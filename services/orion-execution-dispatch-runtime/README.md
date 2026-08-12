@@ -129,8 +129,25 @@ measured gate. It removes a capacity race, not a safety gate — asserted direct
 `tests/test_dispatch_starvation.py::test_the_reservation_does_not_widen_what_may_fire`.
 
 Counters live in `ExecutionDispatchFrameV1.starvation_counts`, keyed
-`"<proposal_kind>:<target_id>"` (**not** `proposal_id`, which embeds the `field_tick_id` and so is
-unique per tick — keying on it would make every tick a first offence). They are carried forward on
+`"<template_key>:<target_id>"` (**not** `proposal_id`, which embeds the `field_tick_id` and so is
+unique per tick — keying on it would make every tick a first offence). The template key is
+recovered from the proposal id by `proposal_template_key`, and it is load-bearing: the first
+version of this patch keyed on `"<proposal_kind>:<target_id>"` alone and was caught as a live no-op
+within minutes of deploy, in the frames this patch itself added. Distinct templates genuinely share
+a kind and target —
+
+```
+inspect_execution_pressure   inspect  capability:orchestration   avg rank 7.5  (starves)
+inspect_attended_target      inspect  capability:orchestration   avg rank 3.0  (admitted ~always)
+```
+
+— so the winner's reset popped the loser's counter every tick, and the candidate that most needed
+aging could never accrue any. An aging mechanism reporting success while changing nothing, for
+precisely the population it existed to serve. `target_id` stays in the key on purpose:
+`inspect_attended_target` binds to whatever attention is on, and inspecting a different target
+really is different work, not a continuation of the same starved job.
+
+They are carried forward on
 stale-discard frames too, via the same dict the EWMA baselines ride in; without that carry a single
 discard tick would zero every counter silently, in exactly the direction that keeps the starved
 thing starved. Only non-zero entries are kept, so the map stays proportional to what is actually

@@ -27,14 +27,56 @@ def _proposal_by_id(proposal_frame: ProposalFrameV1) -> dict[str, ProposalCandid
     return {c.proposal_id: c for c in proposal_frame.candidates}
 
 
+def proposal_template_key(proposal_id: str) -> str | None:
+    """The template that produced a proposal, recovered from its id.
+
+    `orion/proposals/builder.py::stable_proposal_id` builds
+    `proposal:{template_key}:{field_tick_id}:{attention_frame_id}`. Splitting
+    from the LEFT is what makes index 1 safe -- attention_frame_id itself
+    contains colons ("attention.frame:tick_...") so counting from the right
+    would not work. Returns None on anything that does not match, and every
+    caller must have a real fallback: an id-format change must degrade this
+    to a coarser key, never crash dispatch.
+    """
+    parts = proposal_id.split(":")
+    if len(parts) >= 3 and parts[0] == "proposal" and parts[1]:
+        return parts[1]
+    return None
+
+
 def starvation_key(candidate: ProposalCandidateV1) -> str:
     """Cross-tick identity for a repeatedly-proposed candidate.
 
     NOT proposal_id: that embeds the field_tick_id, so it is unique every
     tick and cannot answer "has this same thing been losing for an hour?" --
     which is the only question starvation counters exist to answer.
+
+    The template key is load-bearing, and leaving it out was a live no-op bug
+    (found 2026-08-12, minutes after deploy, in the frames this patch itself
+    added). The first version keyed on `{proposal_kind}:{target_id}` alone --
+    but distinct templates genuinely share a kind and target:
+
+        inspect_execution_pressure  inspect  capability:orchestration
+        inspect_attended_target     inspect  capability:orchestration
+
+    `inspect_attended_target` averages rank 3.0 and is admitted nearly every
+    tick; `inspect_execution_pressure` averages 7.5 and starves. Sharing one
+    key meant the winner's reset popped the loser's counter every tick, so
+    the candidate that most needed aging could never accrue any -- an aging
+    mechanism that reported success while changing nothing, for precisely
+    the population it existed to serve.
+
+    target_id stays in the key on purpose: `inspect_attended_target` binds to
+    whatever attention is on (node:substrate.chat, node:substrate.bus_synaptic,
+    ...), and inspecting a different target really is a different piece of
+    work, not a continuation of the same starved one.
     """
-    return f"{candidate.proposal_kind}:{candidate.target_id}"
+    template = proposal_template_key(candidate.proposal_id)
+    if template is None:
+        # Coarser, collision-prone, and better than crashing: a proposal_id
+        # format change degrades aging, it does not stop dispatch.
+        return f"kind:{candidate.proposal_kind}:{candidate.target_id}"
+    return f"{template}:{candidate.target_id}"
 
 
 def effective_priority(

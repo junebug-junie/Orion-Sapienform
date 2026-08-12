@@ -284,6 +284,49 @@ def test_the_counter_map_stays_bounded_to_what_is_currently_starving():
     assert "inspect:vanished" not in frame.starvation_counts
 
 
+def test_two_templates_sharing_a_kind_and_target_do_not_share_a_counter():
+    """Regression test for a live no-op bug, found in this patch's own frames
+    minutes after deploy. These two are real, from production:
+
+        inspect_execution_pressure  inspect  capability:orchestration
+        inspect_attended_target     inspect  capability:orchestration
+
+    The first version keyed on `{proposal_kind}:{target_id}` alone, so the
+    one that wins nearly every tick (avg rank 3.0) popped the key belonging
+    to the one that starves (avg rank 7.5) -- and the candidate that most
+    needed aging could never accrue any.
+    """
+    winner = _candidate("inspect_attended_target", priority=0.95, target="capability:orchestration")
+    loser = _candidate("inspect_execution_pressure", priority=0.10, target="capability:orchestration")
+    assert starvation_key(winner) != starvation_key(loser)
+
+    crowd = [_candidate(f"inspect_other_{i}", priority=0.90) for i in range(4)]
+    frame = _build(crowd + [winner, loser], prev_counts={starvation_key(loser): 5})
+
+    assert winner.proposal_id in {c.source_proposal_id for c in frame.candidates}
+    assert frame.starvation_counts[starvation_key(loser)] == 6, (
+        "the admitted sibling must not reset a genuinely-starving candidate's counter"
+    )
+
+
+def test_a_malformed_proposal_id_degrades_aging_instead_of_crashing_dispatch():
+    from orion.execution_dispatch.builder import proposal_template_key  # noqa: PLC0415
+
+    assert proposal_template_key("proposal:prune_build_cache:tick_x:attention.frame:tick_x") == (
+        "prune_build_cache"
+    )
+    # attention_frame_id contains colons -- splitting from the right would
+    # pick up the wrong segment, which is why this splits from the left.
+    assert proposal_template_key("proposal:t:tick:a:b:c:d") == "t"
+    for bad in ("", "nonsense", "proposal:", "proposal::tick", "other:t:tick"):
+        assert proposal_template_key(bad) is None
+
+    odd = _candidate("x").model_copy(update={"proposal_id": "nonsense"})
+    assert starvation_key(odd).startswith("kind:")
+    frame = _build([odd])  # must not raise
+    assert frame.frame_id
+
+
 def test_starvation_key_is_stable_across_ticks():
     """The whole mechanism depends on this. proposal_id embeds the
     field_tick_id, so keying on it would make every tick a first offence and

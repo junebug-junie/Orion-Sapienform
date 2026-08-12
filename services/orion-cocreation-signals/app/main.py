@@ -149,7 +149,7 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
                     embed_request_channel=settings.CHANNEL_EMBEDDING_GENERATE,
                     embed_collection=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_COLLECTION,
                     embed_timeout_sec=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC,
-                    truncation_char_threshold=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_TRUNCATION_CHAR_THRESHOLD,
+                    chunk_char_size=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_CHUNK_CHAR_SIZE,
                     poll_interval_sec=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC,
                     state_key=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_STATE_KEY,
                     stop=stop,

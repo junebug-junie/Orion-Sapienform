@@ -149,16 +149,34 @@ class Settings(BaseSettings):
         default="doc_semantic_drift"
     )
     COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC: float = Field(default=30.0)
-    # Best-effort char-length proxy for `possibly_truncated` -- the real
-    # bus embedding-request contract doesn't expose a live token count the
-    # way the offline calibration script's direct container access did
-    # (see orion/schemas/doc_semantic_drift.py's own docstring). ~512
-    # tokens * ~4 chars/token, the same conservative estimate the
-    # calibration script's first draft used before code review replaced it
-    # with a real measurement there -- kept here only because the real
-    # measurement isn't available over the live bus contract, not because
-    # it's preferred.
-    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_TRUNCATION_CHAR_THRESHOLD: int = Field(default=2048)
+    # Chunk window each hunk side is split into before embedding, so a long
+    # doc diff gets chunked instead of silently clipped inside the model.
+    # Replaces `..._TRUNCATION_CHAR_THRESHOLD`, which only *flagged* an
+    # over-long hunk (and fired True on every real event, making it useless
+    # as a signal).
+    #
+    # 1200, not the obvious 2048. Measured 2026-08-12 by running 400 real
+    # chunks from this repo's own *.md history through the live
+    # orion-vector-host container's BAAI/bge-large-en-v1.5 tokenizer:
+    #
+    #   at 2048 chars -> median 541 tokens, p90 608, max 722
+    #                    66.5% of chunks EXCEEDED the model's 512 ceiling
+    #   chars/token on near-full chunks -> median 3.59, min 2.81
+    #
+    # The 512 ceiling is hard and `embedder.embed()` passes truncation=True,
+    # so those chunks were dropped inside the model with no error. The
+    # earlier ~4 chars/token estimate was simply wrong for this corpus --
+    # paths, code fences and identifiers tokenize far denser than prose.
+    # 512 * 2.81 (the observed minimum ratio) = 1437, and 1200 leaves real
+    # margin under it. Note scripts/analysis/measure_doc_semantic_drift.py
+    # already rejected a chars-per-token proxy for this same corpus in
+    # favor of a live token count; this remains a proxy, just a measured
+    # one rather than a guessed one.
+    #
+    # gt=0 is load-bearing: `_chunk_text` returns the text unchunked for
+    # max_chars <= 0, which would silently restore full-text clipping with
+    # chunk_count=1 and no flag.
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_CHUNK_CHAR_SIZE: int = Field(default=1200, gt=0)
 
     # Real Redis key doc_semantic_drift_loop's baseline last_sha is persisted
     # to, so a redeploy resumes from where it left off instead of re-seeding

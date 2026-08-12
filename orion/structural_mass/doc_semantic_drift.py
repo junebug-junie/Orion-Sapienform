@@ -37,12 +37,32 @@ def conventional_commit_prefix(subject: str) -> str | None:
     return kind if kind in _CONVENTIONAL_PREFIXES else None
 
 
-def changed_doc_files(prev_sha: str, head_sha: str, repo_path: str | Path = ".") -> list[str]:
-    """Real ``*.md`` files touched between two commits (``git diff
-    --name-only``, added/copied/modified/renamed -- not deleted, since a
-    deleted doc has no "after" state to score drift against)."""
+# git's --name-status status letters -> this domain's own change_kind
+# vocabulary. C (copied) and R (renamed) both present as a full add of the
+# new path (no -M/-C passed to `git diff`), so they read as "added" here --
+# matching what the hunk text actually looks like, which is what gets
+# scored, rather than what git technically calls the operation.
+_STATUS_TO_CHANGE_KIND = {"A": "added", "C": "added", "R": "added", "M": "modified", "D": "deleted"}
+
+
+def changed_doc_files_with_status(
+    prev_sha: str, head_sha: str, repo_path: str | Path = "."
+) -> list[tuple[str, str]]:
+    """(change_kind, path) for every real ``*.md`` file touched between two
+    commits -- added/copied/modified/renamed, not deleted (a deleted doc has
+    no "after" state to score drift against).
+
+    Reads git's own ``--name-status`` letter rather than inferring the kind
+    from whether a hunk side came back empty: an added file and a modified
+    file whose entire content was replaced can produce similar-looking
+    hunks, but they mean different things for a drift score (see
+    ``DocSemanticDriftV1.change_kind``).
+
+    A malformed/unparseable status line is skipped rather than guessed at --
+    ``git diff --name-status`` emits ``<STATUS>\\t<path>``, and a line
+    without that shape isn't a real file entry."""
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACMR", prev_sha, head_sha, "--", "*.md"],
+        ["git", "diff", "--name-status", "--diff-filter=ACMR", prev_sha, head_sha, "--", "*.md"],
         cwd=repo_path,
         capture_output=True,
         text=True,
@@ -50,7 +70,24 @@ def changed_doc_files(prev_sha: str, head_sha: str, repo_path: str | Path = ".")
     )
     if result.returncode != 0:
         return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    entries: list[tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        # R/C statuses carry a similarity score (e.g. "R100") and a second
+        # path column (old -> new); the *last* column is the current path.
+        status_letter = parts[0].strip()[:1].upper()
+        path = parts[-1].strip()
+        change_kind = _STATUS_TO_CHANGE_KIND.get(status_letter)
+        if change_kind is None or not path:
+            continue
+        entries.append((change_kind, path))
+    return entries
+
+
 
 
 def diff_hunks(
@@ -108,6 +145,9 @@ class DocHunkChange:
     commit_prefix: str | None
     hunk_removed: str
     hunk_added: str
+    # Real git status for this file in the scored range -- see
+    # `changed_doc_files_with_status()` and `DocSemanticDriftV1.change_kind`.
+    change_kind: str | None = None
 
 
 def _commit_subject(sha: str, repo_path: str | Path) -> str:
@@ -134,11 +174,11 @@ def doc_semantic_drift_changes(
     last tick, not one per intermediate commit. Matches
     ``git_delta_loop``'s own "diffs the whole range, not commit-by-commit"
     convention for the same reason (self-healing across a missed poll)."""
-    paths = changed_doc_files(prev_sha, head_sha, repo_path)
+    entries = changed_doc_files_with_status(prev_sha, head_sha, repo_path)
     subject = _commit_subject(head_sha, repo_path)
     prefix = conventional_commit_prefix(subject)
     changes = []
-    for path in paths:
+    for change_kind, path in entries:
         removed, added = diff_hunks(prev_sha, head_sha, path, repo_path)
         # Skip a file whose git-diff produced no real +/- lines at all
         # (e.g. a rename or binary-asset edge case the module docstring
@@ -153,6 +193,7 @@ def doc_semantic_drift_changes(
                 commit_prefix=prefix,
                 hunk_removed=removed,
                 hunk_added=added,
+                change_kind=change_kind,
             )
         )
     return changes

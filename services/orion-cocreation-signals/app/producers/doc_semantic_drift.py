@@ -88,6 +88,110 @@ async def _save_last_sha(bus: OrionBusAsync, state_key: str, sha: str) -> None:
         logger.warning("cocreation_doc_semantic_drift_state_save_failed key=%s sha=%s", state_key, sha, exc_info=True)
 
 
+def _chunk_text(text: str, max_chars: int) -> list[str]:
+    """Split a hunk into <=``max_chars`` windows on line boundaries.
+
+    Exists because the real embedding model silently clips rather than
+    erroring: confirmed live 2026-08-12 that orion-vector-host runs
+    BAAI/bge-large-en-v1.5 with a hard 512-token ceiling (read from the
+    running container's own ``tokenizer_config.json`` ``model_max_length``
+    and ``config.json`` ``max_position_embeddings``). Before this, a 20KB
+    PR-report diff and its first 2KB scored identically -- the tail was
+    never measured, and the resulting score was reported with a
+    ``possibly_truncated`` flag that was True on every real event.
+
+    Line-boundary splitting keeps each window a coherent run of real diff
+    lines rather than slicing mid-sentence. A single line longer than
+    ``max_chars`` is hard-split, since there's no boundary to respect.
+    Returns ``[]`` for empty text -- a real state (a newly-added file has
+    no removed side), not an error."""
+    if not text:
+        return []
+    if max_chars <= 0:
+        return [text]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in text.split("\n"):
+        while len(line) > max_chars:
+            # No line boundary to respect -- emit what's buffered, then
+            # hard-split the oversized line itself.
+            if current:
+                chunks.append("\n".join(current))
+                current, current_len = [], 0
+            chunks.append(line[:max_chars])
+            line = line[max_chars:]
+        # +1 for the newline this line would rejoin with.
+        addition = len(line) + (1 if current else 0)
+        if current and current_len + addition > max_chars:
+            chunks.append("\n".join(current))
+            current, current_len = [line], len(line)
+        else:
+            current.append(line)
+            current_len += addition
+    if current:
+        chunks.append("\n".join(current))
+    return [c for c in chunks if c]
+
+
+def _max_pair_drift(
+    removed_vectors: list[list[float]], added_vectors: list[list[float]]
+) -> float | None:
+    """Drift of the *most-changed* chunk: for each chunk, how unmatched it is
+    against the best-matching chunk on the other side; the score is the worst
+    such mismatch in either direction.
+
+    Deliberately NOT a mean-pooled cosine. Measured against the real model
+    2026-08-12: pooling dilutes drift as roughly 1/N^2, so an identical
+    unrelated rewrite of one section scored 0.2392 in a 1-chunk doc and
+    0.0044 in an 8-chunk doc -- 54x lower for the same real edit. The
+    calibration lineage this signal rests on (docs/superpowers/pr-reports/
+    2026-08-11-doc-semantic-drift-diff-scoped-embedding.md) proposed a 0.3996
+    threshold from single-window samples, so under pooling every long doc
+    would read as a trivial edit -- the inversion of what the signal claims
+    to measure, and a direct failure of CLAUDE.md's metric quality gate.
+
+    Max-pair is length-invariant, and for a hunk that fits in one window it
+    reduces exactly to ``1 - cos(a, b)`` -- the pre-chunking formula -- so
+    existing single-window scores and the 0.3996 threshold keep their
+    meaning.
+
+    Symmetric (max over both directions) rather than only removed->added,
+    which is a deliberate deviation from the directed form: a large block of
+    *added* text with no counterpart on the removed side is real drift, and
+    a directed removed->added scan cannot see it. For the single-chunk case
+    both directions are identical, so this changes nothing about threshold
+    compatibility.
+
+    Honest limitation, not hidden: an extra chunk on the opposing side is
+    one more chance for a changed chunk to find a match. Symmetry contains
+    most of that -- an unmatched chunk contributes its own high term in the
+    other direction, so it cannot quietly drag the score down -- but it does
+    not eliminate it. A second changed section present on both sides whose
+    content resembles the first section's changed text will give that chunk
+    a better match than its true counterpart and lower the reported drift.
+    Far weaker than pooling's ~1/N^2 collapse, which fired on every long doc
+    regardless of content, but not strict length-invariance. Covered by
+    ``test_partially_matching_neighbours_do_lower_the_score`` and
+    ``test_unmatched_chunk_alone_does_not_lower_the_score``.
+
+    Returns ``None`` when either side has no chunks (a newly-added file has
+    no "before" text -- cosine is genuinely undefined, not a failure) or when
+    any pair is unmeasurable, rather than fabricating a number."""
+    if not removed_vectors or not added_vectors:
+        return None
+    worst: float | None = None
+    for vectors, others in ((removed_vectors, added_vectors), (added_vectors, removed_vectors)):
+        for vector in vectors:
+            similarities = [_cosine_similarity(vector, other) for other in others]
+            usable = [s for s in similarities if s is not None]
+            if not usable:
+                return None
+            drift = 1.0 - max(usable)
+            worst = drift if worst is None else max(worst, drift)
+    return worst
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float | None:
     if not a or not b or len(a) != len(b):
         return None
@@ -139,7 +243,27 @@ async def _request_embedding(
         if not isinstance(payload_dict, dict):
             return None
         payload_dict.pop("latent", None)
-        return EmbeddingResultV1.model_validate(payload_dict)
+        # orion-vector-host does NOT signal failure by withholding a reply --
+        # confirmed by code read 2026-08-12 (services/orion-vector-host/
+        # app/main.py:540-571): on a missing-text or embedder exception it
+        # publishes a *well-formed* EmbeddingResultV1 with embedding=[] and
+        # an extra `error` key. EmbeddingResultV1 is extra="ignore"
+        # (orion/schemas/vector/schemas.py:73), so validating it silently
+        # drops that key and hands back a result that looks successful.
+        # Both guards are load-bearing: without them a failed chunk gets
+        # dropped downstream and the remaining chunks are aggregated into a
+        # score presented as a whole measurement.
+        if payload_dict.get("error"):
+            logger.warning(
+                "cocreation_doc_semantic_drift_embed_host_error doc_id=%s error=%s",
+                doc_id, payload_dict.get("error"),
+            )
+            return None
+        result = EmbeddingResultV1.model_validate(payload_dict)
+        if not result.embedding:
+            logger.warning("cocreation_doc_semantic_drift_embed_empty_vector doc_id=%s", doc_id)
+            return None
+        return result
     except Exception:
         logger.warning("cocreation_doc_semantic_drift_embed_request_failed doc_id=%s", doc_id, exc_info=True)
         return None
@@ -154,47 +278,61 @@ async def _score_change(
     change: DocHunkChange,
     collection: str,
     embed_timeout_sec: float,
-    truncation_char_threshold: int,
+    chunk_char_size: int,
 ) -> DocSemanticDriftV1:
-    removed_result, added_result = await asyncio.gather(
-        _request_embedding(
-            rpc_bus,
-            request_channel=request_channel,
-            result_channel_prefix=result_channel_prefix,
-            source=source,
-            doc_id=f"doc_semantic_drift:{change.sha}:{change.path}:removed",
-            text=change.hunk_removed,
-            collection=collection,
-            timeout_sec=embed_timeout_sec,
-        ),
-        _request_embedding(
-            rpc_bus,
-            request_channel=request_channel,
-            result_channel_prefix=result_channel_prefix,
-            source=source,
-            doc_id=f"doc_semantic_drift:{change.sha}:{change.path}:added",
-            text=change.hunk_added,
-            collection=collection,
-            timeout_sec=embed_timeout_sec,
-        ),
+    """One event per changed doc file. Both hunk sides are chunked to fit
+    the embedding model's real 512-token window, embedded chunk-by-chunk,
+    and mean-pooled before the cosine -- see ``_chunk_text()`` for why."""
+    removed_chunks = _chunk_text(change.hunk_removed, chunk_char_size)
+    added_chunks = _chunk_text(change.hunk_added, chunk_char_size)
+
+    async def _embed_side(chunks: list[str], side: str) -> list[list[float]] | None:
+        if not chunks:
+            return None
+        results = await asyncio.gather(
+            *[
+                _request_embedding(
+                    rpc_bus,
+                    request_channel=request_channel,
+                    result_channel_prefix=result_channel_prefix,
+                    source=source,
+                    # Chunk index keeps each window a distinct vector-store
+                    # doc_id -- without it, chunk N would overwrite chunk 0
+                    # in the collection every request.
+                    doc_id=f"doc_semantic_drift:{change.sha}:{change.path}:{side}:{index}",
+                    text=chunk,
+                    collection=collection,
+                    timeout_sec=embed_timeout_sec,
+                )
+                for index, chunk in enumerate(chunks)
+            ]
+        )
+        # A single failed chunk must not silently drop out of the comparison
+        # and leave the rest presented as a whole measurement. `_request_
+        # embedding` now returns None for the embedding host's own
+        # error-shaped replies too, which is what makes this guard real.
+        if any(result is None for result in results):
+            return None
+        return [result.embedding for result in results if result is not None]
+
+    removed_vectors, added_vectors = await asyncio.gather(
+        _embed_side(removed_chunks, "removed"),
+        _embed_side(added_chunks, "added"),
     )
 
     diff: float | None = None
-    if removed_result is not None and added_result is not None:
-        similarity = _cosine_similarity(removed_result.embedding, added_result.embedding)
-        if similarity is not None:
-            diff = 1.0 - similarity
+    if removed_vectors is not None and added_vectors is not None:
+        diff = _max_pair_drift(removed_vectors, added_vectors)
 
     return DocSemanticDriftV1(
         observed_at=datetime.now(timezone.utc),
         sha=change.sha,
         path=change.path,
         commit_prefix=change.commit_prefix,
+        change_kind=change.change_kind,
         diff_scoped_embedding_diff=diff,
-        possibly_truncated=(
-            len(change.hunk_removed) > truncation_char_threshold
-            or len(change.hunk_added) > truncation_char_threshold
-        ),
+        chunk_count_removed=len(removed_chunks),
+        chunk_count_added=len(added_chunks),
         hunk_removed_len_chars=len(change.hunk_removed),
         hunk_added_len_chars=len(change.hunk_added),
     )
@@ -213,8 +351,9 @@ async def _publish(bus: OrionBusAsync, channel: str, source: ServiceRef, event: 
     try:
         await bus.publish(channel, envelope)
         logger.info(
-            "cocreation_doc_semantic_drift_published sha=%s path=%s diff=%s possibly_truncated=%s",
-            event.sha, event.path, event.diff_scoped_embedding_diff, event.possibly_truncated,
+            "cocreation_doc_semantic_drift_published sha=%s path=%s kind=%s diff=%s chunks=%s/%s",
+            event.sha, event.path, event.change_kind, event.diff_scoped_embedding_diff,
+            event.chunk_count_removed, event.chunk_count_added,
         )
         return True
     except Exception:
@@ -231,7 +370,7 @@ async def doc_semantic_drift_loop(
     embed_request_channel: str,
     embed_collection: str,
     embed_timeout_sec: float,
-    truncation_char_threshold: int,
+    chunk_char_size: int,
     poll_interval_sec: float,
     state_key: str,
     stop: asyncio.Event,
@@ -288,7 +427,7 @@ async def doc_semantic_drift_loop(
                             change=change,
                             collection=embed_collection,
                             embed_timeout_sec=embed_timeout_sec,
-                            truncation_char_threshold=truncation_char_threshold,
+                            chunk_char_size=chunk_char_size,
                         )
                         published = await _publish(bus, channel, source, event)
                         all_published = all_published and published

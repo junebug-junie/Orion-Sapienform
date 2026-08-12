@@ -10,7 +10,7 @@ from pathlib import Path
 
 from orion.structural_mass.doc_semantic_drift import (
     DocHunkChange,
-    changed_doc_files,
+    changed_doc_files_with_status,
     conventional_commit_prefix,
     diff_hunks,
     doc_semantic_drift_changes,
@@ -56,7 +56,7 @@ def test_changed_doc_files_only_matches_markdown(tmp_path: Path) -> None:
     (repo / "notes.txt").write_text("not markdown\n", encoding="utf-8")
     head = _commit(repo, "docs: add readme and notes")
 
-    files = changed_doc_files(prev, head, repo)
+    files = [path for _kind, path in changed_doc_files_with_status(prev, head, repo)]
     assert files == ["README.md"]
 
 
@@ -71,7 +71,7 @@ def test_changed_doc_files_excludes_deleted_docs(tmp_path: Path) -> None:
 
     # A deleted doc has no "after" state to score drift against -- must not
     # appear in the changed-files list at all.
-    assert changed_doc_files(prev, head, repo) == []
+    assert changed_doc_files_with_status(prev, head, repo) == []
 
 
 def test_diff_hunks_extracts_only_changed_lines(tmp_path: Path) -> None:
@@ -137,3 +137,72 @@ def test_doc_semantic_drift_changes_carries_commit_prefix(tmp_path: Path) -> Non
     assert len(changes) == 1
     assert changes[0].commit_prefix == "docs"
     assert isinstance(changes[0], DocHunkChange)
+
+
+def test_changed_doc_files_with_status_reports_added_vs_modified(tmp_path: Path) -> None:
+    """The real reason this exists: ``diff_scoped_embedding_diff=None`` has
+    two structurally different causes, and only git's own status letter
+    tells them apart. A newly-added doc has no "before" text (cosine
+    genuinely undefined -- expected); a modified doc scoring None means a
+    real embedding request failed (an alarm). Confirmed live 2026-08-12 that
+    both were publishing as an indistinguishable bare None."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "existing.md").write_text("original line\n")
+    prev = _commit(repo, "docs: seed")
+
+    (repo / "existing.md").write_text("changed line\n")
+    (repo / "brand_new.md").write_text("a fresh doc\n")
+    head = _commit(repo, "docs: edit one, add one")
+
+    entries = dict((path, kind) for kind, path in changed_doc_files_with_status(prev, head, repo))
+    assert entries == {"existing.md": "modified", "brand_new.md": "added"}
+
+
+def test_changed_doc_files_with_status_excludes_deleted_docs(tmp_path: Path) -> None:
+    """--diff-filter=ACMR still excludes deletions -- a deleted doc has no
+    "after" state to score drift against. The schema declares "deleted" for
+    exhaustiveness, but the producer must not emit it today."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "doomed.md").write_text("content\n")
+    prev = _commit(repo, "docs: seed")
+
+    (repo / "doomed.md").unlink()
+    head = _commit(repo, "docs: remove")
+
+    assert changed_doc_files_with_status(prev, head, repo) == []
+
+
+def test_doc_semantic_drift_changes_carries_change_kind(tmp_path: Path) -> None:
+    """End-to-end through the real producer-facing entry point -- the kind
+    has to survive all the way onto DocHunkChange, or the payload field is
+    always None and the disambiguation never happens."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "existing.md").write_text("original\n")
+    prev = _commit(repo, "docs: seed")
+
+    (repo / "existing.md").write_text("updated\n")
+    (repo / "fresh.md").write_text("new content\n")
+    head = _commit(repo, "docs: mixed change")
+
+    kinds = {c.path: c.change_kind for c in doc_semantic_drift_changes(prev, head, repo)}
+    assert kinds == {"existing.md": "modified", "fresh.md": "added"}
+
+
+def test_renamed_doc_reads_as_added_matching_its_hunk_shape(tmp_path: Path) -> None:
+    """No -M/-C is passed to ``git diff``, so a rename presents as a full
+    add at the new path -- and the hunk text really does look like a pure
+    addition. Reporting "added" matches what actually gets scored rather
+    than what git would call the operation with rename detection on."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "old_name.md").write_text("stable content here\n")
+    prev = _commit(repo, "docs: seed")
+
+    _git(repo, "mv", "old_name.md", "new_name.md")
+    head = _commit(repo, "docs: rename")
+
+    entries = dict((path, kind) for kind, path in changed_doc_files_with_status(prev, head, repo))
+    assert entries == {"new_name.md": "added"}

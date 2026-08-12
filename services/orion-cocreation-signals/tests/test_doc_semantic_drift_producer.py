@@ -51,7 +51,7 @@ def _fake_event(change: DocHunkChange, diff: float | None = 0.5) -> DocSemanticD
     return DocSemanticDriftV1(
         observed_at=datetime.now(timezone.utc), sha=change.sha, path=change.path,
         commit_prefix=change.commit_prefix, diff_scoped_embedding_diff=diff,
-        possibly_truncated=False,
+        change_kind=change.change_kind, chunk_count_removed=1, chunk_count_added=1,
         hunk_removed_len_chars=len(change.hunk_removed), hunk_added_len_chars=len(change.hunk_added),
     )
 
@@ -85,7 +85,7 @@ async def test_cold_start_seeds_baseline_without_publishing(fake_bus, source, st
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
@@ -115,7 +115,7 @@ async def test_cold_start_persists_the_seeded_baseline(fake_bus, source, stop_ev
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key=STATE_KEY, stop=stop_event,
         )
 
@@ -151,7 +151,7 @@ async def test_real_change_persists_new_baseline_to_redis(fake_bus, source, stop
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key=STATE_KEY, stop=stop_event,
         )
 
@@ -191,7 +191,7 @@ async def test_failed_publish_does_not_persist_the_unpublished_sha(fake_bus, sou
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key=STATE_KEY, stop=stop_event,
         )
 
@@ -231,7 +231,7 @@ async def test_restart_resumes_from_durable_state_instead_of_cold_starting_at_ne
             bus=bus_after_restart, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key=STATE_KEY, stop=stop_event,
         )
 
@@ -261,7 +261,7 @@ async def test_forked_rpc_bus_client_is_closed_on_loop_exit(fake_bus, source, st
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
@@ -297,7 +297,7 @@ async def test_real_doc_change_publishes_scored_event(fake_bus, source, stop_eve
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
@@ -327,7 +327,7 @@ async def test_no_change_publishes_nothing(fake_bus, source, stop_event, monkeyp
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
@@ -365,7 +365,7 @@ async def test_no_real_doc_files_changed_publishes_nothing_but_advances_sha(
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
@@ -412,7 +412,7 @@ async def test_failed_publish_does_not_advance_state(fake_bus, source, stop_even
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
@@ -448,7 +448,7 @@ async def test_disabled_bus_skips_publish_without_raising(fake_bus, source, stop
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
@@ -474,7 +474,7 @@ async def test_tick_exception_does_not_kill_the_loop(fake_bus, source, stop_even
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            chunk_char_size=2048, poll_interval_sec=0.01,
             state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 

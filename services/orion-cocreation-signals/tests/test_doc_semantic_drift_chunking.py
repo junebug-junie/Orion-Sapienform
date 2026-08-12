@@ -1,4 +1,4 @@
-"""Unit tests for the chunk + mean-pool scoring path in
+"""Unit tests for the chunk + max-chunk-pair scoring path in
 app/producers/doc_semantic_drift.py.
 
 Why this exists: confirmed live 2026-08-12 that orion-vector-host runs
@@ -8,13 +8,14 @@ container's own model files). The model *silently clips* past that -- it
 does not error -- so before chunking, a 20KB doc diff and its first 2KB
 produced the same score, and every real event this repo published carried
 ``possibly_truncated=True``. These tests cover the real behavior that
-replaced it: split each hunk side into windows, embed every window, pool
-them, and never present a partial measurement as a whole one.
+replaced it: split each hunk side into windows below that ceiling, embed
+every window, score by the most-changed chunk pair, and never present a
+partial measurement as a whole one.
 
 Unlike test_doc_semantic_drift_producer.py (which monkeypatches
 ``_score_change`` wholesale to test the loop's *scheduling*), these tests
 drive the real ``_score_change`` with a stubbed embedding transport, so the
-chunking/pooling arithmetic itself is under test.
+chunking/scoring arithmetic itself is under test.
 """
 
 from __future__ import annotations
@@ -105,44 +106,105 @@ def test_nonpositive_max_chars_degrades_to_single_chunk_not_infinite_loop() -> N
 
 
 # --------------------------------------------------------------------------
-# _mean_pool
+# _max_pair_drift
 # --------------------------------------------------------------------------
 
 
-def test_mean_pool_of_single_vector_is_that_vector_normalized() -> None:
-    pooled = mod._mean_pool([[3.0, 4.0]])
-    assert pooled is not None
-    assert pooled == pytest.approx([0.6, 0.8])
+def test_single_chunk_per_side_reduces_to_plain_cosine_distance() -> None:
+    """Threshold compatibility: for a hunk that fits one window the score
+    must be exactly the pre-chunking ``1 - cos(a, b)``, so existing scores
+    and the 0.3996 calibration threshold keep their meaning."""
+    assert mod._max_pair_drift([[1.0, 0.0]], [[0.0, 1.0]]) == pytest.approx(1.0)
+    assert mod._max_pair_drift([[1.0, 0.0]], [[1.0, 0.0]]) == pytest.approx(0.0)
 
 
-def test_mean_pool_normalizes_before_averaging_so_magnitude_does_not_dominate() -> None:
-    """A long chunk's embedding must not outweigh a short one purely through
-    vector magnitude -- that would make the pooled score a function of chunk
-    length rather than content."""
-    # Same two directions, but one supplied with a 1000x magnitude.
-    balanced = mod._mean_pool([[1.0, 0.0], [0.0, 1.0]])
-    lopsided = mod._mean_pool([[1000.0, 0.0], [0.0, 1.0]])
-    assert balanced is not None and lopsided is not None
-    assert lopsided == pytest.approx(balanced)
+def test_drift_is_length_invariant_unlike_mean_pooling() -> None:
+    """The finding that killed mean-pooling: measured against the real model,
+    pooling diluted an identical unrelated-section rewrite from 0.2392 in a
+    1-chunk doc to 0.0044 in an 8-chunk doc (54x). Max-pair must report the
+    same drift regardless of how many unchanged chunks surround it."""
+    # Mutually orthogonal, so the surrounding chunks are genuinely unrelated
+    # to the changed one -- see the test below for what happens when they
+    # are not.
+    removed_changed, added_changed, unchanged = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]
+
+    short = mod._max_pair_drift([removed_changed], [added_changed])
+    # Same real edit, now buried among identical-on-both-sides chunks.
+    long = mod._max_pair_drift(
+        [removed_changed] + [unchanged] * 7,
+        [added_changed] + [unchanged] * 7,
+    )
+    assert short == pytest.approx(long)
+    assert short == pytest.approx(1.0)
 
 
-def test_mean_pool_returns_none_on_mismatched_dims() -> None:
-    assert mod._mean_pool([[1.0, 0.0], [1.0, 0.0, 0.0]]) is None
+def test_partially_matching_neighbours_do_lower_the_score() -> None:
+    """Honest limitation, documented rather than hidden.
+
+    Because the score is symmetric, simply adding an unmatched chunk does
+    NOT lower it -- that chunk contributes its own high term in the other
+    direction. The narrower case that does lower it: a second changed
+    section present on *both* sides whose content partially resembles the
+    first section's changed text. It gives the changed chunk a better match
+    than its true counterpart, so the reported drift falls.
+
+    Far weaker than mean-pooling's ~1/N^2 collapse (which fired on every
+    long doc regardless of content), but real: a doc whose changed sections
+    resemble each other can read quieter than the same edit in isolation."""
+    removed_changed, added_changed = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
+    # Present on both sides, and 45 degrees from the changed pair.
+    resembling = [0.70710678, 0.70710678, 0.0]
+
+    alone = mod._max_pair_drift([removed_changed], [added_changed])
+    with_resembling_section = mod._max_pair_drift(
+        [removed_changed, resembling], [added_changed, resembling]
+    )
+
+    assert alone == pytest.approx(1.0)
+    assert with_resembling_section == pytest.approx(1.0 - 0.70710678)
+    assert with_resembling_section < alone
 
 
-def test_mean_pool_returns_none_when_nothing_real_to_pool() -> None:
-    """Rather than fabricate a zero vector -- same "no empty-shell
-    cognition" contract as _cosine_similarity's own None return."""
-    assert mod._mean_pool([]) is None
-    assert mod._mean_pool([[]]) is None
-    assert mod._mean_pool([[0.0, 0.0]]) is None
+def test_unmatched_chunk_alone_does_not_lower_the_score() -> None:
+    """The counterpart to the above, and why symmetry was worth having: an
+    added chunk with no match cannot quietly drag the score down, because
+    its own unmatchedness is itself scored."""
+    drift = mod._max_pair_drift([[1.0, 0.0]], [[0.0, 1.0], [0.70710678, 0.70710678]])
+    assert drift == pytest.approx(1.0)
 
 
-def test_mean_pool_of_opposing_vectors_returns_none_not_zero() -> None:
-    """Exactly-opposing chunk vectors average to the zero vector, which has
-    no direction -- reporting it as a real pooled embedding would produce a
-    meaningless cosine downstream."""
-    assert mod._mean_pool([[1.0, 0.0], [-1.0, 0.0]]) is None
+def test_unmatched_added_chunk_counts_as_drift(monkeypatch) -> None:
+    """Symmetric on purpose. A large block of *added* text with no
+    counterpart on the removed side is real drift, and a directed
+    removed->added scan cannot see it -- every removed chunk would find its
+    match and report ~0."""
+    matched = [1.0, 0.0]
+    orphan_addition = [0.0, 1.0]
+    drift = mod._max_pair_drift([matched], [matched, orphan_addition])
+    assert drift == pytest.approx(1.0)
+
+
+def test_reports_the_worst_chunk_not_the_average() -> None:
+    """One badly-changed section must not be averaged away by neighbours
+    that barely moved."""
+    stable = [1.0, 0.0]
+    rewritten = [0.0, 1.0]
+    drift = mod._max_pair_drift([stable, rewritten], [stable, stable])
+    assert drift == pytest.approx(1.0)
+
+
+def test_returns_none_when_either_side_has_no_chunks() -> None:
+    """A newly-added file has no "before" text -- genuinely undefined, not a
+    fabricated 0.0."""
+    assert mod._max_pair_drift([], [[1.0, 0.0]]) is None
+    assert mod._max_pair_drift([[1.0, 0.0]], []) is None
+
+
+def test_returns_none_rather_than_fabricate_when_a_pair_is_unmeasurable() -> None:
+    """Mismatched dims / zero vectors make the cosine undefined; reporting a
+    number anyway would be a fabricated measurement."""
+    assert mod._max_pair_drift([[1.0, 0.0]], [[0.0, 0.0]]) is None
+    assert mod._max_pair_drift([[1.0, 0.0]], [[1.0, 0.0, 0.0]]) is None
 
 
 # --------------------------------------------------------------------------
@@ -281,10 +343,14 @@ async def test_added_file_reports_zero_removed_chunks_and_none_diff(source, monk
     undefined. This must be distinguishable from a real embedding failure --
     that's what change_kind + chunk counts are for."""
     _stub_embeddings(monkeypatch)
-    event = await _score(_change("", "brand new doc"), source)
+    event = await _score(_change("", "brand new doc", change_kind="added"), source)
 
     assert event.diff_scoped_embedding_diff is None
-    assert event.change_kind == "modified" or event.change_kind is not None
+    assert event.change_kind == "added"
+    # This is the pair that actually disambiguates: 0 chunks on a side means
+    # structurally undefined, NOT a failed embedding. change_kind alone does
+    # not carry that -- a pure-append edit is status "M" with an empty
+    # removed side (34.8% of real modified-doc changes in this repo).
     assert event.chunk_count_removed == 0
     assert event.chunk_count_added == 1
 
@@ -332,3 +398,81 @@ async def test_event_no_longer_carries_possibly_truncated(source, monkeypatch) -
     _stub_embeddings(monkeypatch)
     event = await _score(_change("old", "new"), source)
     assert not hasattr(event, "possibly_truncated")
+
+
+@pytest.mark.asyncio
+async def test_pure_append_to_existing_doc_is_undefined_not_an_alarm(source, monkeypatch) -> None:
+    """Regression guard on a wrong claim this schema used to make. A
+    pure-append edit has git status "modified" but no removed side at all
+    under --unified=0 -- measured at 34.8% of real modified-doc changes over
+    this repo's last 300 commits. It must be distinguishable from a real
+    embedding failure by chunk_count_removed == 0, not misread as one."""
+    _stub_embeddings(monkeypatch)
+    event = await _score(_change("", "a whole new section", change_kind="modified"), source)
+
+    assert event.change_kind == "modified"
+    assert event.diff_scoped_embedding_diff is None
+    assert event.chunk_count_removed == 0
+
+
+@pytest.mark.asyncio
+async def test_embedding_host_error_reply_is_not_treated_as_a_success(source, monkeypatch) -> None:
+    """orion-vector-host signals failure with a well-formed EmbeddingResultV1
+    carrying embedding=[] and an extra `error` key -- NOT by withholding a
+    reply (services/orion-vector-host/app/main.py:540-571). EmbeddingResultV1
+    is extra="ignore", so a naive model_validate() drops `error` and returns
+    something that looks successful. If that reaches the scorer, the failed
+    chunk is dropped and the survivors are published as a whole measurement.
+    """
+    captured: list[str] = []
+
+    async def _fake_rpc_request(channel, envelope, reply_channel=None, timeout_sec=None):
+        captured.append(envelope.payload["doc_id"])
+        return {"data": b"unused"}
+
+    class _Codec:
+        def decode(self, _data):
+            class _Decoded:
+                ok = True
+
+                class envelope:  # noqa: N801
+                    # Exactly the real error shape from the embedding host.
+                    payload = {
+                        "doc_id": "d",
+                        "embedding": [],
+                        "embedding_model": None,
+                        "embedding_dim": 0,
+                        "error": "CUDA out of memory",
+                    }
+
+            return _Decoded()
+
+    class _Bus:
+        codec = _Codec()
+        rpc_request = staticmethod(_fake_rpc_request)
+
+    result = await mod._request_embedding(
+        _Bus(),
+        request_channel="orion:embedding:generate",
+        result_channel_prefix="orion:embedding:result",
+        source=source,
+        doc_id="doc_semantic_drift:abc:x.md:added:0",
+        text="some real text",
+        collection="doc_semantic_drift",
+        timeout_sec=5.0,
+    )
+    assert result is None, "an error-shaped reply must not read as a successful embedding"
+
+
+@pytest.mark.asyncio
+async def test_one_failed_chunk_nulls_the_side_rather_than_scoring_the_survivors(
+    source, monkeypatch
+) -> None:
+    """The multi-chunk consequence of the guard above: with 3 chunks where
+    one fails, publishing a score over the other 2 would be a fabricated
+    whole measurement."""
+    _stub_embeddings(monkeypatch, fail_texts={"bbb"})
+    event = await _score(_change("aaa\nbbb\nccc", "zzz"), source, chunk_char_size=3)
+
+    assert event.chunk_count_removed == 3
+    assert event.diff_scoped_embedding_diff is None

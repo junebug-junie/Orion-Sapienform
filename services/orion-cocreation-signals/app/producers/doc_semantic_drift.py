@@ -134,37 +134,62 @@ def _chunk_text(text: str, max_chars: int) -> list[str]:
     return [c for c in chunks if c]
 
 
-def _mean_pool(vectors: list[list[float]]) -> list[float] | None:
-    """L2-normalize each chunk vector, average, then renormalize.
+def _max_pair_drift(
+    removed_vectors: list[list[float]], added_vectors: list[list[float]]
+) -> float | None:
+    """Drift of the *most-changed* chunk: for each chunk, how unmatched it is
+    against the best-matching chunk on the other side; the score is the worst
+    such mismatch in either direction.
 
-    Normalizing before averaging keeps one long chunk from dominating the
-    pooled direction purely through magnitude -- the standard way to pool
-    sentence embeddings across windows. Returns ``None`` if there's nothing
-    real to pool (no vectors, mismatched dims, or an all-zero average),
-    matching ``_cosine_similarity``'s own "return None rather than
-    fabricate" contract."""
-    usable = [v for v in vectors if v]
-    if not usable:
+    Deliberately NOT a mean-pooled cosine. Measured against the real model
+    2026-08-12: pooling dilutes drift as roughly 1/N^2, so an identical
+    unrelated rewrite of one section scored 0.2392 in a 1-chunk doc and
+    0.0044 in an 8-chunk doc -- 54x lower for the same real edit. The
+    calibration lineage this signal rests on (docs/superpowers/pr-reports/
+    2026-08-11-doc-semantic-drift-diff-scoped-embedding.md) proposed a 0.3996
+    threshold from single-window samples, so under pooling every long doc
+    would read as a trivial edit -- the inversion of what the signal claims
+    to measure, and a direct failure of CLAUDE.md's metric quality gate.
+
+    Max-pair is length-invariant, and for a hunk that fits in one window it
+    reduces exactly to ``1 - cos(a, b)`` -- the pre-chunking formula -- so
+    existing single-window scores and the 0.3996 threshold keep their
+    meaning.
+
+    Symmetric (max over both directions) rather than only removed->added,
+    which is a deliberate deviation from the directed form: a large block of
+    *added* text with no counterpart on the removed side is real drift, and
+    a directed removed->added scan cannot see it. For the single-chunk case
+    both directions are identical, so this changes nothing about threshold
+    compatibility.
+
+    Honest limitation, not hidden: an extra chunk on the opposing side is
+    one more chance for a changed chunk to find a match. Symmetry contains
+    most of that -- an unmatched chunk contributes its own high term in the
+    other direction, so it cannot quietly drag the score down -- but it does
+    not eliminate it. A second changed section present on both sides whose
+    content resembles the first section's changed text will give that chunk
+    a better match than its true counterpart and lower the reported drift.
+    Far weaker than pooling's ~1/N^2 collapse, which fired on every long doc
+    regardless of content, but not strict length-invariance. Covered by
+    ``test_partially_matching_neighbours_do_lower_the_score`` and
+    ``test_unmatched_chunk_alone_does_not_lower_the_score``.
+
+    Returns ``None`` when either side has no chunks (a newly-added file has
+    no "before" text -- cosine is genuinely undefined, not a failure) or when
+    any pair is unmeasurable, rather than fabricating a number."""
+    if not removed_vectors or not added_vectors:
         return None
-    dim = len(usable[0])
-    if any(len(v) != dim for v in usable):
-        return None
-    summed = [0.0] * dim
-    contributing = 0
-    for vec in usable:
-        norm = sum(x * x for x in vec) ** 0.5
-        if norm == 0.0:
-            continue
-        for i, x in enumerate(vec):
-            summed[i] += x / norm
-        contributing += 1
-    if contributing == 0:
-        return None
-    pooled = [x / contributing for x in summed]
-    pooled_norm = sum(x * x for x in pooled) ** 0.5
-    if pooled_norm == 0.0:
-        return None
-    return [x / pooled_norm for x in pooled]
+    worst: float | None = None
+    for vectors, others in ((removed_vectors, added_vectors), (added_vectors, removed_vectors)):
+        for vector in vectors:
+            similarities = [_cosine_similarity(vector, other) for other in others]
+            usable = [s for s in similarities if s is not None]
+            if not usable:
+                return None
+            drift = 1.0 - max(usable)
+            worst = drift if worst is None else max(worst, drift)
+    return worst
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float | None:
@@ -218,7 +243,27 @@ async def _request_embedding(
         if not isinstance(payload_dict, dict):
             return None
         payload_dict.pop("latent", None)
-        return EmbeddingResultV1.model_validate(payload_dict)
+        # orion-vector-host does NOT signal failure by withholding a reply --
+        # confirmed by code read 2026-08-12 (services/orion-vector-host/
+        # app/main.py:540-571): on a missing-text or embedder exception it
+        # publishes a *well-formed* EmbeddingResultV1 with embedding=[] and
+        # an extra `error` key. EmbeddingResultV1 is extra="ignore"
+        # (orion/schemas/vector/schemas.py:73), so validating it silently
+        # drops that key and hands back a result that looks successful.
+        # Both guards are load-bearing: without them a failed chunk gets
+        # dropped downstream and the remaining chunks are aggregated into a
+        # score presented as a whole measurement.
+        if payload_dict.get("error"):
+            logger.warning(
+                "cocreation_doc_semantic_drift_embed_host_error doc_id=%s error=%s",
+                doc_id, payload_dict.get("error"),
+            )
+            return None
+        result = EmbeddingResultV1.model_validate(payload_dict)
+        if not result.embedding:
+            logger.warning("cocreation_doc_semantic_drift_embed_empty_vector doc_id=%s", doc_id)
+            return None
+        return result
     except Exception:
         logger.warning("cocreation_doc_semantic_drift_embed_request_failed doc_id=%s", doc_id, exc_info=True)
         return None
@@ -241,7 +286,7 @@ async def _score_change(
     removed_chunks = _chunk_text(change.hunk_removed, chunk_char_size)
     added_chunks = _chunk_text(change.hunk_added, chunk_char_size)
 
-    async def _embed_side(chunks: list[str], side: str) -> list[float] | None:
+    async def _embed_side(chunks: list[str], side: str) -> list[list[float]] | None:
         if not chunks:
             return None
         results = await asyncio.gather(
@@ -262,22 +307,22 @@ async def _score_change(
                 for index, chunk in enumerate(chunks)
             ]
         )
-        # A single failed chunk must not silently shrink the pooled vector
-        # into a partial measurement presented as a whole one.
+        # A single failed chunk must not silently drop out of the comparison
+        # and leave the rest presented as a whole measurement. `_request_
+        # embedding` now returns None for the embedding host's own
+        # error-shaped replies too, which is what makes this guard real.
         if any(result is None for result in results):
             return None
-        return _mean_pool([result.embedding for result in results if result is not None])
+        return [result.embedding for result in results if result is not None]
 
-    removed_vector, added_vector = await asyncio.gather(
+    removed_vectors, added_vectors = await asyncio.gather(
         _embed_side(removed_chunks, "removed"),
         _embed_side(added_chunks, "added"),
     )
 
     diff: float | None = None
-    if removed_vector is not None and added_vector is not None:
-        similarity = _cosine_similarity(removed_vector, added_vector)
-        if similarity is not None:
-            diff = 1.0 - similarity
+    if removed_vectors is not None and added_vectors is not None:
+        diff = _max_pair_drift(removed_vectors, added_vectors)
 
     return DocSemanticDriftV1(
         observed_at=datetime.now(timezone.utc),

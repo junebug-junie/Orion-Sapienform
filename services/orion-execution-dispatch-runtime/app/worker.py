@@ -327,7 +327,15 @@ class ExecutionDispatchRuntimeWorker:
             "staleness_discard_count_ewma": 0.0,
             "staleness_discard_count_ewma_var": 0.0,
             "staleness_discard_count_ewma_n": 0,
+            "starvation_counts": {},
         }
+        # 2026-08-12: starvation counters ride in the SAME carried-forward
+        # dict as the EWMA baselines (loaded off the same row -- see
+        # store.load_latest_staleness_discard_baseline), which is what puts
+        # them on stale-discard frames too. .get() rather than [] because a
+        # baseline persisted before this field existed is a real state here,
+        # not a bug.
+        prev_starvation_counts = baseline.get("starvation_counts") or {}
         policy_frame, discarded_this_tick, last_discard_frame = self._drain_stale_policy_frames(
             baseline
         )
@@ -407,6 +415,11 @@ class ExecutionDispatchRuntimeWorker:
             field_tick_id=policy_frame.source_field_tick_id,
             policy=self._policy,
             override_dispatch_mode=self._settings.execution_dispatch_mode,
+            prev_starvation_counts=prev_starvation_counts,
+            # NOTE: updated_baseline deliberately does NOT carry
+            # starvation_counts -- this frame computes its own fresh map and
+            # model_copy would otherwise stamp the previous tick's map back
+            # over it, freezing every counter at its first value.
         ).model_copy(update=updated_baseline)
 
         if (

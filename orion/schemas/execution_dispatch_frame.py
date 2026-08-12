@@ -60,6 +60,12 @@ class ExecutionDispatchCandidateV1(BaseModel):
     dispatch_error: str | None = None
     dispatched_at: datetime | None = None
 
+    # 2026-08-12: how many consecutive ticks this candidate had already lost
+    # the capacity race when this frame was built. On a blocked candidate it
+    # is the whole point of the record -- "starved 40 ticks running" and
+    # "lost once" are different facts and used to be stored identically.
+    starvation_ticks: int = 0
+
     @model_validator(mode="after")
     def _dispatched_requires_evidence(self) -> "ExecutionDispatchCandidateV1":
         if self.dispatch_status == "dispatched":
@@ -146,3 +152,16 @@ class ExecutionDispatchFrameV1(BaseModel):
     staleness_discard_count_ewma: float = 0.0
     staleness_discard_count_ewma_var: float = 0.0
     staleness_discard_count_ewma_n: int = 0
+
+    # 2026-08-12: consecutive-tick starvation counters, keyed by
+    # "<proposal_kind>:<target_id>" (builder._starvation_key -- deliberately
+    # NOT the proposal_id, which embeds the field_tick_id and is therefore
+    # unique per tick and useless as a cross-tick identity).
+    #
+    # Carried forward on every saved frame, same convention as the two EWMA
+    # baselines above. Only keys seen as eligible in THIS tick are written:
+    # a candidate that stops being proposed drops out rather than
+    # accumulating forever. That bound is deliberate -- this repo has shipped
+    # the unbounded version of exactly this shape twice already (see
+    # feedback_substrate_performance / the evidence_event_ids caps).
+    starvation_counts: dict[str, int] = Field(default_factory=dict)

@@ -19,6 +19,27 @@ from orion.substrate.bus_synaptic_surprise import (
 logger = logging.getLogger("orion.execution_dispatch.runtime.store")
 
 
+def _coerce_starvation_counts(raw: object) -> dict[str, int]:
+    """Persisted starvation counters -> a usable dict, never an exception.
+
+    Rows written before this field existed have no key at all, and this value
+    only ever feeds an admission-ordering bonus -- a malformed one should cost
+    the aging bonus for a tick, not stall the dispatch runtime. Returns {}
+    rather than None: absent and empty genuinely mean the same thing here
+    (nothing is starving), unlike the EWMA baselines beside it where
+    "never seeded" is a distinct state that has to be told apart.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        try:
+            out[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 class ExecutionDispatchRuntimeStore:
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
@@ -571,7 +592,8 @@ class ExecutionDispatchRuntimeStore:
                         SELECT
                             dispatch_frame_json ->> 'staleness_discard_count_ewma' AS ewma,
                             dispatch_frame_json ->> 'staleness_discard_count_ewma_var' AS var,
-                            dispatch_frame_json ->> 'staleness_discard_count_ewma_n' AS n
+                            dispatch_frame_json ->> 'staleness_discard_count_ewma_n' AS n,
+                            dispatch_frame_json -> 'starvation_counts' AS starvation_counts
                         FROM substrate_execution_dispatch_frames
                         ORDER BY created_at DESC
                         LIMIT 1
@@ -587,6 +609,18 @@ class ExecutionDispatchRuntimeStore:
             "staleness_discard_count_ewma": float(row["ewma"]) if row["ewma"] is not None else 0.0,
             "staleness_discard_count_ewma_var": float(row["var"]) if row["var"] is not None else 0.0,
             "staleness_discard_count_ewma_n": int(row["n"]) if row["n"] is not None else 0,
+            # 2026-08-12: starvation counters ride along on the SAME row this
+            # already reads rather than in a second query. Not just cheaper --
+            # a separate `ORDER BY created_at DESC LIMIT 1` could resolve to a
+            # different row under concurrent inserts, and the two states would
+            # then be carried forward from different ticks.
+            #
+            # This carry has to be real for aging to work at all: stale-discard
+            # frames are saved rows too (worker._drain_stale_policy_frames
+            # stamps them with this whole dict), so without it one discard tick
+            # would zero every counter -- silently, in exactly the direction
+            # that keeps the starved thing starved.
+            "starvation_counts": _coerce_starvation_counts(row["starvation_counts"]),
         }
 
     def most_recent_closed_day_with_data(

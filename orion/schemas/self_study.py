@@ -24,6 +24,13 @@ SelfConceptKind = Literal[
     "recall_surface",
     "journaling_surface",
     "graph_surface",
+    # Added 2026-08: Layer 2 graphify + structural_mass + enrichment-cache
+    # concept kinds (services/orion-cortex-exec/app/self_study.py
+    # _graphify_derived_concepts / _structural_delta_concepts /
+    # _semantic_enrichment_concepts).
+    "graphify_community",
+    "structural_mass",
+    "semantic_enrichment",
 ]
 SelfReflectionKind = Literal[
     "tension",
@@ -135,6 +142,12 @@ class SelfInducedConceptV1(BaseModel):
     confidence: float
     source_snapshot_id: str
     evidence: list[SelfConceptEvidenceRefV1] = Field(default_factory=list)
+    # Free-form list[str], not a Literal -- kept intentionally open (existing
+    # values are "service"/"channel"/"touchpoint"/"env_surface" etc). Added
+    # 2026-08: "graphify_community" and "structural_mass_delta" as the
+    # inferred_from tags used by _graphify_derived_concepts() and
+    # _structural_delta_concepts() respectively (services/orion-cortex-exec/
+    # app/self_study.py).
     inferred_from: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

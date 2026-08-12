@@ -56,6 +56,16 @@ services:
       # `_resolve_repo_root()` and any script-relative paths resolve identically inside and outside the
       # container. Override ORION_HOST_REPO_ROOT if this node's checkout lives elsewhere.
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:ro
+      # Read-only mount of orion-self-study-enrichment's cache volume (2026-08,
+      # self_study.py's _semantic_enrichment_concepts()). That service names
+      # its volume `${PROJECT}-self-study-enrichment-data` (see
+      # services/orion-self-study-enrichment/docker-compose.yml) and mounts it
+      # at /data; cortex-exec never writes into it, only reads cached
+      # enrichment JSON already written by that service. Mount target here
+      # MUST match SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR's default in
+      # self_study.py (currently /mnt/self_study_enrichment_data) -- if they
+      # diverge, the cache silently reads as "unreachable" with no error.
+      - self_study_enrichment_data:/mnt/self_study_enrichment_data:ro
 
     # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
     privileged: true
@@ -160,6 +170,7 @@ services:
       # Same value as the bind-mount source/target above (not the separate legacy ORION_REPO_ROOT key --
       # see .env_example for the 2026-08-12 rename note).
       ORION_REPO_ROOT: ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}
+      SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR: ${SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR:-/mnt/self_study_enrichment_data/cache/self_study_enrichment}
       CONCEPT_PROFILE_REPOSITORY_BACKEND: ${CONCEPT_PROFILE_REPOSITORY_BACKEND:-local}
       CONCEPT_PROFILE_GRAPHDB_ENDPOINT: ${CONCEPT_PROFILE_GRAPHDB_ENDPOINT:-}
       CONCEPT_PROFILE_GRAPHDB_URL: ${CONCEPT_PROFILE_GRAPHDB_URL:-}
@@ -267,4 +278,11 @@ services:
 
 networks:
   app-net:
+    external: true
+
+volumes:
+  # External: owned/created by orion-self-study-enrichment's compose file,
+  # not this one. cortex-exec only reads from it (see the :ro mount above).
+  self_study_enrichment_data:
+    name: ${PROJECT}-self-study-enrichment-data
     external: true

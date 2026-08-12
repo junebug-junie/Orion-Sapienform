@@ -180,6 +180,45 @@ profiles:
       nms_iou: 0.6
       label_mode: open_vocab           # open_vocab | closed_set
       labels_hint: []                  # optional label shortlist per request
+      # Open-vocabulary detection can only name what the prompt asks about.
+      # With this unset, runner.py fell back to a hardcoded six-word list
+      # (person/face/phone/screen/door/package), which is why 19 days of live
+      # cam0 events describe nothing but doors, screens and the occasional
+      # package -- the detector was blindfolded, not weak. Reviewed frames from
+      # cam0 on 2026-08-12 contain a desk, two office chairs, two monitors, a
+      # whiteboard, a guitar case, storage totes and a table, none of which
+      # were nameable.
+      #
+      # `face` is deliberately absent: identity/face/re-ID stays a non-goal.
+      # Keep terms visually distinct -- near-synonyms make GroundingDINO emit
+      # duplicate overlapping boxes for one object.
+      default_prompts:
+        - person
+        - door
+        - screen
+        - monitor
+        - laptop
+        - keyboard
+        - desk
+        - table
+        - chair
+        - whiteboard
+        - guitar case
+        - backpack
+        - bag
+        - cardboard box
+        - storage bin
+        - book
+        - lamp
+        - window
+        - houseplant
+        - cup
+        - bottle
+        - shoe
+        - clothing
+        - cable
+        - phone
+        - package
     outputs:
       objects:
         include_boxes: true

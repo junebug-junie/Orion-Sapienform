@@ -1,0 +1,23 @@
+name: skills.runtime.builder_prune.v1
+label: Skills — Runtime Housekeeping (Docker Build-Cache Prune)
+description: >
+  Reclaim Docker build cache older than a cutoff, in bounded mode (dry-run
+  default, execute policy-gated). Acts only when the host is genuinely under
+  disk pressure AND there is genuinely reclaimable cache — both conditions,
+  because an autonomous action that fires and changes nothing is theater.
+  Reports disk usage before and after, which is the measurable outcome that
+  makes this action attributable.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 120000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.runtime.builder_prune.v1
+    description: Measure host disk + build cache, gate, prune in dry-run/execute modes, re-measure.
+    order: 0
+    services: []

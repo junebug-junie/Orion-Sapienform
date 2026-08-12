@@ -274,14 +274,70 @@ Deferred deliberately: it needs a per-surface decision about where the live
 sample comes from (Postgres history, bus window, or a service `/latest`
 endpoint), and that is a bigger question than the first four phases combined.
 
-### Open question for Juniper
+### Decisions taken (2026-08-12)
 
-Phases 1–4 are read-only tooling and safe to build straight through. Phase 3
-(the hook) is the one with a real cost: it fires on every matching edit in every
-session, and the graphify nudge is already occupying that surface. A second
-mandatory nudge on the same trigger risks nudge-blindness — the same failure
-mode recorded for the agent-board Stop hook banner, which a live session ignored
-across ~20 consecutive turns because there was no cost to ignoring it.
+- **Scope of the first pass: phases 1+2.** Built and merged as one PR.
+- **Phase 3 hook behavior: always show the full lineage card**, on every edit
+  touching a registered metric — not only on dead/suspect verdicts. Juniper's
+  call. The nudge-blindness risk (the agent-board Stop banner a live session
+  ignored across ~20 turns) is accepted deliberately: a card that only appears
+  for already-known-bad metrics cannot prevent the failure where nobody knew
+  the metric was bad yet.
 
-That is a judgment call about your tolerance for hook noise, not something to
-infer.
+## Build findings (phases 1+2, 2026-08-12)
+
+Two things the build changed about the design, both found by running the
+scanner against the real repo rather than reasoning about it:
+
+**1. `collection_member` is the access kind that matters most, and it was
+missing from the original design.** The first scanner draft classified only
+subscript / `.get` / dict-key / attribute access as high confidence. Under
+that model `cpu_pressure` had **81 raw hits and a blast radius of zero** — no
+explicit key read anywhere outside tests. Its real production consumers all
+register it into a *collection that some loop iterates*:
+
+```
+orion/field/pressure.py:35                              (channel tuple, reducer-iterated)
+orion/field_coherence.py:9,13                           (coherence rule pairs)
+services/orion-field-digester/app/digestion/decay.py:31 (NODE_DECAY_CHANNELS)
+services/orion-field-digester/app/tensor/channels.py:4  (channel definition set)
+```
+
+That `decay.py:31` line is the exact mechanism behind the 2026-07-26
+decayed-to-zero incident in CLAUDE.md §0A — a generic staleness loop
+multiplying a channel by 0.92 per tick. Membership in that list is now
+first-class lineage rather than something to rediscover by hand.
+
+This is also the generalized form of the `transport_prediction_error`
+retirement miss: a metric "retired" from one *named* consumer keeps feeding
+every *generic* one. A blast radius that ignores collection membership reports
+empty for exactly the metrics most likely to be silently alive.
+
+**2. Attribute access was systematically undercounting inner-state metrics.**
+Field-channel and organ metrics are string dict keys; inner-state pydantic
+scalars are attributes (`frame.recon_error`). The first run reported 9
+inner-state metrics with zero consumers; adding `ast.Attribute` recovered 4 of
+them (+153 hits). The remaining 5 (`delta_phi`, `delta_recon_error`,
+`overall_confidence`, `recon_error`, `shuffle_baseline_loss`) appear to be
+genuinely unread and are reported as findings, not fixed here.
+
+### Measured, not asserted
+
+```
+bus_channel   261    scan tokens     386
+field_channel  38    files scanned  3714
+inner_state    36    consumer hits  4713
+organ_signal  252    runtime         ~13s
+TOTAL         587 URNs
+```
+
+### Known limits, stated
+
+- Dynamic access (`vector[name_from_config]`) is invisible to any static
+  scanner. Such call sites are **undercounted, never overcounted**.
+- Python matching is exact-equality on the string constant, so prose that
+  merely contains a metric name produces no hit at all. The YAML/JSON scan is
+  substring-based and correspondingly noisier — it is tagged `config` and
+  excluded from high-confidence blast radius.
+- Liveness is still **not computed** (phase 5). Every lineage card says so
+  explicitly rather than leaving a blank that reads as "fine".

@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -28,6 +28,15 @@ test-actions:
 # rest.
 check-inner-state-registry:
 	@python scripts/check_inner_state_registry.py
+
+# Metric semantic layer (phases 1+2 of docs/superpowers/specs/
+# 2026-08-12-metric-semantic-layer-design.md). Joins the four metric-bearing
+# registries into one URN space and mechanically discovers each metric's
+# downstream blast radius. Read-only reporting; enforcement is phase 4.
+#   make check-metric-lineage                    # summary
+#   make check-metric-lineage METRIC=cpu_pressure  # one lineage card
+check-metric-lineage:
+	@python scripts/check_metric_lineage.py $(if $(METRIC),--metric $(METRIC),) $(if $(JSON),--json,)
 
 # Live-bus gate: every channel marked single_consumer: true in
 # orion/bus/channels.yaml must have exactly one live subscriber

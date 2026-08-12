@@ -44,9 +44,13 @@ services:
       # in this repo. `origin` is an SSH remote (git@github.com:...), so `git push`
       # needs the SSH key + known_hosts; `gh` (PR creation) needs its own token dir.
       # Same identity/keys this worktree's own git/gh operations already use.
+      # NOT ${HOME}/.gitconfig -- a read-only bind mount there fully replaces the
+      # file, which shadows the safe.directory/identity config baked into the
+      # image (Dockerfile) and can't be written to at runtime either (confirmed
+      # live: "could not write config file /root/.gitconfig: Device or resource
+      # busy"). Git identity/safe.directory live in the image instead.
       - ${HOME}/.ssh:/root/.ssh:ro
       - ${HOME}/.config/gh:/root/.config/gh:ro
-      - ${HOME}/.gitconfig:/root/.gitconfig:ro
       - ${HUB_AGENT_GH_BIN_HOST:-${HOME}/.local/bin/gh}:/usr/local/bin/gh:ro
       - ${HUB_AGENT_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - /var/run/docker.sock:/var/run/docker.sock

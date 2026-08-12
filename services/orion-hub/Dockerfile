@@ -39,7 +39,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          docker-compose-plugin \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global --add safe.directory '*' \
+    && git config --global user.name "Orion FCC" \
+    && git config --global user.email "orion-fcc@orion-sapienform.local"
 
 # Upgrade pip
 RUN pip3 install --no-cache-dir --upgrade pip

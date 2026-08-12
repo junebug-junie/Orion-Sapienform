@@ -42,6 +42,22 @@ from orion.structural_mass.doc_semantic_drift import DocHunkChange, doc_semantic
 
 logger = logging.getLogger("orion.cocreation_signals.doc_semantic_drift")
 
+# Max embedding requests in flight per scored file.
+#
+# orion-vector-host consumes these serially -- its Hunter is built without
+# concurrent_handlers (default False, orion/core/bus/bus_service_chassis.py)
+# and the live deployment runs the `hf` backend on CPU at ~0.6s per
+# 1200-char embed (measured on the idle live host 2026-08-12). It is also
+# the shared embedding host for live chat memory (3748 real
+# embedding.generate requests in the 24h before this was written), so an
+# unbounded fan-out over a large doc's chunks does not just make this
+# producer slow -- it monopolizes a service other cognition depends on, and
+# the later chunks time out anyway while queued behind their own siblings.
+#
+# Deliberately small: this producer is a background signal on a 300s poll,
+# with nothing time-critical about any single file's score.
+_EMBED_CONCURRENCY = 4
+
 
 def _current_head_sha(repo_path: str) -> str:
     result = subprocess.run(
@@ -151,10 +167,36 @@ def _max_pair_drift(
     would read as a trivial edit -- the inversion of what the signal claims
     to measure, and a direct failure of CLAUDE.md's metric quality gate.
 
-    Max-pair is length-invariant, and for a hunk that fits in one window it
-    reduces exactly to ``1 - cos(a, b)`` -- the pre-chunking formula -- so
-    existing single-window scores and the 0.3996 threshold keep their
-    meaning.
+    For a hunk that fits in one window this reduces exactly to
+    ``1 - cos(a, b)`` -- the pre-chunking formula -- so single-window scores
+    and the 0.3996 threshold keep their meaning. That exact reduction needs
+    BOTH sides to be a single chunk, not just one of them.
+
+    It is NOT length-invariant, and an earlier version of this docstring
+    wrongly claimed it was. Being a ``max`` over ``2*(N+M)`` non-negative
+    terms makes it an extreme-value statistic: more chunks means more draws
+    means a higher expected maximum, independent of whether more real change
+    occurred. Measured over 30 real hunk pairs from this repo's history:
+
+        N=1     n=8   median 0.1684
+        N=2-3   n=18  median 0.2237
+        N=4+    n=4   median 0.2861
+
+    Monotone, ~70% median inflation from 1 to 4+ chunks (small buckets at
+    the top -- treat the coefficient as directional, the ordering as real).
+    So a multi-chunk event is biased HIGH relative to the single-window
+    0.3996 threshold, and a consumer applying that cutoff across chunk
+    counts will over-flag long docs. A multi-chunk threshold has to be
+    derived separately.
+
+    The bias is a tendency, not a guarantee: an extra chunk adds a term to
+    the max (pushing up) but also adds a match candidate for every chunk on
+    the other side (pushing down), so the net on any single event is
+    content-dependent. A second changed section resembling the first can
+    give that chunk a better match than its true counterpart and lower the
+    score. Both directions are pinned by tests. Still far smaller than the
+    ~54x collapse that disqualified mean-pooling, and it errs toward
+    noticing change rather than hiding it.
 
     Symmetric (max over both directions) rather than only removed->added,
     which is a deliberate deviation from the directed form: a large block of
@@ -282,16 +324,29 @@ async def _score_change(
 ) -> DocSemanticDriftV1:
     """One event per changed doc file. Both hunk sides are chunked to fit
     the embedding model's real 512-token window, embedded chunk-by-chunk,
-    and mean-pooled before the cosine -- see ``_chunk_text()`` for why."""
+    and scored by the most-changed chunk pair -- see ``_chunk_text()`` for
+    why chunking, and ``_max_pair_drift()`` for why max-pair rather than a
+    pooled centroid.
+
+    Embedding requests are capped at ``_EMBED_CONCURRENCY`` in flight. The
+    embedding host handles requests serially on CPU (~0.6s each, measured on
+    the idle live host 2026-08-12) and is shared with live chat memory --
+    firing one unbounded ``gather`` over every chunk of a large doc both
+    starves that shared host and guarantees the later chunks blow their own
+    30s timeout."""
     removed_chunks = _chunk_text(change.hunk_removed, chunk_char_size)
     added_chunks = _chunk_text(change.hunk_added, chunk_char_size)
+    # Shared across both sides -- the cap is about the embedding host's real
+    # serial throughput, so counting each side separately would double it.
+    semaphore = asyncio.Semaphore(_EMBED_CONCURRENCY)
 
     async def _embed_side(chunks: list[str], side: str) -> list[list[float]] | None:
         if not chunks:
             return None
-        results = await asyncio.gather(
-            *[
-                _request_embedding(
+
+        async def _one(index: int, chunk: str):
+            async with semaphore:
+                return await _request_embedding(
                     rpc_bus,
                     request_channel=request_channel,
                     result_channel_prefix=result_channel_prefix,
@@ -304,8 +359,9 @@ async def _score_change(
                     collection=collection,
                     timeout_sec=embed_timeout_sec,
                 )
-                for index, chunk in enumerate(chunks)
-            ]
+
+        results = await asyncio.gather(
+            *[_one(index, chunk) for index, chunk in enumerate(chunks)]
         )
         # A single failed chunk must not silently drop out of the comparison
         # and leave the rest presented as a whole measurement. `_request_
@@ -322,7 +378,11 @@ async def _score_change(
 
     diff: float | None = None
     if removed_vectors is not None and added_vectors is not None:
-        diff = _max_pair_drift(removed_vectors, added_vectors)
+        # O(N*M) cosines over 1024-dim vectors in pure Python. Off the event
+        # loop because run_producers shares one loop with the heartbeat
+        # chassis and five other producers -- a synchronous ~0.5s+ block
+        # here stalls all of them.
+        diff = await asyncio.to_thread(_max_pair_drift, removed_vectors, added_vectors)
 
     return DocSemanticDriftV1(
         observed_at=datetime.now(timezone.utc),

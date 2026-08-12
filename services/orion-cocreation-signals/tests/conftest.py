@@ -11,6 +11,24 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 
 @dataclass
+class FakeRedis:
+    """Minimal in-memory stand-in for the real ``aioredis.Redis`` client
+    exposed by ``OrionBusAsync.redis`` -- just enough (``get``/``set``) for
+    producers that persist durable state (e.g. doc_semantic_drift_loop's
+    ``last_sha``). Backed by a plain dict a test can share across two
+    separate ``FakeBus`` instances to simulate state surviving a real
+    process restart."""
+
+    store: dict
+
+    async def get(self, key: str):
+        return self.store.get(key)
+
+    async def set(self, key: str, value: str) -> None:
+        self.store[key] = value
+
+
+@dataclass
 class FakeBus:
     """Records every publish call instead of touching a real Redis connection.
     ``enabled`` mirrors OrionBusAsync's own attribute the producers check."""
@@ -18,6 +36,7 @@ class FakeBus:
     enabled: bool = True
     published: list[tuple[str, BaseEnvelope]] = field(default_factory=list)
     closed: bool = False
+    redis_store: dict = field(default_factory=dict)
 
     async def publish(self, channel: str, envelope: BaseEnvelope) -> None:
         self.published.append((channel, envelope))
@@ -28,6 +47,10 @@ class FakeBus:
         # real teardown path in tests instead of hitting an AttributeError
         # that only happens to get swallowed by a broad except Exception.
         self.closed = True
+
+    @property
+    def redis(self) -> FakeRedis:
+        return FakeRedis(self.redis_store)
 
 
 @pytest.fixture

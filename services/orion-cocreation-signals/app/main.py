@@ -151,6 +151,7 @@ async def run_producers(settings, bus: OrionBusAsync, stop: asyncio.Event) -> No
                     embed_timeout_sec=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_EMBED_TIMEOUT_SEC,
                     truncation_char_threshold=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_TRUNCATION_CHAR_THRESHOLD,
                     poll_interval_sec=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_POLL_INTERVAL_SEC,
+                    state_key=settings.COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_STATE_KEY,
                     stop=stop,
                 ),
                 name="doc_semantic_drift_loop",

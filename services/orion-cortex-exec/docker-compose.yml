@@ -29,6 +29,19 @@ services:
       # Adds no meaningful privilege: the docker socket two lines up is already
       # root-equivalent.
       - ${ORION_HOST_DOCKER_DATA_ROOT:-/mnt/docker}:/hostfs/docker:ro
+      # `docker compose` (v2) is a CLI plugin, not a built-in subcommand -- mounting the docker binary
+      # alone isn't enough. Without this, `docker compose ...` inside the container fails as an
+      # unrecognized command (confirmed live 2026-08-12: skills.docker.compose_service_bringup.v1's
+      # build step got "unknown flag: --env-file" / top-level `docker [OPTIONS] COMMAND` usage text,
+      # because the CLI silently treated `compose` as an unknown command and choked on the next flag).
+      # Container side is intentionally hardcoded, NOT ${ORION_HOST_DOCKER_CLI_PLUGINS_DIR} -- the docker
+      # CLI's plugin search list (~/.docker/cli-plugins, /usr/local/lib(exec)/docker/cli-plugins,
+      # /usr/lib/docker/cli-plugins, /usr/libexec/docker/cli-plugins) is fixed at compile time, not
+      # env-configurable, so an override pointing the host side at a nonstandard path (e.g. /opt/docker/
+      # cli-plugins on some distros) while also relocating the container side would silently reproduce this
+      # exact failure -- the containerized CLI would never look there. Mirrors ORION_HOST_DOCKER_CLI just
+      # above: host side overridable, container side fixed to a path the CLI actually scans.
+      - ${ORION_HOST_DOCKER_CLI_PLUGINS_DIR:-/usr/libexec/docker/cli-plugins}:/usr/libexec/docker/cli-plugins:ro
       # NVIDIA: slim image omits nvidia-smi; bind-mount host binary. Needs NVIDIA Container Toolkit + `gpus`
       # below. On hosts without a GPU stack, comment this line and `gpus`, or point ORION_HOST_NVIDIA_SMI at a
       # valid host path.

@@ -2262,7 +2262,14 @@ channels:
     schema_id: "DevEconomicsLedgerV1"
     message_kind: "substrate.dev_economics_ledger.v1"
     producer_services: ["orion-cocreation-signals"]
-    consumer_services: []
+    # First real consumer, added 2026-08-12
+    # (docs/superpowers/pr-reports/2026-08-12-dev-economics-hub-
+    # observability.md) -- orion-sql-writer persists DevEconomicsLedgerSQL
+    # rows so the Hub's cocreation-signals tab has real data to read.
+    # Shadow-write phase is over for this channel; doc_semantic_drift and
+    # juniper_affective_state remain consumer_services: [] pending the same
+    # treatment.
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-12"
 

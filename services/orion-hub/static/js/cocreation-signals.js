@@ -22,6 +22,7 @@
 
   var SNAPSHOT_URL = "/api/cocreation-signals/snapshot";
   var HISTORY_URL = "/api/cocreation-signals/history";
+  var DEV_ECONOMICS_URL = "/api/cocreation-signals/dev-economics";
   var SVG_NS = "http://www.w3.org/2000/svg";
 
   var HISTORY_REFRESH_MS = 30000;
@@ -68,6 +69,7 @@
     els.status = $("cocreationSignalsStatus");
     els.baseline = $("cocreationSignalsBaseline");
     els.domains = $("cocreationSignalsDomains");
+    els.devEconomics = $("cocreationSignalsDevEconomics");
     els.windowSelect = $("cocreationSignalsWindow");
     els.intervalSelect = $("cocreationSignalsInterval");
     els.liveToggle = $("cocreationSignalsLive");
@@ -333,6 +335,60 @@
     }
   }
 
+  // dev_economics_ledger_log's first real Hub consumer -- own card, own
+  // fetch, own error boundary (see cocreation_signals_routes.py's
+  // dev_economics() endpoint docstring for why this isn't folded into
+  // renderDomains's score/domain shape).
+  function renderDevEconomics(host, data) {
+    if (!data || !data.ok) {
+      errorBlock(host, "Dev economics ledger", (data && data.error) || "unavailable");
+      return;
+    }
+    card(host, "Dev economics ledger", "dev_economics_ledger_log, live");
+
+    if (!data.present) {
+      note(host, "No ticks yet -- producer disabled, or cold-started and waiting on its first real delta.");
+      return;
+    }
+
+    var statsGrid = el("div", "grid grid-cols-3 gap-2 mb-2");
+    statsGrid.appendChild(statTile("Ticks shown", int(data.window_tick_count)));
+    statsGrid.appendChild(
+      statTile(
+        "Total cost",
+        data.window_total_cost_usd === null ? "—" : "$" + num(data.window_total_cost_usd, 2)
+      )
+    );
+    statsGrid.appendChild(statTile("Total tokens", int(data.window_total_tokens)));
+    host.appendChild(statsGrid);
+
+    host.appendChild(kvRow("latest tick", age(data.latest_age_sec)));
+    if (data.latest && data.latest.unpriced_session_count > 0) {
+      note(
+        host,
+        data.latest.unpriced_session_count + " session(s) in the latest tick had no priceable model -- excluded from that tick's cost, not fabricated as $0.",
+        "text-amber-400/80"
+      );
+    }
+
+    var list = el("div", "mt-2 space-y-1 max-h-64 overflow-y-auto");
+    (data.recent_ticks || []).slice(0, 20).forEach(function (tick) {
+      var row = el("div", "flex items-center justify-between gap-3 text-[11px] font-mono border-b border-gray-800/60 py-1 last:border-b-0");
+      row.appendChild(el("span", "text-gray-500", tick.observed_at ? new Date(tick.observed_at).toLocaleTimeString() : "—"));
+      row.appendChild(el("span", "text-gray-300", int(tick.session_count) + " sess"));
+      row.appendChild(el("span", "text-gray-300", int(tick.total_tokens) + " tok"));
+      row.appendChild(
+        el(
+          "span",
+          "text-gray-100",
+          tick.total_estimated_cost_usd === null ? "—" : "$" + num(tick.total_estimated_cost_usd, 4)
+        )
+      );
+      list.appendChild(row);
+    });
+    host.appendChild(list);
+  }
+
   // ------------------------------------------------------------ poll cycle
 
   function setStatus(text, tone) {
@@ -389,10 +445,22 @@
       renderBaseline(els.baseline, snapshot);
       renderDomains(els.domains, snapshot, lastHistory);
 
+      var devEconomicsData = null;
+      var devEconomicsError = null;
+      try {
+        devEconomicsData = await fetchJson(DEV_ECONOMICS_URL);
+      } catch (err) {
+        devEconomicsError = String(err.message || err);
+      }
+      if (els.devEconomics) {
+        renderDevEconomics(els.devEconomics, devEconomicsData || { ok: false, error: devEconomicsError });
+      }
+
       var problems = [];
       if (!(snapshot.baseline || {}).ok) problems.push("baseline");
       if (!(snapshot.domains || {}).ok) problems.push("domains");
       if (state.historyError) problems.push("history");
+      if (devEconomicsError || !(devEconomicsData || {}).ok) problems.push("dev-economics");
       if (problems.length) {
         setStatus(
           "Updated " + new Date().toLocaleTimeString() + " — degraded source(s): " + problems.join(", "),

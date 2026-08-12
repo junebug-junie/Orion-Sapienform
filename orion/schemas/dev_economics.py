@@ -32,14 +32,25 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DevEconomicsLedgerV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["dev_economics_ledger.v1"] = "dev_economics_ledger.v1"
+    # Real, stable per-event id for durable persistence (added when this
+    # signal got its first real consumer -- orion-sql-writer's
+    # DevEconomicsLedgerSQL table, docs/superpowers/pr-reports/2026-08-12-
+    # dev-economics-hub-observability.md). Same convention as
+    # DominanceStreakTickV1.tick_telemetry_id: a default_factory here means
+    # every event already carries its own idempotency key, so a redelivered
+    # message upserts safely instead of duplicating a row. Non-breaking
+    # addition -- has a default, so any already-published event without it
+    # still parses.
+    event_id: str = Field(default_factory=lambda: f"dev-economics-{uuid4()}")
     observed_at: datetime
     window_since: datetime
     window_until: datetime

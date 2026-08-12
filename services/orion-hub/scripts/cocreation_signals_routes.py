@@ -21,6 +21,18 @@ PR lifecycle / graph structural deltas) to
 Everything here is a read. No writes, no bus publishes, no new channel or
 schema. A number this tab shows is a number some real producer actually
 produced -- there is no synthetic/demo data path.
+
+Also surfaces the dev-economics ledger domain (docs/superpowers/specs/
+2026-07-30-dev-economics-signal-design.md): ``orion-cocreation-signals``'s
+``dev_economics`` producer publishes ``DevEconomicsLedgerV1`` (real per-tick
+token/word/$-cost deltas) to ``orion:substrate:dev_economics_ledger``,
+``orion-sql-writer`` persists each event unconditionally to
+``dev_economics_ledger_log`` (first real consumer of that channel, added
+2026-08-12 -- docs/superpowers/pr-reports/2026-08-12-dev-economics-hub-
+observability.md). Kept as its own endpoint/section rather than folded into
+``KNOWN_DOMAINS``' score/domain model above: this signal has no EWMA
+baseline or single scalar ``score`` -- real $ cost, token counts, and a
+model-mix histogram don't fit that shape honestly.
 """
 
 from __future__ import annotations
@@ -117,6 +129,77 @@ def build_domain_summary(
             }
         )
     return out
+
+
+DEV_ECONOMICS_RECENT_LIMIT: int = 50
+
+
+def build_dev_economics_summary(
+    rows: list[dict[str, Any]], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Shapes recent ``dev_economics_ledger_log`` rows into a rollup + a
+    recent-ticks list. ``rows`` must already be ordered newest-first (the
+    query enforces this); an empty list is a real "no ticks yet" fact
+    (producer disabled, or cold-started but hasn't published its first real
+    delta), not an error -- same "present: False is a real fact" reasoning
+    as ``build_domain_summary`` above.
+    """
+    now = now or datetime.now(timezone.utc)
+    if not rows:
+        return {
+            "present": False,
+            "latest": None,
+            "latest_age_sec": None,
+            "recent_ticks": [],
+            "window_total_cost_usd": None,
+            "window_total_tokens": 0,
+            "window_tick_count": 0,
+        }
+
+    latest = rows[0]
+    observed_at = latest.get("observed_at")
+    age_sec: float | None = None
+    if isinstance(observed_at, datetime):
+        ts = observed_at if observed_at.tzinfo else observed_at.replace(tzinfo=timezone.utc)
+        age_sec = round((now - ts).total_seconds(), 1)
+
+    costs = [r.get("total_estimated_cost_usd") for r in rows if r.get("total_estimated_cost_usd") is not None]
+    recent_ticks = [
+        {
+            "observed_at": r["observed_at"].isoformat() if isinstance(r.get("observed_at"), datetime) else None,
+            "session_count": int(r.get("session_count") or 0),
+            "total_tokens": int(r.get("total_tokens") or 0),
+            "total_estimated_cost_usd": float(r["total_estimated_cost_usd"]) if r.get("total_estimated_cost_usd") is not None else None,
+            "unpriced_session_count": int(r.get("unpriced_session_count") or 0),
+            "model_mix": _coerce_json_field(r.get("model_mix_json")),
+        }
+        for r in rows
+    ]
+
+    return {
+        "present": True,
+        "latest": recent_ticks[0],
+        "latest_age_sec": age_sec,
+        "recent_ticks": recent_ticks,
+        # None only when literally nothing in this window's ticks was
+        # priceable -- distinct from a real $0.00, same discipline as
+        # DevEconomicsLedgerV1's own total_estimated_cost_usd field.
+        "window_total_cost_usd": round(sum(costs), 4) if costs else None,
+        "window_total_tokens": sum(int(r.get("total_tokens") or 0) for r in rows),
+        "window_tick_count": len(rows),
+    }
+
+
+def _coerce_json_field(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def build_history_series(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -286,3 +369,52 @@ def history(hours: int = Query(DEFAULT_HISTORY_HOURS)) -> dict[str, Any]:
         "sample_count": len(rows),
         "series": series,
     }
+
+
+def _load_dev_economics_recent(*, limit: int) -> list[dict[str, Any]]:
+    with _engine().connect() as conn:
+        rows = (
+            conn.execute(
+                text(
+                    """
+                    SELECT observed_at, session_count, total_tokens,
+                           total_estimated_cost_usd, unpriced_session_count,
+                           model_mix_json
+                    FROM dev_economics_ledger_log
+                    ORDER BY observed_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+            .mappings()
+            .all()
+        )
+    return [dict(r) for r in rows]
+
+
+@router.get("/dev-economics")
+def dev_economics() -> dict[str, Any]:
+    """Own endpoint, own error boundary -- degrades independently of
+    /snapshot's baseline/domains blocks, same reasoning as those two
+    degrading independently of each other."""
+    now = datetime.now(timezone.utc)
+    try:
+        rows = _load_dev_economics_recent(limit=DEV_ECONOMICS_RECENT_LIMIT)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "generated_at": now.isoformat(),
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "present": False,
+            "latest": None,
+            "latest_age_sec": None,
+            "recent_ticks": [],
+            "window_total_cost_usd": None,
+            "window_total_tokens": 0,
+            "window_tick_count": 0,
+        }
+    summary = build_dev_economics_summary(rows, now=now)
+    return {"generated_at": now.isoformat(), "ok": True, "error": None, **summary}

@@ -62,6 +62,7 @@ from .mind_run import MindRunSQL
 from .vision_event import VisionEventSQL
 from .action_outcome import ActionOutcomeSQL
 from .dominance_streak_tick import DominanceStreakTickSQL
+from .dev_economics_ledger import DevEconomicsLedgerSQL
 from .drive_audit import DriveAuditSQL
 from .phi_reward import PhiRewardSQL
 from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
@@ -133,6 +134,7 @@ __all__ = [
     "VisionEventSQL",
     "ActionOutcomeSQL",
     "DominanceStreakTickSQL",
+    "DevEconomicsLedgerSQL",
     "DriveAuditSQL",
     "PhiRewardSQL",
     "EquilibriumServiceTransitionSQL",

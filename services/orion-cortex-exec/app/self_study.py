@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -19,6 +21,11 @@ from rdflib.namespace import RDF, XSD
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.schemas.rdf import RdfWriteRequest
+from orion.structural_mass.graph_delta import graph_structural_delta
+from orion.structural_mass.snapshot_history import (
+    GraphSnapshotStats,
+    graph_snapshot_stats_from_text,
+)
 from orion.schemas.self_study import (
     SelfConceptEvidenceRefV1,
     SelfConceptInduceResultV1,
@@ -93,6 +100,60 @@ _VERB_DECORATOR_RE = re.compile(r'@verb\([\"\']([^\"\']+)[\"\']\)')
 _REGISTRY_KEY_RE = re.compile(r'^\s+\"([^\"]+)\":', re.MULTILINE)
 _ENV_FIELD_RE = re.compile(r'^(?P<name>[A-Z0-9_]+)\s*:\s*[^=]+=\s*Field\([^\n]*?(?:alias|env|validation_alias)="(?P<alias>[A-Z0-9_]+)"', re.MULTILINE)
 _ENV_FALLBACK_RE = re.compile(r'^(?P<name>[A-Z0-9_]+)\s*:\s*', re.MULTILINE)
+
+# --- Layer 2 additive concept sources: graphify community, structural_mass
+# delta, semantic-enrichment cache (2026-08) -- see induce_self_concepts()
+# below for wiring.
+# SelfSnapshotV1's list-of-items section names -- was already copy-pasted as
+# a bare tuple literal at multiple pre-existing call sites (review finding:
+# adding two more would have made it 5 independently-drifting copies). One
+# shared constant so a future new section only needs updating here.
+_SNAPSHOT_SECTION_NAMES: tuple[str, ...] = (
+    "services", "modules", "channels", "verbs", "schemas", "touchpoints", "env_surfaces",
+)
+
+_GRAPHIFY_GRAPH_JSON_RELPATH = "graphify-out/graph.json"
+_GRAPHIFY_GRAPH_REPORT_RELPATH = "graphify-out/GRAPH_REPORT.md"
+_BUILT_AT_COMMIT_RE = re.compile(r'"built_at_commit"\s*:\s*"([^"]*)"')
+
+# In-process-only "last observed graphify snapshot" for structural_mass delta
+# concepts -- deliberately mirrors orion-cocreation-signals' graph_delta_loop()
+# caller-owned, in-process state (services/orion-cocreation-signals/app/
+# producers/graph_delta.py, "State (the last-seen GraphSnapshotStats) is
+# caller-owned, kept in-process only"). cortex-exec has no writable/persistent
+# store for this and reusing that JSONL-append pattern would require widening
+# this container's mount to read-write for one small log file, which that
+# same producer's docstring explicitly rejects doing for itself. See the
+# PR report's idempotency-tension note for what this trades away.
+_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA: GraphSnapshotStats | None = None
+
+# Guards read-then-write access to the global above, and backs the
+# per-snapshot result memoization below. Two problems this fixes together
+# (found in review, both reachable from the shipped async bus-verb
+# handlers): (1) reflect_self_concepts() -> validate_phase2a_induction()
+# re-invokes induce_self_concepts() on the SAME snapshot to check
+# byte-identical concept ids; without memoization that second call would
+# see its own first call's already-updated "last seen" state as unchanged
+# and silently drop the structural_mass concept, raising
+# concept_idempotency_mismatch. (2) two concurrently in-flight
+# induce/reflect requests could otherwise interleave reads/writes of the
+# global across each other's awaits and cross-contaminate their prior/
+# current state.
+_STRUCTURAL_DELTA_STATE_LOCK = threading.Lock()
+_STRUCTURAL_DELTA_RESULT_CACHE: "OrderedDict[str, list[SelfInducedConceptV1]]" = OrderedDict()
+_STRUCTURAL_DELTA_RESULT_CACHE_MAX = 8
+
+# Read-only mount of orion-self-study-enrichment's cache volume (see that
+# service's docker-compose.yml `self_study_enrichment_data` volume and
+# services/orion-cortex-exec/docker-compose.yml's mount of the same volume).
+# Path is *inside* the shared volume, matching that service's
+# SELF_STUDY_ENRICHMENT_CACHE_DIR=/data/cache/self_study_enrichment default
+# (the volume is mounted at /data there, so the cache subpath is
+# cache/self_study_enrichment underneath it).
+SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR = os.getenv(
+    "SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR",
+    "/mnt/self_study_enrichment_data/cache/self_study_enrichment",
+)
 
 _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
@@ -434,7 +495,7 @@ def build_self_snapshot(*, observed_at: str | None = None, root: Path | None = N
 def _validate_authoritative_snapshot(snapshot: SelfSnapshotV1) -> None:
     if snapshot.trust_tier != TRUST_TIER:
         raise ValueError(f"snapshot_trust_tier_invalid:{snapshot.trust_tier}")
-    for section_name in ("services", "modules", "channels", "verbs", "schemas", "touchpoints", "env_surfaces"):
+    for section_name in _SNAPSHOT_SECTION_NAMES:
         for item in getattr(snapshot, section_name):
             if item.trust_tier != TRUST_TIER:
                 raise ValueError(f"non_authoritative_item:{section_name}:{item.name}:{item.trust_tier}")
@@ -540,6 +601,253 @@ def build_self_study_summary(snapshot: SelfSnapshotV1) -> str:
         f"Touchpoints present: {', '.join(touch_surfaces) or 'none'}. "
         "Authoritative write-back excludes induced and reflective content."
     )
+
+
+def _load_graphify_source_file_communities() -> dict[str, int]:
+    """Reads graphify-out/graph.json directly as plain JSON (no `graphify`
+    CLI shellout -- this function is synchronous and called from a bus
+    handler) and returns a mapping of node `source_file` (repo-relative
+    path, matching Layer-1 items' `source_path`) -> the first graphify
+    `community` id observed for that path. Real, already-computed graphify
+    communities only -- no re-derivation of clustering here.
+
+    Fails soft (empty dict) if the graph file is missing/unparseable --
+    graphify enrichment is optional, additive context, never load-bearing
+    for Layer-1/Layer-2's existing authoritative guarantees."""
+    graph_json_path = REPO_ROOT / _GRAPHIFY_GRAPH_JSON_RELPATH
+    if not graph_json_path.exists():
+        return {}
+    try:
+        data = json.loads(graph_json_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("self_study_graphify_graph_json_unreadable path=%s", graph_json_path)
+        return {}
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list):
+        return {}
+    mapping: dict[str, int] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        source_file = node.get("source_file")
+        community = node.get("community")
+        if not isinstance(source_file, str) or not isinstance(community, int):
+            continue
+        mapping.setdefault(source_file, community)
+    return mapping
+
+
+def _graphify_derived_concepts(
+    snapshot: SelfSnapshotV1, covered_item_ids: set[str]
+) -> list[SelfInducedConceptV1]:
+    """One `graphify_community` concept per distinct graphify community
+    touched by Layer-1 items NOT already covered by one of the hardcoded
+    concept branches above -- additive, does not replace them."""
+    community_by_source_file = _load_graphify_source_file_communities()
+    if not community_by_source_file:
+        return []
+
+    items_by_community: dict[int, list[SelfKnowledgeItemV1]] = {}
+    for section_name in _SNAPSHOT_SECTION_NAMES:
+        for item in getattr(snapshot, section_name):
+            if item.item_id in covered_item_ids:
+                continue
+            community = community_by_source_file.get(item.source_path)
+            if community is None:
+                continue
+            items_by_community.setdefault(community, []).append(item)
+
+    concepts: list[SelfInducedConceptV1] = []
+    for community_id in sorted(items_by_community):
+        evidence_items = items_by_community[community_id]
+        names = sorted({item.name for item in evidence_items})
+        preview = ", ".join(names[:8]) + ("..." if len(names) > 8 else "")
+        concepts.append(
+            _concept(
+                snapshot=snapshot,
+                concept_kind="graphify_community",
+                label=f"graphify community {community_id}",
+                description=(
+                    f"Layer-1 self-study items ({preview}) share graphify community {community_id}, "
+                    "a structural cluster graphify's own community-detection assigned to their source files."
+                ),
+                evidence_items=evidence_items,
+                inferred_from=["graphify_community"],
+            )
+        )
+    return concepts
+
+
+def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]:
+    """One `structural_mass` concept when graphify's on-disk structural
+    snapshot (graphify-out/graph.json + GRAPH_REPORT.md) has moved in a
+    real, non-trivial way since the last time this process observed it.
+
+    Produces NOTHING (not a fabricated zero-delta concept) on: missing
+    graph files, an unreadable/unparseable snapshot, cold start (no prior
+    in-process observation yet), an unchanged `built_at_commit`, or a
+    parsed-but-trivial delta (all counts unchanged and god-node jaccard
+    reads 1.0/None). Mirrors orion.structural_mass.codebase_delta's
+    documented "no fabricated zero" pattern and orion-cocreation-signals'
+    graph_delta_loop() cold-start guard.
+
+    Memoized per snapshot_id (see _STRUCTURAL_DELTA_RESULT_CACHE above) so
+    repeat calls against the SAME snapshot -- notably
+    validate_phase2a_induction()'s own internal re-induction check -- return
+    the identical result instead of re-observing the "last seen" state a
+    second time and silently diverging from the first call."""
+    global _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA
+
+    with _STRUCTURAL_DELTA_STATE_LOCK:
+        cached = _STRUCTURAL_DELTA_RESULT_CACHE.get(snapshot.snapshot_id)
+        if cached is not None:
+            return cached
+
+        graph_json_path = REPO_ROOT / _GRAPHIFY_GRAPH_JSON_RELPATH
+        report_path = REPO_ROOT / _GRAPHIFY_GRAPH_REPORT_RELPATH
+        if not graph_json_path.exists():
+            return []
+        try:
+            graph_json_text = graph_json_path.read_text(encoding="utf-8")
+            graph_report_text = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+            match = _BUILT_AT_COMMIT_RE.search(graph_json_text)
+            commit_sha = match.group(1) if match else None
+            current_stats = graph_snapshot_stats_from_text(
+                graph_json_text, graph_report_text, commit_sha=commit_sha, backfilled=False
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            # Narrowed from bare `except Exception` (review finding): these
+            # are the expected "file present but unreadable/unparseable"
+            # cases. Anything else (e.g. MemoryError on a corrupt/huge file)
+            # propagates instead of silently looking identical to "nothing
+            # cached yet".
+            logger.warning("self_study_structural_delta_snapshot_unreadable error=%s", exc)
+            return []
+
+        prior_stats = _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA
+        _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA = current_stats
+
+        result: list[SelfInducedConceptV1] = []
+        if prior_stats is not None and prior_stats.commit_sha != current_stats.commit_sha:
+            delta = graph_structural_delta(prior_stats, current_stats)
+            trivial = (
+                delta.node_count_delta == 0
+                and delta.edge_count_delta == 0
+                and delta.community_count_delta == 0
+                and delta.god_node_jaccard_similarity in (None, 1.0)
+            )
+            module_item = next((item for item in snapshot.modules if item.name == "orion.structural_mass"), None)
+            # module_item is None: no authoritative Layer-1 item to anchor
+            # evidence to -- Phase 2A's invariant requires every concept's
+            # evidence to trace to a real snapshot item, so this concept
+            # cannot be produced without one.
+            if not trivial and module_item is not None:
+                entered = ", ".join(sorted(delta.god_nodes_entered)) if delta.god_nodes_entered else "none"
+                exited = ", ".join(sorted(delta.god_nodes_exited)) if delta.god_nodes_exited else "none"
+                description = (
+                    "graphify's on-disk structural snapshot moved since the last in-process observation: "
+                    f"node_count_delta={delta.node_count_delta:+d}, edge_count_delta={delta.edge_count_delta:+d}, "
+                    f"community_count_delta={delta.community_count_delta:+d}, "
+                    f"god_node_jaccard_similarity={delta.god_node_jaccard_similarity}, "
+                    f"god nodes entered=[{entered}], god nodes exited=[{exited}]."
+                )
+                result = [
+                    _concept(
+                        snapshot=snapshot,
+                        concept_kind="structural_mass",
+                        label="repo-wide structural mass delta",
+                        description=description,
+                        evidence_items=[module_item],
+                        inferred_from=["structural_mass_delta"],
+                    )
+                ]
+
+        _STRUCTURAL_DELTA_RESULT_CACHE[snapshot.snapshot_id] = result
+        if len(_STRUCTURAL_DELTA_RESULT_CACHE) > _STRUCTURAL_DELTA_RESULT_CACHE_MAX:
+            _STRUCTURAL_DELTA_RESULT_CACHE.popitem(last=False)
+        return result
+
+
+def _enrichment_cluster_root(path: str) -> str:
+    """Intentional duplicate of services/orion-self-study-enrichment/app/
+    evidence.py's `_cluster_root()` -- NOT imported, because importing
+    another service's app/ package would reach into its internals (CLAUDE.md
+    sec 5). Keep in sync if that function's clustering rule changes."""
+    parts = path.split("/")
+    if parts and parts[0] == "services" and len(parts) > 1:
+        return f"services/{parts[1]}"
+    if len(parts) >= 2:
+        return "/".join(parts[:2])
+    return parts[0] if parts else path
+
+
+def _iter_enrichment_cache_entries(cache_dir: Path) -> Iterable[dict[str, Any]]:
+    if not cache_dir.is_dir():
+        return
+    for json_path in sorted(cache_dir.glob("*/*.json")):
+        try:
+            yield json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+
+def _semantic_enrichment_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]:
+    """One `semantic_enrichment` concept per cluster with a real cached
+    enrichment entry (services/orion-self-study-enrichment/app/cache.py's
+    content-hash-keyed cache), using the enrichment's own real, previously
+    LLM-generated `summary` text verbatim as the concept description.
+
+    The cache key is `content_hash(render_evidence_prompt(bundle))` --
+    not reproducible from this side without replaying the exact evidence
+    bundle that triggered the original run, so this reads every cached
+    entry directly and recovers each entry's cluster(s) from its own stored
+    `touched_paths` field rather than guessing a key. Handles both "cache
+    mount unreachable" (not a container, or nothing mounted there yet) and
+    "no entry yet for this cluster" gracefully -- produces nothing, not an
+    error, for either case."""
+    cache_dir = Path(SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR)
+    if not cache_dir.is_dir():
+        logger.info("self_study_enrichment_cache_unreachable path=%s", cache_dir)
+        return []
+
+    items_by_cluster: dict[str, list[SelfKnowledgeItemV1]] = {}
+    for section_name in _SNAPSHOT_SECTION_NAMES:
+        for item in getattr(snapshot, section_name):
+            items_by_cluster.setdefault(_enrichment_cluster_root(item.source_path), []).append(item)
+
+    concepts: list[SelfInducedConceptV1] = []
+    seen_clusters: set[str] = set()
+    for entry in _iter_enrichment_cache_entries(cache_dir):
+        if not isinstance(entry, dict):
+            # Review finding: a cache file whose JSON content parses but
+            # isn't an object (e.g. a partial/crashed write by that other
+            # service -- cortex-exec doesn't control its writer, see
+            # CLAUDE.md sec 5) must be skipped like any other malformed
+            # entry, not crash the whole induction call on .get().
+            continue
+        summary = entry.get("summary")
+        touched_paths = entry.get("touched_paths")
+        if not summary or not isinstance(summary, str) or not isinstance(touched_paths, list) or not touched_paths:
+            continue
+        clusters = sorted({_enrichment_cluster_root(str(p)) for p in touched_paths})
+        for cluster in clusters:
+            if cluster in seen_clusters:
+                continue
+            evidence_items = items_by_cluster.get(cluster)
+            if not evidence_items:
+                continue
+            seen_clusters.add(cluster)
+            concepts.append(
+                _concept(
+                    snapshot=snapshot,
+                    concept_kind="semantic_enrichment",
+                    label=f"semantic enrichment: {cluster}",
+                    description=summary.strip(),
+                    evidence_items=evidence_items,
+                    inferred_from=["semantic_enrichment"],
+                )
+            )
+    return sorted(concepts, key=lambda concept: concept.label)
 
 
 def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]:
@@ -649,6 +957,15 @@ def induce_self_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConceptV1]
             )
         )
 
+    # Additive Layer 2 concept sources (2026-08): graphify community
+    # clustering, structural_mass repo-wide delta, and semantic-enrichment
+    # cache readback. All additive to the five hardcoded branches above --
+    # none of them replace or alter existing concept output.
+    covered_item_ids = {ref.item_id for concept in concepts for ref in concept.evidence}
+    concepts.extend(_graphify_derived_concepts(snapshot, covered_item_ids))
+    concepts.extend(_structural_delta_concepts(snapshot))
+    concepts.extend(_semantic_enrichment_concepts(snapshot))
+
     concepts.sort(key=lambda item: (item.concept_kind, item.label))
     return concepts
 
@@ -667,7 +984,7 @@ def validate_phase2a_induction(snapshot: SelfSnapshotV1, concepts: Sequence[Self
     _validate_authoritative_snapshot(snapshot)
     authoritative_ids = {
         item.item_id
-        for section_name in ("services", "modules", "channels", "verbs", "schemas", "touchpoints", "env_surfaces")
+        for section_name in _SNAPSHOT_SECTION_NAMES
         for item in getattr(snapshot, section_name)
     }
     for concept in concepts:
@@ -766,6 +1083,36 @@ def reflect_self_concepts(snapshot: SelfSnapshotV1, concepts: Sequence[SelfInduc
             )
         )
 
+    structural_concept = concept_by_kind.get("structural_mass")
+    semantic_enrichment_concepts = sorted(
+        (concept for concept in concepts if concept.concept_kind == "semantic_enrichment"),
+        key=lambda concept: concept.label,
+    )
+    if structural_concept and semantic_enrichment_concepts:
+        # structural_mass is a repo-wide delta (orion.structural_mass.
+        # graph_delta), not cluster-scoped, so this pairs it with the first
+        # (alphabetically) real cluster-level enrichment narrative rather
+        # than pretending a specific per-cluster structural match exists --
+        # see the PR report's idempotency-tension note for why this pairing
+        # is looser than a strict "same cluster" match would be.
+        enrichment_concept = semantic_enrichment_concepts[0]
+        findings.append(
+            _reflection(
+                snapshot=snapshot,
+                reflection_kind="architecture_observation",
+                title="Structural delta and a cached enrichment narrative both point at real change",
+                description=(
+                    f"{structural_concept.description} Separately, a cached semantic-enrichment pass "
+                    f"already explains one affected cluster ({enrichment_concept.label}): "
+                    f"{enrichment_concept.description}"
+                ),
+                concepts=[structural_concept, enrichment_concept],
+                confidence=round(min(structural_concept.confidence, enrichment_concept.confidence), 2),
+                salience=0.7,
+                recommendation="Read the structural delta and the cluster narrative together when reviewing what changed and why, rather than treating them as separate signals.",
+            )
+        )
+
     if not findings and concepts:
         findings.append(
             _reflection(
@@ -853,7 +1200,7 @@ def _build_self_study_retrieval_records(
 ) -> list[SelfStudyRetrievedRecordV1]:
     fact_records = [
         _fact_record(snapshot, item)
-        for section_name in ("services", "modules", "channels", "verbs", "schemas", "touchpoints", "env_surfaces")
+        for section_name in _SNAPSHOT_SECTION_NAMES
         for item in getattr(snapshot, section_name)
     ]
     concept_records = [_concept_record(concept) for concept in concepts]

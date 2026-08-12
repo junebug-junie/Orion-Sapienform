@@ -3,6 +3,7 @@ import importlib.util
 import json
 import sys
 import types
+from collections import OrderedDict
 from pathlib import Path
 from uuid import uuid4
 
@@ -180,6 +181,196 @@ def test_induce_self_concepts_produces_induced_evidence_backed_concepts():
     assert summary.startswith(f"Concept induction produced {len(concepts)} induced architectural concepts")
 
 
+def test_graphify_derived_concepts_use_real_on_disk_graph_json():
+    # No mock graph -- this repo's own graphify-out/graph.json, read the same
+    # way the production code path reads it. Confirms the community mapping
+    # actually overlaps real Layer-1 source paths and produces real,
+    # evidence-backed concepts, not an empty-shell "ran but found nothing".
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    concepts = self_study._graphify_derived_concepts(snapshot, covered_item_ids=set())
+
+    assert concepts, "expected at least one graphify_community concept from the real repo graph"
+    assert all(concept.concept_kind == "graphify_community" for concept in concepts)
+    assert all(concept.trust_tier == "induced" for concept in concepts)
+    assert all(concept.evidence for concept in concepts)
+    assert all(ref.trust_tier == "authoritative" for concept in concepts for ref in concept.evidence)
+    # Idempotent: same snapshot + same on-disk graph -> identical concept ids.
+    again = self_study._graphify_derived_concepts(snapshot, covered_item_ids=set())
+    assert [c.concept_id for c in concepts] == [c.concept_id for c in again]
+
+
+def test_graphify_derived_concepts_skip_already_covered_items():
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    community_by_source_file = self_study._load_graphify_source_file_communities()
+    assert community_by_source_file, "fixture depends on a non-empty graphify graph.json"
+
+    all_item_ids = {
+        item.item_id
+        for section in ("services", "modules", "channels", "verbs", "schemas", "touchpoints", "env_surfaces")
+        for item in getattr(snapshot, section)
+    }
+
+    concepts = self_study._graphify_derived_concepts(snapshot, covered_item_ids=all_item_ids)
+
+    assert concepts == []
+
+
+def _reset_structural_delta_state(monkeypatch):
+    # snapshot_id is stable across build_self_snapshot() calls with the same
+    # observed_at (confirmed by test_repeated_snapshot_keeps_stable_
+    # snapshot_and_item_ids above), so every test in this file that uses the
+    # standard fixture timestamp shares one cache key. Tests that care about
+    # cold-start/idempotency semantics specifically must reset both the
+    # "last observed" global AND the per-snapshot-id result cache, or an
+    # earlier test's induce_self_concepts() call leaves a stale cached
+    # result behind for later tests to (wrongly) hit.
+    monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", None)
+    monkeypatch.setattr(self_study, "_STRUCTURAL_DELTA_RESULT_CACHE", OrderedDict())
+
+
+def test_structural_delta_concepts_cold_start_produces_nothing(monkeypatch):
+    _reset_structural_delta_state(monkeypatch)
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    first = self_study._structural_delta_concepts(snapshot)
+
+    assert first == []
+    # First observation is now recorded in-process -- confirms the cold-start
+    # guard actually captured state rather than silently no-op'ing forever.
+    assert self_study._LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA is not None
+
+
+def test_structural_delta_concepts_unchanged_snapshot_stays_empty(monkeypatch):
+    _reset_structural_delta_state(monkeypatch)
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    self_study._structural_delta_concepts(snapshot)  # cold start, primes state
+    # Same snapshot_id -> memoized cache hit, NOT a fresh disk re-observation
+    # (review fix): confirms repeat calls against one snapshot are pure.
+    second = self_study._structural_delta_concepts(snapshot)
+
+    assert second == []
+
+
+def test_structural_delta_concepts_repeat_call_is_memoized_not_reobserved(monkeypatch):
+    # Direct regression test for the review-caught crash: without
+    # memoization, a second call against the same snapshot would treat its
+    # own first call's "last seen" write as no-op and silently return a
+    # different (empty) result than the first call, breaking Phase 2A's
+    # idempotency invariant whenever a real delta exists on the first call.
+    _reset_structural_delta_state(monkeypatch)
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    sentinel = [
+        self_study._concept(
+            snapshot=snapshot,
+            concept_kind="structural_mass",
+            label="repo-wide structural mass delta",
+            description="sentinel delta for memoization test",
+            evidence_items=[next(item for item in snapshot.modules if item.name == "orion.structural_mass")],
+            inferred_from=["structural_mass_delta"],
+        )
+    ]
+    self_study._STRUCTURAL_DELTA_RESULT_CACHE[snapshot.snapshot_id] = sentinel
+
+    result = self_study._structural_delta_concepts(snapshot)
+
+    assert result is sentinel
+
+
+def test_semantic_enrichment_concepts_missing_cache_dir_returns_empty(monkeypatch, tmp_path):
+    monkeypatch.setattr(self_study, "SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR", str(tmp_path / "not-mounted"))
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    concepts = self_study._semantic_enrichment_concepts(snapshot)
+
+    assert concepts == []
+
+
+def test_semantic_enrichment_concepts_reads_real_cache_entry_shape(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "cache" / "self_study_enrichment"
+    entry_dir = cache_dir / "ab"
+    entry_dir.mkdir(parents=True)
+    (entry_dir / "abcdef123456.json").write_text(
+        json.dumps(
+            {
+                "summary": "cortex-exec's self-study module builds a factual snapshot before any induction runs.",
+                "touched_paths": ["services/orion-cortex-exec/app/self_study.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(self_study, "SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR", str(cache_dir))
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    concepts = self_study._semantic_enrichment_concepts(snapshot)
+
+    assert len(concepts) == 1
+    concept = concepts[0]
+    assert concept.concept_kind == "semantic_enrichment"
+    assert concept.description == "cortex-exec's self-study module builds a factual snapshot before any induction runs."
+    assert concept.evidence
+    assert concept.inferred_from == ["semantic_enrichment"]
+
+
+def test_semantic_enrichment_concepts_skips_malformed_entries(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "cache" / "self_study_enrichment"
+    entry_dir = cache_dir / "cd"
+    entry_dir.mkdir(parents=True)
+    (entry_dir / "no-summary.json").write_text(json.dumps({"touched_paths": ["services/orion-cortex-exec"]}), encoding="utf-8")
+    (entry_dir / "not-json.json").write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(self_study, "SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR", str(cache_dir))
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    concepts = self_study._semantic_enrichment_concepts(snapshot)
+
+    assert concepts == []
+
+
+def test_reflect_self_concepts_does_not_crash_on_a_real_structural_delta(monkeypatch):
+    # End-to-end regression test for the exact review-caught crash: prime a
+    # fake-but-plausible "prior" GraphSnapshotStats (different from the real
+    # on-disk graph.json) so the REAL _structural_delta_concepts() code path
+    # computes a genuine non-trivial delta against the real current stats --
+    # not a mocked function. Before the memoization fix, reflect_self_
+    # concepts()'s internal validate_phase2a_induction() re-induction call
+    # would silently drop that same concept on its second pass and raise
+    # concept_idempotency_mismatch.
+    _reset_structural_delta_state(monkeypatch)
+    fake_prior = self_study.GraphSnapshotStats(
+        node_count=1,
+        edge_count=1,
+        community_count=1,
+        god_nodes=(),
+        commit_sha="0000000000000000000000000000000000000000",
+        backfilled=True,
+    )
+    monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", fake_prior)
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    concepts = self_study.induce_self_concepts(snapshot)
+    assert any(c.concept_kind == "structural_mass" for c in concepts), (
+        "fixture prior stats should differ enough from the real on-disk graph to produce a real delta"
+    )
+
+    # This must not raise concept_idempotency_mismatch.
+    findings = self_study.reflect_self_concepts(snapshot, concepts)
+    assert findings
+
+
+def test_induce_self_concepts_still_idempotent_with_layer2_sources_wired(monkeypatch):
+    # The core Phase 2A invariant (same snapshot in -> same concept ids out)
+    # must survive the three additive Layer 2 sources above.
+    _reset_structural_delta_state(monkeypatch)
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    first = self_study.induce_self_concepts(snapshot)
+    second = self_study.induce_self_concepts(snapshot)
+
+    assert [c.concept_id for c in first] == [c.concept_id for c in second]
+    assert any(c.concept_kind == "graphify_community" for c in first)
+
+
 def test_induced_concept_rdf_request_targets_induced_graph_only():
     snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
     concepts = self_study.induce_self_concepts(snapshot)
@@ -307,6 +498,56 @@ def test_reflect_self_concepts_returns_reflective_findings_with_evidence_and_con
     assert all(finding.concept_refs for finding in findings)
     assert all(ref.trust_tier == "authoritative" for finding in findings for ref in finding.evidence)
     assert all(ref.trust_tier == "induced" for finding in findings for ref in finding.concept_refs)
+
+
+def test_reflect_self_concepts_pairs_structural_delta_with_enrichment_narrative(monkeypatch, tmp_path):
+    # induce_self_concepts()'s Phase 2A validation re-runs induction and
+    # requires byte-identical concept ids on repeat -- so instead of hand-
+    # building a structural_mass concept that only the *first* call would
+    # see, monkeypatch the two Layer 2 source functions themselves to be
+    # deterministic. That way the real induce_self_concepts() pipeline (and
+    # its internal repeat-call idempotency check) exercises the actual
+    # pairing branch in reflect_self_concepts() end to end.
+    cache_dir = tmp_path / "cache" / "self_study_enrichment"
+    entry_dir = cache_dir / "ab"
+    entry_dir.mkdir(parents=True)
+    (entry_dir / "entry.json").write_text(
+        json.dumps(
+            {
+                "summary": "structural_mass computes real git/graph deltas rather than fabricating a zero delta.",
+                "touched_paths": ["orion/structural_mass/graph_delta.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(self_study, "SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR", str(cache_dir))
+
+    def fake_structural_delta_concepts(snapshot):
+        module_item = next(item for item in snapshot.modules if item.name == "orion.structural_mass")
+        return [
+            self_study._concept(
+                snapshot=snapshot,
+                concept_kind="structural_mass",
+                label="repo-wide structural mass delta",
+                description="graphify's on-disk structural snapshot moved: node_count_delta=+3.",
+                evidence_items=[module_item],
+                inferred_from=["structural_mass_delta"],
+            )
+        ]
+
+    monkeypatch.setattr(self_study, "_structural_delta_concepts", fake_structural_delta_concepts)
+
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    concepts = self_study.induce_self_concepts(snapshot)
+    assert any(c.concept_kind == "structural_mass" for c in concepts)
+    assert any(c.concept_kind == "semantic_enrichment" for c in concepts)
+
+    findings = self_study.reflect_self_concepts(snapshot, concepts)
+
+    paired = [f for f in findings if f.title == "Structural delta and a cached enrichment narrative both point at real change"]
+    assert len(paired) == 1
+    assert any(ref.concept_kind == "structural_mass" for ref in paired[0].concept_refs)
+    assert any(ref.concept_kind == "semantic_enrichment" for ref in paired[0].concept_refs)
 
 
 def test_reflective_rdf_request_uses_separate_graph_and_never_authoritative():

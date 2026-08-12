@@ -54,6 +54,18 @@ def test_vocabulary_entries_are_unique_and_clean() -> None:
         assert "." not in p, f"prompt must not contain the separator: {p!r}"
 
 
+def test_vocabulary_is_single_words_only() -> None:
+    """
+    GroundingDINO resolves detections to token spans in the dot-joined caption,
+    and adjacent multi-word phrases bleed together. Live on 2026-08-12,
+    `cardboard box . storage bin` produced the believed labels
+    `cardboard box storage` and `storage`, and never `storage bin`. A garbled
+    label propagates into the narrative and churns the habituation gate.
+    """
+    for prompt in _detector_params()["default_prompts"]:
+        assert " " not in prompt, f"multi-word prompt risks span bleed: {prompt!r}"
+
+
 def test_vocabulary_fits_the_text_encoder_budget() -> None:
     """
     GroundingDINO's BERT text encoder caps at 256 tokens; an overlong caption

@@ -192,6 +192,13 @@ profiles:
       # `face` is deliberately absent: identity/face/re-ID stays a non-goal.
       # Keep terms visually distinct -- near-synonyms make GroundingDINO emit
       # duplicate overlapping boxes for one object.
+      #
+      # SINGLE WORDS ONLY. GroundingDINO maps detections back to token spans in
+      # the dot-joined caption, and adjacent multi-word phrases bleed into each
+      # other. Observed live on 2026-08-12 with `cardboard box . storage bin`:
+      # the believed label set came back holding `cardboard box storage` and a
+      # bare `storage`, and never once `storage bin`. A garbled label is worse
+      # than a coarse one -- it reaches the narrative and it churns.
       default_prompts:
         - person
         - door
@@ -203,15 +210,15 @@ profiles:
         - table
         - chair
         - whiteboard
-        - guitar case
+        - guitar
         - backpack
         - bag
-        - cardboard box
-        - storage bin
+        - box
+        - bin
         - book
         - lamp
         - window
-        - houseplant
+        - plant
         - cup
         - bottle
         - shoe

@@ -66,6 +66,29 @@ fi
 # terminate the whole file), and can never fail or block the commit itself.
 (
     [ -f "$REPO_ROOT/scripts/self_study_enrichment_hook.py" ] || exit 0
-    command -v python3 >/dev/null 2>&1 || exit 0
-    cd "$REPO_ROOT" && python3 "$REPO_ROOT/scripts/self_study_enrichment_hook.py" >/dev/null 2>&1
+
+    # Needs `redis` importable (for the one-shot bus publish in
+    # publish_enrichment_request()) -- not guaranteed on whatever bare
+    # `python3` resolves to on PATH at commit time. Confirmed live
+    # 2026-08-12: this host's own default (non-interactive-shell) PATH
+    # resolves python3 to a system interpreter with no redis installed,
+    # so the script's own `import redis` silently failed on every real
+    # commit -- swallowed by main()'s outer except, same invisible-failure
+    # shape as the sys.path/orion import bug fixed in the same patch.
+    # Probe likely dev-venv locations first (each checked for a REAL
+    # working `import redis`, not just existence), falling back to
+    # whatever's on PATH so this still works on a host where system
+    # python3 happens to have redis installed globally.
+    _SSEH_PYTHON=""
+    for _sseh_cand in "$REPO_ROOT/.venv/bin/python3" "$REPO_ROOT/orion_dev/bin/python3"; do
+        if [ -x "$_sseh_cand" ] && "$_sseh_cand" -c "import redis" >/dev/null 2>&1; then
+            _SSEH_PYTHON="$_sseh_cand"
+            break
+        fi
+    done
+    if [ -z "$_SSEH_PYTHON" ]; then
+        _SSEH_PYTHON=$(command -v python3 2>/dev/null) || exit 0
+    fi
+
+    cd "$REPO_ROOT" && "$_SSEH_PYTHON" "$REPO_ROOT/scripts/self_study_enrichment_hook.py" >/dev/null 2>&1
 ) || true

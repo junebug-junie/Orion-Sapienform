@@ -25,6 +25,16 @@ services:
       # below. On hosts without a GPU stack, comment this line and `gpus`, or point ORION_HOST_NVIDIA_SMI at a
       # valid host path.
       - ${ORION_HOST_NVIDIA_SMI:-/usr/bin/nvidia-smi}:/usr/bin/nvidia-smi:ro
+      # Read-only host repo mount (2026-08-12, skills.docker.compose_service_bringup.v1): the image only ships a
+      # build-time COPY of the repo (baked at Dockerfile build, goes stale the moment host code changes), so
+      # `docker compose build` run from *inside* this container -- even talking to the host daemon over the
+      # docker.sock bind above -- would otherwise construct its build context from that stale snapshot, not live
+      # host code. This mount fixes that. MUST stay `:ro` -- do NOT change to a write mount under any framing
+      # (env sync, log writes, etc.); Juniper does not want this container able to write into the host repo /
+      # main branch. Mounted at the SAME absolute path on both sides so ORION_REPO_ROOT / self_study's
+      # `_resolve_repo_root()` and any script-relative paths resolve identically inside and outside the
+      # container. Override ORION_HOST_REPO_ROOT if this node's checkout lives elsewhere.
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:ro
 
     # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
     privileged: true
@@ -107,6 +117,9 @@ services:
       SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING: ${SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING:-false}
       SKILLS_ALLOW_MESH_SERVICE_SCRIPTS: ${SKILLS_ALLOW_MESH_SERVICE_SCRIPTS:-false}
       SKILLS_MESH_SERVICE_SCRIPT_TIMEOUT_SEC: ${SKILLS_MESH_SERVICE_SCRIPT_TIMEOUT_SEC:-900}
+      SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP: ${SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP:-false}
+      SKILLS_DOCKER_COMPOSE_BRINGUP_TIMEOUT_SEC: ${SKILLS_DOCKER_COMPOSE_BRINGUP_TIMEOUT_SEC:-900}
+      SKILLS_DOCKER_COMPOSE_BRINGUP_HEALTH_POLL_SEC: ${SKILLS_DOCKER_COMPOSE_BRINGUP_HEALTH_POLL_SEC:-60}
       BIOMETRICS_SERVICE_URL: ${BIOMETRICS_SERVICE_URL:-http://orion-athena-biometrics:8100}
       BIOMETRICS_HTTP_TIMEOUT_SEC: ${BIOMETRICS_HTTP_TIMEOUT_SEC:-5}
       # PageIndex query provenance includes enriched journal metadata fields.
@@ -123,7 +136,9 @@ services:
       ENDOGENOUS_RUNTIME_STORE_MAX_RECORDS: ${ENDOGENOUS_RUNTIME_STORE_MAX_RECORDS:-2000}
       ENDOGENOUS_RUNTIME_SQL_READ_ENABLED: ${ENDOGENOUS_RUNTIME_SQL_READ_ENABLED:-true}
       ENDOGENOUS_RUNTIME_SQL_DATABASE_URL: ${ENDOGENOUS_RUNTIME_SQL_DATABASE_URL:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
-      ORION_REPO_ROOT: ${ORION_REPO_ROOT:-}
+      # Same value as the bind-mount source/target above (not the separate legacy ORION_REPO_ROOT key --
+      # see .env_example for the 2026-08-12 rename note).
+      ORION_REPO_ROOT: ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}
       CONCEPT_PROFILE_REPOSITORY_BACKEND: ${CONCEPT_PROFILE_REPOSITORY_BACKEND:-local}
       CONCEPT_PROFILE_GRAPHDB_ENDPOINT: ${CONCEPT_PROFILE_GRAPHDB_ENDPOINT:-}
       CONCEPT_PROFILE_GRAPHDB_URL: ${CONCEPT_PROFILE_GRAPHDB_URL:-}

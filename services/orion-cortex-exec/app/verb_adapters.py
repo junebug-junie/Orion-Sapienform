@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -2131,6 +2132,372 @@ class MeshRefreshServiceEnvsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]
             skill_name="skills.mesh.refresh_service_envs.v1",
             script_relpath="mesh-utilities/common/refresh_service_envs.sh",
         )
+
+
+_SAFE_COMPOSE_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# Bigger blast radius than the two fixed mesh-utilities scripts (arbitrary per-service build/up, no per-caller
+# auth on the Hub debug route -- review finding 2026-08-12). Belt-and-suspenders denylist for services whose own
+# build/restart could take down the very thing serving this request or its immediate neighbors; everything else
+# stays reachable through SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP.
+_DOCKER_COMPOSE_BRINGUP_DENYLIST = frozenset({"orion-cortex-exec", "orion-hub"})
+
+# Secret-shaped substrings to scrub from build/up stdout/stderr before it leaves this process. Best-effort, not a
+# substitute for not leaking secrets into build output in the first place -- matches the existing no-redaction
+# convention for other shell-out skills in this file, but this skill's "any services/<name>, unauthenticated Hub
+# route" combination raises the stakes enough to warrant it (review finding 2026-08-12).
+_SECRET_LIKE_RE = re.compile(
+    r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|Bearer\s+[A-Za-z0-9._-]{10,}|AKIA[0-9A-Z]{12,})"
+)
+
+
+def _redact_secrets(text: str) -> str:
+    return _SECRET_LIKE_RE.sub("[REDACTED]", text or "")
+
+
+# Delay before the confirming re-poll described above. Module-level (not a settings field) so tests can
+# monkeypatch it to ~0 without changing the health-poll-window semantics operators actually configure.
+_HEALTH_POLL_CONFIRM_DELAY_SEC = 3.0
+
+
+def _discover_compose_services(repo_root: Path) -> Dict[str, Path]:
+    """Map bare service dirname -> its docker-compose.yml, discovered live under REPO_ROOT/services.
+
+    Mirrors ``self_study._service_items()``'s discovery style: walk the real directory tree each
+    call instead of hand-maintaining a static list, so this never drifts from what's actually on disk.
+    """
+    out: Dict[str, Path] = {}
+    services_dir = repo_root / "services"
+    if not services_dir.is_dir():
+        return out
+    for entry in sorted(p for p in services_dir.iterdir() if p.is_dir()):
+        compose = entry / "docker-compose.yml"
+        if compose.is_file():
+            out[entry.name] = compose
+    return out
+
+
+def _docker_inspect_container_states(runner: SafeCommandRunner, container_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Map full container id -> {status, health_status, has_healthcheck}."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not container_ids:
+        return out
+    proc = runner.run(["docker", "container", "inspect", *container_ids])
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return out
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return out
+    if not isinstance(payload, list):
+        return out
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("Id") or "")
+        if not cid:
+            continue
+        state = item.get("State") if isinstance(item.get("State"), dict) else {}
+        cfg = item.get("Config") if isinstance(item.get("Config"), dict) else {}
+        health = state.get("Health") if isinstance(state.get("Health"), dict) else None
+        out[cid] = {
+            "status": str(state.get("Status") or "unknown"),
+            "health_status": str(health.get("Status")) if health else None,
+            "has_healthcheck": bool(cfg.get("Healthcheck")),
+        }
+    return out
+
+
+def _compose_ps_container_ids(text: str) -> List[Dict[str, Any]]:
+    """Parse ``docker compose ... ps --format json`` output (array or line-delimited JSON)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, list):
+            rows = [item for item in parsed if isinstance(item, dict)]
+        elif isinstance(parsed, dict):
+            rows = [parsed]
+    except json.JSONDecodeError:
+        for raw_line in stripped.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                rows.append(item)
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        cid = str(row.get("ID") or row.get("Id") or "").strip()
+        if not cid:
+            continue
+        out.append({"id": cid, "name": str(row.get("Name") or row.get("Names") or cid)})
+    return out
+
+
+async def _run_docker_compose_service_bringup(
+    *,
+    ctx: VerbContext,
+    service_raw: Any,
+) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+    _ = ctx
+    skill_name = "skills.docker.compose_service_bringup.v1"
+    observed = _utc_now_iso()
+
+    if not settings.skills_allow_docker_compose_bringup:
+        result = {
+            "service": service_raw,
+            "observed_at_utc": observed,
+            "status": "blocked",
+            "policy_blocked": True,
+            "user_facing_summary": (
+                "Container bring-up is disabled (SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP=false). "
+                "Set SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP=true on cortex-exec to run this action."
+            ),
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="blocked", error={"message": "docker_compose_bringup_disabled_by_policy"}), []
+
+    service = str(service_raw or "").strip()
+    repo_root = self_study_module.REPO_ROOT.resolve()
+    services_dir = repo_root / "services"
+    diagnostics = {
+        "repo_root": str(repo_root),
+        "repo_root_exists": repo_root.is_dir(),
+        "services_dir_exists": services_dir.is_dir(),
+    }
+
+    if not service or not _SAFE_COMPOSE_SERVICE_NAME_RE.match(service) or "/" in service or ".." in service:
+        result = {
+            "service": service_raw,
+            "observed_at_utc": observed,
+            "status": "not_found",
+            "diagnostics": {**diagnostics, "compose_file_exists": False},
+            "user_facing_summary": f"Invalid or missing service name: {service_raw!r}.",
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="fail", error={"message": "invalid_service_name", "service": str(service_raw)}), []
+
+    if service in _DOCKER_COMPOSE_BRINGUP_DENYLIST:
+        result = {
+            "service": service,
+            "observed_at_utc": observed,
+            "status": "blocked",
+            "policy_blocked": True,
+            "diagnostics": diagnostics,
+            "user_facing_summary": (
+                f"{service} is on the container bring-up denylist (self/adjacent-service protection) -- "
+                "rebuilding it from inside its own request path is not allowed via this skill."
+            ),
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="blocked", error={"message": "service_denylisted", "service": service}), []
+
+    discovered = _discover_compose_services(repo_root)
+    compose_path = discovered.get(service)
+    diagnostics["compose_file_exists"] = compose_path is not None
+    if compose_path is None:
+        result = {
+            "service": service,
+            "observed_at_utc": observed,
+            "status": "not_found",
+            "diagnostics": diagnostics,
+            "available_services": sorted(discovered.keys()),
+            "user_facing_summary": (
+                f"No services/{service}/docker-compose.yml found under {repo_root}. "
+                "If this looks wrong, the read-only repo mount may not be live -- check ORION_HOST_REPO_ROOT."
+            ),
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="fail", error={"message": "service_not_found", "service": service}), []
+
+    compose_relpath = f"services/{service}/docker-compose.yml"
+    env_file_args: List[str] = []
+    root_env = repo_root / ".env"
+    if root_env.is_file():
+        env_file_args += ["--env-file", ".env"]
+    service_env_relpath = f"services/{service}/.env"
+    if (repo_root / service_env_relpath).is_file():
+        env_file_args += ["--env-file", service_env_relpath]
+    diagnostics["env_files_used"] = env_file_args[1::2]
+
+    timeout_sec = float(settings.skills_docker_compose_bringup_timeout_sec or 900)
+    runner = SafeCommandRunner(allowed_commands={"docker"}, timeout_sec=timeout_sec)
+    base_cmd = ["docker", "compose", *env_file_args, "-f", compose_relpath]
+    max_len = 16000
+
+    def _truncate(text: str) -> str:
+        t = _redact_secrets((text or "").strip())
+        if len(t) > max_len:
+            return t[: max_len - 40] + "\n...(stdout/stderr truncated)..."
+        return t
+
+    def _invoke(cmd: List[str]) -> subprocess.CompletedProcess[str]:
+        return runner.run(cmd, cwd=str(repo_root))
+
+    try:
+        build_proc = await asyncio.to_thread(_invoke, [*base_cmd, "build"])
+    except Exception as exc:
+        result = {
+            "service": service,
+            "observed_at_utc": _utc_now_iso(),
+            "status": "build_failed",
+            "diagnostics": diagnostics,
+            "user_facing_summary": f"Failed to invoke docker compose build: {exc!s}",
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="unavailable", error={"message": "compose_build_invoke_error", "detail": str(exc)}), []
+
+    build_exit_code = build_proc.returncode
+    build_tail = _truncate((build_proc.stdout or "") + "\n" + (build_proc.stderr or ""))
+
+    if build_exit_code != 0:
+        result = {
+            "service": service,
+            "observed_at_utc": _utc_now_iso(),
+            "status": "build_failed",
+            "diagnostics": diagnostics,
+            "build_exit_code": build_exit_code,
+            "build_stdout_stderr_tail": build_tail,
+            "user_facing_summary": f"docker compose build failed for {service} (exit {build_exit_code}).",
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="fail", error={"message": "compose_build_failed", "exit_code": build_exit_code}), []
+
+    try:
+        up_proc = await asyncio.to_thread(_invoke, [*base_cmd, "up", "-d"])
+    except Exception as exc:
+        result = {
+            "service": service,
+            "observed_at_utc": _utc_now_iso(),
+            "status": "up_failed",
+            "diagnostics": diagnostics,
+            "build_exit_code": build_exit_code,
+            "build_stdout_stderr_tail": build_tail,
+            "user_facing_summary": f"Build ok, but failed to invoke docker compose up: {exc!s}",
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="unavailable", error={"message": "compose_up_invoke_error", "detail": str(exc)}), []
+
+    up_exit_code = up_proc.returncode
+    up_tail = _truncate((up_proc.stdout or "") + "\n" + (up_proc.stderr or ""))
+
+    if up_exit_code != 0:
+        result = {
+            "service": service,
+            "observed_at_utc": _utc_now_iso(),
+            "status": "up_failed",
+            "diagnostics": diagnostics,
+            "build_exit_code": build_exit_code,
+            "build_stdout_stderr_tail": build_tail,
+            "up_exit_code": up_exit_code,
+            "up_stdout_stderr_tail": up_tail,
+            "user_facing_summary": f"docker compose up failed for {service} (exit {up_exit_code}).",
+        }
+        return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="fail", error={"message": "compose_up_failed", "exit_code": up_exit_code}), []
+
+    poll_window_sec = float(settings.skills_docker_compose_bringup_health_poll_sec or 60)
+    poll_interval_sec = 3.0
+    # Separate, much tighter timeout than the 900s build/up timeout for the ps/inspect calls made *inside* the
+    # poll loop -- a hung `docker container inspect` here should not be able to silently blow the poll-window
+    # semantics up to the full build/up budget (review finding 2026-08-12).
+    poll_runner = SafeCommandRunner(allowed_commands={"docker"}, timeout_sec=min(15.0, max(3.0, poll_interval_sec * 3)))
+    containers: List[Dict[str, Any]] = []
+    deadline = time.monotonic() + poll_window_sec
+
+    def _poll_invoke(cmd: List[str]) -> subprocess.CompletedProcess[str]:
+        return poll_runner.run(cmd, cwd=str(repo_root))
+
+    async def _snapshot_containers() -> List[Dict[str, Any]]:
+        try:
+            ps_proc = await asyncio.to_thread(_poll_invoke, [*base_cmd, "ps", "-a", "--format", "json"])
+            rows = _compose_ps_container_ids(ps_proc.stdout) if ps_proc.returncode == 0 else []
+            states = await asyncio.to_thread(_docker_inspect_container_states, poll_runner, [row["id"] for row in rows])
+        except Exception:
+            rows, states = [], {}
+        return [
+            {
+                "name": row["name"],
+                "id": row["id"],
+                "state": states.get(row["id"], {}).get("status", "unknown"),
+                "health": states.get(row["id"], {}).get("health_status"),
+                "has_healthcheck": bool(states.get(row["id"], {}).get("has_healthcheck")),
+            }
+            for row in rows
+        ]
+
+    def _is_settled(snapshot: List[Dict[str, Any]]) -> bool:
+        return bool(snapshot) and all(
+            (c["state"] == "running" and (not c["has_healthcheck"] or c["health"] in ("healthy", "unhealthy")))
+            for c in snapshot
+        )
+
+    while True:
+        containers = await _snapshot_containers()
+        if _is_settled(containers):
+            # Debounce: a container that flaps restarting -> running -> crash between polls can look settled
+            # on a single snapshot. Re-check once more after a short delay before trusting it (review finding
+            # 2026-08-12) -- cheap insurance against misclassifying a crash-loop as healthy.
+            if _HEALTH_POLL_CONFIRM_DELAY_SEC > 0:
+                await asyncio.sleep(_HEALTH_POLL_CONFIRM_DELAY_SEC)
+            confirm = await _snapshot_containers()
+            if _is_settled(confirm) and [c["id"] for c in confirm] == [c["id"] for c in containers]:
+                containers = confirm
+                break
+            containers = confirm
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(min(poll_interval_sec, max(0.0, deadline - time.monotonic())))
+
+    if not containers:
+        overall_status = "unhealthy"
+    else:
+        any_bad = any(
+            c["state"] != "running" or (c["has_healthcheck"] and c["health"] != "healthy")
+            for c in containers
+        )
+        if any_bad:
+            overall_status = "unhealthy"
+        elif any(c["has_healthcheck"] for c in containers):
+            overall_status = "healthy"
+        else:
+            overall_status = "running_no_healthcheck"
+
+    ok = overall_status in ("healthy", "running_no_healthcheck")
+    summary = (
+        f"{service}: build ok, up ok, {len(containers)} container(s) -> {overall_status}."
+        if ok
+        else f"{service}: build ok, up ok, but containers did not settle within {poll_window_sec:.0f}s -> {overall_status}."
+    )
+    result = {
+        "service": service,
+        "observed_at_utc": _utc_now_iso(),
+        "status": overall_status,
+        "diagnostics": diagnostics,
+        "build_exit_code": build_exit_code,
+        "build_stdout_stderr_tail": build_tail,
+        "up_exit_code": up_exit_code,
+        "up_stdout_stderr_tail": up_tail,
+        "containers": containers,
+        "health_poll_window_sec": poll_window_sec,
+        "user_facing_summary": summary,
+    }
+    return _skill_result_output(
+        skill_name=skill_name,
+        result=result,
+        ok=ok,
+        status="success" if ok else "fail",
+        error=None if ok else {"message": "containers_not_healthy", "overall_status": overall_status},
+    ), []
+
+
+@verb("skills.docker.compose_service_bringup.v1")
+class DockerComposeServiceBringupVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        return await _run_docker_compose_service_bringup(ctx=ctx, service_raw=skill_args.get("service"))
 
 
 @verb("skills.mesh.mesh_ops_round.v1")

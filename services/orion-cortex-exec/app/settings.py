@@ -185,6 +185,9 @@ class Settings(BaseSettings):
     skills_allow_mutating_runtime_housekeeping: bool = Field(False, alias="SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING")
     skills_allow_mesh_service_scripts: bool = Field(False, alias="SKILLS_ALLOW_MESH_SERVICE_SCRIPTS")
     skills_mesh_service_script_timeout_sec: float = Field(900.0, alias="SKILLS_MESH_SERVICE_SCRIPT_TIMEOUT_SEC")
+    skills_allow_docker_compose_bringup: bool = Field(False, alias="SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP")
+    skills_docker_compose_bringup_timeout_sec: float = Field(900.0, alias="SKILLS_DOCKER_COMPOSE_BRINGUP_TIMEOUT_SEC")
+    skills_docker_compose_bringup_health_poll_sec: float = Field(60.0, alias="SKILLS_DOCKER_COMPOSE_BRINGUP_HEALTH_POLL_SEC")
     biometrics_service_url: str = Field("http://orion-athena-biometrics:8100", alias="BIOMETRICS_SERVICE_URL")
     # PageIndex query provenance includes enriched journal trigger/stance/facet metadata.
     journal_pageindex_service_url: str = Field("http://orion-pageindex:8360", alias="JOURNAL_PAGEINDEX_SERVICE_URL")

@@ -155,6 +155,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const skillRunnerSelect = document.getElementById('skillRunnerSelect');
   const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
   const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
+  const containerBringupSelect = document.getElementById('containerBringupSelect');
+  const containerBringupRunBtn = document.getElementById('containerBringupRunBtn');
+  const containerBringupStatus = document.getElementById('containerBringupStatus');
+  const containerBringupResult = document.getElementById('containerBringupResult');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
@@ -8975,6 +8979,75 @@ document.addEventListener("DOMContentLoaded", () => {
         runOptions.workflowRequestOverride = { workflow_id: workflowId };
       }
       await submitExplicitChatText(promptText, runOptions);
+    });
+  }
+
+  async function loadContainerBringupServices() {
+    if (!containerBringupSelect) return;
+    try {
+      const resp = await fetch('/api/service-logs/services');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const services = Array.isArray(data && data.services) ? data.services : [];
+      containerBringupSelect.innerHTML = '';
+      if (!services.length) {
+        containerBringupSelect.innerHTML = '<option value="">— No services discovered —</option>';
+        return;
+      }
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '— Select service —';
+      containerBringupSelect.appendChild(placeholder);
+      services.forEach((svc) => {
+        const opt = document.createElement('option');
+        opt.value = String(svc.name || '');
+        opt.textContent = String(svc.name || '');
+        containerBringupSelect.appendChild(opt);
+      });
+    } catch (err) {
+      containerBringupSelect.innerHTML = '<option value="">— Failed to load services —</option>';
+      if (containerBringupStatus) {
+        containerBringupStatus.textContent = `Failed to load service list: ${err && err.message ? err.message : err}`;
+      }
+    }
+  }
+  loadContainerBringupServices();
+
+  if (containerBringupRunBtn && containerBringupSelect) {
+    containerBringupRunBtn.addEventListener('click', async () => {
+      const service = containerBringupSelect.value;
+      if (!service) {
+        if (containerBringupStatus) containerBringupStatus.textContent = 'Select a service first.';
+        return;
+      }
+      const confirmed = window.confirm(
+        `Rebuild and restart "${service}"? This runs docker compose build + up -d for that service and can take several minutes.`
+      );
+      if (!confirmed) return;
+      containerBringupRunBtn.disabled = true;
+      if (containerBringupStatus) containerBringupStatus.textContent = `Bringing up ${service}… this can take several minutes (build + up + health poll).`;
+      if (containerBringupResult) containerBringupResult.classList.add('hidden');
+      try {
+        const resp = await fetch('/api/debug/container-bringup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ service }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (containerBringupStatus) {
+          containerBringupStatus.textContent = resp.ok
+            ? `Done (ok=${data.ok}, status=${data.status || 'unknown'}).`
+            : `Request failed: HTTP ${resp.status}.`;
+        }
+        if (containerBringupResult) {
+          containerBringupResult.textContent = JSON.stringify(data, null, 2);
+          containerBringupResult.classList.remove('hidden');
+        }
+      } catch (err) {
+        if (containerBringupStatus) containerBringupStatus.textContent = `Request error: ${err && err.message ? err.message : err}`;
+      } finally {
+        containerBringupRunBtn.disabled = false;
+      }
     });
   }
 

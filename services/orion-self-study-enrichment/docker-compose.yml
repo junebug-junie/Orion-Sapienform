@@ -24,8 +24,17 @@ services:
       - SELF_STUDY_ENRICHMENT_REPO_PATH=${SELF_STUDY_ENRICHMENT_REPO_PATH:-/repo}
       - SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH=${SELF_STUDY_ENRICHMENT_GRAPH_JSON_PATH:-/repo/graphify-out/graph.json}
 
-      # Real Anthropic credentials -- isolated to this service (see README).
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Authenticate `claude -p` as the host's already-logged-in Claude Code
+      # session (see README's "Credential isolation" section) -- not a
+      # separate per-service API-key billing path. CLAUDE_CONFIG_DIR is
+      # Claude Code's own env var for relocating where it looks for
+      # `.credentials.json`; the volumes: block below bind-mounts only that
+      # one file (read-only) into this directory. The
+      # `${SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR:-/root/.claude}`
+      # interpolation here MUST stay identical to the one in the volumes:
+      # bind-mount target below -- if they ever diverge, the credential
+      # mount becomes invisible to the `claude` binary with no error.
+      - CLAUDE_CONFIG_DIR=${SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR:-/root/.claude}
       - SELF_STUDY_ENRICHMENT_CLAUDE_BIN=${SELF_STUDY_ENRICHMENT_CLAUDE_BIN:-claude}
       - SELF_STUDY_ENRICHMENT_MODEL=${SELF_STUDY_ENRICHMENT_MODEL:-claude-sonnet-5}
       - SELF_STUDY_ENRICHMENT_EFFORT=${SELF_STUDY_ENRICHMENT_EFFORT:-medium}
@@ -40,6 +49,14 @@ services:
       # ownership-mismatch note as orion-cocreation-signals' Dockerfile
       # (`git config --system --add safe.directory '*'` covers it).
       - ${SELF_STUDY_ENRICHMENT_REPO_HOST_PATH}:${SELF_STUDY_ENRICHMENT_REPO_PATH:-/repo}:ro
+      # Real Claude Code login credential -- a single-file, read-only bind
+      # mount of the host's `.credentials.json` (600 perms, owner-only),
+      # NOT the whole `~/.claude` directory (which also holds unrelated
+      # things like history.jsonl, stats-cache.json, session transcripts).
+      # This service never writes to, logs, or echoes any part of this
+      # file. CLAUDE_CONFIG_DIR above must point at the same directory this
+      # is mounted into.
+      - ${SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH:?SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH must be set -- see .env_example}:${SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR:-/root/.claude}/.credentials.json:ro
       # Writable volume for the enrichment cache + rate-limit state --
       # deliberately NOT inside the read-only repo mount above.
       - self_study_enrichment_data:/data

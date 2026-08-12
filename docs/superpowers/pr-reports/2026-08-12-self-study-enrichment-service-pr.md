@@ -131,3 +131,222 @@ scripts/install_git_safety_hooks.sh .
 ## PR link
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/1574
+
+---
+
+## Corrected 2026-08-12: auth mistake found after merge, fixed same day
+
+**What was wrong.** The version of this service that merged as PR #1574
+authenticated its `claude -p` subprocess via a service-local
+`ANTHROPIC_API_KEY` (`app/settings.py`, `app/main.py`, `.env_example`,
+`docker-compose.yml` all carried it; see the original "Env/config changes"
+and "Credential isolation" sections above, left unedited for the record).
+That is a real, direct mistake, not a style nit: the entire stated point of
+wiring in a `claude -p` subprocess for this capability -- across the whole
+design conversation that led to this PR -- was to reuse the operator's
+**already-logged-in Claude Code CLI session** (the same subscription-based
+auth this repo's own dev sessions run under), not to open a second,
+separate pay-per-token Anthropic API billing relationship under a brand-new
+key. Juniper flagged this directly and was upset it shipped this way;
+disclosing it here plainly rather than quietly rewriting the PR's history,
+per this repo's own honesty norms (CLAUDE.md "Runtime truth beats config
+truth").
+
+By the time this was caught, PR #1574 had already merged and its branch
+had been deleted (GitHub does not allow pushing new commits to a closed/
+merged PR), so the fix landed as a same-day follow-up branch/PR
+(`fix/self-study-enrichment-claude-auth`) rather than as additional commits
+on the original branch.
+
+**What changed in the fix.**
+
+- Removed `ANTHROPIC_API_KEY` entirely: no field in `app/settings.py`, no
+  env injection in `app/main.py`'s `handle_request_payload`, no key in
+  `.env_example` or `docker-compose.yml`. No dual-mode, no fallback.
+- `app/main.py` now sets `CLAUDE_CONFIG_DIR` in the subprocess env
+  (defaulting to `SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR`, container-side
+  `/root/.claude` since the Dockerfile runs as root with no `USER`
+  directive) and defensively `env.pop("ANTHROPIC_API_KEY", None)`s any
+  value that might otherwise leak in via `dict(os.environ)`.
+  `CLAUDE_CONFIG_DIR` is Claude Code's own real env var for relocating
+  where it resolves `.credentials.json` (default `~/.claude` if unset --
+  confirmed against Claude Code's own documented behavior, not guessed).
+- `docker-compose.yml` bind-mounts **only** the host's real
+  `~/.claude/.credentials.json` file -- read-only, a single-file mount, not
+  the whole `~/.claude` directory (which also holds unrelated things:
+  `history.jsonl`, `stats-cache.json`, `gh-pr-status-cache.json`, session
+  transcripts, plugins, etc, none of which this service needs or should
+  see). The host path (`SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH`)
+  is now a required (`${VAR:?err}`-guarded) compose variable -- an unset
+  path fails the compose invocation loudly instead of silently resolving
+  to an empty/default bind-mount source for a credential this sensitive
+  (a real code-review finding, fixed in the same patch -- see below).
+- This service never writes to, logs, or echoes any part of the mounted
+  credentials file -- confirmed by inspection of every place `env`/the
+  mount path is touched in `app/main.py` and `app/claude_runner.py`; only
+  `claude`'s own subprocess reads it, never this service's own code.
+- README's "Credential isolation" section rewritten in place with an
+  explicit "Corrected 2026-08-12" note (not silently edited) explaining
+  what was wrong and what the real mechanism is now.
+- New regression tests in `services/orion-self-study-enrichment/tests/test_main.py`:
+  - `test_claude_subprocess_env_has_no_api_key_and_sets_claude_config_dir`
+    -- simulates an `ANTHROPIC_API_KEY` leaked into the *container's own*
+    `os.environ` and proves it is stripped from the subprocess env before
+    `claude -p` is spawned, and that `CLAUDE_CONFIG_DIR` is set correctly.
+  - `test_settings_has_no_anthropic_api_key_field` -- schema-level guard
+    that no `ANTHROPIC_API_KEY` field exists on `Settings`.
+  - `test_docker_compose_has_no_anthropic_api_key_and_requires_credentials_host_path`
+    -- deterministic (CLAUDE.md sec 4) text-level check on the actual
+    `docker-compose.yml` runtime wiring: no `ANTHROPIC_API_KEY` reference
+    anywhere, `CLAUDE_CONFIG_DIR` present, and the credentials host path
+    uses the fail-fast `${VAR:?err}` form.
+
+**Env/config changes (fix patch).**
+
+- Removed keys: `ANTHROPIC_API_KEY` (fully, from `.env_example`,
+  `settings.py`, `docker-compose.yml`).
+- Added keys: `SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH`
+  (operator-specific host path to their real `.credentials.json`, no safe
+  default baked into code -- deliberately required, not defaulted),
+  `SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR` (container-side path, defaults
+  to `/root/.claude`).
+- `.env_example` updated: yes.
+- Local `.env` synced with `python scripts/sync_local_env_from_example.py`:
+  ran; no existing local `.env` for this service was found in the primary
+  checkout (never deployed there), so there was nothing to sync -- an
+  operator deploying this for real must set
+  `SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH` themselves before
+  `docker compose config`/`build`/`up` will succeed (enforced by the new
+  `${VAR:?err}` guard).
+- Skipped keys requiring operator action:
+  `SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH` -- operator must
+  point this at their own real `~/.claude/.credentials.json` (or wherever
+  their `CLAUDE_CONFIG_DIR` override points, if they use one) before
+  deploying.
+
+**Tests run (fix patch).**
+
+```text
+$ .venv/bin/python -m pytest services/orion-self-study-enrichment/tests -q
+25 passed in 2.74s
+```
+
+**Docker/build/smoke checks (fix patch).**
+
+```text
+$ SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH=/home/athena/.claude/.credentials.json \
+  SELF_STUDY_ENRICHMENT_REPO_HOST_PATH=/mnt/scripts/Orion-Sapienform \
+  PROJECT=test NET=test-net \
+  docker compose -f services/orion-self-study-enrichment/docker-compose.yml config
+# validated cleanly: CLAUDE_CONFIG_DIR=/root/.claude in environment:,
+# single-file read-only bind mount of .credentials.json -> /root/.claude/.credentials.json
+# in volumes:, zero ANTHROPIC_API_KEY references anywhere in the rendered config.
+
+$ PROJECT=test NET=test-net SELF_STUDY_ENRICHMENT_REPO_HOST_PATH=/mnt/scripts/Orion-Sapienform \
+  docker compose -f services/orion-self-study-enrichment/docker-compose.yml config
+# (SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH deliberately omitted)
+# error while interpolating services.self-study-enrichment.volumes.[]:
+#   required variable SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH is
+#   missing a value: SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH must
+#   be set -- see .env_example
+# confirms the fail-fast guard works live, not just in a unit test.
+```
+
+Real `docker compose build`/`up` against this service was not re-run in
+this fix patch (no code path changed that affects the image build itself --
+only env/settings/compose wiring and the credential mount, all covered by
+`config` above plus the unit tests).
+
+**Review findings fixed (this fix patch).**
+
+- Finding (must-fix): the credentials host-path bind mount had no
+  fail-fast validation -- an unset
+  `SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH` could resolve to an
+  empty/undefined bind-mount source, an unsafe failure mode for a
+  credential this sensitive.
+  - Fix: changed to compose's `${VAR:?err}` required-variable form in
+    `docker-compose.yml`'s volumes: block.
+  - Evidence: live `docker compose config` run above with the var
+    deliberately omitted -- fails loudly with the exact configured error
+    message, confirmed live, not just asserted in a test.
+- Finding (should-fix): `SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR` defaulted
+  to a specific operator's home directory (`/home/athena/.claude`) baked
+  into `app/settings.py`'s own `Field(default=...)`, not just the
+  `.env_example` (which is expected to be operator-specific) -- would
+  silently point at a nonexistent path for any other operator/deployment.
+  - Fix: changed the container-side default to `/root/.claude` in
+    `settings.py` and `docker-compose.yml` (the container actually runs as
+    root -- no `USER` directive in the Dockerfile -- so this is the real
+    generic default, not another hardcoded username).
+  - Evidence: `app/settings.py:41`, `docker-compose.yml`'s `CLAUDE_CONFIG_DIR`
+    and volume-target interpolations; `.env_example` and README's example
+    paths updated to match, with an explicit comment explaining why the
+    container-side default differs from the host-side example path.
+- Finding (should-fix): the `${SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR:-/root/.claude}`
+  interpolation was duplicated between the `environment:` and `volumes:`
+  blocks in `docker-compose.yml` with no cross-reference -- a future edit
+  to one without the other would silently break the mount (the `claude`
+  binary would look in a different directory than where the credential is
+  actually mounted, with no error, just an auth failure).
+  - Fix: added an explicit comment at the `environment:` line pointing at
+    the `volumes:` line and stating they must stay identical.
+  - Evidence: `docker-compose.yml` lines around `CLAUDE_CONFIG_DIR=`.
+- Finding (should-fix): no deterministic test exercised the actual
+  `docker-compose.yml` runtime wiring (only Python-level `Settings`/
+  subprocess-env tests existed).
+  - Fix: added
+    `test_docker_compose_has_no_anthropic_api_key_and_requires_credentials_host_path`,
+    a plain text-level assertion against the real compose file (CLAUDE.md
+    sec 4 -- deterministic check, not model judgment).
+  - Evidence: `services/orion-self-study-enrichment/tests/test_main.py`;
+    full suite passes (25/25).
+- Finding (nit): the schema-level regression test's docstring implied
+  broader coverage ("must not exist anywhere in this service's config
+  surface") than it actually proves (it only proves the field is gone from
+  `Settings`, not that a stray env var is inert).
+  - Fix: narrowed the docstring to state its real coverage boundary and
+    point at the subprocess-env test as the actual runtime guard.
+  - Evidence: `test_settings_has_no_anthropic_api_key_field`'s updated
+    docstring.
+
+**Restart required.** No restart of any existing running service --
+PR #1574's original merge never had this service deployed live (Docker
+build/smoke in the original PR report was a one-off validation run, not a
+persistent deployment). To deploy the corrected version:
+
+```bash
+python scripts/sync_local_env_from_example.py
+# then set services/orion-self-study-enrichment/.env's
+# SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH to the real host path
+# of ~/.claude/.credentials.json (or wherever CLAUDE_CONFIG_DIR points, if
+# overridden) -- no API key to set anymore.
+scripts/safe_docker_build.sh orion-self-study-enrichment build
+scripts/safe_docker_build.sh orion-self-study-enrichment up -d
+```
+
+**Risks / concerns (fix patch).**
+
+- Severity: low
+  - Concern: the fixed service was never actually run end-to-end against a
+    real, live-mounted `.credentials.json` in this session (only
+    `docker compose config` was validated, plus unit tests with a mocked
+    subprocess) -- the real `claude -p` process authenticating
+    successfully via the mounted file is not directly observed here.
+  - Mitigation: `CLAUDE_CONFIG_DIR`'s behavior (relocating where Claude
+    Code resolves `.credentials.json`) is Claude Code's own documented
+    mechanism, not a novel assumption; the mount/env wiring itself is
+    confirmed live via `docker compose config`. A first real deploy should
+    include one live `claude -p` smoke run and check its exit code/output,
+    not just that the process starts.
+- Severity: low
+  - Concern: mounting a real, subscription-tied login credential into a
+    container is a larger blast radius than the rejected API-key design
+    would have been if that container is ever compromised or its image
+    published somewhere unintended.
+  - Mitigation: mount is read-only, single-file, narrowly scoped (not the
+    whole `~/.claude` directory); this is the explicit tradeoff Juniper
+    asked for (reuse the real session, not a separate scoped key) and is
+    documented plainly in the README's "Credential isolation" section
+    rather than hidden.
+
+**PR link (fix):** see below.

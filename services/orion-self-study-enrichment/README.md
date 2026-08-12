@@ -2,9 +2,11 @@
 
 Thin, isolated service that generates real, evidence-grounded "what is this
 and why" prose summaries for architectural clusters touched by a real
-commit, using an actual `claude -p` subprocess against the real Anthropic
-API. Producer side for a self-study consumer capability that does not exist
-yet -- see "Fast-follow: self_study.py consumer" below.
+commit, using an actual `claude -p` subprocess authenticated as the host's
+already-logged-in Claude Code CLI session (not a separate API key -- see
+"Credential isolation" below). Producer side for a self-study consumer
+capability that does not exist yet -- see "Fast-follow: self_study.py
+consumer" below.
 
 ## Why this exists
 
@@ -77,17 +79,51 @@ for" summary is worse than none.
 
 ## Credential isolation (safety requirement)
 
-The real `ANTHROPIC_API_KEY` lives **only** in this service's own
-`.env`/`.env_example` (empty placeholder in the checked-in example, per
-CLAUDE.md sec 7). `orion-cortex-exec` and `orion-cortex-orch` are not
-touched by this patch at all except (possibly) channel/schema registration
-in `orion/bus/channels.yaml` / `orion/schemas/registry.py`, which are
+**Corrected 2026-08-12 -- see the PR report for the full story of what was
+wrong.** This service does NOT use `ANTHROPIC_API_KEY` and never should.
+The original version of this patch authenticated the `claude -p` subprocess
+via a service-local `ANTHROPIC_API_KEY` (a separate, pay-per-token Anthropic
+API billing relationship). That was a real mistake, not a style choice: the
+entire point of wiring in a `claude -p` subprocess was to reuse the
+operator's **already-logged-in Claude Code CLI session** -- the same
+subscription auth this repo's own dev sessions run under -- not to open a
+second billing relationship. Any `ANTHROPIC_API_KEY` reference anywhere in
+this service (code, `.env_example`, `settings.py`, `docker-compose.yml`) is
+a regression; `tests/test_main.py::test_claude_subprocess_env_has_no_api_key`
+guards against it silently coming back.
+
+The real fix: Claude Code CLI resolves its login credential from
+`$CLAUDE_CONFIG_DIR/.credentials.json` if `CLAUDE_CONFIG_DIR` is set, else
+`~/.claude/.credentials.json`. `app/main.py`'s `handle_request_payload` sets
+`CLAUDE_CONFIG_DIR` in the subprocess env to
+`SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR` (default
+`/root/.claude` -- container-side, matching the container's real default
+`HOME` since the Dockerfile runs as root with no `USER` directive), and
+`docker-compose.yml` bind-
+mounts **only** the host's `~/.claude/.credentials.json` file -- read-only,
+matching its real 600/owner-only host perms -- into that directory at
+`.credentials.json`. The rest of the host's real `~/.claude/` (history,
+plugins, session transcripts, `stats-cache.json`, `gh-pr-status-cache.json`,
+etc) is never mounted into the container; only the one credential file is.
+This service never writes to, logs, or echoes any part of that file.
+
+This is a real, sensitive credential tied to the operator's actual logged-
+in account/subscription -- arguably a bigger blast radius than a scoped API
+key would have been, which is exactly why the mount is a single read-only
+file bind, not a directory mount, and why `SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH`
+has no safe default baked into code (operator sets it explicitly in their
+own local `.env`, same as any other host-path override in this repo).
+
+`orion-cortex-exec` and `orion-cortex-orch` are not touched by this patch
+at all except (possibly) channel/schema registration in
+`orion/bus/channels.yaml` / `orion/schemas/registry.py`, which are
 repo-wide contract files, not credential surfaces -- neither service gains
 any new capability or credential from this patch. Orion's own FCC gateway
 (`orion/fcc/`, `orion/harness/fcc_motor.py`) is untouched; this service
-spawns its own independent `claude -p` process with its own real API key,
-not routed through FCC's internal model gateway (which has no real Claude
-credentials configured).
+spawns its own independent `claude -p` process authenticated via the same
+underlying Claude Code login credential FCC's own `claude_spawn.py`-adjacent
+tooling assumes is already present on the host, not routed through FCC's
+internal model gateway.
 
 ## Safety backstop
 

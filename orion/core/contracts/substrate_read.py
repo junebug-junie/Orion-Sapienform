@@ -41,6 +41,36 @@ That action must *read real host state and act on the answer*, which a
 pre-fetched prompt payload cannot serve: "how much is reclaimable right now"
 has to be asked at decision time.
 
+SCOPE CORRECTION (2026-08-12, same day as the original)
+
+The first version of this contract carried a a Docker build-cache payload --
+build-cache totals, reclaimable bytes, stale-entry counts -- because the
+motivating consumer is autonomous Docker build-cache pruning.
+
+That was wrong, and the trace that should have preceded it came after:
+`orion-biometrics`, the ONLY registered consumer of this channel, has no
+`/var/run/docker.sock` mount. It could never have populated that field. A
+contract promising a payload its responder cannot produce is worse than one
+that omits it -- the omission is visible, the promise is not.
+
+`orion-cortex-exec` DOES have the socket, which is precisely why
+`skills.docker.ps_status.v1` and
+`skills.runtime.docker_prune_stopped_containers.v1` already work there as
+LOCAL verb adapters. And `CortexRouteTemplateV1.cortex_verb` is an
+unconstrained `str`, so an execution-dispatch route can name a `skills.*` verb
+directly, which makes `executor.py:2639`'s local-adapter branch fire.
+
+**So the prune action needs no bus service at all.** It is a local skill in the
+one service that already holds the capability. This contract is therefore
+narrowed to what `orion-biometrics` genuinely owns and can answer without new
+privileges: host filesystem usage, via `shutil.disk_usage`, which needs no
+socket and which it already computes for `disk_pressure`/
+`disk_capacity_pressure`.
+
+Extending a hardware-telemetry service with root-equivalent Docker socket
+access, in order to answer a question a service that already has it can answer
+locally, would have been a real privilege expansion bought for nothing.
+
 DESIGN NOTES
 
 `read_kind` is a closed Literal, not a free string. One kind ships here.
@@ -92,31 +122,6 @@ class SubstrateReadQueryV1(BaseModel):
     mount_path: str = "/mnt/docker"
 
 
-class DockerCacheReadV1(BaseModel):
-    """Docker build-cache accounting, the quantity the prune action acts on.
-
-    Separate from raw disk usage because the two answer different questions and
-    the trigger needs BOTH: at 80% used *with* stale cache, pruning is highly
-    effective; at 80% used with *zero* stale cache, pruning accomplishes
-    nothing and the real condition is a capacity problem needing a human.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    build_cache_total_bytes: int = Field(ge=0)
-    # What Docker itself reports as reclaimable, i.e. not currently in use.
-    build_cache_reclaimable_bytes: int = Field(ge=0)
-    # Reclaimable AND not used recently -- the subset a time-filtered prune
-    # would actually drop. Distinguished from the above because pruning the
-    # whole reclaimable set is what forces the slow full-rebuild that makes
-    # this chore painful; the stale subset is the part that accelerates
-    # nothing. Measured 2026-08-12: 8,550 of 15,037 entries unused >2 weeks.
-    build_cache_stale_bytes: int = Field(ge=0)
-    build_cache_entries: int = Field(ge=0)
-    build_cache_stale_entries: int = Field(ge=0)
-    stale_after_hours: int = Field(gt=0)
-
-
 class HostStorageReadV1(BaseModel):
     """Payload for ``read_kind="host_storage"``."""
 
@@ -127,11 +132,6 @@ class HostStorageReadV1(BaseModel):
     used_bytes: int = Field(ge=0)
     free_bytes: int = Field(ge=0)
     used_pct: float = Field(ge=0.0, le=100.0)
-
-    # Absent when the Docker daemon could not be queried -- which is NOT the
-    # same as "no cache". A caller deciding whether to prune must be able to
-    # tell those apart; see the module docstring.
-    docker: DockerCacheReadV1 | None = None
 
 
 class SubstrateReadReplyV1(BaseModel):

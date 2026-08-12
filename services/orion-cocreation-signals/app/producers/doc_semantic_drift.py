@@ -50,6 +50,44 @@ def _current_head_sha(repo_path: str) -> str:
     return result.stdout.strip()
 
 
+async def _load_last_sha(bus: OrionBusAsync, state_key: str) -> str | None:
+    """Real, durable baseline read -- confirmed live 2026-08-12 (Juniper):
+    an in-process-only ``last_sha`` gets wiped by every redeploy, and this
+    service redeploys far more often than a real doc commit lands. A
+    redeploy landing right after a doc merge (the common real sequence,
+    not an edge case) silently swallows that doc forever under the old
+    pure-in-memory design -- this Redis-backed key is the fix. Returns
+    ``None`` on any real failure (bus disabled, not yet connected, no key
+    set yet) so the caller falls back to the same cold-start behavior as
+    before, never a fabricated SHA."""
+    try:
+        redis = bus.redis
+    except Exception:
+        return None
+    try:
+        raw = await redis.get(state_key)
+    except Exception:
+        logger.warning("cocreation_doc_semantic_drift_state_load_failed key=%s", state_key, exc_info=True)
+        return None
+    if raw is None:
+        return None
+    return raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+
+
+async def _save_last_sha(bus: OrionBusAsync, state_key: str, sha: str) -> None:
+    """Best-effort durable write -- a failure here must not crash the tick
+    that already published real data; the next tick's read just falls back
+    to cold-starting at that point, same as before this fix existed."""
+    try:
+        redis = bus.redis
+    except Exception:
+        return
+    try:
+        await redis.set(state_key, sha)
+    except Exception:
+        logger.warning("cocreation_doc_semantic_drift_state_save_failed key=%s sha=%s", state_key, sha, exc_info=True)
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float | None:
     if not a or not b or len(a) != len(b):
         return None
@@ -195,13 +233,23 @@ async def doc_semantic_drift_loop(
     embed_timeout_sec: float,
     truncation_char_threshold: int,
     poll_interval_sec: float,
+    state_key: str,
     stop: asyncio.Event,
 ) -> None:
-    """Cold-start-sha pattern (same as git_delta_loop): no persisted state, a
-    restart just re-seeds the baseline at the current HEAD instead of scoring
-    whatever doc changes happened while the container was down. Same accepted
-    simplification as git_delta_loop's own docstring -- the very next real
-    doc edit still gets scored, just against a fresh baseline.
+    """Durable-baseline-sha pattern -- ``last_sha`` is persisted to Redis
+    (``state_key``) after every real advance, not just held in process
+    memory. Fixed live 2026-08-12: the original cold-start-sha design
+    (matching ``git_delta_loop``'s own in-memory-only pattern) meant every
+    redeploy re-seeded the baseline at whatever HEAD was current *at that
+    moment* -- and since this service gets redeployed far more often than a
+    real doc commit lands, a redeploy landing right after a doc merge (the
+    common real sequence for this repo, not a rare edge case) silently
+    swallowed that doc forever, confirmed live against two real PRs
+    (#1571, #1577) before this fix. On startup, the baseline resumes from
+    the last real value this producer ever advanced to, not from whatever
+    HEAD happens to be right now -- a restart with no persisted state yet
+    (first-ever boot, or the Redis key genuinely doesn't exist) still cold
+    starts exactly as before.
 
     A dedicated forked RPC bus client is used for the embedding requests so
     replies never race with anything else subscribed on the shared producer
@@ -216,13 +264,16 @@ async def doc_semantic_drift_loop(
     result_channel_prefix = f"orion:embedding:result:doc_semantic_drift:{source.node}"
 
     try:
-        last_sha: str | None = None
+        last_sha: str | None = await _load_last_sha(bus, state_key)
+        if last_sha is not None:
+            logger.info("cocreation_doc_semantic_drift_resumed_from_durable_state last_sha=%s", last_sha)
         while not stop.is_set():
             try:
                 head_sha = await asyncio.to_thread(_current_head_sha, repo_path)
                 if last_sha is None:
                     last_sha = head_sha
                     logger.info("cocreation_doc_semantic_drift_cold_start head_sha=%s", head_sha)
+                    await _save_last_sha(bus, state_key, last_sha)
                 elif head_sha != last_sha:
                     changes = await asyncio.to_thread(
                         doc_semantic_drift_changes, last_sha, head_sha, repo_path
@@ -243,9 +294,13 @@ async def doc_semantic_drift_loop(
                         all_published = all_published and published
                     if all_published:
                         last_sha = head_sha
+                        await _save_last_sha(bus, state_key, last_sha)
                     # else: leave last_sha unchanged -- the next tick's diff will
                     # naturally cover this failed range too (same reasoning as
-                    # git_delta_loop's own _publish() contract).
+                    # git_delta_loop's own _publish() contract). Not persisting
+                    # here is deliberate: persisting a not-yet-fully-published
+                    # sha would durably lose the failed range across a restart
+                    # too, not just within this process's lifetime.
             except Exception:
                 logger.exception("cocreation_doc_semantic_drift_tick_failed")
             try:

@@ -85,12 +85,162 @@ async def test_cold_start_seeds_baseline_without_publishing(fake_bus, source, st
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=1, call_list=calls)
 
     assert fake_bus.published == []
+
+
+STATE_KEY = "orion:cocreation_signals:state:doc_semantic_drift:last_sha"
+
+
+@pytest.mark.asyncio
+async def test_cold_start_persists_the_seeded_baseline(fake_bus, source, stop_event, monkeypatch):
+    """The very first cold-start tick must persist its seeded baseline, not
+    just hold it in memory -- otherwise a restart before any real doc change
+    ever happens would cold-start all over again instead of resuming."""
+    calls: list[str] = []
+
+    def _fake_head(repo_path: str) -> str:
+        calls.append(repo_path)
+        return "a" * 40
+
+    monkeypatch.setattr(doc_semantic_drift_module, "_current_head_sha", _fake_head)
+
+    async def _loop():
+        await doc_semantic_drift_module.doc_semantic_drift_loop(
+            bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
+            repo_path="/repo", embed_request_channel="orion:embedding:generate",
+            embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key=STATE_KEY, stop=stop_event,
+        )
+
+    await _run_until_calls(_loop, stop_event, target_calls=1, call_list=calls)
+
+    assert fake_bus.redis_store.get(STATE_KEY) == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_real_change_persists_new_baseline_to_redis(fake_bus, source, stop_event, monkeypatch):
+    """Regression guard for the live bug (2026-08-12, real PRs #1571/#1577):
+    after a real, fully-published change, the new baseline must be durably
+    persisted, not just held in the loop's own local variable."""
+    shas = ["a" * 40, "a" * 40, "b" * 40]
+    calls: list[str] = []
+
+    def _fake_head(repo_path: str) -> str:
+        idx = min(len(calls), len(shas) - 1)
+        calls.append(repo_path)
+        return shas[idx]
+
+    change = _change("b" * 40)
+
+    monkeypatch.setattr(doc_semantic_drift_module, "_current_head_sha", _fake_head)
+    monkeypatch.setattr(doc_semantic_drift_module, "doc_semantic_drift_changes", lambda p, h, r: [change])
+    monkeypatch.setattr(
+        doc_semantic_drift_module, "_score_change",
+        lambda rpc_bus, **kwargs: asyncio.sleep(0, result=_fake_event(kwargs["change"])),
+    )
+
+    async def _loop():
+        await doc_semantic_drift_module.doc_semantic_drift_loop(
+            bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
+            repo_path="/repo", embed_request_channel="orion:embedding:generate",
+            embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key=STATE_KEY, stop=stop_event,
+        )
+
+    await _run_until_calls(_loop, stop_event, target_calls=3, call_list=calls)
+
+    assert fake_bus.redis_store.get(STATE_KEY) == "b" * 40
+
+
+@pytest.mark.asyncio
+async def test_failed_publish_does_not_persist_the_unpublished_sha(fake_bus, source, stop_event, monkeypatch):
+    """A failed publish must not durably record a baseline past the change
+    that failed to publish -- otherwise a restart right after the failure
+    would permanently lose that range, not just re-cover it next tick."""
+    async def _raising_publish(channel, envelope):
+        raise ConnectionError("transient redis failure")
+
+    fake_bus.publish = _raising_publish
+
+    shas = ["a" * 40, "a" * 40, "b" * 40]
+    calls: list[str] = []
+
+    def _fake_head(repo_path: str) -> str:
+        idx = min(len(calls), len(shas) - 1)
+        calls.append(repo_path)
+        return shas[idx]
+
+    change = _change("b" * 40)
+    monkeypatch.setattr(doc_semantic_drift_module, "_current_head_sha", _fake_head)
+    monkeypatch.setattr(doc_semantic_drift_module, "doc_semantic_drift_changes", lambda p, h, r: [change])
+    monkeypatch.setattr(
+        doc_semantic_drift_module, "_score_change",
+        lambda rpc_bus, **kwargs: asyncio.sleep(0, result=_fake_event(kwargs["change"])),
+    )
+
+    async def _loop():
+        await doc_semantic_drift_module.doc_semantic_drift_loop(
+            bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
+            repo_path="/repo", embed_request_channel="orion:embedding:generate",
+            embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key=STATE_KEY, stop=stop_event,
+        )
+
+    await _run_until_calls(_loop, stop_event, target_calls=3, call_list=calls)
+
+    # Cold start seeded "a"*40 durably -- the failed publish must not have
+    # advanced it to "b"*40.
+    assert fake_bus.redis_store.get(STATE_KEY) == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_restart_resumes_from_durable_state_instead_of_cold_starting_at_new_head(
+    source, stop_event, monkeypatch
+):
+    """The exact real bug this patch fixes: a redeploy (fresh process, fresh
+    FakeBus, but the SAME Redis-backed state) landing right after a real doc
+    change must resume from the last real baseline and score that change --
+    not silently re-seed at the new HEAD and swallow it."""
+    from conftest import FakeBus
+
+    shared_redis_store: dict = {"orion:cocreation_signals:state:doc_semantic_drift:last_sha": "a" * 40}
+
+    # "Process 2" -- a fresh FakeBus (fresh in-process last_sha=None) but
+    # wired to the SAME durable store a real Redis-backed restart would see.
+    bus_after_restart = FakeBus(redis_store=shared_redis_store)
+
+    change = _change("b" * 40)
+    monkeypatch.setattr(doc_semantic_drift_module, "_current_head_sha", lambda repo_path: "b" * 40)
+    monkeypatch.setattr(doc_semantic_drift_module, "doc_semantic_drift_changes", lambda p, h, r: [change])
+    monkeypatch.setattr(
+        doc_semantic_drift_module, "_score_change",
+        lambda rpc_bus, **kwargs: asyncio.sleep(0, result=_fake_event(kwargs["change"], diff=0.7)),
+    )
+
+    async def _loop():
+        await doc_semantic_drift_module.doc_semantic_drift_loop(
+            bus=bus_after_restart, channel="orion:substrate:doc_semantic_drift", source=source,
+            repo_path="/repo", embed_request_channel="orion:embedding:generate",
+            embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key=STATE_KEY, stop=stop_event,
+        )
+
+    await _run_until_calls(_loop, stop_event, target_calls=1, call_list=bus_after_restart.published)
+
+    assert len(bus_after_restart.published) == 1
+    _, envelope = bus_after_restart.published[0]
+    assert envelope.payload["sha"] == "b" * 40
+    assert envelope.payload["diff_scoped_embedding_diff"] == 0.7
 
 
 @pytest.mark.asyncio
@@ -111,7 +261,8 @@ async def test_forked_rpc_bus_client_is_closed_on_loop_exit(fake_bus, source, st
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=1, call_list=calls)
@@ -146,7 +297,8 @@ async def test_real_doc_change_publishes_scored_event(fake_bus, source, stop_eve
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=3, call_list=calls)
@@ -175,7 +327,8 @@ async def test_no_change_publishes_nothing(fake_bus, source, stop_event, monkeyp
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=3, call_list=calls)
@@ -212,7 +365,8 @@ async def test_no_real_doc_files_changed_publishes_nothing_but_advances_sha(
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=4, call_list=calls)
@@ -258,7 +412,8 @@ async def test_failed_publish_does_not_advance_state(fake_bus, source, stop_even
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=4, call_list=calls)
@@ -293,7 +448,8 @@ async def test_disabled_bus_skips_publish_without_raising(fake_bus, source, stop
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=3, call_list=calls)
@@ -318,7 +474,8 @@ async def test_tick_exception_does_not_kill_the_loop(fake_bus, source, stop_even
             bus=fake_bus, channel="orion:substrate:doc_semantic_drift", source=source,
             repo_path="/repo", embed_request_channel="orion:embedding:generate",
             embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
-            truncation_char_threshold=2048, poll_interval_sec=0.01, stop=stop_event,
+            truncation_char_threshold=2048, poll_interval_sec=0.01,
+            state_key="orion:cocreation_signals:state:doc_semantic_drift:last_sha", stop=stop_event,
         )
 
     await _run_until_calls(_loop, stop_event, target_calls=2, call_list=calls)

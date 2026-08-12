@@ -160,6 +160,16 @@ class Settings(BaseSettings):
     # it's preferred.
     COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_TRUNCATION_CHAR_THRESHOLD: int = Field(default=2048)
 
+    # Real Redis key doc_semantic_drift_loop's baseline last_sha is persisted
+    # to, so a redeploy resumes from where it left off instead of re-seeding
+    # at whatever HEAD happens to be at boot -- fixed live 2026-08-12 after a
+    # real doc (PR #1571, then again #1577) got silently swallowed by a
+    # redeploy landing right after its merge. See
+    # doc_semantic_drift_loop()'s own docstring for the full story.
+    COCREATION_SIGNALS_DOC_SEMANTIC_DRIFT_STATE_KEY: str = Field(
+        default="orion:cocreation_signals:state:doc_semantic_drift:last_sha"
+    )
+
     @field_validator(
         "COCREATION_SIGNALS_GIT_DELTA_POLL_INTERVAL_SEC",
         "COCREATION_SIGNALS_PR_LIFECYCLE_POLL_INTERVAL_SEC",

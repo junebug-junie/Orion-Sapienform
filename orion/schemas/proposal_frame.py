@@ -105,3 +105,25 @@ class ProposalFrameV1(BaseModel):
 
     dominant_motivations: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    # 2026-08-12: the tick-level gate. `action_warrant` (orion/field/
+    # action_warrant.py) answers "does this tick's state warrant acting at
+    # all", on a scale where 0.5 is a median normal day for this machine; the
+    # per-template scoring below still decides WHICH candidates. Recorded on
+    # the frame rather than only logged so a quiet tick is inspectable
+    # evidence ("state was calm") instead of an absence.
+    #
+    # Optional for backward compatibility: frames persisted before this field
+    # existed load unchanged, and `None` means "gate not evaluated", which is
+    # deliberately distinguishable from a real 0.0 reading.
+    action_warrant: float | None = Field(default=None, ge=0.0, le=1.0)
+    # The dimensions that actually contributed. The score is only
+    # interpretable alongside this count -- the statistic's null is
+    # chi-square with 2N degrees of freedom, so a warrant of 0.9 over four
+    # dimensions and one over a single dimension are different claims.
+    action_warrant_dimensions: list[str] = Field(default_factory=list)
+    # Why the gate opened or closed, e.g. "warranted", "below_threshold",
+    # "no_live_dimensions". A frame with zero candidates must say which,
+    # because "Orion was calm" and "the signal broke" look identical from the
+    # outside otherwise (CLAUDE.md 0A, no empty-shell cognition).
+    action_warrant_gate: str | None = None

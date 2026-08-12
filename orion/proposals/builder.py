@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from orion.field.action_warrant import action_warrant
 from orion.field.pressure import field_pressures as compute_field_pressures
 from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
 from orion.proposals.scoring import (
@@ -235,15 +236,56 @@ def build_proposal_frame(
         built.append(candidate)
 
     built.sort(key=lambda c: (-c.priority_score, c.proposal_id))
+
+    # THE TICK-LEVEL GATE (2026-08-12).
+    #
+    # Work Outcome O1 asks that Orion's action budget rise and fall with real
+    # internal pressure. It never did: the arena emitted a full slate every
+    # tick, forever, because `min_priority` was a cut on an absolute pressure
+    # whose floor sat above it. 100.00% of ticks cleared it.
+    #
+    # `action_warrant` separates the two questions the old design conflated.
+    # WHETHER this tick's state warrants acting is a property of the tick, not
+    # of any template, and is answered here on a scale whose rest point is
+    # defined. WHICH candidates then win is still the per-template scoring
+    # below, unchanged.
+    #
+    # Applied AFTER external_candidates are merged in, deliberately. Reverie
+    # and cognitive-hop producers write `priority_score` straight from their
+    # own salience, bypassing `proposal_priority()` entirely, so a
+    # per-candidate threshold could never gate them consistently -- their
+    # numbers are on a different scale. A tick-level gate is producer-agnostic
+    # by construction: if the state does not warrant acting, nothing acts,
+    # whoever proposed it.
+    warrant = action_warrant(field)
+    if warrant.score is None:
+        gate = "no_live_dimensions"
+    elif warrant.score < policy.thresholds.action_warrant_min:
+        gate = "below_threshold"
+    else:
+        gate = "warranted"
+
     active: list[ProposalCandidateV1] = []
     suppressed: list[ProposalCandidateV1] = []
-    for candidate in built:
-        if candidate.priority_score < policy.thresholds.suppress_below:
-            suppressed.append(candidate)
-        elif candidate.priority_score < policy.thresholds.min_priority:
-            suppressed.append(candidate)
-        else:
-            active.append(candidate)
+    if gate != "warranted":
+        # Quiet, not broken. Everything is recorded as suppressed rather than
+        # dropped, and `action_warrant_gate` on the frame says which of the two
+        # reasons applied -- a frame with no candidates and no explanation is
+        # indistinguishable from a dead pipeline.
+        suppressed.extend(built)
+        if gate == "no_live_dimensions":
+            warnings.append(
+                "action_warrant_unavailable:"
+                + ",".join(f"{d}={r}" for d, r in sorted(warrant.excluded.items()))
+            )
+    else:
+        for candidate in built:
+            if candidate.priority_score < policy.thresholds.suppress_below:
+                suppressed.append(candidate)
+            elif candidate.priority_score < policy.thresholds.min_priority:
+                suppressed.append(candidate)
+            else:
+                active.append(candidate)
 
     active = active[: policy.limits.max_candidates]
     suppressed = suppressed[: policy.limits.max_suppressed]
@@ -271,4 +313,7 @@ def build_proposal_frame(
         suppressed_candidates=suppressed,
         dominant_motivations=_dominant_motivations(active),
         warnings=warnings,
+        action_warrant=warrant.score,
+        action_warrant_dimensions=list(warrant.contributing),
+        action_warrant_gate=gate,
     )

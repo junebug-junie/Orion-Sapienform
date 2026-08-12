@@ -8,6 +8,7 @@ from orion.proposals.builder import (
     stable_proposal_frame_id,
 )
 from orion.proposals.policy import ProposalTemplateV1, load_proposal_policy
+from orion.proposals.scoring import PRESSURE_DIMENSIONS
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldStateV1
 
@@ -32,6 +33,18 @@ def _loaded_field() -> FieldStateV1:
                 "reliability_pressure": 0.0,
             },
         },
+        # 2026-08-12 (action_warrant tick gate): real precision-baseline
+        # state, elevated. A fixture claiming to be a LOADED field must look
+        # loaded to the tick gate as well as to per-template scoring. These
+        # dicts were absent entirely, which the gate reads -- correctly -- as
+        # every dimension `pinned`/`no_reading`, i.e. "cannot tell", so the
+        # frame came back empty. It passed before only because nothing had
+        # ever asked the field whether its state warranted acting at all;
+        # `base_priority` carried every candidate over `min_priority`
+        # regardless of what the field said.
+        dimension_precision_ewma_n={dim: 128 for dim in PRESSURE_DIMENSIONS},
+        dimension_precision_zscore={dim: 2.5 for dim in PRESSURE_DIMENSIONS},
+        dimension_precision_ewma_var={dim: 1.0 for dim in PRESSURE_DIMENSIONS},
     )
 
 
@@ -309,3 +322,98 @@ def test_build_proposal_frame_includes_binding_resolved_candidate() -> None:
     assert attended[0].binding_resolved_from == ATTENTION_FIRST_TARGET_BINDING
     assert attended[0].target_id == "field:recent_perturbations"
     assert attended[0].target_kind == "field"
+
+
+# --- the tick-level action_warrant gate (2026-08-12) -------------------------
+
+
+def _field_at(z: float, *, var: float = 1.0, n: int = 128) -> FieldStateV1:
+    field = _loaded_field()
+    field.dimension_precision_zscore = {d: z for d in PRESSURE_DIMENSIONS}
+    field.dimension_precision_ewma_var = {d: var for d in PRESSURE_DIMENSIONS}
+    field.dimension_precision_ewma_n = {d: n for d in PRESSURE_DIMENSIONS}
+    return field
+
+
+def test_gate_closes_on_a_calm_tick_and_says_so():
+    """Work Outcome O1's actual requirement: a calm state must produce no
+    action. Before this gate, 100.00% of real ticks proposed a full slate --
+    `min_priority` was a cut on an absolute pressure whose floor sat above it,
+    so it never once bound."""
+    frame = build_proposal_frame(
+        field=_field_at(-1.5), attention=None, policy=POLICY, now=NOW
+    )
+    assert frame.candidates == []
+    assert frame.action_warrant_gate == "below_threshold"
+    assert frame.action_warrant is not None and frame.action_warrant < 0.5
+    # Quiet, not lost: the candidates are still recorded and inspectable.
+    assert frame.suppressed_candidates
+
+
+def test_gate_opens_on_an_elevated_tick():
+    frame = build_proposal_frame(
+        field=_field_at(2.5), attention=None, policy=POLICY, now=NOW
+    )
+    assert frame.candidates
+    assert frame.action_warrant_gate == "warranted"
+    assert frame.action_warrant is not None and frame.action_warrant >= 0.5
+    assert frame.action_warrant_dimensions
+
+
+def test_gate_distinguishes_calm_from_unmeasurable():
+    """"Orion was calm" and "the signal broke" must not look identical.
+
+    A field with no precision baseline at all cannot support a verdict, and
+    says so via a distinct gate reason plus a warning naming each excluded
+    dimension -- rather than silently emitting the same empty frame a genuinely
+    quiet tick produces."""
+    blind = _loaded_field()
+    blind.dimension_precision_zscore = {}
+    blind.dimension_precision_ewma_var = {}
+    blind.dimension_precision_ewma_n = {}
+    frame = build_proposal_frame(field=blind, attention=None, policy=POLICY, now=NOW)
+    assert frame.candidates == []
+    assert frame.action_warrant_gate == "no_live_dimensions"
+    assert frame.action_warrant is None
+    assert any(w.startswith("action_warrant_unavailable:") for w in frame.warnings)
+
+
+def test_gate_also_suppresses_external_candidates():
+    """Reverie/cognitive-hop producers write `priority_score` straight from
+    their own salience, bypassing `proposal_priority()`, so a per-candidate
+    threshold could never gate them consistently. The tick gate is
+    producer-agnostic: if the state does not warrant acting, nothing acts."""
+    external = _build_candidate(
+        template_key="inspect_execution_pressure",
+        template=POLICY.proposal_templates["inspect_execution_pressure"],
+        field=_loaded_field(),
+        field_tick_id="tick_live",
+        attention=None,
+        pressures={},
+        policy=POLICY,
+    ).model_copy(update={"proposal_id": "proposal:reverie_thought:x", "priority_score": 0.75})
+
+    calm = build_proposal_frame(
+        field=_field_at(-1.5), attention=None, policy=POLICY, now=NOW,
+        external_candidates=[external],
+    )
+    assert calm.candidates == []
+    assert any(c.proposal_id == external.proposal_id for c in calm.suppressed_candidates)
+
+    busy = build_proposal_frame(
+        field=_field_at(2.5), attention=None, policy=POLICY, now=NOW,
+        external_candidates=[external],
+    )
+    assert any(c.proposal_id == external.proposal_id for c in busy.candidates)
+
+
+def test_gate_is_monotone_in_state():
+    """The budget must rise and fall WITH state -- O1's literal wording."""
+    seen = [
+        bool(build_proposal_frame(
+            field=_field_at(z), attention=None, policy=POLICY, now=NOW
+        ).candidates)
+        for z in (-3.0, -1.0, 0.0, 1.0, 3.0)
+    ]
+    assert seen == sorted(seen), seen
+    assert seen[0] is False and seen[-1] is True

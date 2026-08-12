@@ -5,6 +5,7 @@ from pathlib import Path
 
 from orion.proposals.builder import build_proposal_frame
 from orion.proposals.policy import load_proposal_policy
+from orion.proposals.scoring import PRESSURE_DIMENSIONS
 from orion.proposals.templates import FORBIDDEN_TRANSPORT_PROPOSAL_KEYS, TRANSPORT_PROPOSAL_TEMPLATE_KEYS
 from orion.schemas.field_state import FieldStateV1
 
@@ -32,6 +33,18 @@ def _field() -> FieldStateV1:
                 "egress_confidence_deficit": 0.8,
             },
         },
+        # 2026-08-12 (action_warrant tick gate): real precision-baseline
+        # state, elevated. A fixture claiming to be a LOADED field must look
+        # loaded to the tick gate as well as to per-template scoring. These
+        # dicts were absent entirely, which the gate reads -- correctly -- as
+        # every dimension `pinned`/`no_reading`, i.e. "cannot tell", so the
+        # frame came back empty. It passed before only because nothing had
+        # ever asked the field whether its state warranted acting at all;
+        # `base_priority` carried every candidate over `min_priority`
+        # regardless of what the field said.
+        dimension_precision_ewma_n={dim: 128 for dim in PRESSURE_DIMENSIONS},
+        dimension_precision_zscore={dim: 2.5 for dim in PRESSURE_DIMENSIONS},
+        dimension_precision_ewma_var={dim: 1.0 for dim in PRESSURE_DIMENSIONS},
     )
 
 

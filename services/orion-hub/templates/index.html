@@ -457,7 +457,10 @@
             Bring up
           </button>
           <div id="containerBringupStatus" class="basis-full text-[11px] text-gray-400"></div>
-          <pre id="containerBringupResult" class="basis-full hidden max-h-64 overflow-auto rounded-lg border border-gray-700 bg-gray-950/60 p-2 text-[10px] text-gray-300 whitespace-pre-wrap"></pre>
+          <details id="containerBringupResultWrap" class="basis-full hidden rounded-lg border border-gray-700 bg-gray-950/60">
+            <summary class="cursor-pointer select-none px-2 py-1 text-[10px] uppercase tracking-wide text-gray-400 hover:text-gray-200">Result (click to collapse)</summary>
+            <pre id="containerBringupResult" class="max-h-64 overflow-auto p-2 text-[10px] text-gray-300 whitespace-pre-wrap"></pre>
+          </details>
         </div>
 
         <div id="runtimeDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">

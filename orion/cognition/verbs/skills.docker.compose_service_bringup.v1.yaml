@@ -1,0 +1,17 @@
+name: skills.docker.compose_service_bringup.v1
+label: Skills — Docker Compose Service Bring-Up
+description: Run `docker compose build` + `up -d` for one services/* directory from the read-only repo mount, then poll container health (policy-gated; mutates Docker stacks).
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 900000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.docker.compose_service_bringup.v1
+    description: Execute docker compose build/up for the requested service and report health.
+    order: 0
+    services: []

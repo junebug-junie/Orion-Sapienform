@@ -159,6 +159,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const containerBringupRunBtn = document.getElementById('containerBringupRunBtn');
   const containerBringupStatus = document.getElementById('containerBringupStatus');
   const containerBringupResultWrap = document.getElementById('containerBringupResultWrap');
+  const containerBringupResultSummary = document.getElementById('containerBringupResultSummary');
   const containerBringupResult = document.getElementById('containerBringupResult');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
@@ -9014,6 +9015,15 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   loadContainerBringupServices();
 
+  if (containerBringupResultWrap && containerBringupResultSummary) {
+    containerBringupResultWrap.addEventListener('toggle', () => {
+      const label = window.OrionContainerBringupUI
+        ? window.OrionContainerBringupUI.summaryLabelForOpenState(containerBringupResultWrap.open)
+        : (containerBringupResultWrap.open ? 'Result (click to collapse)' : 'Result (click to expand)');
+      containerBringupResultSummary.textContent = label;
+    });
+  }
+
   if (containerBringupRunBtn && containerBringupSelect) {
     containerBringupRunBtn.addEventListener('click', async () => {
       const service = containerBringupSelect.value;
@@ -9046,6 +9056,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (containerBringupResultWrap) {
           containerBringupResultWrap.classList.remove('hidden');
           containerBringupResultWrap.open = true;
+          // Don't rely solely on the 'toggle' event firing for a programmatic .open set (spec/browser
+          // support for that varies) -- set the label explicitly here too.
+          if (containerBringupResultSummary && window.OrionContainerBringupUI) {
+            containerBringupResultSummary.textContent = window.OrionContainerBringupUI.summaryLabelForOpenState(true);
+          }
         }
       } catch (err) {
         if (containerBringupStatus) containerBringupStatus.textContent = `Request error: ${err && err.message ? err.message : err}`;

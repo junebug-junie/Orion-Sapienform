@@ -21,12 +21,66 @@ would add uncommitted or unpushed-on-main work if it doesn't branch first.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 
 logger = logging.getLogger("orion-hub.fcc_sandbox_sync")
 
 _GIT_TIMEOUT_S = 30
+
+
+def _load_fcc_env_value(key: str) -> str:
+    """Minimal dotenv read for ``key``, mirroring fcc_motor.load_fcc_env's parsing.
+
+    Not importing that function directly: it lives in orion.harness (governor-only
+    territory) and this module is shared with orion-hub, which has its own
+    near-identical loader in a hub-scoped script. Duplicating a ~10-line KEY=VALUE
+    parser here is cheaper than adding a cross-service import for one field.
+    """
+    raw_path = os.environ.get("HARNESS_FCC_ENV_PATH") or os.environ.get(
+        "HUB_FCC_ENV_PATH", "~/.fcc/.env"
+    )
+    path = Path(os.path.expanduser(str(raw_path or "~/.fcc/.env").strip() or "~/.fcc/.env"))
+    if not path.is_file():
+        return ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, _, v = stripped.partition("=")
+        if k.strip() == key:
+            return v.strip().strip('"').strip("'")
+    return ""
+
+
+def _configure_push_auth(workspace: Path) -> None:
+    """Rewrite the sandbox's SSH-style remote to token-authenticated HTTPS.
+
+    Repo-LOCAL config only (``git -C workspace config --local ...``), never
+    ``--global`` -- this keeps the token out of the image-baked global gitconfig
+    (see the safe.directory/identity fix: a global .gitconfig bind mount already
+    caused one outage here, nothing should write secrets into that file) and
+    scopes it to this one disposable clone. ``git push``/``gh`` in the sandbox
+    otherwise have no credentials at all: GITHUB_PAT is injected into the GitHub
+    MCP server's own subprocess env (orion/fcc/mcp_config.py) but never reaches
+    the outer claude subprocess's shell or git's credential store -- confirmed
+    live (env | grep -i GITHUB found nothing, git push failed with no SSH agent
+    and no HTTPS credential available).
+    """
+    token = _load_fcc_env_value("GITHUB_PAT")
+    if not token:
+        logger.info("fcc_sandbox_push_auth_skipped_no_token")
+        return
+    result = _run_git(
+        workspace,
+        "config",
+        "--local",
+        "url.https://x-access-token:" + token + "@github.com/.insteadOf",
+        "git@github.com:",
+    )
+    if result.returncode != 0:
+        logger.warning("fcc_sandbox_push_auth_config_failed err=%s", result.stderr.strip())
 
 
 class _SyncAbort(Exception):
@@ -74,6 +128,11 @@ def sync_fcc_sandbox(workspace: str | None) -> str:
     path = Path(workspace)
     if not (path / ".git").exists():
         return "skipped_not_a_git_repo"
+
+    # Idempotent, cheap -- runs every sync regardless of whether a full reset
+    # happens below, so push auth is set up even on a skipped-dirty/unpushed
+    # sync (the sandbox may still need to push what's already there).
+    _configure_push_auth(path)
 
     try:
         current_branch = _git_or_abort(

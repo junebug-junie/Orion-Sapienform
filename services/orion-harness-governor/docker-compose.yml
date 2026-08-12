@@ -15,6 +15,7 @@ services:
       - ${HOME}/.fcc:/root/.fcc
       - ${HOME}/.claude.json:/root/.claude.json:ro
       - ${HARNESS_FCC_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
+      - ${HARNESS_FCC_GH_BIN_HOST:-${HOME}/.local/bin/gh}:/usr/local/bin/gh:ro
       # GitNexus global registry (~/.gitnexus/registry.json) — index is built on
       # the host; MCP inside the container discovers it via this read-only mount.
       # The per-repo .gitnexus/ index arrives through the repo mount above.

@@ -106,3 +106,52 @@ def test_sync_resets_a_pushed_branch_back_to_main(origin_and_clone):
     result = sync_fcc_sandbox(str(clone))
     assert result == "synced"
     assert _git(clone, "branch", "--show-current").stdout.strip() == "main"
+
+
+def test_sync_configures_push_auth_from_github_pat(origin_and_clone, tmp_path, monkeypatch):
+    """Regression: GITHUB_PAT only ever reached the GitHub MCP server's own
+    subprocess env, never the outer claude shell or git's credential store --
+    `git push`/`gh` had no credentials at all. sync_fcc_sandbox must rewrite the
+    SSH-style remote to a token-authenticated HTTPS one, repo-local only."""
+    _, clone = origin_and_clone
+    fcc_env_path = tmp_path / "fcc.env"
+    fcc_env_path.write_text("GITHUB_PAT=ghp_test_token_123\nOTHER_KEY=ignored\n")
+    monkeypatch.setenv("HARNESS_FCC_ENV_PATH", str(fcc_env_path))
+
+    sync_fcc_sandbox(str(clone))
+
+    rewrite = _git(
+        clone,
+        "config",
+        "--local",
+        "--get",
+        "url.https://x-access-token:ghp_test_token_123@github.com/.insteadOf",
+    )
+    assert rewrite.stdout.strip() == "git@github.com:"
+
+    # Must be repo-local, never global -- a global write would leak the token
+    # into the image-baked gitconfig shared by every sandbox session.
+    global_check = subprocess.run(
+        ["git", "config", "--global", "--get-regexp", "url\\..*insteadOf"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "x-access-token:ghp_test_token_123" not in global_check.stdout
+
+
+def test_sync_skips_push_auth_when_no_token(origin_and_clone, tmp_path, monkeypatch):
+    _, clone = origin_and_clone
+    monkeypatch.setenv("HARNESS_FCC_ENV_PATH", str(tmp_path / "does_not_exist.env"))
+
+    result = sync_fcc_sandbox(str(clone))
+    assert result == "synced"
+
+    rewrite = subprocess.run(
+        ["git", "config", "--local", "--get-regexp", "url\\..*insteadOf"],
+        cwd=str(clone),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rewrite.returncode != 0 or not rewrite.stdout.strip()

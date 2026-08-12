@@ -3015,6 +3015,42 @@ class BuilderPruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
         after = _builder_prune_disk_usage(data_root)
         reclaimed = max(0, int(before["used_bytes"]) - int(after["used_bytes"]))
+        # 2026-08-12: a prune that reclaimed nothing is NOT a success.
+        #
+        # The gate above measures `docker system df`'s TOTAL Reclaimable, but
+        # the prune below only removes cache older than `until={until_hours}h`.
+        # Those are different quantities. If >= 40 GB is reclaimable and all of
+        # it is younger than the cutoff, the gate passes, the prune removes
+        # ~nothing, and -- before this branch -- the result recorded
+        # `acted=True, decision="pruned", bytes_reclaimed=0` as a success.
+        # Nothing about the host changed, so the identical condition re-fires
+        # on the next tick, forever: real daemon load, zero outcome. That is
+        # exactly the theater this skill was written to prevent, reintroduced
+        # through the back door of a gate that measures a different number than
+        # the action changes.
+        #
+        # Reported honestly instead, and escalated: repeatedly reclaiming zero
+        # while disk stays high is a real condition needing a human, the same
+        # judgement `declined_nothing_to_reclaim` already makes.
+        if reclaimed <= 0:
+            result.update(
+                acted=True,
+                decision="pruned_nothing",
+                escalate=True,
+                disk_after=after,
+                bytes_reclaimed=0,
+                pct_reclaimed=0.0,
+                reason=(
+                    "prune ran but reclaimed no space: "
+                    f"{cache.get('reclaimable_bytes')} bytes reported reclaimable, "
+                    f"but none of it is older than {until_hours}h"
+                ),
+                prune_stdout_tail=(getattr(proc, "stdout", "") or "")[-500:],
+            )
+            return _skill_result_output(
+                skill_name="skills.runtime.builder_prune.v1", result=result
+            ), []
+
         result.update(
             acted=True,
             decision="pruned",

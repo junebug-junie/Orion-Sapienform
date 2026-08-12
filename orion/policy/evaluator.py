@@ -16,6 +16,8 @@ from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 DecisionLiteral = Literal[
     "approved_for_execution",
     "approved_read_only",
+    # 2026-08-12 -- see orion/schemas/policy_decision_frame.py's note.
+    "approved_maintenance",
     "requires_operator_review",
     "deferred",
     "rejected",
@@ -28,6 +30,12 @@ def _policy_gate_for_decision(
 ) -> str:
     if decision == "approved_read_only":
         return "read_only"
+    if decision == "approved_maintenance":
+        # Reuses the existing `execution_policy` gate rather than widening
+        # policy_gate's own Literal: this decision IS an execution-policy
+        # judgement, and it is emphatically not `read_only`, which is the
+        # value it would otherwise have silently inherited.
+        return "execution_policy"
     if decision == "requires_operator_review":
         return "operator_review"
     if decision == "approved_for_execution":

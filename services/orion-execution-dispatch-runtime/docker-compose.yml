@@ -28,7 +28,17 @@ services:
       - ORION_DISPATCH_MAX_RISK_PER_DAY=${ORION_DISPATCH_MAX_RISK_PER_DAY:-10.0}
       - ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY=${ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY:-false}
       - BUS_ACTION_OUTCOME_OUT=${BUS_ACTION_OUTCOME_OUT:-orion:autonomy:action:outcome}
-      - NOTIFY_URL=${NOTIFY_URL:-http://orion-notify:7140}
+      # 2026-08-12: fallback was http://orion-notify:7140, which does not
+      # resolve -- verified live inside this very container
+      # (socket.gethostbyname('orion-notify') -> gaierror; 'notify' -> ok).
+      # The container name is ${PROJECT}-notify, so the compose service key
+      # is the portable hostname. settings.py and .env_example already had
+      # this right; only this fallback was stale, and since the live .env
+      # does not set NOTIFY_URL the stale fallback is what actually ran --
+      # so the theater tripwire's operator alert has been going nowhere.
+      # Found while arming mutating dispatch; fixed here because that alert
+      # is one of the things that makes the arming safe.
+      - NOTIFY_URL=${NOTIFY_URL:-http://notify:7140}
       - NOTIFY_API_TOKEN=${NOTIFY_API_TOKEN:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 

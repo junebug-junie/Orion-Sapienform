@@ -38,6 +38,13 @@ def _family_for_skill(skill_id: str) -> str:
         return "runtime_housekeeping"
     if "up_all_services" in sid or "refresh_service_envs" in sid:
         return "runtime_housekeeping"
+    # 2026-08-12: without this, builder_prune fell through to the final
+    # `return "system_inspection"` -- which is capability_bridge.py's DEFAULT
+    # family when preferred_skill_families is empty. It was not auto-selected
+    # only because it sorted to index 1 rather than 0. That is an alphabetical
+    # accident, not a gate.
+    if "builder_prune" in sid:
+        return "runtime_housekeeping"
     if "nvidia_smi" in sid or "gpu.nvidia" in sid:
         return "gpu_presence"
     if "biometrics.raw_recent" in sid or ("biometrics" in sid and "raw_recent" in sid):
@@ -59,7 +66,15 @@ def _family_for_skill(skill_id: str) -> str:
 
 def _risk_for_skill(skill_id: str) -> tuple[str, bool, bool]:
     sid = str(skill_id or "").lower()
-    if "docker_prune_stopped_containers" in sid:
+    # 2026-08-12: builder_prune matched NO case here and fell through to the
+    # `read_only, True, True` default below, so the one skill in this repo that
+    # deletes host data advertised itself as read_only + idempotent +
+    # observational, requires_confirmation=False, requires_execute_opt_in=False.
+    # Its sibling prune skill on the line below was already high_impact. The
+    # misclassification also propagated to orion/normalizers/agent_trace.py,
+    # which decides "did this have an effect" from risk_class alone -- so the
+    # traces normalized as non-side-effecting too.
+    if "docker_prune_stopped_containers" in sid or "builder_prune" in sid:
         return "high_impact", False, False
     if "up_all_services" in sid or "refresh_service_envs" in sid:
         return "high_impact", False, False
@@ -98,6 +113,10 @@ class ActionsSkillRegistry:
                 requires_confirmation=(risk_class == "high_impact"),
                 requires_execute_opt_in=(
                     "docker_prune_stopped_containers" in skill_id.lower()
+                    # 2026-08-12: added. This skill deletes host data; it
+                    # belongs on the same footing as the sibling prune above,
+                    # not on the read-only default it was silently taking.
+                    or "builder_prune" in skill_id.lower()
                     or "up_all_services" in skill_id.lower()
                     or "refresh_service_envs" in skill_id.lower()
                 ),

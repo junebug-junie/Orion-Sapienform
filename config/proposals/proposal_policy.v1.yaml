@@ -266,7 +266,7 @@ proposal_templates:
   # literal, not aspirational.
   #
   # The safety does not come from the risk number. It comes from three
-  # independent gates: mode.allow_mutating_dispatch (ships FALSE), the
+  # independent gates: mode.allow_mutating_dispatch (ON since 2026-08-12), the
   # maintenance_bounded scope check, and the skill's own measured gate
   # (disk >= 75% AND reclaimable >= 40GB, read from the real filesystem and the
   # real Docker daemon at execution time).

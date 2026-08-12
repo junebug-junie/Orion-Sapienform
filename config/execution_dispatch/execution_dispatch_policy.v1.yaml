@@ -5,13 +5,38 @@ mode:
   default_dispatch_mode: dry_run
   # Real sends require BOTH this true AND the runtime's own
   # EXECUTION_DISPATCH_MODE=dispatch_read_only (services/orion-execution-
-  # dispatch-runtime/.env) -- default_dispatch_mode above stays dry_run, so
-  # opening this gate alone does not turn on live dispatch.
+  # dispatch-runtime/.env, which is the live value on this host and is what
+  # .env_example now ships) -- default_dispatch_mode above stays dry_run, so
+  # a deployment that does NOT set the env key gets dry_run regardless of
+  # this flag.
   allow_dispatch_read_only: true
-  allow_mutating_dispatch: false
+  # 2026-08-12: flipped false -> true. Juniper's explicit decision, made after
+  # the skill was live-previewed on this host (decision "would_act", disk
+  # 77.594% of 468 GiB, 142.5 GB reclaimable across 15,506 build-cache
+  # entries) -- not a default that drifted open.
+  #
+  # This opens ONE gate of three. Still in front of any real mutation:
+  #   1. orion/execution_dispatch/builder.py only lets a route through when
+  #      route.allowed_scope == "maintenance_bounded", and `maintain` is the
+  #      only route with that scope (asserted by
+  #      tests/test_maintenance_dispatch_gating.py).
+  #   2. The runtime's own EXECUTION_DISPATCH_MODE must be dispatch_read_only,
+  #      or dry_run stays true and the skill receives mode=preview.
+  #   3. The skill's own measured gate: it prunes only when the host really
+  #      reads disk >= 75% AND >= 40 GB genuinely reclaimable, and declines
+  #      (escalating) when it cannot measure either one.
+  # Risk accepted: the blast radius is Docker build cache, which rebuilds.
+  allow_mutating_dispatch: true
 
 allowed_policy_decisions:
   - approved_read_only
+  # 2026-08-12: a bounded mutating action, approved. Listing it here widens
+  # this allowlist by one value; it does NOT widen what can actually fire.
+  # The real gate is orion/execution_dispatch/builder.py's
+  # `route.allowed_scope == "maintenance_bounded"` check plus
+  # mode.allow_mutating_dispatch below. This literal exists so the decision
+  # record stops calling a 142 GB deletion read-only, not to authorize it.
+  - approved_maintenance
 
 blocked_policy_decisions:
   - requires_operator_review
@@ -39,14 +64,14 @@ proposal_kind_to_cortex:
 
   # 2026-08-12: the first MUTATING route. `maintenance_bounded` is the only
   # non-read-only scope, and it is inert unless mode.allow_mutating_dispatch is
-  # true -- which it is not by default. cortex_verb names a skills.* verb
+  # true -- ON since 2026-08-12, see mode above. cortex_verb names a skills.* verb
   # directly, which works because CortexRouteTemplateV1.cortex_verb is an
   # unconstrained str and executor.py's local-adapter branch resolves on that
   # prefix; the skill then runs in orion-cortex-exec, which already holds the
   # docker socket.
   #
   # Three independent gates stand between a proposal and a real prune:
-  #   1. mode.allow_mutating_dispatch (below, default false)
+  #   1. mode.allow_mutating_dispatch (above; ON since 2026-08-12)
   #   2. this scope passing builder.py's allowlist
   #   3. the skill's OWN measured gate: disk >= 75% AND reclaimable >= 40GB
   # Any one of them says no and nothing happens.

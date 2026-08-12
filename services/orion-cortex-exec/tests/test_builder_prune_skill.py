@@ -171,7 +171,20 @@ def test_preview_is_the_default_and_does_not_mutate(prune, monkeypatch):
 
 
 def test_acts_only_when_both_conditions_hold(prune, monkeypatch):
-    _set_disk(monkeypatch, used_pct=88.0)
+    """2026-08-12: this used `_set_disk`, which returns the SAME used_pct for
+    the before and after readings -- so it asserted `decision == "pruned"` on a
+    prune that reclaimed exactly zero bytes. It passed only because zero-reclaim
+    was treated as success; adding that branch turned it red, which is the
+    branch doing its job. Given a real before/after delta, as a successful prune
+    actually produces."""
+    total = 469 * GB
+    seq = [
+        {"mount_path": "/mnt/docker", "total_bytes": total, "used_bytes": int(total * 0.88),
+         "free_bytes": total - int(total * 0.88), "used_pct": 88.0},
+        {"mount_path": "/mnt/docker", "total_bytes": total, "used_bytes": int(total * 0.60),
+         "free_bytes": total - int(total * 0.60), "used_pct": 60.0},
+    ]
+    monkeypatch.setattr(va, "_builder_prune_disk_usage", lambda path: seq.pop(0))
     _set_cache(monkeypatch, available=True, reclaimable_bytes=140 * GB, total_bytes=271 * GB, entries=15037, active=0)
     out, _ = _run(prune, _payload(mode="execute"))
     r = _result(out)
@@ -264,3 +277,28 @@ def test_verb_is_registered_under_its_skill_name():
     from orion.core.verbs.registry import registry
 
     assert registry.get("skills.runtime.builder_prune.v1") is va.BuilderPruneVerb
+
+
+def test_a_prune_that_reclaims_nothing_is_not_recorded_as_success(prune, monkeypatch):
+    """The gate measures TOTAL reclaimable; the prune only removes cache older
+    than the cutoff. Those are different numbers, so the gate can pass while
+    the prune changes nothing -- and the identical condition then re-fires
+    every tick, forever. Real daemon load, zero outcome: the theater this
+    skill exists to prevent, arriving through the gate rather than around it.
+    """
+    total = 469 * GB
+    flat = {
+        "mount_path": "/mnt/docker", "total_bytes": total, "used_bytes": int(total * 0.88),
+        "free_bytes": total - int(total * 0.88), "used_pct": 88.0,
+    }
+    monkeypatch.setattr(va, "_builder_prune_disk_usage", lambda path: dict(flat))
+    _set_cache(monkeypatch, available=True, reclaimable_bytes=140 * GB,
+               total_bytes=271 * GB, entries=15037, active=0)
+
+    out, _ = _run(prune, _payload(mode="execute"))
+    r = _result(out)
+    assert prune._calls, "the prune really ran"
+    assert r["decision"] == "pruned_nothing", "must not claim it pruned"
+    assert r["bytes_reclaimed"] == 0
+    assert r["escalate"] is True, "reclaiming zero under real pressure needs a human"
+    assert r["reason"]

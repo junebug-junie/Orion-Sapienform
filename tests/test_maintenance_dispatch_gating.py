@@ -6,12 +6,22 @@ independently blocks — not the one proving it works.
 
 Three gates stand between a proposal and a real prune:
 
-  1. `mode.allow_mutating_dispatch`  (default FALSE)
+  1. `mode.allow_mutating_dispatch`  (ON since 2026-08-12, by explicit
+     operator decision -- see test_mutating_dispatch_is_on_by_explicit_
+     decision_and_stays_narrow for what keeps it narrow)
   2. the `maintenance_bounded` scope passing builder.py's allowlist
   3. the skill's own measured gate (disk >= 75% AND reclaimable >= 40GB),
      tested separately in services/orion-cortex-exec/tests/
 
 Any one saying no means nothing happens.
+
+A note on what this file got WRONG the first time, because it is the reason
+the last section exists. Every gate test here hand-builds `PolicyDecisionV1`,
+so none of them ever ran a `maintain` candidate through the real evaluator --
+and the real evaluator could not build one at all (`maintenance_bounded` was
+missing from two closed Literals), which would have permanently stalled the
+policy runtime. The suite was green throughout. Tests that construct the
+thing under test by hand do not prove the producer can construct it.
 """
 from __future__ import annotations
 
@@ -27,7 +37,13 @@ from orion.execution_dispatch.policy import (
     MAINTENANCE_SCOPE,
     CortexRouteTemplateV1,
     ExecutionDispatchPolicyV1,
+    load_execution_dispatch_policy,
 )
+from orion.policy.builder import build_policy_decision_frame
+from orion.policy.evaluator import evaluate_proposal_candidate
+from orion.policy.policy import load_substrate_policy
+from orion.policy.rules import is_read_only_candidate
+from orion.proposals.policy import load_proposal_policy
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 
@@ -221,17 +237,110 @@ def test_dispatch_dry_run_becomes_the_skills_run_mode(dry_run, expected):
     assert env["context"]["skill_args"]["mode"] == expected
 
 
-# --- shipped config must be the safe position --------------------------------
+# --- shipped config: the gate that is open, and the ones that are not --------
 
 
-def test_shipped_policy_has_mutating_dispatch_off():
+def test_mutating_dispatch_is_on_by_explicit_decision_and_stays_narrow():
+    """This shipped OFF and was flipped ON 2026-08-12 by Juniper's explicit
+    decision, after a live preview on this host (`would_act`, disk 77.594%,
+    142.5 GB reclaimable). The earlier version of this test asserted the OFF
+    position; it is deliberately inverted rather than deleted, so the flip is
+    a visible edit in history instead of a vanished guard.
+
+    What this now guards is that the open gate stays a narrow one: exactly one
+    route may mutate, and it is the build-cache prune.
+    """
     raw = yaml.safe_load(
         (REPO / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml").read_text()
     )
-    assert raw["mode"]["allow_mutating_dispatch"] is False, (
-        "this must ship OFF -- turning it on is Juniper's decision, not a merge's"
+    assert raw["mode"]["allow_mutating_dispatch"] is True
+
+    mutating = {
+        name: r
+        for name, r in raw["proposal_kind_to_cortex"].items()
+        if r["allowed_scope"] == MAINTENANCE_SCOPE
+    }
+    assert set(mutating) == {"maintain"}, (
+        "a second mutating route must be its own reviewed decision, not something "
+        "that inherits an already-open flag"
     )
-    assert raw["proposal_kind_to_cortex"]["maintain"]["allowed_scope"] == MAINTENANCE_SCOPE
+    assert mutating["maintain"]["cortex_verb"] == "skills.runtime.builder_prune.v1"
+
+
+def test_dispatch_mode_falls_back_to_dry_run_when_nothing_sets_it():
+    """Where the env-unset safe default ACTUALLY comes from.
+
+    An earlier version of this test asserted
+    `policy.mode.default_dispatch_mode == "dry_run"` and claimed in its
+    docstring that this protects a deployment which never sets
+    EXECUTION_DISPATCH_MODE. Review traced it: that value is dead code on this
+    path. `_resolve_dispatch_mode` returns `override_dispatch_mode` whenever it
+    is truthy, `worker.py` always passes `settings.execution_dispatch_mode`,
+    and that setting is a non-optional Literal defaulting to `dry_run` -- so
+    the override is never falsy and the policy value is never consulted. The
+    test pinned a number with no runtime effect while its docstring described
+    a mechanism that does not run.
+
+    So this now asserts the real thing: the resolver's fallback, and the
+    settings default that feeds it. If someone later makes
+    `execution_dispatch_mode` optional, the first assertion starts doing real
+    work instead of being decorative.
+    """
+    from orion.execution_dispatch.builder import _resolve_dispatch_mode
+
+    shipped = load_execution_dispatch_policy(
+        REPO / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"
+    )
+    assert _resolve_dispatch_mode(policy=shipped, override_dispatch_mode=None) == "dry_run"
+    assert _resolve_dispatch_mode(policy=shipped, override_dispatch_mode="") == "dry_run"
+
+    # Read the model's real default rather than grepping the source: a text
+    # match here was brittle enough to fail on the actual (correct) code.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_eds_settings",
+        REPO / "services" / "orion-execution-dispatch-runtime" / "app" / "settings.py",
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    field = mod.Settings.model_fields["execution_dispatch_mode"]
+    assert field.default == "dry_run", (
+        "this default, not the policy's, is what actually protects an "
+        "env-unset deployment"
+    )
+
+    compose = (
+        REPO / "services" / "orion-execution-dispatch-runtime" / "docker-compose.yml"
+    ).read_text()
+    assert "${EXECUTION_DISPATCH_MODE:-dry_run}" in compose
+
+
+def test_env_template_states_a_real_dispatch_mode_not_a_stale_one():
+    """`.env_example` is the operator contract, not a placeholder.
+
+    It drifted to `dry_run` while the live `.env` ran `dispatch_read_only`, so
+    `sync_local_env_from_example.py --force` would have quietly stood dispatch
+    down.
+
+    Deliberately NOT `assert modes == ["dispatch_read_only"]`, which is what
+    this first shipped as: that pins a literal on the emergency-stop path, so
+    an operator standing dispatch down via the template would fail CI. A gate
+    that fires when you use the emergency stop is a worse gate. What is
+    actually checkable here is that the key is present exactly once and names
+    a mode the runtime really accepts.
+    """
+    example = (
+        REPO / "services" / "orion-execution-dispatch-runtime" / ".env_example"
+    ).read_text()
+    modes = [
+        line.split("=", 1)[1].strip()
+        for line in example.splitlines()
+        if line.startswith("EXECUTION_DISPATCH_MODE=")
+    ]
+    assert len(modes) == 1, "exactly one uncommented value, or the contract is ambiguous"
+    assert modes[0] in ("dry_run", "prepare_only", "dispatch_read_only")
 
 
 def test_maintenance_is_the_only_non_read_only_scope():
@@ -270,4 +379,133 @@ def test_maintain_kind_rule_exists():
     raw = yaml.safe_load((REPO / "config" / "policy" / "substrate_policy.v1.yaml").read_text())
     rule = raw["proposal_kind_rules"]["maintain"]
     assert rule["allowed_scope"] == MAINTENANCE_SCOPE
-    assert rule["default_decision"] == "approved_read_only"
+    assert rule["default_decision"] == "approved_maintenance"
+    assert rule["mutating"] is True
+
+
+# --- the test whose absence let a blocker ship green -------------------------
+
+
+def _template_faithful_candidate() -> ProposalCandidateV1:
+    """A `maintain` candidate carrying the REAL template's values.
+
+    The rest of this module's fixtures deliberately use off-template values to
+    exercise gates. That is exactly how the blocker below got through: nothing
+    ran a candidate that looks like what the builder actually emits.
+    """
+    tpl = load_proposal_policy(
+        REPO / "config" / "proposals" / "proposal_policy.v1.yaml"
+    ).proposal_templates["prune_build_cache"]
+    return _candidate().model_copy(
+        update={
+            "risk_score": tpl.base_risk,
+            "reversibility_score": tpl.reversibility,
+            "required_policy_gate": tpl.required_policy_gate,
+            "proposed_effect": tpl.proposed_effect,
+        }
+    )
+
+
+def test_maintain_candidate_survives_policy_evaluation():
+    """THE regression test for the 2026-08-12 blocker.
+
+    `PolicyDecisionV1.allowed_scope`/`autonomy_tier` were closed Literals that
+    omitted `maintenance_bounded`, while substrate_policy.v1.yaml's `maintain`
+    rule set both to exactly that. So evaluating a real prune candidate raised
+    ValidationError -- and because that happens during decision CONSTRUCTION,
+    the policy runtime's only escape hatch (which covers a proposal frame that
+    fails to LOAD) did not apply. The frame would stay the FIFO head forever
+    and every downstream layer would go dark.
+
+    Every gating test in this file passed the whole time, because they all
+    hand-build PolicyDecisionV1 instead of going through the evaluator. Hence
+    this test goes through the real evaluator and the real frame builder with
+    the real configs -- no hand-built decision anywhere.
+    """
+    policy = load_substrate_policy(REPO / "config" / "policy" / "substrate_policy.v1.yaml")
+    candidate = _template_faithful_candidate()
+    _, proposal_frame = _frames(candidate)
+
+    decision = evaluate_proposal_candidate(
+        candidate=candidate, proposal_frame=proposal_frame, policy=policy
+    )
+    assert decision.allowed_scope == MAINTENANCE_SCOPE
+    assert decision.autonomy_tier == MAINTENANCE_SCOPE
+
+    frame = build_policy_decision_frame(proposal_frame=proposal_frame, policy=policy)
+    assert len(frame.decisions) == 1
+    assert not frame.warnings, "an unevaluable candidate must not appear here"
+
+    dispatch_policy = load_execution_dispatch_policy(
+        REPO / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"
+    )
+    assert decision.decision in dispatch_policy.allowed_policy_decisions, (
+        "the decision the evaluator really produces must be one the dispatch "
+        "policy really accepts -- the two config files are edited separately"
+    )
+
+
+def test_a_mutating_action_is_never_approved_as_read_only():
+    """The audit trail must not state something false as its grounds.
+
+    `is_read_only_candidate` classified by `proposed_effect`, and the prune
+    template's `preserve_stability` is in `read_only_effects` -- so a verb that
+    deletes ~142 GB was approved through the `read_only_low_risk` branch and
+    persisted a decision saying it reads nothing. That reason string was the
+    stated justification for Orion's first destructive-capable action.
+    """
+    policy = load_substrate_policy(REPO / "config" / "policy" / "substrate_policy.v1.yaml")
+    candidate = _template_faithful_candidate()
+    _, proposal_frame = _frames(candidate)
+
+    assert is_read_only_candidate(candidate, policy) is False
+
+    decision = evaluate_proposal_candidate(
+        candidate=candidate, proposal_frame=proposal_frame, policy=policy
+    )
+    assert decision.decision == "approved_maintenance"
+    assert "read_only_low_risk" not in decision.reasons
+    assert decision.policy_gate != "read_only"
+
+
+def test_read_only_kinds_are_unchanged_by_the_mutating_flag():
+    """The `mutating` check must not reclassify anything else."""
+    policy = load_substrate_policy(REPO / "config" / "policy" / "substrate_policy.v1.yaml")
+    for kind in ("observe", "inspect", "summarize"):
+        assert is_read_only_candidate(_candidate(kind=kind), policy) is True
+
+
+def test_one_unevaluable_candidate_cannot_wedge_the_whole_frame():
+    """Fault isolation, the deterministic gate.
+
+    The Literal fix cures this instance; this cures the class. A candidate the
+    evaluator cannot handle must degrade to a surfaced warning, never to an
+    exception that leaves the frame unbuildable -- because an unbuildable frame
+    is a permanent FIFO stall, not a dropped tick.
+    """
+    policy = load_substrate_policy(REPO / "config" / "policy" / "substrate_policy.v1.yaml")
+    good = _template_faithful_candidate()
+    bad = _candidate(kind="inspect").model_copy(update={"proposal_id": "p-bad"})
+    _, proposal_frame = _frames(good)
+    proposal_frame = proposal_frame.model_copy(update={"candidates": [bad, good]})
+
+    import orion.policy.builder as pb
+
+    real = pb.evaluate_proposal_candidate
+
+    def _boom(*, candidate, proposal_frame, policy):
+        if candidate.proposal_id == "p-bad":
+            raise ValueError("simulated kind-rule/schema mismatch")
+        return real(candidate=candidate, proposal_frame=proposal_frame, policy=policy)
+
+    pb.evaluate_proposal_candidate = _boom
+    try:
+        frame = build_policy_decision_frame(proposal_frame=proposal_frame, policy=policy)
+    finally:
+        pb.evaluate_proposal_candidate = real
+
+    assert len(frame.decisions) == 1, "the good candidate still gets a decision"
+    assert frame.decisions[0].proposal_id == good.proposal_id
+    assert any("candidate_unevaluable:p-bad" in w for w in frame.warnings), (
+        "the failure must be visible on the frame, not only in logs"
+    )

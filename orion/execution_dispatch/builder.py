@@ -175,9 +175,11 @@ def build_execution_dispatch_frame(
             continue
 
         # `maintenance_bounded` is the only non-read-only scope, and it passes
-        # here ONLY when the operator has explicitly opened
-        # mode.allow_mutating_dispatch. Default false, so this branch preserves
-        # exactly the previous behaviour until someone chooses otherwise.
+        # here ONLY when mode.allow_mutating_dispatch is open (ON since
+        # 2026-08-12, by explicit operator decision). This is THE gate: the
+        # decision record's own allowed_scope is never consulted here, so this
+        # route-table check is what actually decides whether a mutating verb
+        # can be dispatched at all.
         scope_allowed = route.allowed_scope in ("inspect_only", "summarize_only") or (
             route.allowed_scope == MAINTENANCE_SCOPE and policy.mode.allow_mutating_dispatch
         )
@@ -231,7 +233,16 @@ def build_execution_dispatch_frame(
             cortex_mode=route.cortex_mode,
             request_envelope=envelope,
             constraints={k: str(v) for k, v in envelope.get("constraints", {}).items()},
-            reasons=["approved_read_only_dispatch_v1"],
+            # 2026-08-12: was the hardcoded literal "approved_read_only_dispatch_v1"
+            # on EVERY dispatched candidate. Once a mutating route exists that
+            # string is simply false for it, and this is the reason recorded on
+            # the stored candidate -- the same class of false-audit-record
+            # defect as the decision literal one layer up.
+            reasons=[
+                "approved_maintenance_dispatch_v1"
+                if route.allowed_scope == MAINTENANCE_SCOPE
+                else "approved_read_only_dispatch_v1"
+            ],
             evidence_refs=list(decision.evidence_refs),
             risk_score=decision.risk_score,
             confidence_score=decision.confidence_score,

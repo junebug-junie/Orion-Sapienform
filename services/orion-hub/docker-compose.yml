@@ -30,6 +30,24 @@ services:
       - ../..:/mnt/scripts/Orion-Sapienform:ro
       - ${HOME}/.fcc:/root/.fcc:ro
       - ${HOME}/.claude.json:/root/.claude.json:ro
+      # Orion's disposable FCC sandbox checkout (see orion/fcc/sandbox_sync.py). A
+      # standalone git clone, not a worktree -- no shared .git object store with the
+      # primary checkout at /mnt/scripts/Orion-Sapienform. Mounted rw so Orion can
+      # commit/push from inside it; the only path back to the real repo is git push
+      # to a non-main branch, gated by GitHub branch protection (PR + review required,
+      # force-push disabled). Mounted at the same absolute host path for the same
+      # reason as the /mnt/scripts/Orion-Sapienform :ro mount above (network_mode:
+      # host means no path translation needed).
+      - ${HUB_ORION_FCC_SANDBOX_HOST:-/mnt/orion-fcc}:/mnt/orion-fcc
+      # Reuse the operator's existing host-level git/gh auth read-only, same pattern
+      # as the .claude.json/claude-binary mounts above -- no credentials are stored
+      # in this repo. `origin` is an SSH remote (git@github.com:...), so `git push`
+      # needs the SSH key + known_hosts; `gh` (PR creation) needs its own token dir.
+      # Same identity/keys this worktree's own git/gh operations already use.
+      - ${HOME}/.ssh:/root/.ssh:ro
+      - ${HOME}/.config/gh:/root/.config/gh:ro
+      - ${HOME}/.gitconfig:/root/.gitconfig:ro
+      - ${HUB_AGENT_GH_BIN_HOST:-${HOME}/.local/bin/gh}:/usr/local/bin/gh:ro
       - ${HUB_AGENT_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - /var/run/docker.sock:/var/run/docker.sock
       #- /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
@@ -93,7 +111,7 @@ services:
       - HUB_FCC_SERVER_URL=${HUB_FCC_SERVER_URL:-http://127.0.0.1:8082}
       - HUB_FCC_AUTH_TOKEN=${HUB_FCC_AUTH_TOKEN:-}
       - HUB_AGENT_CLAUDE_BIN=claude
-      - HUB_AGENT_CLAUDE_WORKSPACE=/mnt/scripts/Orion-Sapienform
+      - HUB_AGENT_CLAUDE_WORKSPACE=${HUB_AGENT_CLAUDE_WORKSPACE:-/mnt/orion-fcc/repo}
       - HUB_AGENT_CLAUDE_TIMEOUT_SEC=${HUB_AGENT_CLAUDE_TIMEOUT_SEC:-900}
       - HUB_AGENT_CLAUDE_MAX_CONCURRENT=${HUB_AGENT_CLAUDE_MAX_CONCURRENT:-1}
       - HUB_AGENT_CLAUDE_MCP_ENABLED=${HUB_AGENT_CLAUDE_MCP_ENABLED:-false}

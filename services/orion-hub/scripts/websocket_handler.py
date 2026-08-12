@@ -39,6 +39,7 @@ from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
 from scripts.fcc_claude_bridge import (
+    active_turns,
     build_harness_reasoning_trace,
     context_overflow_operator_hint,
     is_context_overflow_text,
@@ -46,6 +47,7 @@ from scripts.fcc_claude_bridge import (
 )
 from scripts.turn_cancel import cancel_in_flight_turn, run_awaitable_cancel_on_ws_disconnect
 from scripts.settings import settings
+from orion.fcc.sandbox_sync import sync_fcc_sandbox
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.voice_stt_errors import (
@@ -627,6 +629,39 @@ async def _run_agent_claude_turn_ws(
     )
 
 
+_fcc_sandbox_sync_lock = asyncio.Lock()
+
+
+async def _sync_fcc_sandbox_background(connection_id: str) -> None:
+    """Best-effort, serialized, turn-aware wrapper around ``sync_fcc_sandbox``.
+
+    Runs as a detached task from the WS connect handler (see its call site) so a
+    slow/unreachable origin can't delay connection readiness. Serialized via
+    ``_fcc_sandbox_sync_lock`` so two connects arriving close together can't race
+    each other's git invocations on the same shared sandbox path, and skipped
+    entirely while any FCC turn is in flight (``active_turns()``) so a reset/clean
+    never runs against a workspace a claude subprocess is still reading/writing.
+    """
+    if active_turns():
+        logger.info(
+            "fcc_sandbox_sync_skipped_turn_in_flight connection_id=%s", connection_id
+        )
+        return
+    async with _fcc_sandbox_sync_lock:
+        # Re-check after acquiring the lock: a turn may have started while queued.
+        if active_turns():
+            logger.info(
+                "fcc_sandbox_sync_skipped_turn_in_flight connection_id=%s", connection_id
+            )
+            return
+        sync_result = await asyncio.to_thread(
+            sync_fcc_sandbox, getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None)
+        )
+        logger.info(
+            "fcc_sandbox_sync connection_id=%s result=%s", connection_id, sync_result
+        )
+
+
 async def websocket_endpoint(websocket: WebSocket):
     """Orion capability: Hub chat entry.
 
@@ -659,6 +694,17 @@ async def websocket_endpoint(websocket: WebSocket):
 
     connection_id = str(uuid.uuid4())
     await websocket.send_json({"type": "connection_ready", "connection_id": connection_id})
+
+    # Refresh Orion's disposable FCC sandbox checkout (HUB_AGENT_CLAUDE_WORKSPACE) to
+    # current origin/main once per browser session, not per turn -- see
+    # orion/fcc/sandbox_sync.py for why this lives here and what it guards against.
+    # Fire-and-forget: runs in the background so a slow/unreachable origin can't delay
+    # this connection's readiness handshake, and _fcc_sandbox_sync_lock plus the
+    # active-turn check keep it from racing a concurrent connection's sync or
+    # resetting the workspace out from under a claude subprocess that's still running
+    # with cwd=workspace. Best-effort: a sync failure just degrades to "this turn sees
+    # a stale checkout", never breaks the connection.
+    asyncio.create_task(_sync_fcc_sandbox_background(connection_id))
 
     client_meta = {
         "user_agent": websocket.headers.get("user-agent"),

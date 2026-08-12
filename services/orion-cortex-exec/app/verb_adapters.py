@@ -2179,7 +2179,17 @@ def _discover_compose_services(repo_root: Path) -> Dict[str, Path]:
 
 
 def _docker_inspect_container_states(runner: SafeCommandRunner, container_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Map full container id -> {status, health_status, has_healthcheck}."""
+    """Map container id (both full 64-char and 12-char short form) -> {status, health_status, has_healthcheck}.
+
+    `docker container inspect` always returns the full 64-char ``Id`` regardless of what form of id
+    it was invoked with. Callers here (``_snapshot_containers``) look results up by the 12-char short
+    id `docker compose ps --format json` reports -- keying this dict only by the full id makes every
+    such lookup miss, silently returning ``{}`` and defaulting every container to
+    status="unknown"/health=None/has_healthcheck=False for the entire poll window. Confirmed live
+    2026-08-12: a container that built, started, and was actually running still reported "unknown"
+    for the full 60s poll and got classified "unhealthy". Register both key forms so a lookup by
+    either the short id compose reports or the full id docker inspect reports succeeds.
+    """
     out: Dict[str, Dict[str, Any]] = {}
     if not container_ids:
         return out
@@ -2201,11 +2211,14 @@ def _docker_inspect_container_states(runner: SafeCommandRunner, container_ids: L
         state = item.get("State") if isinstance(item.get("State"), dict) else {}
         cfg = item.get("Config") if isinstance(item.get("Config"), dict) else {}
         health = state.get("Health") if isinstance(state.get("Health"), dict) else None
-        out[cid] = {
+        entry = {
             "status": str(state.get("Status") or "unknown"),
             "health_status": str(health.get("Status")) if health else None,
             "has_healthcheck": bool(cfg.get("Healthcheck")),
         }
+        out[cid] = entry
+        if len(cid) > 12:
+            out[cid[:12]] = entry
     return out
 
 

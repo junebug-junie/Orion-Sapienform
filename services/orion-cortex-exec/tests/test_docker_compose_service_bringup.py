@@ -186,6 +186,35 @@ def test_running_no_healthcheck_classification(fake_repo, monkeypatch):
     assert data["containers"][0]["has_healthcheck"] is False
 
 
+def test_healthy_classification_with_realistic_short_vs_full_container_ids(fake_repo, monkeypatch):
+    """Real docker output shape, not the same-string-both-places shortcut the other classification
+    tests use: `docker compose ps --format json` reports a 12-char short id; `docker container
+    inspect` always returns the full 64-char Id regardless of what id form it was invoked with.
+    Confirmed live 2026-08-12: keying inspect results only by the full id made every poll-loop
+    lookup by the short id miss, silently defaulting every container to state="unknown" for the
+    entire poll window even though it had built, started, and was actually running -- misclassified
+    as unhealthy. This must resolve to healthy just like the same-id-everywhere test above.
+    """
+    short_id = "23292279c2e4"
+    full_id = (short_id + "d676c39adb044c785861e2b4abef94fd3e8707e4e3202e9bc6c" * 2)[:64]
+    assert len(full_id) == 64
+    ps_stdout = _container_row(short_id, "orion-widget-1") + "\n"
+    inspect_body = [
+        {
+            "Id": full_id,
+            "State": {"Status": "running", "Health": {"Status": "healthy"}},
+            "Config": {"Healthcheck": {"Test": ["CMD", "curl", "-f", "http://localhost/health"]}},
+        }
+    ]
+    monkeypatch.setattr(verb_adapters, "SafeCommandRunner", _runner_factory(ps_stdout=ps_stdout, inspect_body=inspect_body))
+    data, out = _run(_plan_request(skill_args={"service": "orion-widget"}))
+    assert data["status"] == "healthy"
+    assert out.ok is True
+    assert data["containers"][0]["state"] == "running"
+    assert data["containers"][0]["has_healthcheck"] is True
+    assert data["containers"][0]["health"] == "healthy"
+
+
 def test_unhealthy_classification(fake_repo, monkeypatch):
     ps_stdout = _container_row("abc123", "orion-widget-1") + "\n"
     inspect_body = [

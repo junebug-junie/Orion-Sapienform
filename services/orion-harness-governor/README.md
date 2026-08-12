@@ -59,6 +59,12 @@ Both are default-off, fail-open, and need no secrets:
 
 - `HARNESS_FCC_GITNEXUS_ENABLED=true` adds the GitNexus code-graph MCP (`gitnexus mcp`). Prerequisite: build the index against the host checkout. The reliable path is the governor image itself (it bakes the LadybugDB FTS extension; without it search silently degrades to "FTS indexes missing"):
 
+  The extension is baked in offline, from a host-local cache (`HARNESS_LBDB_EXT_CACHE_DIR`, default `/mnt/telemetry/duckdb-extensions/staging`) rather than downloaded from `extension.ladybugdb.com` at build time — that origin has had real sustained outages (Cloudflare 522) that block the build outright. Seed the cache once per host (idempotent; auto-refetches when `LBDB_EXT_VERSION`/`LBDB_EXT_PLATFORM` change):
+
+  ```bash
+  scripts/seed_lbdb_fts_extension_cache.sh
+  ```
+
   ```bash
   mkdir -p ~/.gitnexus   # BEFORE first compose up, or docker root-owns it
   docker run --rm \

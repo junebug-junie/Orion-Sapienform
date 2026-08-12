@@ -278,5 +278,22 @@ proposal_templates:
     required_policy_gate: read_only
     base_risk: 0.12
     reversibility: 1.0
+    # 2026-08-12: was UNSET, which defaults to 0.0 -- and this was the only
+    # template in the arena without one. Every other template carries 0.20-0.42
+    # (priority = clamp01(base_priority + confidence * max(match, urgency)),
+    # orion/proposals/scoring.py), so this one was scored with a 0.20-0.42
+    # handicap against every competitor and averaged rank 9.5 of a 10-slot
+    # slate. It stopped being proposed AT ALL at 21:52 (33/hr at 19:00 -> 0)
+    # while the arena kept producing 1,262 proposal frames/hour: it was not
+    # losing on merit, it was starting from zero.
+    #
+    # 0.34 is deliberately mid-pack, not top: it puts the measured live
+    # priority at ~0.76 (0.4163 avg observed with base 0.0), which reliably
+    # clears the 10-slot proposal slate but still sits BELOW the 0.79-0.83
+    # read-only leaders. That division of labour is intended -- base_priority
+    # gets it PROPOSED, the reserved maintenance slot in
+    # config/execution_dispatch/execution_dispatch_policy.v1.yaml gets it
+    # DISPATCHED. It is not meant to out-rank inspection head-on.
+    base_priority: 0.34
     dimensions:
       resource_pressure: 0.50

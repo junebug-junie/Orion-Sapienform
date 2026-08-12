@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
 import os
 import uuid
@@ -77,6 +78,7 @@ from app.models import (
     VisionEventSQL,
     ActionOutcomeSQL,
     DominanceStreakTickSQL,
+    DevEconomicsLedgerSQL,
     DriveAuditSQL,
     PhiRewardSQL,
     GrammarEventSQL,
@@ -101,6 +103,7 @@ from orion.journaler import (
 )
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.field_goal import DominanceStreakTickV1
+from orion.schemas.dev_economics import DevEconomicsLedgerV1
 
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
@@ -458,6 +461,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
     "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
+    "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
     "DriveAuditSQL": (DriveAuditSQL, DriveAuditV1),
     "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
     "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),
@@ -1854,6 +1858,13 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
     trace_id = payload.get("trace_id") or payload.get("traceId")
     if trace_id:
         extra_sql_fields["trace_id"] = str(trace_id)
+    if env.kind == "substrate.dev_economics_ledger.v1":
+        # model_mix is a real dict on the wire schema (DevEconomicsLedgerV1)
+        # but DevEconomicsLedgerSQL stores it as a JSON string column
+        # (model_mix_json) -- no generic dict->JSON column mapping exists in
+        # _write_row, so this is injected explicitly, same pattern as
+        # client_meta's own _json_sanitize handling just above.
+        extra_sql_fields["model_mix_json"] = json.dumps(payload.get("model_mix") or {})
     memory_status = payload.get("memory_status")
     if memory_status:
         extra_sql_fields["memory_status"] = memory_status

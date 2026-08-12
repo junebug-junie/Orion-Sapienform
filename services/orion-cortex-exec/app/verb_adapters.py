@@ -2731,3 +2731,264 @@ class NotifyChatMessageVerb(BaseVerb[PlanExecutionRequest, NotifyChatMessageOutp
             notification_id=str(accepted.notification_id) if accepted.notification_id else None,
         )
         return base, []
+
+
+# --- Autonomous Docker build-cache prune (2026-08-12) -------------------------
+#
+# Design doc: docs/superpowers/specs/2026-08-12-substrate-action-perception-design.md
+#
+# WHY THIS EXISTS. Every substrate action Orion had was a read-only LLM call
+# with no consequence -- `substrate.inspect` receives only the field-pressure
+# numbers that caused its own proposal, so it cannot learn anything that was not
+# already in its prompt. Measured this session, every candidate outcome signal
+# was dead: field_delta improved ~= worsened in every stratum, `surprise` was
+# identical across all concurrent actions on 95.26% of multi-dispatch ticks,
+# `success` was true 99.9% of the time.
+#
+# This action breaks that. It has a real trigger (disk_pressure /
+# disk_capacity_pressure are already live field channels), a real consequence
+# (disk usage changes), and -- the part that matters -- a real per-action
+# outcome: bytes reclaimed, measured before and after by this same verb. That is
+# a genuine (action -> outcome) pair with a continuous magnitude, which is the
+# thing the retroactive-attribution analysis went looking for and could not find.
+#
+# It runs here rather than behind a new bus service because orion-cortex-exec
+# already holds /var/run/docker.sock -- which is why the sibling docker skills
+# above already work. An earlier draft specced a SubstrateReadService for this
+# and named orion-biometrics as the responder; biometrics has no socket and
+# could never have answered. See the design doc's own correction.
+
+# Both thresholds, deliberately. This is the same lesson as `action_warrant`:
+# do not gate on an absolute level whose rest point is undefined.
+#
+#   At 80% used WITH real reclaimable cache -> pruning is highly effective.
+#   At 80% used with NO reclaimable cache   -> pruning accomplishes nothing and
+#                                              the real condition is a capacity
+#                                              problem that needs a human.
+#
+# The second condition is what makes this trigger actionable-only, and its
+# failure is itself the signal to escalate rather than act.
+#
+# Measured on this host 2026-08-12: /mnt/docker 469G total, 356G used (80%),
+# build cache 271GB across 15,037 entries with 0 active, ~140GB reclaimable,
+# observed growth ~2pp/day. 75% gives roughly 7 days of lead time before the
+# existing 90% disk_threshold_watchdog alert, and pruning from 75% lands near
+# 45%.
+BUILDER_PRUNE_MIN_DISK_PCT = 75.0
+BUILDER_PRUNE_MIN_RECLAIMABLE_BYTES = 40 * 1024**3
+
+# Keep cache used within this window. The whole reason a wholesale prune is
+# painful is that it forces every subsequent build to start from scratch
+# (~30 min across 82 containers on this host); entries unused for two weeks
+# accelerate nothing and are pure waste. Measured: 8,550 of 15,037 entries
+# unused >2 weeks.
+BUILDER_PRUNE_DEFAULT_UNTIL_HOURS = 336
+
+# NOTE ON WHAT IS GATED. The design doc phrases the second condition as "stale
+# cache >= 40GB". This implementation gates on Docker's own RECLAIMABLE figure
+# instead, because per-entry sizes from `docker buildx du --verbose` are not
+# trustworthy -- shared layers make most entries report 0B, verified by hand on
+# this host (entry counts bucket correctly by age; byte totals do not). The
+# `--filter until=` on the prune itself is what bounds *what* gets dropped.
+# Reclaimable is the honest measurable proxy; the deviation is recorded here
+# rather than silently papered over.
+
+
+def _builder_prune_disk_usage(path: str) -> Dict[str, Any]:
+    """Real filesystem usage for the Docker data-root. `shutil.disk_usage`
+    needs no Docker socket and cannot fail from daemon trouble, so a disk
+    reading survives even when the cache reading does not."""
+    import shutil
+
+    total, used, free = shutil.disk_usage(path)
+    return {
+        "mount_path": path,
+        "total_bytes": int(total),
+        "used_bytes": int(used),
+        "free_bytes": int(free),
+        "used_pct": round(100.0 * used / total, 3) if total else 0.0,
+    }
+
+
+async def _builder_prune_cache_stats(runner: "SafeCommandRunner") -> Dict[str, Any]:
+    """Build-cache totals from `docker system df --format json`.
+
+    Returns ``{"available": False, "reason": ...}`` when the daemon cannot be
+    reached. That is NOT the same as "no cache", and the caller must not treat
+    it as zero -- an unreadable cache means the gate cannot be evaluated, so the
+    action declines rather than guessing in either direction.
+    """
+    try:
+        proc = await asyncio.to_thread(
+            runner.run, ["docker", "system", "df", "--format", "{{json .}}"]
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure is "cannot evaluate"
+        return {"available": False, "reason": f"docker_system_df_failed:{exc}"}
+
+    stdout = getattr(proc, "stdout", "") or ""
+    if getattr(proc, "returncode", 1) != 0:
+        return {"available": False, "reason": f"docker_system_df_rc:{getattr(proc, 'returncode', None)}"}
+
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:  # noqa: BLE001 - skip non-JSON preamble rows
+            continue
+        if str(row.get("Type", "")).strip().lower() != "build cache":
+            continue
+        return {
+            "available": True,
+            "total_bytes": _parse_docker_size(row.get("Size")),
+            "reclaimable_bytes": _parse_docker_size(row.get("Reclaimable")),
+            "entries": int(row.get("TotalCount") or 0),
+            "active": int(row.get("Active") or 0),
+        }
+    return {"available": False, "reason": "build_cache_row_absent"}
+
+
+def _parse_docker_size(raw: Any) -> int:
+    """Parse Docker's human sizes ("271.3GB", "140.4GB (51%)") to bytes.
+
+    Docker appends a percentage to Reclaimable; it is stripped rather than
+    parsed, because the percentage is of a total we already have.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return 0
+    text = text.split("(")[0].strip()
+    units = {"B": 1, "kB": 1000, "KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4}
+    for suffix in ("TB", "GB", "MB", "kB", "KB", "B"):
+        if text.endswith(suffix):
+            try:
+                return int(float(text[: -len(suffix)].strip()) * units[suffix])
+            except ValueError:
+                return 0
+    try:
+        return int(float(text))
+    except ValueError:
+        return 0
+
+
+@verb("skills.runtime.builder_prune.v1")
+class BuilderPruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        # Same resolver as the sibling stopped-container prune: canonical
+        # run_mode with preview (no mutation) as the DEFAULT. A dry-run flag
+        # that does not actually gate the side effect is a failure mode this
+        # repo has shipped before, so the mutation below is guarded on
+        # run_mode == "execute" explicitly rather than on the absence of a
+        # preview flag.
+        run_mode, mode_resolution = _resolve_docker_prune_run_mode(skill_args)
+
+        data_root = str(skill_args.get("mount_path") or "/mnt/docker").strip() or "/mnt/docker"
+        until_hours = int(skill_args.get("until_hours") or BUILDER_PRUNE_DEFAULT_UNTIL_HOURS)
+        runner = SafeCommandRunner(
+            allowed_commands={"docker"}, timeout_sec=float(settings.skills_mesh_ops_timeout_sec)
+        )
+
+        before = _builder_prune_disk_usage(data_root)
+        cache = await _builder_prune_cache_stats(runner)
+
+        result: Dict[str, Any] = {
+            "node_name": settings.node_name,
+            "run_mode": run_mode,
+            "mode_resolution": mode_resolution,
+            "mount_path": data_root,
+            "until_hours": until_hours,
+            "thresholds": {
+                "min_disk_pct": BUILDER_PRUNE_MIN_DISK_PCT,
+                "min_reclaimable_bytes": BUILDER_PRUNE_MIN_RECLAIMABLE_BYTES,
+            },
+            "disk_before": before,
+            "cache_before": cache,
+        }
+
+        # --- gate: BOTH conditions, or decline and say which failed ---------
+        if not cache.get("available"):
+            result.update(
+                acted=False,
+                decision="declined_unmeasurable",
+                reason=cache.get("reason") or "cache_unreadable",
+                escalate=True,
+            )
+            return _skill_result_output(
+                skill_name="skills.runtime.builder_prune.v1",
+                result=result,
+                ok=False,
+                status="unavailable",
+            ), []
+
+        disk_ok = float(before["used_pct"]) >= BUILDER_PRUNE_MIN_DISK_PCT
+        cache_ok = int(cache["reclaimable_bytes"]) >= BUILDER_PRUNE_MIN_RECLAIMABLE_BYTES
+
+        if not disk_ok:
+            result.update(
+                acted=False,
+                decision="declined_no_pressure",
+                reason=f"used_pct {before['used_pct']} < {BUILDER_PRUNE_MIN_DISK_PCT}",
+                escalate=False,
+            )
+            return _skill_result_output(skill_name="skills.runtime.builder_prune.v1", result=result), []
+
+        if not cache_ok:
+            # Disk IS under pressure but there is nothing to reclaim. Pruning
+            # would change nothing; the real condition needs a human. This is
+            # the branch that keeps the action from becoming theater.
+            result.update(
+                acted=False,
+                decision="declined_nothing_to_reclaim",
+                reason=(
+                    f"reclaimable {cache['reclaimable_bytes']} < "
+                    f"{BUILDER_PRUNE_MIN_RECLAIMABLE_BYTES} at used_pct {before['used_pct']}"
+                ),
+                escalate=True,
+            )
+            return _skill_result_output(skill_name="skills.runtime.builder_prune.v1", result=result), []
+
+        if run_mode != "execute":
+            result.update(
+                acted=False,
+                decision="would_act",
+                reason="preview_mode",
+                escalate=False,
+            )
+            return _skill_result_output(skill_name="skills.runtime.builder_prune.v1", result=result), []
+
+        # --- act -------------------------------------------------------------
+        try:
+            proc = await asyncio.to_thread(
+                runner.run,
+                ["docker", "builder", "prune", "--filter", f"until={until_hours}h", "-f"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            result.update(acted=False, decision="failed", reason=str(exc), escalate=True)
+            return _skill_result_output(
+                skill_name="skills.runtime.builder_prune.v1",
+                result=result,
+                ok=False,
+                status="error",
+                error={"message": str(exc)},
+            ), []
+
+        after = _builder_prune_disk_usage(data_root)
+        reclaimed = max(0, int(before["used_bytes"]) - int(after["used_bytes"]))
+        result.update(
+            acted=True,
+            decision="pruned",
+            escalate=False,
+            disk_after=after,
+            # THE OUTCOME. Continuous, per-action, externally verifiable, and
+            # measured by the actor itself rather than inferred from a field
+            # delta shared across concurrent actions.
+            bytes_reclaimed=reclaimed,
+            pct_reclaimed=round(float(before["used_pct"]) - float(after["used_pct"]), 3),
+            prune_stdout_tail=(getattr(proc, "stdout", "") or "")[-500:],
+        )
+        return _skill_result_output(skill_name="skills.runtime.builder_prune.v1", result=result), []

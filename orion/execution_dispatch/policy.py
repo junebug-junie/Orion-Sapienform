@@ -27,6 +27,13 @@ class CortexRouteTemplateV1(BaseModel):
     cortex_verb: str
     cortex_mode: str = "brain"
     allowed_scope: str
+    # 2026-08-12: per-route RPC budget, None = use the runtime's global
+    # EXECUTION_DISPATCH_RPC_TIMEOUT_SEC. Exists because the two needs are
+    # genuinely opposed: a real build-cache prune can run for minutes, while
+    # this consumer is single-threaded, so a global ceiling large enough for
+    # the prune would let ONE hung inspect stall all dispatch for that long.
+    # Only routes that actually need a longer budget get one.
+    rpc_timeout_sec: float | None = None
 
 
 class DispatchLimitsV1(BaseModel):

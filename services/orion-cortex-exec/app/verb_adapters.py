@@ -2925,8 +2925,12 @@ class BuilderPruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         default_mount = str(settings.builder_prune_mount_path or "/hostfs/docker")
         data_root = str(skill_args.get("mount_path") or default_mount).strip() or default_mount
         until_hours = int(skill_args.get("until_hours") or BUILDER_PRUNE_DEFAULT_UNTIL_HOURS)
+        # 2026-08-12: was skills_mesh_ops_timeout_sec -- 12 SECONDS live. A
+        # real prune over 142 GB would have been killed ~12s in, mid-delete,
+        # every time. See BUILDER_PRUNE_TIMEOUT_SEC in settings.py for why
+        # this needs its own key instead of raising the shared mesh-ops one.
         runner = SafeCommandRunner(
-            allowed_commands={"docker"}, timeout_sec=float(settings.skills_mesh_ops_timeout_sec)
+            allowed_commands={"docker"}, timeout_sec=float(settings.builder_prune_timeout_sec)
         )
 
         before = _builder_prune_disk_usage(data_root)

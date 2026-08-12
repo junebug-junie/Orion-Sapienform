@@ -509,3 +509,68 @@ def test_one_unevaluable_candidate_cannot_wedge_the_whole_frame():
     assert any("candidate_unevaluable:p-bad" in w for w in frame.warnings), (
         "the failure must be visible on the frame, not only in logs"
     )
+
+
+# --- the timeout ladder ------------------------------------------------------
+
+
+def test_the_three_timeout_budgets_are_ordered_innermost_first():
+    """A real prune is minutes of work and THREE nested budgets must clear it.
+
+    The binding constraint was never the RPC timeout this arc first flagged.
+    The prune's docker subprocess was inheriting SKILLS_MESH_OPS_TIMEOUT_SEC,
+    which is 12 SECONDS live -- so a 142 GB prune would have been SIGKILLed
+    ~12s in, mid-delete, on every attempt.
+
+    They must stay strictly increasing outward, or a real overrun surfaces as
+    an opaque outer timeout instead of being attributed to the docker command
+    that actually ran long.
+    """
+    import importlib.util
+
+    verb_yaml = yaml.safe_load(
+        (
+            REPO / "orion" / "cognition" / "verbs" / "skills.runtime.builder_prune.v1.yaml"
+        ).read_text()
+    )
+    step_budget = float(verb_yaml["timeout_ms"]) / 1000.0
+
+    spec = importlib.util.spec_from_file_location(
+        "_cx_settings", REPO / "services" / "orion-cortex-exec" / "app" / "settings.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    subprocess_budget = float(mod.Settings.model_fields["builder_prune_timeout_sec"].default)
+    mesh_ops_budget = float(mod.Settings.model_fields["skills_mesh_ops_timeout_sec"].default)
+
+    route = load_execution_dispatch_policy(
+        REPO / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"
+    ).proposal_kind_to_cortex["maintain"]
+    rpc_budget = route.rpc_timeout_sec
+    assert rpc_budget is not None, "the maintenance route needs its own RPC budget"
+
+    assert subprocess_budget < step_budget < rpc_budget, (
+        f"budgets must increase outward: subprocess={subprocess_budget} "
+        f"step={step_budget} rpc={rpc_budget}"
+    )
+    assert subprocess_budget >= 600, "a real prune needs minutes, not seconds"
+    assert subprocess_budget > mesh_ops_budget, (
+        "the prune must NOT share the seconds-scale mesh-ops budget it used to inherit"
+    )
+
+
+def test_read_only_routes_do_not_get_a_long_rpc_budget():
+    """The whole point of a PER-ROUTE timeout.
+
+    This consumer is single-threaded, so a global ceiling big enough for the
+    prune would let one hung inspect stall all dispatch for 12 minutes. Only
+    the route that needs a long budget may carry one.
+    """
+    policy = load_execution_dispatch_policy(
+        REPO / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"
+    )
+    with_budget = {
+        name for name, r in policy.proposal_kind_to_cortex.items() if r.rpc_timeout_sec is not None
+    }
+    assert with_budget == {"maintain"}

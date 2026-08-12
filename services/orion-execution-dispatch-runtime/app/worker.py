@@ -796,12 +796,23 @@ class ExecutionDispatchRuntimeWorker:
 
         context = dict(candidate.request_envelope.get("context") or {})
 
+        # 2026-08-12: per-route RPC budget. None -> the client's global
+        # timeout, which is what every read-only route still uses. Only the
+        # maintenance route sets one, because a real prune runs for minutes
+        # while this consumer is single-threaded -- raising the global instead
+        # would let one hung inspect stall all dispatch for the same duration.
+        # Looked up by dispatch_kind rather than threaded through the frame so
+        # this stays a pure config change for any future long route.
+        route = self._policy.proposal_kind_to_cortex.get(candidate.dispatch_kind or "")
+        route_timeout = route.rpc_timeout_sec if route is not None else None
+
         try:
             payload = await client.dispatch(
                 verb=candidate.cortex_verb or "",
                 mode=candidate.cortex_mode or "brain",
                 context=context,
                 dispatch_id=candidate.dispatch_id,
+                timeout_sec=route_timeout,
             )
         except Exception as exc:
             logger.warning(

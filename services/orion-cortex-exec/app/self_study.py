@@ -24,7 +24,9 @@ from orion.schemas.rdf import RdfWriteRequest
 from orion.structural_mass.graph_delta import graph_structural_delta
 from orion.structural_mass.snapshot_history import (
     GraphSnapshotStats,
+    append_snapshot,
     graph_snapshot_stats_from_text,
+    read_snapshots,
 )
 from orion.schemas.self_study import (
     SelfConceptEvidenceRefV1,
@@ -116,15 +118,21 @@ _GRAPHIFY_GRAPH_JSON_RELPATH = "graphify-out/graph.json"
 _GRAPHIFY_GRAPH_REPORT_RELPATH = "graphify-out/GRAPH_REPORT.md"
 _BUILT_AT_COMMIT_RE = re.compile(r'"built_at_commit"\s*:\s*"([^"]*)"')
 
-# In-process-only "last observed graphify snapshot" for structural_mass delta
-# concepts -- deliberately mirrors orion-cocreation-signals' graph_delta_loop()
-# caller-owned, in-process state (services/orion-cocreation-signals/app/
-# producers/graph_delta.py, "State (the last-seen GraphSnapshotStats) is
-# caller-owned, kept in-process only"). cortex-exec has no writable/persistent
-# store for this and reusing that JSONL-append pattern would require widening
-# this container's mount to read-write for one small log file, which that
-# same producer's docstring explicitly rejects doing for itself. See the
-# PR report's idempotency-tension note for what this trades away.
+# Fast-path, in-process cache of "last observed graphify snapshot" for
+# structural_mass delta concepts -- always consulted first since it's free.
+# On a cold process (this global is still None) _structural_delta_concepts()
+# falls back to the durable history log below, if one is configured, instead
+# of unconditionally treating every fresh container as "first observation
+# ever." Originally this was documented as in-process-only, deliberately
+# mirroring orion-cocreation-signals' graph_delta_loop() (services/
+# orion-cocreation-signals/app/producers/graph_delta.py) on the grounds that
+# cortex-exec's only repo mount is read-only and widening it for one log file
+# wasn't worth it -- that reasoning still holds and is NOT being revisited
+# here. What changed instead: a small, dedicated, writable volume (mirroring
+# the self_study_enrichment_data volume's own pattern one constant below) now
+# backs a JSONL history log via snapshot_history.append_snapshot/
+# read_snapshots, so durability comes from a new volume rather than from
+# widening the existing read-only repo mount.
 _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA: GraphSnapshotStats | None = None
 
 # Guards read-then-write access to the global above, and backs the
@@ -154,6 +162,14 @@ SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR = os.getenv(
     "SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR",
     "/mnt/self_study_enrichment_data/cache/self_study_enrichment",
 )
+
+# Durable JSONL history log for structural_mass deltas, on a small writable
+# volume owned solely by this service (self_study_structural_mass_data --
+# see services/orion-cortex-exec/docker-compose.yml). Unset (None) means "no
+# durable store configured" -- e.g. local dev without the volume -- and
+# _structural_delta_concepts() falls back to today's in-process-only
+# behavior (cold start every process restart), not a crash.
+SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH = os.getenv("SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH")
 
 _ENV_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
@@ -695,7 +711,13 @@ def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConc
     repeat calls against the SAME snapshot -- notably
     validate_phase2a_induction()'s own internal re-induction check -- return
     the identical result instead of re-observing the "last seen" state a
-    second time and silently diverging from the first call."""
+    second time and silently diverging from the first call.
+
+    "Cold start" here means the in-process global has no observation AND
+    (if SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH is configured) the durable
+    history log is also empty -- a fresh process with a populated history
+    log recovers its last real observation from disk instead of always
+    reporting nothing until its second call."""
     global _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA
 
     with _STRUCTURAL_DELTA_STATE_LOCK:
@@ -725,7 +747,46 @@ def _structural_delta_concepts(snapshot: SelfSnapshotV1) -> list[SelfInducedConc
             return []
 
         prior_stats = _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA
+        if prior_stats is None and SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH:
+            # This process has never observed a snapshot yet -- before
+            # treating that as a true cold start, check whether an earlier
+            # process already recorded one on the durable volume. A wrong
+            # or corrupt history file must not crash concept induction, so
+            # this is best-effort: same narrowed exception set as the
+            # graph-read above, PLUS KeyError (review finding) -- unlike
+            # graph_snapshot_stats_from_text() above, read_snapshots() goes
+            # through GraphSnapshotStats.from_json_dict(), which does direct
+            # dict indexing (data["node_count"], etc.) rather than .get(...),
+            # so a syntactically-valid-but-incomplete JSONL line raises
+            # KeyError, not ValueError/TypeError -- that must stay
+            # non-fatal here same as any other corrupt-history shape.
+            try:
+                history = read_snapshots(SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                logger.warning("self_study_structural_mass_history_unreadable error=%s", exc)
+                history = []
+            if history:
+                prior_stats = history[-1]
+
         _LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA = current_stats
+
+        # Persist whenever this is a genuinely new observation -- either the
+        # very first one ever recorded (prior_stats is None, true cold
+        # start: no in-process state AND nothing durable to recover) or a
+        # real transition to a different commit_sha, regardless of whether
+        # that prior came from memory or from durable recovery above. Only a
+        # recovered prior at the SAME commit_sha is skipped -- re-appending
+        # an identical current_stats on every repeat call at that commit
+        # would defeat the append-only log's purpose (unbounded growth with
+        # zero new information).
+        should_persist = SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH and (
+            prior_stats is None or prior_stats.commit_sha != current_stats.commit_sha
+        )
+        if should_persist:
+            try:
+                append_snapshot(SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH, current_stats)
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning("self_study_structural_mass_history_append_failed error=%s", exc)
 
         result: list[SelfInducedConceptV1] = []
         if prior_stats is not None and prior_stats.commit_sha != current_stats.commit_sha:

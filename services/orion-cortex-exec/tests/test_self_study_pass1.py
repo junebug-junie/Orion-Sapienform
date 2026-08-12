@@ -227,6 +227,10 @@ def _reset_structural_delta_state(monkeypatch):
     # result behind for later tests to (wrongly) hit.
     monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", None)
     monkeypatch.setattr(self_study, "_STRUCTURAL_DELTA_RESULT_CACHE", OrderedDict())
+    # Explicit, not just "happens to be unset": a developer's shell exporting
+    # this real env var would otherwise silently change these tests' cold-
+    # start semantics (durable recovery would kick in unexpectedly).
+    monkeypatch.setattr(self_study, "SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH", None)
 
 
 def test_structural_delta_concepts_cold_start_produces_nothing(monkeypatch):
@@ -276,6 +280,79 @@ def test_structural_delta_concepts_repeat_call_is_memoized_not_reobserved(monkey
     result = self_study._structural_delta_concepts(snapshot)
 
     assert result is sentinel
+
+
+def test_structural_delta_concepts_persists_first_observation_to_durable_history(monkeypatch, tmp_path):
+    # No prior anywhere (in-process or on disk) -- this is the true
+    # cold-start baseline. It should still write ONE entry to the durable
+    # log so a *future* process restart has something to recover.
+    _reset_structural_delta_state(monkeypatch)
+    history_path = tmp_path / "structural_mass_history.jsonl"
+    monkeypatch.setattr(self_study, "SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH", str(history_path))
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    result = self_study._structural_delta_concepts(snapshot)
+
+    assert result == []  # no prior to diff against -- still no fabricated concept
+    history = self_study.read_snapshots(history_path)
+    assert len(history) == 1
+    assert history[0].commit_sha == self_study._LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA.commit_sha
+
+
+def test_structural_delta_concepts_recovers_prior_from_durable_history_across_process_restart(monkeypatch, tmp_path):
+    # Simulates a container restart: the in-process global is None (fresh
+    # process) but an earlier process already recorded a real prior on the
+    # durable volume. That recovered prior -- not "no prior at all" -- must
+    # be what this call diffs against.
+    _reset_structural_delta_state(monkeypatch)
+    history_path = tmp_path / "structural_mass_history.jsonl"
+    stale_prior = self_study.GraphSnapshotStats(
+        node_count=1,
+        edge_count=1,
+        community_count=1,
+        god_nodes=(),
+        commit_sha="0" * 40,
+        backfilled=True,
+    )
+    self_study.append_snapshot(history_path, stale_prior)
+    monkeypatch.setattr(self_study, "SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH", str(history_path))
+    snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+
+    result = self_study._structural_delta_concepts(snapshot)
+
+    # The real on-disk graph is certainly not identical to a 1-node/1-edge
+    # stub at a fake all-zero SHA, so recovering `stale_prior` as the prior
+    # must produce a real, non-trivial delta -- not silently stay empty the
+    # way a true cold start would.
+    assert len(result) == 1
+    assert result[0].concept_kind == "structural_mass"
+    # The real current commit differs from the seeded stale one, so this is
+    # a genuinely new observation and gets appended alongside it.
+    history = self_study.read_snapshots(history_path)
+    assert len(history) == 2
+    assert history[0].commit_sha == stale_prior.commit_sha
+
+
+def test_structural_delta_concepts_does_not_reappend_unchanged_recovered_prior(monkeypatch, tmp_path):
+    # First call establishes the real baseline and persists it.
+    _reset_structural_delta_state(monkeypatch)
+    history_path = tmp_path / "structural_mass_history.jsonl"
+    monkeypatch.setattr(self_study, "SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH", str(history_path))
+    first_snapshot = self_study.build_self_snapshot(observed_at="2026-03-21T00:00:00+00:00")
+    self_study._structural_delta_concepts(first_snapshot)
+    assert len(self_study.read_snapshots(history_path)) == 1
+
+    # Simulate a second process restart at the SAME commit: in-process state
+    # resets to None again, but the durable log already has an entry for
+    # this exact commit_sha. Recovering it must not re-append a duplicate.
+    monkeypatch.setattr(self_study, "_LAST_GRAPH_SNAPSHOT_STATS_FOR_STRUCTURAL_DELTA", None)
+    monkeypatch.setattr(self_study, "_STRUCTURAL_DELTA_RESULT_CACHE", OrderedDict())
+    second_snapshot = self_study.build_self_snapshot(observed_at="2026-03-22T00:00:00+00:00")
+
+    result = self_study._structural_delta_concepts(second_snapshot)
+
+    assert result == []  # same commit as the recovered prior -- no real delta
+    assert len(self_study.read_snapshots(history_path)) == 1  # not duplicated
 
 
 def test_semantic_enrichment_concepts_missing_cache_dir_returns_empty(monkeypatch, tmp_path):

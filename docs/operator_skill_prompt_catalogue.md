@@ -143,8 +143,18 @@ skill in this file.
   skill (server-side, `_discover_compose_services()`) and the Hub dropdown (client-side, populated from the
   existing `GET /api/service-logs/services` endpoint) walk `services/*/docker-compose.yml` on every call. A new
   service directory with a compose file becomes selectable without any catalogue/doc edit.
-- Requires `SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP=true` on cortex-exec (default `false` -- bigger blast radius than
-  the two mesh-utilities scripts above: arbitrary per-service build/up, not a fixed allow-listed script).
+- Requires `SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP=true` on cortex-exec (live/`.env_example` intended default `true` --
+  bigger blast radius than the two mesh-utilities scripts above: arbitrary per-service build/up, not a fixed
+  allow-listed script; set `false` on a node that shouldn't allow container bring-up at all).
+- **Requires an `orion/cognition/verbs/<verb name>.yaml` activation manifest entry, separate from the `@verb(...)`
+  code registration.** `orion.cognition.verb_activation.is_active()` treats a verb as unknown (inactive on every
+  node) unless it has a matching yaml there or is explicitly allow-listed in `active.yaml` -- this is the actual
+  cause of a real live incident where this skill returned "inactive on node" despite being fully implemented and
+  policy-enabled. Once the yaml exists, the verb is active for **any** `is_active()`-gated dispatch path, not only
+  the Hub's dedicated `/api/debug/container-bringup` endpoint -- e.g. the general chat/voice router/supervisor
+  paths that resolve a verb by name. It stays bounded by `SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP`, the service
+  denylist, and the service-name regex in `verb_adapters.py`, but that reachability is broader than "the Hub debug
+  button," and mutates Docker stacks -- worth an explicit mental note, not just a UI-level assumption.
 - Requires the read-only host repo bind-mount (`ORION_HOST_REPO_ROOT` in `services/orion-cortex-exec/docker-compose.yml` /
   `.env_example`) to be live. Without it, `docker compose build` run from inside the container would build from the
   image's stale, build-time-baked repo snapshot instead of the current host code. This mount is **read-only** by

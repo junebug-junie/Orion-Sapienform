@@ -30,6 +30,22 @@ proposal_kind_rules:
     default_decision: approved_read_only
     max_autonomy_tier: read_only
 
+  # 2026-08-12: the first MUTATING kind. Without a rule here `kind_rule()`
+  # returns None and the evaluator defaults to `deferred`, so this had to exist
+  # for the route to be reachable at all -- found by a gating test, not by
+  # reading the config.
+  #
+  # `approved_read_only` is the decision because that is the only member of
+  # execution_dispatch_policy.v1.yaml's `allowed_policy_decisions`; the name is
+  # about which DISPATCH LANE the decision takes, not a claim that the action
+  # reads nothing. What actually keeps the action from firing is
+  # mode.allow_mutating_dispatch (default false), the maintenance_bounded scope
+  # gate, and the skill's own measured disk/reclaimable check.
+  maintain:
+    allowed_scope: maintenance_bounded
+    default_decision: approved_read_only
+    max_autonomy_tier: maintenance_bounded
+
   stabilize:
     allowed_scope: prepare_only
     default_decision: requires_operator_review

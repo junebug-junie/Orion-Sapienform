@@ -233,3 +233,50 @@ proposal_templates:
     # itself (target_binding above), not a pressure dimension -- it was never
     # this template's actual reason to exist.
     dimensions: {}
+
+  # 2026-08-12: the first MUTATING template. Everything above proposes reading
+  # or describing; this proposes doing something to the host.
+  #
+  # Triggered on resource_pressure, which is deliberately APPROXIMATE -- after
+  # the 2026-08-11 thermal unmap that dimension is a max() over five live
+  # capability channels (cpu/memory/gpu/disk/stream_backlog), so it rises on
+  # disk pressure but also on the other four. That imprecision is fine here and
+  # is the intended division of labour: the proposal only has to make the
+  # action *worth considering*, and the skill's own gate does the precise
+  # decision (disk >= 75% AND reclaimable >= 40GB, measured at execution time
+  # from the real filesystem and the real Docker daemon). A proposal that
+  # reaches a host with nothing to reclaim is DECLINED by the skill and
+  # recorded as `declined_nothing_to_reclaim` with escalate=true, which is a
+  # more useful outcome than never proposing.
+  #
+  # base_risk 0.12, and the number is load-bearing rather than decorative.
+  #
+  # It was 0.35 in the first draft, chosen to "signal that this is mutating and
+  # serious". That was a category error: `risk` here is not a label, it is a
+  # number the substrate policy's thresholds ACT on. At 0.35 it exceeds
+  # config/policy/substrate_policy.v1.yaml's `require_review_above_risk: 0.20`,
+  # so the evaluator returns `requires_operator_review` -- which is in
+  # execution_dispatch_policy.v1.yaml's `blocked_policy_decisions`. The risk
+  # value chosen to convey seriousness would have made the action permanently
+  # undispatchable, silently. Caught by a gating test.
+  #
+  # 0.12 is under `approve_read_only_max_risk: 0.15` and reflects what this
+  # action actually costs when wrong: Docker build cache is regenerable by
+  # definition, so the worst case is one slow rebuild. reversibility 1.0 is
+  # literal, not aspirational.
+  #
+  # The safety does not come from the risk number. It comes from three
+  # independent gates: mode.allow_mutating_dispatch (ships FALSE), the
+  # maintenance_bounded scope check, and the skill's own measured gate
+  # (disk >= 75% AND reclaimable >= 40GB, read from the real filesystem and the
+  # real Docker daemon at execution time).
+  prune_build_cache:
+    kind: maintain
+    target_kind: system
+    target_id: host:docker_build_cache
+    proposed_effect: preserve_stability
+    required_policy_gate: read_only
+    base_risk: 0.12
+    reversibility: 1.0
+    dimensions:
+      resource_pressure: 0.50

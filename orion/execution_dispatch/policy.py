@@ -13,6 +13,13 @@ class DispatchModeConfigV1(BaseModel):
     allow_mutating_dispatch: bool = False
 
 
+# The single non-read-only route scope. Lives here, not in builder.py, because
+# BOTH builder and envelopes need it and builder already imports envelopes --
+# putting it in builder makes that a cycle. (Learned the same day, from
+# orion/field/action_warrant.py's own circular import; see PR #1581.)
+MAINTENANCE_SCOPE = "maintenance_bounded"
+
+
 class CortexRouteTemplateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -19,6 +19,13 @@ class ProposalCandidateV1(BaseModel):
         "defer",
         "request_policy_review",
         "prepare_action",
+        # 2026-08-12: the first MUTATING proposal kind. Everything above is
+        # read-only by construction. `maintain` exists so a bounded, reversible
+        # housekeeping action (today: Docker build-cache pruning) can be
+        # proposed at all -- it is still gated three independent ways before
+        # anything happens. See orion/execution_dispatch/builder.py's scope
+        # check and config/execution_dispatch/execution_dispatch_policy.v1.yaml.
+        "maintain",
     ]
 
     title: str

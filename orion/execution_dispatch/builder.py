@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from orion.execution_dispatch.envelopes import build_cortex_request_envelope
-from orion.execution_dispatch.policy import CortexRouteTemplateV1, ExecutionDispatchPolicyV1
+from orion.execution_dispatch.policy import (
+    MAINTENANCE_SCOPE,
+    CortexRouteTemplateV1,
+    ExecutionDispatchPolicyV1,
+)
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
@@ -77,8 +81,14 @@ def build_execution_dispatch_frame(
     dispatched: list[ExecutionDispatchCandidateV1] = []
     warnings: list[str] = list(policy_frame.warnings)
 
-    if policy.mode.allow_mutating_dispatch:
-        warnings.append("mutating_dispatch_disabled_in_v1")
+    # 2026-08-12: this flag used to append a warning and do nothing else --
+    # set it and mutating dispatch stayed off, silently. That is the inverse of
+    # CLAUDE.md 0A's "kill means kill": a switch that reports success while
+    # changing nothing. It now actually gates the `maintenance_bounded` scope
+    # below, and its OFF state is announced rather than its ON state, because
+    # off is the state that silently blocks something an operator asked for.
+    if not policy.mode.allow_mutating_dispatch:
+        warnings.append("mutating_dispatch_disabled_by_policy")
 
     dispatch_status_default, dispatch_mode_candidate = _candidate_status_for_mode(dispatch_mode)
     max_candidates = policy.limits.max_dispatch_candidates
@@ -164,7 +174,14 @@ def build_execution_dispatch_frame(
             )
             continue
 
-        if route.allowed_scope not in ("inspect_only", "summarize_only"):
+        # `maintenance_bounded` is the only non-read-only scope, and it passes
+        # here ONLY when the operator has explicitly opened
+        # mode.allow_mutating_dispatch. Default false, so this branch preserves
+        # exactly the previous behaviour until someone chooses otherwise.
+        scope_allowed = route.allowed_scope in ("inspect_only", "summarize_only") or (
+            route.allowed_scope == MAINTENANCE_SCOPE and policy.mode.allow_mutating_dispatch
+        )
+        if not scope_allowed:
             blocked.append(
                 make_blocked(
                     decision,

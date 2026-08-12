@@ -37,6 +37,25 @@ proposal_kind_to_cortex:
     cortex_mode: brain
     allowed_scope: inspect_only
 
+  # 2026-08-12: the first MUTATING route. `maintenance_bounded` is the only
+  # non-read-only scope, and it is inert unless mode.allow_mutating_dispatch is
+  # true -- which it is not by default. cortex_verb names a skills.* verb
+  # directly, which works because CortexRouteTemplateV1.cortex_verb is an
+  # unconstrained str and executor.py's local-adapter branch resolves on that
+  # prefix; the skill then runs in orion-cortex-exec, which already holds the
+  # docker socket.
+  #
+  # Three independent gates stand between a proposal and a real prune:
+  #   1. mode.allow_mutating_dispatch (below, default false)
+  #   2. this scope passing builder.py's allowlist
+  #   3. the skill's OWN measured gate: disk >= 75% AND reclaimable >= 40GB
+  # Any one of them says no and nothing happens.
+  maintain:
+    dispatch_kind: maintain
+    cortex_verb: skills.runtime.builder_prune.v1
+    cortex_mode: brain
+    allowed_scope: maintenance_bounded
+
 hard_blocks:
   - approved_for_execution
   - prepare_action

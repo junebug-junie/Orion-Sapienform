@@ -66,6 +66,54 @@ fi
 # terminate the whole file), and can never fail or block the commit itself.
 (
     [ -f "$REPO_ROOT/scripts/self_study_enrichment_hook.py" ] || exit 0
-    command -v python3 >/dev/null 2>&1 || exit 0
-    cd "$REPO_ROOT" && python3 "$REPO_ROOT/scripts/self_study_enrichment_hook.py" >/dev/null 2>&1
+
+    # Needs `redis` importable (for the one-shot bus publish in
+    # publish_enrichment_request()) -- not guaranteed on whatever bare
+    # `python3` resolves to on PATH at commit time. Confirmed live
+    # 2026-08-12: this host's own default (non-interactive-shell) PATH
+    # resolves python3 to a system interpreter with no redis installed,
+    # so the script's own `import redis` silently failed on every real
+    # commit -- swallowed by main()'s outer except, same invisible-failure
+    # shape as the sys.path/orion import bug fixed in the same patch.
+    #
+    # Probe both REPO_ROOT (this commit's checkout) AND the shared/primary
+    # checkout derived from --git-common-dir. This repo's own convention
+    # (AGENTS.md sec 2) is committing from a LINKED WORKTREE, not the
+    # primary checkout -- confirmed live that a REPO_ROOT-only probe finds
+    # NOTHING there: .venv/orion_dev are untracked/gitignored, so a linked
+    # worktree only has the tracked files, never its own copy of either
+    # venv. Without the shared-root fallback this "fix" would silently
+    # keep failing for the dominant real case (worktree commits) while
+    # only working for the rare primary-checkout commit. Mirrors graphify's
+    # own post-commit fragment's linked-worktree detection (_GFY_COMMONDIR
+    # above) for how to resolve the shared root from any worktree.
+    _SSEH_COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
+    _SSEH_SHARED_ROOT=""
+    if [ -n "$_SSEH_COMMON_DIR" ]; then
+        _SSEH_SHARED_ROOT=$(cd "$(dirname "$_SSEH_COMMON_DIR")" 2>/dev/null && pwd)
+    fi
+
+    _SSEH_CANDIDATES="$REPO_ROOT/.venv/bin/python3 $REPO_ROOT/orion_dev/bin/python3"
+    if [ -n "$_SSEH_SHARED_ROOT" ]; then
+        # Guarded (review nit, 2026-08-12): without this, an empty
+        # _SSEH_SHARED_ROOT would still build "/.venv/bin/python3" (a
+        # filesystem-root-level path) -- harmless in practice since that
+        # never exists, but inconsistent with the Python-side
+        # _common_checkout_root(), which explicitly returns None here and
+        # lets callers skip the extra candidates outright.
+        _SSEH_CANDIDATES="$_SSEH_CANDIDATES $_SSEH_SHARED_ROOT/.venv/bin/python3 $_SSEH_SHARED_ROOT/orion_dev/bin/python3"
+    fi
+
+    _SSEH_PYTHON=""
+    for _sseh_cand in $_SSEH_CANDIDATES; do
+        if [ -x "$_sseh_cand" ] && "$_sseh_cand" -c "import redis" >/dev/null 2>&1; then
+            _SSEH_PYTHON="$_sseh_cand"
+            break
+        fi
+    done
+    if [ -z "$_SSEH_PYTHON" ]; then
+        _SSEH_PYTHON=$(command -v python3 2>/dev/null) || exit 0
+    fi
+
+    cd "$REPO_ROOT" && "$_SSEH_PYTHON" "$REPO_ROOT/scripts/self_study_enrichment_hook.py" >/dev/null 2>&1
 ) || true

@@ -37,10 +37,42 @@ Design notes (see CLAUDE.md sec 4 -- deterministic vs latent split):
 
 from __future__ import annotations
 
-import json
 import os
-import subprocess
 import sys
+
+# ROOT CAUSE (confirmed live 2026-08-12, after an extended investigation --
+# see _import_redis()'s docstring for the dead ends ruled out first): this
+# file's own directory (scripts/) contains a real, tracked, unrelated
+# package literally named `platform` (scripts/platform/ -- a "platform
+# audits" toolkit: audit_spine.py, audit_antipatterns.py, etc. -- nothing
+# to do with the stdlib module of the same name). Python auto-inserts a
+# script's own directory at sys.path[0] for a `python3 <path>` invocation
+# -- exactly how the git hook invokes this script -- and at that priority
+# it wins over stdlib: ANY `import platform` in this process from this
+# point on (including transitively -- stdlib uuid.py's own `import
+# platform`, needed by redis's asyncio submodule) silently resolves to
+# scripts/platform/__init__.py instead of the real module, so the first
+# real stdlib platform.* attribute access (uuid.py's `platform.system()`)
+# raises AttributeError, not the ImportError a shadow normally produces.
+# Reproduced with a literal one-line `import platform` script placed in
+# this exact directory -- and identically from the shared checkout's
+# scripts/ too, so this is a genuine, pre-existing, repo-wide hazard for
+# ANY script run directly as `python3 scripts/<name>.py`, not specific to
+# this file or this patch.
+#
+# Fix: deprioritize (not remove -- something else in this process, e.g. a
+# test harness that imports this file as a module, may still want
+# scripts/ importable) this file's own directory by moving it to the END
+# of sys.path, before any import that could pull in stdlib `platform`.
+# Must run before the `import json`/`subprocess`/`uuid`/etc. below.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR in sys.path:
+    sys.path.remove(_THIS_DIR)
+    sys.path.append(_THIS_DIR)
+
+import json
+import subprocess
+import uuid  # noqa: F401 -- eager pre-import; see _import_redis()'s docstring
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -142,8 +174,110 @@ def _rate_limit_ok(repo_root: Path) -> bool:
     return True
 
 
+def _common_checkout_root(repo_root: Path) -> Path | None:
+    """Resolves the shared/primary checkout root from a linked worktree via
+    `git rev-parse --git-common-dir`. Untracked, checkout-local files
+    (.env, .venv, orion_dev) live ONLY in the primary checkout -- they are
+    never copied into linked worktrees, since a worktree only gets tracked
+    files. This repo's own convention (AGENTS.md sec 2) is committing from
+    a linked worktree, not the primary checkout, so `repo_root` alone
+    (worktree-scoped) essentially never has a `.env` to find (confirmed
+    live 2026-08-12: same root cause as the .venv/orion_dev interpreter
+    probe in scripts/git_hooks/post-commit needing the identical fallback).
+
+    For a primary checkout (not a linked worktree), this resolves to the
+    same path as repo_root itself -- harmless for callers that just check
+    both, since checking one location twice is a no-op, not a bug. Returns
+    None only when the git command itself fails or reports no common dir;
+    callers should treat that as "no additional location", not an error."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    common_dir_str = result.stdout.strip()
+    if not common_dir_str:
+        return None
+    common_dir = Path(common_dir_str)
+    if not common_dir.is_absolute():
+        common_dir = repo_root / common_dir
+    return common_dir.resolve().parent
+
+
+def _read_bus_url_from_env_file(repo_root: Path) -> str:
+    """Fallback ORION_BUS_URL lookup for when this hook runs from a shell
+    context that never exported it -- confirmed live 2026-08-12: a normal
+    git-commit shell (interactive or a coding agent's Bash tool) has NO
+    ORION_BUS_URL in its process environment on this host, because the
+    canonical value lives only in `.env`, which is a docker-compose
+    `--env-file` input, not something shells source. Without this fallback
+    the hook always hit "ORION_BUS_URL unset, skipping publish" -- reached
+    correctly, not a crash, but a silent no-op on every real commit
+    regardless of whether the qualifying-path/rate-limit/import logic
+    upstream was working (it was, once fixed).
+
+    Checks `.env` at repo_root first, then at the shared/primary checkout
+    root (see _common_checkout_root) -- a linked-worktree commit's
+    repo_root essentially never has its own `.env` (untracked, not copied
+    into worktrees), so without the second location this fallback would
+    still no-op for the dominant real case. Deterministic KEY=VALUE parse,
+    no new dependency (CLAUDE.md sec 10). Returns "" (not raising) when no
+    candidate file/key is found, so callers keep their existing
+    "unset -> skip" behavior unchanged when the value genuinely isn't
+    configured anywhere."""
+    for candidate_root in (repo_root, _common_checkout_root(repo_root)):
+        if candidate_root is None:
+            continue
+        env_path = candidate_root / ".env"
+        if not env_path.exists():
+            continue
+        try:
+            text = env_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == "ORION_BUS_URL":
+                return value.strip().strip('"').strip("'")
+    return ""
+
+
+def _import_redis():
+    """`import redis`, with a defense-in-depth self-heal.
+
+    The real root cause (confirmed live 2026-08-12) of `redis`'s own
+    `redis.asyncio.lock` -> `import uuid` -> stdlib uuid.py's
+    `platform.system()` raising `AttributeError: module 'platform' has no
+    attribute 'system'` is the scripts/platform/ shadow documented at the
+    top of this file -- already fixed above by deprioritizing this file's
+    own directory on sys.path before any import that could reach stdlib
+    `platform`. This function's try/except is defense-in-depth on top of
+    that fix, in case some other invocation context reintroduces a
+    `platform`/`uuid` shadow this file doesn't control (e.g. a caller that
+    re-inserts scripts/ at high priority after this module has already
+    loaded): drop the (poisoned) `platform`/`uuid`/`redis` entries from
+    sys.modules and retry once, forcing a clean from-scratch import."""
+    try:
+        import redis
+    except AttributeError:
+        for _name in ("platform", "uuid", "redis"):
+            sys.modules.pop(_name, None)
+        import redis
+    return redis
+
+
 def publish_enrichment_request(payload: dict, *, bus_url: str, channel: str) -> None:
-    import redis  # local import: only needed on the publish path
+    redis = _import_redis()
 
     client = redis.Redis.from_url(bus_url, socket_timeout=3.0, socket_connect_timeout=3.0)
     try:
@@ -174,6 +308,26 @@ def main() -> int:
     qualifying = qualifying_paths(paths)
     if not qualifying:
         return 0
+
+    # This script is invoked by the git hook as `python3 <this file's path>`
+    # (see scripts/git_hooks/post-commit), not `python3 -c ...` or `-m` --
+    # under that invocation form Python puts the SCRIPT's own directory
+    # (scripts/) on sys.path[0], not the repo root and not the caller's cwd
+    # (even though the hook does `cd "$REPO_ROOT"` first). `orion` lives at
+    # the repo root, so the import below silently raised ModuleNotFoundError
+    # on every real invocation, caught by __main__'s outer `except Exception`
+    # and printed as a "non-fatal error" -- functionally invisible, since the
+    # hook already always exits 0. Confirmed live 2026-08-12: zero enrichment
+    # requests were ever published despite the hook fragment being installed
+    # and the qualifying-path/rate-limit logic above all working correctly.
+    # No existing test caught this because none exercised main() as a real
+    # subprocess the way the git hook does (see test_main_real_subprocess_
+    # invocation_imports_correctly in the test file). repo_root (computed
+    # above via `git rev-parse --show-toplevel`) is the correct fix target
+    # regardless of where this script physically lives -- worktree, primary
+    # checkout, or a future relocation.
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
     # Compute the delta BEFORE consuming a rate-limit slot: git_churn_delta
     # can raise (corrupted/shallow clone, prev_sha no longer reachable after
@@ -206,7 +360,7 @@ def main() -> int:
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    bus_url = os.environ.get("ORION_BUS_URL", "")
+    bus_url = os.environ.get("ORION_BUS_URL", "") or _read_bus_url_from_env_file(repo_root)
     channel = os.environ.get(
         "CHANNEL_SELF_STUDY_ENRICHMENT_REQUESTED", "orion:self_study:enrichment:requested"
     )

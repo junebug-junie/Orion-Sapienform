@@ -66,6 +66,27 @@ services:
       # self_study.py (currently /mnt/self_study_enrichment_data) -- if they
       # diverge, the cache silently reads as "unreachable" with no error.
       - self_study_enrichment_data:/mnt/self_study_enrichment_data:ro
+      # Small, writable volume (2026-08) so
+      # _structural_delta_concepts()'s "last observed graphify snapshot" can
+      # survive a container restart instead of resetting to cold start every
+      # time. Deliberately NOT the read-only host repo mount above -- that
+      # one stays read-only on purpose (see its own comment). This is a
+      # dedicated volume for exactly this purpose, same pattern as
+      # self_study_enrichment_data, and owned solely by this SERVICE (not
+      # external/cross-service, unlike the enrichment volume above).
+      # "Solely by this service" does NOT mean solely by one container,
+      # though (review finding, 2026-08-12): cortex-exec-chat/-spark/
+      # -background below all `extends: cortex-exec` with no volumes
+      # override, so all 4 containers share this same volume and can call
+      # the self_concept_induce/reflect verbs concurrently. self_study.py's
+      # append-only JSONL history log has no cross-process file lock, so a
+      # race there can produce a handful of duplicate entries around a
+      # restart or commit transition -- harmless (the log is read as
+      # "take the last entry", and a duplicate entry is byte-identical to
+      # the one before it), not corruption. Scoping this to a single lane
+      # was considered and rejected as more invasive than the problem
+      # warrants; documenting the real multi-writer shape here instead.
+      - self_study_structural_mass_data:/mnt/self_study_structural_mass_data
 
     # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
     privileged: true
@@ -171,6 +192,7 @@ services:
       # see .env_example for the 2026-08-12 rename note).
       ORION_REPO_ROOT: ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}
       SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR: ${SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR:-/mnt/self_study_enrichment_data/cache/self_study_enrichment}
+      SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH: ${SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH:-/mnt/self_study_structural_mass_data/structural_mass_history.jsonl}
       CONCEPT_PROFILE_REPOSITORY_BACKEND: ${CONCEPT_PROFILE_REPOSITORY_BACKEND:-local}
       CONCEPT_PROFILE_GRAPHDB_ENDPOINT: ${CONCEPT_PROFILE_GRAPHDB_ENDPOINT:-}
       CONCEPT_PROFILE_GRAPHDB_URL: ${CONCEPT_PROFILE_GRAPHDB_URL:-}
@@ -286,3 +308,8 @@ volumes:
   self_study_enrichment_data:
     name: ${PROJECT}-self-study-enrichment-data
     external: true
+  # Owned by THIS service (not external) -- nothing else reads or writes it.
+  # `docker compose up` creates it automatically on first bring-up; no
+  # separate provisioning step needed.
+  self_study_structural_mass_data:
+    name: ${PROJECT}-self-study-structural-mass-data

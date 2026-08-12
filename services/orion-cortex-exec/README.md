@@ -92,6 +92,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
 | `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
 | `ORION_ACTION_OUTCOME_DB_URL` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Shared SQL store for autonomous action outcomes. When set, chat-stance `load_action_outcomes` reads the `action_outcomes` table (written by sql-writer from `action.outcome.emit.v1`); when blank it falls back to the per-container JSON file `ORION_ACTION_OUTCOME_STORE_PATH`. |
+| `SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR` | `/mnt/self_study_enrichment_data/cache/self_study_enrichment` | Read-only path to `orion-self-study-enrichment`'s cache volume, mounted here so `self_study.py`'s `_semantic_enrichment_concepts()` can turn cached LLM enrichment summaries into `semantic_enrichment` Layer-2 concepts. |
+| `SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH` | `/mnt/self_study_structural_mass_data/structural_mass_history.jsonl` | Writable path (dedicated volume, owned solely by this service) to a JSONL history log of graphify structural snapshots, so `self_study.py`'s `_structural_delta_concepts()` recovers its "last observed" snapshot after a container restart instead of resetting to cold start every time. Unset falls back to in-process-only tracking (no crash). |
 
 ### AutonomyStateV2 on chat stance (default off)
 

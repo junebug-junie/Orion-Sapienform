@@ -134,6 +134,14 @@ desktop.ini
 
 .orion_dev/
 
+# scripts/self_study_enrichment_hook.py's own local git-hook state (last-
+# enriched SHA, daily publish-rate-limit counter) -- per-checkout/worktree
+# operational state, not repo content. Same category as .orion_dev/ and
+# .orion-smoke-logs/ just below; was missing here (found live 2026-08-12
+# while verifying the enrichment trigger loop end-to-end -- nothing had
+# ever created this dir before then, so the gap went unnoticed).
+.orion/
+
 # === ML training runs (checkpoints/logs; too large for GitHub) ===
 runs/
 **/runs/**/*.pt

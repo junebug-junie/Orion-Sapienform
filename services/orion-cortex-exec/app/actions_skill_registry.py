@@ -22,6 +22,32 @@ class ActionSkillManifestEntry(BaseModel):
     output_schema: Dict[str, Any] = Field(default_factory=dict)
 
 
+# 2026-08-13: ONE list, used by all three classifiers below.
+#
+# Before this, each of `_family_for_skill`, `_risk_for_skill`, and the
+# `requires_execute_opt_in` expression carried its own hand-written substring
+# check, and a skill had to be added to all three independently. builder_prune
+# was added to none of them on arrival and spent its early life advertising
+# itself as read_only + idempotent + observational with
+# requires_confirmation=False -- the one skill in this repo that deletes host
+# data. That was found and patched three separate times on 2026-08-12.
+#
+# A new host-mutating skill now goes in exactly one place. Adding it here
+# cannot half-register it.
+HOST_MUTATING_SKILL_MARKERS = (
+    "docker_prune_stopped_containers",
+    "builder_prune",
+    "image_prune",
+    "up_all_services",
+    "refresh_service_envs",
+)
+
+
+def _is_host_mutating_skill(skill_id: str) -> bool:
+    sid = str(skill_id or "").lower()
+    return any(marker in sid for marker in HOST_MUTATING_SKILL_MARKERS)
+
+
 def _family_for_skill(skill_id: str) -> str:
     sid = str(skill_id or "").lower()
     if "tailscale_mesh_status" in sid:
@@ -43,7 +69,7 @@ def _family_for_skill(skill_id: str) -> str:
     # family when preferred_skill_families is empty. It was not auto-selected
     # only because it sorted to index 1 rather than 0. That is an alphabetical
     # accident, not a gate.
-    if "builder_prune" in sid:
+    if _is_host_mutating_skill(sid):
         return "runtime_housekeeping"
     if "nvidia_smi" in sid or "gpu.nvidia" in sid:
         return "gpu_presence"
@@ -74,9 +100,7 @@ def _risk_for_skill(skill_id: str) -> tuple[str, bool, bool]:
     # misclassification also propagated to orion/normalizers/agent_trace.py,
     # which decides "did this have an effect" from risk_class alone -- so the
     # traces normalized as non-side-effecting too.
-    if "docker_prune_stopped_containers" in sid or "builder_prune" in sid:
-        return "high_impact", False, False
-    if "up_all_services" in sid or "refresh_service_envs" in sid:
+    if _is_host_mutating_skill(sid):
         return "high_impact", False, False
     if "notify" in sid:
         return "benign_actuation", False, False
@@ -112,13 +136,7 @@ class ActionsSkillRegistry:
                 idempotent=idempotent,
                 requires_confirmation=(risk_class == "high_impact"),
                 requires_execute_opt_in=(
-                    "docker_prune_stopped_containers" in skill_id.lower()
-                    # 2026-08-12: added. This skill deletes host data; it
-                    # belongs on the same footing as the sibling prune above,
-                    # not on the read-only default it was silently taking.
-                    or "builder_prune" in skill_id.lower()
-                    or "up_all_services" in skill_id.lower()
-                    or "refresh_service_envs" in skill_id.lower()
+                    _is_host_mutating_skill(skill_id)
                 ),
                 observational=read_only,
                 risk_class=risk_class,

@@ -17,26 +17,36 @@ def mcp_allowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
     return [f"mcp__{name}" for name in mcp_servers]
 
 
-def mcp_disallowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
-    """Block Bash fallbacks that fail in headless Hub (gh not installed).
-
-    NOT a general destructive-action denylist -- this only ever blocks this
-    one specific `gh` fallback pattern. Under root's bypassPermissions mode
-    (see claude_permission_argv()) there is no other tool-level gate on
-    Bash; do not read this list as a safety boundary for that.
-    """
-    blocked: List[str] = []
-    if "github" in mcp_servers:
-        blocked.append("Bash(gh *)")
-    return blocked
-
-
 def extend_mcp_argv(
     argv: List[str],
     mcp_config_path: Path,
     *,
     extra_allowed_tools: Sequence[str] | None = None,
 ) -> None:
+    """Emit ``--mcp-config`` + per-server ``--allowedTools`` for a FCC turn.
+
+    Deliberately emits NO ``--disallowedTools``. Until 2026-08-13 this
+    appended ``Bash(gh *)`` whenever the github MCP server was present, on
+    the premise that ``gh`` was not installed in the headless Hub container
+    so the model would waste turns on a CLI fallback that could not work.
+    That premise is dead: ``gh`` 2.63.2 is bind-mounted into BOTH containers
+    that spawn ``claude -p`` (``/home/athena/.local/bin/gh`` ->
+    ``/usr/local/bin/gh``) and authenticated as ``junebug-junie`` with
+    ``repo`` scope via ``/root/.config/gh``.
+
+    Keeping the deny actively broke Orion's only route to opening a PR, and
+    a deny rule beats ``--permission-mode bypassPermissions`` -- so ``gh``
+    was the single tool Orion could not run while holding otherwise
+    unrestricted Bash. The github MCP server is rendered read-only
+    (``GITHUB_READ_ONLY=1``, see orion/fcc/mcp_config.py), so it exposes no
+    ``create_pull_request``; with ``Bash(gh *)`` denied as well, BOTH
+    PR-creation paths were closed. Confirmed live 2026-08-13 from the
+    running governor's own rendered argv.
+
+    Do not re-add a ``gh`` deny to steer tool choice. If ``gh`` should ever
+    be blocked again, verify first that it is actually absent or unusable
+    in every container listed above, and say so here.
+    """
     data = json.loads(mcp_config_path.read_text(encoding="utf-8"))
     servers = data.get("mcpServers") or {}
     patterns = mcp_allowed_tool_patterns(servers)
@@ -46,10 +56,6 @@ def extend_mcp_argv(
         argv.append("--allowedTools")
         argv.extend(patterns)
         argv.extend(extra)
-    disallowed = mcp_disallowed_tool_patterns(servers)
-    if disallowed:
-        argv.append("--disallowedTools")
-        argv.extend(disallowed)
 
 
 def claude_permission_argv(*, auto_approve: bool) -> List[str]:

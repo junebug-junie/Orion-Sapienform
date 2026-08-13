@@ -116,3 +116,29 @@ def test_innerstate_signal_requires_shadow_reason_when_shadow() -> None:
 
 def test_main_exits_zero_against_real_repo() -> None:
     assert gate.main([]) == 0
+
+
+def test_attention_schemas_are_registered_with_live_consumers() -> None:
+    """Regression for the gate found RED on main 2026-08-13.
+
+    AttentionBroadcastProjectionV1 and AttentionSelfModelV1 were declared in
+    orion/schemas/registry.py with no entry here. Nothing ran this gate, so it
+    rotted unnoticed until the metric-lineage work wired check-* into CI.
+
+    Both entries carry REAL consumers, verified live: the equilibrium metacog
+    gates poll AttentionSelfModelV1 with both trigger flags true in
+    .env_example, and orion-thought reads the broadcast projection.
+    """
+    from orion.inner_state_registry import REGISTRY
+
+    by_id = {s.signal_id: s for s in REGISTRY}
+
+    broadcast = by_id["attention_broadcast_projection.v1"]
+    assert broadcast.producer_service == "orion-substrate-runtime"
+    assert broadcast.cognition_consumers, "must not regress to zero consumers"
+
+    self_model = by_id["attention_self_model.v1"]
+    assert self_model.producer_service == "orion-substrate-runtime"
+    assert any(
+        "metacog_gate" in c for c in self_model.cognition_consumers
+    ), "the equilibrium metacog gates are the live consumers"

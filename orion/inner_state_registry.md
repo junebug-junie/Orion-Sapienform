@@ -44,8 +44,16 @@ of four composition statuses:
   GPU contention winner, 81.7%/18.3% split over a 295-tick window -- see
   `docs/notes/2026-07-12-phase4-attention-provenance-crosscheck.md`).
 - `SHADOW` -- real, live, deliberately **not** composed, with a required,
-  stated reason (`shadow_reason`). No current entry holds this status: the
-  model case was phi's `valence` heuristic, justified on the claim that no
+  stated reason (`shadow_reason`). **Two entries hold this status as of
+  2026-08-13**: `attention_broadcast_projection.v1` and
+  `attention_self_model.v1`, both added when
+  `scripts/check_inner_state_registry.py` was found RED on main. Their
+  `shadow_reason` is structural rather than a judgement call --
+  `composed_into_self_state` became *unreachable* for anything registered
+  after 2026-07-22, when `orion-self-state-runtime` was deleted (PR #1266);
+  `substrate_self_state` has held 0 rows since. Both have real live cognition
+  consumers, so `REHEARSAL` ("no cognition consumer") would also be wrong.
+  The historical model case was phi's `valence` heuristic, justified on the claim that no
   trained latent correlates with anything hedonic-adjacent -- checked
   directly against the active encoder's real `probes.json` on 2026-07-13
   and found **false** (`agency_readiness` is a real encoder input feature,

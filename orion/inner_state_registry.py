@@ -38,6 +38,8 @@ from pydantic import BaseModel
 
 from orion.autonomy.models import AutonomyStateV2
 from orion.core.schemas.drives import DriveStateV1
+from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateV1
@@ -122,18 +124,99 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         ),
     ),
     InnerStateSignal(
-        signal_id="self_state.v1",
-        schema=SelfStateV1,
-        producer_service="orion-self-state-runtime",
+        signal_id="attention_broadcast_projection.v1",
+        schema=AttentionBroadcastProjectionV1,
+        producer_service="orion-substrate-runtime",
         cadence=Cadence.PER_TICK,
-        composition_status=CompositionStatus.COMPOSED,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not composed into self_state.v1, and cannot be: that producer "
+            "(orion-self-state-runtime) was removed in PR #1266, so "
+            "'composed_into_self_state' is no longer a reachable status for "
+            "any signal registered after 2026-07-23. This is SHADOW in the "
+            "literal sense only -- it has real, live cognition consumers "
+            "listed below."
+        ),
         cognition_consumers=(
-            "services.orion-spark-introspector.app.inner_state:build_inner_state_features",
+            "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
+            "services.orion-thought.app.chain:run_reverie_chain",
         ),
         notes=(
-            "The mood. ~12 dimension scores + confidence + reasons, composed "
-            "from field_state.v1 + field_attention_frame.v1 (partially -- see "
-            "that entry). Feeds phi's InnerStateFeaturesV1 and the L7 ladder."
+            "Rung 3: the selected coalition of the latest workspace "
+            "competition, re-broadcast as one queryable projection. TWO "
+            "tables, not one: substrate_attention_broadcast_projection is a "
+            "SINGLETON upsert row (PK on projection_id, 1 row), while "
+            "substrate_attention_broadcast_log carries real per-tick history "
+            "written by save_attention_broadcast_history() "
+            "(services/orion-substrate-runtime/app/store.py) from "
+            "_attention_broadcast_tick(). Counted live 2026-08-13: log 6359 "
+            "rows, projection 1 row. An earlier draft of this entry said "
+            "'no per-tick history for this lane' -- copied from the schema "
+            "docstring, disproven by the row counts, and corrected before "
+            "merge. Replay of this lane IS possible; use the log table. "
+            "Added to this registry 2026-08-13 after "
+            "scripts/check_inner_state_registry.py was found RED on main: the "
+            "schema had existed in orion/schemas/registry.py with no entry "
+            "here, and nothing ran the gate that would have caught it."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="attention_self_model.v1",
+        schema=AttentionSelfModelV1,
+        producer_service="orion-substrate-runtime",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Same as attention_broadcast_projection.v1: self_state.v1's "
+            "producer no longer exists, so composition into it is not a "
+            "reachable status. Real live consumers are listed below."
+        ),
+        cognition_consumers=(
+            "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+            "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger",
+        ),
+        notes=(
+            "AST/HOT instrumentation -- an inspectable model OF Orion's own "
+            "current attention (Attention Schema Theory / Higher-Order "
+            "Theory). Persisted to substrate_attention_self_model. "
+            "CORRECTION 2026-08-13: the schema's own docstring "
+            "(orion/schemas/attention_self_model.py) still claims it is 'not "
+            "consumed by any live decision path -- that wiring is explicitly "
+            "future work (Phase 3+)'. That is STALE. "
+            "orion-equilibrium-service's generative_metacog_poll_loop reads it "
+            "via AttentionSelfModelReader.fetch_recent_samples and feeds both "
+            "metacog gates above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
+            "and EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE are both true in "
+            ".env_example, so the path is live by default, not future work."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="self_state.v1",
+        schema=SelfStateV1,
+        producer_service="orion-self-state-runtime (DELETED 2026-07-22, PR #1266)",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
+        notes=(
+            "RETIRED, corrected 2026-08-13. This entry previously read "
+            "COMPOSED with producer orion-self-state-runtime and consumer "
+            "services.orion-spark-introspector.app.inner_state:"
+            "build_inner_state_features, and claimed it 'feeds phi's "
+            "InnerStateFeaturesV1 and the L7 ladder'. All three are false: "
+            "services/orion-self-state-runtime was deleted (PR #1266, "
+            "71b6fac57, merged 2026-07-22), services/orion-spark-introspector "
+            "was deleted in the 2026-07-28 spark-introspector retirement, and "
+            "substrate_self_state holds 0 rows (counted live 2026-08-13). "
+            "REHEARSAL is accurate now -- no cognition consumer, because both "
+            "ends are gone. The schema itself is kept only because other "
+            "modules still import SelfStateV1 for typing. "
+            "This was found because adding two SHADOW entries above made the "
+            "registry visibly self-contradictory: their shadow_reason states "
+            "that composed_into_self_state is unreachable, while this entry "
+            "thirty lines down still claimed to be exactly that. "
+            "Retiring the dead consumer here also clears one of the three "
+            "known_missing_consumers carried in "
+            "config/metrics/orphan_baseline.json."
         ),
     ),
     InnerStateSignal(

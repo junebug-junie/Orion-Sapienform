@@ -35,9 +35,16 @@ class AttentionSelfModelV1(BaseModel):
       carries Lamme's `voluntary_override` (top-down goal bias flipping the
       workspace-competition winner — `orion/substrate/attention/top_down.py`).
       Persisted as a *singleton* upsert row in
-      `substrate_attention_broadcast_projection` (confirmed live 2026-07-18:
-      PK on `projection_id`, exactly one row at any time) — there is no
-      per-tick history for this lane, only the most recent snapshot.
+      `substrate_attention_broadcast_projection` (PK on `projection_id`,
+      exactly one row at any time). **2026-08-13 correction:** this previously
+      concluded "there is no per-tick history for this lane, only the most
+      recent snapshot". That is wrong. `_attention_broadcast_tick()` also
+      calls `save_attention_broadcast_history()`
+      (`services/orion-substrate-runtime/app/store.py`), appending one row per
+      tick to `substrate_attention_broadcast_log`. Counted live 2026-08-13:
+      log **6359** rows vs projection **1**. The singleton observation from
+      2026-07-18 was correct about that one table and wrong to generalise to
+      "no history"; replaying this lane is possible via the log table.
     - The general field lane (Layer 5/6): `FieldAttentionFrameV1`, updated on
       a continuous ~2s tick by `orion-attention-runtime`, with real per-tick
       history in `substrate_attention_frames`. **2026-07-23: this lane's
@@ -47,9 +54,21 @@ class AttentionSelfModelV1(BaseModel):
       see `orion/substrate/attention_self_model.py`'s module docstring for
       the full account.
 
-    This is a read-only measurement artifact (Phase 1 scope). It is not
-    published to any bus channel and not consumed by any live decision path —
-    that wiring is explicitly future work (Phase 3+ of the roadmap doc).
+    Not published to any bus channel; persisted to
+    `substrate_attention_self_model`.
+
+    **2026-08-13 correction:** this docstring previously claimed the schema was
+    "not consumed by any live decision path — that wiring is explicitly future
+    work (Phase 3+)". That is no longer true, and the stale claim was found
+    while registering this schema in `orion/inner_state_registry.py`.
+    `orion-equilibrium-service`'s `generative_metacog_poll_loop`
+    (`services/orion-equilibrium-service/app/service.py`) reads recent samples
+    via `AttentionSelfModelReader.fetch_recent_samples` and feeds both
+    `build_insight_metacog_trigger` and `build_flow_metacog_trigger`.
+    `EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE` and
+    `EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE` are both `true` in
+    `.env_example`, so that path is live by default — a real consumer, not
+    future work.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)

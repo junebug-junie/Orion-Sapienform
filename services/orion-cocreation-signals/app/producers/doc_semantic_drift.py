@@ -125,8 +125,17 @@ def _is_unscoreable(change: DocHunkChange) -> bool:
     Deliberately keyed on the real hunk text rather than on
     ``change_kind == "added"``: a *modified* file can be just as unscoreable
     (34.8% of real modified-doc changes over 300 commits are pure appends),
-    and the text is what actually determines whether a cosine exists."""
-    return not change.hunk_removed or not change.hunk_added
+    and the text is what actually determines whether a cosine exists.
+
+    ``.strip()`` because a side of only blank lines or spaces is truthy but
+    equally unscoreable: orion-vector-host rejects whitespace-only text with
+    an ``error="missing_text"`` reply (app/main.py:540), which would surface
+    as a published ``diff=None`` -- a permanent alarm on a change that is
+    structurally unmeasurable. Zero occurrences over 600 real commits / 587
+    real ``*.md`` changes, so this is insurance rather than an observed
+    defect, but it is what makes "a published None always means a real
+    failure" actually true."""
+    return not change.hunk_removed.strip() or not change.hunk_added.strip()
 
 
 def _chunk_text(text: str, max_chars: int) -> list[str]:

@@ -522,9 +522,18 @@ async def test_unscoreable_change_is_skipped_before_any_embedding(
     added_only = _change("", "\n".join(f"line {i}" for i in range(200)), change_kind="added")
 
     monkeypatch.setattr(doc_semantic_drift_module, "_current_head_sha", lambda repo_path: "b" * 40)
-    monkeypatch.setattr(
-        doc_semantic_drift_module, "doc_semantic_drift_changes", lambda p, h, r: [added_only]
-    )
+    # Counted, not just stubbed. Without this the whole test passes
+    # vacuously if the loop ever takes the cold-start branch (e.g. a change
+    # to _load_last_sha or FakeRedis): that path seeds last_sha = head_sha
+    # and saves it, so published == [], calls == [] and the redis assertion
+    # below all hold with zero changes ever examined.
+    changes_calls: list[tuple[str, str]] = []
+
+    def _fake_changes(prev, head, repo):
+        changes_calls.append((prev, head))
+        return [added_only]
+
+    monkeypatch.setattr(doc_semantic_drift_module, "doc_semantic_drift_changes", _fake_changes)
     bus.redis_store["k"] = "a" * 40
 
     stop = stop_event
@@ -544,8 +553,21 @@ async def test_unscoreable_change_is_skipped_before_any_embedding(
 
     await asyncio.wait_for(asyncio.gather(_loop(), _watch()), timeout=5.0)
 
+    assert changes_calls, "the loop never diffed a real range -- assertions below would be vacuous"
     assert bus.published == [], "an unscoreable change must not publish an event"
     assert calls == [], "an unscoreable change must not cost an embedding request"
     # The baseline still advances -- a skip is handled, not a failure to
     # retry forever.
     assert bus.redis_store["k"] == "b" * 40
+
+
+def test_whitespace_only_side_is_unscoreable() -> None:
+    """A side of only blank lines or spaces is truthy but equally
+    unmeasurable -- orion-vector-host rejects whitespace-only text with an
+    `error="missing_text"` reply, which would surface as a published
+    diff=None: a permanent alarm on a structurally unscoreable change. Zero
+    occurrences over 600 real commits, so this pins insurance rather than an
+    observed defect."""
+    assert mod._is_unscoreable(_change("\n\n", "real added text")) is True
+    assert mod._is_unscoreable(_change("   ", "real added text")) is True
+    assert mod._is_unscoreable(_change("real removed text", "\n  \n")) is True

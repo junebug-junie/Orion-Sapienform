@@ -64,10 +64,14 @@ def changed_doc_files_with_status(
     no "after" state to score drift against).
 
     Reads git's own ``--name-status`` letter rather than inferring the kind
-    from whether a hunk side came back empty: an added file and a modified
-    file whose entire content was replaced can produce similar-looking
-    hunks, but they mean different things for a drift score (see
-    ``DocSemanticDriftV1.change_kind``).
+    from the hunk text. Consumed only for logging now: the producer decides
+    what is scoreable from the real hunk text instead
+    (``_is_unscoreable()``), because the status letter is the weaker
+    signal -- a "modified" file can have an empty removed side (a pure
+    append, 34.8% of real modified-doc changes), which the letter does not
+    reveal. The published payload no longer carries a change_kind field at
+    all; every event that survives the skip is an ``M`` with real text on
+    both sides.
 
     A malformed/unparseable status line is skipped rather than guessed at --
     ``git diff --name-status`` emits ``<STATUS>\\t<path>``, and a line
@@ -159,8 +163,12 @@ class DocHunkChange:
     commit_prefix: str | None
     hunk_removed: str
     hunk_added: str
-    # Real git status for this file in the scored range -- see
-    # `changed_doc_files_with_status()` and `DocSemanticDriftV1.change_kind`.
+    # Real git status for this file in the scored range, from
+    # `changed_doc_files_with_status()`. Internal only -- it is logged when
+    # a change is skipped as unscoreable, and is deliberately NOT what
+    # decides scoreability (see `_is_unscoreable()`). Not published: after
+    # the skip, every real event is an "M", so a payload field would be a
+    # constant.
     change_kind: str | None = None
 
 

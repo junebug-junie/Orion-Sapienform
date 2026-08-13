@@ -34,9 +34,26 @@ def test_mcp_allowed_tool_patterns_per_server() -> None:
     assert patterns == ["mcp__github", "mcp__firecrawl"]
 
 
-def test_mcp_disallowed_blocks_gh_when_github_present() -> None:
-    blocked = claude_spawn.mcp_disallowed_tool_patterns({"github": {}, "firecrawl": {}})
-    assert blocked == ["Bash(gh *)"]
+def test_extend_mcp_argv_never_denies_gh(tmp_path: Path) -> None:
+    """Regression gate for the 2026-08-13 PR-creation deadlock.
+
+    ``Bash(gh *)`` on --disallowedTools beat --permission-mode
+    bypassPermissions, so ``gh pr create`` was the one command Orion could
+    not run while holding otherwise unrestricted Bash -- and the github MCP
+    server is read-only, so there was no create_pull_request tool either.
+    Both PR routes were closed at once. Asserts on the whole emitted argv,
+    not just the deleted helper, so re-introducing a deny anywhere in
+    extend_mcp_argv fails here.
+    """
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(
+        json.dumps({"mcpServers": {"github": {"type": "stdio"}, "firecrawl": {"type": "stdio"}}}),
+        encoding="utf-8",
+    )
+    argv: list[str] = ["claude", "-p", "hi"]
+    claude_spawn.extend_mcp_argv(argv, cfg)
+    assert "--disallowedTools" not in argv
+    assert not [a for a in argv if "gh" in a and a.startswith("Bash(")]
 
 
 def test_extend_mcp_argv_uses_per_server_patterns(tmp_path: Path) -> None:
@@ -56,8 +73,6 @@ def test_extend_mcp_argv_uses_per_server_patterns(tmp_path: Path) -> None:
         "--allowedTools",
         "mcp__github",
         "mcp__firecrawl",
-        "--disallowedTools",
-        "Bash(gh *)",
     ]
 
 
@@ -83,8 +98,6 @@ def test_extend_mcp_argv_appends_extra_allowed_tools_after_server_patterns(
         "mcp__github",
         "mcp__firecrawl",
         "mcp__plugin_context-mode_context-mode",
-        "--disallowedTools",
-        "Bash(gh *)",
     ]
 
 

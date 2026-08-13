@@ -82,8 +82,11 @@ async def test_run_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.MonkeyP
     idx = captured_argv.index("--allowedTools")
     assert captured_argv[idx + 1] == "mcp__github"
     assert captured_argv[idx + 2] == "mcp__firecrawl"
-    dis_idx = captured_argv.index("--disallowedTools")
-    assert captured_argv[dis_idx + 1] == "Bash(gh *)"
+    # No --disallowedTools: `Bash(gh *)` used to be denied here, which beat
+    # bypassPermissions and left agent-claude unable to run `gh pr create`
+    # (the github MCP server is read-only, so no create_pull_request either).
+    # See extend_mcp_argv()'s docstring in orion/fcc/claude_spawn.py.
+    assert "--disallowedTools" not in captured_argv
     ss_idx = captured_argv.index("--setting-sources")
     assert captured_argv[ss_idx + 1] == "user,local"
 

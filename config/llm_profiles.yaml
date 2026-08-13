@@ -1000,3 +1000,111 @@ profiles:
     notes: |
       Heavy Atlas agent worker for PlannerReact and AgentChain reasoning flows.
       Intended to back gateway route="agent" on Atlas GPU lane 1.
+
+
+  # ─────────────────────────────────────────────
+  # Muse Glimmer 30B — HF: https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF
+  # Dense causal transformer (~29.6B, all active — not MoE), 52 layers, 6656 hidden,
+  # 32/2 attention heads (GQA 16:1), SwiGLU FFN, 202048 vocab, native 131072+ ctx.
+  # Distilled from Muse Spark for autonomous agentic tasks. Apache 2.0.
+  # Integrated frozen ViT-G/14 (~1.8B) perception encoder; text+image in, text out.
+  # Reliable tool/function calling per model card.
+  # Google-style sampling per model card: temperature=1.0, top_p=0.95, top_k=64.
+  muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision:
+    display_name: "Muse Glimmer 30B – UD-Q4_K_XL + mmproj (llama.cpp, 1x V100 32GB, Circe Agent lane, text+image)"
+    task_type: multimodal
+    backend: llamacpp
+    model_id: "muse-glimmer-30b-ud-q4_k_xl"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: true
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 32768
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Muse-Glimmer-30B-GGUF"
+      hf_filename: "Muse-Glimmer-30B-UD-Q4_K_XL.gguf"
+      # Q8_0 mmproj paired with the Q4 text weights (repo also ships a BF16 mmproj,
+      # ~same size class since the vision tower is only ~1.8B — bump to BF16 if VRAM allows).
+      mmproj_filename: "mmproj-Muse-Glimmer-30B-Q8_0.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 32768
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+      ubatch_size: 1024
+
+      # Card ceiling is 4096 visual tokens/image; kept well under that for VRAM/throughput
+      # headroom on a single 32GB card. batch_size/ubatch_size must stay >= image_max_tokens
+      # (mtmd vision encoder is non-causal) — raised both to 1024 to match.
+      image_min_tokens: 256
+      image_max_tokens: 1024
+
+      # V100 is Volta. Left off: qwen3-coder-next-q5km-2xv100-32gb-agent-depth's llama-optimus
+      # bench found flash_attn on collapses TG ~20x on Volta. The 1x-V100 qwen36-35b-a3b
+      # "balanced" profile sets it on anyway — untested here, treat that as an open
+      # inconsistency, not a precedent to copy without its own bench.
+      no_context_shift: true
+      flash_attn: "off"
+
+      # Google-style sampling per Muse Glimmer model card (matches gemma4-*-it profiles).
+      temperature: 1.0
+      top_k: 64
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 16384
+
+      # --- Speculative decoding (DFlash) — INTENTIONALLY NOT WIRED. Do not uncomment. ---
+      # Repo ships services/orion-llamacpp-host/app's generic draft_filename/draft_repo_id/
+      # n_gpu_layers_draft/draft_min/draft_max -> only ever emit --model-draft, --draft-min,
+      # --draft-max, --n-gpu-layers-draft (see app/main.py). DFlash is architecturally
+      # different (block-diffusion drafting w/ target-hidden-state injection, not a small
+      # standalone LLM) and needs --spec-type draft-dflash (or --dflash) + --spec-draft-n-max,
+      # neither of which app/main.py's CLI builder emits today — wiring draft_filename below
+      # as-is would either no-op or launch under the wrong (legacy) draft path.
+      # DFlash also needs a newer llama-server: it merged upstream 2026-06-28
+      # (ggml-org/llama.cpp PR #22105), well after this stack's pinned
+      # LLAMACPP_IMAGE_TAG=server-cuda-b8740 (~April 2026). LLAMACPP_IMAGE_TAG is one shared
+      # env var across every atlas-workers service (chat/metacog/fast/agent) — bumping it is
+      # a fleet-wide change, not scoped to this profile, and needs its own bench pass.
+      # Follow-up, as its own scoped patch: (1) add spec_type/spec_draft_n_max fields to
+      # LlamaCppConfig + CLI emission in app/main.py, (2) bump LLAMACPP_IMAGE_TAG past the
+      # DFlash merge and smoke-test the other lanes on that tag, (3) then point
+      # draft_filename/draft_repo_id at "dflash-kquant.gguf" in this same HF repo.
+      #hf_draft_repo_id: "unsloth/Muse-Glimmer-30B-GGUF"
+      #hf_draft_filename: "dflash-kquant.gguf"
+
+    notes: |
+      Agent-lane Muse Glimmer 30B (dense, text+image, tool-calling) for 1x V100 32GB —
+      Circe node, Agent compute GPU lane (wire via ATLAS_AGENT_PROFILE_NAME).
+      - VRAM budget: UD-Q4_K_XL weights ~15.9GB + Q8_0 mmproj ~1.9GB ≈ 17.8GB, leaving
+        ~14GB of the 90%-of-32GB budget for 32k KV + batch/ubatch overhead. GQA 16:1
+        (32 query / 2 KV heads) keeps KV cache lean at this context, same order as
+        qwen36-35b-a3b-udq4km-v100-32gb-balanced already proven to fit this card.
+      - Thinking: this model does NOT use chat_template_kwargs.enable_thinking or
+        --reasoning-budget like Qwen3/Gemma — the card's mechanism is literal
+        "Reasoning strength: <low|medium|high|xhigh>" text placed in the system prompt.
+        Left llamacpp.reasoning/reasoning_format/chat_template_kwargs unset here on purpose;
+        wiring any of them would silently do nothing for this model. Set reasoning strength
+        from the caller/orchestrator side (system prompt), not from this profile.
+      - Single parallel slot (agent lane): matches qwen3-coder-next-*-agent-* precedent —
+        keeps smolagents/tool-loop steps stable rather than splitting context across slots.
+      - Speculative decoding (DFlash) is documented but not wired — see the commented block
+        above for the exact code + build-tag gap and the follow-up sequence.
+      - If OOM: lower ctx_size to 24576 then 16384, then image_max_tokens to 560,
+        before falling back to a lower quant (e.g. UD-Q3_K_XL) from the same repo.
+      - Wire: ATLAS_AGENT_PROFILE_NAME=muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision

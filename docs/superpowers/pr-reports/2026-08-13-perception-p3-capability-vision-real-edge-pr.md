@@ -75,9 +75,18 @@ orion:vision:artifacts  --(listener)-->  60-artifact window + last-seen clock
                                      (time-triggered tick, 30s)
                                               |
                                    node:substrate.vision
-                                     perception_staleness  -> capability:vision.pressure
-                                     perception_yield      -> recorded, NOT mapped
+                                     prediction_error      -> capability:vision.pressure
+                                        (carries the availability reading)
+                                     perception_staleness  -> FalkorDB node detail
+                                     perception_yield      -> FalkorDB node detail
 ```
+
+`prediction_error` is the channel name because it is the only pressure-hint key
+the shared receipt path emits; for this node it carries
+`vision_channel_staleness_pressure`. `perception_staleness`/`perception_yield`
+live on the FalkorDB node as inspectable detail, not as field channels —
+promoting either means changing `_prediction_error_receipt` + `state_deltas.py`
++ `NODE_CHANNELS`, a contract change rather than a config line.
 
 **Time-triggered on purpose.** An event-triggered statistic is never recomputed
 once the events stop, which is precisely why the EWMA version froze during an
@@ -235,30 +244,49 @@ detector probe: black 0 objects / grey 0 objects / live 6 objects
 
 ## Acceptance checks vs the design doc
 
-P3's stated checks:
+Proven by **fault injection**: `orion-athena-vision-edge` stopped for ~2
+minutes, then restored. Full cycle observed live.
 
-- *"`capability:vision` shows non-constant pressure traceable to a real
-  receipt"* — **partially met.** The producer is real and the node carries real
-  values, but see Risks: at rest the capability vector still reads 0.0.
-- *"`capability_provenance` non-empty"* — **not met at rest.** See Risks.
-- *"diffusion observably moves a downstream channel"* — **not yet observed**,
-  for the same reason.
+```text
+healthy   age_sec=2.5    staleness=0.000  yield=6.60  samples=5
+camera stopped:
+          age_sec=44.9   staleness=0.664  yield=7.07  samples=27
+          age_sec=74.9   staleness=1.000  yield=0.00  samples=0   <- window cleared
+camera restored:
+          age_sec=2.5    staleness=0.000  yield=6.60  samples=5
+```
+
+`capability:vision` under fault:
+
+```json
+{"pressure": 0.85, "confidence": 0.575, "available_capacity": 0.15}
+capability_provenance: {"pressure": "node:substrate.vision"}
+```
+
+And the field followed the recovery all the way back down —
+node `prediction_error` 1.0 → 0.0, capability `pressure` 0.85 → 0.0.
+
+- *"non-constant pressure traceable to a real receipt"* — **met.** 0.0 → 0.85 →
+  0.0, sourced to `node:substrate.vision`.
+- *"`capability_provenance` non-empty"* — **met under fault.** Still empty at
+  rest; see Risks.
+- *"diffusion observably moves a downstream channel"* — **met.** `confidence`
+  0.575 and `available_capacity` 0.15 are derived from the real pressure, not
+  the fabricated 1.0/1.0 this edge exists to delete.
 
 ## Risks / concerns
 
-- **Severity: medium. The field cannot express "measured and healthy", so at
-  rest this edge is still indistinguishable from the fabricated constant.**
-  `apply_diffusion()` gates provenance on `contribution > 0.0`, so a genuinely
-  measured zero claims neither pressure nor provenance. Confirmed general, not
-  specific to this edge — every capability with pressure > 0 has provenance,
-  and both that sit at exactly 0 (`capability:vision`, `capability:memory`,
-  the latter with a real `node:prometheus` edge) have `{}`. The producer half
-  of P3 is done and verified; the falsehood is only fully deleted once a
-  measured zero can claim provenance. *Proposed fix, not in this patch:* let a
-  zero contribution claim provenance when no other edge has claimed that key,
-  preserving the existing guard's purpose (not overwriting a real one with a
-  later-iterated zero). It touches shared diffusion logic for every capability,
-  so it wants its own patch and sign-off.
+- **Severity: medium. At rest — and only at rest — the vector is still
+  indistinguishable from the fabricated constant.** `apply_diffusion()` gates
+  provenance on `contribution > 0.0`, so a genuinely measured zero claims
+  neither pressure nor provenance. General, not specific to this edge: every
+  capability with pressure > 0 has provenance, and both sitting at exactly 0
+  (`capability:vision`, `capability:memory` — the latter with a real
+  `node:prometheus` edge) have `{}`. Under fault the edge is fully correct, as
+  the injection above shows. *Proposed fix, not in this patch:* let a zero
+  contribution claim provenance when no other edge has claimed that key. It
+  touches shared diffusion for every capability, so it wants its own patch and
+  sign-off.
 - **Severity: low.** `perception_yield` is recorded but unwired, so a blinded
   camera is *visible* on the node but does not yet raise pressure. Deliberate —
   see above.
@@ -267,6 +295,57 @@ P3's stated checks:
 - **Operational note.** A concurrent session rebuilt `orion-substrate-runtime`
   at 05:53 during this work and reverted the deployment, which confounded part
   of the diagnosis. The current deployment (06:14) is intact and verified.
+
+## Review findings fixed
+
+Code review returned 10 findings. **The first one meant this PR did not do what
+it claimed**, and it is the reason the report above differs materially from the
+version first pushed.
+
+- **Critical: the topology edge was dead.** It mapped
+  `perception_staleness: pressure`, and nothing writes that channel onto a
+  field node vector — `_prediction_error_receipt()` hardcodes
+  `pressure_hints: {"prediction_error": ...}`, and `reconcile.py` prunes
+  node-vector keys `NODE_CHANNELS` does not declare. Confirmed live before
+  fixing: the field node vector held only `{"prediction_error": 0.5714}`, a
+  stale high-water mark from the deleted build.
+  - Fix: map `prediction_error: pressure` (the value flowing through that key
+    already *is* the availability reading), and write the receipt on every tick
+    rather than only when faulted, so a healthy 0.0 can refresh the field.
+  - Evidence: the fault-injection cycle above.
+  - **I had named the wrong cause.** My first report attributed the 0.0 to
+    `apply_diffusion`'s provenance gate. That gate is real and still open, but
+    it was not why this edge read zero — the channel never arrived. Both were
+    true; I had found the second and missed the first.
+- **High: `tests/test_field_channel_glossary.py` failed on the branch** (39
+  entries against a hardcoded 38). A repo-root test I never ran — I only ran
+  service-scoped and `orion/substrate` suites.
+  - Fix: removed `perception_staleness` from the glossary. It is a
+    substrate-node property, not a field channel, so listing it there was wrong
+    on the merits and not just for the count.
+- **High: unbounded cold-start skip.** A restart during an ongoing outage (host
+  reboot takes camera and service together) left `_last_vision_artifact_at`
+  None forever and reported silence for a real fault.
+  - Fix: measure from a process-start clock past the deadband.
+- **Medium: `perception_yield` froze during a blackout**, publishing the last
+  healthy 6–8 objects/frame indefinitely — the same reads-as-calm failure on
+  the other channel. Fix: clear the window once availability saturates.
+  Evidence: `staleness=1.000 yield=0.00 samples=0` above.
+- **Medium: embed-only artifacts counted as liveness.** If detection broke while
+  embed tasks kept publishing, both channels would miss it. Fix: only a
+  detect-bearing artifact refreshes the clock.
+- **Medium: codec decode branches could never fire** — `NATIVE_NODE_RETURN_FIELDS`
+  was not extended, so after a rehydrate the properties read absent. Fixed;
+  the same pre-existing gap for `contributing_turn_ids_json` is noted and left
+  alone.
+- **Low: `+inf` age read as calm**, contradicting the monotonicity invariant
+  asserted one test over. Fixed to 1.0; NaN still fails open.
+- **Low: stale comments** in `settings.py` and the topology still described the
+  deleted `gap_zscore` design. Fixed.
+- **Low: comment placement** — the vision listener block had been inserted
+  between the anomaly listener's comment and its code. Moved.
+- **Low: `perceptual_blindness_pressure` has no production caller.** Deliberate
+  and documented; left as-is.
 
 ## Restart required
 

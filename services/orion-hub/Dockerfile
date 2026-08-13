@@ -2,6 +2,17 @@ FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 ARG INSTALL_DEV_DEPS=false
 
+# Claude Code refuses to start with permissionMode=bypassPermissions (or the
+# raw --dangerously-skip-permissions flag) as root/sudo unless it recognizes
+# the process as a deliberate sandbox -- confirmed live 2026-08-13 by reading
+# the CLI's own bundled source: the gate is
+# `getuid()===0 && process.env.IS_SANDBOX!=="1" && !CLAUDE_CODE_BUBBLEWRAP`.
+# This container always runs as root (no USER directive) and
+# fcc_claude_bridge.py's FCC turns route through orion/fcc/claude_spawn.py's
+# claude_permission_argv(), which passes bypassPermissions for root, so
+# without this the FCC claude subprocess crashes on every turn.
+ENV IS_SANDBOX=1
+
 WORKDIR /app
 
 # Install Python + tools + network utilities + Docker CLI/Compose plugin

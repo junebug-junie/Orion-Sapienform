@@ -707,7 +707,7 @@ def test_build_subprocess_env_preserves_tool_search_override(
 
 
 @pytest.mark.asyncio
-async def test_run_fcc_turn_root_uses_dont_ask_permission_mode(
+async def test_run_fcc_turn_root_uses_bypass_permissions_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_argv: list = []
@@ -737,7 +737,7 @@ async def test_run_fcc_turn_root_uses_dont_ask_permission_mode(
         pass
 
     assert "--permission-mode" in captured_argv
-    assert "dontAsk" in captured_argv
+    assert "bypassPermissions" in captured_argv
     assert "--dangerously-skip-permissions" not in captured_argv
 
 

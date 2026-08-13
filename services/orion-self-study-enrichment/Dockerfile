@@ -4,6 +4,17 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Claude Code refuses to start with permissionMode=bypassPermissions (or the
+# raw --dangerously-skip-permissions flag) as root/sudo unless it recognizes
+# the process as a deliberate sandbox -- confirmed live 2026-08-13 by reading
+# the CLI's own bundled source: the gate is
+# `getuid()===0 && process.env.IS_SANDBOX!=="1" && !CLAUDE_CODE_BUBBLEWRAP`.
+# This container always runs as root (no USER directive) and
+# claude_runner.py calls orion/fcc/claude_spawn.py's claude_permission_argv(),
+# which passes bypassPermissions for root, so without this the claude
+# subprocess crashes on every turn even with tools disabled (--tools "").
+ENV IS_SANDBOX=1
+
 # - git: evidence.py reads graphify-out/graph.json + README.md from the
 #   read-only repo mount (SELF_STUDY_ENRICHMENT_REPO_PATH) -- git itself
 #   isn't shelled out to by this service, but the mount is a real .git

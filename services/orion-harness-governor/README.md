@@ -102,7 +102,9 @@ The smoke script `scripts/context_mode_hooks_smoke.py` must pass before enabling
 
 The unified-turn introspection experiment for these flags lives at `scripts/run_unified_turn_introspection_eval.py` with its fixture in `orion/harness/evals/fixtures/`.
 
-`HARNESS_FCC_SKIP_PERMISSIONS=true` (default in compose) passes `--dangerously-skip-permissions` to `claude -p` even when the governor runs as root — otherwise Bash/MCP steps stall on approval prompts with no operator in Orion mode.
+`HARNESS_FCC_SKIP_PERMISSIONS=true` (default in compose) makes `orion/fcc/claude_spawn.py::claude_permission_argv()` pass full-auto-approve permissions to `claude -p` — `--dangerously-skip-permissions` on the host, `--permission-mode bypassPermissions` when running as root (this container always does; no `USER` directive). Otherwise Bash/MCP steps stall or get silently denied with no operator in Orion mode.
+
+`bypassPermissions` as root additionally requires the Dockerfile's `ENV IS_SANDBOX=1` — Claude Code 2.1+ refuses to start in that mode as root/sudo unless it recognizes a deliberate sandbox (`getuid()===0 && IS_SANDBOX!=="1" && !CLAUDE_CODE_BUBBLEWRAP`, confirmed live 2026-08-13 from the CLI's own bundled source). `--permission-mode dontAsk` avoids that startup check but is NOT an auto-approve mode — it's deny-by-default (only `permissions.allow`-listed / read-only-Bash / hook-approved actions run), which is why an earlier version of this code used `dontAsk` under root and every real Bash/git action a headless FCC turn attempted was silently denied.
 
 ### Stream stall detection
 

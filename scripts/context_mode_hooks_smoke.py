@@ -310,7 +310,7 @@ def run_claude_turn(
 ) -> TurnResult:
     """Mirror the FCC motor spawn shape for one headless claude -p turn."""
     argv = [cfg.claude_bin, "-p", prompt, "--output-format", "stream-json", "--verbose"]
-    argv += claude_permission_argv(auto_approve=True)  # root container -> dontAsk
+    argv += claude_permission_argv(auto_approve=True)  # root container -> bypassPermissions
     argv += ["--model", cfg.model_id]
     if allow_plugin_tools:
         argv += ["--allowedTools", PLUGIN_MCP_SERVER]

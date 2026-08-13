@@ -111,11 +111,17 @@ def test_extend_mcp_argv_zero_servers_no_extra_omits_allowed_tools(tmp_path: Pat
     assert argv == ["claude", "-p", "hi", "--mcp-config", str(cfg)]
 
 
-def test_claude_permission_argv_root_uses_dont_ask(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_claude_permission_argv_root_uses_bypass_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # NOT dontAsk: confirmed live 2026-08-13 that dontAsk is a deny-by-default
+    # CI mode (denies any tool call, including Bash, that isn't already
+    # permissions.allow-listed) -- the opposite of the auto-approve behavior
+    # this helper exists to provide for headless root FCC turns.
     monkeypatch.setattr(claude_spawn.os, "geteuid", lambda: 0)
     assert claude_spawn.claude_permission_argv(auto_approve=True) == [
         "--permission-mode",
-        "dontAsk",
+        "bypassPermissions",
     ]
 
 

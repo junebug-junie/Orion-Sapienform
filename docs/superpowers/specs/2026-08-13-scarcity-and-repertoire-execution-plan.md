@@ -1,3 +1,8 @@
+> **SUPERSEDED 2026-08-13 by `2026-08-13-scarcity-ROADMAP.md`.**
+> Its §7 leash is carried forward there verbatim; everything else here was sequenced against
+> the "serialized inference time is scarce" thesis, which the plant survey replaced. Kept for
+> history. Do not plan from this file.
+
 # Scarcity and repertoire: the execution plan
 
 Date: 2026-08-13

@@ -421,6 +421,7 @@ async def _score_change(
     return DocSemanticDriftV1(
         observed_at=datetime.now(timezone.utc),
         sha=change.sha,
+        base_sha=change.base_sha,
         path=change.path,
         commit_prefix=change.commit_prefix,
         diff_scoped_embedding_diff=diff,

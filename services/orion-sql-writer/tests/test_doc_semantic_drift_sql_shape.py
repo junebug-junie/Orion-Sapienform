@@ -68,8 +68,16 @@ def test_channel_is_in_the_default_subscribe_list() -> None:
     `route_map` above. A live .env that predates this patch therefore leaves
     the writer permanently unsubscribed, and the row silently never appears.
     Confirmed live on 2026-08-12 with dev_economics, which is why the .env
-    is edited by hand in the same patch."""
-    assert "orion:substrate:doc_semantic_drift" in Settings().effective_subscribe_channels
+    is edited by hand in the same patch.
+
+    Asserts on the declared FIELD DEFAULT, not on `Settings()`. Instantiating
+    Settings reads process env plus a cwd-relative .env (`class Config:
+    env_file = ".env"`), and the live services/orion-sql-writer/.env already
+    contains this channel -- so an instance-based assertion passes even if
+    the code default is deleted, which is precisely the regression this test
+    is named for. Same approach as test_drive_audit_sql_shape.py:85."""
+    default_channels = Settings.model_fields["sql_writer_subscribe_channels"].default
+    assert "orion:substrate:doc_semantic_drift" in default_channels
 
 
 def test_env_subscribe_list_replaces_rather_than_merges() -> None:
@@ -156,3 +164,43 @@ def test_explicit_event_id_is_not_overwritten() -> None:
 def test_event_id_is_the_primary_key() -> None:
     pk = [c.name for c in DocSemanticDriftSQL.__table__.primary_key.columns]
     assert pk == ["event_id"]
+
+
+def test_env_example_lists_the_channel() -> None:
+    """`.env_example` is the operator contract, and it is what
+    scripts/sync_local_env_from_example.py propagates into a real .env.
+    Because the subscribe list is env-REPLACED rather than merged, an
+    operator whose .env predates this patch stays permanently unsubscribed
+    with no error -- the rows just never appear. Same guard both sibling
+    shape tests carry (test_drive_audit_sql_shape.py:89,
+    test_causal_geometry_snapshot_sql_shape.py:105)."""
+    env_example = (SERVICE_ROOT / ".env_example").read_text()
+    subscribe_line = next(
+        line for line in env_example.splitlines()
+        if line.startswith("SQL_WRITER_SUBSCRIBE_CHANNELS=")
+    )
+    assert "orion:substrate:doc_semantic_drift" in subscribe_line
+
+
+def test_base_sha_is_persisted() -> None:
+    """The scored hunk covers a RANGE, `(base_sha, sha]`, not necessarily a
+    single commit. Without this column a row spanning six commits is
+    indistinguishable from one spanning a single commit -- and any threshold
+    derived from this table needs to condition on that. `chunk_count_*` does
+    not substitute: it measures text length, not commit span."""
+    assert "base_sha" in DocSemanticDriftSQL.__table__.columns
+    assert DocSemanticDriftSQL.__table__.columns["base_sha"].nullable is True
+
+
+def test_overlapping_rescore_is_detectable_rather_than_silent() -> None:
+    """Honest bound on the idempotency claim. `event_id` is (sha, path), so
+    a retry whose HEAD has not moved upserts onto the same row. But if HEAD
+    moved between a partial publish failure and the retry, the same
+    underlying edit is re-scored over a WIDER range under a different key --
+    two real rows for one edit. base_sha is what makes that overlap visible
+    to whoever reads the distribution later."""
+    same_head = _event(sha="b" * 40, base_sha="a" * 40)
+    retry_wider = _event(sha="c" * 40, base_sha="a" * 40)
+    assert same_head.event_id != retry_wider.event_id
+    # ...but the shared range start is on the wire, so a consumer can see it.
+    assert same_head.base_sha == retry_wider.base_sha

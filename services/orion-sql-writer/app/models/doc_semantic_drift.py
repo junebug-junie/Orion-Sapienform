@@ -38,6 +38,12 @@ class DocSemanticDriftSQL(Base):
     observed_at = Column(DateTime(timezone=True), nullable=False)
 
     sha = Column(String, nullable=False, index=True)
+    # Range start (exclusive) -- the score covers `(base_sha, sha]`, which
+    # is often but not always a single commit. Nullable because events
+    # published before 2026-08-13 carry no such field. Without this column
+    # a multi-commit row is indistinguishable from a single-commit one, and
+    # overlapping re-scores after a partial publish failure are undetectable.
+    base_sha = Column(String, nullable=True, index=True)
     path = Column(String, nullable=False, index=True)
     # Self-declared conventional-commit type ("docs", "fix", ...) or NULL --
     # a weak feature by the design doc's own admission (a `docs:` prefix is

@@ -162,6 +162,49 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   FalkorDB and the hub. atlas (96c) and circe (72c) sit at 0.52% and 0.21% -- pure GPU boxes
   with idle CPUs. The interference ceiling is a CPU story that the GPU tables completely miss.
 
+- **`strain` dilutes the binding constraint by 7x, in production.**
+  `orion/telemetry/biometrics_pipeline.py:180` averages 7 pressure channels flat, so one fully
+  saturated channel can never push strain above 0.143. Live right now: atlas reads power 0.798
+  and memory 0.812 and reports **strain 0.232**. `homeostasis = 1 - strain` is therefore
+  anti-informative under concentrated load. Channels are not substitutes -- idle disk does not
+  relieve memory pressure -- so the mean is the wrong aggregate; max or count-above-threshold is
+  right. **Live behaviour change to a widely-read field signal: enumerate consumers first.**
+  → `the-plant` §5.2 / §7 I1.
+
+- **`fan_pressure` and `disk_capacity_pressure` are computed and excluded from `strain`.**
+  athena's disk_capacity is **0.748** -- the highest single pressure on that node -- and feeds
+  nothing. Worth checking which mount (root reads 22%; candidates are docker/postgres/graphdb/
+  telemetry) given the 2026-07-23 Postgres disk death.
+
+- **iLO is live on atlas and athena; raw chassis watts are read and then discarded.**
+  `fan_pressure` comes only from iLO and is non-zero on both (0.610, 0.470), so `power_pressure`
+  on those hosts is real `ilo_power_watts` -- passed through `EwmaBand` into a unitless 0-1 and
+  never persisted raw. Watts are the only quantity here that sums across hosts; band fractions
+  do not. **Storing the number already in memory is the highest-value, lowest-cost fix in the
+  whole arc.** Circe reads fan 0.000 -> iLO not configured there (the NIC problem).
+
+- **`disk_bw_mbps=200.0` and `net_bw_mbps=125.0` are global constants for 3 heterogeneous
+  hosts.** 200 MB/s is spinning-disk-era; against NVMe it understates disk pressure ~10x.
+  125 MB/s is 1 GbE. Both need to be per-node.
+
+- **The atlas ceiling is self-inflicted by batch dispatch.** At measured offered load
+  a = 0.453 erlangs with c = 4 slots, Erlang-B predicts 0.111% blocking; observed all-4-busy is
+  **7.4%** -- **66x Poisson**. Cause is visible in the arrival process: over 3 h / 2,287
+  requests, the burst-size mode above 3 is exactly **5** (123 bursts, more than sizes 3+4+6+7
+  combined) -- the arena's ~5-proposals-per-tick batch. **A batch of 5 into a 4-slot lane blocks
+  by construction at any average load.** So smoothing dispatch beats adding slots, and Orion is
+  its own principal competitor (98% of gateway traffic is cortex-exec). → `the-plant` §6.7.
+
+- **Commensurability rules established** (`the-plant` §6, the thing this branch is named for):
+  for a ceiling report P(saturated) not the mean; compare lanes by blocking probability not
+  utilisation (at c=1 they coincide, at c=4 they diverge 100x -- this is the "8% vs 1/1 slots"
+  question); never average non-substitutable channels; keep raw physical units alongside any
+  normalised band. Plus four cross-domain relations that hold on real data, incl.
+  `load15/threads - cpu_util` as a free I/O-blocking estimator (athena: ~3.4 threads in D-state)
+  and fan-as-leading-thermal-indicator (atlas thermal 0.000 while fan 0.610 -- temperature is
+  flat *because* the BMC is spending fan speed, and fan is the closest signal in the system to
+  the heat/noise Juniper actually pays).
+
 - **APC units not yet wired in (Juniper, in progress).** Real per-node wall draw. This is the
   instrument that converts the dominant cost term from unmeasured to measured. Every chassis
   power figure this arc produced was an estimate from core count and every one was wrong;

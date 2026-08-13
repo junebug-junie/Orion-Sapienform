@@ -1010,6 +1010,26 @@ profiles:
   # Integrated frozen ViT-G/14 (~1.8B) perception encoder; text+image in, text out.
   # Reliable tool/function calling per model card.
   # Google-style sampling per model card: temperature=1.0, top_p=0.95, top_k=64.
+  #
+  # REQUIRED llama-server build: ggml-org/llama.cpp PR #26841 "model: Muse Glimmer
+  # Support" (new LLM_ARCH + vision-encoder graph code + DFlash drafter support),
+  # merged 2026-08-10 -- llama-server cannot recognize this architecture AT ALL
+  # (text, vision, or draft) on any older build, including this stack's current
+  # LLAMACPP_IMAGE_TAG=server-cuda-b8740 default (~April 2026). This profile needs
+  # LLAMACPP_IMAGE_TAG=server-cuda-b10398 (or later).
+  # DO NOT just bump the repo-wide default fallback for this: config/biometrics/
+  # node_catalog.yaml confirms Circe already runs orion-atlas-llamacpp-chat (the
+  # "chat" lane, port 8011) continuously, and LLAMACPP_IMAGE_TAG is one shared build
+  # arg per docker-compose.atlas-workers.yml invocation -- if Circe's chat and agent
+  # workers share one .env/compose invocation on that host (has not been confirmed
+  # from here; verify before deploying), bumping the tag for this profile also
+  # rebuilds the already-stable chat worker onto a 3-day-old master build with no
+  # bench pass. If they do share an env file, either split Circe onto two compose
+  # invocations with separate LLAMACPP_IMAGE_TAG values, or accept and bench the
+  # chat-lane rebuild too -- don't bump silently either way.
+  # UNVERIFIED beyond schema/CLI-builder tests: no live boot has been run against
+  # b10398 from this dev environment (no Docker/GPU access here) -- run the smoke
+  # check in the PR's "Restart required" section before trusting this on Circe.
   muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision:
     display_name: "Muse Glimmer 30B – UD-Q4_K_XL + mmproj (llama.cpp, 1x V100 32GB, Circe Agent lane, text+image)"
     task_type: multimodal
@@ -1068,33 +1088,54 @@ profiles:
 
       n_predict: 16384
 
-      # --- Speculative decoding (DFlash) — INTENTIONALLY NOT WIRED. Do not uncomment. ---
-      # Repo ships services/orion-llamacpp-host/app's generic draft_filename/draft_repo_id/
-      # n_gpu_layers_draft/draft_min/draft_max -> only ever emit --model-draft, --draft-min,
-      # --draft-max, --n-gpu-layers-draft (see app/main.py). DFlash is architecturally
-      # different (block-diffusion drafting w/ target-hidden-state injection, not a small
-      # standalone LLM) and needs --spec-type draft-dflash (or --dflash) + --spec-draft-n-max,
-      # neither of which app/main.py's CLI builder emits today — wiring draft_filename below
-      # as-is would either no-op or launch under the wrong (legacy) draft path.
-      # DFlash also needs a newer llama-server: it merged upstream 2026-06-28
-      # (ggml-org/llama.cpp PR #22105), well after this stack's pinned
-      # LLAMACPP_IMAGE_TAG=server-cuda-b8740 (~April 2026). LLAMACPP_IMAGE_TAG is one shared
-      # env var across every atlas-workers service (chat/metacog/fast/agent) — bumping it is
-      # a fleet-wide change, not scoped to this profile, and needs its own bench pass.
-      # Follow-up, as its own scoped patch: (1) add spec_type/spec_draft_n_max fields to
-      # LlamaCppConfig + CLI emission in app/main.py, (2) bump LLAMACPP_IMAGE_TAG past the
-      # DFlash merge and smoke-test the other lanes on that tag, (3) then point
-      # draft_filename/draft_repo_id at "dflash-kquant.gguf" in this same HF repo.
-      #hf_draft_repo_id: "unsloth/Muse-Glimmer-30B-GGUF"
-      #hf_draft_filename: "dflash-kquant.gguf"
+      # --- Speculative decoding (DFlash, native to this model — see model card) ---
+      # HF README, verbatim: "Muse Glimmer ships with a lightweight 'drafter' model based
+      # on DFlash, a small companion network that proposes entire blocks of tokens at
+      # once." This is the model's own shipped drafter, not a hand-picked small LLM.
+      # DFlash is architecturally different from classic small-LM speculative decoding
+      # (block-diffusion drafting w/ target-hidden-state injection) and llama-server
+      # requires --spec-type draft-dflash + --spec-draft-n-max for it (docs/speculative.md,
+      # ggml-org/llama.cpp PR #22105, merged 2026-06-28) -- app/main.py now emits both when
+      # spec_type is set, gated behind --spec-type appearing in --help (see main.py: if the
+      # pinned build doesn't advertise it, the draft is skipped entirely rather than loaded
+      # under the classic path, since a dflash-arch draft GGUF is not safely interpretable
+      # there). spec_draft_n_max: 16 matches this drafter's trained block size (model card:
+      # "Draft layers: 5, Block size: 16 tokens per forward pass") -- llama-server clamps to
+      # the GGUF's own metadata regardless, but set explicitly rather than relying on that.
+      # Needs the same LLAMACPP_IMAGE_TAG=server-cuda-b10398+ pin as the base model (see the
+      # profile header above) -- the underlying arch-loading gap covers this too, it isn't a
+      # separate requirement. Also worth knowing before trusting this in production: upstream
+      # issue ggml-org/llama.cpp#25116 (status: bug-unconfirmed, open as of 2026-08-13)
+      # reports a GGUF architecture-name/nested-key mismatch ("dflash" vs "dflash-draft";
+      # flat vs nested target_layer_ids keys) breaking DFlash draft loading for a different
+      # model (Qwen3.6-27B) on the same DFlash mechanism -- not confirmed to affect Muse
+      # Glimmer's own dflash-kquant.gguf, but the failure mode is a hard load error
+      # ("DFlash model requires 'target_layers' in GGUF metadata"), not silent degradation,
+      # so a first-boot smoke check will surface it immediately if it does apply here.
+      hf_draft_repo_id: "unsloth/Muse-Glimmer-30B-GGUF"
+      hf_draft_filename: "dflash-kquant.gguf"
+      spec_type: "draft-dflash"
+      spec_draft_n_max: 16
 
     notes: |
-      Agent-lane Muse Glimmer 30B (dense, text+image, tool-calling) for 1x V100 32GB —
-      Circe node, Agent compute GPU lane (wire via ATLAS_AGENT_PROFILE_NAME).
+      Agent-lane Muse Glimmer 30B (dense, text+image, tool-calling, DFlash speculative
+      decoding) for 1x V100 32GB — Circe node, Agent compute GPU lane (wire via
+      ATLAS_AGENT_PROFILE_NAME).
+      - REQUIRES LLAMACPP_IMAGE_TAG=server-cuda-b10398 (or later) — do not rely on the
+        repo-wide default fallback (server-cuda-b8740, ~April 2026). llama.cpp did not
+        recognize this model's architecture at all before ggml-org/llama.cpp PR #26841
+        merged 2026-08-10; this gates text+vision, not just DFlash. Circe already runs
+        orion-atlas-llamacpp-chat continuously (config/biometrics/node_catalog.yaml) — if
+        that worker shares a compose invocation/.env with this one, the tag bump lands on
+        both; confirm Circe's actual layout before deploying, see the profile header above.
+        UNVERIFIED beyond schema/CLI-builder tests: no live boot has run against b10398
+        from this dev environment (no Docker/GPU here) — smoke-test before trusting.
       - VRAM budget: UD-Q4_K_XL weights ~15.9GB + Q8_0 mmproj ~1.9GB ≈ 17.8GB, leaving
         ~14GB of the 90%-of-32GB budget for 32k KV + batch/ubatch overhead. GQA 16:1
         (32 query / 2 KV heads) keeps KV cache lean at this context, same order as
-        qwen36-35b-a3b-udq4km-v100-32gb-balanced already proven to fit this card.
+        qwen36-35b-a3b-udq4km-v100-32gb-balanced already proven to fit this card. Speculative
+        decoding adds a small draft-model + extra-KV overhead on top of this budget that
+        hasn't been separately benched — watch VRAM headroom on first boot.
       - Thinking: this model does NOT use chat_template_kwargs.enable_thinking or
         --reasoning-budget like Qwen3/Gemma — the card's mechanism is literal
         "Reasoning strength: <low|medium|high|xhigh>" text placed in the system prompt.
@@ -1103,8 +1144,14 @@ profiles:
         from the caller/orchestrator side (system prompt), not from this profile.
       - Single parallel slot (agent lane): matches qwen3-coder-next-*-agent-* precedent —
         keeps smolagents/tool-loop steps stable rather than splitting context across slots.
-      - Speculative decoding (DFlash) is documented but not wired — see the commented block
-        above for the exact code + build-tag gap and the follow-up sequence.
+      - Speculative decoding (DFlash) is wired: see the llamacpp.spec_type/hf_draft_*
+        comments above for the exact mechanism, the required build tag, and a known
+        upstream open bug (ggml-org/llama.cpp#25116) that may or may not apply here.
+        If the draft model fails to load, the whole container fails to boot — check logs
+        for "DFlash model requires" errors first; that matches #25116's signature.
       - If OOM: lower ctx_size to 24576 then 16384, then image_max_tokens to 560,
-        before falling back to a lower quant (e.g. UD-Q3_K_XL) from the same repo.
-      - Wire: ATLAS_AGENT_PROFILE_NAME=muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision
+        before falling back to a lower quant (e.g. UD-Q3_K_XL) from the same repo. If VRAM
+        is still tight with the draft model loaded, dropping spec_type/hf_draft_* entirely
+        falls back to plain (non-speculative) decoding without changing anything else.
+      - Wire: ATLAS_AGENT_PROFILE_NAME=muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision,
+        LLAMACPP_IMAGE_TAG=server-cuda-b10398 (Circe worker .env only)

@@ -389,12 +389,34 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         draft_supported = (
             supported_flags is None or "--model-draft" in supported_flags
         )
+        # Block-drafting types (DFlash/DSpark/MTP) load a different GGUF architecture
+        # than the classic small-LM draft path and are only interpretable by a binary
+        # that also advertises --spec-type. Loading the draft file via bare --model-draft
+        # on a binary that predates --spec-type would not fall back to a working legacy
+        # mode -- it would either fail to load or misinterpret the draft GGUF's arch --
+        # so treat --spec-type support as a hard prerequisite (not just an extra flag) for
+        # any profile that requests one, rather than best-effort-omitting just that flag.
+        spec_type_required = cfg.spec_type is not None
+        spec_type_supported = (
+            supported_flags is None or "--spec-type" in supported_flags
+        )
         if not draft_supported:
             logger.error(
                 "Profile requested draft_filename=%s but this llama-server does not advertise "
                 "--model-draft in --help; omitting draft speculative decoding and launching "
                 "the main model only. Upgrade LLAMACPP_IMAGE_TAG or unset draft_filename.",
                 cfg.draft_filename,
+            )
+        elif spec_type_required and not spec_type_supported:
+            logger.error(
+                "Profile requested draft_filename=%s with spec_type=%s but this llama-server "
+                "does not advertise --spec-type in --help; omitting draft speculative decoding "
+                "entirely (not falling back to plain --model-draft -- a %s-architecture draft "
+                "GGUF is not safely loadable via the classic draft path). Upgrade "
+                "LLAMACPP_IMAGE_TAG past the spec_type's upstream merge.",
+                cfg.draft_filename,
+                cfg.spec_type,
+                cfg.spec_type,
             )
         else:
             draft_path = _ensure_draft_file(cfg)
@@ -408,10 +430,17 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
                 append_flag("--model-draft", draft_path)
                 if cfg.n_gpu_layers_draft is not None:
                     append_flag("--n-gpu-layers-draft", str(int(cfg.n_gpu_layers_draft)))
-                if cfg.draft_min is not None:
-                    append_flag("--draft-min", str(int(cfg.draft_min)))
-                if cfg.draft_max is not None:
-                    append_flag("--draft-max", str(int(cfg.draft_max)))
+                if cfg.spec_type is not None:
+                    append_flag("--spec-type", cfg.spec_type)
+                    if cfg.spec_draft_n_max is not None:
+                        append_flag("--spec-draft-n-max", str(int(cfg.spec_draft_n_max)))
+                else:
+                    # Classic draft-simple tuning knobs; not meaningful for block-drafting
+                    # spec_type values (see docs/speculative.md), so scoped to this branch.
+                    if cfg.draft_min is not None:
+                        append_flag("--draft-min", str(int(cfg.draft_min)))
+                    if cfg.draft_max is not None:
+                        append_flag("--draft-max", str(int(cfg.draft_max)))
                 if "--model-draft" not in cmd:
                     logger.error(
                         "Profile requested draft_filename=%s but --model-draft was not emitted; "

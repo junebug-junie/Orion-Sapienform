@@ -61,11 +61,41 @@ class LlamaCppConfig(BaseModel):
     )
     draft_min: Optional[int] = Field(
         default=None,
-        description="Minimum draft tokens before verify (--draft-min)",
+        description="Minimum draft tokens before verify (--draft-min); classic small-LM "
+        "draft path only (spec_type unset / 'draft-simple'). Ignored for block-drafting "
+        "spec_type values (draft-dflash/draft-dspark/draft-mtp), which are tuned by "
+        "spec_draft_n_max instead -- see docs/speculative.md.",
     )
     draft_max: Optional[int] = Field(
         default=None,
-        description="Maximum draft tokens per speculation step (--draft-max)",
+        description="Maximum draft tokens per speculation step (--draft-max); same "
+        "classic-path-only scope as draft_min.",
+    )
+    # llama-server --spec-type (ggml-org/llama.cpp PR #22105 / docs/speculative.md).
+    # Selects the speculative-decoding drafter type. Block-drafting types (draft-dflash,
+    # draft-dspark, draft-mtp) still use draft_filename/draft_repo_id -> --model-draft for
+    # the draft GGUF path, but replace draft_min/draft_max tuning with spec_draft_n_max.
+    # List transcribed from docs/speculative.md as of the DFlash merge (2026-06-28) --
+    # extend if upstream adds a new type and append_flag starts logging an unexpected skip.
+    spec_type: Optional[
+        Literal[
+            "none",
+            "draft-simple",
+            "draft-eagle3",
+            "draft-dflash",
+            "draft-dspark",
+            "draft-mtp",
+            "ngram-cache",
+            "ngram-simple",
+            "ngram-map-k",
+            "ngram-map-k4v",
+            "ngram-mod",
+        ]
+    ] = Field(default=None, description="llama-server --spec-type")
+    spec_draft_n_max: Optional[int] = Field(
+        default=None,
+        description="llama-server --spec-draft-n-max; server clamps this to the draft "
+        "model's trained block size (e.g. 16 for a DFlash drafter with block_size=16).",
     )
 
     host: str = "0.0.0.0"

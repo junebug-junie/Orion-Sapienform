@@ -364,7 +364,23 @@ def test_gemma4_31b_multimodal_profile_forwards_mmproj_and_image_flags(monkeypat
     assert _find_flag_value(cmd, "--top-p") == "0.95"
 
 
-def test_muse_glimmer_30b_agent_vision_profile_forwards_flags_and_leaves_draft_unset(monkeypatch):
+_MUSE_GLIMMER_SUPPORTED_FLAGS_BASE = {
+    "--jinja",
+    "--no-context-shift",
+    "--mmproj",
+    "--ubatch-size",
+    "--image-min-tokens",
+    "--image-max-tokens",
+    "--n-predict",
+    "--temp",
+    "--top-k",
+    "--top-p",
+    "--min-p",
+    "--presence-penalty",
+}
+
+
+def _load_muse_glimmer_profile(monkeypatch):
     repo_root = Path(__file__).resolve().parents[3]
     config_path = repo_root / "config" / "llm_profiles.yaml"
 
@@ -387,37 +403,35 @@ def test_muse_glimmer_30b_agent_vision_profile_forwards_flags_and_leaves_draft_u
     )
     monkeypatch.setattr(
         main,
-        "_get_supported_llama_server_flags",
-        lambda _server_bin: {
-            "--jinja",
-            "--no-context-shift",
-            "--mmproj",
-            "--ubatch-size",
-            "--image-min-tokens",
-            "--image-max-tokens",
-            "--n-predict",
-            "--temp",
-            "--top-k",
-            "--top-p",
-            "--min-p",
-            "--presence-penalty",
-            # Deliberately NOT advertising --model-draft/--spec-type/--dflash here: this
-            # profile ships with draft_filename unset, so the CLI builder must not try to
-            # emit any draft/speculative-decoding flags regardless of what the binary supports.
-        },
+        "_ensure_draft_file",
+        lambda _cfg: "/models/gguf/dflash-kquant.gguf",
     )
-    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 8740)
     monkeypatch.setattr(
         settings_mod.settings,
         "llamacpp_model_path_override",
         "/models/gguf/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
     )
+    return main, profile
+
+
+def test_muse_glimmer_30b_agent_vision_profile_forwards_flags_on_supporting_build(monkeypatch):
+    main, profile = _load_muse_glimmer_profile(monkeypatch)
+
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: _MUSE_GLIMMER_SUPPORTED_FLAGS_BASE
+        | {"--model-draft", "--n-gpu-layers-draft", "--spec-type", "--spec-draft-n-max"},
+    )
+    # server-cuda-b10398: past both the DFlash merge (~b9766) and the Muse Glimmer
+    # architecture merge (ggml-org/llama.cpp#26841, 2026-08-10) this profile needs.
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 10398)
 
     cmd, _env = main.build_llama_server_cmd_and_env(profile)
 
     assert profile.supports_vision is True
     assert profile.supports_tools is True
-    assert profile.llamacpp.draft_filename is None
+    assert profile.llamacpp.spec_type == "draft-dflash"
     assert "--jinja" in cmd
     assert _find_flag_value(cmd, "--mmproj") == "/models/gguf/mmproj-Muse-Glimmer-30B-Q8_0.gguf"
     assert _find_flag_value(cmd, "--ubatch-size") == "1024"
@@ -429,11 +443,45 @@ def test_muse_glimmer_30b_agent_vision_profile_forwards_flags_and_leaves_draft_u
     assert _find_flag_value(cmd, "--top-k") == "64"
     assert _find_flag_value(cmd, "--top-p") == "0.95"
     assert _find_flag_value(cmd, "--n-predict") == "16384"
-    # Speculative decoding is documented-but-not-wired for this profile (see the YAML
-    # notes): confirm no draft/DFlash flag ever reaches the launched command.
+    # DFlash drafter: --model-draft still carries the path, --spec-type/--spec-draft-n-max
+    # select the block-diffusion path, and the classic draft_min/draft_max tuning knobs
+    # (not set on this profile) must not appear since they don't apply to this spec_type.
+    assert _find_flag_value(cmd, "--model-draft") == "/models/gguf/dflash-kquant.gguf"
+    assert _find_flag_value(cmd, "--spec-type") == "draft-dflash"
+    assert _find_flag_value(cmd, "--spec-draft-n-max") == "16"
+    assert "--draft-min" not in cmd
+    assert "--draft-max" not in cmd
+
+
+def test_muse_glimmer_30b_agent_vision_profile_skips_draft_entirely_on_old_build(monkeypatch, caplog):
+    import logging
+
+    main, profile = _load_muse_glimmer_profile(monkeypatch)
+
+    # server-cuda-b8740 (this stack's current default pin, ~April 2026): advertises
+    # --model-draft (classic speculative decoding existed long before DFlash) but not
+    # --spec-type. A dflash-architecture draft GGUF is not safely interpretable via the
+    # classic path, so the builder must skip the draft model entirely rather than
+    # falling back to plain --model-draft.
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: _MUSE_GLIMMER_SUPPORTED_FLAGS_BASE
+        | {"--model-draft", "--n-gpu-layers-draft", "--draft-min", "--draft-max"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 8740)
+
+    with caplog.at_level(logging.ERROR):
+        cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
     assert "--model-draft" not in cmd
     assert "--spec-type" not in cmd
-    assert "--dflash" not in cmd
+    assert "--spec-draft-n-max" not in cmd
+    assert "--draft-min" not in cmd
+    assert "--draft-max" not in cmd
+    # The main model still launches -- this is a graceful degrade, not a crash.
+    assert _find_flag_value(cmd, "--mmproj") == "/models/gguf/mmproj-Muse-Glimmer-30B-Q8_0.gguf"
+    assert any("spec_type" in rec.message and "does not advertise --spec-type" in rec.message for rec in caplog.records)
 
 
 def test_draft_fields_emit_speculative_decoding_flags(monkeypatch, caplog):

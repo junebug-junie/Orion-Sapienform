@@ -187,6 +187,11 @@ class Settings(BaseSettings):
     # route's rpc_timeout_sec (720s), so a real overrun is attributed to the
     # docker command rather than surfacing as an opaque RPC timeout.
     builder_prune_timeout_sec: float = Field(600.0, alias="BUILDER_PRUNE_TIMEOUT_SEC")
+    # Same footing as its sibling above. 2026-08-13 review finding: this was
+    # hardcoded in verb_adapters.py, so changing it needed a code edit and a
+    # redeploy -- while BUILDER_PRUNE_TIMEOUT_SEC exists precisely because the
+    # shared 12s skills-mesh default was catastrophically wrong for a prune.
+    image_prune_timeout_sec: float = Field(600.0, alias="IMAGE_PRUNE_TIMEOUT_SEC")
     docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
     tailscale_path: str = Field("tailscale", alias="ORION_ACTIONS_TAILSCALE_PATH")
     # Optional absolute path to nvidia-smi (host bind-mount or image-installed). When unset, skill resolves PATH.

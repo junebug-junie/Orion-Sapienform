@@ -1,0 +1,31 @@
+name: skills.runtime.image_prune.v1
+label: Skills — Runtime Housekeeping (Dangling Image Prune)
+description: >
+  Reclaim dangling Docker images — untagged, unreferenced layer sets left
+  behind by rebuilds — in bounded mode (dry-run default, execute policy-gated).
+  Acts only when the host is genuinely under disk pressure AND there are
+  genuinely dangling images to remove, both conditions, because an autonomous
+  action that fires and changes nothing is theater. The gate counts the exact
+  set the command removes rather than Docker's broader "reclaimable" figure,
+  which also includes tagged images this action never touches. Reports disk
+  usage before and after, which is the measurable outcome that makes this
+  action attributable.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+# Must sit ABOVE the prune subprocess's own 600s budget
+# (IMAGE_PRUNE_TIMEOUT_SEC) and BELOW the maintenance route's 720s
+# rpc_timeout_sec -- innermost budget fires first, so a real overrun is
+# attributable to the docker command rather than to an opaque outer timeout.
+# Same staggering as skills.runtime.builder_prune.v1.
+timeout_ms: 660000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.runtime.image_prune.v1
+    description: Measure host disk + dangling image count, gate, prune in dry-run/execute modes, re-measure.
+    order: 0
+    services: []

@@ -98,6 +98,44 @@ def effective_priority(
     return priority_score + bonus
 
 
+def candidate_template_key(candidate: ProposalCandidateV1) -> str | None:
+    """The proposal template that produced this candidate, or None.
+
+    Read from `execution_intent["template"]`, which `orion/proposals/builder.py`
+    stamps on every builder-native candidate. Externally-produced candidates
+    (reverie, cognitive-hop) may legitimately carry no template, so None is a
+    real, expected value here -- not an error.
+    """
+    intent = candidate.execution_intent or {}
+    template = intent.get("template")
+    if isinstance(template, str) and template:
+        return template
+    return None
+
+
+def resolve_cortex_route(
+    candidate: ProposalCandidateV1, policy: ExecutionDispatchPolicyV1
+) -> CortexRouteTemplateV1 | None:
+    """Which verb this candidate dispatches to: template override, then kind.
+
+    Before 2026-08-13 this was a bare `proposal_kind_to_cortex.get(kind)`, which
+    meant an entire proposal kind could address exactly one verb. `maintain`
+    could only ever mean `skills.runtime.builder_prune.v1`, so Orion's mutating
+    repertoire was capped at ONE action by the routing layer -- underneath every
+    scoring, budget, and starvation fix applied above it.
+
+    The template override is checked first and the kind map is the fallback, so
+    a policy with an empty `template_to_cortex` behaves identically to the old
+    lookup for every candidate, including ones with no template at all.
+    """
+    template_key = candidate_template_key(candidate)
+    if template_key is not None:
+        route = policy.template_to_cortex.get(template_key)
+        if route is not None:
+            return route
+    return policy.proposal_kind_to_cortex.get(candidate.proposal_kind)
+
+
 def _is_hard_blocked(candidate: ProposalCandidateV1, policy: ExecutionDispatchPolicyV1) -> list[str]:
     hits: list[str] = []
     if candidate.proposal_kind in policy.hard_blocks:
@@ -332,7 +370,7 @@ def build_execution_dispatch_frame(
             )
             continue
 
-        route: CortexRouteTemplateV1 | None = policy.proposal_kind_to_cortex.get(candidate.proposal_kind)
+        route: CortexRouteTemplateV1 | None = resolve_cortex_route(candidate, policy)
         if route is None:
             blocked.append(
                 make_blocked(

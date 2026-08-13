@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -685,3 +686,122 @@ def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
         return 0.0
     anomalous = sum(1 for z in edge_zscores if abs(z) >= _BUS_SYNAPTIC_ZSCORE_SATURATION)
     return anomalous / len(edge_zscores)
+
+
+# ---------------------------------------------------------------------------
+# capability:vision -- perceptual availability
+#
+# 2026-08-13: an earlier draft of this node derived vision health from the bus
+# synaptic graph's `gap_zscore` over the orion:vision:* channels, reusing
+# bus_synaptic_prediction_error's counting rule. That was **deleted rather than
+# tuned**, because it measured the wrong layer, in two ways that no threshold
+# fixes:
+#
+#   1. It z-scores message INTER-ARRIVAL TIME, and the vision pipeline's
+#      cadence is set by a fixed scheduler (config/vision_frame_router.yaml's
+#      `min_seconds_between_tasks_per_camera: 5`). Z-scoring a metronome
+#      measures scheduler jitter, not perception.
+#   2. It is structurally blind to a blinded camera. Measured live by posting
+#      synthetic frames to the vision host: a pure-black frame and a flat-grey
+#      frame each returned `ok=True` with **0 objects**, while the same
+#      detector on the real frame returned 6 (max score 0.72). A capped lens, a
+#      dark room, or a frozen stream all produce perfectly regular, perfectly
+#      successful bus traffic carrying no information whatsoever. Cadence
+#      cannot see that. Yield can, trivially.
+#
+# The replacement reads the eye's own output instead of the bus's rhythm, and
+# uses no EWMA anywhere -- there is no baseline to smooth, only a clock and a
+# count.
+# ---------------------------------------------------------------------------
+
+# Deadband and saturation for perceptual availability, anchored to the measured
+# live cadence of orion:vision:artifacts (2026-08-13, 60s pubsub census: 12
+# messages, one every 5.0s), which is the channel carrying real detector
+# output. The deadband is 3x that healthy interval -- wide enough that ordinary
+# scheduler jitter reads exactly 0.0, narrow enough that a stopped eye is
+# unambiguous well inside a minute.
+_VISION_STALENESS_GRACE_SEC = 15.0
+_VISION_STALENESS_SATURATION_SEC = 60.0
+
+
+def vision_channel_staleness_pressure(
+    age_seconds: float,
+    *,
+    grace_seconds: float = _VISION_STALENESS_GRACE_SEC,
+    saturation_seconds: float = _VISION_STALENESS_SATURATION_SEC,
+) -> float:
+    """0-1 availability pressure from the age of the newest vision artifact.
+
+    Answers "is the eye producing at all". The caller computes ``age_seconds``
+    against a clock on a fixed tick, so this rises during silence -- the
+    property the deleted EWMA approach structurally could not have, since an
+    event-triggered statistic is never recomputed when the events stop.
+
+    This is the "explicit freshness channel" the perception design doc requires,
+    and the reason that doc also insists staleness must never be modelled by
+    decay: a decaying value converges toward calm, which is backwards. Silence
+    has to converge toward alarm. Concretely, this is the shape of the
+    ``node:substrate.route`` incident CLAUDE.md §0A records, where a value that
+    had merely stopped being refreshed was indistinguishable from a genuine
+    calm reading.
+
+    Rest point is exactly 0.0 and genuinely reachable: at health the newest
+    artifact is ~5s old, inside the deadband. Saturates at 1.0, so it is
+    bounded without clamping the input.
+    """
+    if not math.isfinite(age_seconds) or age_seconds <= grace_seconds:
+        return 0.0
+    span = saturation_seconds - grace_seconds
+    if span <= 0:
+        return 1.0
+    return min(1.0, (age_seconds - grace_seconds) / span)
+
+
+def perceptual_yield(object_counts: list[int]) -> float:
+    """Mean detected objects per artifact over a recent window.
+
+    A raw observable, not a pressure: no normalisation, no baseline, no
+    smoothing. Recorded on ``node:substrate.vision`` so a blinded eye is
+    *visible*, and deliberately NOT mapped to ``capability:vision`` pressure
+    yet -- see ``perceptual_blindness_pressure`` for why that step needs
+    evidence this patch does not have.
+
+    Measured live 2026-08-13 on the real cam0 stream: ~6-8 objects per frame
+    against a black or flat-grey probe frame's 0.
+    """
+    if not object_counts:
+        return 0.0
+    usable = [max(0, int(c)) for c in object_counts]
+    return sum(usable) / len(usable)
+
+
+def perceptual_blindness_pressure(
+    object_counts: list[int],
+    *,
+    min_samples: int = 12,
+) -> float:
+    """0-1 pressure for "artifacts are arriving but carry nothing".
+
+    The failure the availability channel cannot see: the pipeline is healthy,
+    tasks return ``ok=True``, messages arrive on schedule, and every frame is
+    empty. Verified reachable by probe -- a black frame returns 0 objects
+    through the real detector while the same detector returns 6 on the live
+    scene.
+
+    **Deliberately not wired to pressure in the patch that introduces it**, and
+    the reason is a genuine ambiguity rather than caution theatre: a sustained
+    zero is equally consistent with a blinded eye and with *an empty dark
+    room at 3am*. Distinguishing those needs a per-stream temporal prior --
+    the "day-shape" of Movement II in the perception design doc, which knows
+    that this room is normally empty at 3am and normally is not at 6pm. Until
+    that exists, a zero-yield alarm would fire every night on a working camera,
+    which is the false-positive twin of the fabricated ``confidence=1.0`` this
+    whole node exists to delete. Recorded and observed first; promoted only
+    once there is something to interpret it against.
+
+    ``min_samples`` guards the cold-start case: a single empty frame is a
+    blink, not blindness.
+    """
+    if len(object_counts) < min_samples:
+        return 0.0
+    return 1.0 if perceptual_yield(object_counts) <= 0.0 else 0.0

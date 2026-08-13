@@ -51,6 +51,8 @@ from orion.substrate.prediction_error import (
     CodebaseMassBaseline,
     biometrics_prediction_error,
     bus_synaptic_prediction_error,
+    perceptual_yield,
+    vision_channel_staleness_pressure,
     chat_prediction_error,
     codebase_prediction_error,
     execution_prediction_error,
@@ -89,6 +91,13 @@ from .store import BiometricsSubstrateStore
 logger = logging.getLogger("orion.substrate.runtime")
 
 _PREDICTION_ERROR_NODE_FLAG = "SUBSTRATE_WRITE_PREDICTION_ERROR_NODES"
+
+# Rolling window of per-artifact detection counts behind `perception_yield`.
+# 60 artifacts is ~5 minutes at the measured live cadence (orion:vision:artifacts
+# every 5.0s, 2026-08-13 pubsub census) -- long enough that one dropped frame or
+# one genuinely empty moment does not move the mean much, short enough that the
+# reading still means "lately" rather than "since boot".
+_VISION_YIELD_WINDOW = 60
 _TRUTHY = {"1", "true", "yes", "on"}
 # Staleness gate for the cached drive state: a stalled drive publisher must not
 # keep forcing involuntary movement forever off a frozen snapshot. Fail-open
@@ -335,6 +344,11 @@ class BiometricsSubstrateWorker:
         self._bus = None
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
+        # Perceptual health state, fed by _vision_artifact_listener_loop and
+        # read on a clock by _vision_channel_tick. Bounded window: this is a
+        # "how is the eye doing lately" reading, not an audit trail.
+        self._last_vision_artifact_at: datetime | None = None
+        self._vision_object_counts: deque[int] = deque(maxlen=_VISION_YIELD_WINDOW)
         self._sql_engine: Any = None
         self._bus_synaptic_client: Any = None
         # Orion embodiment (C producer): latest drive state cached off the bus,
@@ -388,6 +402,9 @@ class BiometricsSubstrateWorker:
                 self._bus_synaptic_tick_loop(), name="substrate-bus-synaptic-tick"
             ),
             asyncio.create_task(
+                self._vision_channel_tick_loop(), name="substrate-vision-channel-tick"
+            ),
+            asyncio.create_task(
                 self._attention_broadcast_loop(), name="substrate-attention-broadcast"
             ),
             asyncio.create_task(
@@ -424,6 +441,17 @@ class BiometricsSubstrateWorker:
         # dimension. Read-only display signal, no feature flag beyond bus
         # availability -- rides on the same s.brain_frame_enabled gate that
         # already governs whether anything consumes the cached value.
+        # Perceptual health: feeds node:substrate.vision -> capability:vision.
+        # Bus-gated like every other listener, and flag-gated on the same
+        # setting as the tick that consumes what it caches -- a listener
+        # filling a window nothing reads is just overhead.
+        if self._bus is not None and s.enable_vision_channel_tick:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._vision_artifact_listener_loop(),
+                    name="substrate-vision-artifact-listener",
+                )
+            )
         if self._bus is not None:
             self._tasks.append(
                 asyncio.create_task(
@@ -950,6 +978,148 @@ class BiometricsSubstrateWorker:
         "RETURN e.latency_zscore AS zscore",
     )
 
+    def _record_vision_artifact(self, object_count: int, now: datetime) -> None:
+        """Fold one observed vision artifact into the perceptual-health window."""
+        self._last_vision_artifact_at = now
+        self._vision_object_counts.append(max(0, int(object_count)))
+
+    async def _vision_artifact_listener_loop(self) -> None:
+        """Subscribe to orion:vision:artifacts and track the eye's own output.
+
+        Mirrors _field_channel_anomaly_listener_loop's subscribe shape. Reads
+        the detector's real output rather than the bus's cadence: see
+        orion/substrate/prediction_error.py's capability:vision section for why
+        the cadence-based version was deleted rather than tuned.
+        """
+        channel = self._settings.vision_artifacts_channel
+        logger.info("substrate_vision_artifact_listener subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        self._handle_vision_artifact_message(msg)
+                    except Exception:
+                        logger.exception("substrate_vision_artifact_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_vision_artifact_listener stopped channel=%s", channel)
+
+    def _handle_vision_artifact_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_vision_artifact_decode_failed: %s", decoded.error)
+            return
+        payload = decoded.envelope.payload or {}
+        outputs = payload.get("outputs") if isinstance(payload, dict) else None
+        objects = (outputs or {}).get("objects") if isinstance(outputs, dict) else None
+        # A missing `objects` key is not the same as an empty detection list:
+        # only a detect-bearing task carries one, and counting an embed-only
+        # artifact as "saw nothing" would manufacture blindness out of routing.
+        if objects is None:
+            self._last_vision_artifact_at = datetime.now(timezone.utc)
+            return
+        self._record_vision_artifact(len(objects), datetime.now(timezone.utc))
+
+    def _vision_channel_tick(self) -> None:
+        """Write node:substrate.vision -- the edge that fills capability:vision.
+
+        Time-triggered on purpose, and that is the whole design point. The
+        deleted EWMA version derived vision health from bus inter-arrival
+        z-scores, which are only recomputed when a message arrives, so silence
+        froze the reading at its last healthy value instead of raising it. A
+        clock-driven tick reads "nothing has arrived for 90s" correctly because
+        it does not need an event to run.
+
+        Two channels:
+          perception_staleness -- availability, mapped to capability:vision
+              pressure. Unambiguous: no artifacts means no sight.
+          perception_yield -- mean objects per artifact, recorded only. NOT
+              mapped to pressure, because sustained zero is equally consistent
+              with a blinded eye and an empty dark room; disambiguating needs
+              the day-shape prior this patch does not build.
+
+        Default-off, fail-open: never raises out of a tick.
+        """
+        if not self._settings.enable_vision_channel_tick:
+            return
+
+        try:
+            now = datetime.now(timezone.utc)
+            last_at = self._last_vision_artifact_at
+            if last_at is None:
+                # Cold start: nothing observed since boot. Honest "unknown" --
+                # writing staleness 0.0 would assert a healthy eye on no
+                # evidence, which is the fabricated confidence=1.0 this node
+                # exists to delete, and writing 1.0 would cry outage during a
+                # normal restart. Skip until the first artifact arrives.
+                logger.info("substrate_vision_channel_tick_awaiting_first_artifact")
+                return
+
+            age_seconds = max(0.0, (now - last_at).total_seconds())
+            staleness = vision_channel_staleness_pressure(age_seconds)
+            counts = list(self._vision_object_counts)
+            yield_value = perceptual_yield(counts)
+
+            if staleness > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="vision_channel",
+                        node_id="node:substrate.vision",
+                        prediction_error=staleness,
+                        now=now,
+                    )
+                )
+            # Written every tick, not only on fault -- a node that can only go
+            # up and never refresh back down to a genuine calm reading produces
+            # permanent false alarms in any consumer polling its raw value.
+            self._write_prediction_error_node(
+                node_id="node:substrate.vision",
+                error=staleness,
+                now=now,
+                reducer_key="vision_channel",
+                extra_channels={
+                    "perception_staleness": staleness,
+                    "perception_yield": yield_value,
+                },
+            )
+            logger.info(
+                "substrate_vision_channel_tick_completed age_sec=%.1f staleness=%.3f "
+                "yield=%.2f samples=%d",
+                age_seconds,
+                staleness,
+                yield_value,
+                len(counts),
+            )
+        except Exception:
+            logger.exception("substrate_vision_channel_tick_failed")
+
+    async def _vision_channel_tick_loop(self) -> None:
+        interval = float(self._settings.vision_channel_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._vision_channel_tick)
+            except Exception:
+                logger.exception("substrate_vision_channel_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+
     def _bus_synaptic_tick(self) -> None:
         """Periodic read of the live bus synaptic graph, feeding
         ``bus_synaptic_prediction_error`` (mirrors the shared writer the other
@@ -1088,6 +1258,7 @@ class BiometricsSubstrateWorker:
         reducer_key: str = "",
         contributing_id: str | None = None,
         evidence_event_ids: Sequence[str] = (),
+        extra_channels: dict[str, float] | None = None,
     ) -> None:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
 
@@ -1162,6 +1333,16 @@ class BiometricsSubstrateWorker:
                 "prediction_error": round(salience, 6),
                 "reducer_key": reducer_key,
             }
+            # Additional field channels this node carries beyond prediction_error
+            # (node:substrate.vision's perception_staleness / perception_yield).
+            # Deliberately NOT clamped to [0, 1]: pressure-typed channels are
+            # already bounded by the functions that produce them, and
+            # perception_yield is a raw count mean -- live values run 6-8 objects
+            # per frame, so a [0,1] clamp here would silently crush every healthy
+            # reading to 1.0 and make a blinded eye indistinguishable from a busy
+            # one, which is the whole distinction the channel exists to carry.
+            for extra_key, extra_value in (extra_channels or {}).items():
+                metadata[extra_key] = round(float(extra_value), 6)
             if evidence_event_ids:
                 metadata["prediction_error_evidence_event_ids"] = list(
                     evidence_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]

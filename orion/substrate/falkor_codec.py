@@ -146,6 +146,14 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # `_json_list`/`_parse_json_list` encoding as `contributing_turn_ids`
 # immediately below (a list of strings, Cypher has no native list-of-string
 # scalar type this codec promotes).
+# `perception_staleness` / `perception_yield` added 2026-08-13, and the first of
+# them was caught the same way `prediction_error_evidence_event_ids` was: after
+# deploying, node:substrate.vision carried prediction_error=0 and
+# perception_staleness NULL, because this allowlist had silently dropped it
+# from the SET clause. Consumer: config/field/orion_field_topology.v1.yaml's
+# node:substrate.vision -> capability:vision edge maps perception_staleness to
+# pressure. Note `perception_yield` is a raw count mean (live: 6-8 objects per
+# frame), NOT a 0-1 pressure, and is encoded unbounded on purpose.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -154,6 +162,8 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "prediction_error",
     "contributing_turn_ids",
     "prediction_error_evidence_event_ids",
+    "perception_staleness",
+    "perception_yield",
 )
 
 # Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()
@@ -193,8 +203,23 @@ DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
 # only once encode_node_properties() runs; FalkorSubstrateStore.upsert_node()
 # is responsible for translating this raw-key set into the encoded property
 # names it actually needs to exclude from the SET clause.
+# `perception_staleness`/`perception_yield` added 2026-08-13. Without them the
+# dynamics tick, which re-persists every node it walks every 30s, re-encoded
+# node:substrate.vision from a metadata dict that did not carry them and set
+# both properties back to NULL -- seconds after _vision_channel_tick had
+# written them, and while that write logged success. The symptom was a node
+# that kept `prediction_error` (already protected here) and silently lost
+# everything else, which reads exactly like an encoder bug and is not one.
+# Any key owned by a writer OTHER than SubstrateDynamicsEngine.tick() belongs
+# in this set, not just prediction-error-shaped ones.
 EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
-    {"prediction_error", "contributing_turn_ids", "prediction_error_evidence_event_ids"}
+    {
+        "prediction_error",
+        "contributing_turn_ids",
+        "prediction_error_evidence_event_ids",
+        "perception_staleness",
+        "perception_yield",
+    }
 )
 
 # Subset of EXTERNALLY_OWNED_METADATA_KEYS whose encoded Cypher property name
@@ -240,6 +265,14 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         "prediction_error_evidence_event_ids_json": _json_list(
             meta.get("prediction_error_evidence_event_ids")
         ),
+        # Scalar-typed, keeps its raw name, and omitted when absent (default
+        # None) on the same reasoning as prediction_error above: "no vision
+        # reading yet" must stay distinguishable from "measured, and the eye is
+        # fine", since those are opposite answers to "can Orion see".
+        "perception_staleness": _safe_float(meta.get("perception_staleness"), default=None),
+        # Raw count mean, not a 0-1 pressure -- live values run 6-8 objects per
+        # frame. Encoded unbounded on purpose; see _write_prediction_error_node.
+        "perception_yield": _safe_float(meta.get("perception_yield"), default=None),
     }
 
 
@@ -334,6 +367,12 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     prediction_error = _safe_float(row.get("prediction_error"), default=None)
     if prediction_error is not None:
         metadata["prediction_error"] = prediction_error
+    perception_staleness = _safe_float(row.get("perception_staleness"), default=None)
+    if perception_staleness is not None:
+        metadata["perception_staleness"] = perception_staleness
+    perception_yield = _safe_float(row.get("perception_yield"), default=None)
+    if perception_yield is not None:
+        metadata["perception_yield"] = perception_yield
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather

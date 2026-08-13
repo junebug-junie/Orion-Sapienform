@@ -150,6 +150,18 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   runs postgres/redis/FalkorDB/hub — so its ceiling is interference with the substrate, not
   inference contention. Moving perception off the orchestration host is the only relief.
 
+- **Chassis power is the dominant term and is entirely unmeasured.** `orion_biometrics.cpu`
+  carries `{util, cores, loadavg}` and no power field; there is no wall measurement anywhere in
+  the system. Juniper observes 700-1200 W all-in for two nodes, against measured GPU residency
+  of only 107 W (atlas) / 153 W (circe). A single 4.5 s inference is ~0.02% of one machine-hour.
+  **A smart plug per node would convert ~99% of the cost model from estimate to measured** and
+  is the cheapest instrument available to this whole arc.
+
+- **athena's CPU is the loaded resource, not its GPU.** 80 cores at 44.1% mean, 15-min load
+  average peaking at **120** (1.5x oversubscribed), on the box that also runs postgres, redis,
+  FalkorDB and the hub. atlas (96c) and circe (72c) sit at 0.52% and 0.21% -- pure GPU boxes
+  with idle CPUs. The interference ceiling is a CPU story that the GPU tables completely miss.
+
 - **Method correction, recorded because it nearly shipped:** `avg((util>0)::int)` is not a duty
   cycle. It reported athena's P100 at "99.74% busy" when its mean utilisation is 12.8% — the
   card is near-continuously *active at low intensity*, which the >0 test cannot distinguish

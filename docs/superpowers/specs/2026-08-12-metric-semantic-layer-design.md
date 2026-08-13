@@ -266,19 +266,28 @@ The actual answer to "agents don't trace upstream." Puts the lineage card in
 front of the agent *before* the edit lands, using the same mechanism as the
 graphify nudge that already works in this repo.
 
-**Phase 4 — CI gate + `make` target.** SHIPPED 2026-08-13.
+**Phase 4 — gate + `make` target.** SHIPPED 2026-08-13.
 
 `make check-metric-lineage-gate`. Three checks, all provable from repo state:
 
-1. **Registry integrity** — everything resolves, no dangling upstream URNs.
-2. **Declared-consumer existence** — a registry may not claim a consumer that
-   does not exist on disk. Found three on first run: the known
+1. **Declared-consumer existence** — a registry may not claim a consumer that
+   does not exist, checked at *both* levels: the module file and the callable
+   after the colon. Found three on first run: the known
    `orion-spark-introspector`, plus `orion-timeline` and `orion-evidence-index`,
    which appear **only** in `channels.yaml` across four channels with zero
-   references anywhere else in the repo.
-3. **Orphan ratchet** — registered metrics with no discoverable consumer may
-   shrink, never grow. A metric that names something but feeds nothing is a
-   keyword cathedral (§0A).
+   references anywhere else in the repo. This is the load-bearing check.
+2. **Orphan ratchet** — registered metrics that feed nothing (no code consumer
+   *and* no surviving declared consumer) may shrink, never grow. A metric that
+   names something but feeds nothing is a keyword cathedral (§0A).
+3. **Referential integrity** — causal parent organs must exist in
+   `ORGAN_REGISTRY`.
+
+**Not wired into CI, despite the name "gate".** No workflow in
+`.github/workflows/` runs any `make check-*` target — not this one and not any
+of the eleven that predate it. It is a local target run by hand or by an agent
+following the contract, which means it can be skipped. Wiring it (and the
+others) into a workflow is a real follow-up, not something this patch quietly
+implies it did.
 
 Pre-existing debt is carried in `config/metrics/orphan_baseline.json` — recorded
 and visible, not silently waived. Fixing it means editing `consumer_services`

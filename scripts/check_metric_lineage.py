@@ -45,18 +45,19 @@ def cmd_summary(graph, scan) -> int:
         for rel in scan.unparsed[:10]:
             print(f"      {rel}")
 
-    # Orphans must be judged on real consumers only. Counting every hit made
-    # this structurally blind to the two largest surfaces: every field channel
-    # appears in the glossary and every bus channel in channels.yaml, both
-    # inside SCAN_ROOTS, so 299 of 386 tokens could never be reported orphaned.
+    # Same definition the gate ratchets on, so report and gate cannot disagree:
+    # a metric feeds nothing only when it has no discoverable code consumer AND
+    # no surviving declared consumer, counted per node on its own surface.
+    from orion.metrics.gate import REPO_ROOT as GATE_ROOT, orphan_nodes
+
     orphans: dict[str, list[str]] = {}
-    for tok, nodes in graph.scan_tokens().items():
-        if not scan.consumers_for(tok, exclude_paths=graph.registry_sources_for(tok)):
-            orphans.setdefault(nodes[0].surface, []).append(tok)
+    for node in orphan_nodes(graph, scan, GATE_ROOT):
+        orphans.setdefault(node.surface, []).append(node.scan_token)
 
     total = sum(len(v) for v in orphans.values())
-    print(f"\n  tokens with no discoverable code consumer: {total}")
-    print("  (registry-of-origin excluded; NOT a liveness verdict)\n")
+    print(f"\n  registered metrics that feed nothing: {total}")
+    print("  (no code consumer AND no surviving declared consumer;")
+    print("   registry-of-origin excluded; NOT a liveness verdict)\n")
 
     for surface in sorted(orphans):
         toks = sorted(orphans[surface])
@@ -193,7 +194,7 @@ def cmd_gate(update_baseline: bool = False) -> int:
 
         graph = build_graph()
         scan = scan_repo(graph.scan_tokens().keys())
-        counts = orphan_counts(graph, scan)
+        counts = orphan_counts(graph, scan, GATE_ROOT)
         missing = missing_declared_consumers(graph, GATE_ROOT)
         path = write_baseline(counts, missing)
         print(f"baseline written: {path}")

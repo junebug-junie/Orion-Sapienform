@@ -74,8 +74,13 @@ check-metric-lineage:
 # Pre-existing debt lives in config/metrics/orphan_baseline.json so it stays
 # visible instead of being silently waived. Regenerate deliberately:
 #   make check-metric-lineage-gate UPDATE_BASELINE=1
+# UPDATE_BASELINE is matched against explicit true values, not tested for
+# non-emptiness: `$(if $(UPDATE_BASELINE),...)` treats ANY value as true, so
+# UPDATE_BASELINE=0 and UPDATE_BASELINE=no -- the obvious ways to disable a
+# flag -- silently rewrote the baseline to whatever the tree contained,
+# ratcheting the debt UPWARD and exiting 0 without ever gating.
 check-metric-lineage-gate:
-	@$(METRIC_PYTHON) scripts/check_metric_lineage.py $(if $(UPDATE_BASELINE),--update-baseline,--gate)
+	@$(METRIC_PYTHON) scripts/check_metric_lineage.py $(if $(filter 1 true yes TRUE YES,$(UPDATE_BASELINE)),--update-baseline,--gate)
 
 # Live-bus gate: every channel marked single_consumer: true in
 # orion/bus/channels.yaml must have exactly one live subscriber

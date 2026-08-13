@@ -251,6 +251,11 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         "prediction_error_evidence_event_ids_json": _json_list(
             meta.get("prediction_error_evidence_event_ids")
         ),
+        # Scalar-typed, keeps its raw name, and omitted when absent (default
+        # None) on the same reasoning as prediction_error above: "no vision
+        # reading yet" must stay distinguishable from "measured, and the eye is
+        # fine", since those are opposite answers to "can Orion see".
+        "perception_staleness": _safe_float(meta.get("perception_staleness"), default=None),
     }
 
 
@@ -345,6 +350,9 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     prediction_error = _safe_float(row.get("prediction_error"), default=None)
     if prediction_error is not None:
         metadata["prediction_error"] = prediction_error
+    perception_staleness = _safe_float(row.get("perception_staleness"), default=None)
+    if perception_staleness is not None:
+        metadata["perception_staleness"] = perception_staleness
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather

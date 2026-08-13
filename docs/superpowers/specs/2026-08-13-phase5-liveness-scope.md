@@ -1,172 +1,223 @@
-# Phase 5 — metric liveness: scope before build
+# Phase 5 — signal semantics: provenance, window, commensurability
 
-**Mode:** Design/scoping. No implementation until Juniper picks a shape.
+**Mode:** Design/scoping. No implementation until Juniper picks the order.
 
-**Date:** 2026-08-13
+**Date:** 2026-08-13 (revised same day — see "What this revision retracts")
 
-## Arsonist summary
+## What this revision retracts
 
-Phases 1–4 answer *where does this metric come from* and *who reads it*. They
-do not answer the question that actually burned us: **is the number real.**
+The first version of this doc framed phase 5 as **liveness** and treated the
+four metric surfaces being different as a *scoping obstacle*. Both were wrong.
 
-The incident record is entirely liveness failures, not lineage failures:
+- "Liveness" is not the problem. Every metric in the incident ledger below was
+  live. They moved, they varied, they were wrong anyway.
+- The surfaces differing is the **design premise**, not an obstacle. A field
+  channel, an inner-state scalar, an organ signal, and a bus channel are
+  different kinds of thing and get different treatment by construction. The
+  first draft presented that as a blocker to be resolved. It isn't one.
+- It also proposed a second answer to bus traffic. Bus traffic is already
+  answered by the bus synaptic graph over `orion-bus-mirror` actuals, which
+  sees multi-hop turns rather than unweighted per-tick counts. Building a
+  parallel `traffic` verdict would be a duplicate mechanism.
 
-- `bus_synaptic_prediction_error()` — a mathematically permanent ~0.27 floor
-  (`mean(|z|)` for a calm population has expected value `sqrt(2/pi)`, not 0).
-  Varied in real time, could never read calm.
-- `node:substrate.route`'s `prediction_error` — decayed to subnormal because a
-  generic staleness loop multiplied it by 0.92 per tick for 48+ hours.
-  *Decayed-to-zero* is indistinguishable from *genuinely-calm-at-zero* without
-  checking the exact geometric ratio between successive values.
-- `transport_prediction_error()` — excluded from one consumer as known-dead
-  while still winning budget slots in a generic one.
-- **Found today, live on main:** `perception_staleness` is an edge source in
-  `config/field/orion_field_topology.v1.yaml:142` but is **absent from
-  `NODE_CHANNELS`** and produced by **nothing** in the digester. The edge can
-  never fire, so `capability:vision` reads `pressure=0.0` and the derived
-  fallbacks stamp `confidence=1.0` — a fabricated healthy vector, re-stamped
-  every tick.
+## The one problem
 
-A naive phase 5 ("sample each metric, run the variance gate") would have
-caught the third and fourth but **not the first two** — the exact two that
-cost the most to find. That is the reason to scope before building.
+**A number reaches a consumer with no record of what it is.**
 
-## The decisive finding: the four surfaces are not comparable
+Three facts are missing at the point of use, and every incident in the record
+is the absence of exactly one of them:
 
-Phases 1–4 treat all 597 URNs uniformly. For liveness they are not uniform at
-all. Measured live 2026-08-13:
+| axis | the missing fact | failure it produces |
+|---|---|---|
+| **Provenance** | which producer actually wrote this, and when | a decayed or dead value reads as a calm real one |
+| **Window** | what interval and what transform this summarizes | "near max but steady" is indistinguishable from "spiking" |
+| **Commensurability** | is this on the same scale/semantics as what it is combined with | a low-resolution input silently dominates a merge or a ranker |
 
-| surface | URNs | live history | verdict |
+This is not a taxonomy. Each axis has a mechanical detector and a measured
+instance, below.
+
+## Incident ledger, mapped
+
+| incident | axis | status |
+|---|---|---|
+| `bus_synaptic_prediction_error()` permanent ~0.27 floor (`mean(\|z\|)` rests at `sqrt(2/pi)`, not 0) | Window | fixed; live min now 0.0039 |
+| `node:substrate.route` decayed by 0.92/tick for 48h, read as calm | Provenance | fixed |
+| `transport_prediction_error()` excluded from one consumer, still winning budget slots in a generic one | Provenance | retired |
+| `perception_staleness` wired as a topology edge source, produced by nothing → fabricated `pressure=0.0/confidence=1.0` | Provenance | fixed 2026-08-13 by the perception P4 work; edge now maps `prediction_error` |
+| `thermal_pressure` (18 distinct) beating capability `pressure` (1,325 distinct) on 91.76% of ticks | Commensurability | fixed by deleting one routing entry |
+| **`node:substrate.codebase` dominating the merged `prediction_error` channel** | Commensurability | **OPEN — measured below** |
+| `resource_pressure` reading calm during a producer outage, crediting the in-flight action with success | Provenance | **OPEN — latent, see below** |
+| "very busy at near max but steady state, so actually peaceful" is not expressible | Window | **OPEN — no mechanism exists** |
+
+Five of eight are fixed. Each was found by hand, by a person or a review
+noticing. None was found by a gate. That is the thing to change.
+
+## Measured evidence (2026-08-13, live)
+
+Source: `substrate_field_state`, 113,190 rows spanning 2026-08-11 → 2026-08-13.
+**That is a 2.5-day window** (the corpus restarts at the disk-death of
+2026-07-23), so distribution claims below are scoped to it and are not
+long-run. Sample used: the most recent 20,000 ticks = 11.4h at a 2.04s median
+tick.
+
+### Commensurability: the merged `prediction_error` channel
+
+`collect_field_channel_pressures()` merges every `PRESSURE_CHANNEL` by `max()`
+across all sources. For `prediction_error` that is a max over 12 nodes:
+
+| source | wins the merge | its own distinct values / 20,000 ticks |
+|---|---|---|
+| `node:substrate.codebase` | **54.2%** | **5** — effectively the constant 0.3357 |
+| `node:substrate.execution` | 41.7% | 1,208 |
+| `node:substrate.vision` | 4.1% | 4 (0.0 with 1.0 spikes) |
+| `node:substrate.biometrics` | **0%** | 1,188 |
+| `node:substrate.bus_synaptic` | **0%** | 341 |
+| `atlas`, `circe`, `athena`, `prometheus`, `substrate.transport` | 0% | 1 each (permanent 0.0) |
+
+Consequences:
+
+- The channel has a **hard floor of 0.3357**, set by a near-constant from one
+  node. It cannot read calm below that. Structurally the same defect as the
+  0.27 floor, but produced by the *merge* rather than by a formula — so a
+  formula-level review would never find it.
+- Over the last 600 ticks (~20 min) it is **1 distinct value, exactly 1.0**.
+- The two richest signals in the set (1,188 and 341 distinct) contribute
+  **nothing, ever**.
+
+`max()` across incommensurable sources does not select the most informative
+one. It selects the highest-scaled one.
+
+### Provenance: the discarded dict
+
+`collect_field_channel_pressures()` already returns
+`tuple[dict[str, float], dict[str, str]]` — values *and* a provenance dict
+naming which source won each channel. `field_pressures()` discards it:
+
+```python
+channel_pressures, _provenance = collect_field_channel_pressures(field)
+return map_channels_to_dimensions(channel_pressures)
+```
+
+The seam exists and is computed every tick. It is thrown away one line before
+the consumer.
+
+### Provenance: the feedback-loop trap
+
+`orion/field/pressure.py:100-108` records, and a code review confirmed, that if
+`services/orion-biometrics` goes quiet, decay drives every remaining input
+toward 0, `resource_pressure` reads calm, and because
+`config/feedback/feedback_policy.v1.yaml` lists `resource_pressure: decrease`
+under `positive_delta_channels` (**verified present on main today**), the
+in-flight action is credited with a positive outcome for a sensor outage.
+
+Tracked to PR #1554, which **merged as docs only**. The guard was never built.
+
+Checked for it directly: **no geometric-decay runs in the last 20,000 ticks** —
+every producer stayed live across the retained window. So this is a **latent
+trap, not a currently-firing bug**. It cannot be caught by monitoring, because
+by the time it fires it has already written a false reward.
+
+### Window: nothing expresses regime
+
+Prototyped level / dispersion / drift / saturation over a declared window
+against real ticks. It separates cleanly (e.g. `memory_pressure` level 0.813
+with dispersion 0.001 — loaded and steady; `gpu_pressure` dispersion 0.258 and
+touching both 0.0 and 1.0 — volatile and rail-saturated). No such reading
+exists anywhere in the system today; consumers get one scalar.
+
+Note the units trap this exposes: a "600-tick window" is 20 minutes at the
+current 2.04s cadence, and nothing anywhere writes that down. **Windows get
+declared in seconds.**
+
+## Treatment by signal kind
+
+Different kinds get different mechanisms. That is the point, not a compromise.
+
+| surface | URNs | what it gets | why |
 |---|---|---|---|
-| `field_channel` | 38 | `substrate_field_state`, **95,966 rows**, `field_json` per tick | **READY** |
-| `inner_state` | 37 | per-signal tables (`substrate_attention_self_model` 6,521, `substrate_attention_broadcast_log` 6,521, `substrate_self_state` **0**) | **PARTIAL** |
-| `organ_signal` | 252 | in-memory window only; `substrate_organ_emissions` has 1.65M rows but **one** `organ_id` | **BLOCKED** |
-| `bus_channel` | 261 | Redis streams (XLEN/XREVRANGE) | **DIFFERENT KIND** |
+| `field_channel` | 38 | full treatment: provenance + regime + commensurability | real per-tick history in `substrate_field_state`; feeds the rankers |
+| `inner_state` (substrate-runtime) | 37 | provenance + regime | per-signal tables exist; this is what feeds the autonomy rankers, so it is where mixing does the most damage |
+| `organ_signal` | 252 | **definition-change alert only** | no persistence (in-memory window only; `substrate_organ_emissions` has 1.65M rows but one `organ_id`, and it is not in `ORGAN_REGISTRY`). Persisting it is a producer change, out of scope. Alert when someone adds to it. |
+| `bus_channel` | 261 | **definition-change alert only** | bus synaptic over `orion-bus-mirror` actuals already owns traffic, including multi-hop. Alert when someone edits the defs. |
 
-Three consequences, each of which changes the build:
+## Roadmap
 
-**1. `organ_signal` is 42% of the URN space and is unsampleable.**
-`services/orion-signal-gateway/app/main.py:60` returns "most recent
-OrionSignalV1 per organ_id from the **in-memory window**" — no persistence.
-`substrate_organ_emissions` looked like a history table and is not: 1,652,247
-rows, `count(distinct organ_id) = 1`, and that one value is
-`biometrics_pressure`, which **is not one of the 30 organ ids in
-`ORGAN_REGISTRY`** (which has `biometrics`). So 29 of 30 organs have no
-history, and the one that does is keyed by a name the registry does not use.
-Any phase 5 covering this surface must first decide whether to persist organ
-signals at all — a producer change, not an observability change.
+Ordered. Each rung is independently shippable and independently useful.
 
-**2. `bus_channel` liveness is a different question with a different answer.**
-A field channel's liveness is "does this *value series* carry information".
-A bus channel's is "is *traffic* flowing". Same word, different measurement,
-different failure modes, and no shared classifier. Conflating them would
-produce a verdict column that means two things.
+### R1 — provenance survives the merge
 
-**3. Only `field_channel` can ship a real verdict today** — and it already
-half does, via `classify_channel_series()` behind Hub's glossary panel.
+Thread the already-computed provenance dict through `field_pressures()` to the
+consumer. No new computation, no new schema concept, no behavior change.
 
-## What already exists and must not be rebuilt
+*Acceptance:* for any dimension, name the source that won each contributing
+channel this tick, from real stored state.
 
-- `orion/field/channel_glossary.py::classify_channel_series()` — the proven
-  classifier. Verdict vocabulary already encodes the incident history:
-  `never_produced` / `dead` / `ratchet_suspect` / `quiet` / `live`.
-- `services/orion-hub/scripts/field_channel_glossary_routes.py` — already
-  computes these live for the 38 field channels and renders them.
-- The glossary YAML's own rule, which this design keeps: **verdicts are
-  computed, never declared.**
+### R2 — regime readout over declared windows
 
-So for `field_channel`, phase 5 is not "build a classifier" — it is "expose
-the one that exists through the metric layer and its gate", which is a much
-smaller patch than the original phase-5 line implied.
+Level, dispersion, drift, saturation as **separate** readings per channel,
+windows declared in seconds. Surface on the lineage card and in `--json`.
+Reuse `orion/bus/ewma.py::compute_ewma_update` and
+`classify_channel_series()`; check `orion/substrate/prediction_error.py`,
+`orion/metacog/trend_reducer.py`, and the phi autoencoder v2 running on field
+signals before writing any new statistic — several already exist and this must
+not add a sixth.
 
-## The trap: variance is not liveness
+*Acceptance:* "near max but steady" and "volatile" produce different readouts
+for two real channels. A saturated channel reports saturation rather than a
+level.
 
-The two most expensive incidents were **not** low-variance. Both moved
-continuously and both were wrong:
+### R3 — commensurability detector
 
-- the 0.27 floor was a *rest-point* error — the metric could not reach calm
-- the 0.92 decay was a *provenance* error — values changed only because a
-  decay loop touched them, with no producer refreshing them
+Flag any merge where one source wins >50% of ticks while contributing fewer
+than N distinct values, and any consumer combining channels whose declared
+window semantics differ.
 
-A variance gate scores both as `live`. Catching them needs two checks that are
-about structure, not spread:
+*Acceptance:* fires on `substrate.codebase` in the `prediction_error` merge as
+it exists today, and would have fired on `thermal_pressure` before the manual
+catch.
 
-- **Rest-point check** — what does this metric read when the world is calm?
-  Requires knowing the theoretical rest value (§0A step 3's theory anchor),
-  which cannot be derived from samples alone.
-- **Self-refresh check** — is the series changing because a *producer* wrote
-  it, or because a *decay loop* touched it? Detectable: successive values in
-  an exact geometric ratio (0.92) with no producer write between them.
+### R4 — definition-change alert
 
-`classify_channel_series`'s `ratchet_suspect` is the closest existing
-analogue, and it only covers the monotone-climb direction.
+Diff-triggered notification when an agent edits bus channel defs, organ defs,
+or topology channel maps. Answers "tell me when someone starts messing in
+there" without a verdict column. Subsumes what the first draft called slice C,
+which was a narrow static assert on one config file and is already green.
 
-## Proposed shape (for discussion, not yet a plan)
+*Acceptance:* editing a channel def in a PR surfaces the change to Juniper.
 
-**Slice A — field channels only, computed verdict through the layer.**
-Surface the existing `classify_channel_series` result on the lineage card and
-in `--json`, sampled from `substrate_field_state`. 38 metrics, zero new
-classifier, zero new schema. Turns "Liveness verdict: NOT COMPUTED" into a
-real answer for the one surface that can honestly answer it.
+### R5 — the guard (proposal mode, not this roadmap)
 
-**Slice B — the decay-artifact detector.**
-The check that would have caught `node:substrate.route`: flag a series whose
-successive ratios are constant to within epsilon and match a known decay
-constant, with no producer write in between. Narrow, mechanical, and aimed at
-a failure mode with two confirmed instances.
-
-**Slice C — static "can this metric ever fire" gate.**
-`perception_staleness` needs **no sampling at all** — it is a wiring gap
-detectable from config: a channel named as a topology edge source that is
-absent from `NODE_CHANNELS` and has no producer. This is a phase-4-style gate,
-cheap, and would have caught today's fabricated-vision case before deploy.
-Arguably it should jump the queue ahead of A and B.
-
-**Deliberately deferred, with the reason:**
-- `organ_signal` — blocked on a persistence decision (see finding 1). Naming
-  it as "phase 5 work" would hide a producer change inside an observability
-  patch.
-- `bus_channel` — different measurement; deserves its own name, not a shared
-  `liveness` column.
-- Rest-point checking — needs a per-metric theory anchor. Cannot be automated
-  from data, and a fabricated anchor is worse than none.
-
-## Missing questions
-
-Answered by inspection, not posed:
-
-- *Is there organ history anywhere?* One organ, wrong key. Answered above.
-- *Does a classifier exist?* Yes, proven, scoped to field channels.
-- *Would sampling have caught the known incidents?* Two of four. That is the
-  central scoping result.
-
-## Open questions for Juniper
-
-1. **Order.** Slice C (static wiring gate) is the cheapest and would have
-   caught a fabricated vector that is live on main right now. A and B are the
-   "real" liveness work. C first, or A first?
-2. **`organ_signal` persistence.** 252 URNs stay permanently unverifiable
-   until organ signals are persisted. That is a producer change to
-   `orion-signal-gateway` with real cost. Worth it, or is the organ surface
-   accepted as lineage-only?
-3. **Scope of the word "liveness".** Do bus channels get a *separate*
-   `traffic` verdict, or stay out of the liveness story entirely?
+A staleness guard on the dimension so a decayed-to-calm reading cannot be
+credited as a positive outcome. This changes a learning loop and needs its own
+proposal with rollback, per CLAUDE.md §0A. **Detection first (R1-R3), so the
+guard is designed against measured behavior rather than a hypothesis.**
 
 ## Non-goals
 
-- One classifier across all four surfaces. The measurement is genuinely
-  different per surface; a shared column would be a keyword cathedral.
-- A declared/persisted verdict column. Verdicts stay computed.
-- Fixing any metric this finds. Detection only; each fix is its own patch.
-- Inferring theory anchors from data.
+- One classifier across all four surfaces.
+- Any declared or persisted verdict column. Verdicts stay computed.
+- Fixing any metric this finds. Detection is its own patch; each fix is another.
+- Inferring theory anchors from data. A fabricated rest-point is worse than none.
+- Changing the merge, the feedback policy, or any ranker in R1-R4.
 
-## Acceptance checks (whichever slice is chosen)
+## Open decisions for Juniper
 
-1. For a known-live channel (`cpu_pressure`) and a known-decayed one
-   (`node:substrate.route` `prediction_error`), verdicts come from real stored
-   history, not fixtures.
-2. Slice C fails on `perception_staleness` as it exists on main today, and
-   passes once the channel is either produced or removed from the topology.
-3. No verdict is written into any config file.
-4. Every surface without a real verdict continues to say so explicitly rather
-   than rendering a blank that reads as "fine".
+1. **Order.** R1 → R2 → R3 as written, or R3 first, given it has a measured
+   open instance and R1/R2 are infrastructure for it?
+2. **R5 timing.** Design the guard now in parallel, or hold until R1-R3 have
+   produced real numbers on how often the trap is approached?
+
+## Risk note — tooling, not code
+
+`rg` output in this environment was caught on 2026-08-13 silently replacing the
+searched-for identifier with a short token on large result sets, including
+inside file paths (`channel_map` → `n`; `config/field/biometrics_lattice.yaml` →
+`config/field/n.yaml`, a path that does not exist). Small result sets are
+unaffected, so it is intermittent. Suspected source is RTK's ripgrep filter.
+
+This matters to this roadmap specifically: every rung depends on reading
+identifiers out of the repo accurately, and this corruption fabricates
+plausible ones. Verify symbol and path spellings with a direct file read before
+relying on grep output. A gate already exists for FCC sessions at
+`~/.claude/hooks/rtk-fcc-gate.sh`; the same exclusion likely needs to cover
+`rg` for this repo.

@@ -1,8 +1,19 @@
 # Scarcity, revised: two ceilings and an invisible currency
 
 Date: 2026-08-13
-Status: **Framing agreed with Juniper. Replaces §1e and §3 of
-`2026-08-13-scarcity-and-repertoire-execution-plan.md`. No phases authorised yet.**
+Status: **SUPERSEDED same day by `2026-08-13-the-plant-three-ceilings.md`.**
+
+> Juniper's objection, and it was correct: this document mostly re-states that nothing
+> works. The residency and concurrency sums in §1 are good, but they are asserted rather
+> than established, and the fleet is treated as one resource when it is three machines with
+> three *different kinds* of ceiling — atlas contends, athena interferes, circe is off by
+> choice and costs a discrete decision. The successor document measures all three per host
+> and prices them in a single unit (marginal joules + an admission term).
+>
+> What survives: "6% utilised and 100% allocated" (now backed by atlas GPU1 at p95=99%),
+> and the standing rule that utilisation is not a valid calibration input here.
+> What is withdrawn: the §3 GPU-2 framing, and the two-ceiling count itself.
+> Kept for the method note in §4, which is still the most useful part of it.
 
 The original plan named serialized inference time as the scarce resource. That was wrong in
 a way that took four separate measurement failures to see, and the correct answer was in

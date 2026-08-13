@@ -119,3 +119,40 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   available capacity. With a concurrency limit of one, the queue forms at arrival, not in the
   meter. Establish the concurrency limit and residency set before any utilisation number is
   used for anything.
+
+## 2026-08-13 (plant survey)
+
+- **There is no LLM call telemetry table.** 193 tables in `conjourney`, none logging inference.
+  Consumer attribution has to be parsed out of `orion-llm-gateway` container logs, which rotate.
+  Any allocation mechanism needs a ledger and there is none. → the first real blocker for
+  anything budget-shaped. `2026-08-13-the-plant-three-ceilings.md` §6.1.
+
+- **`chat` and `agent` routes point at a host that is off.** Both resolve to
+  `http://100.112.254.99:8011` (circe-worker-1); circe does not ping and its biometrics stop at
+  08:21 today. 1 chat request in 6 h. Whether the gateway degrades, retries, or hard-fails is
+  untraced. Orion's deep-cognition lane is currently unavailable and nothing represents that.
+
+- **`priority_admission.py` is wired to AI Town only.** A live, working, `/slots`-driven
+  background admission gate (`reserved_free_slots=2`, fail-open) guards exactly one consumer:
+  `EMBODIMENT_SPEECH_QUICK_LLM_ROUTE=quick_background`. Orion's own autonomous cognition —
+  3,750 of 3,821 gateway requests in 6 h, all from `cortex-exec` — uses foreground `quick`/
+  `metacog` and is subject to no gate. → candidate first phase, `the-plant` §5.
+
+- **Zero admission-wait events in 6 h of gateway logs.** Cannot distinguish "gate never had to
+  fire" from "gate is inert". Needs a deliberate load test before anything is built on it.
+
+- **circe GPU2 holds 21.3 GB of weights and has never been driven above 80% in 7 days**
+  (mean util 0.1%, p95 0, zero samples at util≥80). Pure residency, zero output. Whose model
+  and why loaded is unknown.
+
+- **athena's P100 is the perception organ, not a spare card.** `orion-athena-vision-host`
+  (uvicorn :6600, 5,050 MiB) + `orion-athena-whisper-tts`. p95 util 92% on the same box that
+  runs postgres/redis/FalkorDB/hub — so its ceiling is interference with the substrate, not
+  inference contention. Moving perception off the orchestration host is the only relief.
+
+- **Method correction, recorded because it nearly shipped:** `avg((util>0)::int)` is not a duty
+  cycle. It reported athena's P100 at "99.74% busy" when its mean utilisation is 12.8% — the
+  card is near-continuously *active at low intensity*, which the >0 test cannot distinguish
+  from saturation. Same session also dropped 60% of gateway requests by matching
+  `route=([a-z_]+)` against lines carrying `route=None`. Both caught before the spec was
+  written; both are the same family as the four sampling errors already logged today.

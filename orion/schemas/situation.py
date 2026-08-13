@@ -260,6 +260,40 @@ class SituationPolicyV1(BaseModel):
     do_not_overpersonalize: bool = True
 
 
+class PerceptionContextV1(BaseModel):
+    """What Orion's camera saw, summarised, for the situation brief.
+
+    **The exposed-field list is the privacy contract, and it is short on
+    purpose.** Only a natural-language scene summary and its age cross into the
+    prompt. Deliberately absent, and not to be added without proposal-mode
+    sign-off: raw frames or frame paths, bounding boxes, per-object detections,
+    embeddings, and anything identity-bearing (`vision_events.entities`, faces,
+    re-ID). The perception design doc lists identity/face/re-ID as a non-goal;
+    this schema is where that promise is kept or broken.
+
+    `available=False` is a real state, not an error state: it is how "I have not
+    seen anything recently" is represented, and it must render as exactly that
+    rather than as a stale observation presented as current.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["perception.context.v1"] = "perception.context.v1"
+    available: bool = False
+    # Natural-language only. The vision council's narrative, e.g. "Three chairs,
+    # two tables, one door and one screen are visible in the scene."
+    scene_summary: Optional[str] = None
+    observed_at: Optional[datetime] = None
+    observation_age_seconds: Optional[int] = None
+    stream_id: Optional[str] = None
+    # "live" | "stale" | "disabled" | "unavailable" | "error" -- why the caller
+    # is or is not getting a percept, so a missing one is never ambiguous.
+    source: str = "unavailable"
+    # Camera-derived content about a private home. session_only is the only
+    # value this should hold without an explicit, separately-approved change.
+    privacy_mode: Literal["session_only", "persist_allowed"] = "session_only"
+
+
 class SituationDiagnosticsV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -284,6 +318,10 @@ class SituationBriefV1(BaseModel):
     environment: EnvironmentContextV1 = Field(default_factory=EnvironmentContextV1)
     agenda: AgendaContextV1 = Field(default_factory=AgendaContextV1)
     lab: LabContextV1 = Field(default_factory=LabContextV1)
+    # Additive: defaults to available=False, so an unpatched producer or a
+    # disabled flag yields "haven't seen anything recently" rather than a
+    # missing field.
+    perception: PerceptionContextV1 = Field(default_factory=PerceptionContextV1)
     surface: SurfaceContextV1 = Field(default_factory=SurfaceContextV1)
     affordances: list[SituationAffordanceV1] = Field(default_factory=list)
     policy: SituationPolicyV1 = Field(default_factory=SituationPolicyV1)

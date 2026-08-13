@@ -10,11 +10,13 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
+from .perception_reader import fetch_latest_percept, percept_age_seconds
 from orion.schemas.situation import (
     AgendaContextV1,
     ConversationPhaseContextV1,
     EnvironmentContextV1,
     LabContextV1,
+    PerceptionContextV1,
     PlaceContextV1,
     PresenceContextV1,
     RequestorContextV1,
@@ -60,6 +62,9 @@ class SituationSettings:
     agenda_enabled: bool
     lab_enabled: bool
     lab_provider: str
+    perception_enabled: bool
+    perception_max_age_seconds: int
+    perception_stream_id: str
     default_requestor: str
     presence_persist_allowed: bool
 
@@ -86,6 +91,20 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         hot_car_temp_f_threshold=int(getattr(settings, "orion_situation_hot_car_temp_f_threshold", 80)),
         agenda_enabled=bool(getattr(settings, "orion_situation_agenda_enabled", False)),
         lab_enabled=bool(getattr(settings, "orion_situation_lab_context_enabled", True)),
+        # Default OFF: this puts camera-derived content about a private home
+        # into the prompt, so it is opt-in rather than opt-out.
+        perception_enabled=bool(
+            getattr(settings, "orion_situation_perception_enabled", False)
+        ),
+        # 900s. Live vision_events arrive roughly every 5 min on a static scene
+        # (measured 2026-08-13), so this tolerates a few missed windows without
+        # letting an hour-old percept read as current.
+        perception_max_age_seconds=int(
+            getattr(settings, "orion_situation_perception_max_age_seconds", 900)
+        ),
+        perception_stream_id=str(
+            getattr(settings, "orion_situation_perception_stream_id", "cam0")
+        ),
         lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
         default_requestor=str(getattr(settings, "orion_presence_default_requestor", "Juniper")),
         presence_persist_allowed=bool(getattr(settings, "orion_presence_persist_allowed", False)),
@@ -144,6 +163,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
     env_ctx = _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
+    perception_ctx = _build_perception_context(cfg, diagnostics)
     surface_ctx = _build_surface_context(ctx)
     affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
@@ -156,6 +176,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
             "presence": presence.source,
             "phase": phase_ctx.phase_change,
             "surface": surface_ctx.surface,
+            "perception": perception_ctx.source,
         },
         requestor=presence.requestor,
         presence=presence,
@@ -165,6 +186,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
         environment=env_ctx,
         agenda=agenda_ctx,
         lab=lab_ctx,
+        perception=perception_ctx,
         surface=surface_ctx,
         affordances=affordances,
         diagnostics=diagnostics,
@@ -474,6 +496,59 @@ def _build_lab_context(cfg: SituationSettings) -> LabContextV1:
     return LabContextV1(available=False, source=cfg.lab_provider, thermal_risk="unknown", power_risk="unknown")
 
 
+def _build_perception_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> PerceptionContextV1:
+    """Most recent camera percept, gated hard on age.
+
+    The staleness gate is the point, not a safety rail bolted on: a percept from
+    two hours ago rendered as a current observation is a confabulation with a
+    real referent, which is worse than saying nothing. Past the threshold this
+    returns `available=False` and the prompt line becomes an explicit "haven't
+    seen anything recently".
+
+    Fail-open like every other provider here -- a database problem yields no
+    percept, never an exception into turn assembly.
+    """
+    if not cfg.perception_enabled:
+        diagnostics.provider_status["perception"] = "disabled"
+        return PerceptionContextV1(available=False, source="disabled")
+
+    try:
+        percept = fetch_latest_percept()
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["perception"] = "error"
+        diagnostics.provider_errors["perception"] = str(exc)
+        return PerceptionContextV1(available=False, source="error")
+
+    if not percept or not percept.get("scene_summary"):
+        diagnostics.provider_status["perception"] = "empty"
+        return PerceptionContextV1(available=False, source="unavailable")
+
+    age = percept_age_seconds(percept.get("observed_at"))
+    if age is None or age > cfg.perception_max_age_seconds:
+        diagnostics.provider_status["perception"] = "stale"
+        # observed_at is carried even when stale so a debug surface can say how
+        # old, but scene_summary is NOT -- a stale summary in the payload is a
+        # stale summary one refactor away from reaching a prompt.
+        return PerceptionContextV1(
+            available=False,
+            source="stale",
+            observed_at=percept.get("observed_at"),
+            observation_age_seconds=age,
+        )
+
+    diagnostics.provider_status["perception"] = "ok"
+    return PerceptionContextV1(
+        available=True,
+        source="live",
+        scene_summary=percept["scene_summary"],
+        observed_at=percept.get("observed_at"),
+        observation_age_seconds=age,
+        stream_id=cfg.perception_stream_id,
+    )
+
+
 def _build_surface_context(ctx: dict[str, Any]) -> SurfaceContextV1:
     md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
     surface = str((md.get("surface_context") or {}).get("surface") or "hub_desktop")
@@ -572,6 +647,14 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         lines.append(f"Lab risk: thermal={brief.lab.thermal_risk}, power={brief.lab.power_risk}.")
     else:
         lines.append("Lab: unavailable/stub; do not infer.")
+    if brief.perception.available and brief.perception.scene_summary:
+        age_min = round((brief.perception.observation_age_seconds or 0) / 60)
+        seen = "just now" if age_min < 1 else f"{age_min} min ago"
+        lines.append(f"Room (seen {seen}): {brief.perception.scene_summary}")
+    else:
+        # Never phrase this as "the room is empty/quiet" -- not seeing and
+        # seeing nothing are different claims, and only one of them is true.
+        lines.append("Room: haven't seen anything recently; do not infer.")
     relevance = [f"{a.kind}: {a.suggestion}" for a in brief.affordances if a.trigger_relevance == "active"]
     cautions = [
         "Situation context is grounding, not a requirement to mention.",

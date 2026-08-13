@@ -579,6 +579,7 @@ from orion.schemas.situation import (
     ConversationPhaseContextV1,
     EnvironmentContextV1,
     LabContextV1,
+    PerceptionContextV1,
     PlaceContextV1,
     PresenceCompanionV1,
     PresenceContextV1,
@@ -865,6 +866,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SituationAffordanceV1": SituationAffordanceV1,
     "SituationPolicyV1": SituationPolicyV1,
     "SituationDiagnosticsV1": SituationDiagnosticsV1,
+    "PerceptionContextV1": PerceptionContextV1,
     "SituationBriefV1": SituationBriefV1,
     "SituationPromptFragmentV1": SituationPromptFragmentV1,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields

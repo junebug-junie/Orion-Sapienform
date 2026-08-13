@@ -176,7 +176,18 @@ profiles:
     params:
       max_short_side_px: 960
       max_detections: 60
-      score_threshold: 0.25
+      # Measured on 6 consecutive cam0 frames of a static room holding exactly
+      # one desk, one table and two chairs (2026-08-12), sweeping this value:
+      #   0.25 -> 119 detections: desk x23, box x24, table x18  (~3.8 desks/frame)
+      #   0.35 ->  57 detections: desk x5,  box x6,  table x13  (~0.8 desks/frame)
+      #   0.50 ->  20 detections: only chair x14 and door x6
+      # At 0.25 the low-confidence tail is scattered false positives -- verified
+      # spatially disjoint (pairwise IoU ~0.000), so NMS cannot remove them; only
+      # the threshold can. At 0.50 real objects vanish. 0.35 keeps the object
+      # classes while roughly halving the phantom count.
+      # Per-frame counts remain approximate; do not read narrative plurals as
+      # inventory. See the PR report for the full sweep.
+      score_threshold: 0.35     # alias honoured as box_threshold by the runner
       nms_iou: 0.6
       label_mode: open_vocab           # open_vocab | closed_set
       labels_hint: []                  # optional label shortlist per request
@@ -200,10 +211,13 @@ profiles:
       # bare `storage`, and never once `storage bin`. A garbled label is worse
       # than a coarse one -- it reaches the narrative and it churns.
       default_prompts:
+        # `monitor` is deliberately absent: it and `screen` fired on the same
+        # physical panel (live 2026-08-12: screen x3 + monitor x2 for two
+        # monitors). NMS is per-label, so cross-label synonyms have to be
+        # resolved here rather than downstream.
         - person
         - door
         - screen
-        - monitor
         - laptop
         - keyboard
         - desk

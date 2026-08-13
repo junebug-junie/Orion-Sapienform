@@ -14,6 +14,7 @@ import torch
 
 from .artifacts import merge_result_inputs
 from .caption_sanitize import CAPTION_PROMPT, sanitize_caption
+from .detections import cap_by_score, nms
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
@@ -397,9 +398,14 @@ class VisionRunner:
         if not text.endswith("."):
             text = text + " ."
 
-        box_th = float(p.params.get("box_threshold", 0.25))
+        # `score_threshold` is the historical spelling in vision_profiles.yaml and
+        # was silently ignored; honour it as an alias so the documented knob works.
+        box_th = float(
+            p.params.get("box_threshold", p.params.get("score_threshold", 0.25))
+        )
         text_th = float(p.params.get("text_threshold", 0.25))
         max_det = int(p.params.get("max_detections", 30))
+        nms_iou = float(p.params.get("nms_iou", 0.6))
 
         model, processor = self.models.load_grounding_dino(
             profile_name=p.name,
@@ -466,8 +472,6 @@ class VisionRunner:
 
         objects = []
         for i in range(min(len(scores), len(boxes))):
-            if len(objects) >= max_det:
-                break
             lab = labels[i] if i < len(labels) else "object"
             if isinstance(lab, (int, float)):
                 lab = str(lab)
@@ -477,6 +481,17 @@ class VisionRunner:
                 "box_xyxy": [float(x) for x in boxes[i].tolist()],
             }
             objects.append(obj)
+
+        # Suppress duplicate boxes before capping, so the cap spends its budget
+        # on distinct objects rather than on six views of the same desk.
+        raw_count = len(objects)
+        objects = nms(objects, nms_iou)
+        objects = cap_by_score(objects, max_det)
+        if raw_count != len(objects):
+            logger.debug(
+                f"[DETECT] profile={p.name} raw={raw_count} after_nms_and_cap={len(objects)} "
+                f"nms_iou={nms_iou} max_det={max_det}"
+            )
 
         # Store as JSON artifact
         seed = f"{request.get('image_path') or request.get('frame_path')}|{model_id}|{text}"
@@ -492,6 +507,8 @@ class VisionRunner:
             "prompts": prompts,
             "box_threshold": box_th,
             "text_threshold": text_th,
+            "nms_iou": nms_iou,
+            "max_detections": max_det,
             "objects": objects,
         }
         json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

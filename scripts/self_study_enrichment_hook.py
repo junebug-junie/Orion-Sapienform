@@ -42,23 +42,31 @@ import sys
 
 # ROOT CAUSE (confirmed live 2026-08-12, after an extended investigation --
 # see _import_redis()'s docstring for the dead ends ruled out first): this
-# file's own directory (scripts/) contains a real, tracked, unrelated
-# package literally named `platform` (scripts/platform/ -- a "platform
-# audits" toolkit: audit_spine.py, audit_antipatterns.py, etc. -- nothing
-# to do with the stdlib module of the same name). Python auto-inserts a
-# script's own directory at sys.path[0] for a `python3 <path>` invocation
-# -- exactly how the git hook invokes this script -- and at that priority
-# it wins over stdlib: ANY `import platform` in this process from this
-# point on (including transitively -- stdlib uuid.py's own `import
-# platform`, needed by redis's asyncio submodule) silently resolves to
-# scripts/platform/__init__.py instead of the real module, so the first
-# real stdlib platform.* attribute access (uuid.py's `platform.system()`)
-# raises AttributeError, not the ImportError a shadow normally produces.
-# Reproduced with a literal one-line `import platform` script placed in
-# this exact directory -- and identically from the shared checkout's
-# scripts/ too, so this is a genuine, pre-existing, repo-wide hazard for
-# ANY script run directly as `python3 scripts/<name>.py`, not specific to
-# this file or this patch.
+# file's own directory (scripts/) USED TO contain a real, tracked,
+# unrelated package literally named `platform` -- a "platform audits"
+# toolkit (audit_spine.py, audit_antipatterns.py, etc. -- nothing to do
+# with the stdlib module of the same name), since renamed to
+# scripts/platform_audits/ (2026-08-13, see that package's README for the
+# full incident writeup and scripts/check_scripts_dir_no_stdlib_shadow.py
+# for the deterministic gate that now prevents this exact collision class
+# from recurring). At the time this fix below was written, Python
+# auto-inserting a script's own directory at sys.path[0] for a `python3
+# <path>` invocation -- exactly how the git hook invokes this script --
+# meant ANY `import platform` in this process (including transitively --
+# stdlib uuid.py's own `import platform`, needed by redis's asyncio
+# submodule) silently resolved to scripts/platform/__init__.py instead of
+# the real module, so the first real stdlib platform.* attribute access
+# (uuid.py's `platform.system()`) raised AttributeError, not the
+# ImportError a shadow normally produces. Reproduced with a literal
+# one-line `import platform` script placed in that directory -- and
+# identically from the shared checkout's scripts/ too, confirming this was
+# a genuine, repo-wide hazard, not specific to this file.
+#
+# The rename removes the root cause repo-wide, but this file's own guard
+# below is left in place: it's a harmless no-op now (nothing under
+# scripts/ collides with `platform` anymore) and stays as defense-in-depth
+# against a FUTURE stdlib-name collision under scripts/ (which the gate
+# script would also catch, but this costs nothing to keep).
 #
 # Fix: deprioritize (not remove -- something else in this process, e.g. a
 # test harness that imports this file as a module, may still want
@@ -258,8 +266,9 @@ def _import_redis():
     The real root cause (confirmed live 2026-08-12) of `redis`'s own
     `redis.asyncio.lock` -> `import uuid` -> stdlib uuid.py's
     `platform.system()` raising `AttributeError: module 'platform' has no
-    attribute 'system'` is the scripts/platform/ shadow documented at the
-    top of this file -- already fixed above by deprioritizing this file's
+    attribute 'system'` is the scripts/platform/ shadow (that directory
+    since renamed to scripts/platform_audits/, 2026-08-13) documented at
+    the top of this file -- already fixed above by deprioritizing this file's
     own directory on sys.path before any import that could reach stdlib
     `platform`. This function's try/except is defense-in-depth on top of
     that fix, in case some other invocation context reintroduces a

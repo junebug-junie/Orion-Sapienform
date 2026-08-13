@@ -44,6 +44,17 @@ def conventional_commit_prefix(subject: str) -> str | None:
 # scored, rather than what git technically calls the operation.
 _STATUS_TO_CHANGE_KIND = {"A": "added", "C": "added", "R": "added", "M": "modified", "D": "deleted"}
 
+# Generated *.md that is not authored prose and must not be scored as doc
+# drift. `graphify-out/` is machine-regenerated on a post-commit hook, so
+# its "semantic drift" measures a tool's output churn, not co-creation --
+# and GRAPH_REPORT.md alone produces ~182 removed / ~175 added 1200-char
+# chunks (measured over 400 real commits, 2026-08-12). At the embedding
+# host's real ~0.6s serial throughput that is minutes of work per commit
+# against a 30s per-request timeout, so the file could never actually be
+# scored while still starving the shared embedding host that live chat
+# memory depends on.
+_EXCLUDED_DOC_PATHSPECS = (":(exclude)graphify-out/**",)
+
 
 def changed_doc_files_with_status(
     prev_sha: str, head_sha: str, repo_path: str | Path = "."
@@ -62,7 +73,10 @@ def changed_doc_files_with_status(
     ``git diff --name-status`` emits ``<STATUS>\\t<path>``, and a line
     without that shape isn't a real file entry."""
     result = subprocess.run(
-        ["git", "diff", "--name-status", "--diff-filter=ACMR", prev_sha, head_sha, "--", "*.md"],
+        [
+            "git", "diff", "--name-status", "--diff-filter=ACMR", prev_sha, head_sha,
+            "--", "*.md", *_EXCLUDED_DOC_PATHSPECS,
+        ],
         cwd=repo_path,
         capture_output=True,
         text=True,

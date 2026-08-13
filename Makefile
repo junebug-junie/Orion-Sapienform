@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -44,6 +44,22 @@ check-metric-lineage:
 # Requires ORION_BUS_URL=redis://<tailscale-ip>:6379/0.
 check-single-consumer-channels:
 	@python scripts/check_single_consumer_channels.py
+
+# Fails if anything under scripts/ collides with a Python stdlib module
+# name (e.g. `platform`, `json`, `types`) -- Python auto-inserts scripts/
+# at sys.path[0] for any `python3 scripts/<name>.py` invocation, so a
+# collision silently shadows the real stdlib module for every script run
+# that way. See scripts/platform_audits/README.md for the incident this
+# gate exists to prevent recurring (scripts/platform/, renamed
+# 2026-08-12, cost an extended live investigation to trace).
+# python3, not the bare `python` every other check-* target above uses --
+# deliberate, not an inconsistency: this patch found live that `python`
+# isn't guaranteed on PATH (confirmed on this exact host), and a portability
+# gate using an interpreter name that isn't itself portable would be an odd
+# thing to ship in the same patch. Not fixing the older targets' `python`
+# here -- that's a separate, repo-wide cleanup, out of scope.
+check-scripts-dir-no-stdlib-shadow:
+	@python3 scripts/check_scripts_dir_no_stdlib_shadow.py
 
 # Standing gate from docs/superpowers/specs/2026-07-13-memory-recall-reinforcement-decay-
 # wiring-spec.md acceptance check 1: recall_boost()+decay() must not grow the fraction of

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from scripts.platform._common import (
+from scripts.platform_audits._common import (
     find_repo_root,
     iter_files,
     read_text,
@@ -103,7 +103,7 @@ def scan_schema_sites(repo_root: Path) -> Dict[str, Any]:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("Usage: python scripts/platform/audit_schemas.py <RUN_DIR>")
+        print("Usage: python scripts/platform_audits/audit_schemas.py <RUN_DIR>")
         return 2
 
     run_dir = Path(sys.argv[1]).resolve()

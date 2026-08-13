@@ -22,6 +22,7 @@ that established that rule.
 """
 from __future__ import annotations
 
+import types
 import typing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,22 +37,23 @@ CHANNELS_PATH = REPO_ROOT / "orion" / "bus" / "channels.yaml"
 
 FIELD_DIGESTER = "orion-field-digester"
 
-# Canonical dimension keys carried by OrionSignalV1.dimensions. These are the
-# "#field" half of a URN, never the scannable leaf token -- searching the repo
-# for `level` or `confidence` would match everything and mean nothing.
-_DIMENSION_FIELDS = frozenset(
-    {
-        "level",
-        "trend",
-        "volatility",
-        "valence",
-        "confidence",
-        "arousal",
-        "coherence",
-        "novelty",
-        "salience",
-    }
-)
+# NOTE: an earlier version excluded canonical dimension names (`level`,
+# `confidence`, `valence`, ...) from the scan-token set by NAME, to stop them
+# matching every dict access in the repo. That was both unnecessary and
+# actively wrong:
+#
+#   - unnecessary, because scan_token is `node.name` (a field channel, a
+#     signal_kind, or a scalar field name) and never `node.metric_field`, so
+#     a bare dimension name is only ever a token when some registry really
+#     declares a metric by that name;
+#   - wrong, because it then deleted those real metrics. The glossary channel
+#     `confidence` and five real inner-state scalars (autonomy_state_v2
+#     #confidence, mood_arc_corpus.v1 #valence/#coherence/#novelty,
+#     drive_state.v1 #confidence) got no blast radius AND never appeared in
+#     the orphan list -- invisible in both outputs.
+#
+# Role, not name, decides: the `#field` half of a URN is already excluded
+# structurally by scan_token's definition.
 
 
 @dataclass(frozen=True)
@@ -64,8 +66,23 @@ class MetricNode:
     name: str
     registry_source: str  # the file this was projected from
     metric_field: str | None = None
+    # Parent URNs. Every entry MUST resolve to a real node in the graph --
+    # see test_no_dangling_upstream_urns.
     upstream: tuple[str, ...] = ()
+    # Organ-level causal parents (organ_ids, NOT URNs). Kept separate because
+    # an organ is not itself an addressable metric; synthesising URNs for them
+    # produced 14 permanently-dangling parents.
+    upstream_organs: tuple[str, ...] = ()
+    # Declared DOWNSTREAM consumer *services / call sites*, as recorded by the
+    # source registry. Service-shaped only.
     declared_consumers: tuple[str, ...] = ()
+    # Field channels only: the self-state/evidence dimension this channel
+    # FEEDS. Deliberately not folded into declared_consumers -- these are
+    # dimension names, not services, and printing both under one label gave a
+    # reader two incompatible meanings from one field.
+    feeds_dimensions: tuple[str, ...] = ()
+    # All producer services, when a channel has more than one.
+    all_producers: tuple[str, ...] = ()
     schema_id: str | None = None
     meaning: str | None = None
     notes: str | None = None
@@ -101,9 +118,10 @@ def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
     nodes: list[MetricNode] = []
     for entry in raw.get("channels", []):
         name = entry["channel"]
-        # self_state_dimension / evidence_dimension point at what this channel
-        # FEEDS, so they are recorded here and inverted into `upstream` on the
-        # inner-state side by build_graph().
+        # self_state_dimension / evidence_dimension name the dimension this
+        # channel FEEDS. They are recorded as feeds_dimensions and are NOT
+        # inverted into upstream anywhere -- an earlier comment here claimed
+        # build_graph() performed that inversion; it never did.
         feeds = tuple(
             v
             for v in (entry.get("self_state_dimension"), entry.get("evidence_dimension"))
@@ -118,7 +136,7 @@ def resolve_field_channels(path: Path | None = None) -> list[MetricNode]:
                 registry_source=source,
                 meaning=entry.get("meaning"),
                 notes=f"category={entry.get('category')} level={','.join(entry.get('level', []))}",
-                declared_consumers=feeds,
+                feeds_dimensions=feeds,
             )
         )
     return nodes
@@ -149,10 +167,19 @@ def _float_fields(model: Any) -> list[str]:
 
 
 def _is_float_like(ann: Any) -> bool:
+    """float, Optional[float], or `float | None`.
+
+    The PEP-604 (`float | None`) branch must compare against types.UnionType
+    itself -- str(types.UnionType) is "<class 'types.UnionType'>", never
+    "types.UnionType", so a string comparison silently never fires. That
+    dropped every `X | None` metric from the URN space, including
+    FieldStateV1.recent_perturbation_zscore, and orion/schemas/ uses the
+    `X | None` style predominantly.
+    """
     if ann is float:
         return True
     origin = typing.get_origin(ann)
-    if origin is typing.Union or (origin is not None and str(origin) == "types.UnionType"):
+    if origin is typing.Union or origin is types.UnionType:
         args = [a for a in typing.get_args(ann) if a is not type(None)]
         return len(args) == 1 and args[0] is float
     return False
@@ -218,9 +245,10 @@ def resolve_organ_signals() -> list[MetricNode]:
     source = "orion/signals/registry.py"
     nodes: list[MetricNode] = []
     for organ_id, entry in ORGAN_REGISTRY.items():
-        parents = tuple(
-            _urn("organ_signal", p, p) for p in entry.causal_parent_organs
-        )
+        # Organ ids, not synthesised URNs: metric://organ_signal/<p>/<p> could
+        # never match a real node (whose form is /<organ>/<kind>#<dim>), so it
+        # left 14 permanently-dangling upstream edges across 252 organ nodes.
+        parents = tuple(entry.causal_parent_organs)
         for kind in entry.signal_kinds:
             for dim in entry.canonical_dimensions:
                 nodes.append(
@@ -231,7 +259,7 @@ def resolve_organ_signals() -> list[MetricNode]:
                         name=kind,
                         metric_field=dim,
                         registry_source=source,
-                        upstream=parents,
+                        upstream_organs=parents,
                         notes=f"organ={organ_id} class={entry.organ_class.value}",
                     )
                 )
@@ -254,12 +282,17 @@ def resolve_bus_channels(path: Path | None = None) -> list[MetricNode]:
     nodes: list[MetricNode] = []
     for entry in raw.get("channels", []):
         name = entry["name"]
-        producers = entry.get("producer_services") or ["unknown"]
+        # 41 channels have multiple producers. Sorted, so the URN -- an
+        # addressing identity -- does not silently change when someone
+        # reorders a YAML list cosmetically. The full set is kept on
+        # all_producers rather than dropped.
+        producers = sorted(entry.get("producer_services") or ["unknown"])
         nodes.append(
             MetricNode(
                 urn=_urn("bus_channel", producers[0], name),
                 surface="bus_channel",
                 producer_service=producers[0],
+                all_producers=tuple(producers),
                 name=name,
                 registry_source=source,
                 schema_id=entry.get("schema_id"),
@@ -288,16 +321,18 @@ class MetricGraph:
     def scan_tokens(self) -> dict[str, list[MetricNode]]:
         """token -> nodes. The search space for downstream discovery.
 
-        Pure canonical dimension names are excluded: they are the `#field`
-        half of a URN and would match nearly every dict access in the repo.
+        No name-based exclusions: scan_token is structurally the `name` half
+        of a URN, never the `#field` half, so dimension names only appear here
+        when a registry genuinely declares a metric by that name.
         """
         out: dict[str, list[MetricNode]] = {}
         for node in self.nodes.values():
-            token = node.scan_token
-            if token in _DIMENSION_FIELDS:
-                continue
-            out.setdefault(token, []).append(node)
+            out.setdefault(node.scan_token, []).append(node)
         return out
+
+    def registry_sources_for(self, token: str) -> set[str]:
+        """Files `token` is declared in -- never counted as its consumers."""
+        return {n.registry_source for n in self.nodes.values() if n.scan_token == token}
 
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -336,6 +371,9 @@ def to_dict(node: MetricNode) -> dict[str, Any]:
         "schema_id": node.schema_id,
         "meaning": node.meaning,
         "upstream": list(node.upstream),
+        "upstream_organs": list(node.upstream_organs),
         "declared_consumers": list(node.declared_consumers),
+        "feeds_dimensions": list(node.feeds_dimensions),
+        "all_producers": list(node.all_producers),
         "notes": node.notes,
     }

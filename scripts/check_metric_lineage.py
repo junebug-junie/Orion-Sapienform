@@ -45,22 +45,70 @@ def cmd_summary(graph, scan) -> int:
         for rel in scan.unparsed[:10]:
             print(f"      {rel}")
 
-    by_token = scan.by_token()
-    orphans = [t for t in graph.scan_tokens() if not by_token.get(t)]
-    print(f"\n  tokens with zero consumers anywhere: {len(orphans)}")
-    for tok in sorted(orphans)[:15]:
-        print(f"      {tok}")
-    if len(orphans) > 15:
-        print(f"      ... and {len(orphans) - 15} more")
+    # Orphans must be judged on real consumers only. Counting every hit made
+    # this structurally blind to the two largest surfaces: every field channel
+    # appears in the glossary and every bus channel in channels.yaml, both
+    # inside SCAN_ROOTS, so 299 of 386 tokens could never be reported orphaned.
+    orphans: dict[str, list[str]] = {}
+    for tok, nodes in graph.scan_tokens().items():
+        if not scan.consumers_for(tok, exclude_paths=graph.registry_sources_for(tok)):
+            orphans.setdefault(nodes[0].surface, []).append(tok)
+
+    total = sum(len(v) for v in orphans.values())
+    print(f"\n  tokens with no discoverable code consumer: {total}")
+    print("  (registry-of-origin excluded; NOT a liveness verdict)\n")
+
+    for surface in sorted(orphans):
+        toks = sorted(orphans[surface])
+        note = _ORPHAN_RELIABILITY.get(surface, "")
+        print(f"    {surface:<14} {len(toks):>4}   {note}")
+        for tok in toks[:5]:
+            print(f"        {tok}")
+        if len(toks) > 5:
+            print(f"        ... and {len(toks) - 5} more")
     return 0
 
 
-def cmd_metric(graph, scan, token: str) -> int:
+# How much a "no code consumer" result actually means, per surface. A string
+# -literal scan can only see metrics that are READ as string keys in code.
+_ORPHAN_RELIABILITY = {
+    "field_channel": "STRONG signal -- these are read as dict keys",
+    "organ_signal": "STRONG signal -- signal_kinds are read as dict keys",
+    "inner_state": "MIXED -- scalar fields are strong, `*.v1` signal ids are weak",
+    "bus_channel": "WEAK -- channels are subscribed via config, not string reads; "
+    "trust channels.yaml consumer_services instead",
+}
+
+
+def cmd_metric(graph, scan, token: str, as_json: bool = False) -> int:
     nodes = graph.by_token(token)
     if not nodes:
-        print(f"UNREGISTERED: {token!r} resolves to no URN in any registry.")
-        print("That is the finding -- do not hand-author a URN for it.")
+        if as_json:
+            print(json.dumps({"token": token, "registered": False}, indent=2))
+        else:
+            print(f"UNREGISTERED: {token!r} resolves to no URN in any registry.")
+            print("That is the finding -- do not hand-author a URN for it.")
         return 1
+
+    sources = graph.registry_sources_for(token)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "token": token,
+                    "registered": True,
+                    "nodes": [to_dict(n) for n in nodes],
+                    "consumers": [
+                        h.to_dict()
+                        for h in scan.consumers_for(token, exclude_paths=sources)
+                    ],
+                    "liveness": None,
+                    "liveness_note": "NOT COMPUTED (phase 5)",
+                },
+                indent=2,
+            )
+        )
+        return 0
 
     print(f"=== lineage card: {token} ===\n")
     for node in nodes:
@@ -74,18 +122,30 @@ def cmd_metric(graph, scan, token: str) -> int:
             print(f"  meaning        {node.meaning}")
         if node.notes:
             print(f"  notes          {node.notes}")
+        if node.all_producers and len(node.all_producers) > 1:
+            print(f"  all producers  {', '.join(node.all_producers)}")
         if node.upstream:
             print(f"  upstream       {', '.join(node.upstream)}")
+        if node.upstream_organs:
+            print(f"  parent organs  {', '.join(node.upstream_organs)}")
         if node.declared_consumers:
-            print(f"  declared       {', '.join(node.declared_consumers)}")
+            print(f"  declared svcs  {', '.join(node.declared_consumers)}")
+        if node.feeds_dimensions:
+            print(f"  feeds dims     {', '.join(node.feeds_dimensions)}")
         print()
 
-    prod = scan.consumers_for(token, high_confidence_only=True, include_tests=False)
+    prod = scan.consumers_for(
+        token, high_confidence_only=True, include_tests=False, exclude_paths=sources
+    )
     tests = [
         h
         for h in scan.hits
-        if h.token == token and h.is_test and h.kind in HIGH_CONFIDENCE_KINDS
+        if h.token == token
+        and h.is_test
+        and h.kind in HIGH_CONFIDENCE_KINDS
+        and h.path not in sources
     ]
+    print(f"  declared in    {', '.join(sorted(sources))} (excluded from blast radius)")
     print(f"  BLAST RADIUS (discovered, non-test, high-confidence): {len(prod)}")
     for hit in prod:
         print(f"      {hit.path}:{hit.line}  [{hit.kind}]")
@@ -104,7 +164,11 @@ def cmd_drift(graph, scan) -> int:
             continue
         if node.surface not in ("inner_state",):
             continue
-        discovered = scan.consumers_for(node.name, high_confidence_only=True)
+        discovered = scan.consumers_for(
+            node.name,
+            high_confidence_only=True,
+            exclude_paths=graph.registry_sources_for(node.name),
+        )
         disc_files = {h.path for h in discovered}
         print(f"  {node.urn}")
         print(f"      declared   ({len(node.declared_consumers)}): {list(node.declared_consumers)}")
@@ -131,7 +195,7 @@ def main() -> int:
     scan = scan_repo(graph.scan_tokens().keys())
 
     if args.metric:
-        return cmd_metric(graph, scan, args.metric)
+        return cmd_metric(graph, scan, args.metric, as_json=args.json)
     if args.drift:
         return cmd_drift(graph, scan)
     return cmd_summary(graph, scan)

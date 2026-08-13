@@ -126,7 +126,15 @@ def iter_source_files(
                 continue
             if path.suffix not in (".py", ".yaml", ".yml", ".json"):
                 continue
-            if any(part in EXCLUDED_DIR_NAMES for part in path.parts):
+            # Match against parts RELATIVE to the repo root. Matching absolute
+            # parts silently returns zero files whenever the checkout itself
+            # lives under an excluded name -- and two live worktree
+            # conventions do exactly that (CLAUDE.md 2):
+            # `.worktrees/<name>` and `.claude/worktrees/agent-<id>`, the
+            # latter created by the Agent tool's own isolation="worktree".
+            # A silent empty scan is the precise false negative this tool
+            # exists to prevent, so this must stay relative.
+            if any(part in EXCLUDED_DIR_NAMES for part in path.relative_to(base).parts):
                 continue
             yield path
 
@@ -193,7 +201,10 @@ class _MetricVisitor(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         # `frame.recon_error` -- how pydantic scalar fields are actually read.
-        if node.attr in self.tokens:
+        # Load context only: `self.pressure = x` is a WRITE, not a consumer,
+        # and counting it inflated single-word tokens like `pressure` with
+        # unrelated assignments across the repo.
+        if node.attr in self.tokens and isinstance(node.ctx, ast.Load):
             self._record(node, node.attr, KIND_ATTRIBUTE)
         self.generic_visit(node)
 
@@ -220,9 +231,11 @@ class _MetricVisitor(ast.NodeVisitor):
 def scan_python(path: Path, tokens: frozenset[str], rel: str) -> list[ConsumerHit]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         # A file that does not parse is not a consumer. Reported by the caller
         # via scan_repo()'s unparsed list rather than silently ignored.
+        # ValueError matters as much as SyntaxError: ast.parse raises it for
+        # embedded NUL bytes, and letting it escape aborted the whole scan.
         raise
     visitor = _MetricVisitor(tokens)
     visitor.visit(tree)
@@ -249,9 +262,35 @@ def scan_config(path: Path, tokens: frozenset[str], rel: str) -> list[ConsumerHi
         if stripped.startswith("#"):
             continue
         for token in tokens:
-            if token in line:
+            if _contains_whole_token(line, token):
                 hits.append(ConsumerHit(token, rel, lineno, KIND_CONFIG, is_test))
     return hits
+
+
+def _is_ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _contains_whole_token(line: str, token: str) -> bool:
+    """Whole-token containment, so `cpu_pressure` does not match
+    `cpu_pressure_ewma` and `pressure` does not match every `*_pressure`.
+
+    A plain substring test overmatched badly, and these hits feed the orphan
+    report. Boundary chars are identifier chars, so `orion:substrate:x` still
+    matches inside quotes and YAML values.
+    """
+    start = 0
+    n = len(token)
+    while True:
+        idx = line.find(token, start)
+        if idx == -1:
+            return False
+        before_ok = idx == 0 or not _is_ident_char(line[idx - 1])
+        after = idx + n
+        after_ok = after >= len(line) or not _is_ident_char(line[after])
+        if before_ok and after_ok:
+            return True
+        start = idx + 1
 
 
 @dataclass
@@ -267,9 +306,24 @@ class ScanResult:
         return dict(out)
 
     def consumers_for(
-        self, token: str, high_confidence_only: bool = True, include_tests: bool = False
+        self,
+        token: str,
+        high_confidence_only: bool = True,
+        include_tests: bool = False,
+        exclude_paths: Iterable[str] = (),
     ) -> list[ConsumerHit]:
-        out = [h for h in self.hits if h.token == token]
+        """Downstream consumers of `token`.
+
+        `exclude_paths` must carry the registry file(s) the metric was
+        projected FROM. A registry declaring its own metric is not a consumer
+        of it, and counting it inverted the tool's central claim: every organ
+        token got a collection_member self-hit from orion/signals/registry.py,
+        and for 38 of 57 that self-hit was the ONLY high-confidence non-test
+        result -- reporting "blast radius: 1" for a metric with no real
+        consumers at all.
+        """
+        excluded = set(exclude_paths)
+        out = [h for h in self.hits if h.token == token and h.path not in excluded]
         if high_confidence_only:
             out = [h for h in out if h.kind in HIGH_CONFIDENCE_KINDS]
         if not include_tests:
@@ -295,7 +349,7 @@ def scan_repo(
         if path.suffix == ".py":
             try:
                 hits.extend(scan_python(path, token_set, rel))
-            except SyntaxError:
+            except (SyntaxError, ValueError):
                 unparsed.append(rel)
         else:
             hits.extend(scan_config(path, token_set, rel))

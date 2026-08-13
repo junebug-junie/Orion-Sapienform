@@ -36,9 +36,10 @@ REQUIRED JSON FIELDS
 - quick_lane_skipped_llm: false
 - finalize_changed: false
 
-METADATA (include from inputs)
-- correlation_id, thought_event_id, substrate_appraisal_id, draft_hash
+METADATA
 - schema_version: "finalize.reflection.v1"
+- Do not emit correlation_id, thought_event_id, substrate_appraisal_id or
+  draft_hash. The harness owns those four and overwrites anything sent.
 
 FAIL-CLOSED
 - substrate_appraisal is required context; never invent appraisal fields.

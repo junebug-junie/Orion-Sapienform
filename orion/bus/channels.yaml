@@ -2275,7 +2275,13 @@ channels:
     schema_id: "DocSemanticDriftV1"
     message_kind: "substrate.doc_semantic_drift.v1"
     producer_services: ["orion-cocreation-signals"]
-    consumer_services: []
+    # First real consumer, added 2026-08-13. Not a behavior consumer -- it
+    # only persists rows (DocSemanticDriftSQL). The bus is Redis pub/sub,
+    # so with consumer_services: [] every event was dropped on publish and
+    # ~2 days of real scores exist nowhere; no drift threshold can be
+    # derived without accumulated samples. See docs/superpowers/pr-reports/
+    # 2026-08-13-doc-drift-persistence.md.
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-11"
 

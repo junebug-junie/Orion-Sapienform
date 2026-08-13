@@ -24,13 +24,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class DocSemanticDriftV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["doc_semantic_drift.v1"] = "doc_semantic_drift.v1"
+    # Idempotency key / SQL primary key. Deliberately DERIVED from
+    # (sha, path) rather than a uuid4 like DevEconomicsLedgerV1's own
+    # event_id: those two fully determine the event (one score per file per
+    # scored commit), so a redelivered or re-scored change upserts onto the
+    # same row instead of writing a duplicate with a fresh id. Filled
+    # automatically below so no caller can forget it or invent a different
+    # convention.
+    event_id: str = ""
     observed_at: datetime
     sha: str
     path: str
@@ -93,3 +101,12 @@ class DocSemanticDriftV1(BaseModel):
     chunk_count_added: int = 0
     hunk_removed_len_chars: int = 0
     hunk_added_len_chars: int = 0
+
+    @model_validator(mode="after")
+    def _fill_event_id(self) -> "DocSemanticDriftV1":
+        if not self.event_id:
+            # object.__setattr__ not needed -- the model is mutable by
+            # default; assigning in an "after" validator does not re-trigger
+            # it, so this cannot recurse.
+            self.event_id = f"doc-semantic-drift:{self.sha}:{self.path}"
+        return self

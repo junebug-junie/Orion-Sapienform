@@ -3068,3 +3068,213 @@ class BuilderPruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             prune_stdout_tail=(getattr(proc, "stdout", "") or "")[-500:],
         )
         return _skill_result_output(skill_name="skills.runtime.builder_prune.v1", result=result), []
+
+
+# ===========================================================================
+# skills.runtime.image_prune.v1 (2026-08-13)
+#
+# Orion's second mutating action. Exists because the first one -- builder_prune
+# -- declines on every live run (`declined_no_pressure`, disk 71.4% against its
+# own 75% gate) while the same host carries 3,833 dangling images. Until the
+# per-template cortex route landed, `maintain` could address exactly ONE verb,
+# so there was no way to aim at a different lever.
+#
+# THE GATE MEASURES WHAT THE ACTION CHANGES. `docker system df` reports Images
+# "Reclaimable" as 96.56 GB, but that counts every UNUSED image, tagged ones
+# included -- and `docker image prune` (no `-a`) removes only DANGLING images.
+# Gating on that number would reproduce, exactly, the defect builder_prune's
+# author documented above: a gate that passes on one quantity while the action
+# moves a different one, reporting success having changed nothing.
+#
+# So the gate is a COUNT of dangling images, which is precisely the set the
+# command removes, and the reported outcome is a real before/after disk delta
+# rather than anything Docker predicted.
+# ===========================================================================
+
+# Deliberately LOWER than BUILDER_PRUNE_MIN_DISK_PCT (75.0), and this is a
+# reasoned difference rather than a fit-to-fire. Build cache has real reuse
+# value -- pruning it makes the next build slower, so it earns a higher bar.
+# A dangling image is an unreferenced leftover layer set with no reuse value at
+# all; nothing is traded away by reclaiming it. Disclosed as an uncalibrated
+# starting value, same as every other constant in this family.
+IMAGE_PRUNE_MIN_DISK_PCT = 70.0
+
+# Count, not bytes -- see the gate note above. Uncalibrated starting value;
+# live reading at authoring time was 3,833.
+IMAGE_PRUNE_MIN_DANGLING = 100
+
+# Its own budget, for the same reason BUILDER_PRUNE_TIMEOUT_SEC has one: the
+# shared skills-mesh timeout is 12 SECONDS live, and removing thousands of
+# image layers is minutes of work that would otherwise be SIGKILLed partway.
+IMAGE_PRUNE_TIMEOUT_SEC = 600.0
+
+
+async def _image_prune_dangling_stats(runner: "SafeCommandRunner") -> Dict[str, Any]:
+    """Count of dangling images -- the exact set `docker image prune` removes.
+
+    Returns ``{"available": False, "reason": ...}`` when the daemon cannot be
+    reached. That is NOT the same as "no dangling images", and the caller must
+    not read it as zero: an unreadable count means the gate cannot be evaluated,
+    so the action declines rather than guessing in either direction.
+    """
+    try:
+        proc = await asyncio.to_thread(
+            runner.run, ["docker", "images", "--filter", "dangling=true", "--format", "{{.ID}}"]
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure is "cannot evaluate"
+        return {"available": False, "reason": f"docker_images_failed:{exc}"}
+    if getattr(proc, "returncode", 1) != 0:
+        return {
+            "available": False,
+            "reason": f"docker_images_rc:{getattr(proc, 'returncode', None)}",
+        }
+    ids = [line.strip() for line in (getattr(proc, "stdout", "") or "").splitlines() if line.strip()]
+    return {"available": True, "dangling_count": len(ids)}
+
+
+@verb("skills.runtime.image_prune.v1")
+class ImagePruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        # Same resolver as the sibling docker prunes: canonical run_mode with
+        # preview (no mutation) as the DEFAULT, and the mutation below guarded
+        # on run_mode == "execute" explicitly rather than on the absence of a
+        # preview flag.
+        run_mode, mode_resolution = _resolve_docker_prune_run_mode(skill_args)
+
+        default_mount = str(settings.builder_prune_mount_path or "/hostfs/docker")
+        data_root = str(skill_args.get("mount_path") or default_mount).strip() or default_mount
+
+        # `docker` only -- the runner cannot be talked into another binary by
+        # anything in skill_args, and no argument below is model-composed.
+        runner = SafeCommandRunner(
+            allowed_commands={"docker"}, timeout_sec=float(IMAGE_PRUNE_TIMEOUT_SEC)
+        )
+
+        before = _builder_prune_disk_usage(data_root)
+        dangling = await _image_prune_dangling_stats(runner)
+
+        result: Dict[str, Any] = {
+            "node_name": settings.node_name,
+            "run_mode": run_mode,
+            "mode_resolution": mode_resolution,
+            "mount_path": data_root,
+            "thresholds": {
+                "min_disk_pct": IMAGE_PRUNE_MIN_DISK_PCT,
+                "min_dangling_count": IMAGE_PRUNE_MIN_DANGLING,
+            },
+            "disk_before": before,
+            "dangling_before": dangling,
+        }
+
+        # --- gate: BOTH conditions, or decline and say which failed ---------
+        if not dangling.get("available"):
+            result.update(
+                acted=False,
+                decision="declined_unmeasurable",
+                reason=dangling.get("reason") or "dangling_count_unreadable",
+                escalate=True,
+            )
+            return _skill_result_output(
+                skill_name="skills.runtime.image_prune.v1",
+                result=result,
+                ok=False,
+                status="unavailable",
+            ), []
+
+        disk_ok = float(before["used_pct"]) >= IMAGE_PRUNE_MIN_DISK_PCT
+        count_ok = int(dangling["dangling_count"]) >= IMAGE_PRUNE_MIN_DANGLING
+
+        if not disk_ok:
+            result.update(
+                acted=False,
+                decision="declined_no_pressure",
+                reason=f"used_pct {before['used_pct']} < {IMAGE_PRUNE_MIN_DISK_PCT}",
+                escalate=False,
+            )
+            return _skill_result_output(skill_name="skills.runtime.image_prune.v1", result=result), []
+
+        if not count_ok:
+            # Disk IS under pressure but there is nothing dangling to remove.
+            # Pruning would change nothing; the real condition needs a human.
+            result.update(
+                acted=False,
+                decision="declined_nothing_to_reclaim",
+                reason=(
+                    f"dangling {dangling['dangling_count']} < {IMAGE_PRUNE_MIN_DANGLING} "
+                    f"at used_pct {before['used_pct']}"
+                ),
+                escalate=True,
+            )
+            return _skill_result_output(skill_name="skills.runtime.image_prune.v1", result=result), []
+
+        if run_mode != "execute":
+            result.update(
+                acted=False,
+                decision="would_act",
+                reason="preview_mode",
+                escalate=False,
+            )
+            return _skill_result_output(skill_name="skills.runtime.image_prune.v1", result=result), []
+
+        # --- act -------------------------------------------------------------
+        # NO `-a`. `docker image prune` without it removes ONLY dangling
+        # images -- untagged, unreferenced layer sets. `-a` would additionally
+        # remove every tagged image not currently backing a running container,
+        # which on this host means deleting the images of every stopped
+        # service. That flag must never appear here.
+        try:
+            proc = await asyncio.to_thread(runner.run, ["docker", "image", "prune", "-f"])
+        except Exception as exc:  # noqa: BLE001
+            result.update(acted=False, decision="failed", reason=str(exc), escalate=True)
+            return _skill_result_output(
+                skill_name="skills.runtime.image_prune.v1",
+                result=result,
+                ok=False,
+                status="error",
+                error={"message": str(exc)},
+            ), []
+
+        after = _builder_prune_disk_usage(data_root)
+        dangling_after = await _image_prune_dangling_stats(runner)
+        reclaimed = max(0, int(before["used_bytes"]) - int(after["used_bytes"]))
+        result["disk_after"] = after
+        result["dangling_after"] = dangling_after
+
+        # A prune that reclaimed nothing is NOT a success -- same rule as
+        # builder_prune. Reported honestly and escalated: repeatedly reclaiming
+        # zero while disk stays high is a real condition needing a human.
+        if reclaimed <= 0:
+            result.update(
+                acted=True,
+                decision="pruned_nothing",
+                escalate=True,
+                bytes_reclaimed=0,
+                pct_reclaimed=0.0,
+                reason=(
+                    f"prune ran against {dangling['dangling_count']} dangling images "
+                    "but reclaimed no space"
+                ),
+                prune_stdout_tail=(getattr(proc, "stdout", "") or "")[-500:],
+            )
+            return _skill_result_output(skill_name="skills.runtime.image_prune.v1", result=result), []
+
+        result.update(
+            acted=True,
+            decision="pruned",
+            escalate=False,
+            # THE OUTCOME. Measured by the actor from real before/after disk
+            # readings, never from what Docker predicted was reclaimable.
+            bytes_reclaimed=reclaimed,
+            pct_reclaimed=round(float(before["used_pct"]) - float(after["used_pct"]), 3),
+            images_removed=(
+                int(dangling["dangling_count"]) - int(dangling_after["dangling_count"])
+                if dangling_after.get("available")
+                else None
+            ),
+            prune_stdout_tail=(getattr(proc, "stdout", "") or "")[-500:],
+        )
+        return _skill_result_output(skill_name="skills.runtime.image_prune.v1", result=result), []

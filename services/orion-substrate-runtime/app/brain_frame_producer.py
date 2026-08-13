@@ -212,6 +212,7 @@ def _honesty_regions(attention_payload: Any | None, now: datetime) -> list[Brain
     ]
 
 
+<<<<<<< Updated upstream
 # Calibration for _field_anomaly_regions()'s intensity normalization.
 # recon_loss (mood-arc encoder reconstruction error) has no natural [0,1]
 # range, and a ratio against the encoder's own threshold/recon_error_p95
@@ -259,6 +260,8 @@ def _field_anomaly_regions(field_anomaly: Any | None, now: datetime) -> list[Bra
     ]
 
 
+=======
+>>>>>>> Stashed changes
 def _spotlight(attention, now, cadence_sec) -> BrainSpotlightV1 | None:
     if attention is None:
         return None
@@ -310,8 +313,12 @@ def assemble_brain_frame(
     lane_health: Mapping[str, Any],
     self_state: Mapping[str, Any] | None,
     attention: Any | None,
+<<<<<<< Updated upstream
     attention_payload: Any | None = None,
     field_anomaly: Any | None = None,
+=======
+    attention_payload: Any | None,
+>>>>>>> Stashed changes
     settings: Any,
     now: datetime,
     tick_seq: int,
@@ -325,7 +332,10 @@ def assemble_brain_frame(
         + _lane_regions(lane_health or {}, now, firing, starving)
         + _self_state_regions(self_state, now, float(settings.brain_frame_self_state_cadence_sec))
         + _honesty_regions(attention_payload, now)
+<<<<<<< Updated upstream
         + _field_anomaly_regions(field_anomaly, now)
+=======
+>>>>>>> Stashed changes
     )
     node_samples, edge_samples = _samples(
         nodes, list(edges), settings.brain_frame_sample_nodes, settings.brain_frame_sample_edges

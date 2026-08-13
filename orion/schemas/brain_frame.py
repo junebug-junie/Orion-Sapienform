@@ -13,9 +13,13 @@ class BrainRegionV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+<<<<<<< Updated upstream
     dimension: Literal[
         "node_kind", "lane", "self_state", "lattice_layer", "honesty_metrics", "field_anomaly"
     ]
+=======
+    dimension: Literal["node_kind", "lane", "self_state", "lattice_layer", "honesty_metrics"]
+>>>>>>> Stashed changes
     region_id: str
     label: str
     intensity: float = Field(ge=0.0, le=1.0)

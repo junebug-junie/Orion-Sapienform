@@ -365,6 +365,7 @@ def test_honesty_regions_included_in_frame():
     honesty = {r.region_id: r for r in frame.regions if r.dimension == "honesty_metrics"}
     assert len(honesty) == 1
     assert honesty["honesty:confidence"].intensity == 0.8
+<<<<<<< Updated upstream
 
 
 def _field_anomaly(recon_loss, anomalous=True):
@@ -443,3 +444,6 @@ def test_field_anomaly_regions_included_in_frame():
     fa = {r.region_id: r for r in frame.regions if r.dimension == "field_anomaly"}
     assert len(fa) == 1
     assert fa["field_anomaly:reconstruction"].detail["recon_loss"] == 0.01
+=======
+    assert honesty["honesty:confidence"].state == "firing"
+>>>>>>> Stashed changes

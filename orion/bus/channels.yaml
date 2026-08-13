@@ -571,7 +571,9 @@ channels:
     # an omission: orion-cortex-exec still publishes to it
     # (services/orion-cortex-exec/app/collapse_verbs.py:111,166) and nothing
     # subscribes. Recorded rather than hidden -- an empty consumer list is an
-    # existing convention here (19 other channels carry one).
+    # existing convention here (17 other channels carry one; 18 including
+    # this one, counted by parsing the YAML rather than grepping, since two
+    # further raw matches sit inside comments).
     consumer_services: []
     stability: "experimental"
     since: "2026-01-08"

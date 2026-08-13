@@ -2352,8 +2352,12 @@ class BiometricsSubstrateWorker:
                 lane_health=self._brain_frame_lane_health(),
                 self_state=self._brain_frame_self_state(),
                 attention=attention,
+<<<<<<< Updated upstream
                 attention_payload=attention_self_model,
                 field_anomaly=self._latest_field_anomaly,
+=======
+                attention_payload=None,
+>>>>>>> Stashed changes
                 settings=s,
                 now=now,
                 tick_seq=self._brain_frame_seq,

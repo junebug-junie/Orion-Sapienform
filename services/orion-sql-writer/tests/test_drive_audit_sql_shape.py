@@ -104,22 +104,28 @@ def test_column_shape_is_the_slim_measurement_contract() -> None:
     assert {attr.key for attr in mapper.attrs} == EXPECTED_COLUMNS
 
 
-def test_boot_ddl_create_and_alter_include_attribution_columns() -> None:
-    """Greenfield CREATE and upgrade ALTER must both name the v4 columns.
-
-    CREATE TABLE IF NOT EXISTS alone does not upgrade live tables, so ALTER
-    ADD COLUMN IF NOT EXISTS must stay. CREATE must also list the columns so
-    a fresh DB matches the model without relying on ALTER alone.
-    """
+def test_boot_ddl_no_longer_creates_drive_audits() -> None:
+    """The CREATE TABLE/ALTER/INDEX boot DDL for `drive_audits` was removed
+    2026-08-13, same patch that removed the Hub Drives Analytics tab and
+    dropped the (by-then-frozen, snapshotted-first) `drive_audits` table
+    itself — see docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-
+    analytics-tab-pr.md. This replaces the old
+    test_boot_ddl_create_and_alter_include_attribution_columns (which
+    asserted the DDL text existed): review finding, that DDL was
+    `CREATE TABLE IF NOT EXISTS` unconditionally on every startup, so
+    leaving it in place after the out-of-band drop would have silently
+    resurrected an empty table on the next orion-sql-writer restart,
+    undoing the drop. The rest of this file's tests (MODEL_MAP
+    registration, DriveAuditSQL column shape, derivation logic, insert-only
+    idempotency) are UNCHANGED and still real -- the write PATH for
+    DriveAuditSQL was deliberately left wired (it shares a `_JSONB` type
+    declaration with other still-live sql-writer models; fully untangling
+    it is a separate, larger follow-up, not done in that patch), only the
+    boot-time table creation was removed."""
     main_py = (SERVICE_ROOT / "app" / "main.py").read_text(encoding="utf-8")
-    assert "CREATE TABLE IF NOT EXISTS drive_audits" in main_py
-    create_block = main_py.split("CREATE TABLE IF NOT EXISTS drive_audits", 1)[1].split(
-        ");", 1
-    )[0]
-    assert "tick_attribution JSONB" in create_block
-    assert "tension_kinds JSONB" in create_block
-    assert "ADD COLUMN IF NOT EXISTS tick_attribution JSONB" in main_py
-    assert "ADD COLUMN IF NOT EXISTS tension_kinds JSONB" in main_py
+    assert "CREATE TABLE IF NOT EXISTS drive_audits" not in main_py
+    assert "ALTER TABLE drive_audits" not in main_py
+    assert "idx_drive_audits" not in main_py
 
 
 def test_bounded_attribution_fields_are_columns_but_archive_fields_are_not() -> None:

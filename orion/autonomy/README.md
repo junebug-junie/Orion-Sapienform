@@ -75,40 +75,20 @@ tension minting upstream vs. redesign `DriveEngine`'s aggregation math, a sketch
 log-odds/logit-space alternative):
 [drives_and_autonomy_retrospective.md §5b](drives_and_autonomy_retrospective.md#5b-status-update-2026-07-17-o2-and-o3-shipped-live-verified-and-a-full-trace-from-a-new-fold-batch-saturation-mechanism-all-the-way-back-to-a-pre-existing-one-day-old-open-question-in-orion-field-digesters-own-channel-glossary)
 
-## Hub Drives Analytics
+## Hub Drives Analytics — REMOVED 2026-08-13
 
-Design: [docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md](../../docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md).
+This section described the Hub `Drives` tab (`#drives`, standalone `/drives-analytics` page),
+an orientation/observability surface over the six-drive `DriveEngine` economy's Postgres
+history. The tab, its backend, and the underlying `drive_audits` table it read from have all
+been removed outright — see `services/orion-hub/README.md`'s "5.4 Drives Analytics panel"
+entry and `docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-analytics-tab-pr.md` for
+the removal. `DriveEngine` itself was already retired 2026-07-30 (drive-pressure/goal-generation
+deletion sprint, `orion/sentience_striving_program/README.md` sec8); this tab had been kept
+alive afterward as a deliberate "kill the producer, not the reader" historical-forensics view,
+then removed once that history itself was no longer worth keeping around.
 
-**Why this surface exists.** The six-drive `DriveEngine` economy (`orion/spark/concept_induction/drives.py`,
-`DRIVE_KEYS = ("coherence", "continuity", "capability", "relational", "predictive", "autonomy")`) has run
-live for a while — per-tick audits, `tick_attribution`/`tension_kinds` on the wire, Postgres history, offline
-gate scripts — but until this patch, seeing any of it meant CLI archaeology
-(`scripts/analysis/measure_autonomy_gate.py`, `scripts/drive_state_divergence_audit.py`) or a per-turn chat
-side panel. The Hub **Drives** tab (`#drives`, standalone page `/drives-analytics`) is an orientation and
-observability surface: gauges for current pressure per drive, real contributor history pulled from
-`tick_attribution` (not invented), a program-health KPI strip, dual time series (tick-rate + six pressure
-sparklines), goal-alignment coloring, and a divergence/integrity check against the `drive_state.v1` concept
-store. It **does not mutate** drives, tensions, or goals — there is no promote/dismiss/complete/adjust control
-anywhere on this tab, by design (see the spec's non-goals).
-
-**What "good" looks like on this tab.** Healthy is *churn* — pressures rising and falling across the six
-drives as tensions resolve — combined with goals actually forming out of elevated pressure (a drive's
-pressure is high **and** an active goal's `drive_origin` matches it: goal-aligned "green" in `align`/`combined`
-color mode). It is explicitly **not** "all six pressures pinned high." Six-way saturation/monoculture is a
-regime the tab colors **red**, the same as a stale audit rail or a starved drive — high magnitude alone never
-reads as healthy. `build_window_kpis`/`drive_economy_verdict_from_drive_stats`
-(`services/orion-hub/scripts/drives_analytics.py`) reuse the saturation/coactivation thresholds from
-`scripts/analysis/measure_autonomy_gate.py` so the Hub strip's `gate_verdict_drive_only` agrees with the
-offline gate's math; it can report `GO_DRIVE_ONLY` (drive-rail coactivation cleared, not saturated) but never
-claims a full offline-gate `GO`, since that also requires `resource_pressure`, which this drive-only endpoint
-does not have.
-
-**Where to look next.**
-
-- Full origin story and the still-open self-initiation gap: [drives_and_autonomy_retrospective.md](drives_and_autonomy_retrospective.md)
-- Operator tab mechanics (iframe isolation, endpoints, hash params, restart order): [services/orion-hub/README.md](../../services/orion-hub/README.md)
-- The tab itself: Hub shell hash `#drives`, standalone page `/drives-analytics`
-- Deeper offline measurement (GO/NO-GO/SATURATED/UNMEASURABLE including `resource_pressure`): `scripts/analysis/measure_autonomy_gate.py`
+Design spec (historical, not updated): [docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md](../../docs/superpowers/specs/2026-07-16-hub-drives-analytics-design.md).
+Origin story and the still-open self-initiation gap: [drives_and_autonomy_retrospective.md](drives_and_autonomy_retrospective.md).
 
 ## Subject routing
 

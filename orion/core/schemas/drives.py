@@ -11,19 +11,6 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# The 6-key drive taxonomy. Historically computed live by
-# orion.spark.concept_induction.drives.DriveEngine (deleted 2026-07-30 -- see
-# orion/sentience_striving_program/README.md sec8 for the halt rationale). That
-# module is gone, but this constant lives on here (the schema module, not the
-# deleted engine module) because real historical-data readers still need it:
-# scripts that read already-persisted DriveStateV1/DriveAuditV1 rows
-# (services/orion-hub/scripts/drives_analytics*.py reading the `drive_audits`
-# Postgres table) key their per-drive breakdowns on this tuple. Do not
-# reintroduce a live producer here -- this is metadata describing the shape of
-# historical data, not a revival of the engine.
-DRIVE_KEYS = ("coherence", "continuity", "capability", "relational", "predictive", "autonomy")
-
-
 class ArtifactEventRef(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, protected_namespaces=())
 

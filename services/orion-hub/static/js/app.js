@@ -639,10 +639,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const causalGeometryPanel = document.getElementById("causal-geometry");
   const causalGeometryPanelFrame = document.getElementById("causalGeometryPanelFrame");
   const causalGeometryPanelRefresh = document.getElementById("causalGeometryPanelRefresh");
-  const drivesAnalyticsTabButton = document.getElementById("drivesAnalyticsTabButton");
-  const drivesAnalyticsPanel = document.getElementById("drives");
-  const drivesAnalyticsPanelFrame = document.getElementById("drivesAnalyticsPanelFrame");
-  const drivesAnalyticsPanelRefresh = document.getElementById("drivesAnalyticsPanelRefresh");
   const conceptAtlasTabButton = document.getElementById("conceptAtlasTabButton");
   const conceptAtlasPanel = document.getElementById("concept-atlas");
   const conceptAtlasPanelFrame = document.getElementById("conceptAtlasPanelFrame");
@@ -939,9 +935,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "causal-geometry" && !causalGeometryPanel) {
       effectiveTab = "hub";
     }
-    if (tabKey === "drives" && !drivesAnalyticsPanel) {
-      effectiveTab = "hub";
-    }
     if (tabKey === "concept-atlas" && !conceptAtlasPanel) {
       effectiveTab = "hub";
     }
@@ -972,7 +965,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const isSubstrate = effectiveTab === "substrate";
     const isSubstrateAtlas = effectiveTab === "substrate-atlas";
     const isCausalGeometry = effectiveTab === "causal-geometry";
-    const isDrivesAnalytics = effectiveTab === "drives";
     const isConceptAtlas = effectiveTab === "concept-atlas";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
@@ -1007,9 +999,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (causalGeometryPanel) {
       causalGeometryPanel.classList.toggle("hidden", !isCausalGeometry);
-    }
-    if (drivesAnalyticsPanel) {
-      drivesAnalyticsPanel.classList.toggle("hidden", !isDrivesAnalytics);
     }
     if (conceptAtlasPanel) {
       const wasConceptAtlasVisible = !conceptAtlasPanel.classList.contains("hidden");
@@ -1137,9 +1126,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (causalGeometryTabButton) {
       styleTabButton(causalGeometryTabButton, isCausalGeometry);
-    }
-    if (drivesAnalyticsTabButton) {
-      styleTabButton(drivesAnalyticsTabButton, isDrivesAnalytics);
     }
     if (conceptAtlasTabButton) {
       styleTabButton(conceptAtlasTabButton, isConceptAtlas);
@@ -1741,8 +1727,6 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("substrate-atlas");
     } else if (h === "#causal-geometry" && causalGeometryPanel && causalGeometryTabButton) {
       setActiveTab("causal-geometry");
-    } else if (h === "#drives" && drivesAnalyticsPanel && drivesAnalyticsTabButton) {
-      setActiveTab("drives");
     } else if (h === "#concept-atlas" && conceptAtlasPanel && conceptAtlasTabButton) {
       setActiveTab("concept-atlas");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
@@ -11587,13 +11571,6 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(null, "", "#causal-geometry");
       });
     }
-    if (drivesAnalyticsTabButton && drivesAnalyticsPanel) {
-      drivesAnalyticsTabButton.addEventListener("click", (event) => {
-        event.preventDefault();
-        setActiveTab("drives");
-        history.replaceState(null, "", "#drives");
-      });
-    }
     if (conceptAtlasTabButton && conceptAtlasPanel) {
       conceptAtlasTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -11703,12 +11680,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if (causalGeometryPanelRefresh && causalGeometryPanelFrame) {
     causalGeometryPanelRefresh.addEventListener("click", () => {
       causalGeometryPanelFrame.contentWindow?.location.reload();
-    });
-  }
-
-  if (drivesAnalyticsPanelRefresh && drivesAnalyticsPanelFrame) {
-    drivesAnalyticsPanelRefresh.addEventListener("click", () => {
-      drivesAnalyticsPanelFrame.contentWindow?.location.reload();
     });
   }
 

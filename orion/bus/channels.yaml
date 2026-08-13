@@ -1825,11 +1825,23 @@ channels:
     # ConceptWorker) deleted 2026-07-30 (same sprint as the two channels
     # above). Channel is now producer-less. Historical `drive_audits`
     # Postgres rows (already-written by orion-sql-writer before this date)
-    # remain readable -- services/orion-hub's Drives Analytics page reads
-    # them directly via SQL, not this bus channel. orion-rdf-writer removed
-    # 2026-07-15 (unrelated, prior removal): drive audits were already
-    # Postgres-only; the Fuseki write path was deleted, not just skipped. Do
-    # not re-add either without a real producer/consumer.
+    # were readable via services/orion-hub's Drives Analytics page for a
+    # couple of weeks after that -- both the page and the `drive_audits`
+    # table itself have since been removed outright, 2026-08-13 (table
+    # dropped, snapshotted first; see docs/superpowers/pr-reports/
+    # 2026-08-13-remove-hub-drives-analytics-tab-pr.md). orion-sql-writer's
+    # message-kind -> DriveAuditSQL mapping (settings.py/worker.py) and this
+    # channel's boot-time table DDL were NOT removed in that same patch
+    # (scoped out -- DriveAuditSQL shares a `_JSONB` type declaration with
+    # other still-live sql-writer models, a bigger untangling than that
+    # patch's actual scope); the CREATE TABLE IF NOT EXISTS boot DDL itself
+    # WAS removed (services/orion-sql-writer/app/main.py) since leaving it
+    # in place would have silently resurrected the dropped table on the next
+    # restart. orion-rdf-writer removed 2026-07-15 (unrelated, prior
+    # removal): drive audits were already Postgres-only; the Fuseki write
+    # path was deleted, not just skipped. Do not re-add any producer/consumer
+    # here without first checking whether `drive_audits` should even exist
+    # again.
     producer_services: []
     consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"

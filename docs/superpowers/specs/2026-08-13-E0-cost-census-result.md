@@ -144,3 +144,85 @@ The remaining questions belong to Juniper:
 
 Artifacts: `/tmp/e0-cost-census/report.txt`, `runs.json`, `outputs.md` (all 40 outputs
 verbatim).
+
+---
+
+# CORRECTION (same day): Gate A's verdict is RETRACTED
+
+Juniper pushed back: compute *is* the constrained resource, the fast/metacog lanes are
+"always firing," particularly with AI Town running — and asked whether the calibration was
+wrong because unlike measures were being compared across magnitudes.
+
+That was right, and Gate A's KILL is withdrawn. Four compounding errors:
+
+**1. Wrong GPU.** `nvidia-smi` read this host's Tesla P100. Inference runs on remote
+hosts — `100.112.254.99:8011`, `100.121.214.30:8012`, `100.121.214.30:8013` (atlas/v100,
+per `config/llm_profiles.yaml`). The "5% utilisation" was a machine that does no thinking.
+
+**2. Wrong quantity — the magnitude error.** Latency was measured; **single-slot lane
+occupancy** is the scarce quantity. `max_concurrent_requests: 1` on 14 of 18 profiles, with
+dedicated `device_ids`. A 4.57 s call does not "cost 1.7 arena ticks" — it **holds an entire
+GPU lane closed for 4.57 s**. Latency and occupancy are different units; one was reported as
+if it were the other.
+
+**3. Wrong denominator.** Verb latency was divided by Orion's own 2.7 s tick, as though Orion
+competed only with itself. The real denominator is total lane-seconds shared across AI Town,
+metacog, chat, journal, Juniper's sessions, and the arena.
+
+**4. Wrong condition, circularly.** The census ran with AI Town **down** and the lanes at
+0–9%. The idle case was measured and used to conclude that there is no contention.
+
+## The corrected measurement
+
+Duty cycle, sampled 1 Hz, before and after bringing AI Town up:
+
+```
+lane                    slots   AI Town down   AI Town up
+100.112.254.99:8011       1          0.0%         30.8%
+100.121.214.30:8012       4          4.7%          1.0%
+100.121.214.30:8013       4          9.2%          9.4%
+```
+
+The 4-slot lanes are unmoved. **The single-slot lane goes from idle to 30.8% from one
+additional consumer**, and that is AI Town merely bootstrapping Convex, not running a live
+simulation.
+
+At 30.8% duty, lane 8011 has ~41.5 free lane-seconds per minute. The arena runs ~22 ticks/min;
+one expensive verb per tick at 4.57 s demands ~100.5 lane-seconds/min. **Oversubscribed 2.4×
+against a hard semaphore of one.**
+
+## Revised status
+
+- **Gate A: PASSES on the corrected axis.** Scarcity is real, rivalrous, and enforced by a
+  semaphore rather than a soft budget. Phases 1–5 are **un-cancelled**.
+- The scarce resource is restated: **single-slot lane-seconds, contended across all
+  consumers** — not wall-clock latency against Orion's own tick.
+- It has a property better than the original thesis assumed: the lanes bind hardest exactly
+  when the system is busiest, i.e. when there is most to think about. Scarcity that co-varies
+  with load is a more organism-like constraint than a flat allowance.
+
+## What still stands, unaffected by GPU load
+
+- **Gate B still FAILS.** 0 of 10 goals concerned Orion's state; all ten paraphrased one
+  recalled Juniper coding session. Recall dominance and translator-not-generator are
+  properties of the prompt and retrieval path, not of contention.
+- **`counterfactual` and `context_exec_memory_contradiction_review` are still dead** — empty
+  string in ~0.5 s while reporting `status=success`, all 10 runs.
+
+So Phase 2 still cannot proceed on `goal_formulate` as it stands, but for a reason that has
+nothing to do with cost.
+
+## Open, and the next thing to measure
+
+**Which lane serves the expensive verbs?** If `goal_formulate` routes to a 4-slot lane rather
+than to single-slot 8011, the oversubscription arithmetic above changes materially. Not yet
+traced through `orion-llm-gateway`'s profile selection. This must be answered before any
+budget is designed, or the budget prices the wrong resource — the same class of error this
+correction exists to record.
+
+## Method note for whoever is next
+
+This is the **third** small-sample error in one session: input-invariance from n=2,
+`distinct_outputs=10/10` read as variety, and a single `nvidia-smi` sample read as a duty
+cycle. Point samples of a time-varying quantity keep producing confident wrong answers here.
+Sample over a window, state the window, or do not state the number.

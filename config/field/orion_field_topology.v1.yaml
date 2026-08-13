@@ -98,6 +98,51 @@ edges:
     channel_map:
       prediction_error: pressure
 
+  # 2026-08-13: capability:vision had NO edge at all until this one. Its live
+  # vector was therefore fabricated by the no-inbound-edge path -- pressure=0.0,
+  # confidence=1.0, available_capacity=1.0, capability_provenance empty -- i.e.
+  # Orion's self-model asserted perfect vision, permanently, whether or not a
+  # camera was running. That is the "schema-valid payload with meaningless
+  # content" CLAUDE.md §0A bans, sitting in the self-model.
+  #
+  # node:substrate.vision is not a physical host. Same shape as
+  # node:substrate.bus_synaptic above: an Active-Inference-style domain node
+  # written by services/orion-substrate-runtime/app/worker.py::
+  # _vision_channel_tick via a receipt, consumed through the same generic
+  # prediction_signal perturbation path. It reads the SAME orion_bus_synapse
+  # gap_zscore edges as that node, scoped to the orion:vision:* channels --
+  # measured live 2026-08-13 at 10 of 171 qualifying edges, which is why the
+  # mesh-wide node cannot stand in for it: a total vision blackout moves the
+  # mesh-wide reading to at most 0.058, under its own observed baseline max of
+  # 0.094. Scoped, the same blackout reads 1.0.
+  #
+  # confidence/available_capacity intentionally NOT mapped, exactly as for
+  # capability:transport above -- apply_diffusion()'s derived-fallback formula
+  # produces them from this real pressure rather than fabricating a second
+  # constant, which is the specific bug this edge exists to remove.
+  # BOTH channels map to pressure on purpose. apply_diffusion() combines
+  # multiple sources for one target channel with max() and records which one
+  # won in capability_provenance, so pressure reads "vision is impaired" from
+  # whichever fault is live, and the provenance says which.
+  #
+  # prediction_error alone would NOT be safe here. orion-bus-mirror's
+  # compute_ewma_update runs once per observed message, so a channel that goes
+  # silent does not raise its gap_zscore -- it freezes it at the last value it
+  # had while healthy, normally calm. A dead camera would therefore have read
+  # as pressure 0.0, i.e. the same "perfect vision" falsehood this edge exists
+  # to delete, and the same stale-read-as-calm shape as the
+  # node:substrate.route incident. perception_staleness is the explicit
+  # freshness channel that covers silence; it is derived from last_seen_epoch,
+  # which does advance per observation, and is never modelled by decay
+  # (decay converges toward calm; silence must converge toward alarm).
+  - source_id: node:substrate.vision
+    target_id: capability:vision
+    edge_type: node_capability
+    weight: 0.85
+    channel_map:
+      prediction_error: pressure
+      perception_staleness: pressure
+
   - source_id: node:athena
     target_id: capability:orchestration
     edge_type: node_capability

@@ -73,6 +73,25 @@ class Settings(BaseSettings):
     bus_synaptic_max_edge_age_sec: float = Field(
         3600.0, alias="SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC"
     )
+    # vision_channel_prediction_error: the same bus synaptic graph and the same
+    # gap_zscore property the tick above reads, scoped to the orion:vision:*
+    # channels so capability:vision has a real edge instead of a fabricated
+    # constant. Its own flag and its own interval for the same reason
+    # bus_synaptic got one -- a different question, not a sixth grammar-event
+    # domain. Deliberately NOT added to ACTIVE_INFERENCE_DOMAINS or to
+    # worker.py's _PREDICTION_ERROR_DOMAIN_NODE_IDS in this patch; see the
+    # perception design doc's metric gate, item 6.
+    enable_vision_channel_tick: bool = Field(
+        False, alias="SUBSTRATE_VISION_CHANNEL_TICK_ENABLED"
+    )
+    vision_channel_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_VISION_CHANNEL_TICK_INTERVAL_SEC"
+    )
+    # Substring match against Channel.channel in the bus synaptic graph. A
+    # prefix would be wrong: the qualifying edges include orion:vision:frames
+    # and also orion:vision:events:sql-write, and the catalog normalizes
+    # per-request reply channels to orion:vision:reply:*.
+    vision_channel_match: str = Field("vision", alias="SUBSTRATE_VISION_CHANNEL_MATCH")
     # Same env var name services/orion-bus-mirror and services/orion-recall
     # already use for the same graph -- not a new name.
     falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")

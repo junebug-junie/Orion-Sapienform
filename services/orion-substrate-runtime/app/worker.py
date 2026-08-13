@@ -51,6 +51,8 @@ from orion.substrate.prediction_error import (
     CodebaseMassBaseline,
     biometrics_prediction_error,
     bus_synaptic_prediction_error,
+    vision_channel_prediction_error,
+    vision_channel_staleness_pressure,
     chat_prediction_error,
     codebase_prediction_error,
     execution_prediction_error,
@@ -386,6 +388,9 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
             asyncio.create_task(
                 self._bus_synaptic_tick_loop(), name="substrate-bus-synaptic-tick"
+            ),
+            asyncio.create_task(
+                self._vision_channel_tick_loop(), name="substrate-vision-channel-tick"
             ),
             asyncio.create_task(
                 self._attention_broadcast_loop(), name="substrate-attention-broadcast"
@@ -950,6 +955,128 @@ class BiometricsSubstrateWorker:
         "RETURN e.latency_zscore AS zscore",
     )
 
+    _VISION_CHANNEL_EDGE_QUERY = (
+        "MATCH (o:Organ)-[e:PUBLISHES]->(c:Channel) "
+        "WHERE e.gap_zscore IS NOT NULL AND e.count > $min_count "
+        "AND e.last_seen_epoch > $stale_cutoff_epoch "
+        "AND c.channel CONTAINS $match "
+        "RETURN e.gap_zscore AS zscore, e.last_seen_epoch AS last_seen_epoch"
+    )
+
+    def _vision_channel_tick(self) -> None:
+        """Periodic read of the vision channels' slice of the bus synaptic
+        graph, feeding ``vision_channel_prediction_error`` into
+        ``node:substrate.vision`` -- the edge that fills ``capability:vision``.
+
+        Same graph, same ``gap_zscore`` property, same cold-start and recency
+        filters as ``_bus_synaptic_tick`` above; only the channel scope differs.
+        See ``vision_channel_prediction_error``'s docstring for why a scoped
+        read is not redundant with the mesh-wide one (that function's own
+        docstring concludes single-organ detection needs a per-organ signal).
+
+        Named ``vision`` rather than ``perception``: this service already has a
+        ``_perception_ingest_loop`` for AI Town embodiment perception, and
+        ``node:substrate.perception`` would read as that one's node. This is the
+        camera.
+
+        Default-off, fail-open: never raises out of a tick. Like the
+        bus_synaptic tick it reads FalkorDB fresh each call, so there is no
+        grammar-event batch and ``caused_by_event_ids``/``evidence_event_ids``
+        stay at their defaults rather than being fabricated.
+        """
+        if not self._settings.enable_vision_channel_tick:
+            return
+
+        client = self._get_bus_synaptic_client()
+        if client is None:
+            return
+
+        try:
+            stale_cutoff_epoch = (
+                datetime.now(timezone.utc).timestamp()
+                - self._settings.bus_synaptic_max_edge_age_sec
+            )
+            params = {
+                "min_count": self._settings.bus_synaptic_min_edge_count,
+                "stale_cutoff_epoch": stale_cutoff_epoch,
+                "match": self._settings.vision_channel_match,
+            }
+            zscores: list[float] = []
+            newest_seen_epoch: float | None = None
+            for row in client.graph_query(self._VISION_CHANNEL_EDGE_QUERY, params):
+                if not isinstance(row, dict):
+                    continue
+                value = row.get("zscore")
+                if isinstance(value, (int, float)) and math.isfinite(value):
+                    zscores.append(float(value))
+                seen = row.get("last_seen_epoch")
+                if isinstance(seen, (int, float)) and math.isfinite(seen):
+                    newest_seen_epoch = max(newest_seen_epoch or seen, float(seen))
+
+            now = datetime.now(timezone.utc)
+
+            if newest_seen_epoch is None:
+                # No qualifying vision edge at all -- either cold start, or an
+                # outage long enough that every vision edge aged past
+                # bus_synaptic_max_edge_age_sec. Both mean "cannot tell", which
+                # is not "calm": writing prediction_error=0.0 here would assert
+                # healthy vision on no evidence, the exact defect this node
+                # exists to remove. Skip the write; the node's observed_at then
+                # goes stale, which is the honest reading.
+                logger.warning("substrate_vision_channel_tick_no_edges")
+                return
+
+            age_seconds = max(0.0, now.timestamp() - newest_seen_epoch)
+            staleness = vision_channel_staleness_pressure(age_seconds)
+            error = vision_channel_prediction_error(zscores)
+            # Receipt on either fault, not just the anomaly one -- a receipt is
+            # the audit trail of notable events, and "the eye went quiet" is the
+            # more notable of the two.
+            if error > 0.0 or staleness > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="vision_channel",
+                        node_id="node:substrate.vision",
+                        prediction_error=max(error, staleness),
+                        now=now,
+                    )
+                )
+            # Written every tick, not only when error > 0.0 -- same reasoning as
+            # the bus_synaptic tick below: a node that can only go up and never
+            # refresh back down to a genuine calm reading produces permanent
+            # false alarms in any consumer that polls its raw current value.
+            self._write_prediction_error_node(
+                node_id="node:substrate.vision",
+                error=error,
+                now=now,
+                reducer_key="vision_channel",
+                extra_channels={"perception_staleness": staleness},
+            )
+            logger.info(
+                "substrate_vision_channel_tick_completed edge_count=%d error=%.3f "
+                "age_sec=%.1f staleness=%.3f",
+                len(zscores),
+                error,
+                age_seconds,
+                staleness,
+            )
+        except Exception:
+            logger.exception("substrate_vision_channel_tick_failed")
+
+    async def _vision_channel_tick_loop(self) -> None:
+        interval = float(self._settings.vision_channel_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._vision_channel_tick)
+            except Exception:
+                logger.exception("substrate_vision_channel_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
     def _bus_synaptic_tick(self) -> None:
         """Periodic read of the live bus synaptic graph, feeding
         ``bus_synaptic_prediction_error`` (mirrors the shared writer the other
@@ -1088,6 +1215,7 @@ class BiometricsSubstrateWorker:
         reducer_key: str = "",
         contributing_id: str | None = None,
         evidence_event_ids: Sequence[str] = (),
+        extra_channels: dict[str, float] | None = None,
     ) -> None:
         """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
 
@@ -1162,6 +1290,12 @@ class BiometricsSubstrateWorker:
                 "prediction_error": round(salience, 6),
                 "reducer_key": reducer_key,
             }
+            # Additional field channels this node carries beyond prediction_error.
+            # Used by _vision_channel_tick for `perception_staleness`, which has to
+            # travel on the same node so both can be mapped to capability:vision's
+            # pressure and combined by apply_diffusion()'s existing max().
+            for extra_key, extra_value in (extra_channels or {}).items():
+                metadata[extra_key] = round(max(0.0, min(1.0, float(extra_value))), 6)
             if evidence_event_ids:
                 metadata["prediction_error_evidence_event_ids"] = list(
                     evidence_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]

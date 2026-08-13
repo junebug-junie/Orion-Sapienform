@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -685,3 +686,101 @@ def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
         return 0.0
     anomalous = sum(1 for z in edge_zscores if abs(z) >= _BUS_SYNAPTIC_ZSCORE_SATURATION)
     return anomalous / len(edge_zscores)
+
+
+def vision_channel_prediction_error(edge_zscores: list[float]) -> float:
+    """0-1 score: the anomalous fraction of the *vision* channels' bus edges.
+
+    Deliberately the same counting rule and the same ``|z| >= 3`` convention as
+    ``bus_synaptic_prediction_error`` above, delegating to it rather than
+    reimplementing, because it is the identical question asked of a narrower
+    edge set. The two wrong formulas documented in that docstring are wrong
+    here for exactly the same reasons; there is no case for a second attempt at
+    them.
+
+    **Why this is not redundant with the mesh-wide metric**, per CLAUDE.md
+    §0A's independence check. It reads the same ``gap_zscore`` property from the
+    same graph, so it is emphatically not an independent *instrument* -- but it
+    answers a question the mesh-wide aggregate structurally cannot. That
+    function's own docstring says so: it "cannot cleanly separate a few-organ
+    event from noise at ANY threshold", and concludes "single-organ detection
+    needs a per-organ signal, not a lower threshold on this one." Measured
+    live 2026-08-13: the vision channels are 10 of 171 qualifying edges, so a
+    total vision blackout moves the mesh-wide reading to at most 0.058 --
+    under its own observed baseline max of 0.094, i.e. invisible. Scoped to
+    those 10 edges, the same blackout reads 1.0.
+
+    Reusing the already-maintained EWMA baseline is the point: no new
+    instrument is introduced, nothing new needs calibrating, and the
+    orion-bus-mirror writer that maintains it is already load-bearing for a
+    shipped domain.
+
+    **Quantisation, stated up front:** with ~10 qualifying edges the reading is
+    coarse -- one anomalous edge is 0.1, and there is no value between 0.0 and
+    0.1. That is acceptable for a capability-health channel (the question is
+    "is the eye impaired", not "by how much") but it is not a continuous
+    magnitude and should not be trended as one.
+
+    Caller is responsible for the scoping and for the same cold-start
+    (``count``) and recency (``last_seen_epoch``) filters the mesh-wide caller
+    applies; this function only aggregates the list it is given.
+
+    **This is a traffic-*irregularity* channel and cannot detect silence.** See
+    ``vision_channel_staleness_pressure`` -- that is not an optional companion,
+    it is what makes this one safe to read.
+    """
+    return bus_synaptic_prediction_error(edge_zscores)
+
+
+# Deadband and saturation for vision availability, anchored to the measured
+# live cadence of the vision channels (2026-08-13, 60s pubsub census):
+# orion:vision:frames 0.1s, orion:vision:edge:health 0.1s,
+# orion:vision:artifacts 5.0s, orion:vision:windows 8.6s. Since the staleness
+# below is taken across ALL vision channels, a healthy eye refreshes it about
+# ten times a second, so the deadband is ~150x the healthy interval -- wide
+# enough that ordinary jitter reads exactly 0.0, narrow enough that a stopped
+# camera is unambiguous well inside a minute.
+_VISION_STALENESS_GRACE_SEC = 15.0
+_VISION_STALENESS_SATURATION_SEC = 60.0
+
+
+def vision_channel_staleness_pressure(
+    age_seconds: float,
+    *,
+    grace_seconds: float = _VISION_STALENESS_GRACE_SEC,
+    saturation_seconds: float = _VISION_STALENESS_SATURATION_SEC,
+) -> float:
+    """0-1 availability pressure from the age of the newest vision bus message.
+
+    **Why this exists, and why the anomaly fraction alone is not enough.**
+    ``services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update`` runs
+    once per *observed message*, computing the z-score of that message's
+    inter-arrival gap. If a channel goes silent the function is never called,
+    so ``gap_zscore`` does not rise -- it **freezes at its last value**.
+    Verified by reading that function 2026-08-13, before this node shipped.
+
+    A dead camera therefore leaves ``vision_channel_prediction_error`` reading
+    whatever it read while the camera was alive, which is normally calm. Wiring
+    that alone into ``capability:vision`` would have reproduced the exact defect
+    the edge was built to remove: a self-model confidently asserting healthy
+    vision with no eye attached. It is also the same shape as the
+    ``node:substrate.route`` incident CLAUDE.md §0A records, where a value that
+    had merely stopped being refreshed was indistinguishable from a genuine
+    calm reading.
+
+    ``last_seen_epoch`` *does* advance on every observation, so its age is a
+    true liveness measure. This is the "explicit freshness channel" the
+    perception design doc requires, and the reason that doc also says staleness
+    must never be modelled by decay: a decaying value converges toward calm,
+    which is backwards -- silence should converge toward alarm.
+
+    Rest point is exactly 0.0 and genuinely reachable: at health the newest
+    vision message is a fraction of a second old, far inside the deadband.
+    Saturates at 1.0, so it is bounded without a clamp on the input.
+    """
+    if not math.isfinite(age_seconds) or age_seconds <= grace_seconds:
+        return 0.0
+    span = saturation_seconds - grace_seconds
+    if span <= 0:
+        return 1.0
+    return min(1.0, (age_seconds - grace_seconds) / span)

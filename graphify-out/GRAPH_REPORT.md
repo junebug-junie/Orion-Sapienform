@@ -1,29 +1,16 @@
-<<<<<<< Updated upstream
 # Graph Report - Orion-Sapienform  (2026-07-29)
-=======
-# Graph Report - Orion-Sapienform  (2026-07-28)
->>>>>>> Stashed changes
 
 ## Corpus Check
 - 0 files · ~0 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-<<<<<<< Updated upstream
 - 28306 nodes · 81046 edges · 1395 communities (1047 shown, 348 thin omitted)
 - Extraction: 86% EXTRACTED · 14% INFERRED · 0% AMBIGUOUS · INFERRED: 11337 edges (avg confidence: 0.61)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
 - Built from commit: `97b634c5`
-=======
-- 2489 nodes · 3241 edges · 293 communities (190 shown, 103 thin omitted)
-- Extraction: 90% EXTRACTED · 10% INFERRED · 0% AMBIGUOUS · INFERRED: 321 edges (avg confidence: 0.8)
-- Token cost: 0 input · 0 output
-
-## Graph Freshness
-- Built from commit: `fd647649`
->>>>>>> Stashed changes
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -44,7 +31,6 @@
 - orion-self-state-runtime docker-compose.yml
 - conjourney
 - orion-self-state-runtime requirements.txt
-<<<<<<< Updated upstream
 - test_consolidation_expectations.py
 - websocket_endpoint
 - InMemoryReasoningRepository
@@ -452,36 +438,9 @@
 - substrate-lattice.js
 - apply_structured_output_to_payload
 - snippet_dedupe.py
-=======
-- Collapse Mirror split invariant (Strict/Juniper vs Metacog/Orion; rationale: metacog mirrors must never hit Juniper's triage/enrichment pipeline by default)
-- Service: orion-sql-writer
-- Service: orion-spark-introspector
-- Service: orion-hub
-- Orion Bus Channels Registry (channels.yaml)
-- Service: orion-cortex-exec
-- Context Engineering Pack (Substrate Trace Adoption)
-- Context Pack: orion-substrate-telemetry (Cursor, markdown)
-- Service: orion-vision-host
-- Consolidation Policy v1
-- Shared compactor helpers README
-- Phase 13b SQL-Writer Durability
-- Service: orion-harness-governor
-- Vision Services Documentation
-- Endogenous Action v1 Motor Nerve Spec
-- Service: orion-actions
-- orion-landing-pad Docker Compose
-- Service: orion-landing-pad
-- orion-hub service (README) — browser gateway into the mesh
-- orion-agent-council service (multi-agent deliberation stub)
-- Service: orion-spark-introspector
-- orion-vision-council service
-- Orion Cortex Exec Service
-- CLAUDE.md — Orion Subagent Development Contract: repo-wide rules for how AI coding agents work in Orion-Sapienform, identical content to AGENTS.md (symlinked)
-- Proposal Review API
->>>>>>> Stashed changes
 - orion-substrate-runtime service (biometrics closed loop, grammar reducers, Layers 1-5)
+- _compute_current_distribution
 - config/mesh_remediation_roster.yaml (auto-remediation roster)
-<<<<<<< Updated upstream
 - map_drive_state_to_intent
 - bus-core (Redis broker container)
 - test_attention_loops_reader.py
@@ -567,20 +526,6 @@
 - Integrated Memory Cognition Loop Design
 - Docker readiness (§8): run docker compose builds/deploys through scripts/safe_docker_build.sh instead of calling docker compose directly; it refuses to run from the shared/primary checkout and applies the --env-file/-f pattern automatically; raw docker compose examples retained only as reference for one-off logs/ps commands
 - render_aitown_tab_blocks
-=======
-- bus-core (Redis broker container)
-- AGENTS.md — Orion Subagent Development Contract: repo-wide rules for how AI coding agents work in Orion-Sapienform, aimed at inspectable, testable, parallel-safe agent behavior
-- Metrics Swamp Arsonist Review
-- Recall Epistemic Honesty + Observability Spec
-- cognition_trace_cache.py
-- AutonomyStateV2 evidence pipeline (chat, env-gated)
-- Stance Assembly / ChatStanceBrief
-- Concept Induction (Spark)
-- Endogenous Drive Origination Design
-- reflect.v1 recall profile
-- Integrated Memory Cognition Loop Design
-- Docker readiness (§8): run docker compose builds/deploys through scripts/safe_docker_build.sh instead of calling docker compose directly; it refuses to run from the shared/primary checkout and applies the --env-file/-f pattern automatically; raw docker compose examples retained only as reference for one-off logs/ps commands
->>>>>>> Stashed changes
 - orion-llamacpp-host service (profile-driven llama.cpp GGUF wrapper, Atlas topology)
 - config/proposals/proposal_policy.v1.yaml — Layer 7 proposal policy: limits, priority/risk thresholds, dimension weights, and named proposal_templates that turn substrate state into ProposalFrameV1 candidates
 - Unified Cognitive Substrate Phase 6 (Frontier Expansion / Typed Graph-Delta Generation)
@@ -590,7 +535,6 @@
 - Vision Grounded Pipeline Design
 - Orion Unified Turn (canonical spec)
 - Felt-State Arc Roadmap Spec
-<<<<<<< Updated upstream
 - VerbRegistry
 - test_query.py
 - ChatResponseFeedbackV1
@@ -607,9 +551,6 @@
 - test_worker_prediction_error_node.py
 - test_cortex_gateway_error_reply.py
 - _ev
-=======
-- Orion Signals Roster v1 (mesh service tiers)
->>>>>>> Stashed changes
 - services/orion-memory-consolidation/README.md — subscribes to orion:memory:turn:persisted, classifies each chat turn via LLM gateway quick-lane logprobs, patches chat_history_log.spark_meta, tracks consolidation windows, and on boundary closure runs a deterministic consolidation gate (default) or legacy graph suggest
 - services/orion-execution-dispatch-runtime/README.md — Layer 9 of the Orion cognition substrate: converts PolicyDecisionFrameV1 + ProposalFrameV1 + SelfStateV1 into ExecutionDispatchFrameV1 envelopes, the motor-nerve service that can actually send real actions
 - config/llm_profiles.yaml (LLM profile registry)
@@ -617,8 +558,9 @@
 - Orion Heartbeat Research Charter
 - SuggestDraftV1
 - Runtime Trace Signal Nexus Design
+- findings_bundle_synth.py
+- _FakeProc
 - orion-signal-gateway (normalizes organ-bus events into OrionSignalV1)
-<<<<<<< Updated upstream
 - test_attention_ack.py
 - proposal_review_routes.py
 - generate_descriptions.py
@@ -652,21 +594,15 @@
 - test_action_outcome_sql_shape.py
 - test_worker_attention_broadcast_tick.py
 - claim:orion:substrate-telemetry:0001 — orion-substrate-telemetry persists tier outcomes
-=======
-- orion-spark-introspector: Spark metacognitive streaming service driving the phi/EKG chart
-- Pipeline: Retina Dense
-- World Pulse Sources Policy v1
-- LLM Services and Agentic Flow
->>>>>>> Stashed changes
 - Reasoning Schema Phase 1
 - Unified Cognitive Substrate Phase 1 (Shared Ontology + Canonical Contracts)
 - Unified Cognitive Substrate Phase 11 (Narrow Runtime Review Execution)
 - FCC-Cortex GWT Dispatch Design
+- Deviation Gate (EWMA baseline, anti-flood)
 - execution_trajectory reducer / ExecutionRunStateV1
 - source:2026-05-20-knowledge-forge-v1-merge (metadata)
 - Service: orion-notify
 - Cognition Packs (Memory, Executive, Emergent)
-<<<<<<< Updated upstream
 - walkable_tiles
 - test_fcc_motor_summarize.py
 - recommend_actions_from_alerts
@@ -690,8 +626,6 @@
 - .path
 - test_vision_retina_settings.py
 - Endogenous Drive Origination Design
-=======
->>>>>>> Stashed changes
 - orion-social-memory service
 - Unified Cognitive Substrate Phase 13 (GraphDB-Backed Persistence)
 - Brainstorming Session #1 - Appendix Ideas 3-10
@@ -699,7 +633,6 @@
 - Orion Relational Stance Design (v1)
 - Concept Relation Resolution Design
 - Channel "orion:kg:edge:ingest.v1" (kind=event, schema=KgEdgeIngestV1) producers=[orion-topic-foundry] consumers=[orion-rdf-writer, orion-graphdb]
-<<<<<<< Updated upstream
 - test_simulate_no_db_writes
 - organ_layer
 - test_draft_patch_does_not_write_files
@@ -723,16 +656,17 @@
 - test_coerce_str_list_handles_dict_channel_shapes
 - STTEngine
 - test_transport_latest_404_when_no_projection_row
-=======
-- Channel "orion:dream:log" (kind=event, schema=DreamResultV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer, orion-dream]
->>>>>>> Stashed changes
 - concept_induction_pass Workflow
+- Social Memory Hygiene and Re-Grounding
+- orion-social-room-bridge service
 - Unified Cognitive Substrate Phase 17 (Operator-Controlled Policy Adoption and Rollback)
+- capability_provenance (diffusion)
 - Biometrics Reference Adapter
 - orion-memory-consolidation service
 - Metacog Prompt Slim Context Design
+- Grounded Autonomy Episode Journal Design
+- Unified-Turn Self-Grounding Design
 - Stance React
-<<<<<<< Updated upstream
 - dataset.py
 - Settings
 - scan_cognition_library
@@ -754,10 +688,6 @@
 - main.py
 - orion-self-state-runtime requirements.txt
 - orion-social-memory service
-=======
-- orion-rag: retrieval-augmented generation orchestrator, enriches queries with vector-db context before delegating to LLM host
-- orion-sql-db: PostgreSQL database + pgAdmin client
->>>>>>> Stashed changes
 - GraphDB Semantic vs SQL Operational Ownership Split
 - Unified Cognitive Substrate Phase 4 (Graph Dynamics and Pressure Propagation)
 - Recall Service (orion-recall)
@@ -767,7 +697,6 @@
 - Inner-State Unification Design
 - Vector Audit
 - Orion Node Bootstrap README (Ubuntu 24.04)
-<<<<<<< Updated upstream
 - run_attention_bound_proposal_eval.py
 - enum
 - Orion Cognitive Dashboard UI (index.html + tissue_viz.js)
@@ -792,30 +721,19 @@
 - config/autonomy/capability_policy.v1.yaml — policy config gating which autonomy capabilities may auto-execute per cycle, by side-effect class, required goal status, required drive origins/signal kinds, and per-cycle budget
 - Social GIF Expression Layer
 - Social Scenario Replay Harness
-=======
-- Canonical phi: _phi_from_self_state() / _get_phi_stats
-- orion-notify: minimal notification host centralizing email delivery, attention requests, chat messages, recipient preferences, escalation
-- orion-social-memory: relational continuity synthesizer for social-room turns
-- orion-llm-gateway manual smoke tests: bus chat/exec_step envelopes, ollama vs vllm backend selection
-- config/autonomy/capability_policy.v1.yaml — policy config gating which autonomy capabilities may auto-execute per cycle, by side-effect class, required goal status, required drive origins/signal kinds, and per-cycle budget
-- Social GIF Expression Layer
-- Orion Landing Pad Guide
->>>>>>> Stashed changes
 - live_state vs recovery_state
 - Hub OTEL Traces + Metrics Observability Design
 - CognitiveUnificationLayer
 - Phi seed-v4 Feature Set Design
 - Self-State & Mesh Substrate Redesign
+- up_all_services.sh
 - Channel "orion:evidence:index:upsert" (kind=event, schema=EvidenceUnitV1) producers=[orion-sql-writer, *] consumers=[orion-evidence-index, orion-sql-writer, *]
 - Channel "orion:graph:compression:stale" (kind=event, schema=CompressionStalenessMarkV1) producers=[orion-rdf-writer, orion-graph-compression] consumers=[orion-graph-compression]
 - orion-rdf-writer (bus → triples → RDF store service)
-<<<<<<< Updated upstream
 - smoke_memory_cognition_loop_e2e.sh
-=======
->>>>>>> Stashed changes
 - town_cards.yaml (cast source of truth)
+- test_main_autonomy_graph_probe.py
 - orion-dream Service
-<<<<<<< Updated upstream
 - fcc_model_mapping.py
 - _Store
 - test_substrate_attention_debug_api.py
@@ -830,17 +748,14 @@
 - test_execution_dispatch_bus_catalog.py
 - Reasoning Promotion Phase 3
 - Phase 5 Research Findings
-=======
-- whisper-tts (docker-compose service, GPU TTS/STT)
->>>>>>> Stashed changes
 - Information-Dynamics Pillars
 - OrionSignalV1
 - memory.turn.persisted outbox
 - Repair Pressure v2 + Pre-Turn Appraisal Rail Design
+- Motor Self-Identity Design
 - inner_state_registry.py / InnerStateSignal
 - AutonomyStateV2 Closed-Loop Wiring Design
 - Topic Foundry (Windowing v2, Micro/Macro, Enrichment)
-<<<<<<< Updated upstream
 - verb.schema.json
 - services
 - enum
@@ -873,28 +788,28 @@
 - test_context_exec_proposal_storage_defaults.py
 - test_recall_profiles_cards_knobs.py
 - test_recent_turn_effect_alerts.py
-=======
-- Recall Memory
-- Perceive: Retina Fast Pipeline (Embed, Detect, Caption)
-- Spark organ (salience, change, concept formation)
-- orion-attention-runtime service
-- orion-equilibrium-service Docker Compose Service
->>>>>>> Stashed changes
 - orion-memory-crystallizer: governed cognitive memory crystallization worker; proposes/validates MemoryCrystallizationV1, projects to Chroma/Graphiti/FalkorDB, never canonical without governor
 - Agent Git Safety Mechanism Stack
+- Reasoning Summary Compiler Phase 4
+- Social-State Inspection
 - Workflow Schedule Production Hardening v1
 - Substrate Trace Map Template
 - Phi Snapshot
 - Memory Graph Annotator (Hub) + Dual-Write GraphDB
+- _make_store
 - GoalProposalEngine v2 (dedupe + semantic goals)
 - AutonomyStateV2 Evidence signal_tension Design
+- install-nvidia.sh
+- cortex_exec_fleet_helpers.sh
+- test_autonomy_isolation.py
+- PromptRenderer
 - Chat (Generalist)
 - Daily Metacog v1
 - Self Repo Inspect
+- build_finalize_embodiment_intent
 - Orion Journaler Service Boundaries and Semantics
 - orion-security-watcher (Guard: vision presence/alert debounce service)
 - Bounded trigger loop in ConceptWorker.handle_envelope
-<<<<<<< Updated upstream
 - Phase 3B: Parity Evidence and Cutover-Readiness Model
 - diagnose_cortex_bus_stack.py
 - git-stash-table.sh
@@ -927,9 +842,6 @@
 - _load_state_journaler
 - test_vision_retina_no_detector.py
 - hub_quick_playwright_live.py
-=======
-- orion-sql-writer: durable bus-to-Postgres persistence consumer
->>>>>>> Stashed changes
 - orion-rdf-writer Canonical Writer
 - Social Context Window Selection
 - Social Thread Choreography
@@ -940,7 +852,6 @@
 - Chat History Compactor Design
 - CortexOrchAdapter dispatch_failure signal
 - Journal/Notification Flood Fix Design
-<<<<<<< Updated upstream
 - test_dream_trigger_contract.py
 - Fact Extraction
 - spec:knowledge-forge-ideation-review-v1 (YAML contract)
@@ -986,13 +897,6 @@
 - TestSparqlBuilders
 - test_recall_alert_profile.py
 - test_workflow_ui_js.py
-=======
-- Fact Extraction
-- spec:knowledge-forge-ideation-review-v1 (YAML contract)
-- orion-self-experiments (typed self-experiment registry + context-exec dispatcher)
-- orion-policy-runtime: Layer 8 substrate service evaluating ProposalFrameV1 against SubstratePolicyV1, persists PolicyDecisionFrameV1 (policy is not execution)
-- claim:test:0001 (accepted claim fixture)
->>>>>>> Stashed changes
 - Substrate Atlas (grammar-atom Cytoscape.js graph)
 - Channel triage heuristic report (audit_001/reports_postfix, remediated)
 - Topology Node: prometheus
@@ -1006,18 +910,19 @@
 - ENABLE_TOOL_SEARCH env contract
 - Reverie Narration Continuity Design
 - requirements-dev.txt (repo-wide dev/test deps)
+- orion-bootstrap.sh
+- refresh_service_envs.sh
+- description
+- name
+- prompt_template
 - Assess Runtime State
 - Dream Cycle
 - Finalize Response
-<<<<<<< Updated upstream
 - conftest.py
-=======
->>>>>>> Stashed changes
 - spec:substrate-tier-telemetry-v1
 - Orion Recall Profiles Overview (Multi-Backend Ensemble Policy)
 - graph.compressions.v1 recall profile (unified)
 - Autonomous Event-Driven Concept Induction Trigger Loop note
-<<<<<<< Updated upstream
 - cache_fineweb_edu_sample.sh
 - generate_moc_sample.sh
 - generate_sample.sh
@@ -1062,15 +967,17 @@
 - _sync_runner_settings_module
 - resolve_service
 - test_conftest_cross_service_isolation.py
-=======
->>>>>>> Stashed changes
 - orion-fcc Docker Compose Service
 - orion-feedback-runtime Docker Compose Service
+- field_events.py
+- _reset_graphiti_core_search_stack_cache
+- test_finalize_exec_channel.py
+- test_agent_claude_trace_js.py
 - orion-knowledge-forge Docker Compose
 - orion-meta-tags: LLM-based enrichment of collapse events (entities, sentiment, tags) via orion:collapse:triage -> orion:tags:enriched
+- conftest.py
 - orion-notify service (notification policy owner)
 - orion-rdf-store: operator/deployment stack for Orion's primary RDF datastore (Apache Jena Fuseki); not a Python service, no app/settings.py/requirements.txt
-<<<<<<< Updated upstream
 - get_pg_connection
 - test_cards_adapter_active_only.py
 - test_sql_anchor_since_minutes.py
@@ -1085,11 +992,6 @@
 - TestJournalComposePrompt
 - test_print_recent_turn_effects.py
 - test_schema_registry_import_does_not_load_substrate
-=======
-- Golden phi + node attribution (trained encoder overrides phi_now coherence/energy/novelty)
-- orion-world-pulse (docker-compose service, Firecrawl-backed curiosity fetch)
-- claim:test:bad-ref (disputed claim fixture with dangling references)
->>>>>>> Stashed changes
 - Rationale: weights are calibrated starting points, tunable via repair_pressure_v2_eval.py
 - chat_template_kwargs Per-Request Reasoning
 - Context Exec RLM Integration
@@ -1099,7 +1001,18 @@
 - Hub Social Room Ops v1 Design
 - GitHub Compactor Design
 - Testing Contract (Global)
+- install-docker.sh
+- install-utils.sh
+- setup-node.sh
+- setup-rsfp-10g.sh
+- setup-ssh.sh
+- verify-agent.sh
+- verify-gpu.sh
+- voice-bootstrap.sh
 - Env Refresh Exclude Services List
+- disk-onboarding.sh
+- __init__.py
+- __init__.py
 - Direct Answer
 - Auto Depth Select
 - Concept Induction
@@ -1107,31 +1020,114 @@
 - Skills — Docker PS Status
 - Skills — GPU NVIDIA SMI Snapshot
 - Summarize Context Verb
-<<<<<<< Updated upstream
 - __init__.py
 - __init__.py
 - __init__.py
-=======
->>>>>>> Stashed changes
 - Hub Source Delta Test (smoke-003)
+- __init__.py
+- gpu_host_stats.sh
+- __init__.py
+- __init__.py
+- __init__.py
+- __init__.py
+- __init__.py
 - Laplace's Demon-lite loop (forecast/observe/delta/reflect/adjust)
+- context_exec_live_smoke.sh
+- denver_memory_correction_vertical_smoke.sh
+- export_graphdb_collapse_offline.sh
+- pre-commit
+- import_graphdb_export_to_fuseki.sh
+- install_git_safety_hooks.sh
+- proposal_review_api_smoke.sh
+- safe_docker_build.sh
+- self_experiment_context_exec_smoke.sh
+- setup_graphify_merge_driver.sh
+- smoke_actions_async_message.sh
+- smoke_actions_daily_email_message.sh
+- smoke_actions_pending_attention.sh
+- smoke_actions_scheduler_daily_journal_message.sh
+- smoke_attention.sh
+- smoke_attention_frame_v1.sh
+- smoke_biometrics.sh
+- smoke_biometrics_closed_loop.sh
+- smoke_chat_message_notify.sh
+- smoke_consolidation_v1.sh
+- smoke_cortex_exec_grammar.sh
+- smoke_execution_dispatch_v1.sh
+- smoke_feedback_frame_v1.sh
+- smoke_field_digester_biometrics.sh
+- smoke_hub_serve_origin.sh
+- smoke_hub_topic_studio_dom.sh
+- smoke_hub_topic_studio_panel.sh
+- smoke_hub_topic_studio_preview_options.sh
+- smoke_hub_topic_studio_render.sh
+- smoke_hub_topic_studio_segments_full_text.sh
+- smoke_in_app_notify.sh
+- smoke_memory_cards_e2e.sh
+- smoke_memory_consolidation_gate.sh
+- smoke_mesh_guardian.sh
+- smoke_no_topic_rail.sh
+- smoke_notify.sh
+- smoke_notify_attention.sh
+- smoke_notify_chat_message.sh
+- smoke_notify_prefs.sh
+- smoke_orion_bus_substrate_trace.sh
+- smoke_pcr_chat_memory_e2e.sh
+- smoke_policy_decision_frame_v1.sh
+- smoke_proposal_frame_v1.sh
+- smoke_self_state_v1.sh
+- smoke_topic_drift_alert.sh
+- smoke_topic_foundry_contract.sh
+- smoke_topic_foundry_dataset_create.sh
+- smoke_topic_foundry_preview_detail.sh
+- smoke_topic_foundry_preview_doc_counts.sh
+- smoke_topic_foundry_preview_minimal.sh
+- smoke_topic_foundry_run_results_inspector.sh
+- smoke_topic_foundry_segment_detail.sh
+- smoke_topic_foundry_segments_facets.sh
+- smoke_topic_foundry_train_cosine.sh
+- smoke_topic_studio_e2e.sh
+- smoke_topic_studio_ui.sh
+- smoke_ui_frame_contract.sh
+- test_hub.sh
+- test_orion_actions.sh
+- __init__.py
+- apply_upstream_patches.sh
+- wire_llm_gateway.sh
+- conftest.py
+- conftest.py
 - orion-execution-dispatch-runtime Docker Compose Service
+- edge_registry.py
+- node_registry.py
+- entrypoint.sh
 - Substrate Atlas UI (orion-hub)
+- verify_atlas_quick_llamacpp_thinking_off.sh
+- verify_qwen3_thinking_off_live.sh
 - orion-power-guard docker-compose (UPS/SNMP monitoring, on-battery grace, shutdown command, host SSH key mount)
-<<<<<<< Updated upstream
 - run_server.sh
 - __init__.py
 - smoke_otel_phase1.sh
 - __init__.py
 - __init__.py
-=======
->>>>>>> Stashed changes
 - orion-spark-concept-induction docker-compose.yml
-- orion-vision-window (docker-compose service)
-<<<<<<< Updated upstream
 - __init__.py
-=======
->>>>>>> Stashed changes
+- smoke_topic_foundry_capabilities_and_snippets.sh
+- smoke_topic_foundry_drift.sh
+- smoke_topic_foundry_drift_list.sh
+- smoke_topic_foundry_enrich.sh
+- smoke_topic_foundry_events.sh
+- smoke_topic_foundry_facets_and_search.sh
+- smoke_topic_foundry_health.sh
+- smoke_topic_foundry_kg_edges.sh
+- smoke_topic_foundry_kg_edges_list.sh
+- smoke_topic_foundry_llm_segmentation.sh
+- smoke_topic_foundry_preview.sh
+- smoke_topic_foundry_runs_and_segments_paging.sh
+- smoke_topic_foundry_topics.sh
+- smoke_topic_foundry_train_and_poll.sh
+- __init__.py
+- orion-vision-window (docker-compose service)
+- __init__.py
 - /subagent-driven-development command (parallel sprint orchestration)
 - Profile: Action Recognition
 - Profile: Affect Signals
@@ -1189,12 +1185,9 @@
 - chat.belief.relational.v1 Recall Profile
 - chat.belief.semantic.v1 Recall Profile
 - chat.story.kids.v1 Recall Profile
-<<<<<<< Updated upstream
 - orion-aitown-mcp
 - orion-cognition
 - orion-sapienform
-=======
->>>>>>> Stashed changes
 - orion-agent-council service
 - Collapse Mirrors (causal-density markers)
 - Prometheus node (development/utility)
@@ -1210,7 +1203,6 @@
 - orion-state-service dependencies (fastapi/redis/asyncpg)
 
 ## God Nodes (most connected - your core abstractions)
-<<<<<<< Updated upstream
 1. `ServiceRef` - 1033 edges
 2. `BaseEnvelope` - 980 edges
 3. `OrionBusAsync` - 628 edges
@@ -1221,25 +1213,12 @@
 8. `SubstrateMutationStore` - 181 edges
 9. `CortexClientRequest` - 158 edges
 10. `LLMMessage` - 156 edges
-=======
-1. `Orion Bus Channels Registry (channels.yaml)` - 262 edges
-2. `Service: orion-hub` - 98 edges
-3. `Service: orion-sql-writer` - 77 edges
-4. `Service: orion-cortex-exec` - 54 edges
-5. `Service: orion-social-memory` - 30 edges
-6. `Service: orion-cortex-orch` - 26 edges
-7. `Service: orion-rdf-writer` - 24 edges
-8. `Service: orion-vision-host` - 21 edges
-9. `Service: orion-world-pulse` - 20 edges
-10. `Service: orion-spark-concept-induction` - 19 edges
->>>>>>> Stashed changes
 
 ## Surprising Connections (you probably didn't know these)
 - `Agent Trace inspection modal (Hub UI, fail case screenshot)` --semantically_similar_to--> `Idea 4: Click-through payload cards`  [INFERRED] [semantically similar]
   .verify-run/hub_agent_trace_timeline.png → 2026-07-11-turn-visibility-design-spec.md
 - `Agent Trace inspection modal (Hub UI, fail case screenshot)` --conceptually_related_to--> `agent-trace.js (plain-text step consumer)`  [AMBIGUOUS]
   .verify-run/hub_agent_trace_timeline.png → 2026-07-11-turn-visibility-design-spec.md
-<<<<<<< Updated upstream
 - `Autonomy Origination Measurement Gate (scripts/analysis/README.md)` --semantically_similar_to--> `Phase 3B: Parity Evidence and Cutover-Readiness Model`  [INFERRED] [semantically similar]
   scripts/analysis/README.md → orion/spark/concept_induction/PHASE3B_PARITY_EVIDENCE_READINESS.md
 - `Turn Visibility Design Spec (2026-07-11)` --semantically_similar_to--> `/brainstorming command (sentience-development ideation)`  [INFERRED] [semantically similar]
@@ -1253,17 +1232,6 @@
 - 4-file cycle: `services/orion-cortex-exec/app/executor.py -> services/orion-cortex-exec/app/verb_adapters.py -> services/orion-cortex-exec/app/router.py -> services/orion-cortex-exec/app/pcr_chat_memory.py -> services/orion-cortex-exec/app/executor.py`
 - 5-file cycle: `services/orion-cortex-exec/app/executor.py -> services/orion-cortex-exec/app/verb_adapters.py -> services/orion-cortex-exec/app/router.py -> services/orion-cortex-exec/app/supervisor.py -> services/orion-cortex-exec/app/pcr_chat_memory.py -> services/orion-cortex-exec/app/executor.py`
 - 5-file cycle: `services/orion-cortex-exec/app/executor.py -> services/orion-cortex-exec/app/verb_adapters.py -> services/orion-cortex-exec/app/router.py -> services/orion-cortex-exec/app/grounding_capsule.py -> services/orion-cortex-exec/app/pcr_chat_memory.py -> services/orion-cortex-exec/app/executor.py`
-=======
-- `Turn Visibility Design Spec (2026-07-11)` --semantically_similar_to--> `/brainstorming command (sentience-development ideation)`  [INFERRED] [semantically similar]
-  2026-07-11-turn-visibility-design-spec.md → .claude/commands/superpowers/brainstorming.md
-- `config/llm_profiles.yaml (LLM profile registry)` --references--> `LLM Profiles and Model Routing (section)`  [INFERRED]
-  config/llm_profiles.yaml → README.md
-- `cortex-orch remediation entry` --references--> `orion-cortex-orch service`  [INFERRED]
-  config/mesh_remediation_roster.yaml → README.md
-
-## Import Cycles
-- None detected.
->>>>>>> Stashed changes
 
 ## Hyperedges (group relationships)
 - **Endogenous Runtime Phase Chain (6-16)** — docs_architecture_mentor_gateway_phase6_mentor_gateway, docs_architecture_endogenous_trigger_orchestration_phase7_workflow_orchestrator, docs_architecture_endogenous_runtime_adoption_phase8_adoption_service, docs_architecture_endogenous_runtime_fidelity_phase9_runtime_execution_records, docs_architecture_endogenous_runtime_durability_phase10_record_store [EXTRACTED 0.90]
@@ -1358,10 +1326,6 @@
 - **Atlas LLM serving pipeline (llamacpp Atlas workers -> gateway route table -> profile registry)** — services_orion_llamacpp_host_docker_compose_atlas_workers_service, services_orion_llm_gateway_readme_service, config_llm_profiles_yaml_registry [EXTRACTED 1.00]
 - **Services wired to the shared LLMGatewayService intake channel** — services_orion_llm_gateway_tests_llm_gateway_smoketests, services_orion_memory_consolidation_docker_compose, services_orion_mind_docker_compose [EXTRACTED 1.00]
 - **Notify-centered attention/escalation ecosystem** — services_orion_notify_readme, services_orion_notify_digest_readme, services_orion_mesh_guardian_readme [EXTRACTED 1.00]
-<<<<<<< Updated upstream
-=======
-- **RDF Triple Write and Storage Subsystem (Writer + Fuseki Store)** — services_orion_rdf_writer_readme_service, services_orion_rdf_store_readme_service, services_orion_rdf_store_docker_compose_service_config [EXTRACTED 1.00]
->>>>>>> Stashed changes
 - **Notification Policy and Digest Family** — services_orion_notify_app_policy_rules_orion_notify_service, services_orion_notify_app_policy_rules_notification_rules, services_orion_notify_digest_requirements_dependencies [INFERRED 0.75]
 - **orion-signal-gateway OTel observability stack (collector + Tempo + Grafana)** — services_orion_signal_gateway_otel_collector_config_config, services_orion_signal_gateway_otel_grafana_datasources_config, services_orion_signal_gateway_otel_tempo_config [EXTRACTED 1.00]
 - **Social Room Continuity Substrate** — services_orion_social_memory_service, services_orion_social_room_bridge_service, services_orion_social_memory_readme_chat_social_stored_channel [EXTRACTED 1.00]
@@ -1375,7 +1339,6 @@
 - **Knowledge Forge dangling-reference test family** — tests_fixtures_knowledge_forge_claims_disputed_claim_test_bad_ref_claim, tests_fixtures_knowledge_forge_claims_disputed_claim_test_bad_ref_missing_claim, tests_fixtures_knowledge_forge_claims_disputed_claim_test_bad_ref_missing_source [INFERRED 0.65]
 - **orion-whisper-tts service definition family (README + compose + requirements)** — services_orion_whisper_tts_readme_doc, services_orion_whisper_tts_docker_compose_whisper_tts, services_orion_whisper_tts_requirements_dependencies [EXTRACTED 1.00]
 
-<<<<<<< Updated upstream
 ## Communities (1395 total, 348 thin omitted)
 
 ### Community 0 - "Service: orion-vector-writer"
@@ -1433,55 +1396,11 @@ Nodes (125): SocialArtifactConfirmationV1, SocialArtifactProposalV1, SocialArtif
 ### Community 13 - "orion-self-state-runtime docker-compose.yml"
 Cohesion: 0.03
 Nodes (97): create_entry_from_v2(), ErrorInfo, BaseChassis, ChassisConfig, Hunter, Rabbit, Restart subscriber loops if they exit without an explicit stop signal., RPC / synchronous pattern.     Listens on a single request channel and replies t (+89 more)
-=======
-## Communities (293 total, 103 thin omitted)
-
-### Community 0 - "Service: orion-vector-writer"
-Cohesion: 0.11
-Nodes (27): Channel "orion:chat:history:spark_meta:patch" (kind=event, schema=ChatHistorySparkMetaPatchV1) producers=[orion-memory-consolidation] consumers=[orion-sql-writer], Channel "orion:memory:cards:active" (kind=event, schema=MemoryCardV1) producers=[orion-hub] consumers=[orion-memory-crystallizer], Channel "orion:memory:crystallization:approved" (kind=event, schema=MemoryCrystallizationV1) producers=[orion-memory-crystallizer, orion-hub] consumers=[orion-memory-crystallizer, orion-hub, orion-vector-writer], Channel "orion:memory:crystallization:auto_activated" (kind=event, schema=MemoryCrystallizationV1) producers=[orion-memory-consolidation, orion-memory-crystallizer, orion-hub] consumers=[orion-memory-crystallizer, orion-hub, orion-vector-writer], Channel "orion:memory:crystallization:project" (kind=event, schema=MemoryCrystallizationV1) producers=[orion-memory-crystallizer, orion-hub] consumers=[orion-vector-writer], Channel "orion:memory:crystallization:proposed" (kind=event, schema=MemoryCrystallizationV1) producers=[orion-memory-crystallizer, orion-hub] consumers=[orion-memory-crystallizer, orion-hub], Channel "orion:memory:crystallization:quarantined" (kind=event, schema=MemoryCrystallizationV1) producers=[orion-memory-crystallizer, orion-hub] consumers=[orion-memory-crystallizer, orion-hub], Channel "orion:memory:crystallization:reinforced" (kind=event, schema=MemoryCrystallizationV1) producers=[orion-memory-consolidation, orion-memory-crystallizer, orion-hub] consumers=[orion-memory-crystallizer, orion-hub] (+19 more)
-
-### Community 1 - "Channel "orion:collapse:triage" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-collapse-mirror] consumers=[orion-meta-tags, orion-vector-writer, orion-sql-writer, orion-actions]"
-Cohesion: 0.10
-Nodes (21): Channel "orion:chat:gpt:conversation" (kind=event, schema=ChatGptConversationV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:example" (kind=event, schema=ChatGptDerivedExampleV1) producers=[chatgpt-import] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:import:run" (kind=event, schema=ChatGptImportRunV1) producers=[chatgpt-import] consumers=[orion-sql-writer], Channel "orion:chat:gpt:log" (kind=event, schema=ChatGptMessageV1) producers=[orion-hub] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:message:log" (kind=event, schema=ChatGptMessageV1) producers=[orion-hub] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:gpt:turn" (kind=event, schema=ChatGptLogTurnV1) producers=[orion-hub] consumers=[orion-sql-writer, orion-vector-host], Channel "orion:chat:history:log" (kind=event, schema=ChatHistoryMessageV1) producers=[orion-hub] consumers=[orion-sql-writer, orion-vector-writer, orion-vector-host, orion-spark-concept-induction], Channel "orion:chat:history:turn" (kind=event, schema=ChatHistoryTurnV1) producers=[orion-hub] consumers=[orion-sql-writer, orion-vector-writer, orion-vector-host, orion-spark-concept-induction] (+13 more)
-
-### Community 2 - "Context-exec Workbench"
-Cohesion: 0.17
-Nodes (12): Turn Visibility Design Spec (2026-07-11), orion:turn:hop bus channel (proposed), Idea 8: Self-observability consumer (deferred), Idea 3: Swimlane pipeline view (not a node graph), Idea 5: Timestamp scrubber (rewind/replay/fast-forward), scripts/trace_unified_turn.py (regex hop detector), Idea 2: Hub turn-hop WebSocket relay, TurnHopV1 schema (proposed) (+4 more)
-
-### Community 4 - "Channel "orion:stt:intake" (kind=request, schema=STTRequestPayload) producers=[orion-hub] consumers=[orion-whisper-tts]"
-Cohesion: 0.28
-Nodes (9): Context-exec Beta Runbook, AgentChain Replacement, AgentChainService (legacy), belief_provenance mode, Context-exec Workbench, Cortex Sovereignty, repo_impact_analysis mode, RLM Engine (fake/alexzhang) (+1 more)
-
-### Community 5 - "orion-llm-gateway / model routing"
-Cohesion: 0.28
-Nodes (9): Channel "orion:cortex:gateway:request" (kind=request, schema=CortexChatRequest) producers=[orion-hub] consumers=[orion-cortex-gateway], Channel "orion:cortex:gateway:result:*" (kind=result, schema=CortexChatResult) producers=[orion-cortex-gateway] consumers=[orion-hub], Channel "orion:cortex:request" (kind=request, schema=CortexClientRequest) producers=[orion-hub, orion-cortex-gateway, orion-actions, orion-memory-consolidation] consumers=[orion-cortex-orch], Channel "orion:cortex:result" (kind=result, schema=CortexClientResult) producers=[orion-cortex-orch] consumers=[orion-hub, orion-cortex-gateway], Channel "orion:cortex:result*" (kind=result, schema=CortexClientResult) producers=[orion-cortex-orch] consumers=[orion-hub, orion-cortex-gateway], Schema: CortexChatRequest, Schema: CortexChatResult, Schema: CortexClientResult (+1 more)
-
-### Community 6 - "services/orion-proposal-runtime/README.md — Layer 7 substrate service: converts SelfStateV1 (+ optional attention/field context) into possible actions (ProposalFrameV1), not automatic actions"
-Cohesion: 0.33
-Nodes (6): llm-gateway remediation entry, Atlas node (primary LLM/GPU workhorse), Circe node (high-density GPU expansion server), orion-llm-gateway / model routing, LLM Profiles and Model Routing (section), Reasoning Trace Philosophy
-
-### Community 7 - "orion-cortex-orch service"
-Cohesion: 0.33
-Nodes (6): template inspect_attended_target (P5) — target_binding self_state.dominant_attention_targets[0] with a fallback literal to capability:orchestration if the binding fails to resolve; shipped live at base_priority 0.34 per explicit user go-ahead, not dark-shipped at 0.0, since it's a read-only inspect under the same policy gate/risk class as the other already-live inspect templates; carries a falsifiable 7-day kill criterion (distinct target_id count must be >= 3 or the binding isn't doing anything the literal templates don't already do), checked by run_attention_bound_proposal_eval.py, Prerequisites: substrate_policy_decision_frames populated by orion-policy-runtime (port 8120); substrate_proposal_frames and substrate_self_state from Layers 7-6; two manual SQL migrations applied for ExecutionDispatchFrameV1 and substrate_dispatch_results_v1, Attention-bound proposals (P5): ProposalTemplateV1.target_binding lets a template point at a live field on inbound context; the only binding implemented is ATTENTION_FIRST_TARGET_BINDING = self_state.dominant_attention_targets[0] (orion/proposals/builder.py _resolve_binding_target), which never raises and falls through to the template's static target on an empty list or unsupported target_kind; ProposalCandidateV1 gains binding_resolved_from for traceability, Idempotency: one proposal frame per source_self_state_id; re-running the worker for the same self-state snapshot is a no-op; policy/template changes do not regenerate until a new self-state row exists (v1 semantics), ProposalFrameV1 — data flow substrate_self_state + substrate_attention_frames + substrate_field_state -> orion-proposal-runtime -> ProposalFrameV1 -> substrate_proposal_frames; execution_intent on candidates is descriptive only, no policy approval or cortex-exec calls happen here, services/orion-proposal-runtime/README.md — Layer 7 substrate service: converts SelfStateV1 (+ optional attention/field context) into possible actions (ProposalFrameV1), not automatic actions
-
-### Community 8 - "Memory Constellation (tri-layer SQL/RDF/vector)"
-Cohesion: 0.33
-Nodes (6): Cognitive EKG dashboard + Hub chat panel (screenshot), Bus and platform law, orion-cortex-orch service, Athena node (core services/Hub/orchestration), Orion Hub (main interface), Service spine / cognitive loop (experience->...->changed future stance)
-
-### Community 9 - "Channel "orion:feedback:frame" (kind=event, schema=FeedbackFrameV1) producers=[orion-feedback-runtime] consumers=[orion-spark-concept-induction]"
-Cohesion: 0.33
-Nodes (6): Memory Constellation (tri-layer SQL/RDF/vector), orion-rdf-writer service, orion-social-memory service, orion-social-room-bridge service, orion-sql-writer service, orion-vector-writer / vector-host / vector-db services
-
-### Community 10 - "Channel "orion:exec:request:RecallService" (kind=request, schema=RecallQueryV1) producers=[orion-cortex-exec, orion-cortex-orch, orion-hub, orion-context-exec, orion-spark-concept-induction] consumers=[orion-recall]"
-Cohesion: 0.67
-Nodes (3): Channel "orion:feedback:frame" (kind=event, schema=FeedbackFrameV1) producers=[orion-feedback-runtime] consumers=[orion-spark-concept-induction], Schema: FeedbackFrameV1, Service: orion-feedback-runtime
->>>>>>> Stashed changes
 
 ### Community 14 - "conjourney"
 Cohesion: 0.01
 Nodes (179): "public"."action_outcomes", "public"."attention_loop_outcome", "public"."attention_salience_trace", "public"."autonomy_state_v2", "public"."bus_fallback_log", "public"."calibration_profile_audit", "public"."calibration_profiles", "public"."chat_gpt_conversation" (+171 more)
 
-<<<<<<< Updated upstream
 ### Community 15 - "orion-self-state-runtime requirements.txt"
 Cohesion: 0.04
 Nodes (67): AutonomyLookupV1, AutonomyRepository, AutonomyRepositoryStatus, _bounded_reason(), build_autonomy_repository(), _classify_query_error(), _dominant_drive_from_evidence(), _drives_facet_ok() (+59 more)
@@ -2093,37 +2012,11 @@ Nodes (30): HarnessDraftMoleculeV1, CoalitionSnapshotV1, Typed subset of Attenti
 ### Community 168 - "anthropic_passthrough.py"
 Cohesion: 0.12
 Nodes (34): _available_route_keys(), _backend_supports_anthropic_messages(), build_models_list_payload(), _extract_correlation_id(), _forwardable_request_headers(), _forwardable_response_headers(), handle_messages_get(), handle_messages_head() (+26 more)
-=======
-### Community 36 - "Collapse Mirror split invariant (Strict/Juniper vs Metacog/Orion; rationale: metacog mirrors must never hit Juniper's triage/enrichment pipeline by default)"
-Cohesion: 0.50
-Nodes (4): Collapse Mirror split invariant (Strict/Juniper vs Metacog/Orion; rationale: metacog mirrors must never hit Juniper's triage/enrichment pipeline by default), Metacog/Spark Surgical Patch Tracker, Oríon identity + response-policy profile, actions.respond_to_juniper_collapse_mirror.v1 verb
-
-### Community 69 - "Service: orion-sql-writer"
-Cohesion: 0.05
-Nodes (68): Channel "orion:autonomy:action:outcome" (kind=event, schema=ActionOutcomeEmitV1) producers=[orion-spark-concept-induction, orion-execution-dispatch-runtime] consumers=[orion-sql-writer, *], Channel "orion:chat:social:stored" (kind=event, schema=SocialRoomTurnStoredV1) producers=[orion-sql-writer] consumers=[orion-vector-host, orion-rdf-writer, orion-meta-tags, orion-spark-concept-induction, *], Channel "orion:chat:social:turn" (kind=event, schema=SocialRoomTurnV1) producers=[orion-hub] consumers=[orion-sql-writer], Channel "orion:debug:turn:dossier" (kind=event, schema=TurnDossierV1) producers=[orion-spark-concept-induction] consumers=[orion-rdf-writer, orion-sql-writer, *], Channel "orion:effect:*" (kind=event, schema=VerbEffectV1) producers=[orion-cortex-exec] consumers=[orion-rdf-writer, orion-sql-writer, orion-vector-writer], Channel "orion:hub:messages:create" (kind=event, schema=HubWorldPulseMessageV1) producers=[orion-world-pulse] consumers=[orion-hub, orion-sql-writer, *], Channel "orion:memory:drives:audit" (kind=event, schema=DriveAuditV1) producers=[orion-spark-concept-induction] consumers=[orion-rdf-writer, orion-sql-writer, *], Channel "orion:memory:drives:state" (kind=event, schema=DriveStateV1) producers=[orion-spark-concept-induction] consumers=[orion-rdf-writer, orion-sql-writer, *] (+60 more)
-
-### Community 94 - "Service: orion-spark-introspector"
-Cohesion: 0.06
-Nodes (48): Channel "orion:autonomy:goal:planned" (kind=event, schema=AutonomyGoalPlannedV1) producers=[orion-cortex-exec] consumers=[orion-cortex-exec, *], Channel "orion:calibration:profile:audit" (kind=event, schema=CalibrationProfileAuditV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer], Channel "orion:cortex:exec:request" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch, orion-thought] consumers=[orion-cortex-exec], Channel "orion:cortex:exec:request:background" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch, orion-actions, orion-harness-governor, orion-execution-dispatch-runtime] consumers=[orion-cortex-exec], Channel "orion:cortex:exec:request:chat" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch] consumers=[orion-cortex-exec], Channel "orion:cortex:exec:request:spark" (kind=request, schema=CortexExecRequestPayload) producers=[orion-cortex-orch] consumers=[orion-cortex-exec], Channel "orion:endogenous:runtime:audit" (kind=event, schema=EndogenousRuntimeAuditV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer], Channel "orion:endogenous:runtime:record" (kind=event, schema=EndogenousRuntimeExecutionRecordV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer] (+40 more)
-
-### Community 104 - "Service: orion-hub"
-Cohesion: 0.05
-Nodes (58): Channel "orion:agent-council:intake" (kind=request, schema=GenericPayloadV1) producers=[orion-hub, orion-cortex-exec] consumers=[orion-agent-council], Channel "orion:agent-council:reply*" (kind=result, schema=GenericPayloadV1) producers=[orion-agent-council] consumers=[orion-hub, orion-cortex-exec], Channel "orion:attention:loop_outcome" (kind=event, schema=AttentionLoopOutcomeV1) producers=[orion-hub] consumers=[none], Channel "orion:attention:salience:trace" (kind=telemetry, schema=AttentionSalienceTraceV1) producers=[orion-thought] consumers=[none], Channel "orion:chat:response:feedback" (kind=event, schema=ChatResponseFeedbackV1) producers=[orion-hub, *] consumers=[orion-sql-writer], Channel "orion:cognition:reasoning_call" (kind=telemetry, schema=ReasoningCallV1) producers=[orion-cortex-exec] consumers=[orion-thought], Channel "orion:conversation:request" (kind=request, schema=ChatRequestPayload) producers=[orion-hub] consumers=[orion-cortex-orch], Channel "orion:conversation:result" (kind=result, schema=ChatResultPayload) producers=[orion-cortex-orch] consumers=[orion-hub] (+50 more)
-
-### Community 109 - "Orion Bus Channels Registry (channels.yaml)"
-Cohesion: 0.04
-Nodes (78): Channel "orion:bridge:social:participant" (kind=event, schema=ExternalRoomParticipantV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:delivery" (kind=event, schema=ExternalRoomPostResultV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:intake" (kind=event, schema=ExternalRoomMessageV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:bridge:social:room:skipped" (kind=event, schema=ExternalRoomTurnSkippedV1) producers=[orion-social-room-bridge] consumers=[orion-sql-writer, *], Channel "orion:collapse:enrich" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-cortex-exec] consumers=[orion-collapse-mirror], Channel "orion:collapse:events" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-collapse-mirror, orion-cortex-exec] consumers=[orion-timeline, orion-athena-spark-introspector], Channel "orion:collapse:intake" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-cortex-exec, orion-collapse-mirror] consumers=[orion-collapse-mirror], Channel "orion:collapse:scored" (kind=event, schema=CollapseMirrorEntryV2) producers=[orion-cortex-exec] consumers=[orion-collapse-mirror] (+70 more)
-
-### Community 132 - "Service: orion-cortex-exec"
-Cohesion: 0.29
-Nodes (8): Channel "orion:exec:request:MetaTagsService" (kind=request, schema=MetaTagsRequestV1) producers=[orion-cortex-exec] consumers=[orion-meta-tags], Channel "orion:exec:result:MetaTagsService" (kind=result, schema=MetaTagsResultV1) producers=[orion-meta-tags] consumers=[orion-cortex-exec], Channel "orion:tags:chat:enriched" (kind=event, schema=MetaTagsPayload) producers=[orion-meta-tags] consumers=[orion-rdf-writer], Channel "orion:tags:enriched" (kind=event, schema=MetaTagsPayload) producers=[orion-meta-tags] consumers=[orion-rdf-writer, orion-sql-writer], Schema: MetaTagsPayload, Schema: MetaTagsRequestV1, Schema: MetaTagsResultV1, Service: orion-meta-tags
->>>>>>> Stashed changes
 
 ### Community 169 - "Context Engineering Pack (Substrate Trace Adoption)"
 Cohesion: 0.06
 Nodes (50): Bounded Review-Cycle Philosophy, Consolidation Outcome Semantics, Phase 9 Reflective Graph Consolidation, Zone-Aware Conservatism, AutonomyStateDeltaV1, AutonomyStateV1, AutonomyStateV2, chat_evidence_to_tension (+42 more)
 
-<<<<<<< Updated upstream
 ### Community 170 - "test_chat_relational_stance.py"
 Cohesion: 0.12
 Nodes (29): _compile_repair_speech_overlay(), compile_speech_contract(), _inject_prior_stance_to_inputs(), Deterministic regime-specific contract injected near TASK in chat_general.j2., Copy prior brief summary into stance inputs and expose it as a TOP-LEVEL ctx, _instrumental_brief(), _relational_brief(), test_chat_stance_brief_new_fields_default_none() (+21 more)
@@ -2207,21 +2100,11 @@ Nodes (44): collect_topical_spine_warnings(), _draft_utterance_corpus(), _entity
 ### Community 190 - "HyperbolicGPT"
 Cohesion: 0.33
 Nodes (5): main(), parse_args(), HyperbolicGPT, main(), _pick_device()
-=======
-### Community 174 - "Context Pack: orion-substrate-telemetry (Cursor, markdown)"
-Cohesion: 1.00
-Nodes (3): claim:orion:substrate-telemetry:0001 — orion-substrate-telemetry persists tier outcomes, claim:orion:substrate-telemetry:0002 — orion-cortex-orch optionally merges telemetry facet, source:2026-05-14-substrate-tier-telemetry-design-ref (metadata)
-
-### Community 182 - "Service: orion-vision-host"
-Cohesion: 0.07
-Nodes (43): Channel "orion:exec:request:VisionCouncilService" (kind=request, schema=VisionCouncilRequestPayload) producers=[orion-vision-window] consumers=[orion-vision-council], Channel "orion:exec:request:VisionHostService" (kind=request, schema=VisionTaskRequestPayload) producers=[orion-cortex-exec, orion-hub, orion-vision-host, orion-vision-frame-router] consumers=[orion-vision-host], Channel "orion:exec:request:VisionScribeService" (kind=request, schema=VisionScribeRequestPayload) producers=[orion-vision-council] consumers=[orion-vision-scribe], Channel "orion:exec:request:VisionWindowService" (kind=request, schema=VisionWindowRequestPayload) producers=[orion-vision-window] consumers=[orion-vision-council], Channel "orion:exec:result:VisionCouncilService" (kind=result, schema=VisionCouncilResultPayload) producers=[orion-vision-council] consumers=[orion-vision-window], Channel "orion:exec:result:VisionScribeService" (kind=result, schema=VisionScribeResultPayload) producers=[orion-vision-scribe] consumers=[orion-vision-council], Channel "orion:exec:result:VisionWindowService" (kind=result, schema=VisionWindowResultPayload) producers=[orion-vision-window] consumers=[orion-vision-council], Channel "orion:vision:artifacts" (kind=event, schema=VisionArtifactPayload) producers=[orion-vision-edge, orion-vision-host] consumers=[orion-security-watcher, orion-vision-window, orion-vision-council] (+35 more)
->>>>>>> Stashed changes
 
 ### Community 191 - "Consolidation Policy v1"
 Cohesion: 0.05
 Nodes (46): Field Attention Policy v1, Signal Kind: biometrics_state, Signal Kind: chat_reasoning_quality, Signal Kind: chat_social_hazard, Signal Kind: failure_event, Signal Kind: mesh_health, Signal to Drive Map v1, Signal Kind: spark_signal (+38 more)
 
-<<<<<<< Updated upstream
 ### Community 192 - "Shared compactor helpers README"
 Cohesion: 0.09
 Nodes (15): GpuInfo, GpuInspector, Pick GPU with highest free VRAM among candidates, honoring reserve/hard_floor., Raised when the bounded async queue cannot accept another pending task., Submit a unit of work to the scheduler; returns handler result., Multi-GPU scheduler with:     - global inflight cap     - per-GPU inflight cap, Pending items waiting on the worker (best-effort backlog indicator)., True if VRAM policy allows scheduling onto at least one configured CUDA device. (+7 more)
@@ -2238,13 +2121,10 @@ Nodes (18): create_frame_source(), FolderFrameSource, FrameReadResult, FrameSour
 Cohesion: 0.10
 Nodes (38): annotate_harness_step(), build_context_pressure_step(), chars_per_token_estimate(), context_fill_pct(), context_overflow_operator_hint(), context_pressure_threshold_chars(), context_pressure_threshold_pct(), context_risk_level() (+30 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 196 - "Phase 13b SQL-Writer Durability"
 Cohesion: 0.05
 Nodes (45): Calibration Adoption Typed Contracts, InMemoryCalibrationProfileStore Manual Adoption Seam, Phase 12 Calibration Profile Adoption, Advisory-Only Recommendations Posture, EndogenousCalibrationEngine, EndogenousOfflineEvaluator, Phase 11 Offline Evaluation and Calibration, EndogenousRuntimeAdoptionService (+37 more)
 
-<<<<<<< Updated upstream
 ### Community 197 - "MemoryCompactionDeltaV1"
 Cohesion: 0.13
 Nodes (20): MindLLMFailOpenRecord, Fail-open metadata preserved when LLM synthesis falls back to deterministic Mind, MindPhaseTelemetry, phase_telemetry_machine_keys(), Per-phase LLM telemetry for Mind run inspectability., maybe_publish_llm_surface_instability_trigger(), _publish_metacog_trigger_async(), Advisory metacog trigger when LLM language surface appears unstable. (+12 more)
@@ -2536,17 +2416,11 @@ Nodes (13): resolve_execution_lane(), _req(), test_explicit_lane_spark_wins_over
 ### Community 270 - "SceneBeliefTracker"
 Cohesion: 0.12
 Nodes (13): BeliefObserveResult, Per-stream scene label habituation (observed → believed tier)., Enter votes: empty ring slots inherit last non-empty labels (flicker fix)., Exit votes: count only labels present in each raw observation., SceneBeliefRegistry, SceneBeliefTracker, test_belief_ignores_single_empty_observation(), test_belief_requires_enter_votes() (+5 more)
-=======
-### Community 235 - "Service: orion-harness-governor"
-Cohesion: 0.06
-Nodes (39): Channel "orion:actions:trigger:journal.v1" (kind=event, schema=JournalTriggerV1) producers=[orion-actions, orion-embodiment, *] consumers=[orion-actions], Channel "orion:embodiment:intent" (kind=event, schema=EmbodimentIntentV1) producers=[orion-substrate-runtime, orion-harness-governor, orion-cortex-exec] consumers=[orion-embodiment], Channel "orion:embodiment:outcome" (kind=event, schema=EmbodimentOutcomeV1) producers=[orion-embodiment] consumers=[orion-hub], Channel "orion:embodiment:perception" (kind=event, schema=WorldPerceptionV1) producers=[orion-embodiment] consumers=[orion-substrate-runtime, orion-self-state-runtime, orion-cortex-exec], Channel "orion:grammar:accepted-pressure" (kind=event, schema=GrammarEventV1) producers=[orion-substrate-runtime] consumers=[none], Channel "orion:grammar:event" (kind=event, schema=GrammarEventV1) producers=[orion-vision-retina, orion-hub, orion-vision-edge, orion-vision-window, orion-biometrics, orion-cortex-exec, orion-bus, orion-harness-governor, orion-cortex-orch] consumers=[orion-sql-writer], Channel "orion:harness:run:artifact" (kind=event, schema=HarnessRunV1) producers=[orion-harness-governor] consumers=[*], Channel "orion:harness:run:cancel" (kind=event, schema=HarnessRunCancelV1) producers=[orion-hub] consumers=[orion-harness-governor] (+31 more)
->>>>>>> Stashed changes
 
 ### Community 271 - "Vision Services Documentation"
 Cohesion: 0.08
 Nodes (33): Vision Services Documentation, BaseEnvelope, Cortex-Exec Vision Verb Enablement, Frame Router Dispatch Tiers (baseline/triggered), GroundingDINO, Titanium Contract Stack, VisionArtifactPayload, Vision Council (orion-vision-council) (+25 more)
 
-<<<<<<< Updated upstream
 ### Community 272 - "SocialGifUsageStateV1"
 Cohesion: 0.16
 Nodes (23): SocialGifUsageStateV1, _eligible_summary(), _FakeBus, _FakeCallSyneClient, _FakeHubClient, _FakeSocialMemoryClient, _payload(), _policy_and_message() (+15 more)
@@ -2575,13 +2449,10 @@ Nodes (23): Config, Settings, CoquiBackend, _ensure_torch_load_compat(), _is_xtt
 Cohesion: 0.05
 Nodes (52): set_active_goal(), clear_cursor_resets_for_tests(), cursor_reset_snapshot(), CursorResetRecord, last_reset_skipped_history(), parse_timestamp_at(), Operator cursor reset auth, validation, and audit trail., record_cursor_reset() (+44 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 279 - "Endogenous Action v1 Motor Nerve Spec"
 Cohesion: 0.09
 Nodes (32): Endogenous Action v1 Motor Nerve Spec, P0 Dispatch Status Honesty (prepared_for_dispatch), P2 Experience Loop (act becomes experience), Endogenous-Origination Measurement Gate (verdict a/b), Motor Nerve (Layer 9 Dispatch Send), substrate.inspect/summarize/observe Verbs, Cognition Theater Tripwire, Execution Dispatch Motor Nerve P1 Design (+24 more)
 
-<<<<<<< Updated upstream
 ### Community 280 - "WorldPulseRunResultV1"
 Cohesion: 0.11
 Nodes (39): outcome_from_followup(), Return the followup whose section matches the first gap-section label the     re, Rebuild an ActionOutcomeRefV1 from a world-pulse curiosity followup so the     r, select_reusable_followup(), iter_gap_section_labels(), Yield normalized section labels from `section:` focal refs across     world_cove, _followup(), _gap_signal() (+31 more)
@@ -2717,25 +2588,11 @@ Nodes (22): SelectedFrontierMatterV1, Project the mode-agnostic self/attention s
 ### Community 316 - "ContextExecRunner"
 Cohesion: 0.14
 Nodes (26): _artifact_evidence_count(), artifact_repo_evidence_count(), _blocked_summary(), count_evidence(), evaluate_investigation_outcome(), explicit_fake_run_requested(), grounding_required(), _grounding_sources_attempted() (+18 more)
-=======
-### Community 281 - "Service: orion-actions"
-Cohesion: 0.12
-Nodes (19): Channel "orion:actions:audit" (kind=event, schema=GenericPayloadV1) producers=[orion-actions] consumers=[none], Channel "orion:actions:manage:result:*" (kind=result, schema=WorkflowScheduleManageResponseV1) producers=[orion-actions] consumers=[orion-cortex-orch], Channel "orion:actions:manage:workflow.v1" (kind=request, schema=WorkflowScheduleManageRequestV1) producers=[orion-cortex-orch] consumers=[orion-actions], Channel "orion:actions:trigger:daily_metacog.v1" (kind=event, schema=GenericPayloadV1) producers=[orion-actions] consumers=[orion-actions], Channel "orion:actions:trigger:daily_pulse.v1" (kind=event, schema=GenericPayloadV1) producers=[orion-actions, orion-cortex-exec] consumers=[orion-actions], Channel "orion:actions:trigger:workflow.v1" (kind=event, schema=WorkflowDispatchRequestV1) producers=[orion-cortex-orch, orion-actions] consumers=[orion-actions], Channel "orion:collapse:stored" (kind=event, schema=CollapseMirrorStoredV1) producers=[orion-sql-writer] consumers=[orion-actions, *], Channel "orion:context_exec:event" (kind=event, schema=GenericPayloadV1) producers=[orion-context-exec] consumers=[*] (+11 more)
-
-### Community 285 - "orion-landing-pad Docker Compose"
-Cohesion: 0.50
-Nodes (4): Landing Pad Metrics Explorer UI, orion-landing-pad Docker Compose, Orion Landing Pad service (sensory gateway + working memory), orion-landing-pad Python dependencies
-
-### Community 299 - "Service: orion-landing-pad"
-Cohesion: 0.07
-Nodes (32): Channel "orion:biometrics:cluster" (kind=telemetry, schema=BiometricsClusterV1) producers=[orion-biometrics-hub] consumers=[orion-state-service, orion-sql-writer], Channel "orion:biometrics:induction" (kind=telemetry, schema=BiometricsInductionV1) producers=[orion-biometrics, orion-biometrics-hub] consumers=[orion-state-service, orion-sql-writer], Channel "orion:biometrics:sample" (kind=telemetry, schema=BiometricsSampleV1) producers=[orion-biometrics] consumers=[orion-sql-writer, orion-landing-pad], Channel "orion:biometrics:summary" (kind=telemetry, schema=BiometricsSummaryV1) producers=[orion-biometrics, orion-biometrics-hub] consumers=[orion-state-service, orion-sql-writer, orion-landing-pad], Channel "orion:cognition:trace" (kind=event, schema=CognitionTracePayload) producers=[orion-cortex-exec] consumers=[orion-spark-introspector, orion-landing-pad, orion-bus-tap], Channel "orion:exec:result:StateService:*" (kind=result, schema=StateLatestReply) producers=[orion-state-service] consumers=[orion-cortex-exec, *], Channel "orion:pad:event" (kind=event, schema=PadEventV1) producers=[orion-landing-pad] consumers=[*], Channel "orion:pad:frame" (kind=event, schema=StateFrameV1) producers=[orion-landing-pad] consumers=[*] (+24 more)
->>>>>>> Stashed changes
 
 ### Community 317 - "orion-hub service (README) — browser gateway into the mesh"
 Cohesion: 0.10
 Nodes (27): orion-gpu-cluster-power service (compose), orion-gpu-cluster-power requirements.txt, compression_policy.v1.yaml (scopes, clustering, summarization policy), orion-graph-compression service (compose), GraphCompressionRegionMaterializedV1 (bus event schema), MutationPressureEvidenceV1 (bus event schema), orion-graph-compression service (README), orion-graph-compression requirements.txt (networkx/leidenalg/igraph) (+19 more)
 
-<<<<<<< Updated upstream
 ### Community 318 - "substrate_effect_pipeline.py"
 Cohesion: 0.12
 Nodes (19): In-memory LRU cache of per-turn substrate effect snapshots., SubstrateEffectCache, SubstrateEffectSnapshot, _push_observation(), Orchestrate the repair_pressure appraisal pipeline for one chat turn.  Failure m, Run the appraiser end-to-end. Stash a snapshot in `cache`. Return summary., run_substrate_effect_pipeline(), _summary_dict() (+11 more)
@@ -2840,13 +2697,10 @@ Nodes (9): _make_worker(), Unit tests for the Orion embodiment perception->subst
 Cohesion: 0.15
 Nodes (20): Tests for operator proposal CLI., _run_cli(), _seed_and_approve(), test_dry_run_execute_creates_receipt_without_mutation(), test_dry_run_execute_does_not_change_memory(), test_dry_run_execute_does_not_change_repo(), test_dry_run_execute_does_not_mark_executed_success(), test_dry_run_execute_rejects_pending_review() (+12 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 346 - "orion-agent-council service (multi-agent deliberation stub)"
 Cohesion: 0.09
 Nodes (26): datasets (PyPI dependency), fastapi (PyPI dependency), httpx (PyPI dependency), loguru (PyPI dependency), numpy (PyPI dependency), orjson (PyPI dependency), pydantic (PyPI dependency), PyYAML (PyPI dependency) (+18 more)
 
-<<<<<<< Updated upstream
 ### Community 347 - "test_notify_attention_ack.py"
 Cohesion: 0.31
 Nodes (5): _env(), FakeQueue, test_enqueue_failure_is_swallowed(), test_enqueue_run_result_stream_selects_run_result_envelope(), test_enqueue_skipped_when_no_run_result_envelope()
@@ -2930,17 +2784,11 @@ Nodes (5): GPUConfig, LLMProfile, LLMProfileRegistry, Config, Settings
 ### Community 367 - "sql_timeline.py"
 Cohesion: 0.11
 Nodes (13): _filter_excluded_rows(), _is_current_turn_echo(), _memory_filter_clause(), _normalize_text(), _parse_row(), _pick_id_col(), _pick_session_col(), _pick_spark_meta_col() (+5 more)
-=======
-### Community 362 - "Service: orion-spark-introspector"
-Cohesion: 0.10
-Nodes (21): Channel "orion:equilibrium:metacog:trigger" (kind=event, schema=MetacogTriggerV1) producers=[orion-equilibrium-service] consumers=[orion-cortex-orch, orion-sql-writer], Channel "orion:equilibrium:snapshot" (kind=event, schema=EquilibriumSnapshotV1) producers=[orion-equilibrium-service] consumers=[orion-cortex-orch], Channel "orion:metacognition:tick" (kind=telemetry, schema=MetacognitionTickV1) producers=[orion-equilibrium-service] consumers=[orion-sql-writer], Channel "orion:self:inner_features" (kind=telemetry, schema=InnerStateFeaturesV1) producers=[orion-spark-introspector] consumers=[orion-hub, orion-sql-writer], Channel "orion:self:phi_reward" (kind=telemetry, schema=PhiIntrinsicRewardV1) producers=[orion-spark-introspector] consumers=[orion-substrate-runtime, orion-sql-writer, orion-hub], Channel "orion:spark:introspect:candidate" (kind=event, schema=SparkCandidateV1) producers=[orion-cortex-exec] consumers=[orion-spark-introspector], Channel "orion:spark:introspect:candidate:log" (kind=event, schema=SparkCandidateV1) producers=[orion-hub] consumers=[orion-spark-introspector], Channel "orion:spark:state:snapshot" (kind=telemetry, schema=SparkStateSnapshotV1) producers=[orion-spark-introspector, orion-equilibrium-service] consumers=[orion-state-service, orion-sql-writer] (+13 more)
->>>>>>> Stashed changes
 
 ### Community 368 - "orion-vision-council service"
 Cohesion: 0.09
 Nodes (25): chromadb dependency (vector store backend), orion-vector-writer service, orion-vision-council docker-compose config, evidence_grounding.py choke point, evidence_transition.py choke point, orion-vision-council service, orion-vision-council dependencies (fastapi, redis, pydantic), orion-vision-edge live MJPEG/SSE debug UI (+17 more)
 
-<<<<<<< Updated upstream
 ### Community 369 - "context_exec_permissions_for_llm_profile"
 Cohesion: 0.05
 Nodes (71): context_exec_permissions_for_llm_profile(), Map Hub compute lane / LLM profile to a context-exec permission envelope., _call_name(), detect_semantic_tools_from_code(), _detect_via_ast(), _detect_via_regex(), Deterministic semantic tool detection for agent_repl code_action telemetry., Return registered workbench tool names found in *code*, first appearance order. (+63 more)
@@ -2953,13 +2801,10 @@ Nodes (11): CapabilitiesResponse, capabilities(), VectorHostEmbeddingProvider, b
 Cohesion: 0.25
 Nodes (13): DatasetPreviewDoc, DatasetPreviewRequest, DatasetPreviewResponse, preview_dataset_endpoint(), apply_overrides(), build_conversations(), Conversation, OverrideRecord (+5 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 372 - "Orion Cortex Exec Service"
 Cohesion: 0.11
 Nodes (24): concept_induction_pass Workflow, Concept Profile Repository Seam, orion-chat-memory Docker Compose Service, orion-chat-memory Python Dependencies, orion-collapse-mirror Docker Compose Service, Orion Collapse Mirror Service, orion-collapse-mirror Python Dependencies, orion-consolidation-runtime Docker Compose Service (+16 more)
 
-<<<<<<< Updated upstream
 ### Community 373 - "test_turn_effect.py"
 Cohesion: 0.12
 Nodes (32): _coerce_float(), compute_deltas_from_turn_effect(), _delta_block(), evaluate_turn_effect_alert(), _evidence_block(), should_emit_turn_effect_alert(), turn_effect_from_appraisal(), turn_effect_from_spark_meta() (+24 more)
@@ -3100,13 +2945,10 @@ Nodes (21): EnrichmentSpec, _build_run_record_for_update(), _elapsed_secs(), enq
 Cohesion: 0.12
 Nodes (14): _make_service(), Real syntax from services/orion-hub/docker-compose.yml -- the plain string-list, A sidecar service's own environment: keys must never leak into the checked     s, Regression test: the actual orion-recall docker-compose.yml, checked against the, docker-compose also supports `environment:` as a mapping (KEY: value) instead, test_compose_env_file_directive_detected_extended_mapping_form(), test_compose_env_keys_matches_mapping_form(), test_main_json_output_shape() (+6 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 410 - "CLAUDE.md — Orion Subagent Development Contract: repo-wide rules for how AI coding agents work in Orion-Sapienform, identical content to AGENTS.md (symlinked)"
 Cohesion: 0.13
 Nodes (15): Clean git and worktree rules (§2): start with git status/branch check, classify dirt before mixing, prefer a separate worktree for parallel subagent work — stated as prose policy, not an enforced mechanism, Completion status (§19): every task ends in exactly one of DONE, DONE_WITH_CONCERNS, BLOCKED, or NEEDS_CONTEXT — never 'partially done', Env/config/settings contract (§7): env parity is non-negotiable — any add/remove/rename of an env key must update .env_example, local .env, settings.py, docker-compose.yml, requirements.txt, and README in the same changeset, via scripts/sync_local_env_from_example.py, Event substrate first: grow from events -> schema -> trace -> reducer -> projection -> eval -> UI, not from a hand-authored mind-palace ontology with no runtime proof, Follow-through is part of the feature: a patch isn't done until the branch is clean, tests/evals pass, review is fixed, env is synced, Docker checks run, restart commands are listed, the branch is pushed, and the PR report exists, No keyword cathedrals: labels/enums/taxonomies/ontology nodes without a schema contract, producer, consumer, reducer, UI surface, metric, test, eval, or live smoke attached in the same patch are banned as junk that names the world without changing runtime behavior, PR description template (§18): required Markdown shape covering summary, outcome moved, architecture touched, files changed, schema/bus/API changes, env/config changes, tests/evals/docker checks run, review findings fixed, restart required, risks, Prime directive: do not build cathedrals — prefer thin seams, small patches, explicit contracts, fast tests, and visible evidence; design mode gets a design artifact, implementation mode gets a finished branch with tests/evals/docs/review/PR report (+7 more)
 
-<<<<<<< Updated upstream
 ### Community 411 - "NISUPSClient"
 Cohesion: 0.18
 Nodes (8): PowerStatus, Parsed snapshot of UPS state from SNMP., NISUPSClient, Reads APC UPS status from a local or remote apcupsd NIS server (TCP 3551)., Connects to apcupsd and requests the 'status' dump., Async wrapper to fetch and parse status.          (We keep it async to match the, SNMPUPSClient, _to_int()
@@ -3166,17 +3008,11 @@ Nodes (20): _asList(), _clearError(), _esc(), _fmt(), _gateColor(), _get(), _loa
 ### Community 425 - "apply_structured_output_to_payload"
 Cohesion: 0.16
 Nodes (10): apply_structured_output_to_payload(), build_response_format(), Build llama.cpp / OpenAI-compatible response_format payloads from a named method, Mutate opts in place for structured output + thinking policy.     Returns (opts,, Pick method: options.structured_output_method → env → none., Return response_format dict for the given method, or None for none/unknown., resolve_structured_output_method(), response_format_shape_label() (+2 more)
-=======
-### Community 413 - "Proposal Review API"
-Cohesion: 0.24
-Nodes (12): memory_correction_proposal mode, MemoryCorrectionProposalV1, orion_proposal_cli.py, patch_proposal mode, PatchProposalV1, ProposalEnvelopeV1, Proposal Ledger, ProposalLedgerRecordV1 (+4 more)
->>>>>>> Stashed changes
 
 ### Community 427 - "orion-substrate-runtime service (biometrics closed loop, grammar reducers, Layers 1-5)"
 Cohesion: 0.10
 Nodes (21): biometrics_pressure organ contract (organ.contract.v1), orion-substrate-organs service (event-native organ contracts), orion-substrate-runtime compose config, brain-frame live stimulus-response smoke test (acceptance section 6), orion-substrate-runtime service (biometrics closed loop, grammar reducers, Layers 1-5), orion-substrate-runtime dependencies (fastapi/sqlalchemy/psycopg2/redis), orion-substrate-telemetry compose config, orion-substrate-telemetry dependencies (fastapi/asyncpg/redis) (+13 more)
 
-<<<<<<< Updated upstream
 ### Community 428 - "_compute_current_distribution"
 Cohesion: 0.32
 Nodes (12): _compute_current_distribution(), drift_daemon_loop(), _is_drift_alert(), _js_divergence(), _load_baseline_distribution(), _load_clusterer(), _normalize_counts(), _require_hdbscan_predict() (+4 more)
@@ -3188,17 +3024,11 @@ Nodes (19): cortex-exec remediation entry, cortex-gateway remediation entry, cor
 ### Community 430 - "map_drive_state_to_intent"
 Cohesion: 0.60
 Nodes (5): build_state_response(), get_security_state(), get_security_state_root(), set_security_state(), set_security_state_root()
-=======
-### Community 429 - "config/mesh_remediation_roster.yaml (auto-remediation roster)"
-Cohesion: 0.16
-Nodes (14): cortex-exec remediation entry, cortex-gateway remediation entry, cortex-orch remediation entry, equilibrium-service remediation entry (auto_remediate: false), landing-pad remediation entry, config/mesh_remediation_roster.yaml (auto-remediation roster), notify remediation entry (auto_remediate: false), recall remediation entry (+6 more)
->>>>>>> Stashed changes
 
 ### Community 431 - "bus-core (Redis broker container)"
 Cohesion: 0.14
 Nodes (20): Orion (AI Town persona card), orion-biometrics service, fork_rpc_client (orion.core.bus.rpc_fork), GrammarEventV1 (bus substrate trace schema), bus-core (Redis broker container), bus-exporter (Prometheus redis_exporter), bus-observer (grammar trace sidecar), bus_transport_reducer (deferred Layer 3 reducer) (+12 more)
 
-<<<<<<< Updated upstream
 ### Community 432 - "test_attention_loops_reader.py"
 Cohesion: 0.15
 Nodes (8): _Conn, _Engine, _Result, test_latest_salience_for_theme_dict_features(), test_latest_salience_for_theme_no_row(), test_latest_salience_for_theme_string_features(), test_load_pending_loops_falls_back_to_theme_key(), test_load_pending_loops_filters_and_builds()
@@ -3219,26 +3049,18 @@ Nodes (14): attach(), coalesceChatSuggestDraft(), coalesceMemoryGraphSuggestEnve
 Cohesion: 0.60
 Nodes (5): _base_source(), _journal_payload(), test_journal_entry_write_uses_nested_payload_for_validation_and_write(), test_non_regression_other_route_keeps_payload_shape(), test_regression_full_envelope_shape_fails_journal_schema_but_nested_payload_passes()
 
-=======
->>>>>>> Stashed changes
 ### Community 437 - "AGENTS.md — Orion Subagent Development Contract: repo-wide rules for how AI coding agents work in Orion-Sapienform, aimed at inspectable, testable, parallel-safe agent behavior"
 Cohesion: 0.11
 Nodes (19): Clean git and worktree rules (§2): start with git status/branch check, classify dirt before mixing, prefer a separate worktree for parallel subagent work — stated as prose policy, not an enforced mechanism, Completion status (§19): every task ends in exactly one of DONE, DONE_WITH_CONCERNS, BLOCKED, or NEEDS_CONTEXT — never 'partially done', Deterministic gates over repeated yelling: if Juniper has to repeat a rule twice, turn it into a script/test/check/hook/make target instead of a louder prompt, Env/config/settings contract (§7): env parity is non-negotiable — any add/remove/rename of an env key must update .env_example, local .env, settings.py, docker-compose.yml, requirements.txt, and README in the same changeset, via scripts/sync_local_env_from_example.py, Event substrate first: grow from events -> schema -> trace -> reducer -> projection -> eval -> UI, not from a hand-authored mind-palace ontology with no runtime proof, Follow-through is part of the feature: a patch isn't done until the branch is clean, tests/evals pass, review is fixed, env is synced, Docker checks run, restart commands are listed, the branch is pushed, and the PR report exists, No empty-shell cognition: do not ship cognition-shaped output with no substance — empty semantic projections, placeholder memory cards, fallback text as generated cognition, raw_len=0 treated as success, stale reducer cursors are all invalid success states requiring inspectable evidence, No keyword cathedrals: labels/enums/taxonomies/ontology nodes without a schema contract, producer, consumer, reducer, UI surface, metric, test, eval, or live smoke attached in the same patch are banned as junk that names the world without changing runtime behavior (+11 more)
 
 ### Community 438 - "Metrics Swamp Arsonist Review"
-<<<<<<< Updated upstream
 Cohesion: 0.22
 Nodes (14): Metrics Swamp Arsonist Review, AutonomyStateV2, DriveEngine, Endogenous Naming Collision, endogenous_origination.py (NO-GO), endogenous_runtime.py, phi encoder, SelfStateV1 (+6 more)
-=======
-Cohesion: 0.09
-Nodes (33): Metrics Swamp Arsonist Review, AutonomyStateV2, DriveEngine, Endogenous Naming Collision, endogenous_origination.py (NO-GO), endogenous_runtime.py, Field-topology Edge Weights, phi encoder (+25 more)
->>>>>>> Stashed changes
 
 ### Community 439 - "Recall Epistemic Honesty + Observability Spec"
 Cohesion: 0.15
 Nodes (19): Graphiti-Core Backend Activation Spec, Memory Crystallization (belief), graphiti_core Backend (hybrid vector+graph search), RELATES_TO Edge Schema (FalkorDB), Search Stack Driver/Client Reuse Cache, FalkorDB Vectorf32 Cast Bug/Fix, Memory Recall Reinforcement + Decay Wiring Spec, CrystallizationDynamicsV1 (activation/decay) (+11 more)
 
-<<<<<<< Updated upstream
 ### Community 440 - "properties"
 Cohesion: 0.11
 Nodes (19): description, type, type, description, type, description, type, description (+11 more)
@@ -3298,17 +3120,11 @@ Nodes (11): agent-trace.js (plain-text step consumer), api_routes.py (GET /api/c
 ### Community 455 - "AutonomyStateV2 evidence pipeline (chat, env-gated)"
 Cohesion: 0.17
 Nodes (15): get_route_targets(), _load_route_targets(), _resolve_route(), RouteTarget, health(), routes_catalog(), build_routes_response(), _entry_to_dict() (+7 more)
-=======
-### Community 454 - "cognition_trace_cache.py"
+
+### Community 456 - "test_agent_chain_guards.py"
 Cohesion: 0.18
-Nodes (11): agent-trace.js (plain-text step consumer), api_routes.py (GET /api/cognition/trace/{correlation_id}), Idea 4: Click-through payload cards, cognition_trace_cache.py, CognitionTracePayload schema, HarnessRunStepV1 schema, HarnessStepRelay (harness_step_relay.py), orion:cognition:trace bus channel (+3 more)
->>>>>>> Stashed changes
+Nodes (16): consecutive_tool_count(), plan_action_saturated(), Pure guard logic for agent-chain runtime (Pass 2 testability)., Second or later plan_action in the same chain should become a delivery verb., Count consecutive calls of `candidate` from the tail of tools_called., True when a new plan_action would exceed max_consecutive repeated plan_action ca, Triage is disallowed once any prior delegated step exists., repeated_plan_action_needs_delivery() (+8 more)
 
-### Community 455 - "AutonomyStateV2 evidence pipeline (chat, env-gated)"
-Cohesion: 0.67
-Nodes (3): config/autonomy/signal_drive_map.yaml, AutonomyStateV2 evidence pipeline (chat, env-gated), Orion Autonomy README
-
-<<<<<<< Updated upstream
 ### Community 457 - "test_proposal.py"
 Cohesion: 0.24
 Nodes (15): _clamp01(), Phase B — spontaneous thought → governed proposal candidate.  Maps a non-hollow, Convert a thought into a review-gated proposal candidate, or None.      Returns, spontaneous_thought_to_candidate(), _coalition(), Phase B — spontaneous thought → governed proposal candidate.  The security-criti, test_absent_coalition_targets_self_state_without_raising(), test_autoaction_posture_recorded_but_gate_unchanged() (+7 more)
@@ -3420,18 +3236,12 @@ Nodes (7): _annotate_reason(), _check(), _format_local(), HealthCheck, HealthMon
 ### Community 496 - "test_stt_engine.py"
 Cohesion: 0.24
 Nodes (12): _load_stt_module(), _mock_canonicalize(), stt_engine(), test_canonicalize_wav_produces_16k_mono_s16(), test_measure_wav_levels_silent_vs_tone(), test_peak_threshold_invalid_env_falls_back(), test_peak_threshold_reads_env(), test_transcribe_client_override_when_server_peak_zero() (+4 more)
-=======
-### Community 475 - "Stance Assembly / ChatStanceBrief"
-Cohesion: 0.20
-Nodes (11): Proposal mode required before invasive cognition changes: memory, identity, self-modeling, autonomy, private recall, social continuity, or cognition-loop changes need a proposal naming capability change, data touched, privacy boundary, proof trace, dangerous failure mode, and rollback before implementation, baseline dispatch policy (retina_fast, every_n_frames 10, no caption/embeddings), porch_eye camera config (open-vocab detect: person/package/vehicle/animal), triggered dispatch policy (person trigger, TTL 8s, caption+embeddings on), config/vision_frame_router.yaml (baseline vs triggered dispatch), Autonomy readiness / mutation pipeline, Dreams / Dream Weaver (symbolic residue processing), Journal layer (autobiographical compression) (+3 more)
->>>>>>> Stashed changes
 
 ### Community 497 - "Concept Induction (Spark)"
 Cohesion: 0.13
 Nodes (16): orion:chat:history:log channel, chat.history.message.v1 kind, ChatHistoryMessageEnvelope, skills.chat.discussion_window.v1, Chat History to Vector Memory Flow, orion-hub (chat history publisher), orion-vector-host, orion-vector-writer (+8 more)
 
 ### Community 498 - "Endogenous Drive Origination Design"
-<<<<<<< Updated upstream
 Cohesion: 0.19
 Nodes (16): Phi Inner State Truthful Design, Reconstruction-Error φ Objective Function, Signal Veracity Audit (input hygiene), Phi Intrinsic Reward + Value Learning (Step 3b), Intrinsic Reward r = Δφ, TopDownBiasCombiner / VoluntaryOverrideV1, Phi Encoder Plan 2 Design, mlp_shallow_v1 Encoder (+8 more)
 
@@ -3494,16 +3304,11 @@ Nodes (7): _FakeQuery, _FakeSession, test_chat_history_log_scalar_columns_from_m
 ### Community 516 - "test_check_daily_schedule_collisions.py"
 Cohesion: 0.18
 Nodes (8): True positive against the actual repo config: Daily Journal reuses Daily     Pul, test_load_cadences_includes_synthetic_daily_journal_entry(), test_main_fail_on_collision_exits_one(), test_main_fail_on_collision_exits_zero_when_below_threshold(), test_main_json_output_contains_collisions(), test_main_report_only_exits_zero_even_with_collision(), test_real_env_example_has_known_daily_pulse_journal_collision(), _write_env_example()
-=======
-Cohesion: 0.07
-Nodes (42): Autonomy Arc Measurement Gate (Step 0), Endogenous Drive Origination Design, Origination Dynamics Under Leaky Math, EndogenousOriginationTicker, Homeostatic Drives Real Tensions Design, Deviation Gate (EWMA baseline, anti-flood), Internal Economy Scarcity Allocation Design, AllocationDecisionV1 / MetabolicBudgetV1 (+34 more)
->>>>>>> Stashed changes
 
 ### Community 518 - "reflect.v1 recall profile"
 Cohesion: 0.13
 Nodes (15): collapse_mirror.v1 recall profile, deep.graph.v1 recall profile, dream.v1 recall profile, graphtri.v1 recall profile, journal.daily.grounded.v1 recall profile, journal.daily.metacog.grounded.v1 recall profile, journal.notify.grounded.v1 recall profile, journal.world_pulse.grounded.v1 recall profile (+7 more)
 
-<<<<<<< Updated upstream
 ### Community 519 - "train_moc.py"
 Cohesion: 0.38
 Nodes (8): ddp_print(), ddp_setup(), main(), parse_args(), save_checkpoint(), set_seed(), split_train_eval(), unwrap_model()
@@ -3540,43 +3345,33 @@ Nodes (7): _goal(), test_capability_policy_allows_episode_journal_at_proposed(),
 Cohesion: 0.11
 Nodes (28): apply_operator_goal_reasoning_promotion(), _autonomy_goal_execution_enabled(), build_goal_graph_query_client(), complete_goal(), dismiss_goal(), execute_goal_action(), fetch_goal_by_artifact_id(), plan_promoted_goal() (+20 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 529 - "Integrated Memory Cognition Loop Design"
-Cohesion: 0.07
-Nodes (38): Active-Packet Collector / retrieve_active_packet, CrystallizationDynamicsV1 (activation/decay), Consolidation Crystallization Gate Design, Deterministic Consolidation Gate, MemoryCrystallizationV1, Memory Rail Stack (canonical vs derived), Durable World-Pulse Consumption Design, RedisStreamWorkQueue Durable Stream (+30 more)
+Cohesion: 0.19
+Nodes (14): Active-Packet Collector / retrieve_active_packet, CrystallizationDynamicsV1 (activation/decay), Consolidation Crystallization Gate Design, Deterministic Consolidation Gate, MemoryCrystallizationV1, Memory Rail Stack (canonical vs derived), Memory Weight Reinforcement Decay Design, Substrate activation/consolidation reuse (+6 more)
 
 ### Community 530 - "Docker readiness (§8): run docker compose builds/deploys through scripts/safe_docker_build.sh instead of calling docker compose directly; it refuses to run from the shared/primary checkout and applies the --env-file/-f pattern automatically; raw docker compose examples retained only as reference for one-off logs/ps commands"
 Cohesion: 0.60
 Nodes (5): Docker readiness (§8): run docker compose builds/deploys through scripts/safe_docker_build.sh instead of calling docker compose directly; it refuses to run from the shared/primary checkout and applies the --env-file/-f pattern automatically; raw docker compose examples retained only as reference for one-off logs/ps commands, Docker readiness (§8): run docker compose builds/deploys through scripts/safe_docker_build.sh instead of calling docker compose directly; it refuses to run from the shared/primary checkout and applies the --env-file/-f pattern automatically; raw docker compose examples retained only as reference for one-off logs/ps commands, docs/superpowers/pr-reports/2026-07-14-agent-git-safety-hooks-pr.md — PR report documenting the full shared-checkout-docker-revert incident story, cited from CLAUDE.md §8, Incident: a concurrent agent session ran docker compose build+up straight from the shared/primary checkout and silently reverted another session's already-verified fix — the concrete motivation for both the safe_docker_build.sh wrapper and the pre-commit shared-checkout guard, scripts/safe_docker_build.sh — required wrapper for all docker compose build/up/deploy in this repo, replacing bare docker compose calls; refuses to run from the shared/primary checkout (worktrees only) and applies the standard --env-file/-f pattern automatically
-<<<<<<< Updated upstream
 
 ### Community 532 - "render_aitown_tab_blocks"
 Cohesion: 0.43
 Nodes (5): Server-side AI Town tab HTML fragments for Hub index render., render_aitown_tab_blocks(), _Settings, test_hub_aitown_tab_hidden_when_disabled(), test_hub_aitown_tab_rendered_when_enabled()
-=======
->>>>>>> Stashed changes
 
 ### Community 533 - "orion-llamacpp-host service (profile-driven llama.cpp GGUF wrapper, Atlas topology)"
 Cohesion: 0.19
 Nodes (14): config/llm_profiles.yaml (LLM profile/model registry, source of truth), orion-llama-cola-host Docker Compose, Orion Llama-CoLA Host service (dual-path text + latent action indices), orion-llama-cola-host Python dependencies (torch, transformers, deepspeed), orion-llamacpp-host Atlas multi-worker Docker Compose (chat/metacog/fast/agent lanes), orion-llamacpp-host single-worker Docker Compose, orion-llamacpp-host service (profile-driven llama.cpp GGUF wrapper, Atlas topology), orion-llamacpp-host Python dependencies (thin wrapper, no ML libs) (+6 more)
 
 ### Community 534 - "config/proposals/proposal_policy.v1.yaml — Layer 7 proposal policy: limits, priority/risk thresholds, dimension weights, and named proposal_templates that turn substrate state into ProposalFrameV1 candidates"
-Cohesion: 0.17
-Nodes (12): config/proposals/proposal_policy.v1.yaml — Layer 7 proposal policy: limits, priority/risk thresholds, dimension weights, and named proposal_templates that turn substrate state into ProposalFrameV1 candidates, template defer_due_to_low_readiness — no policy gate, defer on self:current to preserve_stability, base_priority 0.25, base_risk 0.0, dimensions uncertainty 0.50 / reliability_pressure 0.50, template inspect_bus_channel_catalog — read_only inspect of orion/bus/channels.yaml as a system target, base_priority 0.38, dimension contract_pressure 0.60, template inspect_execution_pressure — read_only inspect of capability:orchestration, base_priority 0.40, base_risk 0.05, dimension execution_pressure 0.60, template inspect_field_topology_catalog — read_only inspect of config/field/orion_field_topology.v1.yaml, base_priority 0.33, dimension field_intensity 0.45, template inspect_node_resource_pressure — read_only inspect of node:atlas, base_priority 0.34, dimension resource_pressure 0.50, template inspect_transport_status — read_only inspect of capability:transport, base_priority 0.42, dimensions contract_pressure 0.55 / reliability_pressure 0.40, template request_policy_review_for_action — operator_review gate to prepare_for_policy_gate on policy:execution, base_priority 0.20, base_risk 0.30 (highest risk template in the file) (+4 more)
+Cohesion: 0.14
+Nodes (14): config/proposals/proposal_policy.v1.yaml — Layer 7 proposal policy: limits, priority/risk thresholds, dimension weights, and named proposal_templates that turn substrate state into ProposalFrameV1 candidates, template defer_due_to_low_readiness — no policy gate, defer on self:current to preserve_stability, base_priority 0.25, base_risk 0.0, dimensions uncertainty 0.50 / reliability_pressure 0.50, template inspect_attended_target (P5) — target_binding self_state.dominant_attention_targets[0] with a fallback literal to capability:orchestration if the binding fails to resolve; shipped live at base_priority 0.34 per explicit user go-ahead, not dark-shipped at 0.0, since it's a read-only inspect under the same policy gate/risk class as the other already-live inspect templates; carries a falsifiable 7-day kill criterion (distinct target_id count must be >= 3 or the binding isn't doing anything the literal templates don't already do), checked by run_attention_bound_proposal_eval.py, template inspect_bus_channel_catalog — read_only inspect of orion/bus/channels.yaml as a system target, base_priority 0.38, dimension contract_pressure 0.60, template inspect_execution_pressure — read_only inspect of capability:orchestration, base_priority 0.40, base_risk 0.05, dimension execution_pressure 0.60, template inspect_field_topology_catalog — read_only inspect of config/field/orion_field_topology.v1.yaml, base_priority 0.33, dimension field_intensity 0.45, template inspect_node_resource_pressure — read_only inspect of node:atlas, base_priority 0.34, dimension resource_pressure 0.50, template inspect_transport_status — read_only inspect of capability:transport, base_priority 0.42, dimensions contract_pressure 0.55 / reliability_pressure 0.40 (+6 more)
 
 ### Community 535 - "Unified Cognitive Substrate Phase 6 (Frontier Expansion / Typed Graph-Delta Generation)"
 Cohesion: 0.19
 Nodes (14): Materialized Graph State, SubstrateDynamicsEngine, CoherenceAssessmentV1, Unified Cognitive Substrate Phase 6 (Frontier Expansion / Typed Graph-Delta Generation), FrontierContextPackBuilder, FrontierExpansionService, FrontierGraphDeltaBundleV1, Zone-Aware Landing Posture (+6 more)
 
 ### Community 536 - "Orion Titanium Contracts"
-<<<<<<< Updated upstream
 Cohesion: 0.18
 Nodes (15): Orion Titanium Contracts, BaseEnvelope, Contract Mismatch Report, Neural Projection (Spark), No Dict Soup Rule, Landing Pad pad.* contracts, Redis Pub/Sub Bus, spark_vector (+7 more)
-=======
-Cohesion: 0.17
-Nodes (16): Orion Titanium Contracts, BaseEnvelope, Dream Contracts (dream.result.v1), Contract Mismatch Report, Neural Projection (Spark), No Dict Soup Rule, Redis Pub/Sub Bus, spark_vector (+8 more)
->>>>>>> Stashed changes
 
 ### Community 537 - "Orion Platform Contract"
 Cohesion: 0.21
@@ -3598,7 +3393,6 @@ Nodes (14): Answer Contract From Stance Design (ABANDONED), Imperative-First Mot
 Cohesion: 0.22
 Nodes (14): Felt-State Arc Roadmap Spec, field_channel_corpus.v1 (raw channel pressures), HDBSCAN Attractor/Cluster Discovery, Inner State Registry (REHEARSAL/COMPOSED), mood_arc_corpus.v1 Collector, Windowed Mood-Arc Sequence Autoencoder, Phi Encoder Train/Promote Lifecycle, Two-Tier Shuffle/AR(1) Surrogate Gate (+6 more)
 
-<<<<<<< Updated upstream
 ### Community 542 - "VerbRegistry"
 Cohesion: 0.30
 Nodes (5): Loads and caches VerbConfig objects from verbs/*.yaml, Return all registered verbs. Use reload=True to refresh the cache., Lightweight filtering helper used by supervisors/planners., VerbRegistry, VerbConfig
@@ -3643,13 +3437,10 @@ Nodes (5): GPUConfig, LlamaCppConfig, LLMProfile, LLMProfileRegistry, Settings
 Cohesion: 0.07
 Nodes (33): AlertPayload, AlertSnapshot, Detection, Detection coming from the vision edge service.      - kind: "face", "motion", "y, Raw event from vision edge, as seen on orion:vision:edge:raw., Simple persistent security state., Summary of a logical 'visit' (a contiguous episode of humans present).     v1 is, A single snapshot image captured around the time of an alert. (+25 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 557 - "Orion Signals Roster v1 (mesh service tiers)"
 Cohesion: 0.14
 Nodes (14): orion-biometrics (tier1, organ: biometrics), orion-bus (core, required), orion-collapse-mirror (tier1, organ: collapse_mirror), orion-cortex-exec (tier1, organs: cortex_exec, autonomy, chat_stance), orion-cortex-gateway (routing), orion-cortex-orch (routing), orion-equilibrium-service (tier1, organ: equilibrium), orion-llm-gateway (routing) (+6 more)
 
-<<<<<<< Updated upstream
 ### Community 558 - "Phase 4 Cluster-Weighting Research"
 Cohesion: 0.40
 Nodes (6): Field-topology Edge Weights, Phase 4 Cluster-Weighting Research, BIOMETRICS_ROLE_WEIGHTS_JSON, CLUSTER_ROLE_WEIGHTS, metacog_biometrics_cue, orion-state-service Aggregation
@@ -3666,19 +3457,17 @@ Nodes (7): _Bus, _Codec, _Decoded, _Env, test_gateway_disabled_recall_forwards_s
 Cohesion: 0.23
 Nodes (3): _ev(), TestBuildFactSheet, TestReduceDriveHistory
 
-=======
->>>>>>> Stashed changes
 ### Community 562 - "services/orion-memory-consolidation/README.md — subscribes to orion:memory:turn:persisted, classifies each chat turn via LLM gateway quick-lane logprobs, patches chat_history_log.spark_meta, tracks consolidation windows, and on boundary closure runs a deterministic consolidation gate (default) or legacy graph suggest"
 Cohesion: 0.17
 Nodes (13): Deterministic gates over repeated yelling: if Juniper has to repeat a rule twice, turn it into a script/test/check/hook/make target instead of a louder prompt, scripts/concept_relation_digest.py — standalone script (not a live service loop) run every 30 minutes via Athena cron, turning memory_concept_relation_decisions rows into reflection crystallizations; make check-concept-relation-digest-liveness is the fail-safe, querying the real undigested backlog age (not a heartbeat file) and exiting non-zero past MAX_AGE_HOURS (default 3h) — a deterministic gate against the cron entry silently dying or not persisting across a host migration, Cross-window concept-relation resolution (off by default): vector-similarity candidate retrieval plus one bounded structured-output LLM call judging same/refines/contradicts/unrelated against nearest existing active crystallizations of the same kind; refines/contradicts only attach a typed link to the new candidate, never mutate the existing target — that stays a human decision via the links/supersede API; gated by CONCEPT_RELATION_RESOLUTION_ENABLED plus embed/chroma host config, both required or the feature does nothing, MEMORY_CONSOLIDATION_OUTPUT modes: crystallization_propose (default, runs consolidation_memory_gate and skips low-signal windows or proposes MemoryCrystallizationV1), graph_draft (legacy LLM graph-suggest path), skip_only (gate runs for traceability, always marks skipped); gate thresholds require the window not be all low-info-social, since a bare novelty/significance float alone previously let a noisy classifier score crystallize a short greeting-only turn, scripts/drive_history_reflection_synthesis.py (manual/on-demand only, NOT cron'd) — reads real persisted DriveAuditV1 ticks from the Fuseki drives graph and synthesizes one reflection-kind MemoryCrystallizationV1 via a deterministic reducer stage (reduce_drive_history, a pure unit-tested function, same bar as orion/spark/concept_induction/drive_tension.py) followed by a narrow LLM-phrasing stage that only ever sees a pre-computed fact sheet; parse_and_validate_narrative enforces that every cited fact's literal tokens appear verbatim in the output, and the script refuses to synthesize below MIN_EVENTS=5 or MIN_DISTINCT_DAYS=2, Known recurring footgun: 'flag on, dependency not wired' — CONCEPT_RELATION_RESOLUTION_ENABLED=true alone does not imply the digest is scheduled, and this exact pattern has already caused silent no-ops twice in this repo (CONCEPT_RELATION_RESOLUTION_ENABLED itself missing its embed/chroma hosts on first activation, and RECALL_GRAPHITI_IN_CHAT missing its adapter URL) — checking both halves explicitly every time is cheaper than re-discovering this, services/orion-memory-consolidation/README.md — subscribes to orion:memory:turn:persisted, classifies each chat turn via LLM gateway quick-lane logprobs, patches chat_history_log.spark_meta, tracks consolidation windows, and on boundary closure runs a deterministic consolidation gate (default) or legacy graph suggest, Turn change appraisal: each persisted turn after the first in a window gets a logprob-calibrated turn_change_appraisal patch (novelty score, shift kind, confidence, baseline mode); high-confidence novel turns emit OrionSignalV1 on orion:signals:memory_consolidation (+5 more)
 
 ### Community 563 - "services/orion-execution-dispatch-runtime/README.md — Layer 9 of the Orion cognition substrate: converts PolicyDecisionFrameV1 + ProposalFrameV1 + SelfStateV1 into ExecutionDispatchFrameV1 envelopes, the motor-nerve service that can actually send real actions"
-Cohesion: 0.25
-Nodes (9): No empty-shell cognition: do not ship cognition-shaped output with no substance — empty semantic projections, placeholder memory cards, fallback text as generated cognition, raw_len=0 treated as success, stale reducer cursors are all invalid success states requiring inspectable evidence, Experience loop (P2): every real send (success, empty observation, or RPC failure) publishes an ActionOutcomeEmitV1 event onto orion:autonomy:action:outcome (BUS_ACTION_OUTCOME_OUT) — the same always-on route orion-spark-concept-induction already produces onto for curiosity-fetch outcomes, consumed by orion-sql-writer into the durable action_outcomes table; subject always 'orion' (self-directed, never relationship-scoped); replay-safe since sql-writer upserts by dispatch_id via merge(), EXECUTION_DISPATCH_MODE gate — default dry_run (build, no send); real sends require both this env set to dispatch_read_only AND config/execution_dispatch/execution_dispatch_policy.v1.yaml's mode.allow_dispatch_read_only true, plus per-tick and daily send budgets enforced before any send happens, ExecutionDispatchFrameV1 / ExecutionDispatchCandidateV1 — the schema this service builds; dispatch_status vocabulary (prepared, dry_run, blocked, skipped, prepared_for_dispatch, dispatched) enforced at the schema level, with dispatched requiring dispatched_at plus a result_ref or dispatch_error, Idempotency: dispatch_id is deterministic per proposal+policy, so if the process dies between a successful send and frame persistence, the next tick replays the stored substrate_dispatch_results row instead of resending — a real cortex-exec call never fires twice for the same candidate, Rollback: set EXECUTION_DISPATCH_MODE=dry_run and restart this one container — single kill switch for all real sending, services/orion-execution-dispatch-runtime/README.md — Layer 9 of the Orion cognition substrate: converts PolicyDecisionFrameV1 + ProposalFrameV1 + SelfStateV1 into ExecutionDispatchFrameV1 envelopes, the motor-nerve service that can actually send real actions, Theater tripwire: if more than half of the trailing 10 real dispatch results have status=empty (a real send that produced no usable observation), the worker stops sending for the rest of its process lifetime, visible via GET /latest's theater_tripwire_active field; deliberately does not self-clear (a self-clearing tripwire could resume sending on a coincidentally non-empty sample without anyone deciding that was safe) — requires a restart to re-arm (+1 more)
+Cohesion: 0.17
+Nodes (13): No empty-shell cognition: do not ship cognition-shaped output with no substance — empty semantic projections, placeholder memory cards, fallback text as generated cognition, raw_len=0 treated as success, stale reducer cursors are all invalid success states requiring inspectable evidence, Experience loop (P2): every real send (success, empty observation, or RPC failure) publishes an ActionOutcomeEmitV1 event onto orion:autonomy:action:outcome (BUS_ACTION_OUTCOME_OUT) — the same always-on route orion-spark-concept-induction already produces onto for curiosity-fetch outcomes, consumed by orion-sql-writer into the durable action_outcomes table; subject always 'orion' (self-directed, never relationship-scoped); replay-safe since sql-writer upserts by dispatch_id via merge(), EXECUTION_DISPATCH_MODE gate — default dry_run (build, no send); real sends require both this env set to dispatch_read_only AND config/execution_dispatch/execution_dispatch_policy.v1.yaml's mode.allow_dispatch_read_only true, plus per-tick and daily send budgets enforced before any send happens, ExecutionDispatchFrameV1 / ExecutionDispatchCandidateV1 — the schema this service builds; dispatch_status vocabulary (prepared, dry_run, blocked, skipped, prepared_for_dispatch, dispatched) enforced at the schema level, with dispatched requiring dispatched_at plus a result_ref or dispatch_error, Idempotency: dispatch_id is deterministic per proposal+policy, so if the process dies between a successful send and frame persistence, the next tick replays the stored substrate_dispatch_results row instead of resending — a real cortex-exec call never fires twice for the same candidate, Prerequisites: substrate_policy_decision_frames populated by orion-policy-runtime (port 8120); substrate_proposal_frames and substrate_self_state from Layers 7-6; two manual SQL migrations applied for ExecutionDispatchFrameV1 and substrate_dispatch_results_v1, Rollback: set EXECUTION_DISPATCH_MODE=dry_run and restart this one container — single kill switch for all real sending, services/orion-execution-dispatch-runtime/README.md — Layer 9 of the Orion cognition substrate: converts PolicyDecisionFrameV1 + ProposalFrameV1 + SelfStateV1 into ExecutionDispatchFrameV1 envelopes, the motor-nerve service that can actually send real actions (+5 more)
 
 ### Community 564 - "config/llm_profiles.yaml (LLM profile registry)"
-Cohesion: 0.38
-Nodes (7): Gemma 4 31B/E4B multimodal (text+image[+audio]) profiles, llama3-1-cola CoLA intention host profile, config/llm_profiles.yaml (LLM profile registry), qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition profile (monster FCC), qwen3-30b-a3b-instruct-2507-q5km-atlas-metacog-16k profile, qwen3-8b-q5km-v100-16gb-atlas-metacog-16k profile, qwen3-coder-next agent breadth/depth profiles
+Cohesion: 0.18
+Nodes (13): Gemma 4 31B/E4B multimodal (text+image[+audio]) profiles, llama3-1-cola CoLA intention host profile, config/llm_profiles.yaml (LLM profile registry), qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition profile (monster FCC), qwen3-30b-a3b-instruct-2507-q5km-atlas-metacog-16k profile, qwen3-8b-q5km-v100-16gb-atlas-metacog-16k profile, qwen3-coder-next agent breadth/depth profiles, llm-gateway remediation entry (+5 more)
 
 ### Community 565 - "MemoryCardV1"
 Cohesion: 0.19
@@ -3696,7 +3485,6 @@ Nodes (13): Memory Graph from Chat - Soul-Purpose Review, Generous Extraction, S
 Cohesion: 0.18
 Nodes (13): Runtime Introspection Interrogation Design, Anti-bullshit claim-to-evidence guardrail, Strict evidence contract (hop topology), interrogate_runtime_state verb, Chat Stance Signal Adapter Contract, ChatStanceBrief (no-PII signal mapping), OrionSignalV1, Runtime Trace Signal Nexus Design (+5 more)
 
-<<<<<<< Updated upstream
 ### Community 569 - "findings_bundle_synth.py"
 Cohesion: 0.24
 Nodes (10): attach_findings_to_debug(), merge_findings_bundle_dicts(), Synthesize a serializable FindingsBundle from planner trace + contract (Phase 2, Merge two FindingsBundle-shaped dicts (exec supervisor aggregation)., synthesize_findings_bundle(), _trace_has_repo_evidence(), _trace_has_runtime_evidence(), test_merge_findings_merges_lists() (+2 more)
@@ -3705,13 +3493,10 @@ Nodes (10): attach_findings_to_debug(), merge_findings_bundle_dicts(), Synthesiz
 Cohesion: 0.23
 Nodes (5): _FakeProc, _FakeStream, test_cancel_before_register_kills_on_spawn(), test_cancel_fcc_turn_kills_registered_process(), test_run_fcc_turn_registers_and_unregisters_process()
 
-=======
->>>>>>> Stashed changes
 ### Community 571 - "orion-signal-gateway (normalizes organ-bus events into OrionSignalV1)"
 Cohesion: 0.28
 Nodes (9): orion-signal-gateway (normalizes organ-bus events into OrionSignalV1), orion-signals (organ signal mesh launcher, not a runtime service), orion-signal-gateway docker-compose.yml, orion-signal-gateway otel/collector-config.yaml (OTLP collector), orion-signal-gateway otel/grafana-datasources.yaml (Tempo datasource provisioning), orion-signal-gateway otel/tempo.yaml (Grafana Tempo single-binary config), orion-signal-gateway README.md, orion-signal-gateway requirements.txt (+1 more)
 
-<<<<<<< Updated upstream
 ### Community 572 - "test_attention_ack.py"
 Cohesion: 0.40
 Nodes (5): _persisted_state(), The fix routes acks through sql-writer's direct write endpoint     (proxy_post), test_attention_ack_calls_sql_writer_proxy_not_bus(), test_attention_ack_propagates_not_found_from_sql_writer(), test_attention_ack_rejects_mismatched_attention_id()
@@ -3752,12 +3537,6 @@ Nodes (4): description, minimum, type, order
 Cohesion: 0.22
 Nodes (7): build_vllm_command_and_env(), main(), Build the vLLM OpenAI server command + environment based on Settings + profiles., Config, Resolve (model_id, gpu_cfg) using:           1) Explicit env: VLLM_MODEL_ID (opt, Load raw profile dicts from YAML (same file used by llm-gateway)., Settings
 
-=======
-### Community 585 - "orion-spark-introspector: Spark metacognitive streaming service driving the phi/EKG chart"
-Cohesion: 0.15
-Nodes (13): orion-spark-introspector (tier1, organ: spark_introspector), Orion Cognitive Dashboard UI (index.html + tissue_viz.js), orion-spark-introspector docker-compose.yml, orion-spark-introspector README (Spark Engine v2), CoLA-derived novelty signal (orion-llama-cola-host /v1/understand, per-session distribution novelty), Mood-arc corpus collector (roadmap item 1: MoodArcCorpusRowV1 JSONL sink), scripts/fit_mood_arc_encoder.py (roadmap item 2: windowed sequence-autoencoder over mood-arc corpus), OrionState (compact self-state representation: mood, focus_themes, latent_state) (+5 more)
-
->>>>>>> Stashed changes
 ### Community 590 - "Pipeline: Retina Dense"
 Cohesion: 0.24
 Nodes (12): Capability: vision (declared, unwired), Pipeline: Retina Dense, Pipeline: Retina Fast, Profile: Image Embedding, Profile: Identity/Face Embedding, Profile: Pose Estimation, Profile: Open-Vocab Detector, Profile: Segmentation (SAM2-class) (+4 more)
@@ -3770,7 +3549,6 @@ Nodes (12): Source: BBC World RSS, Source: CISA KEV Catalog (Manual URL), Source
 Cohesion: 0.26
 Nodes (12): LLM Services and Agentic Flow, AgentChainService, Cortex-Exec, Cortex-Orch, CouncilService (stub), Dual-Lobe Host (llamacpp), LLM Gateway (Reflective), PlannerReactService (+4 more)
 
-<<<<<<< Updated upstream
 ### Community 593 - "up_all_services_batched.sh"
 Cohesion: 0.27
 Nodes (7): collect_up_failures(), is_excluded(), print_failed_logs(), up_all_services_batched.sh script, up_one(), up_one_bg(), wait_for_bus_ready()
@@ -3835,11 +3613,9 @@ Nodes (10): _graph_node(), _make_worker(), Unit tests for the continuous attenti
 Cohesion: 1.00
 Nodes (3): claim:orion:substrate-telemetry:0001 — orion-substrate-telemetry persists tier outcomes, claim:orion:substrate-telemetry:0002 — orion-cortex-orch optionally merges telemetry facet, source:2026-05-14-substrate-tier-telemetry-design-ref (metadata)
 
-=======
->>>>>>> Stashed changes
 ### Community 617 - "Reasoning Schema Phase 1"
-Cohesion: 0.09
-Nodes (30): Reasoning Promotion Phase 3, Contradiction-Aware Gating, HITL Escalation Policy, Dynamic Entity/Domain Lifecycle Governance, Deterministic Transition Evaluator, PromotionEvaluationResultV1, Explicit Promotion Transition Matrix, Reasoning Schema Phase 1 (+22 more)
+Cohesion: 0.24
+Nodes (11): Reasoning Schema Phase 1, ClaimV1, ContradictionV1, MentorProposalV1, PromotionDecisionV1, ReasoningArtifactBaseV1, RelationV1, Reasoning Schema Registry Surface (+3 more)
 
 ### Community 618 - "Unified Cognitive Substrate Phase 1 (Shared Ontology + Canonical Contracts)"
 Cohesion: 0.25
@@ -3852,6 +3628,10 @@ Nodes (11): Unified Cognitive Substrate Phase 10 (Review Scheduling and Revisit 
 ### Community 620 - "FCC-Cortex GWT Dispatch Design"
 Cohesion: 0.22
 Nodes (11): Hub Agent Claude Design (FCC harness in chat), fcc_claude_bridge (subprocess motor), stream-json harness event relay, FCC-Cortex GWT Dispatch Design, Redis bus-native RPC (no HTTP Hub-to-organ), Global Workspace Theory (GWT) mapping, orion-harness-governor (orion/harness library), Trust rupture refusal threshold + boundary register (+3 more)
+
+### Community 621 - "Deviation Gate (EWMA baseline, anti-flood)"
+Cohesion: 0.20
+Nodes (11): EndogenousOriginationTicker, Deviation Gate (EWMA baseline, anti-flood), AllocationDecisionV1 / MetabolicBudgetV1, MetabolicAllocator (water-filling), Self Tab Substrate Brain-EKG Design, SubstrateBrainFrameV1, phi_value_metabolism (coherence drive feed), OrionSignalV1 Signal Substrate (+3 more)
 
 ### Community 622 - "execution_trajectory reducer / ExecutionRunStateV1"
 Cohesion: 0.20
@@ -3869,7 +3649,6 @@ Nodes (11): Channel "orion:notify:config:preference" (kind=event, schema=Notific
 Cohesion: 0.20
 Nodes (11): delivery_pack: user-facing artifact verbs, emergent_pack: introspection/reflection/dream/counterfactual verbs, executive_pack: classify/plan/prioritize/evaluate verbs, memory_pack: memory retrieval/contextualization/narrative verbs, Cognition Packs (Memory, Executive, Emergent), Orion Cognition Layer README, Semantic Planner (verb -> ExecutionPlan), Verb exec_step bus contract (orion-exec:request/result:<Service>) (+3 more)
 
-<<<<<<< Updated upstream
 ### Community 626 - "walkable_tiles"
 Cohesion: 0.24
 Nodes (9): _map(), objectTiles indexed [layer][x][y]; -1 = empty. `blocked` is a set of (x,y)., test_walkable_empty_on_malformed(), test_walkable_excludes_blocked_tiles(), test_walkable_multiple_layers_any_block(), Walkability derived from an AI Town ``worldMap``.  AI Town stores object/collisi, Return the set of walkable integer tiles ``(x, y)`` for a worldMap.      Fail-op, walkable_tiles() (+1 more)
@@ -3941,11 +3720,6 @@ Nodes (10): Autonomy Arc Measurement Gate (Step 0), Endogenous Drive Origination
 ### Community 652 - "orion-social-memory service"
 Cohesion: 0.22
 Nodes (10): Social Claim Revision and Peer-Claim Tracking, Social Consensus, Divergence, and Attribution, Speaker-Aware Consensus States, Social Conversational Commitments, SocialCommitmentResolutionV1, SocialCommitmentV1, Social Epistemic Stance and Uncertainty Signaling, Epistemic Claim Kinds (+2 more)
-=======
-### Community 652 - "orion-social-memory service"
-Cohesion: 0.06
-Nodes (40): Social Artifact Dialogue, Conservative Dialogue Scope Handling, SocialArtifactConfirmationV1, SocialArtifactProposalV1, SocialArtifactRevisionV1, Social Claim Revision and Peer-Claim Tracking, Claim Stance Lifecycle, Social Consensus, Divergence, and Attribution (+32 more)
->>>>>>> Stashed changes
 
 ### Community 653 - "Unified Cognitive Substrate Phase 13 (GraphDB-Backed Persistence)"
 Cohesion: 0.27
@@ -3971,7 +3745,6 @@ Nodes (10): CONCEPT_AUTONOMOUS_TRIGGER_ENABLED off decision, ConceptWorker / con
 Cohesion: 0.20
 Nodes (10): Channel "orion:kg:edge:ingest.v1" (kind=event, schema=KgEdgeIngestV1) producers=[orion-topic-foundry] consumers=[orion-rdf-writer, orion-graphdb], Channel "orion:topic:foundry:drift:alert.v1" (kind=event, schema=TopicFoundryDriftAlertV1) producers=[orion-topic-foundry] consumers=[*], Channel "orion:topic:foundry:enrich:complete.v1" (kind=event, schema=TopicFoundryEnrichCompleteV1) producers=[orion-topic-foundry] consumers=[*], Channel "orion:topic:foundry:run:complete.v1" (kind=event, schema=TopicFoundryRunCompleteV1) producers=[orion-topic-foundry] consumers=[*], Schema: KgEdgeIngestV1, Schema: TopicFoundryDriftAlertV1, Schema: TopicFoundryEnrichCompleteV1, Schema: TopicFoundryRunCompleteV1 (+2 more)
 
-<<<<<<< Updated upstream
 ### Community 662 - "organ_layer"
 Cohesion: 0.20
 Nodes (12): layers_export(), organ_layer(), Organ layer taxonomy for Organ Signals mesh filters (Milestone B0)., Return layer for organ_id; unknown organs default to cognition., JSON-serializable layer map for Hub API., test_layers_export_includes_all_registry_organs(), test_organ_layer_cognition_organs(), test_organ_layer_runtime_organs() (+4 more)
@@ -4012,26 +3785,33 @@ Nodes (8): client(), _empty_projection_with_diagnostics(), _mind_prep(), Regress
 Cohesion: 0.42
 Nodes (9): _drive(), _make_worker(), Unit tests for the Orion embodiment C producer hook.  Verifies the substrate wor, test_cache_drive_state_fails_open_on_bad_decode(), test_emit_fails_open_when_publish_raises(), test_flag_off_publishes_nothing(), test_flag_on_publishes_one_involuntary_intent(), test_no_drive_state_publishes_nothing() (+1 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 683 - "Channel "orion:dream:log" (kind=event, schema=DreamResultV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer, orion-dream]"
 Cohesion: 0.29
 Nodes (7): Channel "orion:dream:compaction-delta" (kind=event, schema=MemoryCompactionDeltaV1) producers=[orion-dream] consumers=[none], Channel "orion:dream:log" (kind=event, schema=DreamResultV1) producers=[orion-cortex-exec] consumers=[orion-sql-writer, orion-dream], Channel "orion:dream:trigger" (kind=event, schema=DreamTriggerPayload) producers=[orion-dream] consumers=[orion-cortex-orch], Schema: DreamResultV1, Schema: DreamTriggerPayload, Schema: MemoryCompactionDeltaV1, Service: orion-dream
 
-<<<<<<< Updated upstream
 ### Community 685 - "STTEngine"
 Cohesion: 0.07
 Nodes (30): Payload for Speech-to-Text (ASR) request.     Kind: stt.transcribe.request, Payload for TTS synthesis request.     Kind: tts.synthesize.request, STTRequestPayload, STTResultPayload, TTSRequestPayload, TTSResultPayload, Sends a TTSRequestPayload to the TTS Service and waits for a TTSResultPayload., Sends an STTRequestPayload to the Speech Service and waits for an STTResultPaylo (+22 more)
 
-=======
->>>>>>> Stashed changes
 ### Community 687 - "concept_induction_pass Workflow"
 Cohesion: 0.22
 Nodes (9): Active Verbs Manifest, Verb Enforcement (no silent chat_general fallback), concept_induction_pass Workflow, Append-only journal.entry.write.v1 Boundary, Chat-Invoked Cognitive Workflow Registry, Workflow vs Actions Skill Distinction, Bounded Deterministic Synthesis, Concept Induction Details Modal (+1 more)
 
+### Community 688 - "Social Memory Hygiene and Re-Grounding"
+Cohesion: 0.25
+Nodes (9): Dynamic Entity/Domain Lifecycle Governance, Social Memory Hygiene and Re-Grounding, SocialDecaySignalV1, SocialMemoryFreshnessV1, SocialRegroundingDecisionV1, Social Relationship Calibration and Trust Boundaries, SocialCalibrationSignalV1, SocialPeerCalibrationV1 (+1 more)
+
+### Community 689 - "orion-social-room-bridge service"
+Cohesion: 0.33
+Nodes (9): Social Relational Memory, Peer/Room Continuity Synthesis, Social Room Bridge, CallSyne REST Bridge, Hub social_room chat profile, orion-social-room-bridge service, Transport-Thin Adapter Boundary, Social Skill Surfacing (+1 more)
+
 ### Community 690 - "Unified Cognitive Substrate Phase 17 (Operator-Controlled Policy Adoption and Rollback)"
 Cohesion: 0.39
 Nodes (9): Unified Cognitive Substrate Phase 16 (GraphDB Query Planning and Reuse), Bounded Query-Result Reuse Cache, Unified Cognitive Substrate Phase 17 (Operator-Controlled Policy Adoption and Rollback), SubstratePolicyProfileStore, SubstratePolicyProfileV1, Unified Cognitive Substrate Phase 18 (Durable Policy Store and Cache/Runtime Wiring), query_cache_enabled Knob, Unified Cognitive Substrate Phase 19 (SQL-Backed Policy Control-Plane Persistence) (+1 more)
+
+### Community 691 - "capability_provenance (diffusion)"
+Cohesion: 0.36
+Nodes (9): Phase 4 Attention-Provenance Cross-check, capability_provenance (diffusion), Do Not Unify Salience/Provenance, dominant_attention_targets (salience), Attention Salience Decay-Bypass Investigation, Computed-but-never-consumed Decay Pattern, dwell global-scalar bug, endogenous_curiosity sibling bug (+1 more)
 
 ### Community 692 - "Biometrics Reference Adapter"
 Cohesion: 0.22
@@ -4045,11 +3825,18 @@ Nodes (9): Memory Consolidation Pipeline Design, Logprob turn classify (MEMORY/B
 Cohesion: 0.22
 Nodes (9): Metacog Prompt Slim Context Design, metacog_biometrics_cue (compact cue), Worker context preflight / trim, Metacog Two-Pass Native Logprob Probe Design, Collapse mirror (MetacogDraftTextPatchV1), Native logprob uncertainty probe (pass 2), Metacog Substrate Funnel Design, phi-grounded causal_density scoring (+1 more)
 
+### Community 695 - "Grounded Autonomy Episode Journal Design"
+Cohesion: 0.33
+Nodes (9): Durable World-Pulse Consumption Design, RedisStreamWorkQueue Durable Stream, Grounded Autonomy Episode Journal Design, Deterministic Salience Scorer (term overlap), World-Pulse Curiosity Followups Design, CuriosityFollowupV1 (Orion went looking), Grounded Episode Narrative Seed, FetchedArticleRefV1 / ActionOutcomeRefV1 (+1 more)
+
+### Community 696 - "Unified-Turn Self-Grounding Design"
+Cohesion: 0.25
+Nodes (9): Mind Unified Stance Enrichment Design, mind_coloring Advisory Block, PCR Phase Orchestration (0/1/3), Reverie Semantic Lift Design, ConcernCardV1 / semantic resolver, Metacog GPU / background exec lane routing, Unified-Turn Self-Grounding Design, GroundingCapsuleV1 (+1 more)
+
 ### Community 697 - "Stance React"
 Cohesion: 0.22
 Nodes (9): Reverie Narrate (Spontaneous Felt-Layer Narration), SpontaneousThoughtV1 (schema), Simulation, Skills — Mesh Presence (Tailscale), Stance React, Story Weave, Substrate Inspect, Substrate Observe (+1 more)
 
-<<<<<<< Updated upstream
 ### Community 699 - "dataset.py"
 Cohesion: 0.48
 Nodes (6): _chat_template(), _iter_jsonl(), _load_from_jsonl(), _normalize_record(), _stable_bucket(), CanonicalSftExample
@@ -4086,8 +3873,6 @@ Nodes (6): _atlas_field_state(), _fake_engine_with_field(), test_field_capabilit
 Cohesion: 0.32
 Nodes (4): client(), _mind_prep(), _projection_with_item(), test_mind_run_emits_shadow_synthesis_from_projection_items_without_authority()
 
-=======
->>>>>>> Stashed changes
 ### Community 712 - "orion-rag: retrieval-augmented generation orchestrator, enriches queries with vector-db context before delegating to LLM host"
 Cohesion: 0.22
 Nodes (9): orion-ollama-host docker-compose (GPU runtime, port 11434, healthcheck, model volume), orion-ollama-host: wrapper around official Ollama container, auto-pulls model on startup, exposes port 11434, orion-ollama-host dependencies (pydantic, pydantic-settings, PyYAML, requests), orion-pageindex docker-compose (port 8360, PageIndex build args, journal_entry_index table wiring), orion-pageindex: standalone journals PageIndex service (corpora rebuild/status/query API for journals and chat_episodes), orion-pageindex dependencies (fastapi, uvicorn, pydantic, psycopg2-binary, SQLAlchemy, pytest), orion-rag docker-compose (bus request/reply channels, VECTOR_DB_URL, EMBEDDING_MODEL), orion-rag: retrieval-augmented generation orchestrator, enriches queries with vector-db context before delegating to LLM host (+1 more)
@@ -4096,7 +3881,6 @@ Nodes (9): orion-ollama-host docker-compose (GPU runtime, port 11434, healthchec
 Cohesion: 0.10
 Nodes (22): orion-social-memory docker-compose.yml, orion-social-memory README, orion:chat:social:stored (social-memory input channel), orion-social-memory requirements.txt, orion-social-memory: relational continuity synthesizer for social-room turns, orion-social-room-bridge docker-compose.yml, orion-social-room-bridge requirements.txt, orion-social-room-bridge: social platform bridge (Callsyne/Hub) (+14 more)
 
-<<<<<<< Updated upstream
 ### Community 717 - "test_phi_reward_sql_shape.py"
 Cohesion: 0.29
 Nodes (7): PhiIntrinsicRewardV1, _normalize_phi_reward_payload(), _make_reward(), Shape checks for the phi_reward SQL write path (no Postgres required)., test_model_map_registers_phi_reward_sql_with_schema(), test_normalize_phi_reward_payload_maps_to_real_columns(), test_phi_reward_row_constructs_without_raising()
@@ -4117,8 +3901,6 @@ Nodes (6): join_openai_message_content(), Normalize OpenAI-compatible message.co
 Cohesion: 0.25
 Nodes (8): Social Artifact Dialogue, Conservative Dialogue Scope Handling, SocialArtifactConfirmationV1, SocialArtifactProposalV1, SocialArtifactRevisionV1, orion-social-memory service, Social Style and Rituals, Style Adaptation Snapshot
 
-=======
->>>>>>> Stashed changes
 ### Community 725 - "GraphDB Semantic vs SQL Operational Ownership Split"
 Cohesion: 0.25
 Nodes (8): GraphDB Semantic vs SQL Operational Ownership Split, Substrate vs Control-Plane vs Operational SQL Split, Unified Cognitive Substrate Phase 20 (Policy Comparison Operationalization), Policy Comparison (baseline_vs_active / previous_vs_current / selected_pair), Unified Cognitive Substrate Phase 20c (Postgres Comparison/Control-Plane Parity), Postgres Operational/Control-Plane Truth, Unified Cognitive Substrate Phase 21 (Control-Plane Parity and Wiring Verification), Bus/Schema/SQL-Writer Wiring Verification
@@ -4155,7 +3937,6 @@ Nodes (8): Vector Audit, RECALL_VECTOR_COLLECTIONS Zero-Result Root Cause, Vecto
 Cohesion: 0.25
 Nodes (8): Tailscale auth key placeholder file (empty), Admin SSH authorized_keys policy, Script: orion-bootstrap.sh, Orion Node Bootstrap README (Ubuntu 24.04), Requirement: docker-compose.repo SSH URL, Requirement: Tailscale auth key (env or file), Script: verify-agent.sh, Script: verify-gpu.sh
 
-<<<<<<< Updated upstream
 ### Community 734 - "run_attention_bound_proposal_eval.py"
 Cohesion: 0.38
 Nodes (6): fetch_attended_target_ids(), open_readonly_connection(), Kill-criterion eval: attention-bound proposal target diversity (P5).  `inspect_a, Open a psycopg2 connection and force a read-only session.      Returns None on a, Return the target_id of every inspect_attended_target candidate whose     parent, run()
@@ -4219,17 +4000,11 @@ Nodes (3): _fake_engine(), _frame(), test_tail_returns_ascending_and_200()
 ### Community 757 - "test_stop_chat_ui_smoke.py"
 Cohesion: 0.25
 Nodes (4): Regression guard: the cancel request must key off the per-connection id     capt, The Stop button must be shown for every WS send path that starts a     server-ca, test_app_js_shows_stop_button_on_every_turn_kind_send(), test_app_js_stop_request_uses_connection_id_not_session_id()
-=======
-### Community 739 - "Canonical phi: _phi_from_self_state() / _get_phi_stats"
-Cohesion: 0.50
-Nodes (4): Canonical phi: _phi_from_self_state() / _get_phi_stats(), orion-equilibrium-service heartbeat trigger, OrionTissue: fallback-only tensor (cold-start/outage path), Rationale: spark_engine.py/integration.py/strategies.py deleted (zero production consumers, third φ implementation)
->>>>>>> Stashed changes
 
 ### Community 758 - "orion-notify: minimal notification host centralizing email delivery, attention requests, chat messages, recipient preferences, escalation"
 Cohesion: 0.29
 Nodes (8): orion-mesh-guardian docker compose deployment (port 7161, mounts /repo ro + docker.sock, NOTIFY_BASE_URL, equilibrium snapshot), orion-mesh-guardian: detects half-dead bus consumers on chat critical path, publishes Hub Pending Attention cards via notify, optional auto-remediation via docker compose, orion-mesh-guardian Python dependencies (fastapi, pydantic, httpx, pyyaml, redis, loguru, requests), orion-notify-digest docker compose deployment (port 7150, shared postgres with notify, drift alert env), orion-notify-digest: builds daily summary of notification activity, sends via orion-notify, integrates Topic Foundry topics/drift alerts, orion-notify docker compose deployment (port 7140, SMTP env, in-app channel, escalation poll), orion-notify: minimal notification host centralizing email delivery, attention requests, chat messages, recipient preferences, escalation, orion-notify Python dependencies (fastapi, requests, pyyaml, loguru, redis, httpx)
 
-<<<<<<< Updated upstream
 ### Community 760 - "test_rdf_chatturn_windowing.py"
 Cohesion: 0.32
 Nodes (4): RDF chat-turn recall must honor the profile time window.  The graph stores no us, _run_window(), test_windowing_drops_out_of_window_and_stamps_kept(), test_windowing_noop_when_since_minutes_non_positive()
@@ -4237,11 +4012,6 @@ Nodes (4): RDF chat-turn recall must honor the profile time window.  The graph s
 ### Community 763 - "test_phase21_wiring_verification.py"
 Cohesion: 0.43
 Nodes (6): _load_settings_module(), test_evidence_index_wiring_exists_in_settings_env_compose_bus_and_registry(), test_feedback_wiring_exists_in_settings_env_and_compose(), test_journal_index_wiring_exists_in_settings_env_compose_bus_and_registry(), test_markdown_adapter_channel_wiring_exists_in_settings_env_compose_bus_and_registry(), test_parsed_document_channel_wiring_exists_in_settings_env_compose_bus_and_registry()
-=======
-### Community 762 - "orion-social-memory: relational continuity synthesizer for social-room turns"
-Cohesion: 0.25
-Nodes (8): orion-social-memory docker-compose.yml, orion-social-memory README, orion:chat:social:stored (social-memory input channel), orion-social-memory requirements.txt, orion-social-memory: relational continuity synthesizer for social-room turns, orion-social-room-bridge docker-compose.yml, orion-social-room-bridge requirements.txt, orion-social-room-bridge: social platform bridge (Callsyne/Hub)
->>>>>>> Stashed changes
 
 ### Community 767 - "orion-llm-gateway manual smoke tests: bus chat/exec_step envelopes, ollama vs vllm backend selection"
 Cohesion: 0.38
@@ -4255,15 +4025,9 @@ Nodes (7): config/autonomy/capability_policy.v1.yaml — policy config gating wh
 Cohesion: 0.29
 Nodes (7): Social GIF Expression Layer, SocialGifIntentV1, SocialGifPolicyDecisionV1, SocialGifUsageStateV1, Social GIF Interpretation Proxy, Non-Visual GIF Text Proxy, GIF Proxy Reaction Classes
 
-<<<<<<< Updated upstream
 ### Community 770 - "Social Scenario Replay Harness"
 Cohesion: 0.29
 Nodes (7): Social Scenario Replay Harness, SocialScenarioEvaluationResultV1, SocialScenarioExpectationV1, SocialScenarioFixtureV1, Social Shakedown Workflow, SocialShakedownFixV1, SocialShakedownIssueV1
-=======
-### Community 771 - "Orion Landing Pad Guide"
-Cohesion: 0.48
-Nodes (7): Landing Pad pad.* contracts, Orion Landing Pad Guide, PadEventV1, Salience Pulse (pad.signal.v1), Landing Pad Reducer, Salience Scorer, StateFrameV1 (Specious Present)
->>>>>>> Stashed changes
 
 ### Community 772 - "live_state vs recovery_state"
 Cohesion: 0.29
@@ -4285,6 +4049,10 @@ Nodes (7): Phi Corpus Hygiene Design, Phi seed-v4 Feature Set Design, token-base
 Cohesion: 0.29
 Nodes (7): Scarcity Economy Brainstorm v2, Interoceptive recalibration / pinned-sensor gate, Queue-wait scarcity sense organ, resource_pressure saturated at 1.0, Self-State & Mesh Substrate Redesign, Metric substrate design invariants (no field without producer, preserve provenance), Mesh embodiment via field-topology edges
 
+### Community 777 - "up_all_services.sh"
+Cohesion: 0.43
+Nodes (4): is_excluded(), print_failed_logs(), up_all_services.sh script, up_one()
+
 ### Community 778 - "Channel "orion:evidence:index:upsert" (kind=event, schema=EvidenceUnitV1) producers=[orion-sql-writer, *] consumers=[orion-evidence-index, orion-sql-writer, *]"
 Cohesion: 0.29
 Nodes (7): Channel "orion:evidence:index:upsert" (kind=event, schema=EvidenceUnitV1) producers=[orion-sql-writer, *] consumers=[orion-evidence-index, orion-sql-writer, *], Channel "orion:evidence:markdown:ingest" (kind=event, schema=MarkdownSpecIngestV1) producers=[*] consumers=[orion-sql-writer, orion-evidence-index], Channel "orion:evidence:parsed:ingest" (kind=event, schema=ParsedDocumentIngestV1) producers=[*] consumers=[orion-sql-writer, orion-evidence-index], Schema: EvidenceUnitV1, Schema: MarkdownSpecIngestV1, Schema: ParsedDocumentIngestV1, Service: orion-evidence-index
@@ -4297,22 +4065,22 @@ Nodes (7): Channel "orion:graph:compression:events" (kind=event, schema=GraphCom
 Cohesion: 0.29
 Nodes (7): orion-rdf-writer (bus → triples → RDF store service), orion-recall (memory retrieval / MemoryBundleV1 fusion service), orion-rdf-writer docker-compose.yml, orion-rdf-writer requirements.txt, orion-recall docker-compose.yml, orion-recall README.md, orion-recall requirements.txt
 
-<<<<<<< Updated upstream
 ### Community 783 - "smoke_memory_cognition_loop_e2e.sh"
 Cohesion: 0.43
 Nodes (5): fail(), _health_curl(), PYTHONPATH, run_pytest(), smoke_memory_cognition_loop_e2e.sh script
 
-=======
->>>>>>> Stashed changes
 ### Community 784 - "town_cards.yaml (cast source of truth)"
 Cohesion: 0.33
 Nodes (7): Generated Juniper Feld join description, town_cards.yaml (cast source of truth), Juniper Feld (AI Town human player character card), Orion (AI Town character card), orion-ai-town docker-compose.yml, orion-ai-town README, orion-ai-town service (AI Town mesh wrapper)
+
+### Community 786 - "test_main_autonomy_graph_probe.py"
+Cohesion: 0.52
+Nodes (6): _clear_graphdb_env(), test_autonomy_graph_probe_configured_success(), test_autonomy_graph_probe_deep_optional_repo_ready_check(), test_autonomy_graph_probe_failure_logs_without_secret(), test_autonomy_graph_probe_non_200_logs_bounded_snippet(), test_autonomy_graph_probe_unconfigured_graceful()
 
 ### Community 787 - "orion-dream Service"
 Cohesion: 0.29
 Nodes (7): orion-cortex-orch Python Dependencies, orion-dream Docker Compose Service, orion-dream Service, orion-dream Python Dependencies, orion-embodiment Docker Compose Service, orion-embodiment Service, orion-embodiment Python Dependencies
 
-<<<<<<< Updated upstream
 ### Community 789 - "fcc_model_mapping.py"
 Cohesion: 0.38
 Nodes (4): label_to_claude_model_id(), Map FCC env key labels to stable Claude tier model ids for claude CLI --model., test_label_to_tier_model_ids(), test_unknown_label_raises()
@@ -4341,13 +4109,10 @@ Nodes (3): ``ORGAN_REGISTRY`` integrity (phase-2 causal DAG contract)., DFS from
 Cohesion: 0.33
 Nodes (3): _load_sql_writer_channel_kinds(), Ensure every subscribed bus kind has a sql-writer persistence path (prevents sil, test_subscribed_catalog_kinds_are_routable_or_explicitly_special()
 
-=======
->>>>>>> Stashed changes
 ### Community 807 - "whisper-tts (docker-compose service, GPU TTS/STT)"
 Cohesion: 0.33
 Nodes (7): vllm-host (docker-compose service, GPU-backed vLLM runtime), orion-vllm-host Python dependencies (pydantic, pydantic-settings, pyyaml), voip-endpoint (docker-compose service, Asterisk/SIP host-networked), orion-voip-endpoint Python dependencies (fastapi, redis, pydantic), whisper-tts (docker-compose service, GPU TTS/STT), Orion Whisper TTS README (TTS/STT bus contracts, Coqui XTTS-v2, Whisper), orion-whisper-tts Python dependencies (TTS, openai-whisper, transformers pin)
 
-<<<<<<< Updated upstream
 ### Community 808 - "test_tts_engine_settings.py"
 Cohesion: 0.38
 Nodes (3): _load_settings_module(), test_tts_settings_xtts_defaults(), test_whisper_tts_timeout_settings_defaults()
@@ -4364,8 +4129,6 @@ Nodes (6): Reasoning Promotion Phase 3, Contradiction-Aware Gating, HITL Escalat
 Cohesion: 0.40
 Nodes (6): Dream Contracts (dream.result.v1), Substrate Ladder L7-L11, Phase 5 Research Findings, compaction_applier.py (inert), L7-L11 Ladder is Rehearsal, Reverie Consolidation Grounding
 
-=======
->>>>>>> Stashed changes
 ### Community 815 - "Information-Dynamics Pillars"
 Cohesion: 0.33
 Nodes (6): Ablation Baseline (heartbeat disabled), Kraskov et al. 2004 - Estimating Mutual Information (KSG), Maldacena 1998 - AdS/CFT Correspondence, Pastawski et al. 2015 - Holographic Quantum Codes, Information-Dynamics Pillars, Pre-Registered Hypotheses H1-H4
@@ -4382,6 +4145,10 @@ Nodes (6): Spark Introspection Lane Isolation Design, Chat/spark/background lane
 Cohesion: 0.40
 Nodes (6): Repair Pressure v2 + Pre-Turn Appraisal Rail Design, Kill phrase_match_v1 keyword tables, logprob_probe_v2 (seven-kind evidence), AppraisalParadigm plugin rail, PreTurnAppraisalRequestV1 / TurnAppraisalBundleV1, orion-thought organ (ThoughtV1)
 
+### Community 819 - "Motor Self-Identity Design"
+Cohesion: 0.33
+Nodes (6): Motor Self-Identity Design, HARNESS_SELF_IDENTITY_BRIEF, Orion Embodiment (mind-to-sprite) Design, Drive→Movement Involuntary Producer, EmbodimentIntentV1 / WorldPerceptionV1, DriveStateV1 / IdentitySnapshotV1
+
 ### Community 820 - "inner_state_registry.py / InnerStateSignal"
 Cohesion: 0.33
 Nodes (6): is_corpus_row_healthy ingestion gate, Cognition Metric Lineage & Liveness Registry Ideas, MetricRegistration dataclass, variance-gate liveness classifier, check_inner_state_registry.py gate, inner_state_registry.py / InnerStateSignal
@@ -4394,7 +4161,6 @@ Nodes (6): AutonomyStateV2 Closed-Loop Wiring Design, AutonomySliceV1 model, com
 Cohesion: 0.40
 Nodes (6): Topic Foundry (Windowing v2, Micro/Macro, Enrichment), Topic Foundry Hub Contract Deep-Dive, Topic Foundry /capabilities Contract, Hub Topic Studio UI, Micro/Macro Run Scope, Windowing v2 Modes
 
-<<<<<<< Updated upstream
 ### Community 823 - "verb.schema.json"
 Cohesion: 0.33
 Nodes (5): description, $id, $schema, title, type
@@ -4407,8 +4173,6 @@ Nodes (6): description, services, description, items, minItems, type
 Cohesion: 0.33
 Nodes (6): enum, type, priority, high, low, medium
 
-=======
->>>>>>> Stashed changes
 ### Community 827 - "Recall Memory"
 Cohesion: 0.40
 Nodes (6): Pattern Detection, Build RDF Triples, Recall Memory, Recall Profile: reflect.v1, Reflect, Web Search (Simulated)
@@ -4417,7 +4181,6 @@ Nodes (6): Pattern Detection, Build RDF Triples, Recall Memory, Recall Profile: 
 Cohesion: 0.40
 Nodes (6): Perceive: Caption Frame, Perceive: Detect Open-Vocabulary Objects, Perceive: Embed Image, Perceive: Retina Fast Pipeline (Embed, Detect, Caption), Perceive Vision Events (Host -> Window -> Council), Perceive Vision Memory (Host -> Window -> Council -> Scribe)
 
-<<<<<<< Updated upstream
 ### Community 829 - "recall.py"
 Cohesion: 0.40
 Nodes (4): Standardized memory fragment returned by Recall service., Request to recall memory from various sources (Vector, SQL, RDF)., RecallRequest, RecallResult
@@ -4445,17 +4208,11 @@ Nodes (4): main(), run_fake_mode(), run_real_mode(), smoke_vision_caption_proven
 ### Community 837 - "test_scheduler_cursor_state_path.py"
 Cohesion: 0.53
 Nodes (5): _load_compose(), _parse_env_example(), Guards the fix for the ephemeral-/tmp cursor durability gap.  `services/orion-ac, test_compose_mounts_volume_covering_state_paths(), test_env_example_store_paths_not_under_tmp()
-=======
-### Community 830 - "Spark organ (salience, change, concept formation)"
-Cohesion: 0.33
-Nodes (6): orion-meta-tags service, orion-notify-digest service, Spark organ (salience, change, concept formation), orion-spark-concept-induction service, orion-spark-introspector service, orion-topic-foundry service
->>>>>>> Stashed changes
 
 ### Community 840 - "orion-attention-runtime service"
 Cohesion: 0.33
 Nodes (6): FieldAttentionFrameV1 (substrate_attention_frames), FieldStateV1 (substrate_field_state), orion-attention-runtime service, orion-field-digester service (referenced upstream writer), orion-notify service (referenced alert sink), orion-athena-sql-db / orion-sql-db (referenced Postgres)
 
-<<<<<<< Updated upstream
 ### Community 841 - "get_settings"
 Cohesion: 0.29
 Nodes (3): health(), get_settings(), Settings
@@ -4468,13 +4225,10 @@ Nodes (3): filter_world_context_capsule(), test_filter_world_context_capsule_fai
 Cohesion: 0.33
 Nodes (5): ORION_ACTIONS_TAILSCALE_PATH, ORION_CONTAINER_TAILSCALE_BIN, ORION_HOST_TAILSCALE_BIN, ORION_HOST_TAILSCALE_RUN, up-with-tailscale.sh script
 
-=======
->>>>>>> Stashed changes
 ### Community 846 - "orion-equilibrium-service Docker Compose Service"
 Cohesion: 0.33
 Nodes (6): orion-equilibrium-service Docker Compose Service, orion-equilibrium-service Service, orion-equilibrium-service Python Dependencies, orion-field-digester Docker Compose Service, orion-field-digester Service, orion-field-digester Python Dependencies
 
-<<<<<<< Updated upstream
 ### Community 848 - "test_aitown_proxy.py"
 Cohesion: 0.60
 Nodes (3): _request(), test_aitown_proxy_disabled_returns_404(), test_aitown_proxy_forwards_path()
@@ -4507,8 +4261,6 @@ Nodes (4): _profiles_dir(), Every shipped recall profile must declare cards_top_
 Cohesion: 0.53
 Nodes (5): _load_core_event_cache(), _load_executor_module(), test_core_event_cache_filters_turn_effect_alerts(), test_format_recent_turn_effect_alerts_summary(), test_system_alert_tags_merge()
 
-=======
->>>>>>> Stashed changes
 ### Community 866 - "orion-memory-crystallizer: governed cognitive memory crystallization worker; proposes/validates MemoryCrystallizationV1, projects to Chroma/Graphiti/FalkorDB, never canonical without governor"
 Cohesion: 0.40
 Nodes (5): Bus channel orion:memory:crystallization:proposed (memory.crystallization.proposed.v1), MemoryCrystallizationV1 artifact schema: governed cognitive memory, proposal/approval workflow, orion-memory-crystallizer docker compose deployment (port 8634, crystallization channel + Graphiti/FalkorDB env), orion-memory-crystallizer: governed cognitive memory crystallization worker; proposes/validates MemoryCrystallizationV1, projects to Chroma/Graphiti/FalkorDB, never canonical without governor, orion-memory-crystallizer Python dependencies (fastapi 0.111, asyncpg, psycopg2-binary)
@@ -4516,6 +4268,14 @@ Nodes (5): Bus channel orion:memory:crystallization:proposed (memory.crystalliza
 ### Community 867 - "Agent Git Safety Mechanism Stack"
 Cohesion: 0.50
 Nodes (5): Defense in Depth Principle, destructive_git_guard.py, Agent Git Safety Mechanism Stack, orion-git-shim, Worktree Hygiene Tooling
+
+### Community 868 - "Reasoning Summary Compiler Phase 4"
+Cohesion: 0.50
+Nodes (5): Reasoning Summary Compiler Phase 4, Chat Stance Reasoning Summary Integration, Concept-Translation Drift Suppression, ReasoningSummaryCompiler, ReasoningSummaryV1
+
+### Community 869 - "Social-State Inspection"
+Cohesion: 0.50
+Nodes (5): Social-Room Realism Tuning, Social-State Inspection, SocialInspectionDecisionTraceV1, SocialInspectionSectionV1, SocialInspectionSnapshotV1
 
 ### Community 870 - "Workflow Schedule Production Hardening v1"
 Cohesion: 0.50
@@ -4533,6 +4293,10 @@ Nodes (7): Spark Metrics v2, Channelized Tissue Expectations, Novelty z-score (b
 Cohesion: 0.40
 Nodes (5): Memory Graph Annotator (Hub) + Dual-Write GraphDB, AffectiveDisposition / Situation / TypedEntity, orionmem Ontology (RDF/PROV-O/Schema.org), Escaping Shallow Reference-less Recall, Memory Graph Chat Entry Bridge Design
 
+### Community 874 - "_make_store"
+Cohesion: 0.53
+Nodes (5): _make_store(), Create a CompressionStore with a mock engine., test_drain_stale_queue_returns_up_to_batch(), test_enqueue_stale_inserts_row(), test_upsert_artifact_idempotent()
+
 ### Community 875 - "GoalProposalEngine v2 (dedupe + semantic goals)"
 Cohesion: 0.40
 Nodes (5): chat_stance.py unified beliefs integration, Autonomy Goals v2 Design, Goal lifecycle state machine (promote/plan/execute), GoalProposalEngine v2 (dedupe + semantic goals), Stance mode decoupled from goals
@@ -4541,7 +4305,6 @@ Nodes (5): chat_stance.py unified beliefs integration, Autonomy Goals v2 Design,
 Cohesion: 0.60
 Nodes (5): AutonomyStateV2 Evidence signal_tension Design, AutonomyEvidenceRefV1 typed evidence contract, chat_evidence_to_tension adapter, AutonomyStateV2 hard isolation from phi/SelfState/DriveEngine, signal_drive_map.yaml
 
-<<<<<<< Updated upstream
 ### Community 877 - "install-nvidia.sh"
 Cohesion: 0.70
 Nodes (4): add_generic_repo_list(), add_hardcoded_repo_list(), install_from_ubuntu_repo(), install-nvidia.sh script
@@ -4554,8 +4317,6 @@ Nodes (3): cortex_exec_fleet_helpers.sh script, up_cortex_exec_fleet(), verify_c
 Cohesion: 0.83
 Nodes (3): _imports_autonomy_v2(), _python_files(), test_autonomy_state_v2_not_wired_into_phi_or_self_state()
 
-=======
->>>>>>> Stashed changes
 ### Community 881 - "Chat (Generalist)"
 Cohesion: 0.40
 Nodes (5): Chat (Generalist), Chat (Kids Story), Chat (Quick), Chat (Social Room), Orion Voice Finalize
@@ -4567,6 +4328,10 @@ Nodes (5): Daily Metacog v1, Daily Pulse v1, Journal Compose, Log (Collapse Mirr
 ### Community 883 - "Self Repo Inspect"
 Cohesion: 0.70
 Nodes (5): Self Concept Induce, Self Concept Reflect, Recall Profile: self.factual.v1, Self Repo Inspect, Self Retrieve (Trust-Mode Lane Retrieval)
+
+### Community 884 - "build_finalize_embodiment_intent"
+Cohesion: 0.60
+Nodes (4): build_finalize_embodiment_intent(), Pure (D) intent for a finalized relational turn.      A relational turn with a k, test_non_relational_turn_no_intent(), test_relational_turn_builds_deliberate_approach()
 
 ### Community 885 - "Orion Journaler Service Boundaries and Semantics"
 Cohesion: 0.50
@@ -4580,7 +4345,6 @@ Nodes (5): orion-security-watcher (Guard: vision presence/alert debounce service
 Cohesion: 0.40
 Nodes (5): Rationale: concept_induction_pass stayed a bounded reader; missing runtime behavior was autonomous triggering, ConceptInductionTrigger contract (source_kind, subjects, trigger_reason, ...), Bounded trigger loop in ConceptWorker.handle_envelope(), Graph mapping shape (SparkConceptProfile/Subject/Concept/Cluster/StateEstimate RDF nodes), Rationale: graph write additive/isolated, LocalProfileStore stays source of truth
 
-<<<<<<< Updated upstream
 ### Community 888 - "Phase 3B: Parity Evidence and Cutover-Readiness Model"
 Cohesion: 0.40
 Nodes (5): Phase 2: Spark ConceptProfile Graph Read Model, Phase 3A: Shadow Rollout for Spark ConceptProfile Repository, Phase 3B: Parity Evidence and Cutover-Readiness Model, Phase 4: ConceptProfile Runtime Cutover (concept_induction_pass), Phase 0: Spark Concept Profile Repository Seam
@@ -4660,11 +4424,6 @@ Nodes (4): _import_top_levels(), Memory-graph core stays deterministic: no LLM v
 ### Community 933 - "hub_quick_playwright_live.py"
 Cohesion: 0.60
 Nodes (4): main(), Quick (fast) only: send probe1, wait for reply, immediately send probe2, wait ag, _run_fast_two_turns(), _run_one()
-=======
-### Community 921 - "orion-sql-writer: durable bus-to-Postgres persistence consumer"
-Cohesion: 0.40
-Nodes (5): orion-sql-writer docker-compose.yml, orion-sql-writer README, action.outcome.emit.v1 persistence (action_outcomes table, idempotent upsert on action_id), orion-sql-writer requirements.txt, orion-sql-writer: durable bus-to-Postgres persistence consumer
->>>>>>> Stashed changes
 
 ### Community 934 - "orion-rdf-writer Canonical Writer"
 Cohesion: 0.50
@@ -4714,7 +4473,6 @@ Nodes (4): Evaluate, Fact Extraction, Goal Formulation, Memory graph suggest (br
 Cohesion: 0.50
 Nodes (4): orion-self-experiments (typed self-experiment registry + context-exec dispatcher), orion-self-experiments docker-compose.yml, orion-self-experiments README.md, orion-self-experiments requirements.txt
 
-<<<<<<< Updated upstream
 ### Community 953 - "dependencies"
 Cohesion: 0.50
 Nodes (3): puppeteer, dependencies, puppeteer
@@ -4791,13 +4549,10 @@ Nodes (3): activatePanel(), deactivatePanel(), styleTabButton()
 Cohesion: 0.83
 Nodes (3): run_infer(), run_server_boot(), validate_llamacpp_upgrade.sh script
 
-=======
->>>>>>> Stashed changes
 ### Community 990 - "orion-policy-runtime: Layer 8 substrate service evaluating ProposalFrameV1 against SubstratePolicyV1, persists PolicyDecisionFrameV1 (policy is not execution)"
 Cohesion: 0.50
 Nodes (4): orion-policy-runtime docker-compose (port 8120, SUBSTRATE_POLICY_PATH, POLICY_POLL_INTERVAL_SEC), orion-policy-runtime: Layer 8 substrate service evaluating ProposalFrameV1 against SubstratePolicyV1, persists PolicyDecisionFrameV1 (policy is not execution), substrate_policy_decision_frames table (PolicyDecisionFrameV1 records), orion-policy-runtime dependencies (fastapi, sqlalchemy, psycopg2-binary, PyYAML)
 
-<<<<<<< Updated upstream
 ### Community 991 - "smoke.sh"
 Cohesion: 0.83
 Nodes (3): fail(), pass(), smoke.sh script
@@ -4821,11 +4576,6 @@ Nodes (3): _load_fusion_module(), test_tag_prefix_boost_ranks_alert_tag(), test_
 ### Community 1005 - "test_workflow_ui_js.py"
 Cohesion: 0.83
 Nodes (3): _run_node(), test_workflow_ui_normalizes_metadata_and_chip_label(), test_workflow_ui_run_again_visibility_rules_and_non_workflow_passthrough()
-=======
-### Community 998 - "claim:test:0001 (accepted claim fixture)"
-Cohesion: 0.67
-Nodes (3): claim:test:0001 (accepted claim fixture), source:test:fixture (design_doc source fixture, primary trust), spec:test:compile (execution_ready spec fixture, component orion-test)
->>>>>>> Stashed changes
 
 ### Community 1006 - "Substrate Atlas (grammar-atom Cytoscape.js graph)"
 Cohesion: 0.67
@@ -4879,6 +4629,18 @@ Nodes (3): Reverie Narration Continuity Design, Reverie Chain Continuity (prior_
 Cohesion: 0.67
 Nodes (3): orion-sql-writer-tests CI workflow, Memory-graph / SHACL validation dependency (rdflib+pyshacl), requirements-dev.txt (repo-wide dev/test deps)
 
+### Community 1023 - "description"
+Cohesion: 0.67
+Nodes (3): description, type, description
+
+### Community 1024 - "name"
+Cohesion: 0.67
+Nodes (3): description, type, name
+
+### Community 1025 - "prompt_template"
+Cohesion: 0.67
+Nodes (3): description, type, prompt_template
+
 ### Community 1026 - "Assess Runtime State"
 Cohesion: 0.67
 Nodes (3): Assess Mesh Presence, Assess Runtime State, Assess Storage Health
@@ -4927,6 +4689,10 @@ Nodes (3): orion-world-pulse (docker-compose service, Firecrawl-backed curiosity
 Cohesion: 0.67
 Nodes (3): claim:test:bad-ref (disputed claim fixture with dangling references), claim:does:not:exist (dangling depends_on reference, no fixture defines it), source:missing:0001 (dangling source_refs reference, no fixture defines it)
 
+### Community 1125 - "DriveAuditEvent"
+Cohesion: 0.28
+Nodes (4): DriveAuditEvent, One real, already-persisted DriveAuditV1 tick, as read back from Fuseki.      `a, TestFetchEventDetails, TestParseBindings
+
 ## Ambiguous Edges - Review These
 - `agent-trace.js (plain-text step consumer)` → `Agent Trace inspection modal (Hub UI, fail case screenshot)`  [AMBIGUOUS]
   .verify-run/hub_agent_trace_timeline.png · relation: conceptually_related_to
@@ -4956,15 +4722,9 @@ Nodes (3): claim:test:bad-ref (disputed claim fixture with dangling references),
   docs/notes/2026-07-14-attention-salience-decay-bypass-investigation.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-<<<<<<< Updated upstream
 - **1183 isolated node(s):** `install-docker.sh script`, `install-utils.sh script`, `orion-bootstrap.sh script`, `GIT_SSH_COMMAND`, `setup-node.sh script` (+1178 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **348 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
-=======
-- **850 isolated node(s):** `CognitionTracePayload schema`, `HarnessRunStepV1 schema`, `substrate-atlas.js`, `substrate-lattice.js (sibling viz, uninspected)`, `websocket_handler.py` (+845 more)
-  These have ≤1 connection - possible missing edges or undocumented components.
-- **103 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
->>>>>>> Stashed changes
 
 ## Work-memory lessons
 

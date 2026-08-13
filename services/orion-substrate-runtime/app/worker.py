@@ -349,6 +349,9 @@ class BiometricsSubstrateWorker:
         # "how is the eye doing lately" reading, not an audit trail.
         self._last_vision_artifact_at: datetime | None = None
         self._vision_object_counts: deque[int] = deque(maxlen=_VISION_YIELD_WINDOW)
+        # Bounds the cold-start case: without it, a restart during an ongoing
+        # camera outage would skip the write forever and report silence.
+        self._process_started_at: datetime = datetime.now(timezone.utc)
         self._sql_engine: Any = None
         self._bus_synaptic_client: Any = None
         # Orion embodiment (C producer): latest drive state cached off the bus,
@@ -441,6 +444,13 @@ class BiometricsSubstrateWorker:
         # dimension. Read-only display signal, no feature flag beyond bus
         # availability -- rides on the same s.brain_frame_enabled gate that
         # already governs whether anything consumes the cached value.
+        if self._bus is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._field_channel_anomaly_listener_loop(),
+                    name="substrate-field-channel-anomaly-listener",
+                )
+            )
         # Perceptual health: feeds node:substrate.vision -> capability:vision.
         # Bus-gated like every other listener, and flag-gated on the same
         # setting as the tick that consumes what it caches -- a listener
@@ -450,13 +460,6 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._vision_artifact_listener_loop(),
                     name="substrate-vision-artifact-listener",
-                )
-            )
-        if self._bus is not None:
-            self._tasks.append(
-                asyncio.create_task(
-                    self._field_channel_anomaly_listener_loop(),
-                    name="substrate-field-channel-anomaly-listener",
                 )
             )
         # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-
@@ -1024,11 +1027,16 @@ class BiometricsSubstrateWorker:
         payload = decoded.envelope.payload or {}
         outputs = payload.get("outputs") if isinstance(payload, dict) else None
         objects = (outputs or {}).get("objects") if isinstance(outputs, dict) else None
-        # A missing `objects` key is not the same as an empty detection list:
-        # only a detect-bearing task carries one, and counting an embed-only
-        # artifact as "saw nothing" would manufacture blindness out of routing.
+        # A missing `objects` key is not an empty detection list -- only a
+        # detect-bearing task carries one, and counting an embed-only artifact
+        # as "saw nothing" would manufacture blindness out of routing.
+        #
+        # It is also not evidence of liveness. Treating any artifact as proof
+        # the eye works means that if detection breaks while embed-only tasks
+        # keep publishing, staleness stays 0.0 forever and yield freezes at its
+        # last healthy value -- both channels missing the exact failure they
+        # exist to catch. Only a detect-bearing artifact refreshes the clock.
         if objects is None:
-            self._last_vision_artifact_at = datetime.now(timezone.utc)
             return
         self._record_vision_artifact(len(objects), datetime.now(timezone.utc))
 
@@ -1059,28 +1067,51 @@ class BiometricsSubstrateWorker:
             now = datetime.now(timezone.utc)
             last_at = self._last_vision_artifact_at
             if last_at is None:
-                # Cold start: nothing observed since boot. Honest "unknown" --
-                # writing staleness 0.0 would assert a healthy eye on no
-                # evidence, which is the fabricated confidence=1.0 this node
-                # exists to delete, and writing 1.0 would cry outage during a
-                # normal restart. Skip until the first artifact arrives.
-                logger.info("substrate_vision_channel_tick_awaiting_first_artifact")
-                return
+                # Nothing observed since this process started. Measure the age
+                # from process start rather than skipping forever: a host reboot
+                # takes the camera and this service down together, which is the
+                # single most likely correlated failure, and an unbounded skip
+                # would report silence for a real ongoing outage. Inside the
+                # deadband this still declines to write (a normal restart must
+                # not cry outage); past it, "up this long with zero artifacts"
+                # is exactly an availability fault and is reported as one.
+                startup_age = max(0.0, (now - self._process_started_at).total_seconds())
+                if vision_channel_staleness_pressure(startup_age) <= 0.0:
+                    logger.info("substrate_vision_channel_tick_awaiting_first_artifact")
+                    return
+                age_seconds = startup_age
+            else:
+                age_seconds = max(0.0, (now - last_at).total_seconds())
 
-            age_seconds = max(0.0, (now - last_at).total_seconds())
             staleness = vision_channel_staleness_pressure(age_seconds)
+            # Yield describes the artifacts behind it, so it must not outlive
+            # them. Once availability is faulted the window no longer describes
+            # anything current, and continuing to publish the last healthy mean
+            # (6-8 objects/frame) through a blackout is the same
+            # stopped-being-refreshed-reads-as-calm failure this node exists to
+            # avoid -- just on the other channel.
+            if staleness >= 1.0:
+                self._vision_object_counts.clear()
             counts = list(self._vision_object_counts)
             yield_value = perceptual_yield(counts)
 
-            if staleness > 0.0:
-                self._store.save_receipt(
-                    _prediction_error_receipt(
-                        reducer_key="vision_channel",
-                        node_id="node:substrate.vision",
-                        prediction_error=staleness,
-                        now=now,
-                    )
+            # Receipt on EVERY tick, unlike _bus_synaptic_tick's fault-gated one.
+            # The receipt is the only path to the field node vector
+            # (state_deltas.py turns pressure_hints into the perturbation the
+            # digester folds in), and this signal's healthy state is exactly
+            # 0.0. Gating on staleness > 0.0 meant a fault wrote a value that
+            # then never refreshed back down -- confirmed live: the field vector
+            # sat at a stale prediction_error=0.5714 from an earlier build while
+            # the eye was healthy. A high-water mark that can only rise is the
+            # node:substrate.route failure wearing a different hat.
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="vision_channel",
+                    node_id="node:substrate.vision",
+                    prediction_error=staleness,
+                    now=now,
                 )
+            )
             # Written every tick, not only on fault -- a node that can only go
             # up and never refresh back down to a genuine calm reading produces
             # permanent false alarms in any consumer polling its raw value.
@@ -2352,12 +2383,8 @@ class BiometricsSubstrateWorker:
                 lane_health=self._brain_frame_lane_health(),
                 self_state=self._brain_frame_self_state(),
                 attention=attention,
-<<<<<<< Updated upstream
                 attention_payload=attention_self_model,
                 field_anomaly=self._latest_field_anomaly,
-=======
-                attention_payload=None,
->>>>>>> Stashed changes
                 settings=s,
                 now=now,
                 tick_seq=self._brain_frame_seq,

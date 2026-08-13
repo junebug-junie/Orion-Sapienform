@@ -355,11 +355,14 @@ def test_make_targets_resolve_a_real_interpreter():
         )
 
 
-def test_live_repo_still_has_the_three_known_missing_consumers():
+def test_live_missing_consumers_match_the_baseline_exactly():
     """Documents the real debt this gate is carrying.
 
-    If one gets fixed this test fails loudly, which is the prompt to shrink the
-    baseline rather than let it quietly drift.
+    Equality, not subset: if a debt gets PAID this fails just as loudly as if a
+    new one appears, forcing the baseline to shrink instead of silently
+    carrying a debt that no longer exists. That fired for real on 2026-08-13 --
+    retiring self_state.v1's dead orion-spark-introspector consumer took the
+    set from 3 to 2, and this test refused to pass until the baseline followed.
     """
     graph = build_graph()
     missing = missing_declared_consumers(graph, REPO_ROOT)

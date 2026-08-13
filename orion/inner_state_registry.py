@@ -143,10 +143,17 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         ),
         notes=(
             "Rung 3: the selected coalition of the latest workspace "
-            "competition, re-broadcast as one queryable projection. Persisted "
-            "as a SINGLETON upsert row in "
-            "substrate_attention_broadcast_projection (PK on projection_id) -- "
-            "no per-tick history for this lane, only the latest snapshot. "
+            "competition, re-broadcast as one queryable projection. TWO "
+            "tables, not one: substrate_attention_broadcast_projection is a "
+            "SINGLETON upsert row (PK on projection_id, 1 row), while "
+            "substrate_attention_broadcast_log carries real per-tick history "
+            "written by save_attention_broadcast_history() "
+            "(services/orion-substrate-runtime/app/store.py) from "
+            "_attention_broadcast_tick(). Counted live 2026-08-13: log 6359 "
+            "rows, projection 1 row. An earlier draft of this entry said "
+            "'no per-tick history for this lane' -- copied from the schema "
+            "docstring, disproven by the row counts, and corrected before "
+            "merge. Replay of this lane IS possible; use the log table. "
             "Added to this registry 2026-08-13 after "
             "scripts/check_inner_state_registry.py was found RED on main: the "
             "schema had existed in orion/schemas/registry.py with no entry "
@@ -186,16 +193,30 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
     InnerStateSignal(
         signal_id="self_state.v1",
         schema=SelfStateV1,
-        producer_service="orion-self-state-runtime",
+        producer_service="orion-self-state-runtime (DELETED 2026-07-22, PR #1266)",
         cadence=Cadence.PER_TICK,
-        composition_status=CompositionStatus.COMPOSED,
-        cognition_consumers=(
-            "services.orion-spark-introspector.app.inner_state:build_inner_state_features",
-        ),
+        composition_status=CompositionStatus.REHEARSAL,
+        cognition_consumers=(),
         notes=(
-            "The mood. ~12 dimension scores + confidence + reasons, composed "
-            "from field_state.v1 + field_attention_frame.v1 (partially -- see "
-            "that entry). Feeds phi's InnerStateFeaturesV1 and the L7 ladder."
+            "RETIRED, corrected 2026-08-13. This entry previously read "
+            "COMPOSED with producer orion-self-state-runtime and consumer "
+            "services.orion-spark-introspector.app.inner_state:"
+            "build_inner_state_features, and claimed it 'feeds phi's "
+            "InnerStateFeaturesV1 and the L7 ladder'. All three are false: "
+            "services/orion-self-state-runtime was deleted (PR #1266, "
+            "71b6fac57, merged 2026-07-22), services/orion-spark-introspector "
+            "was deleted in the 2026-07-28 spark-introspector retirement, and "
+            "substrate_self_state holds 0 rows (counted live 2026-08-13). "
+            "REHEARSAL is accurate now -- no cognition consumer, because both "
+            "ends are gone. The schema itself is kept only because other "
+            "modules still import SelfStateV1 for typing. "
+            "This was found because adding two SHADOW entries above made the "
+            "registry visibly self-contradictory: their shadow_reason states "
+            "that composed_into_self_state is unreachable, while this entry "
+            "thirty lines down still claimed to be exactly that. "
+            "Retiring the dead consumer here also clears one of the three "
+            "known_missing_consumers carried in "
+            "config/metrics/orphan_baseline.json."
         ),
     ),
     InnerStateSignal(

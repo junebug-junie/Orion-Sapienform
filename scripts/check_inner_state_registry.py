@@ -93,7 +93,7 @@ _EXTRA_COVERED_SCHEMA_NAMES: dict[str, str] = {
     #     here because this registry's scope (per the design spec) is felt-
     #     state signals, not attention-allocation mechanics -- flagged as
     #     worth its own future audit, not silently dismissed.
-    "AttentionFrameV1": "distinct conversational-attention/curiosity subsystem (orion/schemas/attention_frame.py), not audited by this registry pass",
+    "AttentionFrameV1": "sub-object of the registered attention_broadcast_projection.v1 entry (AttentionBroadcastProjectionV1.frame, orion/schemas/attention_frame.py) -- covered transitively, no entry of its own",
     "AttentionSignalV1": "distinct conversational-attention/curiosity subsystem (orion/schemas/attention_frame.py), not audited by this registry pass",
     "AttentionSalienceTraceV1": "distinct conversational-attention/curiosity subsystem (orion/schemas/attention_salience.py), not audited by this registry pass",
     "AttentionLoopOutcomeV1": "distinct conversational-attention/curiosity subsystem (orion/schemas/attention_salience.py), not audited by this registry pass",

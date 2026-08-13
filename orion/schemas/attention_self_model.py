@@ -35,9 +35,16 @@ class AttentionSelfModelV1(BaseModel):
       carries Lamme's `voluntary_override` (top-down goal bias flipping the
       workspace-competition winner — `orion/substrate/attention/top_down.py`).
       Persisted as a *singleton* upsert row in
-      `substrate_attention_broadcast_projection` (confirmed live 2026-07-18:
-      PK on `projection_id`, exactly one row at any time) — there is no
-      per-tick history for this lane, only the most recent snapshot.
+      `substrate_attention_broadcast_projection` (PK on `projection_id`,
+      exactly one row at any time). **2026-08-13 correction:** this previously
+      concluded "there is no per-tick history for this lane, only the most
+      recent snapshot". That is wrong. `_attention_broadcast_tick()` also
+      calls `save_attention_broadcast_history()`
+      (`services/orion-substrate-runtime/app/store.py`), appending one row per
+      tick to `substrate_attention_broadcast_log`. Counted live 2026-08-13:
+      log **6359** rows vs projection **1**. The singleton observation from
+      2026-07-18 was correct about that one table and wrong to generalise to
+      "no history"; replaying this lane is possible via the log table.
     - The general field lane (Layer 5/6): `FieldAttentionFrameV1`, updated on
       a continuous ~2s tick by `orion-attention-runtime`, with real per-tick
       history in `substrate_attention_frames`. **2026-07-23: this lane's

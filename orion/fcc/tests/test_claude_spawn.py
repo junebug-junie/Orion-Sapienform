@@ -44,6 +44,11 @@ def test_extend_mcp_argv_never_denies_gh(tmp_path: Path) -> None:
     Both PR routes were closed at once. Asserts on the whole emitted argv,
     not just the deleted helper, so re-introducing a deny anywhere in
     extend_mcp_argv fails here.
+
+    Gates the deny FLAG rather than scanning for the string "gh": an
+    allow-list entry like ``Bash(gh pr create:*)`` passed through
+    extra_allowed_tools is a correct change and must not trip this test.
+    Both flag spellings are checked so a rename doesn't slip a deny past.
     """
     cfg = tmp_path / "mcp.json"
     cfg.write_text(
@@ -53,7 +58,7 @@ def test_extend_mcp_argv_never_denies_gh(tmp_path: Path) -> None:
     argv: list[str] = ["claude", "-p", "hi"]
     claude_spawn.extend_mcp_argv(argv, cfg)
     assert "--disallowedTools" not in argv
-    assert not [a for a in argv if "gh" in a and a.startswith("Bash(")]
+    assert "--disallowed-tools" not in argv
 
 
 def test_extend_mcp_argv_uses_per_server_patterns(tmp_path: Path) -> None:

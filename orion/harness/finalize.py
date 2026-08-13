@@ -8,6 +8,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from pydantic import ValidationError
+
 from orion.cognition.cortex_payload_extract import cortex_exec_failure_detail, extract_cortex_payload_text
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
@@ -359,6 +361,30 @@ async def run_finalize_reflection(
     try:
         exec_result = await cortex_client(plan_request)
         raw_payload = extract_finalize_reflection_payload(exec_result)
+        # extract_finalize_reflection_payload() returns model TEXT on the normal
+        # path (extract_cortex_payload_text() is str-typed), so normalize to a
+        # dict BEFORE injecting the four server-owned identity fields. The
+        # injection below used to sit after this try block guarded by
+        # `isinstance(raw_payload, dict)`, which is false for a str -- so the
+        # fields were never injected on any real turn and FinalizeReflectionV1
+        # validation failed with 4 missing required fields. Dead since
+        # 40cf980bf (2026-07-05); only reachable when the quick lane is blocked,
+        # which is why most turns never hit it.
+        if isinstance(raw_payload, str):
+            raw_payload = parse_json_object(raw_payload)
+        if isinstance(raw_payload, dict):
+            # Assignment, NOT setdefault: these four are server-owned identity.
+            # setdefault let a model-supplied value win, which was harmless only
+            # while this block was dead. _reflection_id()/_verdict_molecule_id()
+            # hash the reflection's copies while the sibling fields on the same
+            # outcome molecule come from the real appraisal object -- one
+            # transcribed-wrong draft_hash and those two keys silently stop
+            # correlating, with nothing visible at runtime.
+            raw_payload["correlation_id"] = correlation_id
+            raw_payload["thought_event_id"] = thought.event_id
+            raw_payload["substrate_appraisal_id"] = substrate_appraisal.molecule_id
+            raw_payload["draft_hash"] = substrate_appraisal.draft_hash
+        reflection = parse_finalize_reflection_payload(raw_payload)
     except Exception as exc:
         degraded = maybe_quick_lane_verdict(
             correlation_id=correlation_id,
@@ -373,8 +399,19 @@ async def run_finalize_reflection(
                 exc,
             )
             return degraded, True, None
+        # Distinguish "the payload would not parse/validate" from "the gateway
+        # call failed". Both degrade the same way, but only the first can be
+        # caused by OUR bug (a FinalizeReflectionV1 field rename would degrade
+        # every turn to misaligned instead of crashing loudly), so it must be
+        # greppable on its own rather than hiding under an llm_failed label.
+        unparseable = isinstance(exc, (ValidationError, ValueError))
         logger.warning(
-            "harness_finalize_reflect_llm_failed_using_degraded_reflection corr=%s err=%s",
+            "%s corr=%s err=%s",
+            (
+                "harness_finalize_reflect_payload_unparseable_using_degraded_reflection"
+                if unparseable
+                else "harness_finalize_reflect_llm_failed_using_degraded_reflection"
+            ),
             correlation_id,
             exc,
         )
@@ -397,12 +434,6 @@ async def run_finalize_reflection(
             False,
             None,
         )
-    if isinstance(raw_payload, dict):
-        raw_payload.setdefault("correlation_id", correlation_id)
-        raw_payload.setdefault("thought_event_id", thought.event_id)
-        raw_payload.setdefault("substrate_appraisal_id", substrate_appraisal.molecule_id)
-        raw_payload.setdefault("draft_hash", substrate_appraisal.draft_hash)
-    reflection = parse_finalize_reflection_payload(raw_payload)
     cortex_trace_id = exec_result.get("trace_id") or exec_result.get("cortex_trace_id")
     if isinstance(cortex_trace_id, str):
         return reflection, False, cortex_trace_id

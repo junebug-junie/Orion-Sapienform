@@ -104,6 +104,31 @@ async def _save_last_sha(bus: OrionBusAsync, state_key: str, sha: str) -> None:
         logger.warning("cocreation_doc_semantic_drift_state_save_failed key=%s sha=%s", state_key, sha, exc_info=True)
 
 
+def _is_unscoreable(change: DocHunkChange) -> bool:
+    """True when this change has no measurable drift, so no event is worth
+    publishing at all.
+
+    Drift is defined between a "before" and an "after". A brand-new file has
+    no before; a pure-append edit has no removed lines under ``--unified=0``;
+    a pure-deletion edit has no added lines. In every case one side is empty,
+    cosine is undefined, and the only honest score is ``None``.
+
+    Publishing those anyway is what this repo's first real live batch
+    actually did: 6 of 8 events (2026-08-13) carried ``diff=None`` with an
+    empty side, all of them new PR reports and specs. That ratio is
+    structural, not a small sample -- this repo's doc volume is dominated by
+    files that are created once and never revised, so waiting for more data
+    would only produce more nulls. A channel whose traffic is mostly "we
+    could not measure this" is the empty-shell pattern CLAUDE.md 0A rules
+    out, even when each individual null is honestly labelled.
+
+    Deliberately keyed on the real hunk text rather than on
+    ``change_kind == "added"``: a *modified* file can be just as unscoreable
+    (34.8% of real modified-doc changes over 300 commits are pure appends),
+    and the text is what actually determines whether a cosine exists."""
+    return not change.hunk_removed or not change.hunk_added
+
+
 def _chunk_text(text: str, max_chars: int) -> list[str]:
     """Split a hunk into <=``max_chars`` windows on line boundaries.
 
@@ -389,7 +414,6 @@ async def _score_change(
         sha=change.sha,
         path=change.path,
         commit_prefix=change.commit_prefix,
-        change_kind=change.change_kind,
         diff_scoped_embedding_diff=diff,
         chunk_count_removed=len(removed_chunks),
         chunk_count_added=len(added_chunks),
@@ -411,8 +435,8 @@ async def _publish(bus: OrionBusAsync, channel: str, source: ServiceRef, event: 
     try:
         await bus.publish(channel, envelope)
         logger.info(
-            "cocreation_doc_semantic_drift_published sha=%s path=%s kind=%s diff=%s chunks=%s/%s",
-            event.sha, event.path, event.change_kind, event.diff_scoped_embedding_diff,
+            "cocreation_doc_semantic_drift_published sha=%s path=%s diff=%s chunks=%s/%s",
+            event.sha, event.path, event.diff_scoped_embedding_diff,
             event.chunk_count_removed, event.chunk_count_added,
         )
         return True
@@ -479,6 +503,20 @@ async def doc_semantic_drift_loop(
                     )
                     all_published = True
                     for change in changes:
+                        if _is_unscoreable(change):
+                            # Not a failure -- drift between "before" and
+                            # "after" is undefined when one side has no
+                            # text. Skipped BEFORE embedding: a 15-chunk new
+                            # doc otherwise burned 15 real embedding
+                            # requests (plus 15 vector-store writes and 15
+                            # tissue feeds) to publish a guaranteed None.
+                            logger.info(
+                                "cocreation_doc_semantic_drift_skipped_unscoreable "
+                                "sha=%s path=%s kind=%s removed_chars=%d added_chars=%d",
+                                change.sha, change.path, change.change_kind,
+                                len(change.hunk_removed), len(change.hunk_added),
+                            )
+                            continue
                         event = await _score_change(
                             rpc_bus,
                             request_channel=embed_request_channel,

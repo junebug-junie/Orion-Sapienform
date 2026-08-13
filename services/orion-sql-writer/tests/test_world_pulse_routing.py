@@ -9,7 +9,13 @@ SQL_WRITER_ROOT = THIS_DIR.parent
 REPO_ROOT = SQL_WRITER_ROOT.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SQL_WRITER_ROOT))
-sys.modules.pop("app", None)
+# NOTE: a bare `sys.modules.pop("app", None)` used to sit here. It was a
+# workaround for tests/grammar_integration_helpers.py hijacking the global
+# `app` package to reach another service and never restoring it. That helper
+# now restores sys.modules itself, so the pop is unnecessary -- and actively
+# harmful: popping strands the module objects that already-imported test
+# modules still hold references to, which is what made test_grammar_truth
+# patch one copy of app.grammar_truth and read another.
 
 from app.settings import DEFAULT_ROUTE_MAP
 from app.worker import MODEL_MAP, map_world_pulse_situation_brief_row, map_world_pulse_situation_change_row

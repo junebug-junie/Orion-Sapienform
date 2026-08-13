@@ -157,15 +157,46 @@ def _register_service_app_package(service_root: Path) -> None:
 
 
 def load_biometrics_substrate_store_class():
-    """Import substrate store without colliding with sql-writer's app package."""
+    """Import substrate store without colliding with sql-writer's app package.
+
+    Restores ``sys.modules`` afterwards, which the original did not.
+
+    ``app`` is a package name THREE different services claim. To reach
+    orion-substrate-runtime's copy this has to point the global name at that
+    service, and the original left it pointed there permanently -- so every
+    later test in the session found a foreign ``app`` (or none at all).
+
+    That single leak is the source of a whole family of downstream symptoms:
+
+    - ``tests/test_world_pulse_routing.py:12`` and
+      ``test_endogenous_runtime_sql_routing_phase13b.py:12`` each open with a
+      bare ``sys.modules.pop("app", None)``. Those are not tidiness; they are
+      workarounds for this leak, and they make it worse -- popping strands
+      every module object that a previously-imported test still holds.
+    - ``test_grammar_truth.py`` then had its import-time symbols bound to a
+      stranded ``app.grammar_truth`` while inline ``from app import
+      grammar_truth`` statements re-resolved to a fresh one. Patching one and
+      reading the other is why those tests reported
+      ``grammar_retention_not_run`` mid-suite and passed alone.
+
+    Restoring here fixes the cause rather than each symptom. The returned
+    class stays valid after restoration -- a class object does not care
+    whether its defining module is still in sys.modules.
+    """
     substrate_root = REPO_ROOT / "services/orion-substrate-runtime"
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    _clear_app_namespace()
-    _register_service_app_package(substrate_root)
-    from app.store import BiometricsSubstrateStore
 
-    return BiometricsSubstrateStore
+    saved = {name: mod for name, mod in sys.modules.items() if name == "app" or name.startswith("app.")}
+    try:
+        _clear_app_namespace()
+        _register_service_app_package(substrate_root)
+        from app.store import BiometricsSubstrateStore
+
+        return BiometricsSubstrateStore
+    finally:
+        _clear_app_namespace()
+        sys.modules.update(saved)
 
 
 def assert_grammar_event_indexes_valid(engine: Engine) -> None:

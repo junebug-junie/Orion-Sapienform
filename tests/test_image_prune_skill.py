@@ -21,6 +21,7 @@ deletes host data. That was patched three separate times in one day.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,16 @@ def image_prune_block(adapter_source: str) -> str:
     happens to contain the same string.
     """
     start = adapter_source.index("async def _image_prune_dangling_stats")
-    return adapter_source[start:]
+    block = adapter_source[start:]
+    # 2026-08-13 review finding: the docstring promised scoping that the old
+    # `adapter_source[start:]` did not implement -- it ran to EOF and was
+    # correct only because ImagePruneVerb happens to be last in a 3,280-line
+    # file. Rather than a fragile end offset (the closing `return` line appears
+    # in several branches), assert the property the scoping actually needs:
+    # no OTHER verb follows, so nothing unrelated can enter the slice.
+    others = [m for m in re.findall(r'@verb\("([^"]+)"\)', block) if "image_prune" not in m]
+    assert not others, f"another verb now follows image_prune; bound this slice: {others}"
+    return block
 
 
 # ---------------------------------------------------------------------------
@@ -58,16 +68,58 @@ def image_prune_block(adapter_source: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_prune_command_is_dangling_only_never_all(image_prune_block: str) -> None:
-    """`-a`/`--all` must not appear in this verb's docker invocation.
+def _docker_argvs(block: str) -> list[list[str]]:
+    """Every `["docker", ...]` argv literal in the block, as lists of strings.
 
-    Asserted against the source rather than by executing docker, because the
-    failure this guards is catastrophic and irreversible on a live host: `-a`
-    deletes the image of every stopped service.
+    Substring grepping was the old approach and it did not work: `-af` does not
+    contain the 4-character sequence `"-a"` (no closing quote), so the single
+    most natural way to write force-plus-all was invisible to the guard that
+    exists to forbid it. 2026-08-13 review finding, reproduced by mutation: a
+    branch running `["docker","image","prune","-af"]` PASSED the old test.
     """
-    assert '["docker", "image", "prune", "-f"]' in image_prune_block
-    for forbidden in ('"-a"', "'-a'", '"--all"', "'--all'"):
-        assert forbidden not in image_prune_block, f"{forbidden} must never appear in image_prune"
+    argvs: list[list[str]] = []
+    for raw in re.findall(r'\[\s*"docker".*?\]', block, flags=re.S):
+        argvs.append(re.findall(r'"([^"]*)"', raw))
+    return argvs
+
+
+def _carries_all_flag(argvs: list[list[str]]) -> bool:
+    """True if any argv carries -a/--all, in any spelling including combined."""
+    for argv in argvs:
+        for flag in argv:
+            if flag == "--all":
+                return True
+            if flag.startswith("-") and not flag.startswith("--") and "a" in flag[1:]:
+                return True
+    return False
+
+
+def test_prune_command_is_dangling_only_never_all(image_prune_block: str) -> None:
+    """No docker argv here may carry `-a`/`--all`, in ANY spelling.
+
+    Without `-a`, `docker image prune` removes only dangling (untagged,
+    unreferenced) images. With it, every tagged image not backing a running
+    container goes too -- on this host, the images of every stopped service.
+    Catastrophic and irreversible on a live host, which is why this is checked
+    per-flag rather than by substring.
+    """
+    argvs = _docker_argvs(image_prune_block)
+    assert ["docker", "image", "prune", "-f"] in argvs, argvs
+    assert not _carries_all_flag(argvs), f"-a/--all present: {argvs}"
+
+
+def test_the_all_flag_guard_actually_catches_every_spelling() -> None:
+    """Meta-test: prove the guard fails on the spellings it must catch.
+
+    Without this, a guard that silently matched nothing would pass forever --
+    exactly what the substring version did for `-af`.
+    """
+    for bad in ('["docker", "image", "prune", "-af"]',
+                '["docker", "image", "prune", "-fa"]',
+                '["docker", "image", "prune", "--all", "-f"]'):
+        assert _carries_all_flag(_docker_argvs(bad)), bad
+    # ...and does NOT fire on the real, correct argv.
+    assert not _carries_all_flag(_docker_argvs('["docker", "image", "prune", "-f"]'))
 
 
 def test_runner_allows_only_docker(image_prune_block: str) -> None:

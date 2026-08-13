@@ -1,8 +1,12 @@
-# Phase E0 result: the thesis is dead. Stopping.
+# Phase E0 result: Gate B failed, Gate A killed then RETRACTED
+
+> **Read the CORRECTION at the foot of this file before citing anything above it.**
+> Gate A's kill was withdrawn the same day: it measured the wrong GPU, the wrong
+> quantity, and the idle condition. Gate B's failure stands.
 
 Date: 2026-08-13
 Phase: E0 of `2026-08-13-scarcity-and-repertoire-execution-plan.md`
-Status: **KILL GATE REACHED — Phases 1–5 cancelled. This is a successful phase (§7.3).**
+Status: **Gate B FAILED (stands). Gate A killed, then RETRACTED — Phases 1–5 un-cancelled.**
 Cost: 41 LLM calls, no deploy, no schema change, 1 commit.
 
 ---

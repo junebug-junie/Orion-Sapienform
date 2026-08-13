@@ -184,7 +184,16 @@ def load_real_field_ticks(conn, limit: int) -> list[dict[str, Any]]:
     Adjacent ticks are near-identical (the field moves slowly), so ten
     consecutive rows would ask the model the same question ten times and
     measure caching rather than cognition. Sampled across a window instead.
+
+    2026-08-13 review finding: the stride used to be inlined as
+    `rn %% (2000 / %s)`, which is Postgres INTEGER division. For any limit in
+    [1001, 2000] that evaluates to 1, and `rn % 1 = 1` is never true, so the
+    query returned zero rows against a 94,895-row table and the caller reported
+    "no real field ticks available". Above 2000 it raised division-by-zero.
+    Computed in Python and clamped to >= 1 instead.
     """
+    window = 2000
+    stride = max(1, window // max(1, limit))
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -196,10 +205,10 @@ def load_real_field_ticks(conn, limit: int) -> list[dict[str, Any]]:
                 ORDER BY generated_at DESC
                 LIMIT 2000
             ) s
-            WHERE rn %% (2000 / %s) = 1
+            WHERE rn %% %s = 1
             LIMIT %s
             """,
-            (max(1, limit), limit),
+            (stride, limit),
         )
         rows = cur.fetchall()
     out: list[dict[str, Any]] = []
@@ -345,12 +354,32 @@ async def run_one(client, verb: str, tick: dict[str, Any], index: int, timeout_s
                 if isinstance(value, int):
                     tokens = value
 
+    # `ok` means "this is a usable MEASUREMENT", not "the RPC returned".
+    #
+    # 2026-08-13 review finding: this used to be a bare `ok=True` for anything
+    # that did not raise. It computed `plan_status` and `final_text` and then
+    # never consulted either. The first live run therefore reported
+    # `counterfactual: ok 10 / fail 0  mean 0.50s` for a verb that returns an
+    # empty string without executing, and a human had to hand-annotate the
+    # result table with "<- INVALID". That is exactly the `final_len=0` treated
+    # as success shape this repo bans -- in the instrument whose output
+    # cancelled five phases of the plan.
+    #
+    # A verb that returns nothing has not been timed; it has been skipped. Its
+    # 0.5s is the latency of failing, and averaging it into a cost census is
+    # worse than having no number at all.
+    usable = plan_status in (None, "success", "ok", "completed") and bool(final_text.strip())
     return RunResult(
         verb=verb,
         run_index=index,
         tick_id=tick.get("tick_id"),
         wall_sec=wall,
-        ok=True,
+        ok=usable,
+        error=(
+            None
+            if usable
+            else f"unusable_measurement plan_status={plan_status} final_len={len(final_text)}"
+        ),
         completion_tokens=tokens,
         plan_status=plan_status,
         final_text=final_text,

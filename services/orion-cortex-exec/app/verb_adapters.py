@@ -3106,6 +3106,8 @@ IMAGE_PRUNE_MIN_DANGLING = 100
 # Its own budget, for the same reason BUILDER_PRUNE_TIMEOUT_SEC has one: the
 # shared skills-mesh timeout is 12 SECONDS live, and removing thousands of
 # image layers is minutes of work that would otherwise be SIGKILLed partway.
+# Default only -- the operative value is settings.image_prune_timeout_sec
+# (IMAGE_PRUNE_TIMEOUT_SEC), so this can be tuned without a code edit.
 IMAGE_PRUNE_TIMEOUT_SEC = 600.0
 
 
@@ -3151,7 +3153,9 @@ class ImagePruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         # `docker` only -- the runner cannot be talked into another binary by
         # anything in skill_args, and no argument below is model-composed.
         runner = SafeCommandRunner(
-            allowed_commands={"docker"}, timeout_sec=float(IMAGE_PRUNE_TIMEOUT_SEC)
+            allowed_commands={"docker"}, timeout_sec=float(
+                settings.image_prune_timeout_sec or IMAGE_PRUNE_TIMEOUT_SEC
+            )
         )
 
         before = _builder_prune_disk_usage(data_root)
@@ -3260,7 +3264,24 @@ class ImagePruneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
                 ),
                 prune_stdout_tail=(getattr(proc, "stdout", "") or "")[-500:],
             )
-            return _skill_result_output(skill_name="skills.runtime.image_prune.v1", result=result), []
+            # 2026-08-13 review finding: this used to fall through to
+            # _skill_result_output's defaults (ok=True, status="success"), so a
+            # prune that ran and reclaimed NOTHING was reported to every generic
+            # consumer as a success -- the honesty lived only inside
+            # result["decision"], which nothing downstream reads. `status` is
+            # the only signal a generic consumer sees, since cortex-exec's
+            # main.py hardcodes ok=True on the outer payload regardless.
+            #
+            # builder_prune has the identical defect (verb_adapters.py ~3052).
+            # NOT fixed here -- it is routed and live, so changing its reported
+            # status is a behaviour change to a shipped path that deserves its
+            # own patch. Parked.
+            return _skill_result_output(
+                skill_name="skills.runtime.image_prune.v1",
+                result=result,
+                ok=False,
+                status="empty",
+            ), []
 
         result.update(
             acted=True,

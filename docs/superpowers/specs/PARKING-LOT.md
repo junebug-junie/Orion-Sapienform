@@ -81,3 +81,25 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
 
 - **Verb names cannot be trusted as capability descriptions.** Assumed `goal_formulate` formulated
   goals. It does not. Check the prompt template before routing any verb.
+
+## 2026-08-13 (PR #1617 review)
+
+- **`builder_prune`'s `pruned_nothing` branch reports `status="success"`.** Identical defect to
+  the one fixed in `image_prune` this round: a prune that ran and reclaimed nothing falls through
+  to `_skill_result_output`'s defaults (`ok=True, status="success"`), with the honesty living only
+  in `result["decision"]`, which no generic consumer reads. NOT fixed — builder_prune is routed
+  and live, so changing its reported status is a behaviour change to a shipped path and deserves
+  its own patch. `verb_adapters.py` ~3052.
+
+- **`_resolve_docker_prune_run_mode` has default-open edges.** Reproduced: `{'dry_run': None}`,
+  `{'dry_run': ''}` and `{'dry_run': 0}` all resolve to **execute**, while the string
+  `{'dry_run': 'false'}` resolves to preview (a truthy string is *safer* than the boolean False).
+  It also infers execute from natural language in `description`/`text`. Pre-existing and shared
+  with `builder_prune`. No producer currently puts free text into `skill_args` for these verbs
+  (`executor.py:2371` gates that to `docker_prune_stopped_containers`), so reachability is
+  unproven — but `/mnt/docker` reads 78% right now, above `image_prune`'s 70% gate, so this is
+  the first time those edges sit in front of a gate that is actually open. `image_prune` is
+  unrouted, which is the only reason this is parked rather than blocking.
+
+- **`mount_path` from `skill_args` flows unguarded into `shutil.disk_usage`** in both prune verbs;
+  a nonexistent path raises `FileNotFoundError` out of `execute()`.

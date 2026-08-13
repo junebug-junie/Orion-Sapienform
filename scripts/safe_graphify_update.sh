@@ -46,6 +46,13 @@ THRESHOLD_PCT="${GRAPHIFY_UPDATE_MAX_NODE_LOSS_PCT:-10}"
 # Every artifact `graphify update .` may rewrite or create. All of them are
 # restored together -- a partial restore is what produced the second incident.
 # Basenames must stay unique; they are the backup filenames.
+#
+# .graphify_labels.json is on this list for a measured reason, not a guessed
+# one: during the 2026-08-12 cleanup the leaked top-level copy held 290
+# entries -- exactly the community count of the DESTROYED graph, whose report
+# read "290 communities" -- while the pre-update copy held 1395, matching the
+# real graph's 1395. It was leaking on every refused run alongside the report,
+# just less visibly because it is gitignored scratch state.
 ARTIFACTS="graphify-out/graph.json
 graphify-out/manifest.json
 graphify-out/GRAPH_REPORT.md

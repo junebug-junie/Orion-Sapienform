@@ -79,6 +79,7 @@ from app.models import (
     ActionOutcomeSQL,
     DominanceStreakTickSQL,
     DevEconomicsLedgerSQL,
+    DocSemanticDriftSQL,
     DriveAuditSQL,
     PhiRewardSQL,
     GrammarEventSQL,
@@ -104,6 +105,7 @@ from orion.journaler import (
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
+from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
@@ -462,6 +464,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
     "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
+    "DocSemanticDriftSQL": (DocSemanticDriftSQL, DocSemanticDriftV1),
     "DriveAuditSQL": (DriveAuditSQL, DriveAuditV1),
     "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
     "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),

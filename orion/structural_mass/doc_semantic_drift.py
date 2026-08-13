@@ -163,6 +163,13 @@ class DocHunkChange:
     commit_prefix: str | None
     hunk_removed: str
     hunk_added: str
+    # Start of the diff range this hunk was computed over (exclusive). `sha`
+    # is the range END -- these are usually adjacent commits, but a tick
+    # that spans several commits (a missed poll, a retry after a failed
+    # publish) scores the whole `(base_sha, sha]` net change as one hunk.
+    # Without this, a multi-commit row is indistinguishable from a
+    # single-commit one.
+    base_sha: str | None = None
     # Real git status for this file in the scored range, from
     # `changed_doc_files_with_status()`. Internal only -- it is logged when
     # a change is skipped as unscoreable, and is deliberately NOT what
@@ -210,6 +217,7 @@ def doc_semantic_drift_changes(
         changes.append(
             DocHunkChange(
                 sha=head_sha,
+                base_sha=prev_sha,
                 path=path,
                 commit_subject=subject,
                 commit_prefix=prefix,

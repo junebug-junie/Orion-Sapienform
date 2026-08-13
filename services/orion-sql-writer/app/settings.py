@@ -82,6 +82,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "action.outcome.emit.v1": "ActionOutcomeSQL",
     "debug.attention.streak_tick.v1": "DominanceStreakTickSQL",
     "substrate.dev_economics_ledger.v1": "DevEconomicsLedgerSQL",
+    "substrate.doc_semantic_drift.v1": "DocSemanticDriftSQL",
     "memory.drives.audit.v1": "DriveAuditSQL",
     "self.phi_reward.v1": "PhiRewardSQL",
     "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
@@ -181,6 +182,7 @@ class Settings(BaseSettings):
             "orion:causal_geometry:snapshot",
             "orion:debug:attention:streak_tick",
             "orion:substrate:dev_economics_ledger",
+            "orion:substrate:doc_semantic_drift",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

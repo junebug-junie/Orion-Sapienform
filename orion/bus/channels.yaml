@@ -2273,10 +2273,11 @@ channels:
     since: "2026-08-11"
 
   # doc-semantic-drift domain (docs/superpowers/specs/2026-07-30-doc-
-  # semantic-drift-design.md). Pure shadow write, no consumer yet -- same
-  # precedent as bus_synaptic_prediction_error and the affective-state
-  # signal's own rollout: publish real data first, let a live-data sanity
-  # pass on the live stream (not just the offline replay in
+  # semantic-drift-design.md). Persisted by orion-sql-writer since
+  # 2026-08-13 -- it was a pure shadow write until then, which on a pub/sub
+  # bus meant every event was dropped on publish. Original rollout
+  # rationale, kept for the record: publish real data first, let a
+  # live-data sanity pass on the live stream (not just the offline replay in
   # docs/superpowers/pr-reports/2026-08-11-doc-semantic-drift-diff-scoped-
   # embedding.md) justify a threshold/consumer later. This producer also
   # publishes to orion:embedding:generate (already-registered, existing
@@ -2287,7 +2288,13 @@ channels:
     schema_id: "DocSemanticDriftV1"
     message_kind: "substrate.doc_semantic_drift.v1"
     producer_services: ["orion-cocreation-signals"]
-    consumer_services: []
+    # First real consumer, added 2026-08-13. Not a behavior consumer -- it
+    # only persists rows (DocSemanticDriftSQL). The bus is Redis pub/sub,
+    # so with consumer_services: [] every event was dropped on publish and
+    # ~2 days of real scores exist nowhere; no drift threshold can be
+    # derived without accumulated samples. See docs/superpowers/pr-reports/
+    # 2026-08-13-doc-drift-persistence.md.
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-11"
 
@@ -2306,9 +2313,9 @@ channels:
     # (docs/superpowers/pr-reports/2026-08-12-dev-economics-hub-
     # observability.md) -- orion-sql-writer persists DevEconomicsLedgerSQL
     # rows so the Hub's cocreation-signals tab has real data to read.
-    # Shadow-write phase is over for this channel; doc_semantic_drift and
-    # juniper_affective_state remain consumer_services: [] pending the same
-    # treatment.
+    # Shadow-write phase is over for this channel. doc_semantic_drift got
+    # the same treatment 2026-08-13; juniper_affective_state is the last
+    # one still on consumer_services: [], i.e. still dropping every event.
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-12"

@@ -24,15 +24,42 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class DocSemanticDriftV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["doc_semantic_drift.v1"] = "doc_semantic_drift.v1"
+    # Idempotency key / SQL primary key. Deliberately DERIVED from
+    # (sha, path) rather than a uuid4 like DevEconomicsLedgerV1's own
+    # event_id: those two fully determine the event (one score per file per
+    # scored commit), so a redelivered or re-scored change upserts onto the
+    # same row instead of writing a duplicate with a fresh id. Filled
+    # automatically below so no caller can forget it or invent a different
+    # convention.
+    event_id: str = ""
     observed_at: datetime
+    # End of the scored diff range. NOT necessarily a single commit's own
+    # change -- see base_sha.
     sha: str
+    # Start of the scored range, exclusive: the score covers the net change
+    # over `(base_sha, sha]`. Usually the immediately preceding commit, but
+    # a tick that spans several (a missed poll, or a retry after a partial
+    # publish failure held the baseline back) collapses them into one hunk.
+    #
+    # Recorded because the accumulated distribution is unreadable without
+    # it. A row spanning six commits is a different kind of observation
+    # from a row spanning one, and `chunk_count_*` does not reveal which --
+    # it measures text length, not commit span. Any threshold derived from
+    # this table has to be able to condition on that.
+    #
+    # It also makes double-counting detectable. `event_id` is (sha, path),
+    # so a retry whose HEAD has NOT moved upserts correctly -- but if HEAD
+    # moved between the failure and the retry, the same underlying edit is
+    # re-scored over a wider range under a different key. Both rows are
+    # real observations; only base_sha reveals that their ranges overlap.
+    base_sha: str | None = None
     path: str
     commit_prefix: str | None = None
     # None here means a real embedding failure -- and only that.
@@ -93,3 +120,12 @@ class DocSemanticDriftV1(BaseModel):
     chunk_count_added: int = 0
     hunk_removed_len_chars: int = 0
     hunk_added_len_chars: int = 0
+
+    @model_validator(mode="after")
+    def _fill_event_id(self) -> "DocSemanticDriftV1":
+        if not self.event_id:
+            # object.__setattr__ not needed -- the model is mutable by
+            # default; assigning in an "after" validator does not re-trigger
+            # it, so this cannot recurse.
+            self.event_id = f"doc-semantic-drift:{self.sha}:{self.path}"
+        return self

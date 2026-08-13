@@ -1,7 +1,31 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-gate check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
+
+# Interpreter for the metric-lineage targets below. Two live problems this
+# solves, both confirmed on this host 2026-08-13:
+#   - bare `python` does not exist here (only python3), so a target invoking
+#     `python` dies with "No such file or directory" / exit 127. The
+#     check-metric-lineage target shipped in PR #1603 was broken this way.
+#   - system python3 has no pydantic, which every registry import needs, so
+#     python3 alone fails at import time.
+# Prefer the repo venv when present, else fall back to python3 so the target
+# still runs anywhere the deps happen to be installed globally.
+#
+# The venv lookup has to reach the MAIN checkout: linked worktrees have no
+# .venv of their own, so a plain `[ -x .venv/bin/python ]` resolves to python3
+# inside every worktree -- i.e. it would fail exactly where this repo does most
+# of its work (CLAUDE.md 2 requires worktrees for implementation). git's
+# common-dir points at the main checkout's .git, whose parent holds the venv.
+#
+# Scoped to these targets deliberately -- switching every older check-* target
+# off bare `python` is a separate repo-wide cleanup, out of scope here.
+METRIC_PYTHON ?= $(shell \
+	if [ -x .venv/bin/python ]; then echo .venv/bin/python; \
+	else _c=$$(git rev-parse --git-common-dir 2>/dev/null); \
+	     if [ -n "$$_c" ] && [ -x "$$_c/../.venv/bin/python" ]; then echo "$$_c/../.venv/bin/python"; \
+	     else echo python3; fi; fi)
 
 bootstrap-test-envs:
 	@./scripts/bootstrap_test_envs.sh $(if $(SERVICE),--service $(SERVICE),)
@@ -36,7 +60,27 @@ check-inner-state-registry:
 #   make check-metric-lineage                    # summary
 #   make check-metric-lineage METRIC=cpu_pressure  # one lineage card
 check-metric-lineage:
-	@python scripts/check_metric_lineage.py $(if $(METRIC),--metric $(METRIC),) $(if $(JSON),--json,)
+	@$(METRIC_PYTHON) scripts/check_metric_lineage.py $(if $(METRIC),--metric $(METRIC),) $(if $(JSON),--json,)
+
+# Phase 4 CI gate over the same layer. Three checks, all provable from repo
+# state -- no naming heuristics:
+#   1. registry integrity (everything resolves, no dangling upstream URNs)
+#   2. declared-consumer existence -- catches a registry claiming a consumer
+#      that was deleted (found orion-spark-introspector, orion-timeline, and
+#      orion-evidence-index on first run)
+#   3. orphan ratchet -- registered metrics with no consumer may shrink, never
+#      grow; a metric that names something but feeds nothing is a keyword
+#      cathedral (CLAUDE.md 0A)
+# Pre-existing debt lives in config/metrics/orphan_baseline.json so it stays
+# visible instead of being silently waived. Regenerate deliberately:
+#   make check-metric-lineage-gate UPDATE_BASELINE=1
+# UPDATE_BASELINE is matched against explicit true values, not tested for
+# non-emptiness: `$(if $(UPDATE_BASELINE),...)` treats ANY value as true, so
+# UPDATE_BASELINE=0 and UPDATE_BASELINE=no -- the obvious ways to disable a
+# flag -- silently rewrote the baseline to whatever the tree contained,
+# ratcheting the debt UPWARD and exiting 0 without ever gating.
+check-metric-lineage-gate:
+	@$(METRIC_PYTHON) scripts/check_metric_lineage.py $(if $(filter 1 true yes TRUE YES,$(UPDATE_BASELINE)),--update-baseline,--gate)
 
 # Live-bus gate: every channel marked single_consumer: true in
 # orion/bus/channels.yaml must have exactly one live subscriber

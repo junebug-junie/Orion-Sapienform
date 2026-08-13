@@ -45,18 +45,19 @@ def cmd_summary(graph, scan) -> int:
         for rel in scan.unparsed[:10]:
             print(f"      {rel}")
 
-    # Orphans must be judged on real consumers only. Counting every hit made
-    # this structurally blind to the two largest surfaces: every field channel
-    # appears in the glossary and every bus channel in channels.yaml, both
-    # inside SCAN_ROOTS, so 299 of 386 tokens could never be reported orphaned.
+    # Same definition the gate ratchets on, so report and gate cannot disagree:
+    # a metric feeds nothing only when it has no discoverable code consumer AND
+    # no surviving declared consumer, counted per node on its own surface.
+    from orion.metrics.gate import REPO_ROOT as GATE_ROOT, orphan_nodes
+
     orphans: dict[str, list[str]] = {}
-    for tok, nodes in graph.scan_tokens().items():
-        if not scan.consumers_for(tok, exclude_paths=graph.registry_sources_for(tok)):
-            orphans.setdefault(nodes[0].surface, []).append(tok)
+    for node in orphan_nodes(graph, scan, GATE_ROOT):
+        orphans.setdefault(node.surface, []).append(node.scan_token)
 
     total = sum(len(v) for v in orphans.values())
-    print(f"\n  tokens with no discoverable code consumer: {total}")
-    print("  (registry-of-origin excluded; NOT a liveness verdict)\n")
+    print(f"\n  registered metrics that feed nothing: {total}")
+    print("  (no code consumer AND no surviving declared consumer;")
+    print("   registry-of-origin excluded; NOT a liveness verdict)\n")
 
     for surface in sorted(orphans):
         toks = sorted(orphans[surface])
@@ -179,12 +180,61 @@ def cmd_drift(graph, scan) -> int:
     return 0
 
 
+def cmd_gate(update_baseline: bool = False) -> int:
+    from orion.metrics.gate import (
+        REPO_ROOT as GATE_ROOT,
+        missing_declared_consumers,
+        orphan_counts,
+        run_gate,
+        write_baseline,
+    )
+
+    if update_baseline:
+        from orion.metrics.consumers import scan_repo
+
+        graph = build_graph()
+        scan = scan_repo(graph.scan_tokens().keys())
+        counts = orphan_counts(graph, scan, GATE_ROOT)
+        missing = missing_declared_consumers(graph, GATE_ROOT)
+        path = write_baseline(counts, missing)
+        print(f"baseline written: {path}")
+        print(f"  orphans by surface: {dict(sorted(counts.items()))}")
+        print(f"  known-missing declared consumers: {len(missing)}")
+        for consumer, source in sorted(missing.items()):
+            print(f"      {consumer}  (declared in {source})")
+        return 0
+
+    result = run_gate()
+    for note in result.notes:
+        print(f"  {note}")
+    if result.ok:
+        print("\nmetric lineage gate: PASS")
+        return 0
+    print(f"\nmetric lineage gate: FAIL ({len(result.failures)})\n")
+    for failure in result.failures:
+        print(f"  - {failure}")
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--json", action="store_true", help="dump the joined graph as JSON")
     ap.add_argument("--metric", help="print a lineage card for one metric token")
     ap.add_argument("--drift", action="store_true", help="declared vs discovered consumers")
+    ap.add_argument(
+        "--gate",
+        action="store_true",
+        help="CI gate: registry integrity, declared-consumer existence, orphan ratchet",
+    )
+    ap.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="rewrite the orphan ratchet baseline (deliberate; run when a decrease is real)",
+    )
     args = ap.parse_args()
+
+    if args.gate or args.update_baseline:
+        return cmd_gate(update_baseline=args.update_baseline)
 
     graph = build_graph()
 

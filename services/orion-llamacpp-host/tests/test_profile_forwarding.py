@@ -679,3 +679,118 @@ def test_draft_requested_but_flags_unsupported_omits_draft_without_crash(monkeyp
         for rec in caplog.records
         if rec.levelno >= logging.ERROR
     )
+
+
+def test_explicit_draft_simple_spec_type_still_falls_back_on_old_build(monkeypatch):
+    """spec_type='draft-simple' is the classic small-LM draft path spelled out
+    explicitly -- unlike block-drafting types, it has a working pre---spec-type
+    fallback (bare --model-draft/--draft-min/--draft-max) and must still use it
+    when the binary doesn't advertise --spec-type, rather than being treated as
+    a hard prerequisite the way draft-dflash/draft-dspark/draft-mtp are."""
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-draft-simple-explicit",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            draft_filename="Qwen3-0.6B-Q4_K_M.gguf",
+            draft_repo_id="unsloth/Qwen3-0.6B-GGUF",
+            spec_type="draft-simple",
+            draft_min=4,
+            draft_max=16,
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=99,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_draft_file",
+        lambda _cfg: "/models/gguf/Qwen3-0.6B-Q4_K_M.gguf",
+    )
+    # --model-draft/--draft-min/--draft-max supported; --spec-type is not (old binary).
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--model-draft", "--draft-min", "--draft-max", "--temp"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 4719)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert _find_flag_value(cmd, "--model-draft") == "/models/gguf/Qwen3-0.6B-Q4_K_M.gguf"
+    assert _find_flag_value(cmd, "--draft-min") == "4"
+    assert _find_flag_value(cmd, "--draft-max") == "16"
+    assert "--spec-type" not in cmd
+
+
+def test_ngram_spec_type_emits_flag_without_draft_filename(monkeypatch):
+    """ngram-* spec_type values need no draft GGUF file at all (in-context
+    lookup) -- --spec-type must still be emitted even though draft_filename is
+    unset, since the emission used to live entirely inside the draft_filename
+    branch and would silently never fire for this family."""
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-ngram",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            spec_type="ngram-cache",
+            spec_draft_n_max=8,
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=99,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--spec-type", "--spec-draft-n-max", "--temp"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 10398)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert "--model-draft" not in cmd
+    assert _find_flag_value(cmd, "--spec-type") == "ngram-cache"
+    assert _find_flag_value(cmd, "--spec-draft-n-max") == "8"

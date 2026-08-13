@@ -35,6 +35,31 @@ _LLAMA_FLAG_PATTERN = re.compile(r"--([a-z0-9][a-z0-9-]*)")
 _LLAMA_BUILD_PATTERN = re.compile(r"version:\s*(\d+)")
 _GGUF_SHARD_PATTERN = re.compile(r"^(.+/)(.+)-(\d{5})-of-(\d{5})\.gguf$")
 
+# llama-server --spec-type values that load a draft GGUF with no classic-draft
+# equivalent (docs/speculative.md): each needs --model-draft + --spec-type +
+# --spec-draft-n-max together, and none of them are reachable via the pre-
+# --spec-type flags (--draft-min/--draft-max), unlike "draft-simple"/unset.
+_BLOCK_DRAFT_SPEC_TYPES = {"draft-dflash", "draft-dspark", "draft-mtp"}
+# --spec-type values that need no draft GGUF file at all (in-context lookup).
+_NGRAM_SPEC_TYPES = {
+    "ngram-cache",
+    "ngram-simple",
+    "ngram-map-k",
+    "ngram-map-k4v",
+    "ngram-mod",
+}
+
+
+def _flag_confirmed_supported(supported_flags: Optional[Set[str]], flag: str) -> bool:
+    """True only when a --help probe actually ran and listed `flag`.
+
+    Fails CLOSED (unlike most gating in this file, which fails open when the
+    probe itself failed/returned None) -- reserved for call sites where guessing
+    wrong risks loading an incompatible GGUF architecture rather than just
+    silently omitting an optional flag.
+    """
+    return supported_flags is not None and flag in supported_flags
+
 
 def _shard_filenames_for_download(filename: str) -> list[str]:
     """Expand a multi-part GGUF first-shard path into all shard filenames."""
@@ -384,22 +409,39 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
     if cfg.presence_penalty is not None:
         append_flag("--presence-penalty", str(cfg.presence_penalty))
 
-    # Speculative decoding (draft model). Optional; omit cleanly when unsupported.
+    # Speculative decoding. Three distinct llama-server mechanisms live behind
+    # llamacpp.spec_type (docs/speculative.md):
+    #  1. Classic small-LM draft: spec_type unset, or explicitly "draft-simple"/"none".
+    #     --model-draft + --draft-min/--draft-max. Predates --spec-type entirely, so an
+    #     older binary lacking --spec-type can still run this via the bare flags --
+    #     --spec-type is emitted too when explicitly requested and the binary happens
+    #     to support it, but its absence is NOT a reason to skip the draft model.
+    #  2. Block-drafting types (draft-dflash/draft-dspark/draft-mtp): need a GGUF draft
+    #     file (--model-draft) PLUS --spec-type + --spec-draft-n-max, and have no
+    #     legacy-flag equivalent -- an older binary without --spec-type cannot run
+    #     these at all (loading the draft GGUF via bare --model-draft would either fail
+    #     to load or misinterpret its architecture), so --spec-type support is a hard,
+    #     fail-closed prerequisite for these types specifically, not a best-effort extra.
+    #  3. N-gram types (ngram-*): no draft GGUF file -- pure in-context lookup, selected
+    #     via --spec-type alone, so this branch runs independently of draft_filename.
+    if cfg.spec_type is not None and cfg.spec_type in _NGRAM_SPEC_TYPES:
+        if not _flag_confirmed_supported(supported_flags, "--spec-type"):
+            logger.error(
+                "Profile requested spec_type=%s (n-gram drafting, no draft GGUF needed) but "
+                "this llama-server does not advertise --spec-type in --help; omitting "
+                "speculative decoding. Upgrade LLAMACPP_IMAGE_TAG or unset spec_type.",
+                cfg.spec_type,
+            )
+        else:
+            append_flag("--spec-type", cfg.spec_type)
+            if cfg.spec_draft_n_max is not None:
+                append_flag("--spec-draft-n-max", str(int(cfg.spec_draft_n_max)))
+
     if cfg.draft_filename:
         draft_supported = (
             supported_flags is None or "--model-draft" in supported_flags
         )
-        # Block-drafting types (DFlash/DSpark/MTP) load a different GGUF architecture
-        # than the classic small-LM draft path and are only interpretable by a binary
-        # that also advertises --spec-type. Loading the draft file via bare --model-draft
-        # on a binary that predates --spec-type would not fall back to a working legacy
-        # mode -- it would either fail to load or misinterpret the draft GGUF's arch --
-        # so treat --spec-type support as a hard prerequisite (not just an extra flag) for
-        # any profile that requests one, rather than best-effort-omitting just that flag.
-        spec_type_required = cfg.spec_type is not None
-        spec_type_supported = (
-            supported_flags is None or "--spec-type" in supported_flags
-        )
+        block_drafting = cfg.spec_type in _BLOCK_DRAFT_SPEC_TYPES
         if not draft_supported:
             logger.error(
                 "Profile requested draft_filename=%s but this llama-server does not advertise "
@@ -407,13 +449,14 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
                 "the main model only. Upgrade LLAMACPP_IMAGE_TAG or unset draft_filename.",
                 cfg.draft_filename,
             )
-        elif spec_type_required and not spec_type_supported:
+        elif block_drafting and not _flag_confirmed_supported(supported_flags, "--spec-type"):
             logger.error(
                 "Profile requested draft_filename=%s with spec_type=%s but this llama-server "
-                "does not advertise --spec-type in --help; omitting draft speculative decoding "
-                "entirely (not falling back to plain --model-draft -- a %s-architecture draft "
-                "GGUF is not safely loadable via the classic draft path). Upgrade "
-                "LLAMACPP_IMAGE_TAG past the spec_type's upstream merge.",
+                "does not advertise --spec-type in --help (or its --help could not be probed); "
+                "omitting draft speculative decoding entirely (not falling back to plain "
+                "--model-draft -- a %s-architecture draft GGUF is not safely loadable via the "
+                "classic draft path). Upgrade LLAMACPP_IMAGE_TAG past the spec_type's upstream "
+                "merge.",
                 cfg.draft_filename,
                 cfg.spec_type,
                 cfg.spec_type,
@@ -430,13 +473,22 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
                 append_flag("--model-draft", draft_path)
                 if cfg.n_gpu_layers_draft is not None:
                     append_flag("--n-gpu-layers-draft", str(int(cfg.n_gpu_layers_draft)))
-                if cfg.spec_type is not None:
+                if block_drafting:
                     append_flag("--spec-type", cfg.spec_type)
                     if cfg.spec_draft_n_max is not None:
                         append_flag("--spec-draft-n-max", str(int(cfg.spec_draft_n_max)))
                 else:
-                    # Classic draft-simple tuning knobs; not meaningful for block-drafting
-                    # spec_type values (see docs/speculative.md), so scoped to this branch.
+                    # Classic path (spec_type unset, "draft-simple", or "none"). Emit
+                    # --spec-type too when explicitly requested and the binary happens to
+                    # support it (harmless/more precise), but its absence never blocks the
+                    # draft model here -- unlike block-drafting, this path has a working
+                    # fallback (the bare --model-draft/--draft-min/--draft-max flags).
+                    if cfg.spec_type is not None and _flag_confirmed_supported(
+                        supported_flags, "--spec-type"
+                    ):
+                        append_flag("--spec-type", cfg.spec_type)
+                        if cfg.spec_draft_n_max is not None:
+                            append_flag("--spec-draft-n-max", str(int(cfg.spec_draft_n_max)))
                     if cfg.draft_min is not None:
                         append_flag("--draft-min", str(int(cfg.draft_min)))
                     if cfg.draft_max is not None:

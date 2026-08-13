@@ -1,294 +1,109 @@
-"""Shape checks for the drive-audit SQL write path (no Postgres required).
+"""Guards that the drive-audit SQL write path stays fully removed.
 
-Asserts the real wiring for bus -> sql-writer -> SQL read:
-`DriveAuditSQL` is registered in `MODEL_MAP` under the `DriveAuditSQL`
-route key, keyed off kind `memory.drives.audit.v1`, the channel is in the
-subscribe defaults AND `.env_example` (the env alias REPLACES the default
-list in live deployments, so a settings-only change is dead wiring), and the
-`active_count` derivation degrades to 0 instead of raising.
+Was `test_drive_audit_sql_shape.py`, a shape-check suite for `DriveAuditSQL`'s
+write path (MODEL_MAP registration, column shape, derivation logic,
+insert-only idempotency). That whole write path was untangled and removed
+2026-08-13 (docs/superpowers/pr-reports/
+2026-08-13-untangle-drive-audit-sql-writer-pr.md), a same-day follow-up to
+the Hub Drives Analytics tab removal
+(docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-analytics-tab-pr.md)
+that had already dropped the underlying `drive_audits` Postgres table and its
+boot DDL but left the rest of the wiring in place, scoped out at the time
+under a (subsequently-checked-and-wrong) belief that `DriveAuditSQL` shared a
+`_JSONB` type declaration with other live sql-writer models -- it does not;
+every other model file declares its own private copy of that one-line type
+alias, so there was nothing to untangle.
+
+This file replaces the old shape checks with the inverse: asserting the
+model, its registrations, and the channel are all actually gone, so a future
+change can't silently re-wire this without it being a deliberate, visible
+diff here.
 """
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-
-from sqlalchemy import create_engine, inspect
-from sqlalchemy.orm import sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
-from orion.core.schemas.drives import ArtifactProvenance, DriveAuditV1  # noqa: E402
-
-from app.models.drive_audit import DriveAuditSQL  # noqa: E402
-from app.worker import MODEL_MAP, _apply_drive_audit_derivations  # noqa: E402
-from app.settings import DEFAULT_ROUTE_MAP, Settings  # noqa: E402
-
 CHANNEL = "orion:memory:drives:audit"
 
-EXPECTED_COLUMNS = {
-    "artifact_id",
-    "subject",
-    "active_count",
-    "active_drives",
-    "dominant_drive",
-    "summary",
-    "drive_pressures",
-    "tick_attribution",
-    "tension_kinds",
-    "correlation_id",
-    "observed_at",
-    "created_at",
-}
+
+def test_drive_audit_sql_model_file_is_gone() -> None:
+    assert not (SERVICE_ROOT / "app" / "models" / "drive_audit.py").exists()
 
 
-def _make_audit(**overrides) -> DriveAuditV1:
-    defaults = dict(
-        artifact_id="drive-audit-abc-123",
-        subject="orion",
-        model_layer="drives",
-        entity_id="orion",
-        kind="memory.drives.audit.v1",
-        ts=datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
-        correlation_id="corr-1",
-        provenance=ArtifactProvenance(intake_channel=CHANNEL),
-        drive_pressures={"novelty": 0.4, "coherence": 0.2},
-        active_drives=["novelty", "coherence"],
-        dominant_drive="novelty",
-    )
-    defaults.update(overrides)
-    return DriveAuditV1(**defaults)
+def test_drive_audit_sql_not_exported_from_models_package() -> None:
+    import app.models as models  # noqa: E402
+
+    assert not hasattr(models, "DriveAuditSQL")
+    assert "DriveAuditSQL" not in models.__all__
 
 
-def _row_dict(audit: DriveAuditV1) -> dict:
-    """Mirror `_write_row`: filter the payload dict to mapper columns, then
-    apply the DriveAuditSQL per-model derivations."""
-    data = audit.model_dump()
-    mapper = inspect(DriveAuditSQL)
-    valid_keys = {attr.key for attr in mapper.attrs}
-    filtered = {k: v for k, v in data.items() if k in valid_keys}
-    _apply_drive_audit_derivations(data, filtered)
-    return filtered
+def test_drive_audit_sql_not_in_model_map_or_insert_only() -> None:
+    from app.worker import INSERT_ONLY_MODELS, MODEL_MAP  # noqa: E402
+
+    assert "DriveAuditSQL" not in MODEL_MAP
+    assert all(m.__name__ != "DriveAuditSQL" for m in INSERT_ONLY_MODELS)
 
 
-def test_default_route_map_points_drive_audit_at_drive_audit_sql() -> None:
-    assert DEFAULT_ROUTE_MAP.get("memory.drives.audit.v1") == "DriveAuditSQL"
+def test_route_map_no_longer_points_at_drive_audit_sql() -> None:
+    from app.settings import DEFAULT_ROUTE_MAP  # noqa: E402
+
+    assert "memory.drives.audit.v1" not in DEFAULT_ROUTE_MAP
 
 
-def test_model_map_registers_drive_audit_sql_with_audit_schema() -> None:
-    assert MODEL_MAP["DriveAuditSQL"] == (DriveAuditSQL, DriveAuditV1)
+def test_route_map_json_in_env_example_no_longer_has_drive_audit_entry() -> None:
+    """DEFAULT_ROUTE_MAP is only the Python fallback -- `Settings.route_map`
+    (app/settings.py) does `{**DEFAULT_ROUTE_MAP, **json.loads(sql_writer_route_map_json)}`,
+    so SQL_WRITER_ROUTE_MAP_JSON's env value REPLACES/overrides the default per-key
+    on top of it. Cleaning DEFAULT_ROUTE_MAP alone does not clean a stale key still
+    sitting in the operator-facing env JSON (review finding: exactly this key was
+    left behind in .env_example -- and the deployed .env -- the first time this
+    file's route-map test was written)."""
+    import json
+
+    env_example = (SERVICE_ROOT / ".env_example").read_text()
+    for line in env_example.splitlines():
+        if line.startswith("SQL_WRITER_ROUTE_MAP_JSON="):
+            route_map = json.loads(line.split("=", 1)[1])
+            assert "memory.drives.audit.v1" not in route_map
+            return
+    raise AssertionError("SQL_WRITER_ROUTE_MAP_JSON not found in .env_example")
 
 
-def test_channel_is_in_settings_default_list() -> None:
+def test_settings_effective_route_map_no_longer_has_drive_audit_entry() -> None:
+    """Exercises the actual runtime-effective path (`Settings().route_map`),
+    not just the Python-side default, with an env override string standing in
+    for `.env_example`'s current value -- catches a regression even if a
+    future edit reintroduces the stale key only in one of the two places."""
+    from app.settings import Settings  # noqa: E402
+
+    settings = Settings(SQL_WRITER_ROUTE_MAP_JSON='{"some.other.kind.v1": "SomeOtherModel"}')
+    assert "memory.drives.audit.v1" not in settings.route_map
+    assert settings.route_map["some.other.kind.v1"] == "SomeOtherModel"
+
+
+def test_channel_no_longer_in_settings_default_list() -> None:
+    from app.settings import Settings  # noqa: E402
+
     default_channels = Settings.model_fields["sql_writer_subscribe_channels"].default
-    assert CHANNEL in default_channels
+    assert CHANNEL not in default_channels
 
 
-def test_channel_is_in_env_example_subscribe_channels() -> None:
-    """Live deployments set SQL_WRITER_SUBSCRIBE_CHANNELS, and the Pydantic
-    alias REPLACES the code default entirely — the channel must also be in the
-    operator contract or the wiring is dead in production (confirmed prior
-    incident of exactly this failure mode)."""
+def test_channel_no_longer_in_env_example() -> None:
     env_example = (SERVICE_ROOT / ".env_example").read_text()
     for line in env_example.splitlines():
         if line.startswith("SQL_WRITER_SUBSCRIBE_CHANNELS="):
-            assert CHANNEL in line
+            assert CHANNEL not in line
             return
     raise AssertionError("SQL_WRITER_SUBSCRIBE_CHANNELS not found in .env_example")
 
 
-def test_column_shape_is_the_slim_measurement_contract() -> None:
-    mapper = inspect(DriveAuditSQL)
-    assert {attr.key for attr in mapper.attrs} == EXPECTED_COLUMNS
-
-
-def test_boot_ddl_no_longer_creates_drive_audits() -> None:
-    """The CREATE TABLE/ALTER/INDEX boot DDL for `drive_audits` was removed
-    2026-08-13, same patch that removed the Hub Drives Analytics tab and
-    dropped the (by-then-frozen, snapshotted-first) `drive_audits` table
-    itself — see docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-
-    analytics-tab-pr.md. This replaces the old
-    test_boot_ddl_create_and_alter_include_attribution_columns (which
-    asserted the DDL text existed): review finding, that DDL was
-    `CREATE TABLE IF NOT EXISTS` unconditionally on every startup, so
-    leaving it in place after the out-of-band drop would have silently
-    resurrected an empty table on the next orion-sql-writer restart,
-    undoing the drop. The rest of this file's tests (MODEL_MAP
-    registration, DriveAuditSQL column shape, derivation logic, insert-only
-    idempotency) are UNCHANGED and still real -- the write PATH for
-    DriveAuditSQL was deliberately left wired (it shares a `_JSONB` type
-    declaration with other still-live sql-writer models; fully untangling
-    it is a separate, larger follow-up, not done in that patch), only the
-    boot-time table creation was removed."""
-    main_py = (SERVICE_ROOT / "app" / "main.py").read_text(encoding="utf-8")
-    assert "CREATE TABLE IF NOT EXISTS drive_audits" not in main_py
-    assert "ALTER TABLE drive_audits" not in main_py
-    assert "idx_drive_audits" not in main_py
-
-
-def test_bounded_attribution_fields_are_columns_but_archive_fields_are_not() -> None:
-    # summary is deliberately NOT in this list: it and the bounded attribution
-    # fields are stored, while the full evidence archive remains excluded.
-    mapper = inspect(DriveAuditSQL)
-    cols = {attr.key for attr in mapper.attrs}
-    for archive_field in ("evidence_items", "source_event_refs"):
-        assert archive_field not in cols
-    for bounded_field in ("tick_attribution", "tension_kinds"):
-        assert bounded_field in cols
-
-
-def test_tick_attribution_and_tension_kinds_pass_through() -> None:
-    attribution = {
-        "coherence": 0.1,
-        "continuity": 0.0,
-        "capability": 0.0,
-        "relational": 0.2,
-        "predictive": 0.5,
-        "autonomy": 0.0,
-    }
-    kinds = ["substrate.world_coverage_gap", "tension.contradiction.v1"]
-    row = _row_dict(
-        _make_audit(tick_attribution=attribution, tension_kinds=kinds)
-    )
-    assert row["tick_attribution"] == attribution
-    assert row["tension_kinds"] == kinds
-    obj = DriveAuditSQL(**row)
-    assert obj.tick_attribution["predictive"] == 0.5
-    assert obj.tension_kinds[0] == "substrate.world_coverage_gap"
-
-    # Schema defaults (empty dict / empty list) also survive the mapper filter.
-    row_empty = _row_dict(_make_audit(tick_attribution={}, tension_kinds=[]))
-    assert row_empty["tick_attribution"] == {}
-    assert row_empty["tension_kinds"] == []
-    obj_empty = DriveAuditSQL(**row_empty)
-    assert obj_empty.tick_attribution == {}
-    assert obj_empty.tension_kinds == []
-
-
-def test_summary_passes_through_to_column() -> None:
-    """`summary` is a plain `DriveAuditV1` field, so once the mapper column
-    exists the generic `_write_row` filter passes it through — no worker
-    change. None (schema default) is fine too."""
-    row = _row_dict(_make_audit(summary="drive tick summary"))
-    assert row["summary"] == "drive tick summary"
-    obj = DriveAuditSQL(**row)
-    assert obj.summary == "drive tick summary"
-
-    row_none = _row_dict(_make_audit(summary=None))
-    assert row_none.get("summary") is None
-    assert DriveAuditSQL(**row_none).summary is None
-
-
-def test_active_count_derived_from_active_drives() -> None:
-    row = _row_dict(_make_audit())
-    assert row["active_count"] == 2
-    assert row["active_drives"] == ["novelty", "coherence"]
-    assert row["dominant_drive"] == "novelty"
-    assert row["subject"] == "orion"
-    assert row["artifact_id"] == "drive-audit-abc-123"
-
-
-def test_active_count_zero_when_active_drives_empty() -> None:
-    row = _row_dict(_make_audit(active_drives=[], dominant_drive=None))
-    assert row["active_count"] == 0
-
-
-def test_active_count_zero_when_active_drives_missing_or_malformed() -> None:
-    # Schema default (field absent on the wire) -> empty list -> 0.
-    audit = _make_audit()
-    data = audit.model_dump()
-    data.pop("active_drives", None)
-    filtered: dict = {}
-    _apply_drive_audit_derivations(data, filtered)
-    assert filtered["active_count"] == 0
-
-    # Malformed (non-list) values never raise, degrade to 0.
-    for malformed in (None, "novelty", 3, {"novelty": True}):
-        filtered = {}
-        _apply_drive_audit_derivations({"active_drives": malformed}, filtered)
-        assert filtered["active_count"] == 0
-
-
-def test_observed_at_maps_from_artifact_ts() -> None:
-    ts = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
-    row = _row_dict(_make_audit(ts=ts))
-    assert row["observed_at"] == ts
-
-
-def test_row_dict_constructs_drive_audit_sql_without_raising() -> None:
-    row = DriveAuditSQL(**_row_dict(_make_audit()))
-    assert row.artifact_id == "drive-audit-abc-123"
-    assert row.active_count == 2
-
-
-def test_insert_only_membership() -> None:
-    """DriveAuditSQL takes the INSERT_ONLY fast path, not merge().
-
-    Every tick mints a fresh artifact_id, so merge()'s PK SELECT would always
-    miss — pure per-event overhead at drive-tick volume (review finding). The
-    fast path (add + duplicate-key catch) gives equivalent idempotency for
-    these immutable rows.
-    """
-    from app.worker import INSERT_ONLY_MODELS
-
-    # Match by name+table, not `DriveAuditSQL in ...`: when the whole test dir
-    # runs, another module's sys.path setup can import app.models.drive_audit
-    # as a second module instance, so class identity fails while the runtime
-    # (which imports consistently) is unaffected.
-    assert any(
-        m.__name__ == "DriveAuditSQL" and getattr(m, "__tablename__", None) == "drive_audits"
-        for m in INSERT_ONLY_MODELS
-    )
-
-
-def test_insert_only_redelivery_keeps_one_row_and_first_write_wins() -> None:
-    """Re-delivery of the same artifact_id is skipped, not duplicated.
-
-    Mirrors the INSERT_ONLY fast path (`sess.add` + IntegrityError catch →
-    rollback + skip) against in-memory SQLite. Asserts the idempotency claim
-    in the model docstring: one row survives, the first write's values win.
-    """
-    from sqlalchemy.exc import IntegrityError
-
-    engine = create_engine("sqlite://")
-    DriveAuditSQL.__table__.create(bind=engine)
-    Session = sessionmaker(bind=engine)
-
-    def _insert_only(audit: DriveAuditV1) -> bool:
-        sess = Session()
-        try:
-            try:
-                sess.add(DriveAuditSQL(**_row_dict(audit)))
-                sess.commit()
-                return True
-            except IntegrityError:
-                sess.rollback()
-                return False
-        finally:
-            sess.close()
-
-    assert _insert_only(_make_audit()) is True
-
-    sess = Session()
-    try:
-        first = sess.get(DriveAuditSQL, "drive-audit-abc-123")
-        original_created_at = first.created_at
-        assert first.active_count == 2
-    finally:
-        sess.close()
-    assert original_created_at is not None
-
-    # Redelivery (same PK, different content) is skipped — first write wins.
-    assert _insert_only(_make_audit(active_drives=["novelty"], dominant_drive="novelty")) is False
-
-    sess = Session()
-    try:
-        rows = sess.query(DriveAuditSQL).all()
-        assert len(rows) == 1
-        row = rows[0]
-        assert row.active_count == 2
-        assert row.created_at == original_created_at
-    finally:
-        sess.close()
+def test_worker_no_longer_imports_drive_audit_v1() -> None:
+    worker_py = (SERVICE_ROOT / "app" / "worker.py").read_text(encoding="utf-8")
+    assert "DriveAuditSQL" not in worker_py
+    assert "DriveAuditV1" not in worker_py
+    assert "_apply_drive_audit_derivations" not in worker_py

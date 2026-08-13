@@ -644,8 +644,8 @@ async def lifespan(app: FastAPI):
             # services/orion-sql-writer/app/models/dominance_streak_tick.py's docstring and
             # docs/superpowers/specs/2026-07-30-goal-system-remaining-gaps-design.md Part H.
             # High-volume (~1 row per real field tick); bounded by
-            # goal_provenance_streak_ticks_retention_days (default 14, applied at boot below,
-            # matching drive_audits_retention_days' pattern).
+            # goal_provenance_streak_ticks_retention_days (default 14, applied at boot below;
+            # previously matched the now-removed drive_audits_retention_days' pattern).
             conn.exec_driver_sql(
                 """
                 CREATE TABLE IF NOT EXISTS goal_provenance_streak_ticks (
@@ -673,9 +673,13 @@ async def lifespan(app: FastAPI):
             # left in place -- `CREATE TABLE IF NOT EXISTS` unconditionally
             # on every startup would have silently resurrected an empty
             # table on the next orion-sql-writer restart, undoing the drop.
-            # See also worker.py's DriveAuditSQL mapping removal and
-            # orion/bus/channels.yaml's orion:memory:drives:audit entry,
-            # removed/updated in the same patch.
+            # The rest of the write-path wiring (worker.py's DriveAuditSQL
+            # model/MODEL_MAP/INSERT_ONLY_MODELS entries, settings.py's
+            # route-map + subscribe-channel-default entries, .env_example,
+            # and orion/bus/channels.yaml's orion:memory:drives:audit entry)
+            # was deliberately left in place at that time and fully removed
+            # in a same-day follow-up patch (docs/superpowers/pr-reports/
+            # 2026-08-13-untangle-drive-audit-sql-writer-pr.md).
             conn.exec_driver_sql(
                 "ALTER TABLE bus_fallback_log ADD COLUMN IF NOT EXISTS created_at_ts TIMESTAMPTZ;"
             )
@@ -733,17 +737,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
 
-    drive_audits_retention_days = int(getattr(settings, "drive_audits_retention_days", 0) or 0)
-    if drive_audits_retention_days > 0:
-        try:
-            with engine.begin() as conn:
-                conn.exec_driver_sql(
-                    "DELETE FROM drive_audits WHERE COALESCE(observed_at, created_at) < (NOW() - (%s || ' days')::INTERVAL);",
-                    (str(drive_audits_retention_days),),
-                )
-            logger.info("🧹 Applied drive_audits retention window=%s days", drive_audits_retention_days)
-        except Exception as exc:
-            logger.warning("drive_audits retention startup failed (continuing boot): %s", exc)
+    # drive_audits retention startup job removed 2026-08-13 (same patch that
+    # fully untangled DriveAuditSQL's write path) -- the table and its boot
+    # DDL are both gone, so a DELETE against it was dead weight even guarded
+    # by the try/except. See settings.py for the matching field removal.
 
     goal_provenance_streak_ticks_retention_days = int(
         getattr(settings, "goal_provenance_streak_ticks_retention_days", 0) or 0

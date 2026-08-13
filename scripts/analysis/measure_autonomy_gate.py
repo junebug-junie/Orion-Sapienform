@@ -749,6 +749,14 @@ def fetch_drive_stats_postgres(conn, window_start: datetime) -> tuple[DriveStats
     table (written by orion-sql-writer; the successor source to the frozen
     Fuseki DriveAudit graph).
 
+    STATUS 2026-08-13: ``drive_audits`` and orion-sql-writer's write path for
+    it were both removed (table dropped, snapshotted first; write-path fully
+    untangled same day -- docs/superpowers/pr-reports/
+    2026-08-13-untangle-drive-audit-sql-writer-pr.md). The "missing table"
+    degrade branch below is now this function's permanent steady state, not
+    a transient race with a not-yet-deployed writer. Not on any
+    cron/scheduler in this repo (manual-invocation only).
+
     ``active_count`` is already derived at write time, so the histogram is a
     single server-side ``GROUP BY active_count`` — no JSONB parsing here. A
     second cheap ``GROUP BY dominant_drive`` on the same connection fills the

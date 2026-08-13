@@ -1845,21 +1845,22 @@ channels:
     # couple of weeks after that -- both the page and the `drive_audits`
     # table itself have since been removed outright, 2026-08-13 (table
     # dropped, snapshotted first; see docs/superpowers/pr-reports/
-    # 2026-08-13-remove-hub-drives-analytics-tab-pr.md). orion-sql-writer's
-    # message-kind -> DriveAuditSQL mapping (settings.py/worker.py) and this
-    # channel's boot-time table DDL were NOT removed in that same patch
-    # (scoped out -- DriveAuditSQL shares a `_JSONB` type declaration with
-    # other still-live sql-writer models, a bigger untangling than that
-    # patch's actual scope); the CREATE TABLE IF NOT EXISTS boot DDL itself
-    # WAS removed (services/orion-sql-writer/app/main.py) since leaving it
-    # in place would have silently resurrected the dropped table on the next
-    # restart. orion-rdf-writer removed 2026-07-15 (unrelated, prior
-    # removal): drive audits were already Postgres-only; the Fuseki write
-    # path was deleted, not just skipped. Do not re-add any producer/consumer
-    # here without first checking whether `drive_audits` should even exist
-    # again.
+    # 2026-08-13-remove-hub-drives-analytics-tab-pr.md). Same day, follow-up
+    # patch (docs/superpowers/pr-reports/2026-08-13-untangle-drive-audit-sql-
+    # writer-pr.md) fully removed orion-sql-writer's write-path wiring too:
+    # `DriveAuditSQL` model deleted, MODEL_MAP/route-map/subscribe-channel-
+    # default entries removed, this channel dropped from .env_example (and
+    # local .env). The earlier "shares a _JSONB type declaration with other
+    # live models" scope note that had blocked this was checked and was
+    # wrong -- every other sql-writer model declares its own private copy of
+    # that same one-line type alias, not a shared import, so there was
+    # nothing to untangle. orion-rdf-writer removed 2026-07-15 (unrelated,
+    # prior removal): drive audits were already Postgres-only; the Fuseki
+    # write path was deleted, not just skipped. This channel now has zero
+    # producers and zero consumers. Do not re-add either without first
+    # checking whether `drive_audits` should even exist again.
     producer_services: []
-    consumer_services: ["orion-sql-writer", "*"]
+    consumer_services: []
     stability: "experimental"
     since: "2026-03-19"
 

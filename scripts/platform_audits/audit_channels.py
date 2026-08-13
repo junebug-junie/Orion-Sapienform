@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from scripts.platform._common import (
+from scripts.platform_audits._common import (
     find_repo_root,
     iter_files,
     load_channels_catalog,
@@ -135,7 +135,7 @@ def triage_unknown(ch: str, files: List[str]) -> str:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("Usage: python scripts/platform/audit_channels.py <RUN_DIR>")
+        print("Usage: python scripts/platform_audits/audit_channels.py <RUN_DIR>")
         return 2
 
     run_dir = Path(sys.argv[1]).resolve()

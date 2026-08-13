@@ -2,6 +2,20 @@
 """Weekly-cadence batch job: turn Orion's own real, persisted drive-activation
 history into ONE narrative `reflection`-kind crystallization.
 
+STATUS 2026-08-13: the source this script depends on is permanently gone, not
+transiently empty. DriveEngine (the only producer of `DriveAuditV1`) was
+deleted 2026-07-30; the `drive_audits` Postgres table itself was dropped
+2026-08-13 (snapshotted first); and the same day, orion-sql-writer's write
+path for it (model, MODEL_MAP/route-map entries, channel subscription) was
+fully removed too (docs/superpowers/pr-reports/
+2026-08-13-untangle-drive-audit-sql-writer-pr.md). `fetch_drive_history_events`
+below already degrades safely on a missing table (empty list, logged error,
+no raise) -- that degrade-open behavior is now the script's PERMANENT steady
+state, not a transient fallback. This script was never on any cron/scheduler
+in this repo (manual-invocation only), so nothing is silently failing; if
+drive history synthesis is wanted again, a new producer/table would need to
+exist first.
+
 Context: `DriveAuditV1` (`orion/core/schemas/drives.py`) is computed live on every
 DriveEngine tick and persisted, append-only, to the Postgres `drive_audits` table
 (written by orion-sql-writer) as a timestamped row -- a genuine historical

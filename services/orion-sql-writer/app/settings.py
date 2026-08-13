@@ -83,7 +83,6 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "debug.attention.streak_tick.v1": "DominanceStreakTickSQL",
     "substrate.dev_economics_ledger.v1": "DevEconomicsLedgerSQL",
     "substrate.doc_semantic_drift.v1": "DocSemanticDriftSQL",
-    "memory.drives.audit.v1": "DriveAuditSQL",
     "self.phi_reward.v1": "PhiRewardSQL",
     "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
 }
@@ -177,7 +176,6 @@ class Settings(BaseSettings):
             "orion:equilibrium:transition",
             "orion:chat:history:spark_meta:patch",
             "orion:autonomy:action:outcome",
-            "orion:memory:drives:audit",
             "orion:self:phi_reward",
             "orion:causal_geometry:snapshot",
             "orion:debug:attention:streak_tick",
@@ -217,20 +215,13 @@ class Settings(BaseSettings):
         "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
-    # drive_audits was written on every DriveEngine tick (thousands/day, append-only)
-    # until DriveEngine was deleted 2026-07-30 (drive-pressure/goal-generation
-    # deletion sprint) -- the table is now write-never, frozen historical data read
-    # by Hub Drives Analytics (services/orion-hub). The 90-day prune window that used
-    # to bound unbounded live growth would, left unchanged, silently delete this now-
-    # finite history out from under that reader within 90 days of the last real
-    # DriveEngine tick -- a real data-loss bug caught 2026-07-30, not a hypothetical.
-    # Defaulting to 0 (disabled) preserves the frozen history indefinitely. 0 disables
-    # pruning; a positive value re-enables it (only appropriate again if this table
-    # gets a new live producer).
-    drive_audits_retention_days: int = Field(0, alias="DRIVE_AUDITS_RETENTION_DAYS")
+    # drive_audits_retention_days removed 2026-08-13: the drive_audits table
+    # (and orion-sql-writer's whole write path for it) was fully removed that
+    # day, so there is nothing left to prune. See docs/superpowers/pr-reports/
+    # 2026-08-13-untangle-drive-audit-sql-writer-pr.md.
 
     # goal_provenance_streak_ticks (2026-08-11, Part H debug telemetry, review fix): unlike
-    # drive_audits above, this table has a real, currently-live producer and no natural
+    # the now-removed drive_audits above, this table has a real, currently-live producer and no natural
     # ceiling -- ~1 row per real orion-attention-runtime field tick, matching
     # substrate_attention_frames' cadence (~43k rows/day per that table's own retention
     # comment). Defaults ON (unlike drive_audits' 0/disabled default) precisely because this

@@ -1833,35 +1833,25 @@ channels:
     stability: "experimental"
     since: "2026-03-14"
 
-  - name: "orion:memory:drives:audit"
-    kind: "event"
-    schema_id: "DriveAuditV1"
-    message_kind: "memory.drives.audit.v1"
-    # Producer (orion-spark-concept-induction's audit.py, via bus_worker.py's
-    # ConceptWorker) deleted 2026-07-30 (same sprint as the two channels
-    # above). Channel is now producer-less. Historical `drive_audits`
-    # Postgres rows (already-written by orion-sql-writer before this date)
-    # were readable via services/orion-hub's Drives Analytics page for a
-    # couple of weeks after that -- both the page and the `drive_audits`
-    # table itself have since been removed outright, 2026-08-13 (table
-    # dropped, snapshotted first; see docs/superpowers/pr-reports/
-    # 2026-08-13-remove-hub-drives-analytics-tab-pr.md). orion-sql-writer's
-    # message-kind -> DriveAuditSQL mapping (settings.py/worker.py) and this
-    # channel's boot-time table DDL were NOT removed in that same patch
-    # (scoped out -- DriveAuditSQL shares a `_JSONB` type declaration with
-    # other still-live sql-writer models, a bigger untangling than that
-    # patch's actual scope); the CREATE TABLE IF NOT EXISTS boot DDL itself
-    # WAS removed (services/orion-sql-writer/app/main.py) since leaving it
-    # in place would have silently resurrected the dropped table on the next
-    # restart. orion-rdf-writer removed 2026-07-15 (unrelated, prior
-    # removal): drive audits were already Postgres-only; the Fuseki write
-    # path was deleted, not just skipped. Do not re-add any producer/consumer
-    # here without first checking whether `drive_audits` should even exist
-    # again.
-    producer_services: []
-    consumer_services: ["orion-sql-writer", "*"]
-    stability: "experimental"
-    since: "2026-03-19"
+  # "orion:memory:drives:audit" (message_kind memory.drives.audit.v1, schema
+  # DriveAuditV1) retired outright 2026-08-13, not just zeroed out. Producer
+  # (orion-spark-concept-induction's audit.py) deleted 2026-07-30. The
+  # `drive_audits` Postgres table it fed was dropped 2026-08-13 (snapshotted
+  # first; docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-
+  # analytics-tab-pr.md), and orion-sql-writer's write-path wiring for it
+  # (DriveAuditSQL model, MODEL_MAP/route-map/subscribe-channel entries) was
+  # fully untangled the same day (docs/superpowers/pr-reports/
+  # 2026-08-13-untangle-drive-audit-sql-writer-pr.md). A zero-producer/
+  # zero-consumer entry here still counts as a live registered metric to
+  # scripts/check_metric_lineage.py's orphan ratchet -- "wire it to a real
+  # consumer, or retire the registry entry" is that gate's own remedy, and
+  # this repo's convention (CLAUDE.md 0A: "kill means kill, no fallback to
+  # the thing being killed") is retirement, not a `["*"]` wildcard left in
+  # place purely to satisfy the gate. `DriveAuditV1` (orion/core/schemas/
+  # drives.py) and its orion/schemas/registry.py entry are deliberately kept
+  # -- that's a type definition historical artifacts can still validate
+  # against, not live bus wiring. Do not re-add this channel without first
+  # checking whether `drive_audits` should even exist again.
 
   - name: "orion:memory:identity:snapshot"
     kind: "event"

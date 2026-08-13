@@ -2,6 +2,17 @@
 """Read-only Phase 3 shadow-measure comparison: biometrics prediction-error
 vs. the halted drives system's bucket-vote output, over real historical data.
 
+STATUS 2026-08-13: the `drive_audits` side of this comparison is now
+permanently gone, not transiently empty -- the table was dropped and
+orion-sql-writer's write path for it fully removed the same day
+(docs/superpowers/pr-reports/2026-08-13-untangle-drive-audit-sql-writer-pr.md).
+The "relation does not exist" degrade branch this script already has around
+its `FROM drive_audits` query is now this script's permanent steady state
+for that side of the comparison, not a race with a not-yet-deployed writer.
+Not on any cron/scheduler in this repo (manual-invocation only). Kept as a
+historical/read-only comparison tool; if `drive_audits` never comes back,
+this script's `drive_audits` side will never produce real output again.
+
 `docs/superpowers/specs/2026-07-18-objective-3-consciousness-scaffolded-
 roadmap-design.md` Phase 3: "Route one real producer domain onto real field
 channels in observe-only mode, alongside the still-live bucket-vote system,

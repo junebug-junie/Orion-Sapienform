@@ -133,6 +133,10 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         "prediction_error": None,
         "contributing_turn_ids_json": "[]",
         "prediction_error_evidence_event_ids_json": "[]",
+        # node:substrate.vision's channels. Absent metadata encodes as None so
+        # "no vision reading yet" stays distinguishable from a measured 0.0.
+        "perception_staleness": None,
+        "perception_yield": None,
     }
 
 

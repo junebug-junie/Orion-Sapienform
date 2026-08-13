@@ -203,8 +203,23 @@ DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
 # only once encode_node_properties() runs; FalkorSubstrateStore.upsert_node()
 # is responsible for translating this raw-key set into the encoded property
 # names it actually needs to exclude from the SET clause.
+# `perception_staleness`/`perception_yield` added 2026-08-13. Without them the
+# dynamics tick, which re-persists every node it walks every 30s, re-encoded
+# node:substrate.vision from a metadata dict that did not carry them and set
+# both properties back to NULL -- seconds after _vision_channel_tick had
+# written them, and while that write logged success. The symptom was a node
+# that kept `prediction_error` (already protected here) and silently lost
+# everything else, which reads exactly like an encoder bug and is not one.
+# Any key owned by a writer OTHER than SubstrateDynamicsEngine.tick() belongs
+# in this set, not just prediction-error-shaped ones.
 EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
-    {"prediction_error", "contributing_turn_ids", "prediction_error_evidence_event_ids"}
+    {
+        "prediction_error",
+        "contributing_turn_ids",
+        "prediction_error_evidence_event_ids",
+        "perception_staleness",
+        "perception_yield",
+    }
 )
 
 # Subset of EXTERNALLY_OWNED_METADATA_KEYS whose encoded Cypher property name

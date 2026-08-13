@@ -14,7 +14,7 @@ from collections import deque
 
 import pytest
 
-from app.worker import THEATER_TRIPWIRE_EMPTY_THRESHOLD, THEATER_TRIPWIRE_WINDOW, ExecutionDispatchRuntimeWorker
+from app.worker import THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD, THEATER_TRIPWIRE_WINDOW, ExecutionDispatchRuntimeWorker
 
 
 def _bare_worker() -> ExecutionDispatchRuntimeWorker:
@@ -44,7 +44,7 @@ class TestTheaterTripwireInProcessWindow:
 
     def test_trips_when_more_than_threshold_fraction_is_empty(self) -> None:
         worker = _bare_worker()
-        n_empty = int(THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_EMPTY_THRESHOLD) + 1
+        n_empty = int(THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD) + 1
         for _ in range(n_empty):
             worker._recent_dispatch_statuses.append("empty")
         for _ in range(THEATER_TRIPWIRE_WINDOW - n_empty):
@@ -55,7 +55,7 @@ class TestTheaterTripwireInProcessWindow:
         """The real condition is `>`, not `>=` -- exactly half empty (the
         literal threshold value) must not trip."""
         worker = _bare_worker()
-        half = int(THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_EMPTY_THRESHOLD)
+        half = int(THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD)
         for _ in range(half):
             worker._recent_dispatch_statuses.append("empty")
         for _ in range(THEATER_TRIPWIRE_WINDOW - half):
@@ -70,7 +70,7 @@ class TestTheaterTripwireInProcessWindow:
         patch is careful to preserve while fixing the separate, real bug
         (stale pre-restart Postgres rows defeating restart-to-re-arm)."""
         worker = _bare_worker()
-        n_empty = int(THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_EMPTY_THRESHOLD) + 1
+        n_empty = int(THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD) + 1
         for _ in range(n_empty):
             worker._recent_dispatch_statuses.append("empty")
         for _ in range(THEATER_TRIPWIRE_WINDOW - n_empty):
@@ -92,12 +92,52 @@ class TestTheaterTripwireInProcessWindow:
             worker._recent_dispatch_statuses.append("success")
         assert len(worker._recent_dispatch_statuses) == THEATER_TRIPWIRE_WINDOW
 
-    def test_failed_status_does_not_count_as_empty(self) -> None:
-        """`_check_theater_tripwire` only counts literal "empty" -- "failed"
-        (an RPC/send error, a different failure mode than a hollow-but-
-        technically-successful response) must not contribute to the empty
-        count, matching pre-existing behavior this patch does not change."""
+    def test_failed_status_now_counts_as_unproductive(self) -> None:
+        """BEHAVIOUR REVERSED 2026-08-13, deliberately.
+
+        This test previously asserted that "failed" must NOT contribute to the
+        count, on the reasoning that an RPC/send error is a different failure
+        mode than a hollow-but-successful response.
+
+        That reasoning stopped holding when skill-verb results started being
+        classified honestly. Before that change, a `skills.runtime.*` verb that
+        failed was stored as "empty" and therefore counted here. After it, the
+        same failure is stored as "failed" -- so under the old predicate a
+        maintenance verb could fail on every one of the trailing 10 dispatches
+        and never trip the one mechanism built to catch a dead motor nerve.
+
+        The predicate now counts every non-success status, which restores that
+        coverage and additionally covers RPC send failures. Live trip risk was
+        measured before shipping rather than assumed: 30 failed against 12,782
+        success over 24h (0.23%), versus a threshold of >50% of trailing 10.
+        """
         worker = _bare_worker()
         for _ in range(THEATER_TRIPWIRE_WINDOW):
             worker._recent_dispatch_statuses.append("failed")
+        assert worker._check_theater_tripwire() is True
+
+    def test_all_success_never_trips(self) -> None:
+        """The inverse guard. Without it, a predicate that counted everything
+        (`sum(1 for _ in recent)`) would pass every other test in this class."""
+        worker = _bare_worker()
+        for _ in range(THEATER_TRIPWIRE_WINDOW):
+            worker._recent_dispatch_statuses.append("success")
         assert worker._check_theater_tripwire() is False
+
+    def test_mixed_empty_and_failed_combine_toward_the_threshold(self) -> None:
+        """Hand-derived: window 10, threshold 0.5, so >5 unproductive trips.
+
+        3 empty + 3 failed = 6 unproductive > 5, with 4 success. Neither
+        status alone reaches the threshold; only counting them together does.
+        This is precisely the mixed-failure case the old predicate could not
+        see at all.
+        """
+        worker = _bare_worker()
+        for _ in range(3):
+            worker._recent_dispatch_statuses.append("empty")
+        for _ in range(3):
+            worker._recent_dispatch_statuses.append("failed")
+        for _ in range(4):
+            worker._recent_dispatch_statuses.append("success")
+        assert len(worker._recent_dispatch_statuses) == THEATER_TRIPWIRE_WINDOW
+        assert worker._check_theater_tripwire() is True

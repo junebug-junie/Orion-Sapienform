@@ -205,6 +205,15 @@ def run_lengths(fingerprints: Iterable[str]) -> list[int]:
     return runs
 
 
+def _run_values(fingerprints: Sequence[str]) -> list[str]:
+    """The fingerprint of each maximal run, aligned 1:1 with `run_lengths`."""
+    values: list[str] = []
+    for fingerprint in fingerprints:
+        if not values or values[-1] != fingerprint:
+            values.append(fingerprint)
+    return values
+
+
 def percentile(sorted_values: Sequence[float], q: float) -> float | None:
     """Nearest-rank percentile over an already-sorted sequence."""
     if not sorted_values:
@@ -244,8 +253,14 @@ def measure_urgency_resolution(frames: Sequence[Sequence[dict[str, Any]]]) -> Ur
             result.frames_missing_urgency += 1
             continue
         result.frames += 1
-        result.candidates += len(candidates)
-        result.candidates_per_frame.append(len(candidates))
+        # Counts candidates with a READABLE urgency, not all candidates.
+        # `tied_at_max` below is computed over the same population, so the
+        # ratio the report prints has one consistent denominator. These are
+        # currently identical because `urgency_score` is required on
+        # ProposalCandidateV1 -- correct by accident of the schema rather than
+        # by construction, which is not a property worth relying on.
+        result.candidates += len(present)
+        result.candidates_per_frame.append(len(present))
         # Round to 9dp before counting distinctness: float round-trips through
         # JSON can differ in the last bit for values that were computed
         # identically, and counting those as "distinct" would understate the
@@ -334,6 +349,8 @@ class DecisionRedundancy:
     empty_frames: int = 0
     distinct_fingerprints: int = 0
     runs: list[int] = dataclass_field(default_factory=list)
+    empty_runs: list[int] = dataclass_field(default_factory=list)
+    identical_runs: list[int] = dataclass_field(default_factory=list)
 
 
 def measure_decision_redundancy(
@@ -358,7 +375,37 @@ def measure_decision_redundancy(
         fingerprints.append("|".join(parts))
     result.distinct_fingerprints = len(set(fingerprints))
     result.runs = run_lengths(fingerprints)
+    # Split, because the two populations imply DIFFERENT remedies and the
+    # combined headline hides which one dominates: a run of empty frames means
+    # "Orion produced nothing and published it anyway", while a run of
+    # identical non-empty frames means "Orion re-published the same conclusion".
+    # The first is fixed by not emitting; the second by change-detection. Spec
+    # section 7 asks which of those the 91% discard actually is.
+    result.empty_runs = [n for fp, n in zip(_run_values(fingerprints), result.runs) if fp == EMPTY_FINGERPRINT]
+    result.identical_runs = [
+        n for fp, n in zip(_run_values(fingerprints), result.runs) if fp != EMPTY_FINGERPRINT
+    ]
     return result
+
+
+# Block reasons that mean "policy said no", NOT "lost the capacity contest".
+#
+# A template gated to `operator_review` or `deferred` is BLOCKED BY DESIGN --
+# `config/execution_dispatch/execution_dispatch_policy.v1.yaml` lists both under
+# `blocked_policy_decisions`, and `proposal_kind_to_cortex` has no route for
+# `defer` or `request_policy_review` at all. Counting those as starvation was a
+# false headline: the first live 24h run reported three "starved" templates
+# (defer_due_to_low_readiness, request_policy_review_for_action, reverie) and
+# ALL THREE were policy-blocked on 100% of their blocked rows. True starvation
+# count was zero.
+#
+# Matched as a prefix so a reason gains detail without silently escaping the
+# classification.
+POLICY_BLOCK_REASON_PREFIXES = ("policy_decision:",)
+
+
+def is_policy_block_reason(reason: str) -> bool:
+    return any(reason.startswith(prefix) for prefix in POLICY_BLOCK_REASON_PREFIXES)
 
 
 @dataclass
@@ -367,6 +414,28 @@ class TemplateReach:
     dispatched: int = 0
     blocked: int = 0
     blocked_reasons: Counter = dataclass_field(default_factory=Counter)
+
+    @property
+    def policy_blocked(self) -> int:
+        return sum(n for reason, n in self.blocked_reasons.items() if is_policy_block_reason(reason))
+
+    @property
+    def contested_blocked(self) -> int:
+        """Blocked for a reason that is NOT a policy refusal -- i.e. it entered
+        the capacity contest and lost."""
+        return self.blocked - self.policy_blocked
+
+    @property
+    def is_starved(self) -> bool:
+        """Proposed, never dispatched, and not merely refused by policy.
+
+        A template that policy declines to route is not starved; it is doing
+        exactly what it was configured to do. Only a template that was allowed
+        to compete and never won is starved.
+        """
+        if self.proposed <= 0 or self.dispatched > 0:
+            return False
+        return self.blocked == 0 or self.contested_blocked > 0
 
 
 def _candidate_id(candidate: dict[str, Any]) -> Any:
@@ -534,10 +603,21 @@ def load_dispatch_candidates(
     from "there were no dispatch frames at all" -- two very different findings
     that an unqualified zero would conflate.
     """
+    # `generated_at`, not `created_at`, for two independent reasons:
+    #
+    # 1. Correctness. Proposal frames are windowed on `generated_at`, and a
+    #    dispatch frame is written well after the proposal frame it descends
+    #    from -- measured live, median lag 287s, max 918s. Windowing the two
+    #    populations on different clocks skews section D's proposed-vs-
+    #    dispatched comparison. At the 24h default that skew is under 1%, but
+    #    `--window-hours` accepts any positive value, and at 0.1h it reported
+    #    five "starved" templates that had dispatched fine over a longer window.
+    # 2. Speed. `created_at` is unindexed on this table; `generated_at` has
+    #    idx_substrate_execution_dispatch_frames_generated_at.
     sql = (
         "SELECT dispatch_frame_json FROM substrate_execution_dispatch_frames "
-        "WHERE created_at > now() - (%s || ' hours')::interval "
-        "ORDER BY created_at ASC"
+        "WHERE generated_at > now() - (%s || ' hours')::interval "
+        "ORDER BY generated_at ASC"
     )
     dispatched: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
@@ -599,7 +679,9 @@ def render_report(
         avg_tied = sum(urgency.tied_at_max) / len(urgency.tied_at_max)
         add("")
         add(f"  avg candidates TIED at frame max  {avg_tied:.2f} of {avg_candidates:.2f}")
-        add(f"  -> effective discrimination       {100.0 * (1.0 - avg_tied / avg_candidates):.1f}% of the field is separable by urgency")
+        add(
+            f"  -> {100.0 * (1.0 - avg_tied / avg_candidates):.1f}% of candidates are NOT tied at their frame's max urgency"
+        )
 
     add("")
     add("## B. Cross-template correlation (are competitors the same number?)")
@@ -633,11 +715,25 @@ def render_report(
         add(f"  runs of consecutive-identical   {n_runs}")
         if n_runs:
             redundant_pct = 100.0 * (redundancy.total_frames - n_runs) / redundancy.total_frames
-            ordered = sorted(redundancy.runs)
             add(f"  frames adding no new decision   {redundancy.total_frames - n_runs} ({redundant_pct:.1f}%)")
-            add(f"  run length  mean/median/p95/max "
-                f"{sum(ordered) / n_runs:.2f} / {percentile(ordered, 0.5):.0f} / "
-                f"{percentile(ordered, 0.95):.0f} / {max(ordered)}")
+            add("")
+            # Split by population: the two imply different remedies, and the
+            # combined number cannot tell them apart. See
+            # measure_decision_redundancy's own comment.
+            for label, runs in (
+                ("all runs        ", redundancy.runs),
+                ("EMPTY runs      ", redundancy.empty_runs),
+                ("identical runs  ", redundancy.identical_runs),
+            ):
+                if not runs:
+                    add(f"  {label}  (none)")
+                    continue
+                ordered = sorted(runs)
+                add(
+                    f"  {label}  n={len(runs):5d}  frames={sum(runs):6d}  "
+                    f"mean/median/p95/max = {sum(ordered) / len(ordered):.2f} / "
+                    f"{percentile(ordered, 0.5):.0f} / {percentile(ordered, 0.95):.0f} / {max(ordered)}"
+                )
 
     add("")
     add("## D. Dispatch reachability (which templates ever win a slot?)")
@@ -647,18 +743,49 @@ def render_report(
     if not reach:
         add("  NO CANDIDATES IN WINDOW")
     else:
-        add(f"  {'template':38s} {'proposed':>9s} {'dispatched':>11s} {'blocked':>8s} {'win rate':>9s}")
+        add(
+            f"  {'template':38s} {'proposed':>9s} {'dispatch':>9s} "
+            f"{'blk:policy':>11s} {'blk:lost':>9s} {'win rate':>9s}"
+        )
         for template, entry in sorted(reach.items(), key=lambda kv: -kv[1].proposed):
-            rate = (entry.dispatched / entry.proposed) if entry.proposed else 0.0
+            # Guarded rather than defaulted to 0.0: `proposed == 0` with real
+            # dispatches is reachable when the two populations are windowed at
+            # a boundary, and printing "0.00%" for it would read as a starved
+            # template rather than as an unmeasurable one.
+            rate = f"{100.0 * entry.dispatched / entry.proposed:8.2f}%" if entry.proposed else "     n/a"
             add(
-                f"  {template:38s} {entry.proposed:9d} {entry.dispatched:11d} "
-                f"{entry.blocked:8d} {100.0 * rate:8.2f}%"
+                f"  {template:38s} {entry.proposed:9d} {entry.dispatched:9d} "
+                f"{entry.policy_blocked:11d} {entry.contested_blocked:9d} {rate}"
             )
-        starved = [t for t, e in reach.items() if e.proposed > 0 and e.dispatched == 0]
+
         add("")
-        add(f"  templates proposed but NEVER dispatched in window: {len(starved)}")
+        add("  block reasons (why a candidate did not get a slot):")
+        aggregate_reasons: Counter = Counter()
+        for entry in reach.values():
+            aggregate_reasons.update(entry.blocked_reasons)
+        if not aggregate_reasons:
+            add("    (none)")
+        for reason, count in aggregate_reasons.most_common(10):
+            label = "policy" if is_policy_block_reason(reason) else "contested"
+            add(f"    {count:8d}  [{label:9s}]  {reason}")
+
+        starved = [t for t, e in reach.items() if e.is_starved]
+        policy_only = [
+            t
+            for t, e in reach.items()
+            if e.proposed > 0 and e.dispatched == 0 and not e.is_starved
+        ]
+        add("")
+        add(f"  STARVED (competed, never won): {len(starved)}")
         for template in sorted(starved):
-            add(f"    - {template} ({reach[template].proposed} proposals, 0 dispatches)")
+            entry = reach[template]
+            add(
+                f"    - {template} ({entry.proposed} proposals, 0 dispatches, "
+                f"{entry.contested_blocked} contested blocks)"
+            )
+        add(f"  blocked by policy, NOT starved: {len(policy_only)}")
+        for template in sorted(policy_only):
+            add(f"    - {template} ({reach[template].policy_blocked} policy blocks)")
 
     add("")
     add("=" * 78)

@@ -402,3 +402,152 @@ def test_percentile_nearest_rank_hand_computed():
 
 def test_percentile_empty_is_none():
     assert mod.percentile([], 0.5) is None
+
+
+# ---------------------------------------------------------------------------
+# Policy-blocked vs starved (review finding, 2026-08-13).
+#
+# The first live run reported three "starved" templates and all three were
+# 100% policy-blocked: `defer` and `request_policy_review` kinds have no route
+# in proposal_kind_to_cortex at all, and `deferred`/`requires_operator_review`
+# are listed under blocked_policy_decisions. True starvation count was zero.
+# A false starvation headline in the section the script's own docstring calls
+# "the outcome the other three sections predict" is worse than no section.
+# ---------------------------------------------------------------------------
+
+
+def test_policy_blocked_template_is_not_starved():
+    """Blocked only by `policy_decision:*` -- doing exactly what it was configured to do."""
+    proposals = [[_cand("gated", 0.5)] for _ in range(100)]
+    blocked = [
+        {
+            "dispatch_id": "dispatch:proposal:gated:tick_a:x:y",
+            "reasons": ["policy_decision:requires_operator_review"],
+        }
+        for _ in range(100)
+    ]
+    reach = mod.measure_dispatch_reachability(proposals, [], blocked)
+    entry = reach["gated"]
+    assert entry.policy_blocked == 100
+    assert entry.contested_blocked == 0
+    assert entry.is_starved is False
+
+
+def test_capacity_blocked_template_is_starved():
+    """Blocked for a capacity reason -- it competed and lost. The real thing."""
+    proposals = [[_cand("loser", 0.5)] for _ in range(100)]
+    blocked = [
+        {
+            "dispatch_id": "dispatch:proposal:loser:tick_a:x:y",
+            "reasons": ["max_dispatch_candidates_exceeded"],
+        }
+        for _ in range(100)
+    ]
+    reach = mod.measure_dispatch_reachability(proposals, [], blocked)
+    entry = reach["loser"]
+    assert entry.policy_blocked == 0
+    assert entry.contested_blocked == 100
+    assert entry.is_starved is True
+
+
+def test_never_even_blocked_is_starved():
+    """Proposed, never dispatched, never blocked -- it vanished. Still starvation."""
+    proposals = [[_cand("ghost", 0.5)] for _ in range(100)]
+    reach = mod.measure_dispatch_reachability(proposals, [], [])
+    assert reach["ghost"].is_starved is True
+
+
+def test_a_template_that_ever_dispatched_is_not_starved():
+    proposals = [[_cand("winner", 0.5)] for _ in range(100)]
+    dispatched = [{"dispatch_id": "dispatch:proposal:winner:tick_a:x:y"}]
+    reach = mod.measure_dispatch_reachability(proposals, dispatched, [])
+    assert reach["winner"].is_starved is False
+
+
+def test_mixed_block_reasons_count_as_starved():
+    """Any contested block means it entered the contest, so a mix is starvation.
+
+    Hand-derived: 3 policy + 2 contested -> policy_blocked 3, contested 2,
+    is_starved True. Without the `contested_blocked > 0` arm this would be
+    misread as purely policy-gated.
+    """
+    proposals = [[_cand("mixed", 0.5)] for _ in range(5)]
+    blocked = [
+        {"dispatch_id": "dispatch:proposal:mixed:tick_a:x:y", "reasons": ["policy_decision:deferred"]}
+        for _ in range(3)
+    ] + [
+        {
+            "dispatch_id": "dispatch:proposal:mixed:tick_a:x:y",
+            "reasons": ["max_dispatch_candidates_exceeded"],
+        }
+        for _ in range(2)
+    ]
+    reach = mod.measure_dispatch_reachability(proposals, [], blocked)
+    assert reach["mixed"].policy_blocked == 3
+    assert reach["mixed"].contested_blocked == 2
+    assert reach["mixed"].is_starved is True
+
+
+def test_policy_block_prefix_match_survives_added_detail():
+    """A reason gaining detail must not silently escape the classification."""
+    assert mod.is_policy_block_reason("policy_decision:deferred") is True
+    assert mod.is_policy_block_reason("policy_decision:deferred:low_readiness") is True
+    assert mod.is_policy_block_reason("max_dispatch_candidates_exceeded") is False
+    assert mod.is_policy_block_reason("") is False
+
+
+# ---------------------------------------------------------------------------
+# Empty vs identical run split (review finding).
+# ---------------------------------------------------------------------------
+
+
+def test_runs_are_split_by_empty_vs_identical():
+    """Hand-derived: [X, X, EMPTY, EMPTY, EMPTY, Y] -> runs [2, 3, 1].
+
+    empty_runs must be [3] and identical_runs [2, 1], and the two must
+    partition `runs` exactly -- a run belongs to one population or the other,
+    never both and never neither.
+    """
+    x = [_decision("a", "approved_read_only")]
+    y = [_decision("b", "approved_read_only")]
+    result = mod.measure_decision_redundancy([x, x, [], [], [], y])
+    assert result.runs == [2, 3, 1]
+    assert result.empty_runs == [3]
+    assert result.identical_runs == [2, 1]
+    assert sorted(result.empty_runs + result.identical_runs) == sorted(result.runs)
+
+
+def test_run_values_aligns_one_to_one_with_run_lengths():
+    """The split depends on this alignment; assert it directly.
+
+    ['a','a','b','a'] -> run_lengths [2,1,1] and run values ['a','b','a'].
+    A repeated value in non-adjacent runs must produce a separate entry.
+    """
+    seq = ["a", "a", "b", "a"]
+    assert mod.run_lengths(seq) == [2, 1, 1]
+    assert mod._run_values(seq) == ["a", "b", "a"]
+
+
+# ---------------------------------------------------------------------------
+# Section A denominator (review finding).
+# ---------------------------------------------------------------------------
+
+
+def test_urgency_candidate_count_excludes_unreadable_candidates():
+    """`candidates` and `tied_at_max` must share one denominator.
+
+    Frame has 3 candidates but only 2 with a readable urgency, both tied.
+    `candidates` must therefore be 2, not 3 -- otherwise the printed ratio
+    divides a count of readable candidates by a count of all candidates.
+    """
+    frames = [
+        [
+            _cand("a", 0.9),
+            _cand("b", 0.9),
+            {"proposal_id": "proposal:c:tick:x:y"},  # no urgency_score at all
+        ]
+    ]
+    result = mod.measure_urgency_resolution(frames)
+    assert result.frames == 1
+    assert result.candidates == 2
+    assert result.tied_at_max == [2]

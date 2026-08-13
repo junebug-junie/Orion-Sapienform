@@ -1676,3 +1676,175 @@ async def test_replayed_structured_result_is_not_re_emitted_as_a_failure(monkeyp
     _, env = fake_bus.publish.await_args.args
     assert env.payload["success"] is True
     assert "structured result" in env.payload["summary"]
+
+
+# ---------------------------------------------------------------------------
+# Plan-level failure (2026-08-13, review finding).
+#
+# Nothing upstream raises for a failed verb: cortex-exec's main.py hardcodes
+# `CortexExecResultPayload(ok=True, ...)`, and cortex_client only checks the
+# codec's ok. So a failed plan arrives here as a well-formed payload whose
+# `final_text` is the skill's own JSON error report -- content-indistinguishable
+# from a success. The plan's real verdict is in `result.status` and was simply
+# never read.
+#
+# The structured-result patch made this worse before this fix: it graded such a
+# payload `status="success"` with a stored summary literally reading
+# "failed: ...". These tests exist because the first round of tests for that
+# patch fed only successful payloads.
+# ---------------------------------------------------------------------------
+
+_FAILED_PRUNE_FINAL_TEXT = (
+    '{"acted": false, "decision": "failed", '
+    '"reason": "Command \'docker builder prune\' timed out after 600 seconds", '
+    '"escalate": true, "disk_before": {"used_pct": 84.1, "used_bytes": 42}}'
+)
+
+
+def _worker_for_send(monkeypatch, payload_by_dispatch):
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1675)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    fake_bus = _patch_bus_and_client(monkeypatch, payload_by_dispatch)
+    return worker, fake_bus
+
+
+@pytest.mark.asyncio
+async def test_failed_plan_is_stored_as_failed_not_success(monkeypatch) -> None:
+    """A verb that reported `status="fail"` must never be stored as success."""
+    worker, _ = _worker_for_send(
+        monkeypatch,
+        {"dispatch:1": {"result": {"status": "fail", "final_text": _FAILED_PRUNE_FINAL_TEXT}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    kwargs = worker._store.save_dispatch_result.call_args.kwargs
+    assert kwargs["status"] == "failed"
+    assert kwargs["result_json"]["plan_status"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_failed_plan_emits_an_unsuccessful_action_outcome(monkeypatch) -> None:
+    """The emitted outcome feeds feedback scoring and Orion's self-narration.
+
+    A stored summary reading "failed: ..." alongside `success=True` is exactly
+    the "reports success while changing nothing" class this repo bans.
+    """
+    worker, fake_bus = _worker_for_send(
+        monkeypatch,
+        {"dispatch:1": {"result": {"status": "fail", "final_text": _FAILED_PRUNE_FINAL_TEXT}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is False
+    assert "verb reported fail" in env.payload["summary"]
+
+
+@pytest.mark.asyncio
+async def test_failed_plan_still_preserves_the_verbs_real_measurements(monkeypatch) -> None:
+    """A failed prune still measured the host; those readings are real.
+
+    Discarding them because the action did not complete would throw away a
+    genuine observation of the world -- the same loss this whole patch exists
+    to stop, in a different place.
+    """
+    worker, _ = _worker_for_send(
+        monkeypatch,
+        {"dispatch:1": {"result": {"status": "fail", "final_text": _FAILED_PRUNE_FINAL_TEXT}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    stored = worker._store.save_dispatch_result.call_args.kwargs["result_json"]
+    assert stored["structured_result"]["disk_before"]["used_pct"] == 84.1
+
+
+@pytest.mark.asyncio
+async def test_failed_plan_counts_toward_the_theater_tripwire(monkeypatch) -> None:
+    """The dead-motor-nerve detector must see verb failures.
+
+    Under the pre-fix predicate a maintenance verb could fail on every one of
+    the trailing 10 dispatches without ever tripping it.
+    """
+    worker, _ = _worker_for_send(
+        monkeypatch,
+        {"dispatch:1": {"result": {"status": "fail", "final_text": _FAILED_PRUNE_FINAL_TEXT}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    assert list(worker._recent_dispatch_statuses) == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_plan_is_stored_as_failed_with_its_reason(monkeypatch) -> None:
+    """`blocked=True` carries no `status="fail"`; it must still be caught."""
+    worker, fake_bus = _worker_for_send(
+        monkeypatch,
+        {
+            "dispatch:1": {
+                "result": {
+                    "status": "success",
+                    "blocked": True,
+                    "blocked_reason": "scope_not_permitted",
+                    "final_text": '{"decision": "pruned"}',
+                }
+            }
+        },
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "failed"
+    _, env = fake_bus.publish.await_args.args
+    assert "scope_not_permitted" in env.payload["summary"]
+
+
+@pytest.mark.asyncio
+async def test_successful_plan_is_unaffected_by_the_failure_check(monkeypatch) -> None:
+    """The inverse guard: an explicit `status="success"` must still succeed.
+
+    Without this, a check that failed everything would pass all the tests
+    above.
+    """
+    worker, fake_bus = _worker_for_send(
+        monkeypatch,
+        {"dispatch:1": {"result": {"status": "success", "final_text": _SKILL_PRUNE_FINAL_TEXT}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "success"
+    _, env = fake_bus.publish.await_args.args
+    assert env.payload["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_payload_with_no_readable_status_keeps_content_classification(monkeypatch) -> None:
+    """An unrecognised payload shape must NOT be graded as a failure.
+
+    Every live payload today carries `result.status`, but inventing a verdict
+    for a shape we cannot read would be a fabricated grade. `None` falls
+    through to the existing content-based classification instead -- which is
+    also what keeps every pre-existing test in this file valid.
+    """
+    worker, _ = _worker_for_send(
+        monkeypatch,
+        {"dispatch:1": {"result": {"final_text": '{"observation": "steady"}'}}},
+    )
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "success"

@@ -54,6 +54,58 @@ def extract_final_text(result_payload: dict[str, Any]) -> str:
     return ""
 
 
+def plan_execution_status(result_payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The dispatched plan's OWN verdict, and why, straight from the payload.
+
+    Returns `(status, reason)` where status is `PlanExecutionResult.status`
+    (`"success"` / `"partial"` / `"fail"`), or the synthetic `"blocked"` when
+    the plan reports `blocked=True`. `(None, None)` when the payload carries no
+    readable status at all -- an unknown shape must not be silently graded.
+
+    This exists because NOTHING upstream of here surfaces a verb failure:
+
+      - `services/orion-cortex-exec/app/main.py:696` builds
+        `CortexExecResultPayload(ok=True, ...)` with `ok` hardcoded, regardless
+        of `res.status`.
+      - `orion/execution_dispatch/cortex_client.py` only checks the *codec*'s
+        `decoded.ok`, so it never raises for a failed plan.
+      - `services/orion-cortex-exec/app/router.py:1396` sets
+        `overall_status = "fail"` but still populates `final_text` with the
+        skill's own JSON error payload.
+
+    So a verb that failed arrives here looking exactly like one that succeeded,
+    carrying a perfectly well-formed structured result whose `decision` field
+    literally reads `"failed"`. The plan's real status is sitting in the same
+    payload and was simply never read.
+    """
+    result = result_payload.get("result") if isinstance(result_payload, dict) else None
+    if not isinstance(result, dict):
+        return None, None
+    if result.get("blocked") is True:
+        reason = result.get("blocked_reason")
+        return "blocked", str(reason) if isinstance(reason, str) and reason else "blocked"
+    status = result.get("status")
+    if not isinstance(status, str) or not status:
+        return None, None
+    return status, None
+
+
+def is_failed_plan_status(status: str | None) -> bool:
+    """True when a plan's own status means the dispatched work did not complete.
+
+    `None` is NOT a failure: an older or unrecognised payload shape has no
+    readable verdict, and inventing one would be a fabricated grade. Those keep
+    the pre-existing content-based classification.
+
+    `"partial"` counts as a failure. Dispatch plans are single-step, so
+    `router.py:1396`'s `"partial" if len(step_results) > 1 else "fail"` cannot
+    produce it for this caller today -- but if a multi-step dispatch plan ever
+    exists, a plan that did not finish what it was asked is not a success, and
+    the safe default is the honest one.
+    """
+    return status is not None and status not in ("success", "ok", "completed")
+
+
 def _empty_result() -> dict[str, Any]:
     return {
         "observation": "",

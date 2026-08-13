@@ -741,3 +741,268 @@ def test_parse_session_usage_record_top_level_human_turns_still_counted(
     assert record.is_subagent is False
     assert record.human_turn_count == 1
     assert record.human_word_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Denominator correctness (2026-08-13 live audit)
+#
+# Both bugs below silently corrupted every rate derived from this parser --
+# swear_frequency's denominator most directly. Neither was a crash, an error
+# log, or a schema violation: the counts were simply wrong, and the only way
+# they surfaced was measuring the real corpus against the real published
+# events.
+# ---------------------------------------------------------------------------
+
+
+def _user_line(*, ts: str, text: str, prompt_source: str | None = "typed") -> dict:
+    line = {
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "timestamp": ts,
+        "sessionId": "sess-denominator",
+        "origin": {"kind": "human"},
+    }
+    if prompt_source is not None:
+        line["promptSource"] = prompt_source
+    return line
+
+
+def test_queued_messages_are_real_juniper_text(tmp_path: Path) -> None:
+    """A message typed WHILE a turn was still running is held by the harness
+    and submitted when the agent comes free, tagged promptSource="queued".
+    It was being dropped as synthetic. Measured live 2026-08-13: 74 real
+    queued messages in the corpus. Typing over a busy agent is itself a
+    frustration signature, so these were disproportionately the samples an
+    affect signal most wants."""
+    transcript = tmp_path / "queued.jsonl"
+    _write_jsonl(transcript, [_user_line(ts="2026-08-13T00:00:00.000Z", text="Cool what's next", prompt_source="queued")])
+    messages = list(parse_transcript_file(transcript))
+    assert [m.text for m in messages] == ["Cool what's next"]
+
+
+def test_suggestion_accepted_is_real_juniper_text(tmp_path: Path) -> None:
+    """Accepting an autocomplete suggestion is still Juniper choosing to send
+    that text."""
+    transcript = tmp_path / "suggested.jsonl"
+    _write_jsonl(transcript, [_user_line(ts="2026-08-13T00:00:00.000Z", text="try it now", prompt_source="suggestion_accepted")])
+    assert [m.text for m in parse_transcript_file(transcript)] == ["try it now"]
+
+
+def test_system_and_sdk_prompt_sources_stay_excluded(tmp_path: Path) -> None:
+    """The other half of the same fix: widening the accepted set must not
+    admit harness-injected turns. "system" carries <task-notification>
+    blocks (705 in the real corpus); "sdk" carries programmatic turns like
+    "Run the Bash tool with command: ..." -- both confirmed by direct
+    inspection 2026-08-13, not assumed from the name."""
+    transcript = tmp_path / "synthetic.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(ts="2026-08-13T00:00:00.000Z", text="a notification body", prompt_source="system"),
+            _user_line(ts="2026-08-13T00:01:00.000Z", text="Run the Bash tool with command: echo hi", prompt_source="sdk"),
+            _user_line(ts="2026-08-13T00:02:00.000Z", text="a real one", prompt_source="typed"),
+        ],
+    )
+    assert [m.text for m in parse_transcript_file(transcript)] == ["a real one"]
+
+
+def test_local_command_stdout_is_not_juniper_prose(tmp_path: Path) -> None:
+    """Harness output for a slash command was being scored as words Juniper
+    typed -- 123 messages / 2004 words in the real corpus, all pure
+    denominator inflation. A message that is ENTIRELY this wrapper must drop
+    out completely rather than score as an empty message."""
+    transcript = tmp_path / "stdout.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(
+                ts="2026-08-13T00:00:00.000Z",
+                text="<local-command-stdout>Set model to Sonnet 5 and saved as your default</local-command-stdout>",
+            ),
+            _user_line(ts="2026-08-13T00:01:00.000Z", text="ok now fix it"),
+        ],
+    )
+    assert [m.text for m in parse_transcript_file(transcript)] == ["ok now fix it"]
+
+
+def test_bash_input_and_stdout_wrappers_are_stripped(tmp_path: Path) -> None:
+    """`! <command>` bash-mode turns echo both the command and its output
+    under role user."""
+    transcript = tmp_path / "bash.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(ts="2026-08-13T00:00:00.000Z", text="<bash-input>git status --short</bash-input>"),
+            _user_line(ts="2026-08-13T00:01:00.000Z", text="<bash-stdout>M  some/file.py</bash-stdout>"),
+        ],
+    )
+    assert list(parse_transcript_file(transcript)) == []
+
+
+def test_placeholder_angle_brackets_in_juniper_prose_survive(tmp_path: Path) -> None:
+    """The boundary the wrapper fix must not cross. Juniper routinely writes
+    angle-bracket placeholders when instructing an agent -- <name> appears in
+    60 real admitted messages, <question> in 38, <service> in 20, <path> in
+    17. Those are real prose, not harness wrappers, and stripping by tag name
+    alone would silently eat them (and the swear words next to them).
+
+    Asserts the FULL text is preserved, not merely that the message survives:
+    a strip that removed only the tagged span would still yield a non-empty
+    message and pass a weaker assertion.
+
+    Uses a CLOSED ``<section>...</section>`` pair deliberately. The first
+    version of this test used only unclosed placeholders, which made it
+    unfailable: the over-broad regex it was meant to catch
+    (``<(\\w+)>...</\\1>``) needs a closing tag to match anything, so the
+    test passed against the very mutation it existed to detect. Confirmed by
+    running it against that mutation, not by re-reading it. Closed pairs are
+    also the real-world case that actually loses words -- a live audit found
+    6 such messages, one of them 373 words inside ``<section>``."""
+    text = (
+        "run the damn thing for <service> at <path> and tell me the <question>\n"
+        "<section>keep every word of this real instruction</section>"
+    )
+    transcript = tmp_path / "placeholders.jsonl"
+    _write_jsonl(transcript, [_user_line(ts="2026-08-13T00:00:00.000Z", text=text)])
+    messages = list(parse_transcript_file(transcript))
+    assert [m.text for m in messages] == [text]
+
+
+def test_bash_stderr_sibling_does_not_survive_as_phantom_words(tmp_path: Path) -> None:
+    """`<bash-stdout>` is emitted with a `<bash-stderr>` sibling even when
+    stderr is empty. Stripping only stdout leaves a bare
+    `<bash-stderr></bash-stderr>`, which is non-empty text and therefore
+    admitted -- tokenizing to 4 phantom words ("bash", "stderr", twice) from
+    a message Juniper never typed. Real shape, taken verbatim from the live
+    corpus 2026-08-13."""
+    transcript = tmp_path / "stderr_sibling.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(
+                ts="2026-08-13T00:00:00.000Z",
+                text="<bash-stdout>✓ Logged out of github.com</bash-stdout><bash-stderr></bash-stderr>",
+            )
+        ],
+    )
+    assert list(parse_transcript_file(transcript)) == []
+
+
+def test_wrapper_stripped_from_a_message_that_also_has_real_prose(tmp_path: Path) -> None:
+    """The common live shape: a system-reminder or command echo prepended to
+    text Juniper actually typed. The prose must survive and the boilerplate
+    must not be counted."""
+    transcript = tmp_path / "mixed.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(
+                ts="2026-08-13T00:00:00.000Z",
+                text="<local-command-stdout>Set model to Sonnet 5</local-command-stdout>\nnow chase the bug",
+            )
+        ],
+    )
+    assert [m.text for m in parse_transcript_file(transcript)] == ["now chase the bug"]
+
+
+def test_compact_summary_is_not_juniper_prose(tmp_path: Path) -> None:
+    """A /compact continuation summary is MODEL-authored text injected as a
+    type=user turn. It carries no promptSource, so the "absent means typed"
+    default admitted all 109 of them in the real corpus -- 30.7% of the whole
+    denominator and 45.6% of the numerator, moving swear_frequency -21.4%.
+
+    The `isCompactSummary` boolean sits on the same JSON object the filter
+    already reads, so this is a one-field check, not a heuristic."""
+    transcript = tmp_path / "compacted.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": "This session is being continued from a previous conversation "
+                    "that ran out of context.\n\nSummary:\n8. All user messages:\n - \"this is bullshit\"",
+                },
+                "timestamp": "2026-08-13T00:00:00.000Z",
+                "sessionId": "sess-compact",
+                "isCompactSummary": True,
+                "isVisibleInTranscriptOnly": True,
+            },
+            _user_line(ts="2026-08-13T00:01:00.000Z", text="ok keep going"),
+        ],
+    )
+    assert [m.text for m in parse_transcript_file(transcript)] == ["ok keep going"]
+
+
+def test_compact_summary_does_not_recount_quoted_swears(tmp_path: Path) -> None:
+    """Why this is worse than plain denominator inflation, pinned as
+    behaviour rather than left in a comment. A summary quotes Juniper's own
+    angry messages verbatim, and every later compaction re-summarizes the one
+    before it -- so a single real swear is counted again in each successive
+    summary, inflating the NUMERATOR too. Here the same swear appears in the
+    real message and in two summaries; only the real one may count."""
+    from orion.cocreation.affective_signals import count_swear_words, tokenize
+
+    quoted = 'Summary:\n8. All user messages:\n - "this is bullshit"'
+    transcript = tmp_path / "recount.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(ts="2026-08-13T00:00:00.000Z", text="this is bullshit"),
+            {
+                "type": "user",
+                "message": {"role": "user", "content": quoted},
+                "timestamp": "2026-08-13T00:01:00.000Z",
+                "sessionId": "s",
+                "isCompactSummary": True,
+            },
+            {
+                "type": "user",
+                "message": {"role": "user", "content": quoted},
+                "timestamp": "2026-08-13T00:02:00.000Z",
+                "sessionId": "s",
+                "isCompactSummary": True,
+            },
+        ],
+    )
+    swears = sum(count_swear_words(tokenize(m.text)) for m in parse_transcript_file(transcript))
+    assert swears == 1
+
+
+def test_wrapper_strip_is_non_greedy_across_repeated_tags(tmp_path: Path) -> None:
+    """`.*?` not `.*`. With a greedy body the regex spans from the FIRST
+    opening tag to the LAST closing tag, swallowing every real word between
+    two harness blocks -- and a message that is bracketed by them collapses
+    to None and vanishes entirely. Mutation-verified: replacing `.*?` with
+    `.*` was caught by no test before this one."""
+    transcript = tmp_path / "greedy.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(
+                ts="2026-08-13T00:00:00.000Z",
+                text="<bash-input>ls</bash-input>keep this damn text<bash-input>pwd</bash-input>",
+            )
+        ],
+    )
+    assert [m.text for m in parse_transcript_file(transcript)] == ["keep this damn text"]
+
+
+def test_wrapper_strip_spans_newlines(tmp_path: Path) -> None:
+    """`re.DOTALL`. Every real <bash-stdout>/<system-reminder> body in the
+    corpus is multi-line, so without DOTALL the pattern matches nothing at
+    all and the entire fix silently no-ops on live data while still passing
+    single-line tests. Mutation-verified: dropping the flag was caught by no
+    test before this one."""
+    transcript = tmp_path / "multiline.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            _user_line(
+                ts="2026-08-13T00:00:00.000Z",
+                text="<bash-stdout>line one\nline two\nline three</bash-stdout>\nreal words here",
+            )
+        ],
+    )
+    assert [m.text for m in parse_transcript_file(transcript)] == ["real words here"]

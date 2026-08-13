@@ -17,6 +17,11 @@ Two extraction passes over the same real, already-existing local data, per
 
 Filtering rules, in order:
 
+0. ``isCompactSummary is not True``. A ``/compact`` continuation summary is
+   model-authored text injected as a ``type=user`` turn with no
+   ``promptSource``, so rule 2's inclusion default admitted it. See
+   ``_is_real_typed_human_turn`` for the measured scale -- it was the
+   largest single contaminant in this parser.
 1. ``type == "user"`` and ``message.content`` is a plain ``str``. A list
    ``content`` is almost always a tool-result echo (the harness re-injects
    tool output under role ``user``) or synthetic harness text (e.g.
@@ -30,18 +35,42 @@ Filtering rules, in order:
    worth the risk of instead *admitting* synthetic harness text as if
    Juniper had typed it, which would be the worse failure for a signal
    whose whole point is measuring Juniper's own words.
-2. ``promptSource == "typed"`` and ``origin.kind == "human"`` when present --
-   distinguishes a real keystroke turn from synthetic/injected turns. Older
-   transcript lines may lack these fields; treated as typed/human by default
-   (conservative toward inclusion, not exclusion, since the alternative is
-   silently losing real signal from every transcript written before these
-   fields existed).
+2. ``promptSource`` in ``_HUMAN_PROMPT_SOURCES`` and ``origin.kind ==
+   "human"`` when present -- distinguishes a real keystroke turn from
+   synthetic/injected turns. See that constant for the measured value
+   distribution and why ``queued``/``suggestion_accepted`` count as real
+   Juniper text while ``system``/``sdk`` do not. Older transcript lines may
+   lack these fields; treated as typed/human by default (conservative toward
+   inclusion, not exclusion, since the alternative is silently losing real
+   signal from every transcript written before these fields existed).
 3. Known synthetic wrapper tags are stripped from the text before scoring --
    ``<local-command-caveat>``, ``<command-name>``, ``<command-message>``,
-   ``<command-args>``, ``<system-reminder>`` -- since their content is harness
+   ``<command-args>``, ``<system-reminder>``, ``<local-command-stdout>``,
+   ``<bash-input>``, ``<bash-stdout>``, ``<bash-stderr>`` -- since their
+   content is harness
    boilerplate, not something Juniper composed. A message that is *entirely*
    wrapper text (e.g. a bare ``/compact`` with no trailing prose) yields
    ``None`` after stripping and is dropped, not scored as an empty message.
+
+   The last three were added 2026-08-13 after a live audit found 127 real
+   messages (2099 words) of pure harness output being scored as Juniper's
+   own prose, inflating every rate's denominator. The audit also found the
+   boundary that matters here: tags like ``<name>``, ``<question>``,
+   ``<service>``, ``<path>`` appear inside admitted messages 60/38/20/17
+   times, but those are Juniper's own placeholder prose in instructions to
+   an agent, not harness wrappers -- stripping by tag name alone would eat
+   real text. What separates them empirically is that a harness wrapper is
+   the *entire* message and therefore starts it; the placeholders appear
+   mid-sentence. Only tags observed in the leading position are listed here.
+
+   Measured cost of getting that boundary wrong: a blanket
+   ``<(\\w+)>...</\\1>`` strip would delete 515 real words across 6 real
+   messages -- 373 of them from one instruction where Juniper wrapped a
+   spec in ``<section>...</section>``. ``<bash-stderr>`` is on the list
+   despite never appearing in the leading position, because it is emitted
+   only as a sibling of ``<bash-stdout>``: without it, stripping stdout
+   alone leaves a bare ``<bash-stderr></bash-stderr>`` that survives as a
+   non-empty message and tokenizes to 4 phantom words.
 4. A message with no parseable ``timestamp`` (missing, or not an ISO-8601
    string) is dropped entirely, not included with a null timestamp -- every
    real message in this repo's local corpus as of 2026-08-11 has one, so
@@ -69,10 +98,33 @@ logger = logging.getLogger("orion.dev_economics.claude_code_ingest")
 DEFAULT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
 _WRAPPER_TAG_PATTERN = re.compile(
-    r"<(local-command-caveat|command-name|command-message|command-args|system-reminder)>"
+    r"<(local-command-caveat|command-name|command-message|command-args|system-reminder"
+    r"|local-command-stdout|bash-input|bash-stdout|bash-stderr|tool_use_error)>"
     r".*?</\1>",
     re.DOTALL,
 )
+
+# promptSource values that mean "Juniper really typed this", beyond the plain
+# "typed" case. Measured against the real local corpus 2026-08-13 rather than
+# guessed -- the full set of values present is: typed (2638), None (1915),
+# system (705), queued (74), sdk (5), suggestion_accepted (1).
+#
+# - "queued" is a message typed WHILE a turn was still running, held, and
+#   submitted when the agent came free. Real Juniper prose ("Cool what's
+#   next") -- and disproportionately the interesting kind: 75 dropped
+#   queued/suggestion_accepted messages carried 6475 words and 9 real swear
+#   words, since typing over a busy agent is itself a frustration signature.
+#   Dropping them biased both the numerator and the denominator.
+# - "suggestion_accepted" is Juniper accepting an autocomplete suggestion --
+#   the text is still what Juniper chose to send.
+#
+# Deliberately still excluded: "system" (harness-injected, e.g.
+# <task-notification> blocks) and "sdk" (programmatic turns, e.g. "Run the
+# Bash tool with command: ..." -- confirmed by direct inspection, not
+# assumed). A promptSource absent entirely stays admitted, unchanged: older
+# transcripts predate the field, and the conservative direction there is
+# inclusion.
+_HUMAN_PROMPT_SOURCES: frozenset[str] = frozenset({"typed", "queued", "suggestion_accepted"})
 
 
 @dataclass(frozen=True)
@@ -127,8 +179,32 @@ def _is_real_typed_human_turn(obj: dict) -> bool:
         # list content is a tool-result echo re-injected under role "user",
         # never something Juniper typed.
         return False
+    if obj.get("isCompactSummary") is True:
+        # A /compact continuation summary: MODEL-authored text injected as a
+        # type=user turn. It carries no promptSource at all, so rule 2's
+        # "absent means treat as typed" default admitted every one of them.
+        #
+        # This is the single largest contaminant in this parser, found
+        # 2026-08-13 only after the two fixes above were already written --
+        # 109 real messages carrying 30.7% of the whole corpus denominator
+        # and 45.6% of the numerator. Excluding them moves swear_frequency
+        # -21.4% (0.000591 -> 0.000464).
+        #
+        # Worse than ordinary denominator inflation, for two reasons a pure
+        # word-count view misses: a summary QUOTES Juniper's own angry
+        # messages back (its "All user messages" section is verbatim), so it
+        # corrupts numerator and denominator non-uniformly; and because each
+        # compaction re-summarizes the one before it, the same real swear is
+        # counted again in every successive summary. 34 real 15-minute
+        # windows read non-calm purely from this machine-authored text while
+        # the actual Juniper messages in them contained zero swears, and
+        # some windows are 100% summary with no typed Juniper words at all
+        # -- a published affect score for a window in which Juniper said
+        # nothing, which is exactly the empty-shell failure root CLAUDE.md
+        # §0A names.
+        return False
     prompt_source = obj.get("promptSource")
-    if prompt_source is not None and prompt_source != "typed":
+    if prompt_source is not None and prompt_source not in _HUMAN_PROMPT_SOURCES:
         return False
     origin = obj.get("origin")
     if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):

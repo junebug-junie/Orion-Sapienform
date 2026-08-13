@@ -15,10 +15,13 @@
 # the three deps installed below -- deliberately not the repo's full
 # requirements, which pull heavy service dependencies these checks never touch.
 #
+# check_inner_state_registry.py was excluded when this workflow first shipped
+# because it was RED on main -- wiring an already-failing gate would have
+# blocked every PR. PR #1613 registered the two missing attention schemas and
+# turned it green, so it is now included below. That sequencing was the point:
+# a gate joins CI only once it passes on main.
+#
 # Deliberately EXCLUDED, with reasons:
-#   - check_inner_state_registry.py  -- RED on main today. Wiring it now would
-#     block every PR on a pre-existing failure. Its own patch should fix the
-#     two unregistered schemas, then add it here.
 #   - check_single_consumer_channels.py, check_activation_saturation.py,
 #     check_substrate_projection_schema_drift.py,
 #     check_concept_relation_digest_liveness.py -- all need live infra
@@ -60,6 +63,9 @@ jobs:
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)
         run: python scripts/check_metric_lineage.py --gate
+
+      - name: Inner-state registry completeness
+        run: python scripts/check_inner_state_registry.py
 
       - name: scripts/ must not shadow a stdlib module
         run: python scripts/check_scripts_dir_no_stdlib_shadow.py

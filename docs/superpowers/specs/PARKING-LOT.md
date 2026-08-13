@@ -162,6 +162,32 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   FalkorDB and the hub. atlas (96c) and circe (72c) sit at 0.52% and 0.21% -- pure GPU boxes
   with idle CPUs. The interference ceiling is a CPU story that the GPU tables completely miss.
 
+- **APC units not yet wired in (Juniper, in progress).** Real per-node wall draw. This is the
+  instrument that converts the dominant cost term from unmeasured to measured. Every chassis
+  power figure this arc produced was an estimate from core count and every one was wrong;
+  circe is a Gigabyte HA01 with 3x 2200 W PSUs, not the 200-280 W box two drafts assumed.
+  → `the-plant` §5 TODO 1. Blocks any real cost model.
+
+- **RAPL is present on athena and root-blocked.** `/sys/class/powercap/intel-rapl:{0,1}/energy_uj`
+  exists (2x Xeon Gold 6138, 125 W package limit each = 250 W) but is mode 400. A permission
+  change or a root-run collector gives real CPU package power today at zero hardware cost.
+  Partial (athena only, CPU only) but immediate. → `the-plant` §5 TODO 2.
+
+- **Mean GPU utilisation is the wrong statistic for a contention ceiling.** Juniper flagged
+  atlas as under-reported at 6.8%/22.1% mean util given it runs inference ~24/7. Correct: a
+  live 1 Hz `/slots` poll shows `quick` (:8013) is **bimodal** -- 101 of 121 samples completely
+  idle, 9 samples completely full, nothing in between. It hits all-4-busy **7.4%** of the time
+  while averaging 11.2% of capacity. `nvidia-smi utilization.gpu` additionally samples ~1 s out
+  of every 31 s (3% of the timeline) and under-reports bandwidth-bound LLM decode. `/slots` is
+  the right meter and the admission gate already reads it. 2-min window -- needs 24 h.
+
+- **No disk I/O telemetry anywhere**, on an 80-thread box running 81 containers at load 42
+  (7-day load15 max 120.2, i.e. 1.5x oversubscribed). Only capacity is visible (22% of 197 G).
+  Plausible second interference channel on athena, currently invisible.
+
+- **Athena thermals are readable and uncollected:** `x86_pkg_temp` 56 C / 65 C (two sockets),
+  `pch_lewisburg` 45 C, via `/sys/class/thermal`. Nothing writes these to biometrics.
+
 - **Method correction, recorded because it nearly shipped:** `avg((util>0)::int)` is not a duty
   cycle. It reported athena's P100 at "99.74% busy" when its mean utilisation is 12.8% — the
   card is near-continuously *active at low intensity*, which the >0 test cannot distinguish

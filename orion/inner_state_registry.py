@@ -38,6 +38,8 @@ from pydantic import BaseModel
 
 from orion.autonomy.models import AutonomyStateV2
 from orion.core.schemas.drives import DriveStateV1
+from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateV1
@@ -119,6 +121,66 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "dominant_channel, top reason) survives on the additive "
             "SelfStateV1.dominant_attention_target_details field via "
             "AttentionTargetSummaryV1 (orion/schemas/self_state.py)."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="attention_broadcast_projection.v1",
+        schema=AttentionBroadcastProjectionV1,
+        producer_service="orion-substrate-runtime",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Not composed into self_state.v1, and cannot be: that producer "
+            "(orion-self-state-runtime) was removed in PR #1266, so "
+            "'composed_into_self_state' is no longer a reachable status for "
+            "any signal registered after 2026-07-23. This is SHADOW in the "
+            "literal sense only -- it has real, live cognition consumers "
+            "listed below."
+        ),
+        cognition_consumers=(
+            "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
+            "services.orion-thought.app.chain:run_reverie_chain",
+        ),
+        notes=(
+            "Rung 3: the selected coalition of the latest workspace "
+            "competition, re-broadcast as one queryable projection. Persisted "
+            "as a SINGLETON upsert row in "
+            "substrate_attention_broadcast_projection (PK on projection_id) -- "
+            "no per-tick history for this lane, only the latest snapshot. "
+            "Added to this registry 2026-08-13 after "
+            "scripts/check_inner_state_registry.py was found RED on main: the "
+            "schema had existed in orion/schemas/registry.py with no entry "
+            "here, and nothing ran the gate that would have caught it."
+        ),
+    ),
+    InnerStateSignal(
+        signal_id="attention_self_model.v1",
+        schema=AttentionSelfModelV1,
+        producer_service="orion-substrate-runtime",
+        cadence=Cadence.PER_TICK,
+        composition_status=CompositionStatus.SHADOW,
+        shadow_reason=(
+            "Same as attention_broadcast_projection.v1: self_state.v1's "
+            "producer no longer exists, so composition into it is not a "
+            "reachable status. Real live consumers are listed below."
+        ),
+        cognition_consumers=(
+            "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+            "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger",
+        ),
+        notes=(
+            "AST/HOT instrumentation -- an inspectable model OF Orion's own "
+            "current attention (Attention Schema Theory / Higher-Order "
+            "Theory). Persisted to substrate_attention_self_model. "
+            "CORRECTION 2026-08-13: the schema's own docstring "
+            "(orion/schemas/attention_self_model.py) still claims it is 'not "
+            "consumed by any live decision path -- that wiring is explicitly "
+            "future work (Phase 3+)'. That is STALE. "
+            "orion-equilibrium-service's generative_metacog_poll_loop reads it "
+            "via AttentionSelfModelReader.fetch_recent_samples and feeds both "
+            "metacog gates above; EQUILIBRIUM_METACOG_INSIGHT_TRIGGER_ENABLE "
+            "and EQUILIBRIUM_METACOG_FLOW_TRIGGER_ENABLE are both true in "
+            ".env_example, so the path is live by default, not future work."
         ),
     ),
     InnerStateSignal(

@@ -40,8 +40,8 @@
 set -e
 
 GRAPH_FILE="graphify-out/graph.json"
-MANIFEST_FILE="graphify-out/manifest.json"
 THRESHOLD_PCT="${GRAPHIFY_UPDATE_MAX_NODE_LOSS_PCT:-10}"
+SNAPSHOT_GLOB="graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
 
 # Every artifact `graphify update .` may rewrite or create. All of them are
 # restored together -- a partial restore is what produced the second incident.
@@ -84,6 +84,10 @@ BEFORE=$(_count_nodes) || {
 }
 
 BACKUP_DIR=$(mktemp -d)
+# The backup set grew from 2 files to 6 (~46MB, dominated by graph.json and
+# graph.html) and `graphify update` on this repo runs for minutes, so a Ctrl-C
+# would otherwise leak that into /tmp. Cleans up on any exit path.
+trap 'rm -rf "$BACKUP_DIR"' EXIT INT TERM
 
 _backup_artifacts() {
     for _f in $ARTIFACTS; do
@@ -110,19 +114,56 @@ _restore_artifacts() {
     done
 }
 
-# graphify also drops a dated snapshot dir (graphify-out/<YYYY-MM-DD>/). It is
-# NOT auto-removed here: deleting directories is a destructive op needing
-# explicit approval per CLAUDE.md 13, and that dir is the recovery source when
-# a restore is incomplete. Named so it can be cleaned up deliberately.
-_warn_snapshot_dirs() {
-    for _d in graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
-        [ -d "$_d" ] || continue
-        echo "" >&2
-        echo "[safe-graphify-update] NOTE: snapshot dir $_d is present (left in place," >&2
-        echo "  not auto-removed). It duplicates graphify-out/ artifacts; remove it" >&2
-        echo "  deliberately once you have confirmed the restore is correct." >&2
+# graphify drops a dated snapshot dir (graphify-out/<YYYY-MM-DD>/) holding a
+# PRE-update copy of its outputs. That ordering is not an assumption -- it is
+# established from tracked git history: in commit eae14a6c, which added
+# graphify-out/2026-07-29/, that snapshot's graph.json has 32529 nodes, the
+# top-level graph.json in the SAME commit has 28307, and the top-level in the
+# PARENT commit has 32529. The snapshot matches the parent, i.e. pre-update.
+# It is therefore a genuine recovery source, which is exactly how the
+# 2026-08-12 report and label-cache restore was performed.
+#
+# NOT auto-removed: deleting directories is a destructive op needing explicit
+# approval per CLAUDE.md 13, and it is the recovery source. Only dirs CREATED
+# BY THIS RUN are named -- an earlier version globbed every dated dir and told
+# the operator to delete it, which would have included the git-TRACKED
+# graphify-out/2026-07-29/, i.e. advice to delete committed repo content.
+_list_snapshot_dirs() {
+    for _d in $SNAPSHOT_GLOB; do
+        [ -d "$_d" ] && echo "$_d"
     done
+    # Explicit success REQUIRED. With no dated dir present the glob stays
+    # literal, `[ -d ]` is false, and that false becomes the function's exit
+    # status -- which under `set -e` killed the whole script before its first
+    # log line, on the common path where no snapshot exists yet.
+    return 0
 }
+
+_warn_snapshot_dirs() {
+    _new=""
+    for _d in $(_list_snapshot_dirs); do
+        case "
+$SNAPSHOT_DIRS_BEFORE
+" in
+            *"
+$_d
+"*) continue ;;
+        esac
+        _new="$_new $_d"
+    done
+    [ -n "$_new" ] || return 0
+    echo "" >&2
+    echo "[safe-graphify-update] NOTE: this run created snapshot dir(s):$_new" >&2
+    echo "  They hold a PRE-update copy of graphify-out/ (~45MB each) and are" >&2
+    echo "  gitignored, so they will NOT appear in git status. Left in place as" >&2
+    echo "  the recovery source; remove deliberately once the restore is verified." >&2
+}
+
+# Recorded BEFORE the update so _warn_snapshot_dirs reports only what this run
+# created, never a pre-existing (possibly git-tracked) dated dir. Must come
+# after the function definitions above -- sh resolves functions at call time,
+# and under `set -e` an undefined-function call kills the script outright.
+SNAPSHOT_DIRS_BEFORE=$(_list_snapshot_dirs)
 
 _backup_artifacts
 
@@ -130,14 +171,16 @@ echo "[safe-graphify-update] before: $BEFORE nodes. running: graphify update . $
 if ! graphify update . "$@"; then
     echo "[safe-graphify-update] ERROR: graphify update itself failed (nonzero exit) -- restoring backup" >&2
     _restore_artifacts
-    rm -rf "$BACKUP_DIR"
+    _warn_snapshot_dirs
+    echo "[safe-graphify-update] Verify with: git status --short graphify-out/" >&2
     exit 1
 fi
 
 AFTER=$(_count_nodes) || {
     echo "[safe-graphify-update] ERROR: could not read node count after update -- restoring backup" >&2
     _restore_artifacts
-    rm -rf "$BACKUP_DIR"
+    _warn_snapshot_dirs
+    echo "[safe-graphify-update] Verify with: git status --short graphify-out/" >&2
     exit 1
 }
 
@@ -155,13 +198,15 @@ if [ "$EXCEEDS" = "1" ]; then
     echo "  Do not re-run graphify update . directly and trust its own log output." >&2
     echo "  Investigate first, or use a full re-extraction instead of incremental update." >&2
     _restore_artifacts
-    rm -rf "$BACKUP_DIR"
     _warn_snapshot_dirs
     echo "" >&2
     echo "[safe-graphify-update] Verify with: git status --short graphify-out/" >&2
+    echo "  (snapshot dirs are gitignored, so check any named above by hand)" >&2
     exit 1
 fi
 
 echo "[safe-graphify-update] OK: node count $BEFORE -> $AFTER (~${DROP_PCT}% change, within ${THRESHOLD_PCT}% threshold)."
-rm -rf "$BACKUP_DIR"
+# Also fires on the success path: dated snapshots are gitignored now, so a
+# healthy run would otherwise add ~45MB to disk with no signal at all.
+_warn_snapshot_dirs
 exit 0

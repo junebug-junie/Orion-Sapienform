@@ -237,21 +237,105 @@ def test_graphify_crash_also_restores_report(tmp_path: Path) -> None:
     assert "1000 nodes" in report
 
 
-def test_snapshot_dir_is_reported_not_deleted(tmp_path: Path) -> None:
-    """Dated snapshot dirs are named in output but never auto-removed --
-    deleting dirs needs explicit approval, and it is the recovery source."""
-    _write_full_artifacts(tmp_path, node_count=999, report_nodes=999)
-    snap = tmp_path / "graphify-out" / "2026-08-12"
-    snap.mkdir()
-    (snap / "GRAPH_REPORT.md").write_text("snapshot", encoding="utf-8")
+def _fake_graphify_with_snapshot(
+    bin_dir: Path, result_node_count: int, report_nodes: int, snapshot_date: str
+) -> None:
+    """Like _fake_graphify_full, but also drops a dated snapshot dir the way
+    real graphify does -- containing a PRE-update copy.
 
+    That ordering is established from tracked git history: in commit eae14a6c
+    (which added graphify-out/2026-07-29/) the snapshot's graph.json has 32529
+    nodes, the top-level in the SAME commit has 28307, and the top-level in the
+    PARENT commit has 32529 -- the snapshot matches the parent, i.e. pre-update.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    fake = bin_dir / "graphify"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"mkdir -p graphify-out/{snapshot_date}\n"
+        # snapshot captures the PRE-update state, before anything is rewritten
+        f"cp graphify-out/graph.json graphify-out/{snapshot_date}/graph.json\n"
+        f"cp graphify-out/GRAPH_REPORT.md graphify-out/{snapshot_date}/GRAPH_REPORT.md\n"
+        f"python3 -c \"import json; json.dump({{'nodes': [{{'id': i}} for i in range({result_node_count})], 'edges': []}}, open('graphify-out/graph.json', 'w'))\"\n"
+        f"printf '# Graph Report\\n- {report_nodes} nodes\\n' > graphify-out/GRAPH_REPORT.md\n"
+        "printf 'generated' > graphify-out/graph.html\n"
+        "echo 'Code graph updated.'\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+
+def test_run_created_snapshot_dir_is_reported_and_holds_pre_update_state(
+    tmp_path: Path,
+) -> None:
+    """The scenario the suite previously never exercised: a snapshot dir
+    created BY the destructive run. It must be named in output (it is
+    gitignored, so `git status` will not show it) and must retain the
+    PRE-update copy, which is what makes it a usable recovery source."""
+    _write_full_artifacts(tmp_path, node_count=999, report_nodes=999)
     fake_bin = tmp_path / "fake_bin"
-    _fake_graphify_full(fake_bin, result_node_count=50, report_nodes=50)
+    _fake_graphify_with_snapshot(fake_bin, 50, 50, "2026-08-13")
 
     proc = _run(tmp_path, fake_bin)
     assert proc.returncode == 1
-    assert "2026-08-12" in proc.stderr
+    assert "2026-08-13" in proc.stderr
+
+    snap = tmp_path / "graphify-out" / "2026-08-13"
     assert snap.exists(), "snapshot dir must not be auto-deleted"
+    assert "999 nodes" in (snap / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+
+
+def test_preexisting_snapshot_dir_is_not_named_for_deletion(tmp_path: Path) -> None:
+    """Regression: an earlier version globbed EVERY dated dir and told the
+    operator to remove it -- including the git-TRACKED graphify-out/2026-07-29/,
+    i.e. advice to delete committed repo content. Only dirs this run created
+    may be named."""
+    _write_full_artifacts(tmp_path, node_count=999, report_nodes=999)
+    preexisting = tmp_path / "graphify-out" / "2026-07-29"
+    preexisting.mkdir()
+    (preexisting / "GRAPH_REPORT.md").write_text("tracked content", encoding="utf-8")
+
+    fake_bin = tmp_path / "fake_bin"
+    _fake_graphify_with_snapshot(fake_bin, 50, 50, "2026-08-13")
+
+    proc = _run(tmp_path, fake_bin)
+    assert proc.returncode == 1
+    assert "2026-08-13" in proc.stderr
+    assert "2026-07-29" not in proc.stderr
+    assert preexisting.exists()
+
+
+def test_snapshot_warning_fires_on_success_path(tmp_path: Path) -> None:
+    """Snapshots are gitignored now, so a HEALTHY run would otherwise add
+    ~45MB to disk with no signal anywhere."""
+    _write_full_artifacts(tmp_path, node_count=1000, report_nodes=1000)
+    fake_bin = tmp_path / "fake_bin"
+    _fake_graphify_with_snapshot(fake_bin, 1005, 1005, "2026-08-13")
+
+    proc = _run(tmp_path, fake_bin)
+    assert proc.returncode == 0
+    assert "2026-08-13" in proc.stderr
+
+
+def test_snapshot_warning_fires_on_crash_path(tmp_path: Path) -> None:
+    """The crash path restored artifacts but issued no snapshot warning."""
+    _write_full_artifacts(tmp_path, node_count=1000, report_nodes=1000)
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir(parents=True)
+    fake = fake_bin / "graphify"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "mkdir -p graphify-out/2026-08-13\n"
+        "cp graphify-out/graph.json graphify-out/2026-08-13/graph.json\n"
+        "echo 'not json' > graphify-out/graph.json\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    proc = _run(tmp_path, fake_bin)
+    assert proc.returncode == 1
+    assert "2026-08-13" in proc.stderr
 
 
 def test_boundary_at_exactly_threshold_percent(tmp_path: Path) -> None:

@@ -109,37 +109,47 @@ edges:
   # node:substrate.bus_synaptic above: an Active-Inference-style domain node
   # written by services/orion-substrate-runtime/app/worker.py::
   # _vision_channel_tick via a receipt, consumed through the same generic
-  # prediction_signal perturbation path. It reads the SAME orion_bus_synapse
-  # gap_zscore edges as that node, scoped to the orion:vision:* channels --
-  # measured live 2026-08-13 at 10 of 171 qualifying edges, which is why the
-  # mesh-wide node cannot stand in for it: a total vision blackout moves the
-  # mesh-wide reading to at most 0.058, under its own observed baseline max of
-  # 0.094. Scoped, the same blackout reads 1.0.
+  # prediction_signal perturbation path. Unlike that node it reads nothing from
+  # the bus synaptic graph: it listens to the vision artifact channel and
+  # measures the eye's own output on a clock. A first revision did read that
+  # graph's gap_zscore, and was deleted rather than tuned -- it z-scored a
+  # fixed 5s scheduler, and froze rather than rose when the eye went silent.
   #
   # confidence/available_capacity intentionally NOT mapped, exactly as for
   # capability:transport above -- apply_diffusion()'s derived-fallback formula
   # produces them from this real pressure rather than fabricating a second
   # constant, which is the specific bug this edge exists to remove.
-  # Only perception_staleness maps to pressure. The node also carries
-  # perception_yield (mean objects detected per artifact), deliberately
-  # unmapped: a sustained zero is equally consistent with a blinded eye and an
-  # empty dark room at 3am, and telling those apart needs a per-stream
-  # day-shape prior that does not exist yet. Wiring it now would fire nightly
-  # on a working camera -- the false-positive twin of the fabricated
-  # confidence=1.0 this edge exists to delete. Recorded and observed first.
+  # `prediction_error` is the channel name, and it carries the AVAILABILITY
+  # reading (vision_channel_staleness_pressure) for this node.
   #
-  # An earlier draft mapped a bus-cadence prediction_error here as well. That
-  # was deleted, not tuned: it z-scored message inter-arrival time against a
-  # fixed 5s scheduler (a metronome), and was structurally blind to a blinded
-  # camera -- verified by probe, where a black frame returned ok=True with 0
-  # objects while the bus traffic stayed perfectly regular. See
-  # orion/substrate/prediction_error.py's capability:vision section.
+  # Not a free choice: `prediction_error` is the only pressure-hint key the
+  # shared receipt path emits. _prediction_error_receipt() hardcodes
+  # `pressure_hints: {"prediction_error": ...}`, state_deltas.py turns exactly
+  # that into the node-vector perturbation, and reconcile.py prunes any
+  # node-vector key that field-digester's channels.py::NODE_CHANNELS does not
+  # declare. An earlier revision of this edge mapped `perception_staleness`
+  # here, which reads better and was **dead**: nothing writes that channel onto
+  # a field node vector, so diffusion.py's src.get() returned 0.0 forever and
+  # capability:vision kept the fabricated pressure=0.0/confidence=1.0 vector
+  # this edge exists to delete -- including during a total blackout. Caught by
+  # code review, confirmed live against substrate_field_state.
+  #
+  # perception_staleness/perception_yield remain on the FalkorDB node as
+  # inspectable detail (see falkor_codec's allowlist); they are not field
+  # channels. Promoting either to a real one means plumbing it through
+  # _prediction_error_receipt + state_deltas.py + NODE_CHANNELS, which is a
+  # contract change, not a config line.
+  #
+  # perception_yield is deliberately not mapped to pressure at all: a sustained
+  # zero is equally consistent with a blinded eye and an empty dark room at
+  # 3am, and separating those needs a per-stream day-shape prior that does not
+  # exist yet.
   - source_id: node:substrate.vision
     target_id: capability:vision
     edge_type: node_capability
     weight: 0.85
     channel_map:
-      perception_staleness: pressure
+      prediction_error: pressure
 
   - source_id: node:athena
     target_id: capability:orchestration

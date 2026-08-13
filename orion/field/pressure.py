@@ -237,9 +237,17 @@ class DimensionContributor:
     value: float
     # The source_id that won this CHANNEL's own merge inside
     # collect_field_channel_pressures() -- a node_id, capability_id, or the
-    # resolved capability_provenance entry. None when the caller had no
-    # channel-provenance dict to thread through (map_channels_to_dimensions'
-    # back-compat path), which is not the same as "unknown producer".
+    # resolved capability_provenance entry.
+    #
+    # None means "not threaded through", NOT "produced by nobody". Two ways to
+    # get it: the caller passed no channel-provenance dict at all (the
+    # map_channels_to_dimensions back-compat path), or it passed one lacking
+    # this key. The second is unreachable via field_pressures_with_provenance()
+    # today -- the only channel collect_field_channel_pressures() writes
+    # without a provenance entry is recent_perturbation_count, which has no
+    # CHANNEL_DIMENSION_MAP entry and so never reaches a dimension -- but the
+    # type does not enforce that, so do not read None as a claim about a
+    # producer.
     source_id: str | None
 
 
@@ -247,21 +255,37 @@ class DimensionContributor:
 class DimensionProvenance:
     """Why a dimension reads what it reads this tick.
 
-    R1 of docs/superpowers/specs/2026-08-13-phase5-liveness-scope.md. The
-    merge that produces a dimension is a max() across channels, and the
+    R1 of the phase-5 roadmap, PR #1622 (branch docs/phase5-liveness-scope).
+    Cited by PR number, not path: that doc is NOT on main as of this commit,
+    and this file already learned at CHANNEL_DIMENSION_MAP above that a code
+    comment pointing at a file which does not resolve is how a "tracked
+    follow-up" becomes tracked nowhere. Every number below is restated inline
+    so this docstring stands alone if the doc never lands.
+
+    The merge that produces a dimension is a max() across channels, and the
     channel merge feeding it is itself a max() across sources -- so a
     dimension's value is one source's number, and until now which source that
     was got discarded before any consumer saw it.
 
-    That discard is not hypothetical harm. Measured 2026-08-13 over 20,000
-    live ticks: `node:substrate.codebase` won the merged `prediction_error`
-    channel on 54.2% of ticks while contributing 5 distinct values in 20,000
-    (an effective constant of 0.3357, so the channel has a hard floor it can
-    never read calm below), while `node:substrate.biometrics` (1,188 distinct)
-    and `node:substrate.bus_synaptic` (341 distinct) won 0% and contributed
-    nothing at all. Same defect class as the `thermal_pressure` (18 distinct)
-    vs capability `pressure` (1,325 distinct) domination fixed on 2026-08-11,
-    one layer down. Neither was findable without knowing who won.
+    That discard is not hypothetical harm. Measured 2026-08-13 over the most
+    recent 20,000 `substrate_field_state` ticks (11.4h at a 2.04s cadence):
+    `node:substrate.codebase` won the merged `prediction_error` channel on
+    54.2% of ticks while contributing 5 distinct values in 20,000 (an
+    effective constant of 0.3357, so the channel has a hard floor it can never
+    read calm below), while `node:substrate.biometrics` (1,188 distinct) and
+    `node:substrate.bus_synaptic` (341 distinct) won 0% and contributed
+    nothing at all.
+
+    Same defect class as the `thermal_pressure` domination fixed on
+    2026-08-11, one layer down. NOTE the two measurements of that older case
+    in this file are from different windows and are not interchangeable: the
+    CHANNEL_DIMENSION_MAP comment above reports 39 vs 1,895 distinct over
+    28,735 ticks / 24h (the window the fix was made on), while the same
+    comparison over this docstring's 20,000-tick / 11.4h window reads 18 vs
+    1,325. Same conclusion, different sample -- neither is the "true" count,
+    and a shorter window necessarily sees fewer distinct values.
+
+    Neither case was findable without knowing who won.
 
     `contributors` is every channel that mapped into this dimension, not just
     the winner -- R3's commensurability detector needs the losers to tell a
@@ -273,6 +297,21 @@ class DimensionProvenance:
     winning_channel: str
     winning_source_id: str | None
     contributors: tuple[DimensionContributor, ...]
+    # False when at least one other contributor tied the winning value, in
+    # which case `winning_channel` is whichever tied contender the dict
+    # happened to iterate last -- an arbitrary pick, not a fact about the
+    # world. R3 MUST exclude these before tallying a win rate, or it will
+    # systematically credit whichever channel sorts later and report a
+    # domination that never happened.
+    #
+    # Not a rare edge case. `repair_pressure` and `conversation_load` are both
+    # in PRESSURE_CHANNELS, so a 0.0 reading is stored rather than filtered
+    # (see the `channel in PRESSURE_CHANNELS or v > 0` branch in
+    # collect_field_channel_pressures) -- every calm tick where both read 0.0
+    # is a tie with a confidently-named winner. Surfaced by code review of
+    # this patch, which demonstrated the winner flipping purely by reordering
+    # the input dict.
+    winner_is_unique: bool
 
 
 def map_channels_to_dimensions_with_provenance(
@@ -293,7 +332,7 @@ def map_channels_to_dimensions_with_provenance(
     last-iterated channel at an equal value wins. Deterministic given
     Python's insertion-ordered dicts, and consistent between the two layers.
     """
-    provenance = channel_provenance or {}
+    provenance = {} if channel_provenance is None else channel_provenance
     dims: dict[str, float] = {}
     winners: dict[str, tuple[str, float]] = {}
     contributors: dict[str, list[DimensionContributor]] = {}
@@ -317,12 +356,15 @@ def map_channels_to_dimensions_with_provenance(
     detail: dict[str, DimensionProvenance] = {}
     for dim_id, value in dims.items():
         winning_channel, _winning_value = winners[dim_id]
+        dim_contributors = tuple(contributors[dim_id])
+        tied = sum(1 for c in dim_contributors if c.value == value)
         detail[dim_id] = DimensionProvenance(
             dimension_id=dim_id,
             value=value,
             winning_channel=winning_channel,
             winning_source_id=provenance.get(winning_channel),
-            contributors=tuple(contributors.get(dim_id, ())),
+            contributors=dim_contributors,
+            winner_is_unique=tied == 1,
         )
     return dims, detail
 

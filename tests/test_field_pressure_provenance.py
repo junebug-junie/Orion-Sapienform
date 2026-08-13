@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from orion.field.pressure import (
     CHANNEL_DIMENSION_MAP,
     DimensionContributor,
+    collect_field_channel_pressures,
     field_pressures,
     field_pressures_with_provenance,
     map_channels_to_dimensions,
@@ -63,6 +64,86 @@ def test_two_channels_into_one_dimension_names_the_winner() -> None:
     }
 
 
+def test_winner_is_the_max_not_the_last_channel_iterated() -> None:
+    """The mutant this suite was originally blind to (found by code review):
+    attributing a dimension to the last channel the loop touched rather than
+    to the one that actually won. Every other fixture here happens to make
+    those the same channel, so none of them catch it.
+
+    The two contributors MUST come from different nodes. A first attempt at
+    this fixture put both on node:a, and the mutant survived it: looking up
+    the wrong channel still returned the right source, because there was only
+    one source. The source has to differ for the assertion to bite.
+
+    Hand-computed:
+      channel merge: repair_pressure   = 0.80, won by node:a
+                     conversation_load = 0.20, won by node:b
+      insertion order puts conversation_load LAST, repair_pressure wins on
+      value:
+      social_pressure = max(0.80, 0.20) = 0.80, won by repair_pressure
+                        -> whose source is node:a, NOT node:b
+    """
+    state = _state(
+        {"node:a": {"repair_pressure": 0.80}, "node:b": {"conversation_load": 0.20}}
+    )
+    dims, detail = field_pressures_with_provenance(state)
+
+    assert dims["social_pressure"] == 0.80
+    social = detail["social_pressure"]
+    assert social.winning_channel == "repair_pressure"
+    # The load-bearing assertion: node:b is the last channel's source.
+    assert social.winning_source_id == "node:a"
+    # The winner is the FIRST contributor here, not the last.
+    assert social.contributors[0].channel == "repair_pressure"
+    assert social.contributors[-1].channel == "conversation_load"
+    assert social.winner_is_unique is True
+
+
+def test_channel_layer_tie_break_is_last_source_wins() -> None:
+    """Pins the CHANNEL-layer tie-break through the real
+    collect_field_channel_pressures() merge, not just the dimension layer.
+
+    The dataclass docstring claims both layers share a `>=` last-wins
+    convention. Code review showed nothing in the repo actually pinned the
+    channel layer -- flipping its `>=` to `>` left 55 related tests green.
+
+    Hand-computed: `pressure` is in PRESSURE_CHANNELS, both nodes read 0.50,
+    so the merge stores 0.50 and provenance goes to whichever node iterated
+    last -- node:second.
+    """
+    state = _state({"node:first": {"pressure": 0.50}, "node:second": {"pressure": 0.50}})
+    channels, channel_provenance = collect_field_channel_pressures(state)
+
+    assert channels["pressure"] == 0.50
+    assert channel_provenance["pressure"] == "node:second"
+
+    _dims, detail = field_pressures_with_provenance(state)
+    assert detail["resource_pressure"].winning_source_id == "node:second"
+
+
+def test_tied_winner_is_flagged_as_not_unique() -> None:
+    """A tie names a winner chosen by dict order, which is not a fact about
+    the world. R3 tallies win rates, so the degenerate case has to be
+    detectable rather than merely documented.
+
+    Hand-computed: both social channels read 0.0 -- a calm tick. Both are in
+    PRESSURE_CHANNELS so 0.0 is stored, not filtered. social_pressure = 0.0
+    with two tied contributors.
+    """
+    state = _state({"node:a": {"repair_pressure": 0.0, "conversation_load": 0.0}})
+    dims, detail = field_pressures_with_provenance(state)
+
+    assert dims["social_pressure"] == 0.0
+    social = detail["social_pressure"]
+    assert len(social.contributors) == 2
+    assert social.winner_is_unique is False
+
+    # ...and the genuine single-winner case is still reported as unique.
+    contested = _state({"node:a": {"repair_pressure": 0.4, "conversation_load": 0.9}})
+    _d, contested_detail = field_pressures_with_provenance(contested)
+    assert contested_detail["social_pressure"].winner_is_unique is True
+
+
 def test_dimension_provenance_survives_a_walkover() -> None:
     """A single-contributor dimension still names its source.
 
@@ -86,7 +167,13 @@ def test_values_are_identical_to_the_provenance_free_path() -> None:
       staleness 0.25 -> continuity_pressure 0.25
       pressure  0.60 -> resource_pressure   0.60
       execution_pressure 0.90 -> execution_pressure 0.90
+      reasoning_pressure 0.35 -> reasoning_pressure 0.35
+      reliability_pressure 0.15 -> reliability_pressure 0.15
+      egress_confidence_deficit 0.55 -> introspection_pressure 0.55
       repair_pressure 0.10, conversation_load 0.80 -> social_pressure 0.80
+
+    Covers all 7 dimensions CHANNEL_DIMENSION_MAP can produce, so a routing
+    entry silently disappearing shows up here.
     """
     state = _state(
         {
@@ -94,6 +181,9 @@ def test_values_are_identical_to_the_provenance_free_path() -> None:
                 "staleness": 0.25,
                 "pressure": 0.60,
                 "execution_pressure": 0.90,
+                "reasoning_pressure": 0.35,
+                "reliability_pressure": 0.15,
+                "egress_confidence_deficit": 0.55,
                 "repair_pressure": 0.10,
                 "conversation_load": 0.80,
             }
@@ -103,8 +193,12 @@ def test_values_are_identical_to_the_provenance_free_path() -> None:
         "continuity_pressure": 0.25,
         "resource_pressure": 0.60,
         "execution_pressure": 0.90,
+        "reasoning_pressure": 0.35,
+        "reliability_pressure": 0.15,
+        "introspection_pressure": 0.55,
         "social_pressure": 0.80,
     }
+    assert set(expected) == set(CHANNEL_DIMENSION_MAP.values())
     dims, detail = field_pressures_with_provenance(state)
 
     assert dims == expected

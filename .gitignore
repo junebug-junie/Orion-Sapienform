@@ -166,3 +166,18 @@ graphify-out/.graphify_*
 # graphify-out/graph.json via scripts/graphify_seed_semantic_cache.py. Never
 # commit local cache files (CLAUDE.md section 2).
 graphify-out/cache/
+
+# Dated snapshot dirs graphify drops beside its outputs on an update. Their
+# graph.json/manifest.json are BYTE-IDENTICAL duplicates of the top-level
+# files in the same commit -- ~45MB of pure duplication each. graphify-out/
+# 2026-07-29/ already got committed this way, against this file's own stated
+# intent above that only graph.json/GRAPH_REPORT.md/manifest.json are real
+# committed outputs. The snapshot's GRAPH_REPORT.md is worth keeping around
+# locally: it is the recovery source when a destructive update leaks a
+# shrunken report (see scripts/safe_graphify_update.sh).
+graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
+
+# Generated interactive graph view (~2.3MB). Never part of the tracked output
+# set, and it loads vis-network from an external CDN, so a committed copy
+# renders blank offline or if the pin moves.
+graphify-out/graph.html

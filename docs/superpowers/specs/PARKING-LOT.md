@@ -61,3 +61,23 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   0.0 on all 74,264 ticks (dead producer, still consumed); `node:circe` bottoms at 3e-323 (decay
   artifact); `template_match_score` provably dead for all 13 templates; `prune_build_cache` has no
   cooldown; "7 dimensions" prose stale in `orion/field/pressure.py:14,249,259-267`.
+
+## 2026-08-13 (Phase E0)
+
+- **`counterfactual` and `context_exec_memory_contradiction_review` are dead.** Both return an
+  empty string in ~0.5 s while reporting `status=success`, on all 10 runs. Never executed before
+  E0, so nobody knew. Empty-shell-cognition reporting success. NOT fixed — E0 hit a kill gate and
+  stopped.
+
+- **Recall dominates supplied context.** Ten `goal_formulate` runs across ten different field
+  ticks, each given Orion's real live pressure readings as the explicit `intention`, all returned
+  paraphrases of the same recalled Juniper coding session. Possibly the largest blocker in the
+  system for any cognitive-verb work: routed into the arena, these verbs would narrate session
+  history rather than Orion's condition. Deserves its own measurement.
+
+- **`goal_formulate` is a translator, not a generator.** Its prompt reads
+  `{{ intention or text or request }}` — it structures a *supplied* intention. It cannot produce
+  one from state. Any verb sharing that prompt shape has the same limit.
+
+- **Verb names cannot be trusted as capability descriptions.** Assumed `goal_formulate` formulated
+  goals. It does not. Check the prompt template before routing any verb.

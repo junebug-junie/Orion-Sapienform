@@ -565,7 +565,14 @@ channels:
     # "orion-athena-spark-introspector" (deployed-instance-name variant of
     # orion-spark-introspector) removed 2026-07-28, spark-introspector
     # retirement.
-    consumer_services: ["orion-timeline"]
+    # "orion-timeline" removed 2026-08-13: services/orion-timeline does not
+    # exist and the name appeared nowhere in the repo except this line.
+    # That leaves this channel WRITE-ONLY, and that is the honest state, not
+    # an omission: orion-cortex-exec still publishes to it
+    # (services/orion-cortex-exec/app/collapse_verbs.py:111,166) and nothing
+    # subscribes. Recorded rather than hidden -- an empty consumer list is an
+    # existing convention here (19 other channels carry one).
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-08"
 
@@ -1766,7 +1773,14 @@ channels:
     schema_id: "EvidenceUnitV1"
     message_kind: "evidence.unit.v1"
     producer_services: ["orion-sql-writer", "*"]
-    consumer_services: ["orion-evidence-index", "orion-sql-writer", "*"]
+    # "orion-evidence-index" removed 2026-08-13 from this channel and from
+    # orion:evidence:markdown:ingest / orion:evidence:parsed:ingest --
+    # services/orion-evidence-index does not exist and the name appeared
+    # nowhere in the repo except those three consumer lists. The evidence
+    # ingest channels keep orion-sql-writer, which really does subscribe
+    # (services/orion-sql-writer/app/settings.py's
+    # sql_writer_subscribe_channels).
+    consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-04-14"
 
@@ -1775,7 +1789,7 @@ channels:
     schema_id: "MarkdownSpecIngestV1"
     message_kind: "document.markdown.spec.v1"
     producer_services: ["*"]
-    consumer_services: ["orion-sql-writer", "orion-evidence-index"]
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-04-18"
 
@@ -1784,7 +1798,7 @@ channels:
     schema_id: "ParsedDocumentIngestV1"
     message_kind: "document.parsed.v1"
     producer_services: ["*"]
-    consumer_services: ["orion-sql-writer", "orion-evidence-index"]
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-04-19"
 

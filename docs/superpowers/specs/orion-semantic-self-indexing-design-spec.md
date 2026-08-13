@@ -409,7 +409,7 @@ Before enabling this in ordinary Orion turns, a live headless FCC smoke must pro
 - SessionStart restores state after compaction;
 - active files, task, decisions, and errors survive within the expected bounded snapshot;
 - no duplicate Context Mode MCP server is registered;
-- `--permission-mode dontAsk` allows the approved Context Mode tools;
+- the approved Context Mode tools actually run under the FCC subprocess's real permission argv (root containers pass `--permission-mode bypassPermissions`, not `dontAsk` -- see `orion/fcc/claude_spawn.py::claude_permission_argv()`; `dontAsk` is deny-by-default and was fixed away from in 2026-08, so a check written against it would pass for the wrong reason);
 - disabling the feature restores the previous FCC behavior.
 
 The plugin path and the standalone MCP path must not be enabled simultaneously if that produces duplicate tool registration. Once the plugin is proven, the ephemeral standalone Context Mode MCP entry should be removed if the plugin owns the MCP server.

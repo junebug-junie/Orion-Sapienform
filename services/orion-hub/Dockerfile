@@ -2,6 +2,13 @@ FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 ARG INSTALL_DEV_DEPS=false
 
+# Required for the root FCC claude subprocess to start under full-auto-approve
+# permissions instead of crashing on startup -- see
+# orion/fcc/claude_spawn.py::claude_permission_argv() for the canonical
+# explanation (don't duplicate it here; that's the one place to update if
+# Claude Code's own gate behavior changes).
+ENV IS_SANDBOX=1
+
 WORKDIR /app
 
 # Install Python + tools + network utilities + Docker CLI/Compose plugin

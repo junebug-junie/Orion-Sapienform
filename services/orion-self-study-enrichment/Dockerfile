@@ -4,6 +4,14 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Required for the root FCC claude subprocess to start under full-auto-approve
+# permissions instead of crashing on startup (even with tools disabled via
+# --tools "" -- the startup gate fires regardless) -- see
+# orion/fcc/claude_spawn.py::claude_permission_argv() for the canonical
+# explanation (don't duplicate it here; that's the one place to update if
+# Claude Code's own gate behavior changes).
+ENV IS_SANDBOX=1
+
 # - git: evidence.py reads graphify-out/graph.json + README.md from the
 #   read-only repo mount (SELF_STUDY_ENRICHMENT_REPO_PATH) -- git itself
 #   isn't shelled out to by this service, but the mount is a real .git

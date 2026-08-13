@@ -11,6 +11,13 @@ FROM python:3.12-slim
 ARG LBDB_EXT_VERSION=0.18.1
 ARG LBDB_EXT_PLATFORM=linux_amd64
 
+# Required for the root FCC claude subprocess to start under full-auto-approve
+# permissions instead of crashing on startup -- see
+# orion/fcc/claude_spawn.py::claude_permission_argv() for the canonical
+# explanation (don't duplicate it here; that's the one place to update if
+# Claude Code's own gate behavior changes).
+ENV IS_SANDBOX=1
+
 WORKDIR /app
 
 # MCP toolchain: docker CLI (GitHub MCP), node/npx (Firecrawl MCP), git

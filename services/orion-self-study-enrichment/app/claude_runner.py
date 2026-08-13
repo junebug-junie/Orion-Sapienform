@@ -8,8 +8,8 @@ single evidence-in/prose-out call with tools disabled entirely
 helpers where they genuinely fit (both do -- this call still benefits from
 skipping the repo's own project-level CLAUDE.md/hooks, and from
 non-interactive permission auto-approval, even with tools off, since
-`--dangerously-skip-permissions`/`--permission-mode dontAsk` also silences
-any other prompt Claude Code might otherwise emit).
+`--dangerously-skip-permissions`/`--permission-mode bypassPermissions` also
+silences any other prompt Claude Code might otherwise emit).
 
 Model id: `claude-sonnet-5` (see settings.py) -- the real Sonnet 5 string
 used elsewhere in this repo, e.g. `orion/dev_economics/pricing.py`.

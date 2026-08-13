@@ -62,10 +62,12 @@ def test_silence_converges_toward_alarm_not_toward_calm() -> None:
     assert values[0] == 0.0 and values[-1] == 1.0
 
 
-def test_non_finite_age_is_treated_as_calm_not_as_alarm() -> None:
-    # Fail-open: a malformed clock reading must not fabricate an outage.
+def test_nan_age_fails_open_but_infinite_age_is_an_outage() -> None:
+    # NaN is a malformed clock reading, not a claim about the eye -- fail open.
     assert vision_channel_staleness_pressure(float("nan")) == 0.0
-    assert vision_channel_staleness_pressure(float("inf")) == 0.0
+    # +inf means "no artifact ever seen", which is the alarm end. Mapping it to
+    # calm would contradict the monotonicity invariant asserted below.
+    assert vision_channel_staleness_pressure(float("inf")) == 1.0
 
 
 def test_negative_age_is_clamped_to_calm() -> None:

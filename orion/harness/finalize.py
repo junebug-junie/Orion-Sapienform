@@ -303,9 +303,26 @@ def build_finalize_reflect_plan_request(
     )
 
 
-def parse_finalize_reflection_payload(raw: dict[str, Any] | str) -> FinalizeReflectionV1:
+def parse_finalize_reflection_payload(
+    raw: dict[str, Any] | str, *, defaults: dict[str, Any] | None = None
+) -> FinalizeReflectionV1:
+    """Parse + validate a reflect-LLM payload, backfilling `defaults` for any
+    key the payload omits (existing values in `raw` always win).
+
+    `defaults` must be applied AFTER the str->dict conversion below, not on
+    the caller's pre-parse `raw` -- extract_finalize_reflection_payload's
+    only real return is a `str` (from extract_cortex_payload_text; it never
+    actually returns a `dict` despite its `dict[str, Any] | str` annotation,
+    confirmed live 2026-08-13), so an `isinstance(raw, dict)` guard on the
+    caller's side is always False and any setdefault done there silently
+    never runs. Applying the merge here, after parse_json_object, is what
+    makes it actually fire regardless of whether `raw` arrived as a str or a
+    dict.
+    """
     if isinstance(raw, str):
         raw = parse_json_object(raw)
+    if defaults:
+        raw = {**defaults, **raw}
     return FinalizeReflectionV1.model_validate(raw)
 
 
@@ -359,12 +376,15 @@ async def run_finalize_reflection(
     try:
         exec_result = await cortex_client(plan_request)
         raw_payload = extract_finalize_reflection_payload(exec_result)
-        if isinstance(raw_payload, dict):
-            raw_payload.setdefault("correlation_id", correlation_id)
-            raw_payload.setdefault("thought_event_id", thought.event_id)
-            raw_payload.setdefault("substrate_appraisal_id", substrate_appraisal.molecule_id)
-            raw_payload.setdefault("draft_hash", substrate_appraisal.draft_hash)
-        reflection = parse_finalize_reflection_payload(raw_payload)
+        reflection = parse_finalize_reflection_payload(
+            raw_payload,
+            defaults={
+                "correlation_id": correlation_id,
+                "thought_event_id": thought.event_id,
+                "substrate_appraisal_id": substrate_appraisal.molecule_id,
+                "draft_hash": substrate_appraisal.draft_hash,
+            },
+        )
     except Exception as exc:
         degraded = maybe_quick_lane_verdict(
             correlation_id=correlation_id,

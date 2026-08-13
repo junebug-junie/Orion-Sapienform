@@ -103,3 +103,19 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
 
 - **`mount_path` from `skill_args` flows unguarded into `shutil.disk_usage`** in both prune verbs;
   a nonexistent path raises `FileNotFoundError` out of `execute()`.
+
+## 2026-08-13 (scarcity revision)
+
+- **Circe fan/thermal telemetry is unreachable** — the NIC does not read in. Power is a usable
+  proxy but heat and noise are what actually make the office unusable, so the ceiling is being
+  designed against a proxy rather than the felt quantity. Separate problem; noted so it is not
+  lost.
+
+- **`orion_biometrics` carries real per-GPU `power_draw_watts` for athena/atlas/circe**, 15,713
+  circe rows back to 2026-07-24, and nothing in the cognition path reads it. This is the only
+  live telemetry found that prices Orion's own cost in a unit Juniper actually pays.
+
+- **Standing rule established:** on this system an idle utilisation reading is NOT evidence of
+  available capacity. With a concurrency limit of one, the queue forms at arrival, not in the
+  meter. Establish the concurrency limit and residency set before any utilisation number is
+  used for anything.

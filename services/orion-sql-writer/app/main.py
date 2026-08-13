@@ -664,57 +664,18 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_goal_provenance_streak_ticks_observed_at ON goal_provenance_streak_ticks (observed_at DESC);"
             )
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE IF NOT EXISTS drive_audits (
-                    artifact_id TEXT PRIMARY KEY,
-                    subject TEXT NOT NULL,
-                    active_count INTEGER NOT NULL,
-                    active_drives JSONB,
-                    dominant_drive TEXT NULL,
-                    summary TEXT NULL,
-                    drive_pressures JSONB,
-                    tick_attribution JSONB,
-                    tension_kinds JSONB,
-                    correlation_id TEXT NULL,
-                    observed_at TIMESTAMPTZ NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                """
-            )
-            # summary was added after the live table already existed (v2:
-            # drive_history_reflection_synthesis reads it from Postgres), so
-            # CREATE TABLE IF NOT EXISTS alone won't add it — upgrade in place.
-            conn.exec_driver_sql(
-                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS summary TEXT;"
-            )
-            # v4: Hub Drives Analytics contributor history. Wire DriveAuditV1 already
-            # carries these; older tables need the ALTER. Greenfield CREATE above
-            # already includes them; ADD COLUMN IF NOT EXISTS is a no-op there.
-            conn.exec_driver_sql(
-                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS tick_attribution JSONB;"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE drive_audits ADD COLUMN IF NOT EXISTS tension_kinds JSONB;"
-            )
-            # The autonomy measurement gate windows on COALESCE(observed_at,
-            # created_at); a bare created_at index would never serve that
-            # predicate (observed_at is nearly always set), so index the
-            # expression itself.
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_drive_audits_window ON drive_audits ((COALESCE(observed_at, created_at)) DESC);"
-            )
-            # v3: originally added for Mind's drive_state_compact facet fetch
-            # (mind_runtime.py's fetch_drive_state_facet_for_mind), which additionally
-            # filtered WHERE subject='orion' under a tight timeout budget; that facet was
-            # removed 2026-07-30 (drive-pressure/goal-generation deletion sprint), but this
-            # leading-subject composite still serves the same subject-filtered query shape
-            # used by Hub Drives Analytics (services/orion-hub/scripts/drives_analytics_queries.py),
-            # so it stays.
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_drive_audits_subject_window "
-                "ON drive_audits (subject, (COALESCE(observed_at, created_at)) DESC);"
-            )
+            # drive_audits table (CREATE/ALTER/INDEX boot DDL) removed
+            # 2026-08-13, same patch as the Hub Drives Analytics tab removal
+            # (docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-
+            # analytics-tab-pr.md). Review finding: the table had already
+            # been dropped out-of-band (snapshotted first,
+            # /tmp/drive_audits_drop_2026-08-13/), but this boot DDL was
+            # left in place -- `CREATE TABLE IF NOT EXISTS` unconditionally
+            # on every startup would have silently resurrected an empty
+            # table on the next orion-sql-writer restart, undoing the drop.
+            # See also worker.py's DriveAuditSQL mapping removal and
+            # orion/bus/channels.yaml's orion:memory:drives:audit entry,
+            # removed/updated in the same patch.
             conn.exec_driver_sql(
                 "ALTER TABLE bus_fallback_log ADD COLUMN IF NOT EXISTS created_at_ts TIMESTAMPTZ;"
             )

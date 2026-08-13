@@ -47,9 +47,11 @@ def _glossary_path_candidates() -> list[Path]:
     resolves to `/app` inside the Hub container and the file is genuinely
     missing there. Compose mounts the full repo read-only at `/repo` (and
     `/mnt/scripts/Orion-Sapienform`) specifically for cases like this -- same
-    problem, same fix already established in
-    services/orion-hub/scripts/drives_analytics.py's
-    `_repo_root_candidates()`, mirrored here rather than re-derived.
+    problem, same fix pattern this repo has used elsewhere for the same
+    Dockerfile-COPY-scope gap (originally established in
+    services/orion-hub/scripts/drives_analytics.py's `_repo_root_candidates()`,
+    since removed 2026-08-13 along with that module; the pattern itself is
+    reproduced here, not re-derived from scratch).
     """
     seen: set[str] = set()
     roots: list[Path] = []

@@ -48,17 +48,19 @@ extraction/clustering/embedding/dossier/identity/profile production (the rest
 of this README, and the actual reason `ConceptWorker` exists) is untouched and
 runs unconditionally on every intake event, independent of this deletion.
 
-**What this means for the Hub Drives tab and Postgres `drive_audits`:** this
-service is no longer a producer of anything drive-shaped. `drive_audits` in
-Postgres is a frozen, finite historical table now (its retention-prune job was
-disabled specifically so this history doesn't get deleted — see
-`services/orion-sql-writer/README.md`); the Hub **Drives** tab
-(`#drives`, `/drives-analytics`) still renders it, relabeled "(historical)".
-No new rows will ever arrive. See
-[orion/autonomy/README.md § Hub Drives Analytics](../../orion/autonomy/README.md#hub-drives-analytics)
-and the PR report (`docs/superpowers/pr-reports/2026-07-30-delete-orion-drives-pr.md`)
-for the full picture, including the accepted consequence that this service no
-longer proposes goals at all.
+**What this means for Postgres `drive_audits` and the (now-removed) Hub Drives
+tab:** this service is no longer a producer of anything drive-shaped.
+`drive_audits` was a frozen, finite historical table for a couple of weeks
+after this deletion — until it, and the Hub **Drives** tab that read it, were
+both removed outright 2026-08-13 (table dropped, snapshotted first; tab and
+its backend deleted). See
+[orion/autonomy/README.md § Hub Drives Analytics](../../orion/autonomy/README.md)
+(now a removal note, not a live description) and the PR reports
+(`docs/superpowers/pr-reports/2026-07-30-delete-orion-drives-pr.md` for this
+service's own producer deletion,
+`docs/superpowers/pr-reports/2026-08-13-remove-hub-drives-analytics-tab-pr.md`
+for the tab/table removal) for the full picture, including the accepted
+consequence that this service no longer proposes goals at all.
 
 ## Readonly capabilities (recall.query.readonly, P4)
 

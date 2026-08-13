@@ -21,8 +21,12 @@ from orion.execution_dispatch.builder import (
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
 from orion.execution_dispatch.result_extraction import (
+    RESULT_KIND_EMPTY,
+    RESULT_KIND_STRUCTURED,
     extract_final_text,
+    is_failed_plan_status,
     parse_structured_observation,
+    plan_execution_status,
 )
 from orion.notify.client import NotifyClient
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
@@ -35,7 +39,9 @@ from app.store import ExecutionDispatchRuntimeStore
 logger = logging.getLogger("orion.execution_dispatch.runtime")
 
 THEATER_TRIPWIRE_WINDOW = 10
-THEATER_TRIPWIRE_EMPTY_THRESHOLD = 0.5
+# Renamed from THEATER_TRIPWIRE_EMPTY_THRESHOLD 2026-08-13: the predicate it
+# gates now counts every non-success status, not just literal "empty".
+THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD = 0.5
 # Real, disclosed gap closed defensively (review, 2026-07-26): every live
 # proposal_kind_to_cortex-routed template today has base_risk >= 0.02 (the
 # one base_risk=0.0 template, defer_due_to_low_readiness, has no cortex
@@ -695,19 +701,35 @@ class ExecutionDispatchRuntimeWorker:
         recent = list(self._recent_dispatch_statuses)
         if len(recent) < THEATER_TRIPWIRE_WINDOW:
             return self.theater_tripwire_active
-        empty_count = sum(1 for s in recent if s == "empty")
+        # Counts every non-productive result, not just literal "empty".
+        #
+        # Before the structured-result patch, a `skills.runtime.*` verb that
+        # failed was stored as "empty" and therefore counted here. After it,
+        # the same failure is stored honestly as "failed" -- which, under the
+        # old `s == "empty"` predicate, meant a maintenance verb failing 10
+        # times in a row could NEVER trip the one mechanism built to catch a
+        # dead motor nerve. This restores that coverage.
+        #
+        # It also newly counts RPC send failures, which the old predicate
+        # ignored even though they were already being appended to this deque.
+        # That widening is intended: if half the trailing sends produce no
+        # outcome, pausing dispatch is the right response whether the cause is
+        # an empty observation or a transport error. Live trip risk measured
+        # before shipping, not assumed: 30 failed against 12,782 success over
+        # 24h (0.23%) versus a threshold of >50% of the trailing 10.
+        unproductive_count = sum(1 for s in recent if s != "success")
         newly_tripped = (
             not self.theater_tripwire_active
-            and empty_count > THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_EMPTY_THRESHOLD
+            and unproductive_count > THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD
         )
         if newly_tripped:
             self.theater_tripwire_active = True
             logger.warning(
-                "execution_dispatch_theater_tripwire_active empty=%d window=%d",
-                empty_count,
+                "execution_dispatch_theater_tripwire_active unproductive=%d window=%d",
+                unproductive_count,
                 len(recent),
             )
-            self._notify_tripwire(empty_count, len(recent))
+            self._notify_tripwire(unproductive_count, len(recent))
         return self.theater_tripwire_active
 
     async def _send_one(
@@ -808,15 +830,25 @@ class ExecutionDispatchRuntimeWorker:
                     }
                 )
             existing_observation = existing["result_json"].get("observation") or ""
+            # Same rule as the fresh-result path above: success is the stored
+            # `status`, not the presence of observation prose. Re-deriving it
+            # from `bool(observation)` here would have replayed every
+            # structured skill result as a failure even after the live path
+            # started recording it correctly -- the two-paths-one-patched
+            # divergence this arc has already shipped twice.
+            existing_kind = existing["result_json"].get("result_kind")
             await self._emit_action_outcome(
                 bus,
                 candidate=candidate,
                 summary=(
                     existing_observation
-                    if existing_observation
-                    else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                    or (
+                        f"{candidate.dispatch_kind} on {candidate.target_id} returned a structured result"
+                        if existing_kind == RESULT_KIND_STRUCTURED
+                        else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                    )
                 ),
-                success=bool(existing_observation),
+                success=existing["status"] == "success",
                 observed_at=now,
             )
             return candidate.model_copy(
@@ -875,10 +907,87 @@ class ExecutionDispatchRuntimeWorker:
                 }
             )
 
+        # The plan's own verdict comes FIRST, before any content classification.
+        #
+        # Nothing upstream surfaces a verb failure: cortex-exec's main.py
+        # hardcodes `ok=True` on the result payload, and cortex_client only
+        # checks the codec's ok, so `client.dispatch` above does not raise for a
+        # failed plan -- it returns a well-formed payload whose `final_text` is
+        # the skill's own JSON error report. Classifying that by content alone
+        # grades a failure as a success, with a stored summary reading
+        # "failed: Command 'docker builder prune' timed out after 600 seconds".
+        plan_status, plan_reason = plan_execution_status(payload)
+        if is_failed_plan_status(plan_status):
+            reason = plan_reason or f"plan status={plan_status}"
+            logger.warning(
+                "execution_dispatch_plan_failed dispatch_id=%s plan_status=%s reason=%s",
+                candidate.dispatch_id,
+                plan_status,
+                reason,
+            )
+            self._store.save_dispatch_result(
+                result_id=result_id,
+                dispatch_id=candidate.dispatch_id,
+                frame_id=frame.frame_id,
+                # Reuses the existing "failed" value rather than minting a new
+                # one: orion/feedback/builder.py::_cortex_status_to_outcome maps
+                # "failed" to a real failed score, and any unrecognised value to
+                # "unknown", which would silently drop these from scoring
+                # entirely.
+                status="failed",
+                result_json={
+                    "error": reason[:2000],
+                    "plan_status": plan_status,
+                    # The verb's own payload is still preserved -- a failed
+                    # prune's disk/cache measurements are real observations of
+                    # the host and must not be discarded just because the
+                    # action did not complete.
+                    "structured_result": parse_structured_observation(
+                        extract_final_text(payload)
+                    )["structured_result"],
+                    "evidence_refs": [result_id],
+                },
+                raw_len=0,
+            )
+            self._recent_dispatch_statuses.append("failed")
+            await self._emit_action_outcome(
+                bus,
+                candidate=candidate,
+                summary=(
+                    f"attempted {candidate.dispatch_kind} on {candidate.target_id}, "
+                    f"verb reported {plan_status}: {reason}"
+                ),
+                success=False,
+                observed_at=now,
+            )
+            return candidate.model_copy(
+                update={
+                    "dispatch_status": "dispatched",
+                    "dispatched_at": now,
+                    "result_ref": result_id,
+                    "dispatch_error": reason[:500],
+                }
+            )
+
         final_text = extract_final_text(payload)
         observation_data = parse_structured_observation(final_text)
         raw_len = len(observation_data["observation"])
-        status = "success" if raw_len > 0 else "empty"
+        # Success is decided by `result_kind`, NOT by `len(observation)`.
+        #
+        # A `skills.runtime.*` verb returns its own structured result dict with
+        # no `observation` key at all, so the old length test recorded every
+        # one of them as `empty` -- the same state a dead executor produces.
+        # Live, that meant all four builder_prune dispatches (Orion's only
+        # mutating action) were stored as empty while cortex-exec had logged
+        # `raw_len=739` for the very same correlation ids. A skill that
+        # honestly declined to act produced a REAL result and must be
+        # recorded as one.
+        #
+        # `raw_len` deliberately still measures the observation string, so the
+        # existing column keeps its existing meaning for existing queries; the
+        # structured payload is carried alongside it instead of through it.
+        result_kind = observation_data.get("result_kind", RESULT_KIND_EMPTY)
+        status = "empty" if result_kind == RESULT_KIND_EMPTY else "success"
         self._store.save_dispatch_result(
             result_id=result_id,
             dispatch_id=candidate.dispatch_id,
@@ -889,9 +998,10 @@ class ExecutionDispatchRuntimeWorker:
         )
         self._recent_dispatch_statuses.append(status)
         logger.info(
-            "execution_dispatch_result dispatch_id=%s status=%s raw_len=%d",
+            "execution_dispatch_result dispatch_id=%s status=%s kind=%s raw_len=%d",
             candidate.dispatch_id,
             status,
+            result_kind,
             raw_len,
         )
         await self._emit_action_outcome(
@@ -899,10 +1009,16 @@ class ExecutionDispatchRuntimeWorker:
             candidate=candidate,
             summary=(
                 observation_data["observation"]
-                if raw_len > 0
-                else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                or (
+                    # A structured result with no self-summary is still a real
+                    # result; say so factually rather than claiming it returned
+                    # nothing, which is what the old wording did.
+                    f"{candidate.dispatch_kind} on {candidate.target_id} returned a structured result"
+                    if result_kind == RESULT_KIND_STRUCTURED
+                    else f"{candidate.dispatch_kind} on {candidate.target_id} returned no observation"
+                )
             ),
-            success=raw_len > 0,
+            success=status == "success",
             observed_at=now,
         )
         return candidate.model_copy(

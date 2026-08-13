@@ -341,12 +341,33 @@ See `docs/superpowers/specs/2026-07-30-execution-dispatch-staleness-discard-desi
 full live-data investigation (real backlog depth, throughput math, root cause) and the deferred
 part-2 throughput redesign this was scoped alongside but does not itself implement.
 
-**Theater tripwire**: if more than half of the trailing 10 real results have `status="empty"`
-(a real send that produced no usable observation), the worker stops sending for the rest of
-its process lifetime — visible via `GET /latest`'s `theater_tripwire_active` field and one
-`orion-notify` warning event on the transition into tripped. Re-arm requires a restart; it does
-not self-clear, by design (a self-clearing tripwire could resume sending on a coincidentally
-non-empty sample without anyone deciding that was safe).
+**Theater tripwire**: if more than half of the trailing 10 real results are **not**
+`status="success"` — i.e. `empty` (a real send that produced no usable result) or `failed`
+(an RPC send error, or a verb whose own plan reported `fail`/`blocked`) — the worker stops
+sending for the rest of its process lifetime — visible via `GET /latest`'s
+`theater_tripwire_active` field and one `orion-notify` warning event on the transition into
+tripped. Re-arm requires a restart; it does not self-clear, by design (a self-clearing tripwire
+could resume sending on a coincidentally healthy sample without anyone deciding that was safe).
+
+> Widened 2026-08-13 from counting only `status="empty"`. Skill-verb results
+> (`skills.runtime.*`) used to be misclassified as `empty` because the result parser only
+> understood observation verbs; once they were classified honestly, a maintenance verb failing
+> on all ten trailing dispatches would no longer have tripped the one mechanism built to catch
+> a dead motor nerve. Live trip risk was measured before the change, not assumed: 30 `failed`
+> against 12,782 `success` over 24h (0.23%), against a threshold of >50%.
+
+**Result status values** written to `substrate_dispatch_results.status`:
+
+| status | meaning |
+| --- | --- |
+| `success` | the plan reported success AND returned a readable result — either an observation verb's `observation` string, or a skill verb's own structured result dict (`result_kind="structured"`, payload preserved verbatim under `result_json.structured_result`) |
+| `empty` | a real send whose payload carried nothing readable: blank `final_text`, malformed JSON, a non-object, `{}`, or an observation verb returning a blank `observation` |
+| `failed` | the RPC send raised, or the plan's own `status` was `fail`/`partial` or `blocked=True`. The verb's measurements, if any, are still preserved under `result_json.structured_result` — a failed prune still really measured the disk |
+
+Note that `raw_len` measures the `observation` string only. Since 2026-08-13 a structured skill
+result can be `status="success"` with `raw_len=0`, so the previously-true invariant
+`status='success' ⟺ raw_len>0` no longer holds — any ad-hoc SQL using `raw_len=0` as
+"nothing came back" needs `status`/`result_kind` instead.
 
 **Idempotency**: `dispatch_id` is deterministic per proposal+policy, so if this process dies
 between a successful send and the frame being persisted, the next tick's rebuild of the same

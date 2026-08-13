@@ -350,3 +350,116 @@ scripts/safe_docker_build.sh orion-execution-dispatch-runtime up -d --build
 ## PR link
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/new/feat/metric-commensurability
+
+---
+
+# Addendum: the action repertoire (commits 5-6)
+
+Added after the measurement above reframed the problem. Both commits are
+**inert at runtime** — nothing was deployed for either.
+
+## What the measurement forced
+
+Chasing "why does Orion never really act" past arbitration found two things
+the handover spec does not mention, and both dominate everything in its §5:
+
+**1. Orion's entire action repertoire is four verbs, and the router caps it there.**
+
+```
+inspect    -> substrate.inspect                 inspect_only
+summarize  -> substrate.summarize               summarize_only
+observe    -> substrate.observe                 inspect_only
+maintain   -> skills.runtime.builder_prune.v1   maintenance_bounded   <- the only mutating one
+```
+
+`orion/execution_dispatch/builder.py:335` resolved the target as
+`policy.proposal_kind_to_cortex.get(candidate.proposal_kind)` — keyed on KIND
+alone. `maintain` meant build-cache pruning and could never mean anything else.
+**No scoring, budget, reservation, or sampling change above the router can
+widen a repertoire the router caps at one.** That is the structural reason
+§5's arbitration work could not have delivered autonomy on its own.
+
+**2. The feedback loop is open.** `substrate_feedback_frames` holds 302,974
+rows, live. Nothing in `orion/proposals/` or `orion-proposal-runtime` reads any
+of them (grep: zero hits). `orion/reverie/efficacy.py` — the module that
+computes whether an action was useful — has **zero live callers**. No outcome
+has ever influenced a future decision.
+
+So the priority order is: repertoire → closed loop → commensurable scale. The
+spec starts at the third.
+
+## Commit 5 — per-template cortex route
+
+`template_to_cortex` is checked before the kind map, falling back to it. An
+override, not a replacement, so adding a second maintenance action does not
+require re-declaring the twelve read-only templates that already work.
+
+Backward compatibility is the load-bearing claim and is asserted rather than
+argued: `test_empty_template_map_is_byte_identical_to_the_old_lookup` evaluates
+the OLD expression directly and compares identity against the new resolver,
+across all four live kinds plus a template-less external candidate. A further
+test asserts the shipped YAML declares zero template routes, so adding one is a
+deliberate step with its own deploy.
+
+## Commit 6 — `skills.runtime.image_prune.v1`
+
+Aimed at the lever builder_prune is not. Measured live:
+
+```
+Images        3930 total, 82 active, 168.1 GB, 96.56 GB reclaimable (57%)
+              3,833 dangling
+Build Cache   12674 entries, 258.3 GB, 111.9 GB reclaimable
+Containers    82, 79 active, 186.5 MB (3 stopped)
+disk          71.426% of 502.9 GB   <- below builder_prune's own 75% gate
+```
+
+**The gate counts dangling images, not `system df` "Reclaimable".** Those
+differ by design: Reclaimable covers every unused image including tagged ones,
+while `docker image prune` (no `-a`) removes only dangling. Gating on the
+former would reproduce exactly the defect builder_prune shipped — a gate
+satisfied by one quantity while the action moves another. The outcome is a real
+before/after disk delta, never Docker's estimate.
+
+Safety properties, each with a test that fails when broken: no `-a` ever;
+`allowed_commands={"docker"}`; mutation gated on `run_mode == "execute"` rather
+than the absence of a preview flag; unreadable daemon declines instead of
+assuming zero; `reclaimed <= 0` is `pruned_nothing` + escalate, never success.
+
+Also unified the three skill classifiers behind one
+`HOST_MUTATING_SKILL_MARKERS` list. They were three independent substring
+checks — which is how builder_prune ended up in none of them, advertising
+`read_only + idempotent + observational, requires_confirmation=False` on the
+one skill that deletes host data, patched three separate times on 2026-08-12.
+Verified by importing the pre-change module beside the new one and diffing
+every classification: the only skill whose family or risk changed is
+image_prune itself (`system_inspection/read_only` →
+`runtime_housekeeping/high_impact`). All eight others byte-identical.
+
+## Tests
+
+```text
+tests/test_cortex_route_resolution.py    14 passed  (new)
+tests/test_image_prune_skill.py          19 passed  (new)
+tests/test_execution_dispatch_builder.py
+tests/test_maintenance_dispatch_gating.py
+tests/test_dispatch_starvation.py        83 passed combined
+```
+
+Red-checked in scratch copies, four separate breaks: template override ignored
+(2 capability tests fail, 12 compat tests still pass, as they must); override
+capturing every candidate of the kind (leak guard fails); `-a` added to the
+prune command (flag guard fails); marker removed from one of the two
+duplicated classifier modules (registration guard fails).
+
+## Deploy status
+
+**Nothing deployed.** `template_to_cortex` is empty and `maintain` still
+resolves to builder_prune, so `image_prune` is unreachable by autonomous
+dispatch. Routing it — preview-only first, so Orion measures the real 3,833 /
+96.56 GB and reports `would_act` without mutating — is the next step and needs
+an explicit decision.
+
+## Open, unchanged from above
+
+The arena degeneracy (§A/§B) is still diagnosed and untouched. Rank order is
+still decided by hand-authored `base_priority` constants.

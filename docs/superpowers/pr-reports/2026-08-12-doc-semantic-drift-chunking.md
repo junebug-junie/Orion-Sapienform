@@ -91,7 +91,7 @@ Max-pair reduces **exactly** to `1 - cos(a, b)` when each side is one chunk, so 
 
 ```text
 .venv/bin/python -m pytest services/orion-cocreation-signals/tests/ orion/structural_mass/tests/ -q
-138 passed, 15 warnings in 7.09s
+140 passed, 15 warnings in 7.63s
 ```
 
 Pre-existing, unrelated, not fixed here: `orion/schemas/tests/test_context_provenance.py::test_static_ctx_assignments_covered` fails on clean `main` too.
@@ -138,6 +138,29 @@ Two bugs in my own test fixtures, found by the tests failing rather than by read
 - A "pooled score reflects all chunks" test used `[0,1]` and `[0,-1]` as the differing tails — mirror-symmetric about the removed-side vector, so both scored identically and the assertion could never distinguish them.
 - A "length-invariant" test used a surrounding chunk 45° from the changed pair, which let the changed chunk find a partial match. Fixing it surfaced a **real property of max-pair** that is now documented and tested rather than papered over (below).
 
+
+### Second review round (verification pass on the fixes above)
+
+The re-review confirmed F1/F3/F4 independently — including reproducing the 1200-char measurement (600 chunks, 0 exceeding 512) and enumerating every reply shape `orion-vector-host` can emit to confirm the F1 guards are exhaustive. It then found four more, two of them real behavior bugs:
+
+- Finding: `graphify-out/**` was in scope for doc scanning. It is machine-regenerated on a post-commit hook, so scoring it measures a tool's output churn rather than co-creation. `GRAPH_REPORT.md` alone yields ~182 removed / ~175 added 1200-char chunks; at the embedding host's real ~0.6s serial throughput that is ~214s against a 30s per-request timeout — the file could **never** be scored, while monopolizing the shared embedding host that live chat memory depends on (3748 real requests in 24h). The 2048→1200 change made this 1.75x worse.
+  - Fix: `_EXCLUDED_DOC_PATHSPECS = (":(exclude)graphify-out/**",)`.
+  - Evidence: `test_generated_graphify_output_is_not_scored_as_doc_drift`.
+- Finding: embedding fan-out was one unbounded `gather` over every chunk, against a host that consumes serially (`Hunter` built without `concurrent_handlers`, `hf` backend on CPU).
+  - Fix: `_EMBED_CONCURRENCY = 4`, shared across both hunk sides.
+  - Evidence: `test_embedding_requests_are_capped_in_flight` asserts observed peak ≤ cap and > 1 (so it can't pass by nothing overlapping).
+- Finding: `_max_pair_drift` ran synchronously on the event loop shared with the heartbeat chassis and five other producers; measured 0.13s at N=M=20, 0.55s at N=M=40.
+  - Fix: `asyncio.to_thread`.
+- Finding: **the "length-invariant" claim was false.** A max over `2*(N+M)` non-negative terms is an extreme-value statistic, so more chunks biases the score high — measured over 30 real hunk pairs: median 0.1684 at N=1, 0.2237 at N=2-3, 0.2861 at N=4+. The test asserting invariance used padding vectors byte-identical on both sides, so every padding term was exactly `1 - 1.0 = 0` and could not detect the bias by construction — and matched no real input shape, since `--unified=0` hunks contain no unchanged chunks at all.
+  - Fix: claim removed from `_max_pair_drift` and the schema; replaced with the measured bias and its direction.
+  - Evidence: `test_extra_chunks_bias_the_score_high_not_low`, plus the pre-existing counter-case test.
+- Finding: the schema's comparability note said `1 = ... reduces exactly to 1 - cos(a, b)`, but that requires **both** counts to be 1 — a 1-removed/2-added event is already a max-pair score. A consumer filtering on one count would build a non-comparable set.
+  - Fix: corrected to require both.
+- Finding: `_score_change`'s own docstring still described the deleted mean-pool.
+  - Fix: corrected.
+
+**Three fixture bugs across two rounds, all mine, all found by tests failing rather than by reading them.** The invariance one is the worst: it asserted a property that does not hold, and its fixture was constructed so it could never fail. My first replacement for it then claimed extra chunks can only *raise* the score — directly disproven by the test immediately below it. The net effect is content-dependent; both directions are now pinned by tests and the docstring says so.
+
 ## Risks / concerns
 
 - Severity: medium
@@ -147,8 +170,8 @@ Two bugs in my own test fixtures, found by the tests failing rather than by read
 ---
 
 - Severity: medium
-- Concern: max chunk-pair drift is not strictly length-invariant. Symmetry contains most of the problem (an unmatched chunk contributes its own high term, so it cannot quietly drag the score down), but a second changed section resembling the first section's changed text can still give that chunk a better match than its true counterpart and lower the reported drift.
-- Mitigation: documented in `_max_pair_drift`'s docstring and pinned by two tests asserting both directions of the behavior. Far weaker than pooling's ~1/N² collapse, which fired on every long doc regardless of content.
+- Concern: max chunk-pair drift is **not length-invariant**, and multi-chunk events are biased high relative to the single-window 0.3996 threshold (median 0.1684 at N=1 vs 0.2861 at N=4+ over 30 real hunk pairs). A consumer applying that cutoff across chunk counts will over-flag long docs. The bias is a tendency rather than a guarantee — an extra chunk adds a term to the max but also adds a match candidate for the other side, so the net on any single event is content-dependent.
+- Mitigation: documented in `_max_pair_drift` and in the schema, with both directions pinned by tests. Far smaller than pooling's ~54x collapse and in the safer direction (over-reports rather than hides change). **A multi-chunk threshold must be derived separately — the 0.3996 figure applies only to events where both chunk counts are 1.**
 
 ---
 
@@ -159,8 +182,8 @@ Two bugs in my own test fixtures, found by the tests failing rather than by read
 ---
 
 - Severity: low
-- Concern: chunking roughly doubles embedding requests per doc change (measured 2.08x over 300 commits, max 20 chunks for one file), and up to 20 concurrent RPCs now fan out from one `_score_change` against a host that embeds sequentially with a 30s per-request timeout. A large doc's last chunk queues behind the rest, so larger docs are now *more* likely to time out — and one timeout nulls that whole side.
-- Mitigation: none applied; not load-tested, so whether 20 chunks actually trips 30s is unverified. Worth a bounded concurrency cap if it shows up live.
+- Concern: chunking roughly doubles embedding requests per doc change (2.08x measured over 300 commits). Each request also unconditionally persists a vector-store document **and** calls `feed_tissue()`, injecting doc-diff chunks into live OrionTissue state — the producer's docstring disclosed the former but not the latter, and chunking multiplies both by N.
+- Mitigation: fan-out is now capped at 4 in flight and `graphify-out/**` (by far the largest contributor) is excluded, so the pathological case is gone. The tissue-feed side effect is disclosed here but not otherwise addressed — worth a look before this producer's output is consumed.
 
 ---
 

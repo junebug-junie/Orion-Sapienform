@@ -73,14 +73,16 @@ class Settings(BaseSettings):
     bus_synaptic_max_edge_age_sec: float = Field(
         3600.0, alias="SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC"
     )
-    # vision_channel_prediction_error: the same bus synaptic graph and the same
-    # gap_zscore property the tick above reads, scoped to the orion:vision:*
-    # channels so capability:vision has a real edge instead of a fabricated
-    # constant. Its own flag and its own interval for the same reason
-    # bus_synaptic got one -- a different question, not a sixth grammar-event
-    # domain. Deliberately NOT added to ACTIVE_INFERENCE_DOMAINS or to
-    # worker.py's _PREDICTION_ERROR_DOMAIN_NODE_IDS in this patch; see the
-    # perception design doc's metric gate, item 6.
+    # Perceptual availability, feeding node:substrate.vision ->
+    # capability:vision so that capability has a real edge instead of a
+    # fabricated constant. A bus listener on the vision artifact channel feeds
+    # a clock-driven tick -- NOT a bus-cadence statistic, which was tried and
+    # deleted (it z-scored a fixed scheduler, and froze rather than rose when
+    # the eye went silent). Own flag and interval, like bus_synaptic, because
+    # it is a different question rather than another grammar-event domain.
+    # Deliberately NOT added to ACTIVE_INFERENCE_DOMAINS or to worker.py's
+    # _PREDICTION_ERROR_DOMAIN_NODE_IDS in this patch; see the perception
+    # design doc's metric gate, item 6.
     enable_vision_channel_tick: bool = Field(
         False, alias="SUBSTRATE_VISION_CHANNEL_TICK_ENABLED"
     )

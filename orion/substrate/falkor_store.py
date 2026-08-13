@@ -158,6 +158,16 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     "dormant",
     "dormancy_updated_at",
     "prediction_error",
+    # Without these, falkor_codec's decode branches for them can never fire:
+    # this tuple is the only row source for hydration, so after any rehydrate
+    # get_node_by_id() reports both as absent even though the durable Cypher
+    # properties hold real values -- including inside
+    # _write_prediction_error_node()'s own carry-forward read.
+    # NOTE: contributing_turn_ids_json and
+    # prediction_error_evidence_event_ids_json have the same gap and are left
+    # as-is here; that is pre-existing and out of scope for this patch.
+    "perception_staleness",
+    "perception_yield",
 )
 
 NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (

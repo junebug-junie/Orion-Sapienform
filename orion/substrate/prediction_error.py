@@ -749,7 +749,15 @@ def vision_channel_staleness_pressure(
     artifact is ~5s old, inside the deadband. Saturates at 1.0, so it is
     bounded without clamping the input.
     """
-    if not math.isfinite(age_seconds) or age_seconds <= grace_seconds:
+    # +inf means "no artifact ever seen", which is the alarm end, not the calm
+    # end -- mapping it to 0.0 would contradict this function's own invariant
+    # that a longer silence never reads calmer. NaN is a malformed clock
+    # reading rather than a claim about the eye, so it stays fail-open at 0.0.
+    if math.isnan(age_seconds):
+        return 0.0
+    if age_seconds == math.inf:
+        return 1.0
+    if age_seconds <= grace_seconds:
         return 0.0
     span = saturation_seconds - grace_seconds
     if span <= 0:

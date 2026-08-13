@@ -171,6 +171,10 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     """
     best_contribution: dict[tuple[str, str], float] = {}
     best_source: dict[tuple[str, str], str] = {}
+    # Attribution for channels whose source measured exactly 0.0. Kept apart
+    # from best_source because that dict doubles as the derived-fallback gate
+    # below; this one only ever reaches capability_provenance.
+    measured_zero_source: dict[tuple[str, str], str] = {}
     possible_targets: dict[str, set[str]] = {}
 
     # Causal Geometry v1, Rung 3A: when FIELD_PLASTICITY_ENABLED is off (the
@@ -206,16 +210,38 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
                 )
         for src_ch, tgt_ch in edge.channel_map.items():
             possible_targets.setdefault(edge.target_id, set()).add(tgt_ch)
+            # `src_ch in src` separates two cases the old `.get(src_ch, 0.0)`
+            # could not: the source has no value for this channel this tick
+            # (genuinely unknown), versus the source measured exactly 0.0
+            # (known, and healthy). Both produced a 0.0 contribution, and only
+            # the first should stay anonymous.
+            src_measured = src_ch in src
             src_val = float(src.get(src_ch, 0.0))
             contribution = _clamp01(src_val * effective_weight * diffusion_rate)
             key = (edge.target_id, tgt_ch)
-            # Only a real (>0) contribution may claim provenance/win the
-            # max -- a zero contribution (source has no value for its mapped
-            # channel this tick) must not overwrite another edge's real one
-            # just by being evaluated later in iteration order.
+            # Only a real (>0) contribution may win the max -- a zero must not
+            # overwrite another edge's real one just by being evaluated later
+            # in iteration order.
             if contribution > 0.0 and contribution >= best_contribution.get(key, 0.0):
                 best_contribution[key] = contribution
                 best_source[key] = edge.source_id
+            elif src_measured:
+                # A measured zero is attribution ONLY, tracked separately from
+                # best_source on purpose. best_source is also the gate for the
+                # derived confidence/available_capacity fallback below, and
+                # putting a measured zero into it would skip that fallback and
+                # hard-floor those channels to 0.0 -- the exact failure the
+                # gate's own comment warns about.
+                #
+                # Without recording it somewhere, though, a capability whose
+                # source is genuinely healthy is byte-for-byte identical to one
+                # never measured at all: pressure 0.0, provenance {}, and
+                # confidence/available_capacity fabricated back to 1.0. That is
+                # the "schema-valid payload with meaningless content"
+                # CLAUDE.md 0A bans, and it is what made capability:vision's
+                # real edge (PR #1616) indistinguishable at rest from the
+                # fabricated vector it was built to replace.
+                measured_zero_source.setdefault(key, edge.source_id)
 
     for target_id, channels in possible_targets.items():
         tgt = state.capability_vectors.setdefault(target_id, {})
@@ -223,12 +249,16 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
         for tgt_ch in channels:
             key = (target_id, tgt_ch)
             tgt[tgt_ch] = best_contribution.get(key, 0.0)
-            if key in best_source:
-                provenance[tgt_ch] = best_source[key]
+            attributed = best_source.get(key) or measured_zero_source.get(key)
+            if attributed is not None:
+                provenance[tgt_ch] = attributed
             else:
                 # Nobody contributed this tick -- clear stale provenance too,
                 # not just reset the value, so the two never disagree about
-                # what's currently true.
+                # what's currently true. Note "nobody contributed" now means
+                # nothing *measured* it either: a source reporting a real 0.0
+                # is attributed above, so an empty provenance entry once again
+                # means genuinely unknown rather than either-unknown-or-fine.
                 provenance.pop(tgt_ch, None)
 
         if "pressure" in tgt:

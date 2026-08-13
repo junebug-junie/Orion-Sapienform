@@ -247,19 +247,6 @@ channels:
     category: self_monitoring
     meaning: "How much a recent prediction (from the prediction/surprise subsystem) missed reality."
 
-  - channel: perception_staleness
-    level: [node]
-    category: self_monitoring
-    meaning: >-
-      Availability of the camera lane: how stale the newest message on any
-      orion:vision:* bus channel is, 0.0 while frames are flowing and 1.0 once
-      the eye has been silent for a minute. Written only by
-      node:substrate.vision. Exists as a channel separate from prediction_error
-      because a silent bus channel FREEZES its gap_zscore rather than raising
-      it, so the irregularity channel alone reads a dead camera as calm. Must
-      never be added to NODE_DECAY_CHANNELS -- decay converges toward calm, and
-      silence has to converge toward alarm.
-
   - channel: pressure
     level: [capability]
     category: synthesized_rollup

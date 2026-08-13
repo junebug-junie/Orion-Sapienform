@@ -83,6 +83,24 @@ class ExecutionDispatchPolicyV1(BaseModel):
     allowed_policy_decisions: list[str] = Field(default_factory=list)
     blocked_policy_decisions: list[str] = Field(default_factory=list)
     proposal_kind_to_cortex: dict[str, CortexRouteTemplateV1] = Field(default_factory=dict)
+
+    # 2026-08-13: per-TEMPLATE route override, checked before the per-kind map
+    # above. Empty by default, so with no entries here every candidate resolves
+    # exactly as it did before this field existed (asserted by test, not
+    # assumed).
+    #
+    # Why this exists: `proposal_kind_to_cortex` is keyed on `proposal_kind`
+    # alone, so a whole kind can address exactly ONE verb. `maintain` meant
+    # `skills.runtime.builder_prune.v1` and could never mean anything else --
+    # Orion's entire mutating repertoire was one action BY CONSTRUCTION, not by
+    # arbitration. No amount of scoring, budgeting, or sampling downstream can
+    # widen a repertoire that the routing layer caps at one.
+    #
+    # Deliberately an override rather than a replacement: the kind map stays the
+    # default for every template that does not name its own route, so adding a
+    # second maintenance action does not require re-declaring the twelve
+    # read-only templates that were already working.
+    template_to_cortex: dict[str, CortexRouteTemplateV1] = Field(default_factory=dict)
     hard_blocks: list[str] = Field(default_factory=list)
     limits: DispatchLimitsV1 = Field(default_factory=DispatchLimitsV1)
 

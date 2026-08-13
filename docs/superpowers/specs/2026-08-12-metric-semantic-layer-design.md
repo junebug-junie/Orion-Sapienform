@@ -266,8 +266,32 @@ The actual answer to "agents don't trace upstream." Puts the lineage card in
 front of the agent *before* the edit lands, using the same mechanism as the
 graphify nudge that already works in this repo.
 
-**Phase 4 — CI gate + `make` target + CLAUDE.md §0A pointer.**
-Turns §0A steps 1, 2, and 4 from prose into a failing check.
+**Phase 4 — CI gate + `make` target.** SHIPPED 2026-08-13.
+
+`make check-metric-lineage-gate`. Three checks, all provable from repo state:
+
+1. **Registry integrity** — everything resolves, no dangling upstream URNs.
+2. **Declared-consumer existence** — a registry may not claim a consumer that
+   does not exist on disk. Found three on first run: the known
+   `orion-spark-introspector`, plus `orion-timeline` and `orion-evidence-index`,
+   which appear **only** in `channels.yaml` across four channels with zero
+   references anywhere else in the repo.
+3. **Orphan ratchet** — registered metrics with no discoverable consumer may
+   shrink, never grow. A metric that names something but feeds nothing is a
+   keyword cathedral (§0A).
+
+Pre-existing debt is carried in `config/metrics/orphan_baseline.json` — recorded
+and visible, not silently waived. Fixing it means editing `consumer_services`
+in `channels.yaml`, a contract change (§6) belonging in its own patch.
+
+**What phase 4 deliberately does NOT catch:** newly introduced but
+*unregistered* metrics. `arena_degeneracy` (PR #1604) shipped the same day and
+is invisible to this layer. Catching that statically would mean guessing which
+new string dict keys are "metric-shaped", and the only available signal is a
+suffix list (`*_pressure`, `*_load`, `*_error`, …) — precisely the keyword
+cathedral §0A bans, false-positive noisy, and trivially evaded. Registration is
+enforced by review and by the phase 3 card, not by a heuristic pretending to be
+a gate. Stated so the absence reads as a decision, not an oversight.
 
 **Phase 5 — liveness generalization beyond field channels.**
 Deferred deliberately: it needs a per-surface decision about where the live

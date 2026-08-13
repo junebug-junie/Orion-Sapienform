@@ -1,0 +1,15 @@
+{
+  "_comment": "Ratchet baseline for scripts/check_metric_lineage.py --gate. Both sections may shrink, never grow. Regenerate deliberately with --update-baseline when a decrease is real.",
+  "_orphans_comment": "Registered metrics with no discoverable code consumer, per surface. A metric that names something but feeds nothing is a keyword cathedral (CLAUDE.md 0A).",
+  "orphans_by_surface": {
+    "bus_channel": 150,
+    "inner_state": 19,
+    "organ_signal": 38
+  },
+  "_missing_comment": "Consumers a registry CLAIMS but which do not exist on disk. Pre-existing debt recorded so it stays visible; fixing means editing consumer_services in orion/bus/channels.yaml or the cognition_consumers tuple in orion/inner_state_registry.py, a contract change (CLAUDE.md 6) belonging in its own patch.",
+  "known_missing_consumers": {
+    "orion-evidence-index": "orion/bus/channels.yaml",
+    "orion-timeline": "orion/bus/channels.yaml",
+    "services.orion-spark-introspector.app.inner_state:build_inner_state_features": "orion/inner_state_registry.py"
+  }
+}

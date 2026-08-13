@@ -1,11 +1,32 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from orion.fcc import claude_spawn
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# Every known production caller of claude_permission_argv(auto_approve=True)
+# that runs in a root Docker container (no USER directive), mapped to the
+# Dockerfile that MUST set ENV IS_SANDBOX=1 -- see
+# claude_permission_argv()'s docstring for why: bypassPermissions refuses to
+# start as root without it, so a missing ENV line means the FCC claude
+# subprocess crashes on startup on every turn in that container.
+#
+# scripts/context_mode_hooks_smoke.py is deliberately excluded: it's a
+# host-run dev smoke script, not a service container -- no Dockerfile owns it.
+_ROOT_CALLERS_TO_DOCKERFILE = {
+    "orion/harness/fcc_motor.py": "services/orion-harness-governor/Dockerfile",
+    "services/orion-hub/scripts/fcc_claude_bridge.py": "services/orion-hub/Dockerfile",
+    "services/orion-self-study-enrichment/app/claude_runner.py": (
+        "services/orion-self-study-enrichment/Dockerfile"
+    ),
+}
+_KNOWN_NON_CONTAINER_CALLERS = {"scripts/context_mode_hooks_smoke.py"}
 
 
 def test_mcp_allowed_tool_patterns_per_server() -> None:
@@ -160,3 +181,47 @@ def test_setting_sources_argv_explicit_empty_means_no_flag(
     forcing --setting-sources at all."""
     monkeypatch.setenv("HARNESS_FCC_SETTING_SOURCES", "")
     assert claude_spawn.setting_sources_argv("HARNESS_FCC_SETTING_SOURCES") == []
+
+
+def test_known_root_callers_dockerfiles_set_is_sandbox() -> None:
+    """Every known root-container caller of claude_permission_argv() must
+    have ENV IS_SANDBOX=1 in its Dockerfile, or bypassPermissions crashes the
+    FCC claude subprocess on startup on every turn (see that function's
+    docstring). This locks in today's 3 known pairings so an edit that drops
+    the ENV line -- not just a brand-new caller -- is caught too."""
+    for caller, dockerfile in _ROOT_CALLERS_TO_DOCKERFILE.items():
+        text = (REPO_ROOT / dockerfile).read_text(encoding="utf-8")
+        assert re.search(r"^ENV\s+IS_SANDBOX=1\b", text, re.MULTILINE), (
+            f"{dockerfile} (owns root caller {caller}) is missing "
+            "`ENV IS_SANDBOX=1` -- its FCC claude subprocess will crash on "
+            "startup under bypassPermissions"
+        )
+
+
+def test_no_undiscovered_root_callers_of_claude_permission_argv() -> None:
+    """Fails loudly if a NEW caller of claude_permission_argv(auto_approve=True)
+    shows up anywhere in the repo without being added to
+    _ROOT_CALLERS_TO_DOCKERFILE (or _KNOWN_NON_CONTAINER_CALLERS) above --
+    the exact recurrence this gate exists to catch: a future service reuses
+    this helper as root, tests/review/CI all stay green, and the failure
+    only surfaces live as every turn crashing on startup."""
+    known = set(_ROOT_CALLERS_TO_DOCKERFILE) | _KNOWN_NON_CONTAINER_CALLERS
+    found: set[str] = set()
+    for path in REPO_ROOT.rglob("*.py"):
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if "/tests/" in rel or rel.startswith("tests/") or rel.endswith("/claude_spawn.py"):
+            continue
+        if ".worktrees/" in rel or "/node_modules/" in rel:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if re.search(r"claude_permission_argv\(\s*auto_approve\s*=\s*True\s*\)", text):
+            found.add(rel)
+    unknown = found - known
+    assert not unknown, (
+        f"New claude_permission_argv(auto_approve=True) caller(s) not in "
+        f"_ROOT_CALLERS_TO_DOCKERFILE / _KNOWN_NON_CONTAINER_CALLERS: "
+        f"{sorted(unknown)} -- if this runs as root in a container, add its "
+        "Dockerfile to _ROOT_CALLERS_TO_DOCKERFILE and set ENV IS_SANDBOX=1 "
+        "there; if it's host-run (no container), add it to "
+        "_KNOWN_NON_CONTAINER_CALLERS instead."
+    )

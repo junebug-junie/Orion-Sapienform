@@ -18,7 +18,13 @@ def mcp_allowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
 
 
 def mcp_disallowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
-    """Block Bash fallbacks that fail in headless Hub (gh not installed)."""
+    """Block Bash fallbacks that fail in headless Hub (gh not installed).
+
+    NOT a general destructive-action denylist -- this only ever blocks this
+    one specific `gh` fallback pattern. Under root's bypassPermissions mode
+    (see claude_permission_argv()) there is no other tool-level gate on
+    Bash; do not read this list as a safety boundary for that.
+    """
     blocked: List[str] = []
     if "github" in mcp_servers:
         blocked.append("Bash(gh *)")
@@ -47,21 +53,38 @@ def extend_mcp_argv(
 
 
 def claude_permission_argv(*, auto_approve: bool) -> List[str]:
-    """Auto-approve tool permissions for non-interactive FCC turns."""
+    """Full-auto-approve permission argv for non-interactive FCC turns.
+
+    CANONICAL EXPLANATION (Dockerfile ENV IS_SANDBOX=1 comments and the
+    orion-harness-governor README point back here -- update this one place,
+    not each copy, if Claude Code's behavior changes):
+
+    `--dangerously-skip-permissions` (the raw flag) and `--permission-mode
+    bypassPermissions` are the same full-bypass behavior, and BOTH refuse to
+    start as root/sudo unless the process recognizes a deliberate sandbox:
+    reverse-engineered live 2026-08-13 from the CLI's own bundled source, the
+    gate is `getuid()===0 && process.env.IS_SANDBOX!=="1" &&
+    !CLAUDE_CODE_BUBBLEWRAP`. Every Dockerfile whose service calls this
+    function as root (grep this repo for `claude_permission_argv(` to find
+    them) MUST set `ENV IS_SANDBOX=1`, or the claude subprocess crashes on
+    startup on every turn -- plain Docker isn't enough, the CLI checks this
+    exact env var, not container detection.
+
+    This is NOT the same as `--permission-mode dontAsk`, used here
+    previously: dontAsk avoids that startup refusal but is a deny-by-default
+    CI mode ("auto-deny every tool call that would otherwise prompt, run
+    only permissions.allow-listed / read-only-Bash / PreToolUse-hook-approved
+    actions") -- confirmed live 2026-08-13, a headless root FCC turn got
+    "Permission to use Bash has been denied because Claude Code is running
+    in don't ask mode" on a plain `git commit`, i.e. it silently denied every
+    real action instead of auto-approving them.
+
+    Root containers that set IS_SANDBOX=1 for this get FULL Bash/tool access
+    with no per-call prompt -- know what else the container mounts (docker
+    socket, SSH keys, network mode) before enabling this on a new service.
+    """
     if not auto_approve:
         return []
-    # `--dangerously-skip-permissions` (the raw flag) refuses to start under
-    # root/sudo -- but `--permission-mode bypassPermissions` is the documented
-    # equivalent full-bypass mode and is NOT subject to that same startup
-    # refusal, so root containers get it via --permission-mode instead of the
-    # raw flag. This is NOT the same as `--permission-mode dontAsk`, which was
-    # used here previously: dontAsk is a deny-by-default CI mode ("auto-deny
-    # every tool call that would otherwise prompt, run only
-    # permissions.allow-listed / read-only-Bash / PreToolUse-hook-approved
-    # actions") -- confirmed live 2026-08-13, a headless root FCC turn got
-    # "Permission to use Bash has been denied because Claude Code is running
-    # in don't ask mode" on a plain `git commit`, i.e. it silently denied
-    # every real action instead of auto-approving them.
     if os.geteuid() == 0:
         return ["--permission-mode", "bypassPermissions"]
     return ["--dangerously-skip-permissions"]

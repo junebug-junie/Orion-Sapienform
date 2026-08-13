@@ -4,15 +4,12 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Claude Code refuses to start with permissionMode=bypassPermissions (or the
-# raw --dangerously-skip-permissions flag) as root/sudo unless it recognizes
-# the process as a deliberate sandbox -- confirmed live 2026-08-13 by reading
-# the CLI's own bundled source: the gate is
-# `getuid()===0 && process.env.IS_SANDBOX!=="1" && !CLAUDE_CODE_BUBBLEWRAP`.
-# This container always runs as root (no USER directive) and
-# claude_runner.py calls orion/fcc/claude_spawn.py's claude_permission_argv(),
-# which passes bypassPermissions for root, so without this the claude
-# subprocess crashes on every turn even with tools disabled (--tools "").
+# Required for the root FCC claude subprocess to start under full-auto-approve
+# permissions instead of crashing on startup (even with tools disabled via
+# --tools "" -- the startup gate fires regardless) -- see
+# orion/fcc/claude_spawn.py::claude_permission_argv() for the canonical
+# explanation (don't duplicate it here; that's the one place to update if
+# Claude Code's own gate behavior changes).
 ENV IS_SANDBOX=1
 
 # - git: evidence.py reads graphify-out/graph.json + README.md from the

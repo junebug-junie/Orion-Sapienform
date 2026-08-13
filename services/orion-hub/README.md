@@ -849,6 +849,8 @@ When `HUB_AGENT_CLAUDE_ENABLED=true`, Hub exposes **Agent Claude - Opus / Sonnet
 
 **Requirements:** `claude` on PATH (Hub container mount), repo mount, `~/.fcc/.env` (see `config/fcc.env_example`), and **`orion-fcc`** running on host port **8082** (`services/orion-fcc`). Hub uses `HUB_FCC_SERVER_URL=http://127.0.0.1:8082`; Orion harness uses `HARNESS_FCC_SERVER_URL=http://host.docker.internal:8082`.
 
+**Permissions:** this container always runs as root (no `USER` directive), so `orion/fcc/claude_spawn.py::claude_permission_argv()` gives these turns full-auto-approve Bash/tool access via `--permission-mode bypassPermissions` (requires the Dockerfile's `ENV IS_SANDBOX=1` — see that function's docstring). That's genuinely unprompted access in a container that also mounts `/var/run/docker.sock`, the operator's real `${HOME}/.ssh` (read-only, for `git push`), and runs `network_mode: "host"` — not narrowed to repo writes. No repo-committed hook gates it (`--setting-sources user,local` drops project-level hooks for FCC turns); whatever gates a bad call must live in the operator-managed Claude config, not this repo.
+
 **Live smoke:**
 
 ```bash

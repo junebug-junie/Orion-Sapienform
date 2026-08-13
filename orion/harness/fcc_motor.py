@@ -405,11 +405,15 @@ def _stream_stall_timeout_sec(turn_timeout_sec: float) -> float:
 
 
 def _should_skip_claude_permissions() -> bool:
-    """Whether to pass --dangerously-skip-permissions to claude -p.
+    """Whether claude -p should get full-auto-approve permission argv.
 
-    Docker harness runs as root; HARNESS_FCC_SKIP_PERMISSIONS=true (default in
-    governor compose) avoids blocking Bash/MCP on approval prompts with no operator.
-    When unset, preserve legacy host-dev behavior: skip only for non-root euid.
+    The actual flag differs by caller (see claude_permission_argv() in
+    orion/fcc/claude_spawn.py): --dangerously-skip-permissions on the host,
+    --permission-mode bypassPermissions as root (this function only decides
+    whether to auto-approve at all, not which flag). Docker harness runs as
+    root; HARNESS_FCC_SKIP_PERMISSIONS=true (default in governor compose)
+    avoids blocking Bash/MCP on approval prompts with no operator. When
+    unset, preserve legacy host-dev behavior: skip only for non-root euid.
     """
     raw = os.environ.get("HARNESS_FCC_SKIP_PERMISSIONS", "").strip().lower()
     if raw in {"0", "false", "no", "off"}:

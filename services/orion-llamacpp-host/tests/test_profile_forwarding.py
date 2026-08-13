@@ -364,6 +364,126 @@ def test_gemma4_31b_multimodal_profile_forwards_mmproj_and_image_flags(monkeypat
     assert _find_flag_value(cmd, "--top-p") == "0.95"
 
 
+_MUSE_GLIMMER_SUPPORTED_FLAGS_BASE = {
+    "--jinja",
+    "--no-context-shift",
+    "--mmproj",
+    "--ubatch-size",
+    "--image-min-tokens",
+    "--image-max-tokens",
+    "--n-predict",
+    "--temp",
+    "--top-k",
+    "--top-p",
+    "--min-p",
+    "--presence-penalty",
+}
+
+
+def _load_muse_glimmer_profile(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", "muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision")
+    monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", str(config_path))
+
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile_cfg = raw["profiles"]["muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision"]
+    profile = profiles_mod.LLMProfile(name="muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision", **profile_cfg)
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_mmproj_file",
+        lambda _cfg: "/models/gguf/mmproj-Muse-Glimmer-30B-Q8_0.gguf",
+    )
+    monkeypatch.setattr(
+        main,
+        "_ensure_draft_file",
+        lambda _cfg: "/models/gguf/dflash-kquant.gguf",
+    )
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+    )
+    return main, profile
+
+
+def test_muse_glimmer_30b_agent_vision_profile_forwards_flags_on_supporting_build(monkeypatch):
+    main, profile = _load_muse_glimmer_profile(monkeypatch)
+
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: _MUSE_GLIMMER_SUPPORTED_FLAGS_BASE
+        | {"--model-draft", "--n-gpu-layers-draft", "--spec-type", "--spec-draft-n-max"},
+    )
+    # server-cuda-b10398: past both the DFlash merge (~b9766) and the Muse Glimmer
+    # architecture merge (ggml-org/llama.cpp#26841, 2026-08-10) this profile needs.
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 10398)
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert profile.supports_vision is True
+    assert profile.supports_tools is True
+    assert profile.llamacpp.spec_type == "draft-dflash"
+    assert "--jinja" in cmd
+    assert _find_flag_value(cmd, "--mmproj") == "/models/gguf/mmproj-Muse-Glimmer-30B-Q8_0.gguf"
+    assert _find_flag_value(cmd, "--ubatch-size") == "1024"
+    assert _find_flag_value(cmd, "--image-min-tokens") == "256"
+    assert _find_flag_value(cmd, "--image-max-tokens") == "1024"
+    assert _find_flag_value(cmd, "--ctx-size") == "32768"
+    assert _find_flag_value(cmd, "--batch-size") == "1024"
+    assert _find_flag_value(cmd, "--temp") == "1.0"
+    assert _find_flag_value(cmd, "--top-k") == "64"
+    assert _find_flag_value(cmd, "--top-p") == "0.95"
+    assert _find_flag_value(cmd, "--n-predict") == "16384"
+    # DFlash drafter: --model-draft still carries the path, --spec-type/--spec-draft-n-max
+    # select the block-diffusion path, and the classic draft_min/draft_max tuning knobs
+    # (not set on this profile) must not appear since they don't apply to this spec_type.
+    assert _find_flag_value(cmd, "--model-draft") == "/models/gguf/dflash-kquant.gguf"
+    assert _find_flag_value(cmd, "--spec-type") == "draft-dflash"
+    assert _find_flag_value(cmd, "--spec-draft-n-max") == "16"
+    assert "--draft-min" not in cmd
+    assert "--draft-max" not in cmd
+
+
+def test_muse_glimmer_30b_agent_vision_profile_skips_draft_entirely_on_old_build(monkeypatch, caplog):
+    import logging
+
+    main, profile = _load_muse_glimmer_profile(monkeypatch)
+
+    # server-cuda-b8740 (this stack's current default pin, ~April 2026): advertises
+    # --model-draft (classic speculative decoding existed long before DFlash) but not
+    # --spec-type. A dflash-architecture draft GGUF is not safely interpretable via the
+    # classic path, so the builder must skip the draft model entirely rather than
+    # falling back to plain --model-draft.
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: _MUSE_GLIMMER_SUPPORTED_FLAGS_BASE
+        | {"--model-draft", "--n-gpu-layers-draft", "--draft-min", "--draft-max"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 8740)
+
+    with caplog.at_level(logging.ERROR):
+        cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert "--model-draft" not in cmd
+    assert "--spec-type" not in cmd
+    assert "--spec-draft-n-max" not in cmd
+    assert "--draft-min" not in cmd
+    assert "--draft-max" not in cmd
+    # The main model still launches -- this is a graceful degrade, not a crash.
+    assert _find_flag_value(cmd, "--mmproj") == "/models/gguf/mmproj-Muse-Glimmer-30B-Q8_0.gguf"
+    assert any("spec_type" in rec.message and "does not advertise --spec-type" in rec.message for rec in caplog.records)
+
+
 def test_draft_fields_emit_speculative_decoding_flags(monkeypatch, caplog):
     import logging
 
@@ -559,3 +679,118 @@ def test_draft_requested_but_flags_unsupported_omits_draft_without_crash(monkeyp
         for rec in caplog.records
         if rec.levelno >= logging.ERROR
     )
+
+
+def test_explicit_draft_simple_spec_type_still_falls_back_on_old_build(monkeypatch):
+    """spec_type='draft-simple' is the classic small-LM draft path spelled out
+    explicitly -- unlike block-drafting types, it has a working pre---spec-type
+    fallback (bare --model-draft/--draft-min/--draft-max) and must still use it
+    when the binary doesn't advertise --spec-type, rather than being treated as
+    a hard prerequisite the way draft-dflash/draft-dspark/draft-mtp are."""
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-draft-simple-explicit",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            draft_filename="Qwen3-0.6B-Q4_K_M.gguf",
+            draft_repo_id="unsloth/Qwen3-0.6B-GGUF",
+            spec_type="draft-simple",
+            draft_min=4,
+            draft_max=16,
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=99,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_draft_file",
+        lambda _cfg: "/models/gguf/Qwen3-0.6B-Q4_K_M.gguf",
+    )
+    # --model-draft/--draft-min/--draft-max supported; --spec-type is not (old binary).
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--model-draft", "--draft-min", "--draft-max", "--temp"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 4719)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert _find_flag_value(cmd, "--model-draft") == "/models/gguf/Qwen3-0.6B-Q4_K_M.gguf"
+    assert _find_flag_value(cmd, "--draft-min") == "4"
+    assert _find_flag_value(cmd, "--draft-max") == "16"
+    assert "--spec-type" not in cmd
+
+
+def test_ngram_spec_type_emits_flag_without_draft_filename(monkeypatch):
+    """ngram-* spec_type values need no draft GGUF file at all (in-context
+    lookup) -- --spec-type must still be emitted even though draft_filename is
+    unset, since the emission used to live entirely inside the draft_filename
+    branch and would silently never fire for this family."""
+    monkeypatch.setenv("LLM_PROFILE_NAME", "unit-test")
+
+    main = importlib.import_module("app.main")
+    profiles_mod = importlib.import_module("app.profiles")
+    settings_mod = importlib.import_module("app.settings")
+
+    profile = profiles_mod.LLMProfile(
+        name="unit-ngram",
+        backend="llamacpp",
+        model_id="unit-target",
+        gpu=profiles_mod.GPUConfig(num_gpus=1, tensor_parallel_size=1, device_ids=[0]),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            model_root="/models/gguf",
+            repo_id="example/target",
+            filename="target.gguf",
+            spec_type="ngram-cache",
+            spec_draft_n_max=8,
+            host="0.0.0.0",
+            port=8080,
+            ctx_size=8192,
+            n_gpu_layers=99,
+            threads=8,
+            n_parallel=1,
+            batch_size=512,
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {"--spec-type", "--spec-draft-n-max", "--temp"},
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 10398)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/target.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert "--model-draft" not in cmd
+    assert _find_flag_value(cmd, "--spec-type") == "ngram-cache"
+    assert _find_flag_value(cmd, "--spec-draft-n-max") == "8"

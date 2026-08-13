@@ -163,6 +163,22 @@ class Settings(BaseSettings):
     orion_situation_hot_car_temp_f_threshold: int = Field(80, alias="ORION_SITUATION_HOT_CAR_TEMP_F_THRESHOLD")
     orion_situation_agenda_enabled: bool = Field(False, alias="ORION_SITUATION_AGENDA_ENABLED")
     orion_situation_lab_context_enabled: bool = Field(True, alias="ORION_SITUATION_LAB_CONTEXT_ENABLED")
+    # P4: the camera percept in the situation brief. Default OFF -- this puts
+    # camera-derived content about a private home into the prompt, so it is
+    # opt-in. See PerceptionContextV1's docstring for the exposed-field
+    # contract (scene summary + age only; no frames, boxes, or identities).
+    orion_situation_perception_enabled: bool = Field(
+        False, alias="ORION_SITUATION_PERCEPTION_ENABLED"
+    )
+    # Older than this and the percept is withheld entirely, rendering as
+    # "haven't seen anything recently" rather than as a current observation.
+    # 900s tolerates a few missed windows at the measured ~5min event cadence.
+    orion_situation_perception_max_age_seconds: int = Field(
+        900, alias="ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS"
+    )
+    orion_situation_perception_stream_id: str = Field(
+        "cam0", alias="ORION_SITUATION_PERCEPTION_STREAM_ID"
+    )
     orion_situation_lab_provider: str = Field("stub", alias="ORION_SITUATION_LAB_PROVIDER")
     orion_presence_session_ttl_seconds: int = Field(14400, alias="ORION_PRESENCE_SESSION_TTL_SECONDS")
     orion_presence_default_requestor: str = Field("Juniper", alias="ORION_PRESENCE_DEFAULT_REQUESTOR")

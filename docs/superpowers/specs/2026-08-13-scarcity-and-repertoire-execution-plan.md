@@ -1,7 +1,10 @@
 # Scarcity and repertoire: the execution plan
 
 Date: 2026-08-13
-Status: **PROPOSED — needs Juniper sign-off before Phase E0 runs.**
+Status: **SUPERSEDED IN PART — see `2026-08-13-scarcity-revision-two-ceilings.md` before acting on §1e, §3, or Phases 1–5.**
+> The thesis in §3 (serialized inference time as the scarce resource) was wrong. The
+> revision replaces it with two ceilings (residency + concurrency) and names the real
+> currency as foregone processes. §7's throttle and Phase E0's Gate B still stand.
 Supersedes parts of `2026-08-12-metric-commensurability-handover-spec.md` (see §2).
 
 This is a plan, a kill-switch, and a leash. §7 is the part that exists to stop the agent

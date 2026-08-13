@@ -166,3 +166,26 @@ graphify-out/.graphify_*
 # graphify-out/graph.json via scripts/graphify_seed_semantic_cache.py. Never
 # commit local cache files (CLAUDE.md section 2).
 graphify-out/cache/
+
+# Dated snapshot dirs graphify drops beside its outputs on an update. Each
+# holds a PRE-update copy of graphify-out/, ~45MB. Established from tracked
+# history, not assumed: in commit eae14a6c (which added graphify-out/
+# 2026-07-29/) the snapshot's graph.json has 32529 nodes, the top-level in the
+# SAME commit has 28307, and the top-level in the PARENT commit has 32529 --
+# the snapshot matches the parent. That is what makes it a usable recovery
+# source when a destructive update leaks shrunken artifacts (see
+# scripts/safe_graphify_update.sh), and it is how the 2026-08-12 report and
+# label-cache restore was actually performed.
+#
+# Ignoring them keeps new ones out of history, against this file's own stated
+# intent above that only graph.json/GRAPH_REPORT.md/manifest.json are real
+# committed outputs. It does NOT untrack graphify-out/2026-07-29/, which is
+# already committed -- gitignore never applies to tracked files. Removing that
+# ~45MB from tracking is a deliberate `git rm --cached -r` decision, left to
+# Juniper rather than bundled into a bugfix patch.
+graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
+
+# Generated interactive graph view (~2.3MB). Never part of the tracked output
+# set, and it loads vis-network from an external CDN, so a committed copy
+# renders blank offline or if the pin moves.
+graphify-out/graph.html

@@ -146,6 +146,16 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # `_json_list`/`_parse_json_list` encoding as `contributing_turn_ids`
 # immediately below (a list of strings, Cypher has no native list-of-string
 # scalar type this codec promotes).
+# `perception_staleness` added 2026-08-13, and caught the same way
+# `prediction_error_evidence_event_ids` was: node:substrate.vision writes both
+# `prediction_error` and `perception_staleness`, capability:vision's edge maps
+# both to `pressure`, and after deploying, the node in FalkorDB carried
+# prediction_error=0 and perception_staleness NULL -- this allowlist had
+# silently dropped it from the SET clause, so the availability half of the
+# signal never reached the field digester at all. The channel exists precisely
+# because a silent bus channel freezes its gap_zscore instead of raising it, so
+# losing it would have left capability:vision reading a dead camera as calm --
+# the exact defect that edge was added to remove.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -154,6 +164,7 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "prediction_error",
     "contributing_turn_ids",
     "prediction_error_evidence_event_ids",
+    "perception_staleness",
 )
 
 # Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()

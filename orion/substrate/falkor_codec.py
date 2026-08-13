@@ -146,16 +146,14 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # `_json_list`/`_parse_json_list` encoding as `contributing_turn_ids`
 # immediately below (a list of strings, Cypher has no native list-of-string
 # scalar type this codec promotes).
-# `perception_staleness` added 2026-08-13, and caught the same way
-# `prediction_error_evidence_event_ids` was: node:substrate.vision writes both
-# `prediction_error` and `perception_staleness`, capability:vision's edge maps
-# both to `pressure`, and after deploying, the node in FalkorDB carried
-# prediction_error=0 and perception_staleness NULL -- this allowlist had
-# silently dropped it from the SET clause, so the availability half of the
-# signal never reached the field digester at all. The channel exists precisely
-# because a silent bus channel freezes its gap_zscore instead of raising it, so
-# losing it would have left capability:vision reading a dead camera as calm --
-# the exact defect that edge was added to remove.
+# `perception_staleness` / `perception_yield` added 2026-08-13, and the first of
+# them was caught the same way `prediction_error_evidence_event_ids` was: after
+# deploying, node:substrate.vision carried prediction_error=0 and
+# perception_staleness NULL, because this allowlist had silently dropped it
+# from the SET clause. Consumer: config/field/orion_field_topology.v1.yaml's
+# node:substrate.vision -> capability:vision edge maps perception_staleness to
+# pressure. Note `perception_yield` is a raw count mean (live: 6-8 objects per
+# frame), NOT a 0-1 pressure, and is encoded unbounded on purpose.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -165,6 +163,7 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "contributing_turn_ids",
     "prediction_error_evidence_event_ids",
     "perception_staleness",
+    "perception_yield",
 )
 
 # Subset of DYNAMICS_METADATA_KEYS owned by SubstrateDynamicsEngine.tick()
@@ -256,6 +255,9 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         # reading yet" must stay distinguishable from "measured, and the eye is
         # fine", since those are opposite answers to "can Orion see".
         "perception_staleness": _safe_float(meta.get("perception_staleness"), default=None),
+        # Raw count mean, not a 0-1 pressure -- live values run 6-8 objects per
+        # frame. Encoded unbounded on purpose; see _write_prediction_error_node.
+        "perception_yield": _safe_float(meta.get("perception_yield"), default=None),
     }
 
 
@@ -353,6 +355,9 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     perception_staleness = _safe_float(row.get("perception_staleness"), default=None)
     if perception_staleness is not None:
         metadata["perception_staleness"] = perception_staleness
+    perception_yield = _safe_float(row.get("perception_yield"), default=None)
+    if perception_yield is not None:
+        metadata["perception_yield"] = perception_yield
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather

@@ -1,8 +1,9 @@
-"""Unit tests for the vision-scoped field signals feeding capability:vision.
+"""Unit tests for the perceptual-health signals feeding capability:vision.
 
-Two channels, deliberately separate: an irregularity channel that reuses the
-mesh-wide counting rule, and an availability channel that exists because the
-first one structurally cannot see silence.
+An availability channel (is the eye producing at all) and a yield channel (is
+what it produces carrying anything). Both read the detector's own output; the
+earlier bus-cadence version was deleted, not tuned -- see
+orion/substrate/prediction_error.py's capability:vision section.
 """
 
 from __future__ import annotations
@@ -10,46 +11,10 @@ from __future__ import annotations
 import math
 
 from orion.substrate.prediction_error import (
-    bus_synaptic_prediction_error,
-    vision_channel_prediction_error,
+    perceptual_blindness_pressure,
+    perceptual_yield,
     vision_channel_staleness_pressure,
 )
-
-
-# --- irregularity channel -------------------------------------------------
-
-
-def test_matches_the_mesh_wide_counting_rule_exactly() -> None:
-    # It delegates on purpose; this pins that it stays a delegation rather than
-    # drifting into a second, separately-calibrated formula.
-    for zs in ([], [0.0], [3.0], [0.5, 4.2, -7.0], [-3.0, 2.99]):
-        assert vision_channel_prediction_error(zs) == bus_synaptic_prediction_error(zs)
-
-
-def test_empty_edge_list_is_zero() -> None:
-    assert vision_channel_prediction_error([]) == 0.0
-
-
-def test_counts_anomalous_fraction_at_the_three_sigma_convention() -> None:
-    # 2 of 10 anomalous -- the exact reading observed live at 05:20:04 on
-    # 2026-08-13 while the mesh-wide value sat at 0.0175.
-    zscores = [3.4, -5.1] + [0.2] * 8
-    assert vision_channel_prediction_error(zscores) == 0.2
-
-
-def test_boundary_is_inclusive_at_three_sigma() -> None:
-    assert vision_channel_prediction_error([3.0]) == 1.0
-    assert vision_channel_prediction_error([2.999]) == 0.0
-
-
-def test_one_enormous_outlier_counts_the_same_as_one_marginal_one() -> None:
-    # The heavy-tail failure that pinned the mesh-wide node at 1.0 cannot recur.
-    assert vision_channel_prediction_error([7087.8, 0.1, 0.1, 0.1]) == 0.25
-    assert vision_channel_prediction_error([3.01, 0.1, 0.1, 0.1]) == 0.25
-
-
-def test_negative_zscores_count_by_magnitude() -> None:
-    assert vision_channel_prediction_error([-4.0, 0.1]) == 0.5
 
 
 # --- availability channel -------------------------------------------------
@@ -117,19 +82,36 @@ def test_degenerate_window_saturates_immediately() -> None:
     ) == 1.0
 
 
-def test_a_frozen_anomaly_reading_does_not_mask_an_outage() -> None:
+def test_a_blinded_eye_is_invisible_to_availability_alone() -> None:
     """
-    The design-invalidating case, as an executable assertion.
+    The failure that motivated the yield channel, as an executable assertion.
 
-    compute_ewma_update runs per observed message, so a silent channel freezes
-    its gap_zscore at whatever it held while healthy -- normally calm. If the
-    two channels were not combined, a dead camera would read as healthy.
+    A capped lens or dark room keeps artifacts flowing on schedule, so
+    availability reads a clean 0.0 while every frame is empty. Verified against
+    the real detector: a black probe frame returned ok=True with 0 objects
+    where the live scene returned 6.
     """
-    frozen_calm_zscores = [0.1, -0.2, 0.05]
-    assert vision_channel_prediction_error(frozen_calm_zscores) == 0.0
+    assert vision_channel_staleness_pressure(5.0) == 0.0  # artifacts on time
+    assert perceptual_yield([0] * 60) == 0.0              # and carrying nothing
+    assert perceptual_blindness_pressure([0] * 60) == 1.0
 
-    dead_for_two_minutes = vision_channel_staleness_pressure(120.0)
-    assert dead_for_two_minutes == 1.0
 
-    # capability:vision maps both to `pressure`, combined by apply_diffusion's max().
-    assert max(vision_channel_prediction_error(frozen_calm_zscores), dead_for_two_minutes) == 1.0
+def test_yield_is_a_raw_observable_not_a_pressure() -> None:
+    # No normalisation: 6.75 means 6.75 objects per frame, not a 0-1 score.
+    assert perceptual_yield([6, 8, 7, 6]) == 6.75
+    assert perceptual_yield([]) == 0.0
+
+
+def test_blindness_needs_sustained_evidence_not_one_empty_frame() -> None:
+    # A single empty frame is a blink; the guard prevents a cold-start alarm.
+    assert perceptual_blindness_pressure([0]) == 0.0
+    assert perceptual_blindness_pressure([0, 0, 0]) == 0.0
+    assert perceptual_blindness_pressure([0] * 12) == 1.0
+
+
+def test_any_real_detection_clears_blindness() -> None:
+    assert perceptual_blindness_pressure([0] * 59 + [1]) == 0.0
+
+
+def test_negative_counts_are_clamped_not_trusted() -> None:
+    assert perceptual_yield([-5, 5]) == 2.5

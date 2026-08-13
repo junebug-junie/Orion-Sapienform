@@ -87,11 +87,13 @@ class Settings(BaseSettings):
     vision_channel_tick_interval_sec: float = Field(
         30.0, alias="SUBSTRATE_VISION_CHANNEL_TICK_INTERVAL_SEC"
     )
-    # Substring match against Channel.channel in the bus synaptic graph. A
-    # prefix would be wrong: the qualifying edges include orion:vision:frames
-    # and also orion:vision:events:sql-write, and the catalog normalizes
-    # per-request reply channels to orion:vision:reply:*.
-    vision_channel_match: str = Field("vision", alias="SUBSTRATE_VISION_CHANNEL_MATCH")
+    # The channel carrying the detector's real output. Chosen over
+    # orion:vision:events (~11/hour -- far too sparse to read as liveness) and
+    # over orion:vision:frames (0.1s, but pre-detector, so it stays healthy
+    # while the eye is blind). Measured live 2026-08-13: one message every 5.0s.
+    vision_artifacts_channel: str = Field(
+        "orion:vision:artifacts", alias="SUBSTRATE_VISION_ARTIFACTS_CHANNEL"
+    )
     # Same env var name services/orion-bus-mirror and services/orion-recall
     # already use for the same graph -- not a new name.
     falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")

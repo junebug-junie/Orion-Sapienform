@@ -688,58 +688,38 @@ def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
     return anomalous / len(edge_zscores)
 
 
-def vision_channel_prediction_error(edge_zscores: list[float]) -> float:
-    """0-1 score: the anomalous fraction of the *vision* channels' bus edges.
+# ---------------------------------------------------------------------------
+# capability:vision -- perceptual availability
+#
+# 2026-08-13: an earlier draft of this node derived vision health from the bus
+# synaptic graph's `gap_zscore` over the orion:vision:* channels, reusing
+# bus_synaptic_prediction_error's counting rule. That was **deleted rather than
+# tuned**, because it measured the wrong layer, in two ways that no threshold
+# fixes:
+#
+#   1. It z-scores message INTER-ARRIVAL TIME, and the vision pipeline's
+#      cadence is set by a fixed scheduler (config/vision_frame_router.yaml's
+#      `min_seconds_between_tasks_per_camera: 5`). Z-scoring a metronome
+#      measures scheduler jitter, not perception.
+#   2. It is structurally blind to a blinded camera. Measured live by posting
+#      synthetic frames to the vision host: a pure-black frame and a flat-grey
+#      frame each returned `ok=True` with **0 objects**, while the same
+#      detector on the real frame returned 6 (max score 0.72). A capped lens, a
+#      dark room, or a frozen stream all produce perfectly regular, perfectly
+#      successful bus traffic carrying no information whatsoever. Cadence
+#      cannot see that. Yield can, trivially.
+#
+# The replacement reads the eye's own output instead of the bus's rhythm, and
+# uses no EWMA anywhere -- there is no baseline to smooth, only a clock and a
+# count.
+# ---------------------------------------------------------------------------
 
-    Deliberately the same counting rule and the same ``|z| >= 3`` convention as
-    ``bus_synaptic_prediction_error`` above, delegating to it rather than
-    reimplementing, because it is the identical question asked of a narrower
-    edge set. The two wrong formulas documented in that docstring are wrong
-    here for exactly the same reasons; there is no case for a second attempt at
-    them.
-
-    **Why this is not redundant with the mesh-wide metric**, per CLAUDE.md
-    §0A's independence check. It reads the same ``gap_zscore`` property from the
-    same graph, so it is emphatically not an independent *instrument* -- but it
-    answers a question the mesh-wide aggregate structurally cannot. That
-    function's own docstring says so: it "cannot cleanly separate a few-organ
-    event from noise at ANY threshold", and concludes "single-organ detection
-    needs a per-organ signal, not a lower threshold on this one." Measured
-    live 2026-08-13: the vision channels are 10 of 171 qualifying edges, so a
-    total vision blackout moves the mesh-wide reading to at most 0.058 --
-    under its own observed baseline max of 0.094, i.e. invisible. Scoped to
-    those 10 edges, the same blackout reads 1.0.
-
-    Reusing the already-maintained EWMA baseline is the point: no new
-    instrument is introduced, nothing new needs calibrating, and the
-    orion-bus-mirror writer that maintains it is already load-bearing for a
-    shipped domain.
-
-    **Quantisation, stated up front:** with ~10 qualifying edges the reading is
-    coarse -- one anomalous edge is 0.1, and there is no value between 0.0 and
-    0.1. That is acceptable for a capability-health channel (the question is
-    "is the eye impaired", not "by how much") but it is not a continuous
-    magnitude and should not be trended as one.
-
-    Caller is responsible for the scoping and for the same cold-start
-    (``count``) and recency (``last_seen_epoch``) filters the mesh-wide caller
-    applies; this function only aggregates the list it is given.
-
-    **This is a traffic-*irregularity* channel and cannot detect silence.** See
-    ``vision_channel_staleness_pressure`` -- that is not an optional companion,
-    it is what makes this one safe to read.
-    """
-    return bus_synaptic_prediction_error(edge_zscores)
-
-
-# Deadband and saturation for vision availability, anchored to the measured
-# live cadence of the vision channels (2026-08-13, 60s pubsub census):
-# orion:vision:frames 0.1s, orion:vision:edge:health 0.1s,
-# orion:vision:artifacts 5.0s, orion:vision:windows 8.6s. Since the staleness
-# below is taken across ALL vision channels, a healthy eye refreshes it about
-# ten times a second, so the deadband is ~150x the healthy interval -- wide
-# enough that ordinary jitter reads exactly 0.0, narrow enough that a stopped
-# camera is unambiguous well inside a minute.
+# Deadband and saturation for perceptual availability, anchored to the measured
+# live cadence of orion:vision:artifacts (2026-08-13, 60s pubsub census: 12
+# messages, one every 5.0s), which is the channel carrying real detector
+# output. The deadband is 3x that healthy interval -- wide enough that ordinary
+# scheduler jitter reads exactly 0.0, narrow enough that a stopped eye is
+# unambiguous well inside a minute.
 _VISION_STALENESS_GRACE_SEC = 15.0
 _VISION_STALENESS_SATURATION_SEC = 60.0
 
@@ -750,33 +730,24 @@ def vision_channel_staleness_pressure(
     grace_seconds: float = _VISION_STALENESS_GRACE_SEC,
     saturation_seconds: float = _VISION_STALENESS_SATURATION_SEC,
 ) -> float:
-    """0-1 availability pressure from the age of the newest vision bus message.
+    """0-1 availability pressure from the age of the newest vision artifact.
 
-    **Why this exists, and why the anomaly fraction alone is not enough.**
-    ``services/orion-bus-mirror/app/graph_writer.py::compute_ewma_update`` runs
-    once per *observed message*, computing the z-score of that message's
-    inter-arrival gap. If a channel goes silent the function is never called,
-    so ``gap_zscore`` does not rise -- it **freezes at its last value**.
-    Verified by reading that function 2026-08-13, before this node shipped.
+    Answers "is the eye producing at all". The caller computes ``age_seconds``
+    against a clock on a fixed tick, so this rises during silence -- the
+    property the deleted EWMA approach structurally could not have, since an
+    event-triggered statistic is never recomputed when the events stop.
 
-    A dead camera therefore leaves ``vision_channel_prediction_error`` reading
-    whatever it read while the camera was alive, which is normally calm. Wiring
-    that alone into ``capability:vision`` would have reproduced the exact defect
-    the edge was built to remove: a self-model confidently asserting healthy
-    vision with no eye attached. It is also the same shape as the
+    This is the "explicit freshness channel" the perception design doc requires,
+    and the reason that doc also insists staleness must never be modelled by
+    decay: a decaying value converges toward calm, which is backwards. Silence
+    has to converge toward alarm. Concretely, this is the shape of the
     ``node:substrate.route`` incident CLAUDE.md §0A records, where a value that
     had merely stopped being refreshed was indistinguishable from a genuine
     calm reading.
 
-    ``last_seen_epoch`` *does* advance on every observation, so its age is a
-    true liveness measure. This is the "explicit freshness channel" the
-    perception design doc requires, and the reason that doc also says staleness
-    must never be modelled by decay: a decaying value converges toward calm,
-    which is backwards -- silence should converge toward alarm.
-
     Rest point is exactly 0.0 and genuinely reachable: at health the newest
-    vision message is a fraction of a second old, far inside the deadband.
-    Saturates at 1.0, so it is bounded without a clamp on the input.
+    artifact is ~5s old, inside the deadband. Saturates at 1.0, so it is
+    bounded without clamping the input.
     """
     if not math.isfinite(age_seconds) or age_seconds <= grace_seconds:
         return 0.0
@@ -784,3 +755,53 @@ def vision_channel_staleness_pressure(
     if span <= 0:
         return 1.0
     return min(1.0, (age_seconds - grace_seconds) / span)
+
+
+def perceptual_yield(object_counts: list[int]) -> float:
+    """Mean detected objects per artifact over a recent window.
+
+    A raw observable, not a pressure: no normalisation, no baseline, no
+    smoothing. Recorded on ``node:substrate.vision`` so a blinded eye is
+    *visible*, and deliberately NOT mapped to ``capability:vision`` pressure
+    yet -- see ``perceptual_blindness_pressure`` for why that step needs
+    evidence this patch does not have.
+
+    Measured live 2026-08-13 on the real cam0 stream: ~6-8 objects per frame
+    against a black or flat-grey probe frame's 0.
+    """
+    if not object_counts:
+        return 0.0
+    usable = [max(0, int(c)) for c in object_counts]
+    return sum(usable) / len(usable)
+
+
+def perceptual_blindness_pressure(
+    object_counts: list[int],
+    *,
+    min_samples: int = 12,
+) -> float:
+    """0-1 pressure for "artifacts are arriving but carry nothing".
+
+    The failure the availability channel cannot see: the pipeline is healthy,
+    tasks return ``ok=True``, messages arrive on schedule, and every frame is
+    empty. Verified reachable by probe -- a black frame returns 0 objects
+    through the real detector while the same detector returns 6 on the live
+    scene.
+
+    **Deliberately not wired to pressure in the patch that introduces it**, and
+    the reason is a genuine ambiguity rather than caution theatre: a sustained
+    zero is equally consistent with a blinded eye and with *an empty dark
+    room at 3am*. Distinguishing those needs a per-stream temporal prior --
+    the "day-shape" of Movement II in the perception design doc, which knows
+    that this room is normally empty at 3am and normally is not at 6pm. Until
+    that exists, a zero-yield alarm would fire every night on a working camera,
+    which is the false-positive twin of the fabricated ``confidence=1.0`` this
+    whole node exists to delete. Recorded and observed first; promoted only
+    once there is something to interpret it against.
+
+    ``min_samples`` guards the cold-start case: a single empty frame is a
+    blink, not blindness.
+    """
+    if len(object_counts) < min_samples:
+        return 0.0
+    return 1.0 if perceptual_yield(object_counts) <= 0.0 else 0.0

@@ -120,27 +120,25 @@ edges:
   # capability:transport above -- apply_diffusion()'s derived-fallback formula
   # produces them from this real pressure rather than fabricating a second
   # constant, which is the specific bug this edge exists to remove.
-  # BOTH channels map to pressure on purpose. apply_diffusion() combines
-  # multiple sources for one target channel with max() and records which one
-  # won in capability_provenance, so pressure reads "vision is impaired" from
-  # whichever fault is live, and the provenance says which.
+  # Only perception_staleness maps to pressure. The node also carries
+  # perception_yield (mean objects detected per artifact), deliberately
+  # unmapped: a sustained zero is equally consistent with a blinded eye and an
+  # empty dark room at 3am, and telling those apart needs a per-stream
+  # day-shape prior that does not exist yet. Wiring it now would fire nightly
+  # on a working camera -- the false-positive twin of the fabricated
+  # confidence=1.0 this edge exists to delete. Recorded and observed first.
   #
-  # prediction_error alone would NOT be safe here. orion-bus-mirror's
-  # compute_ewma_update runs once per observed message, so a channel that goes
-  # silent does not raise its gap_zscore -- it freezes it at the last value it
-  # had while healthy, normally calm. A dead camera would therefore have read
-  # as pressure 0.0, i.e. the same "perfect vision" falsehood this edge exists
-  # to delete, and the same stale-read-as-calm shape as the
-  # node:substrate.route incident. perception_staleness is the explicit
-  # freshness channel that covers silence; it is derived from last_seen_epoch,
-  # which does advance per observation, and is never modelled by decay
-  # (decay converges toward calm; silence must converge toward alarm).
+  # An earlier draft mapped a bus-cadence prediction_error here as well. That
+  # was deleted, not tuned: it z-scored message inter-arrival time against a
+  # fixed 5s scheduler (a metronome), and was structurally blind to a blinded
+  # camera -- verified by probe, where a black frame returned ok=True with 0
+  # objects while the bus traffic stayed perfectly regular. See
+  # orion/substrate/prediction_error.py's capability:vision section.
   - source_id: node:substrate.vision
     target_id: capability:vision
     edge_type: node_capability
     weight: 0.85
     channel_map:
-      prediction_error: pressure
       perception_staleness: pressure
 
   - source_id: node:athena

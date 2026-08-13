@@ -90,6 +90,10 @@ Not run — no local Docker daemon access in this session. The pytest suite alre
   - Evidence: `git status --short` after staging shows no untracked files in the diff.
 - The review agent's environment lacked `pytest`/`sqlalchemy` (no venv under the worktree) and could not run the test suite itself — it reviewed statically (`py_compile`, manual trace of `route_map`/`MODEL_MAP`/`INSERT_ONLY_MODELS`) and flagged this as a limitation. I ran the actual suite separately (see Tests run above) using the repo-root `.venv`, both before and after applying its findings.
 
+## CI failure fixed post-push
+
+`orion-static-gates` CI's "Metric lineage gate" failed: `scripts/check_metric_lineage.py --gate` ratcheted `bus_channel` orphans 18 → 19. Zeroing `orion:memory:drives:audit`'s `consumer_services` (removing the `"*"` wildcard along with the real `orion-sql-writer` entry) made the channel a genuine orphan by this gate's own definition — a registered `bus_channel` node with no code consumer and no surviving declared consumer (the gate special-cases `"*"` as "an unverifiable but real claim of consumption," so it had been the only thing keeping this entry off the ratchet). The gate's own failure message: "Wire it to a real consumer, or retire the registry entry." Restoring `"*"` would have satisfied the gate cosmetically without being true — the channel really does have zero producers and zero consumers now. Fix: removed the channel entry from `orion/bus/channels.yaml` entirely (matches CLAUDE.md 0A's "kill means kill, no fallback to the thing being killed" — a `producer_services: [], consumer_services: []` entry is a partial exclusion, not a retirement). `DriveAuditV1`'s schema definition and its `orion/schemas/registry.py` entry were left in place (a type definition, not live wiring). Verified locally: `check_metric_lineage.py --gate` → PASS (`bus_channel: 18`, back to baseline), all 5 other static gates still pass, sql-writer test suite unchanged (204 passed / 18 failed / 3 errors, same pre-existing set).
+
 ## Restart required
 
 ```bash

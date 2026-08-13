@@ -35,38 +35,24 @@ class DocSemanticDriftV1(BaseModel):
     sha: str
     path: str
     commit_prefix: str | None = None
-    # Real git diff status for this file in the scored range ("added" /
-    # "modified"), read from `git diff --name-status` rather than inferred
-    # from an empty hunk. Exists because `diff_scoped_embedding_diff=None`
-    # had two structurally different causes that no consumer could tell
-    # apart (confirmed live 2026-08-12 on real events): a newly-added file
-    # has no "before" text at all, so no removed-side embedding is requested
-    # and the cosine is genuinely undefined -- correct-by-definition, not a
-    # failure.
+    # None here means a real embedding failure -- and only that.
     #
-    # Note what this field alone does NOT tell you. `change_kind` is not a
-    # sufficient alarm condition on its own: a pure-append edit (adding a
-    # section to an existing doc -- the most common doc edit in this repo)
-    # has git status "M" but an empty removed side under --unified=0, so it
-    # also produces a legitimate None. Measured over this repo's last 300
-    # commits: 56 of 161 modified-doc changes (34.8%) have no removed side.
+    # It used to have two causes a consumer could not tell apart: a genuine
+    # failure, and a structurally-undefined comparison (a new file, a pure
+    # append, a pure deletion -- one side has no text, so cosine does not
+    # exist). A `change_kind` field was added 2026-08-12 to disambiguate
+    # them. The live batch on 2026-08-13 showed why that was the wrong fix:
+    # 6 of 8 real events were the structural case, all new PR reports and
+    # specs, and that ratio is structural rather than a small sample --
+    # this repo's docs are mostly created once and never revised.
     #
-    # Use the chunk counts to disambiguate, not this field:
-    #   chunk_count_removed == 0 or chunk_count_added == 0
-    #       -> structurally undefined, expected, not a failure
-    #   both > 0 and diff is None
-    #       -> a real embedding request failed; this is the alarm
+    # So the producer now skips those changes entirely instead of publishing
+    # a labelled null (`_is_unscoreable()`), and `change_kind` was removed
+    # with them: every published event is a modified file with real text on
+    # both sides, which made the field a constant, and a constant is not a
+    # signal -- the same reason `possibly_truncated` was removed before it.
     #
-    # "deleted" is declared here but never produced today: the producer's
-    # `changed_doc_files_with_status()` filters to --diff-filter=ACMR, deliberately
-    # excluding deletions (a deleted doc has no "after" state to score
-    # drift against). Declared so a consumer's match is exhaustive if that
-    # filter is ever widened.
-    change_kind: Literal["added", "modified", "deleted"] | None = None
-    # None when either side's embedding request failed (e.g. the bus/
-    # embedding host was unavailable this tick), or -- expected, not a
-    # failure -- when one side has no text at all (see `change_kind`).
-    # A real "couldn't measure this one" fact, not a fabricated 0.0.
+    # A consumer can therefore treat any None as an alarm.
     diff_scoped_embedding_diff: float | None = None
     # How many <=CHUNK_CHAR_SIZE windows each side's hunk was split into
     # before embedding. Replaces the former `possibly_truncated` bool,

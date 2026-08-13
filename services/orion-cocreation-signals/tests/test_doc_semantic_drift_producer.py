@@ -51,7 +51,7 @@ def _fake_event(change: DocHunkChange, diff: float | None = 0.5) -> DocSemanticD
     return DocSemanticDriftV1(
         observed_at=datetime.now(timezone.utc), sha=change.sha, path=change.path,
         commit_prefix=change.commit_prefix, diff_scoped_embedding_diff=diff,
-        change_kind=change.change_kind, chunk_count_removed=1, chunk_count_added=1,
+        chunk_count_removed=1, chunk_count_added=1,
         hunk_removed_len_chars=len(change.hunk_removed), hunk_added_len_chars=len(change.hunk_added),
     )
 

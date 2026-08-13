@@ -33,6 +33,7 @@ for path in (REPO_ROOT, SERVICE_ROOT):
         sys.path.insert(0, str(path))
 
 from app.producers import doc_semantic_drift as mod  # noqa: E402
+from app.producers import doc_semantic_drift as doc_semantic_drift_module  # noqa: E402
 
 from orion.core.bus.bus_schemas import ServiceRef  # noqa: E402
 from orion.structural_mass.doc_semantic_drift import DocHunkChange  # noqa: E402
@@ -351,34 +352,6 @@ async def test_one_failed_chunk_yields_none_not_a_partial_measurement(source, mo
 
 
 @pytest.mark.asyncio
-async def test_added_file_reports_zero_removed_chunks_and_none_diff(source, monkeypatch) -> None:
-    """A newly-added doc has no "before" text, so cosine is genuinely
-    undefined. This must be distinguishable from a real embedding failure --
-    that's what change_kind + chunk counts are for."""
-    _stub_embeddings(monkeypatch)
-    event = await _score(_change("", "brand new doc", change_kind="added"), source)
-
-    assert event.diff_scoped_embedding_diff is None
-    assert event.change_kind == "added"
-    # This is the pair that actually disambiguates: 0 chunks on a side means
-    # structurally undefined, NOT a failed embedding. change_kind alone does
-    # not carry that -- a pure-append edit is status "M" with an empty
-    # removed side (34.8% of real modified-doc changes in this repo).
-    assert event.chunk_count_removed == 0
-    assert event.chunk_count_added == 1
-
-
-@pytest.mark.asyncio
-async def test_change_kind_passes_through_to_the_event(source, monkeypatch) -> None:
-    """The whole disambiguation depends on this reaching the payload: an
-    `added` file with diff=None is expected, a `modified` file with
-    diff=None is an alarm."""
-    _stub_embeddings(monkeypatch)
-    event = await _score(_change("", "brand new doc", change_kind="added"), source)
-    assert event.change_kind == "added"
-
-
-@pytest.mark.asyncio
 async def test_short_hunk_still_scores_as_a_single_chunk(source, monkeypatch) -> None:
     """Chunking must not change behavior for hunks that already fit -- these
     scores stay directly comparable to the pre-chunking ones."""
@@ -411,21 +384,6 @@ async def test_event_no_longer_carries_possibly_truncated(source, monkeypatch) -
     _stub_embeddings(monkeypatch)
     event = await _score(_change("old", "new"), source)
     assert not hasattr(event, "possibly_truncated")
-
-
-@pytest.mark.asyncio
-async def test_pure_append_to_existing_doc_is_undefined_not_an_alarm(source, monkeypatch) -> None:
-    """Regression guard on a wrong claim this schema used to make. A
-    pure-append edit has git status "modified" but no removed side at all
-    under --unified=0 -- measured at 34.8% of real modified-doc changes over
-    this repo's last 300 commits. It must be distinguishable from a real
-    embedding failure by chunk_count_removed == 0, not misread as one."""
-    _stub_embeddings(monkeypatch)
-    event = await _score(_change("", "a whole new section", change_kind="modified"), source)
-
-    assert event.change_kind == "modified"
-    assert event.diff_scoped_embedding_diff is None
-    assert event.chunk_count_removed == 0
 
 
 @pytest.mark.asyncio
@@ -516,3 +474,100 @@ async def test_embedding_requests_are_capped_in_flight(source, monkeypatch) -> N
     assert peak <= mod._EMBED_CONCURRENCY
     # Guard against the cap passing trivially because nothing overlapped.
     assert peak > 1
+
+
+# --------------------------------------------------------------------------
+# _is_unscoreable -- what never gets published at all
+# --------------------------------------------------------------------------
+
+
+def test_new_file_is_unscoreable() -> None:
+    """No "before" text means no cosine. The live batch on 2026-08-13 had 6
+    of 8 events in this state, all new PR reports and specs."""
+    assert mod._is_unscoreable(_change("", "a brand new doc")) is True
+
+
+def test_pure_append_is_unscoreable_even_though_git_calls_it_modified() -> None:
+    """Keyed on the real hunk text, not on change_kind: under --unified=0 a
+    pure append to an existing file has no removed lines at all (34.8% of
+    real modified-doc changes over 300 commits)."""
+    assert mod._is_unscoreable(_change("", "an appended section", change_kind="modified")) is True
+
+
+def test_pure_deletion_is_unscoreable() -> None:
+    assert mod._is_unscoreable(_change("removed content", "")) is True
+
+
+def test_real_two_sided_edit_is_scoreable() -> None:
+    assert mod._is_unscoreable(_change("old text", "new text")) is False
+
+
+@pytest.mark.asyncio
+async def test_unscoreable_change_is_skipped_before_any_embedding(
+    source, stop_event, monkeypatch
+) -> None:
+    """Skipped BEFORE the embedding requests, not after. A 15-chunk new doc
+    otherwise burned 15 real embedding requests -- each one a vector-store
+    write and a tissue feed on a shared, serial, CPU-bound host -- to
+    publish a guaranteed None."""
+    from conftest import FakeBus
+
+    calls = _stub_embeddings(monkeypatch)
+
+    async def _fake_fork(parent):
+        return parent
+
+    monkeypatch.setattr(doc_semantic_drift_module, "fork_rpc_client", _fake_fork)
+    bus = FakeBus()
+    added_only = _change("", "\n".join(f"line {i}" for i in range(200)), change_kind="added")
+
+    monkeypatch.setattr(doc_semantic_drift_module, "_current_head_sha", lambda repo_path: "b" * 40)
+    # Counted, not just stubbed. Without this the whole test passes
+    # vacuously if the loop ever takes the cold-start branch (e.g. a change
+    # to _load_last_sha or FakeRedis): that path seeds last_sha = head_sha
+    # and saves it, so published == [], calls == [] and the redis assertion
+    # below all hold with zero changes ever examined.
+    changes_calls: list[tuple[str, str]] = []
+
+    def _fake_changes(prev, head, repo):
+        changes_calls.append((prev, head))
+        return [added_only]
+
+    monkeypatch.setattr(doc_semantic_drift_module, "doc_semantic_drift_changes", _fake_changes)
+    bus.redis_store["k"] = "a" * 40
+
+    stop = stop_event
+
+    async def _loop():
+        await doc_semantic_drift_module.doc_semantic_drift_loop(
+            bus=bus, channel="orion:substrate:doc_semantic_drift", source=source,
+            repo_path="/repo", embed_request_channel="orion:embedding:generate",
+            embed_collection="doc_semantic_drift", embed_timeout_sec=5.0,
+            chunk_char_size=20, poll_interval_sec=0.01, state_key="k", stop=stop,
+        )
+
+    async def _watch():
+        # Give the loop real ticks, then stop it.
+        await asyncio.sleep(0.15)
+        stop.set()
+
+    await asyncio.wait_for(asyncio.gather(_loop(), _watch()), timeout=5.0)
+
+    assert changes_calls, "the loop never diffed a real range -- assertions below would be vacuous"
+    assert bus.published == [], "an unscoreable change must not publish an event"
+    assert calls == [], "an unscoreable change must not cost an embedding request"
+    # The baseline still advances -- a skip is handled, not a failure to
+    # retry forever.
+    assert bus.redis_store["k"] == "b" * 40
+
+
+def test_whitespace_only_side_is_unscoreable() -> None:
+    """A side of only blank lines or spaces is truthy but equally
+    unmeasurable -- orion-vector-host rejects whitespace-only text with an
+    `error="missing_text"` reply, which would surface as a published
+    diff=None: a permanent alarm on a structurally unscoreable change. Zero
+    occurrences over 600 real commits, so this pins insurance rather than an
+    observed defect."""
+    assert mod._is_unscoreable(_change("\n\n", "real added text")) is True
+    assert mod._is_unscoreable(_change("   ", "real added text")) is True
+    assert mod._is_unscoreable(_change("real removed text", "\n  \n")) is True

@@ -4,7 +4,7 @@ import ast
 import sys
 from pathlib import Path
 
-from scripts.platform._common import find_repo_root, iter_files, read_text, relpath, service_guess_from_path, write_json
+from scripts.platform_audits._common import find_repo_root, iter_files, read_text, relpath, service_guess_from_path, write_json
 
 
 def _extract_str(node: ast.AST) -> str | None:
@@ -15,7 +15,7 @@ def _extract_str(node: ast.AST) -> str | None:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("Usage: python scripts/platform/audit_spine.py <RUN_DIR>")
+        print("Usage: python scripts/platform_audits/audit_spine.py <RUN_DIR>")
         return 2
 
     run_dir = Path(sys.argv[1]).resolve()

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from scripts.platform._common import find_repo_root, iter_files, read_text, relpath, write_json
+from scripts.platform_audits._common import find_repo_root, iter_files, read_text, relpath, write_json
 
 RAW_REDIS_PATTERNS = [
     r"\bimport\s+redis\b",
@@ -24,7 +24,7 @@ RAW_PUBSUB_CALLS = [
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("Usage: python scripts/platform/audit_antipatterns.py <RUN_DIR>")
+        print("Usage: python scripts/platform_audits/audit_antipatterns.py <RUN_DIR>")
         return 2
 
     run_dir = Path(sys.argv[1]).resolve()

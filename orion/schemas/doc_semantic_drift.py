@@ -80,14 +80,24 @@ class DocSemanticDriftV1(BaseModel):
     # stands between the raw text and the score, plus (with the field
     # above) whether a None is structural or a real failure.
     #
-    # 1 = the hunk fit in a single embedding window, and the score reduces
-    # exactly to the pre-chunking `1 - cos(a, b)` -- directly comparable to
-    # earlier events and to the 0.3996 threshold proposed in the original
-    # calibration replay. >1 = a max-chunk-pair score over that many
-    # windows, which is length-invariant by construction (see
-    # `_max_pair_drift()` for why a mean-pooled score was rejected: it
-    # diluted an identical real edit 54x between a 1-chunk and an 8-chunk
-    # doc).
+    # BOTH counts == 1 is the comparability condition: only then does the
+    # score reduce exactly to the pre-chunking `1 - cos(a, b)`, directly
+    # comparable to earlier events and to the 0.3996 threshold from the
+    # original calibration replay. Filtering on one count alone is not
+    # enough -- a 1-removed/2-added event is already a max-chunk-pair score,
+    # not a plain cosine.
+    #
+    # Otherwise the score is max chunk-pair drift, which is NOT
+    # length-invariant: being a max over 2*(N+M) terms makes it an
+    # extreme-value statistic, so more chunks biases it HIGH even with no
+    # extra real change (measured over 30 real hunk pairs: median 0.1684 at
+    # N=1, 0.2237 at N=2-3, 0.2861 at N=4+). Applying the single-window
+    # 0.3996 cutoff across chunk counts will over-flag long docs; a
+    # multi-chunk threshold has to be derived separately. See
+    # `_max_pair_drift()` for the full note, and for why mean-pooling was
+    # rejected outright (it diluted an identical real edit 54x between a
+    # 1-chunk and an 8-chunk doc -- a far larger error, in the direction
+    # that hides change rather than over-reports it).
     #
     # Honest residual: CHUNK_CHAR_SIZE is a measured chars-per-token proxy,
     # not a live token count. A chunk denser than the observed 2.81

@@ -1,0 +1,74 @@
+# Workflow: repo-wide static gates.
+#
+# Why this exists: this repo has a dozen `make check-*` gates and, until now,
+# NO workflow ran any of them. They were local targets that an agent or human
+# had to remember to invoke -- which is the same "nudge you can skip" failure
+# the gates themselves were written to replace.
+#
+# That is not hypothetical. `scripts/check_inner_state_registry.py` was found
+# RED on main on 2026-08-13 (two schemas matching its keyword heuristic with no
+# registry entry). It had rotted precisely because nothing ran it. See the
+# exclusion note below.
+#
+# Scope: only gates that are BOTH static (no Postgres, Redis, or live bus) and
+# currently green on main. Verified 2026-08-13 in a clean venv containing only
+# the three deps installed below -- deliberately not the repo's full
+# requirements, which pull heavy service dependencies these checks never touch.
+#
+# Deliberately EXCLUDED, with reasons:
+#   - check_inner_state_registry.py  -- RED on main today. Wiring it now would
+#     block every PR on a pre-existing failure. Its own patch should fix the
+#     two unregistered schemas, then add it here.
+#   - check_single_consumer_channels.py, check_activation_saturation.py,
+#     check_substrate_projection_schema_drift.py,
+#     check_concept_relation_digest_liveness.py -- all need live infra
+#     (ORION_BUS_URL / POSTGRES_URI). Not CI-runnable without standing up real
+#     services; out of scope here.
+#   - check_service_env_compose_parity.py -- requires a SERVICE argument, not
+#     standalone-runnable across the repo.
+#
+# No path filters: these gates check repo-wide invariants (bus channel
+# consumers, metric lineage, hostname references, stdlib shadowing), so
+# scoping them to specific paths would let the exact cross-cutting edits they
+# exist to catch slip through. Total runtime is well under a minute.
+
+name: orion-static-gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  static-gates:
+    name: Static repo gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Minimal, verified dep set -- every gate below was confirmed to pass in
+      # a fresh venv containing exactly these three packages.
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pydantic pydantic-settings PyYAML
+
+      # Each gate is its own step so a failure names itself in the UI rather
+      # than surfacing as one opaque red block.
+      - name: Metric lineage gate (consumer existence, orphan ratchet)
+        run: python scripts/check_metric_lineage.py --gate
+
+      - name: scripts/ must not shadow a stdlib module
+        run: python scripts/check_scripts_dir_no_stdlib_shadow.py
+
+      - name: Service hostname references
+        run: python scripts/check_service_hostname_refs.py
+
+      - name: Journal dispatch registry completeness
+        run: python scripts/check_journal_dispatch_registry.py
+
+      - name: Daily schedule collisions (report-only)
+        run: python scripts/check_daily_schedule_collisions.py

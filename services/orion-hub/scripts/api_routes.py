@@ -1393,7 +1393,14 @@ def api_fcc_sandbox_sync():
     """
     from orion.fcc.sandbox_sync import last_sync_state
 
-    return {"workspace": settings.HUB_AGENT_CLAUDE_WORKSPACE, **last_sync_state()}
+    # `configured_workspace`, and spread last, deliberately: spreading the state over
+    # a leading "workspace" key let its own None override the configured value, so a
+    # freshly booted hub reported workspace=null -- precisely when an operator checks
+    # this route, and precisely when the sandbox is most likely stale.
+    return {
+        **last_sync_state(),
+        "configured_workspace": settings.HUB_AGENT_CLAUDE_WORKSPACE,
+    }
 
 
 @router.get("/api/presence")

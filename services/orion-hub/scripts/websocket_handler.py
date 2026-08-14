@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import os
+import sys
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -47,7 +48,7 @@ from scripts.fcc_claude_bridge import (
 )
 from scripts.turn_cancel import cancel_in_flight_turn, run_awaitable_cancel_on_ws_disconnect
 from scripts.settings import settings
-from orion.fcc.sandbox_sync import last_sync_state, record_sync_skip, sync_fcc_sandbox
+from orion.fcc.sandbox_sync import record_sync_skip, sync_fcc_sandbox
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.voice_stt_errors import (
@@ -673,7 +674,11 @@ async def _sync_fcc_sandbox_background(connection_id: str) -> None:
     # reset path it started stashing and moving Orion's actual checkout -- caught
     # live on 2026-08-14, stash@{1} authored by the test runner. Mocking it in
     # each test would work until the next test forgets; this cannot be forgotten.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    # PYTEST_CURRENT_TEST alone is not enough: it is set per test *item*, so a task
+    # or thread that outlives the item -- which is exactly what this fire-and-forget
+    # task is -- can observe it as unset. `sys.modules` is stable for the whole
+    # process, and hub never imports pytest in production.
+    if os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules:
         logger.info("fcc_sandbox_sync_skipped_test_process connection_id=%s", connection_id)
         record_sync_skip(
             getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None),

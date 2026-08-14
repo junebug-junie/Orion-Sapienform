@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
+from orion.fcc.turn_lock import turn_in_progress
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -604,6 +605,15 @@ async def run_fcc_turn(
     if stream_read_limit < 65536:
         stream_read_limit = 65536
 
+    # Hold the shared sandbox lock for the whole turn. Hub refreshes the sandbox to
+    # origin/main on every browser refresh (hard reset + clean), and its only prior
+    # interlock was fcc_claude_bridge.active_turns() -- a dict local to the *hub*
+    # process, blind to this one. Since live chat turns dispatch here via the
+    # governor's bus RPC path, that dict is empty during essentially every real turn,
+    # so a refresh mid-turn could reset the tree out from under this subprocess.
+    # See orion/fcc/turn_lock.py.
+    _turn_lock = turn_in_progress(workspace)
+    _turn_lock.__enter__()
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -717,6 +727,7 @@ async def run_fcc_turn(
         return
     finally:
         _unregister_process(correlation_id)
+        _turn_lock.__exit__(None, None, None)
         if mcp_config_path is not None:
             from orion.fcc.mcp_config import cleanup_mcp_config
 

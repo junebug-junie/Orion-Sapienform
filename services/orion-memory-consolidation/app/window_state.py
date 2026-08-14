@@ -43,6 +43,12 @@ class WindowStore:
             "phase_change": phase_change,
             "memory_classify_ts": scores.get("memory_classify_ts"),
             "spark_meta": spark_meta,
+            # Carried per-turn (not per-window) precisely because _get_open_window()
+            # is global -- a single open window can and does hold turns from
+            # different platforms (26 such mixed windows found live 2026-08-14).
+            # build_crystallization_from_window() only treats a window as external
+            # when EVERY turn agrees, so a mixed window still reaches the human queue.
+            "source_platform": turn.source_platform,
         }
         if row is None:
             window_id = str(uuid4())

@@ -146,6 +146,41 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Vision / chat attachments ---
+    # Capability is read from the worker's own /props, never from the profile
+    # registry's supports_vision claim -- see app/vision.py for why.
+    llm_gateway_vision_enabled: bool = Field(
+        default=True,
+        alias="LLM_GATEWAY_VISION_ENABLED",
+        description="Master switch. When false, every route is treated as blind and images are refused.",
+    )
+    llm_gateway_vision_props_cache_ttl_sec: float = Field(
+        default=300.0,
+        alias="LLM_GATEWAY_VISION_PROPS_CACHE_TTL_SEC",
+        description="How long a worker's /props modality report is trusted before re-probing.",
+    )
+    llm_gateway_vision_props_timeout_sec: float = Field(
+        default=5.0,
+        alias="LLM_GATEWAY_VISION_PROPS_TIMEOUT_SEC",
+    )
+    llm_gateway_attachment_allowed_hosts: str = Field(
+        default="",
+        alias="LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS",
+        description=(
+            "Comma-separated hostnames the gateway may fetch attachment bytes from. "
+            "Empty means refuse everything: source_url arrives from upstream, so an "
+            "unrestricted fetch would make the gateway an SSRF proxy into the mesh."
+        ),
+    )
+    llm_gateway_attachment_max_bytes: int = Field(
+        default=8_388_608,
+        alias="LLM_GATEWAY_ATTACHMENT_MAX_BYTES",
+    )
+    llm_gateway_attachment_fetch_timeout_sec: float = Field(
+        default=10.0,
+        alias="LLM_GATEWAY_ATTACHMENT_FETCH_TIMEOUT_SEC",
+    )
+
     class Config:
         env_file = ".env"
         extra = "ignore"

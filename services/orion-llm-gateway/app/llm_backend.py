@@ -11,6 +11,11 @@ import re
 import httpx
 
 from orion.llm.openai_message_content import join_openai_message_content
+from app.vision import (
+    AttachmentFetchError,
+    build_multimodal_messages,
+    resolve_vision_capability,
+)
 from orion.core.bus.async_service import OrionBusAsync
 
 from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
@@ -940,9 +945,50 @@ def _execute_openai_chat(
         structured_diag["route"] = route
         structured_diag["served_by"] = served_by
 
+    # Text serialization is unchanged and still produced by the same function as
+    # every text-only turn. Attachments are layered on top afterwards, so a turn
+    # with none is byte-identical to the pre-attachment behavior.
+    serialized_messages = _serialize_messages(body.messages or [])
+    vision_diag: Dict[str, Any] = {}
+    attachments = list(getattr(body, "attachments", None) or [])
+    if attachments:
+        capability = resolve_vision_capability(base_url)
+        vision_diag = {
+            "attachment_count": len(attachments),
+            "route": route,
+            "served_by": served_by,
+            **capability.as_debug(),
+        }
+        if not capability.vision:
+            # Refuse loudly. Silently answering a text-only turn after Juniper
+            # attached an image is exactly the "empty-shell cognition" failure
+            # this feature exists to prevent: Orion would appear to have looked.
+            err = (
+                f"route '{route or backend_name}' cannot accept images "
+                f"({capability.detail or 'no vision modality'})"
+            )
+            logger.error("[LLM-GW] refusing attachments: %s", err)
+            return {
+                "text": f"[Error: {err}]",
+                "spark_meta": spark_meta,
+                "raw": {},
+                "vision": {**vision_diag, "status": "refused"},
+            }
+        try:
+            serialized_messages = build_multimodal_messages(serialized_messages, attachments)
+            vision_diag["status"] = "attached"
+        except AttachmentFetchError as exc:
+            logger.error("[LLM-GW] attachment resolution failed: %s", exc)
+            return {
+                "text": f"[Error: attachments could not be read: {exc}]",
+                "spark_meta": spark_meta,
+                "raw": {},
+                "vision": {**vision_diag, "status": "fetch_failed", "detail": str(exc)},
+            }
+
     payload = {
         "model": model,
-        "messages": _serialize_messages(body.messages or []),
+        "messages": serialized_messages,
         "stream": False,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
@@ -1159,6 +1205,8 @@ def _execute_openai_chat(
                 raw_out = {**raw_out, "choices": stripped_choices}
             if structured_diag:
                 raw_out = {**raw_out, "structured_output_diagnostics": structured_diag}
+            if vision_diag:
+                raw_out = {**raw_out, "vision": vision_diag}
             return {
                 "text": text,
                 "spark_meta": spark_meta,
@@ -1169,6 +1217,9 @@ def _execute_openai_chat(
                 "inline_think_content": think_reasoning or None,
                 "structured_output_diagnostics": structured_diag or None,
                 "llm_uncertainty": llm_uncertainty,
+                # Present only when the turn carried attachments, so a text turn's
+                # result shape is unchanged.
+                "vision": vision_diag or None,
             }
 
     except httpx.TimeoutException:

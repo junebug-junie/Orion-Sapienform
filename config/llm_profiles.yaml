@@ -319,7 +319,9 @@ profiles:
 
     supports_tools: true
     supports_embeddings: false
-    supports_vision: false
+    # NOTE: supports_vision was removed from the LLM gateway's profile model on
+    # 2026-08-14 -- nothing read it, and this lane is exactly why it was
+    # misleading. Vision is resolved at runtime from the worker's /props.
 
     gpu:
       num_gpus: 2
@@ -336,6 +338,24 @@ profiles:
       model_root: "/models/gguf"
       hf_repo_id: "unsloth/Qwen3.6-35B-A3B-GGUF"
       hf_filename: "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"
+      # Multimodal projector for the chat lane, added 2026-08-14 so Juniper can
+      # show Orion an image in Orion's own primary conversational voice rather
+      # than being routed to a different model to be seen.
+      #
+      # This lane's weights were already VL-capable and nobody had noticed: the
+      # GGUF's chat template opens with `image_count`/`video_count` namespaces
+      # (the Qwen3-VL family template), and unsloth/Qwen3.6-35B-A3B-GGUF ships
+      # mmproj-BF16/F16/F32. The worker was simply launched without --mmproj, so
+      # `/props` reported `modalities.vision: false` (measured live on :8011).
+      #
+      # F16 rather than BF16/F32: V100 (sm_70) has no native bf16 path, and F32
+      # doubles projector VRAM for no quality gain at this quant level.
+      #
+      # VRAM is the real risk and it is NOT yet measured: ~24GB of Q5_K_M weights
+      # plus a 131k KV cache already sit close to the 2x V100 32GB budget, and the
+      # projector adds ~1-2GB on top. If bring-up OOMs, drop ctx_size to 98304
+      # before touching n_gpu_layers -- KV at this context is the larger term.
+      mmproj_filename: "mmproj-F16.gguf"
       host: "0.0.0.0"
       port: 8080
 

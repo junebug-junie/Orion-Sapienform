@@ -65,6 +65,10 @@ async def fetch_routes() -> dict[str, Any]:
                     "status": str(item.get("status") or "unknown"),
                     "latency_ms": item.get("latency_ms"),
                     "last_checked_at": item.get("last_checked_at"),
+                    # True/False from the worker's own /props; None means the
+                    # probe could not answer. The composer greys out its attach
+                    # button on anything that is not True.
+                    "vision": item.get("vision"),
                 }
             )
     by_id = {r["id"]: r for r in routes}
@@ -78,6 +82,7 @@ async def fetch_routes() -> dict[str, Any]:
                 "status": "unknown",
                 "latency_ms": None,
                 "last_checked_at": None,
+                "vision": None,
             },
         )
     ordered = [by_id[rid] for rid in ("chat", "quick", "agent", "metacog")]

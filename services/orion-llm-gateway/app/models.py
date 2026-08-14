@@ -1,6 +1,8 @@
 from typing import Any, Dict, Optional, List, Literal
 from pydantic import BaseModel, Field, ConfigDict
 
+from orion.core.bus.bus_schemas import AttachmentRefV1
+
 
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -39,6 +41,14 @@ class ChatBody(BaseModel):
     )
 
     options: Dict[str, Any] = Field(default_factory=dict)
+    attachments: List[AttachmentRefV1] = Field(
+        default_factory=list,
+        description=(
+            "Image references for this turn. Resolved to model input only on the "
+            "OpenAI-compatible backend path, and only when the target worker's "
+            "/props reports vision. Empty leaves the payload unchanged."
+        ),
+    )
     stream: bool = False
     return_json: bool = False
     trace_id: Optional[str] = None

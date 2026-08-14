@@ -787,13 +787,28 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Bus disabled; writer will be idle.")
 
+    # Backlog watcher for bus_fallback_log. Independent of orion_bus_enabled on
+    # purpose: the rows it reads are already in Postgres, and a writer with the
+    # bus disabled still has a backlog worth reporting.
+    watch_task: asyncio.Task | None = None
+    if settings.sql_writer_fallback_watch_enabled:
+        from app.fallback_watch import fallback_watch_loop
+
+        watch_task = asyncio.create_task(fallback_watch_loop(settings))
+    else:
+        logger.warning(
+            "bus_fallback_log backlog watcher DISABLED "
+            "(SQL_WRITER_FALLBACK_WATCH_ENABLED=false); unrouted events will accumulate silently"
+        )
+
     try:
         yield
     finally:
-        if task:
-            task.cancel()
-            with contextlib.suppress(Exception):
-                await task
+        for background in (task, watch_task):
+            if background:
+                background.cancel()
+                with contextlib.suppress(Exception):
+                    await background
 
 
 app = FastAPI(

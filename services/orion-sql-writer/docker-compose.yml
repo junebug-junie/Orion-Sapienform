@@ -55,6 +55,17 @@ services:
       - SQL_WRITER_ALLOW_ACCEPTED_PRESSURE_INGEST=${SQL_WRITER_ALLOW_ACCEPTED_PRESSURE_INGEST:-false}
       - SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX=${SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX:-64}
 
+      # bus_fallback_log backlog watcher -> Hub in_app + email via orion-notify.
+      - SQL_WRITER_FALLBACK_WATCH_ENABLED=${SQL_WRITER_FALLBACK_WATCH_ENABLED:-true}
+      - SQL_WRITER_FALLBACK_WATCH_INTERVAL_SEC=${SQL_WRITER_FALLBACK_WATCH_INTERVAL_SEC:-300}
+      - SQL_WRITER_FALLBACK_WATCH_WINDOW_SEC=${SQL_WRITER_FALLBACK_WATCH_WINDOW_SEC:-86400}
+      - SQL_WRITER_FALLBACK_WATCH_THRESHOLD_STEP=${SQL_WRITER_FALLBACK_WATCH_THRESHOLD_STEP:-5}
+      # "notify" is the compose SERVICE name; "orion-notify" (directory) and
+      # "orion-athena-notify" (container_name) have both already broken this
+      # exact URL elsewhere. See services/orion-notify-digest/.env_example.
+      - NOTIFY_SERVICE_URL=${NOTIFY_SERVICE_URL:-http://notify:7140}
+      - NOTIFY_API_TOKEN=${NOTIFY_API_TOKEN:-}
+
       - DATABASE_URL=${DATABASE_URL}
       # POSTGRES_URI removed as redundant/conflict
 

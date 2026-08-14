@@ -25,6 +25,19 @@ class Observation:
     node_id: str
     channel: str
     value: float
+    """The value the gate should train on -- subnormals collapsed to a clean 0.0."""
+
+    raw_value: float
+    """The value exactly as stored, before subnormal coercion.
+
+    Carried separately because `geometric_decay_ratio()` needs the *uncoerced*
+    series to work at all: it rejects any series containing a non-positive
+    value, so feeding it coerced values would make it structurally incapable of
+    detecting the very decay artifact it exists to detect. Found in self-review
+    2026-08-14, after a first run reported 'decay-suspect series: none' for
+    exactly that reason rather than because the data was clean.
+    """
+
     coerced_subnormal: bool
 
 
@@ -48,12 +61,11 @@ def iter_observations(field_json: Mapping[str, Any]) -> Iterator[Observation]:
             if not math.isfinite(value):
                 continue
             coerced = abs(value) < SUBNORMAL_EPSILON and value != 0.0
-            if coerced:
-                value = 0.0
             yield Observation(
                 node_id=str(node_id),
                 channel=str(channel),
-                value=value,
+                value=0.0 if coerced else value,
+                raw_value=value,
                 coerced_subnormal=coerced,
             )
 

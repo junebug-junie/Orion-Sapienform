@@ -152,7 +152,10 @@ def main() -> int:
             for obs in iter_observations(field_json):
                 channels_seen.add(obs.channel)
                 tail = tails[(obs.node_id, obs.channel)]
-                tail.append(obs.value)
+                # RAW, not coerced: `geometric_decay_ratio` rejects series with a
+                # non-positive value, so feeding it the subnormal-collapsed value
+                # would make it blind to the exact artifact it exists to find.
+                tail.append(obs.raw_value)
                 if len(tail) > DECAY_PROBE_SAMPLES:
                     tail.pop(0)
 

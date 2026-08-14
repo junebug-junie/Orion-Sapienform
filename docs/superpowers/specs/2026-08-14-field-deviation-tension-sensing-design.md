@@ -244,6 +244,19 @@ so there is no admission-vs-monoculture tradeoff to split here.
   multiplied toward zero by a generic decay loop, and they read as *calm* to any consumer that
   does not check. This patch collapses them to a clean 0.0 and counts them; it does not fix
   the producers.
-- The decay-ratio probe found **no clean constant-ratio series** in the sampled tails, meaning
-  the subnormals have already bottomed out rather than being caught mid-decay. The detector
-  stays in place to catch the next one on the way down.
+- **The decay-ratio probe caught the documented artifact live, mid-decay**, on two series:
+  `node:circe / reasoning_load` and `node:rpc_timeout / reliability_pressure`, both at
+  **ratio = 0.92 exactly** — the `NODE_DECAY_CHANNELS` generic staleness-decay loop in
+  `services/orion-field-digester/app/digestion/decay.py`, multiplying an unrefreshed channel
+  by 0.92 every tick. Neither channel is calm; both are unmaintained and heading to zero,
+  and any consumer reading them without this check would score them as at-rest.
+
+  **A first version of this patch reported "decay-suspect series: none" here, and that was a
+  bug in the instrument, not a clean result.** The probe was being fed the subnormal-coerced
+  value (`0.0`), and `geometric_decay_ratio()` rejects any series containing a non-positive
+  value — so it was structurally incapable of firing on the exact artifact it exists to
+  detect, while reporting a result indistinguishable from healthy data. Caught in self-review
+  before merge; `Observation` now carries `raw_value` alongside the coerced `value`, with a
+  regression test (`test_raw_value_survives_coercion_so_the_decay_probe_can_still_see_it`).
+  Recorded here rather than quietly fixed because it is a textbook instance of this repo's
+  own recurring failure mode: a metric that cannot represent the state it claims to measure.

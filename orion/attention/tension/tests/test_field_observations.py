@@ -35,7 +35,29 @@ def test_subnormal_is_coerced_to_clean_zero_and_flagged():
 def test_genuine_zero_is_not_flagged_as_coerced():
     obs = list(iter_observations({"node_vectors": {"node:a": {"cpu_pressure": 0.0}}}))
     assert obs[0].value == 0.0
+    assert obs[0].raw_value == 0.0
     assert obs[0].coerced_subnormal is False
+
+
+def test_raw_value_survives_coercion_so_the_decay_probe_can_still_see_it():
+    """Regression, self-review 2026-08-14. `value` is collapsed to 0.0 so a
+    subnormal cannot pump variance into a baseline -- but `geometric_decay_ratio`
+    rejects any series containing a non-positive value, so if the probe were fed
+    `value` it could never fire on the decay artifact it exists to detect. It
+    would report 'none' for a structural reason indistinguishable from clean data.
+    """
+    obs = list(iter_observations({"node_vectors": {"node:circe": {"cpu_pressure": 3e-321}}}))[0]
+    assert obs.value == 0.0
+    assert obs.raw_value == 3e-321
+
+    # And end to end: a decaying series read through iter_observations is still
+    # detectable, which is the property the measurement script depends on.
+    series = [1e-300 * (0.92**i) for i in range(10)]
+    raws = [
+        list(iter_observations({"node_vectors": {"node:circe": {"cpu_pressure": v}}}))[0].raw_value
+        for v in series
+    ]
+    assert geometric_decay_ratio(raws) == pytest.approx(0.92)
 
 
 @pytest.mark.parametrize("bad", ["abc", None, float("nan"), float("inf")])

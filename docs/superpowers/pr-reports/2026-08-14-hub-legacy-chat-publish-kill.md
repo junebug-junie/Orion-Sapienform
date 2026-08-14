@@ -13,8 +13,10 @@
   any Hub source. Mutation-verified, including a plant into the real
   `chat_history.py`.
 - **Corrected a false claim in two already-merged PR reports.** Both described
-  these fallback rows as lost cognition. They were not: every one is a duplicate
-  of a turn already persisted by the two enveloped publishes on the same channel.
+  these fallback rows as lost cognition. They were not: every one duplicates a
+  turn already persisted by the surviving enveloped publishes — two
+  `chat.history.message.v1` on the log channel, one `chat.history` on the turn
+  channel.
 - Removed a now-dead `use_recall` assignment left behind in `api_routes.py`.
 
 ## Outcome moved
@@ -75,11 +77,12 @@ described. The `orion:chat:history:log` channel keeps its registered
 ## The trap this deliberately avoids
 
 `PUBLISH_CHAT_HISTORY_LOG` gated the WS raw publish, so flipping that flag to
-`false` looks like a one-line fix. **It is not.** The same flag gates the two
-*real* publishes at `services/orion-hub/scripts/chat_history.py:288` and `:392`.
-Turning it off would silence the duplicate and kill `chat_history_log`
-persistence with it. Only the raw block may be deleted. This is recorded as a
-comment at the deletion site and asserted by
+`false` looks like a one-line fix. **It is not.** The same flag gates **four**
+*real* publish paths in `services/orion-hub/scripts/chat_history.py` — `:288`
+(chat history messages), `:392` (chat turn), `:570` (social room turn), `:634`
+(response feedback). Turning it off would silence the duplicate and kill
+`chat_history_log` persistence with it. Only the raw block may be deleted. This
+is recorded as a comment at the deletion site and asserted by
 `test_ws_turn_still_persists_the_turn`.
 
 ## Consumer safety check (why deleting this is safe)

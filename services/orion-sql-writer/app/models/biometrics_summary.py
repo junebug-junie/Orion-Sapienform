@@ -19,6 +19,16 @@ class BiometricsSummarySQL(Base):
     # Raw physical units (chassis_watts, temp_c_max, ...) alongside the normalised pressures.
     # A key is absent when unmeasured on that node -- never 0.0 -- so a fleet total summed
     # from this column is honest about what it could not see. See BiometricsSummaryV1.
-    # NB: `Base.metadata.create_all` creates missing TABLES, not missing COLUMNS, so an
-    # existing deployment needs the ALTER in scripts/sql/2026-08-14_biometrics_measurements.sql.
-    measurements = Column(JSONB, nullable=True)
+    #
+    # none_as_null=True is REQUIRED, not stylistic. SQLAlchemy's JSONB stores Python None as
+    # the JSON scalar `null` by default, which produced a THIRD state on top of the two the
+    # contract defines: SQL NULL (producer predates the field), JSONB 'null' (same meaning,
+    # different encoding), and JSONB object. `measurements IS NULL` silently misses the middle
+    # one, so a consumer filtering for "nodes that have not been upgraded" would have counted
+    # atlas as reporting. Confirmed live 2026-08-14: 3 atlas and 2 circe rows landed as
+    # jsonb 'null' while athena's landed as objects.
+    #
+    # NB: `Base.metadata.create_all` creates missing TABLES, not missing COLUMNS. The ALTER
+    # runs at writer boot (app/main.py); scripts/sql/2026-08-14_biometrics_measurements.sql
+    # is the out-of-band copy.
+    measurements = Column(JSONB(none_as_null=True), nullable=True)

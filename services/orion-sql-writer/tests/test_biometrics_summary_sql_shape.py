@@ -51,3 +51,15 @@ def test_writer_boot_applies_the_column_before_serving() -> None:
     assert "orion_biometrics_summary" in src
     assert "ADD COLUMN IF NOT EXISTS measurements JSONB" in src
     assert "ALTER TABLE IF EXISTS orion_biometrics_summary" in src
+
+
+def test_measurements_stores_python_none_as_sql_null_not_jsonb_null() -> None:
+    """Confirmed live 2026-08-14: without none_as_null, `None` landed as the JSON scalar
+    `null`, giving three encodings for two states -- and `measurements IS NULL` missed one.
+
+    The contract is: SQL NULL = the producer predates this field and says nothing about the
+    node; {} = a current producer measured nothing. A jsonb 'null' is neither, and a consumer
+    filtering for un-upgraded nodes would have counted atlas as reporting.
+    """
+    col = BiometricsSummarySQL.__table__.columns["measurements"]
+    assert getattr(col.type, "none_as_null", False) is True

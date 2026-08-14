@@ -47,7 +47,14 @@ jobs:
     name: Static repo gates
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 so `git merge-base HEAD origin/main` resolves. The
+      # definition-drift gate verifies the committed _last_change block against
+      # the merge base; with the default depth-1 checkout there is no merge
+      # base, and that check degrades to a printed skip. The drift check itself
+      # still runs either way -- this is what keeps the integrity half honest.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -63,6 +70,14 @@ jobs:
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)
         run: python scripts/check_metric_lineage.py --gate
+
+      # R4 definition-change alert. Red means a metric's meaning, schema,
+      # producers or consumers changed without config/metrics/
+      # metric_definitions.lock.json being regenerated -- the fix is to run
+      # `--update` and commit, which writes the change into the lock in plain
+      # English so it lands in the PR diff Juniper reads.
+      - name: Metric definition drift (re-lock required on any def change)
+        run: python scripts/check_definition_drift.py --gate
 
       - name: Inner-state registry completeness
         run: python scripts/check_inner_state_registry.py

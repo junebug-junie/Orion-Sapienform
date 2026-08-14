@@ -33,6 +33,42 @@ def test_build_routes_response_defaults_to_chat(monkeypatch: pytest.MonkeyPatch)
     assert payload["default_route"] == "chat"
     assert [r["id"] for r in payload["routes"]] == ["chat", "quick", "agent", "metacog"]
     assert all("status" in r for r in payload["routes"])
+    assert all("model" in r for r in payload["routes"])
+
+
+def _client_factory(*, model_id: str | None = "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"):
+    """Builds an AsyncClient stand-in whose .get() answers /health with 200
+    and /v1/models with an OpenAI-compat models list (or a malformed/absent
+    one, when model_id is None), matching the real llama.cpp shape confirmed
+    live 2026-08-14."""
+
+    class _HealthResp:
+        status_code = 200
+
+        def json(self):
+            return {}
+
+    class _ModelsResp:
+        status_code = 200
+
+        def json(self):
+            if model_id is None:
+                return {}
+            return {"object": "list", "data": [{"id": model_id}]}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url: str):
+            if url.endswith("/v1/models"):
+                return _ModelsResp()
+            return _HealthResp()
+
+    return lambda **kwargs: _Client()
 
 
 @pytest.mark.asyncio
@@ -47,21 +83,7 @@ async def test_get_routes_payload_marks_probe_up(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(gw_settings, "llm_route_table_json", json.dumps(table))
     _load_route_targets.cache_clear()
-
-    class _Resp:
-        status_code = 200
-
-    class _Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def get(self, url: str):
-            return _Resp()
-
-    monkeypatch.setattr(route_catalog.httpx, "AsyncClient", lambda **kwargs: _Client())
+    monkeypatch.setattr(route_catalog.httpx, "AsyncClient", _client_factory())
 
     payload = await route_catalog.get_routes_payload()
     by_id = {r["id"]: r for r in payload["routes"]}
@@ -70,3 +92,59 @@ async def test_get_routes_payload_marks_probe_up(monkeypatch: pytest.MonkeyPatch
     assert by_id["chat"]["backend"] == "llamacpp"
     assert by_id["chat"]["latency_ms"] is not None
     assert by_id["chat"]["last_checked_at"]
+    assert by_id["chat"]["model"] == "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"
+
+
+@pytest.mark.asyncio
+async def test_get_routes_payload_model_none_when_models_endpoint_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = {
+        "chat": {"url": "http://chat:8011", "served_by": "atlas-worker-1", "backend": "llamacpp"},
+    }
+    from app.settings import settings as gw_settings
+
+    monkeypatch.setattr(gw_settings, "llm_route_table_json", json.dumps(table))
+    _load_route_targets.cache_clear()
+    monkeypatch.setattr(route_catalog.httpx, "AsyncClient", _client_factory(model_id=None))
+
+    payload = await route_catalog.get_routes_payload()
+    by_id = {r["id"]: r for r in payload["routes"]}
+    # Health still reports "up" -- a malformed/absent /v1/models response is
+    # a missing nice-to-have, not a route outage.
+    assert by_id["chat"]["status"] == "up"
+    assert by_id["chat"]["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_routes_payload_model_none_when_route_is_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = {
+        "chat": {"url": "http://chat:8011", "served_by": "atlas-worker-1", "backend": "llamacpp"},
+    }
+    from app.settings import settings as gw_settings
+
+    monkeypatch.setattr(gw_settings, "llm_route_table_json", json.dumps(table))
+    _load_route_targets.cache_clear()
+
+    class _DownClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url: str):
+            raise ConnectionError("refused")
+
+    monkeypatch.setattr(route_catalog.httpx, "AsyncClient", lambda **kwargs: _DownClient())
+
+    payload = await route_catalog.get_routes_payload()
+    by_id = {r["id"]: r for r in payload["routes"]}
+    assert by_id["chat"]["status"] == "down"
+    # _probe_model runs concurrently with the health check (review finding:
+    # sequential would double worst-case refresh latency), but its result is
+    # discarded whenever health isn't "up" -- confirmed via the down status
+    # above, regardless of what _probe_model itself returned here.
+    assert by_id["chat"]["model"] is None

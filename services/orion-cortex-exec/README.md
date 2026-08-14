@@ -224,6 +224,22 @@ If `self_state` is absent, stale, or fails to parse, metacog-lane scoring falls 
 
 **Tests:** `tests/test_collapse_service_causal_density.py` (repo root) covers strict-lane parity, metacog pull-down/pull-up, dict-shaped `self_state` coercion, and malformed-input fallback.
 
+### Situation brief
+
+`app/situation.py`'s `build_situation_for_ctx()` assembles a `SituationBriefV1` (`orion/schemas/situation.py`) once per session (cached, TTL-gated) covering time, presence, weather, lab, camera perception, and runtime identity, then compresses it into one `SituationPromptFragmentV1.compact_text` block injected into `chat_general.j2` via `ctx["situation_prompt_fragment"]`. Every sub-context follows the same fail-open shape: a `_build_X_context()` wrapping a `_fetch_X()` in try/except, degrading to `available=False` ("do not infer") on any failure rather than guessing, with `diagnostics.provider_status`/`provider_errors` recording the outcome.
+
+**Runtime identity (`RuntimeContextV1`, 2026-08-14):** which LLM model is actually serving Orion's chat replies, added because Orion previously had no way to know. `_fetch_runtime_context()` reads `orion-llm-gateway`'s `GET /routes` (see that service's README, "Model identity" section, for where the live model id comes from) for `ORION_SITUATION_RUNTIME_ROUTE`'s (default `chat`) served model, cached `ORION_SITUATION_RUNTIME_TTL_SECONDS` (default `120`). Renders as `"You are currently running on model: <id> (route=<route>)."` or `"Current model: unavailable; do not infer or guess a name."` — never a guessed name.
+
+| Variable | Default (`.env_example`) | Role |
+| :--- | :--- | :--- |
+| `ORION_SITUATION_RUNTIME_ENABLED` | `true` | Master switch. Unlike perception this carries no private-home content, so it defaults on. |
+| `ORION_SITUATION_RUNTIME_ROUTE` | `chat` | Which `orion-llm-gateway` route's model to report. |
+| `ORION_SITUATION_RUNTIME_TTL_SECONDS` | `120` | This service's own cache, on top of the gateway's own 15s route-health cache. |
+| `ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC` | `2.0` | Bound on the `GET /routes` call; a slow/dead gateway degrades the prompt line, never blocks the turn. |
+| `CORTEX_EXEC_LLM_GATEWAY_URL` | `http://orion-llm-gateway:8210` | Base URL for the probe. Both `orion-llm-gateway` and `llm-gateway` resolve on the shared `app-net` network (confirmed live via `docker inspect`); this repo's other services use the bare `llm-gateway` alias (`CONTEXT_EXEC_LLM_GATEWAY_URL`, `HUB_LLM_GATEWAY_URL`) but either works. |
+
+**Tests:** `tests/test_situation_provider.py` (mocks `urlopen`; covers live-model-reported, gateway-unreachable degrade, route-missing-from-response degrade, disabled-by-default, and TTL caching).
+
 ## Running & Testing
 
 ### Run via Docker

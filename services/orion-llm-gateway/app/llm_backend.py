@@ -1199,6 +1199,28 @@ def _execute_openai_chat(
 # 5. Public Entrypoints
 # ─────────────────────────────────────────────
 
+def _served_model(result: Dict[str, Any], requested_model: str) -> str:
+    """Prefer the backend's own echoed model id over the requested label.
+
+    `requested_model` is whatever the route table / profile / caller asked
+    for -- often a stable alias like "Active-GGUF-Model" that names a route,
+    not a specific weights file. The OpenAI-compat chat/completions response
+    and Ollama's /api/chat response both echo the real served model in their
+    JSON body's top-level "model" key (confirmed live 2026-08-14 against the
+    chat/agent route: requested "Active-GGUF-Model", backend actually served
+    "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"). That value survives into `result["raw"]`
+    already (see _execute_openai_chat/_execute_ollama_chat above) -- this
+    just promotes it to the top-level "model" field callers actually read,
+    instead of the placeholder they requested. Falls back to the requested
+    label when raw has no model key (llama.cpp's native /completion endpoint
+    doesn't echo one, nor do the error-path returns above), so callers never
+    see model=None.
+    """
+    raw = result.get("raw")
+    served = raw.get("model") if isinstance(raw, dict) else None
+    return served if isinstance(served, str) and served.strip() else requested_model
+
+
 def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     route_table = get_route_targets()
     lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False)) and bool(route_table)
@@ -1333,7 +1355,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 )
                 if isinstance(result, dict):
                     result["backend"] = backend
-                    result["model"] = model
+                    result["model"] = _served_model(result, model)
                     result["route"] = route
                     result["served_by"] = served_by
                 return result
@@ -1357,7 +1379,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             )
             if isinstance(result, dict):
                 result["backend"] = backend
-                result["model"] = model
+                result["model"] = _served_model(result, model)
                 result["route"] = route
                 result["served_by"] = served_by
             return result
@@ -1393,7 +1415,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 )
                 if isinstance(result, dict):
                     result["backend"] = backend
-                    result["model"] = model
+                    result["model"] = _served_model(result, model)
                     result["route"] = route
                     result["served_by"] = served_by
                 return result
@@ -1417,7 +1439,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             )
             if isinstance(result, dict):
                 result["backend"] = backend
-                result["model"] = model
+                result["model"] = _served_model(result, model)
                 result["route"] = route
                 result["served_by"] = served_by
             return result
@@ -1461,7 +1483,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
         )
     if isinstance(result, dict):
         result["backend"] = backend
-        result["model"] = model
+        result["model"] = _served_model(result, model)
         result["route"] = route
         result["served_by"] = served_by
     return result

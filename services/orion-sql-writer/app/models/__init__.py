@@ -64,6 +64,7 @@ from .action_outcome import ActionOutcomeSQL
 from .dominance_streak_tick import DominanceStreakTickSQL
 from .dev_economics_ledger import DevEconomicsLedgerSQL
 from .doc_semantic_drift import DocSemanticDriftSQL
+from .juniper_affective_state import JuniperAffectiveStateSQL
 from .phi_reward import PhiRewardSQL
 from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
 from .grammar_trace import (
@@ -136,6 +137,7 @@ __all__ = [
     "DominanceStreakTickSQL",
     "DevEconomicsLedgerSQL",
     "DocSemanticDriftSQL",
+    "JuniperAffectiveStateSQL",
     "PhiRewardSQL",
     "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",

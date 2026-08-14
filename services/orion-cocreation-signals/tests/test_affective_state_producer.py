@@ -58,7 +58,7 @@ async def test_publishes_every_tick_even_with_zero_messages(
     observation, not a no-op to skip -- same reasoning as pr_lifecycle."""
     calls: list[tuple] = []
 
-    def _fake_score_window(path, since, until):
+    def _fake_score_window(path, since, until, *, cold_start=False):
         calls.append((since, until))
         return _fake_event(since, until)
 
@@ -85,7 +85,7 @@ async def test_windows_tile_contiguously_tick_to_tick(
 ) -> None:
     seen_windows: list[tuple] = []
 
-    def _fake_score_window(path, since, until):
+    def _fake_score_window(path, since, until, *, cold_start=False):
         seen_windows.append((since, until))
         return _fake_event(since, until)
 
@@ -115,7 +115,7 @@ async def test_failed_publish_does_not_advance_window(
 
     seen_windows: list[tuple] = []
 
-    def _fake_score_window(path, since, until):
+    def _fake_score_window(path, since, until, *, cold_start=False):
         seen_windows.append((since, until))
         return _fake_event(since, until)
 
@@ -141,7 +141,7 @@ async def test_cold_start_window_uses_dedicated_lookback_not_poll_interval(
 ) -> None:
     windows: list[tuple] = []
 
-    def _fake_score_window(path, since, until):
+    def _fake_score_window(path, since, until, *, cold_start=False):
         windows.append((since, until))
         return _fake_event(since, until)
 
@@ -211,3 +211,75 @@ def test_score_window_real_end_to_end_against_real_transcript_files(tmp_path) ->
     assert event.message_count == 1
     assert event.swear_count == 1
     assert event.swear_frequency == 0.25
+
+
+@pytest.mark.asyncio
+async def test_only_the_first_tick_is_flagged_cold_start(
+    fake_bus, source, stop_event, monkeypatch, tmp_path
+) -> None:
+    """The first tick's window is cold_start_lookback_sec wide and therefore
+    OVERLAPS windows a previous run already published; every later tick tiles
+    exactly and can be summed with its neighbours.
+
+    Without the flag, the obvious `SUM(word_count)` over an hour silently
+    double-counts. Confirmed on the first two rows ever persisted
+    (2026-08-14): a 913s window sat entirely inside a 3600s one and the sum
+    returned 7669 words against a true 5913, +34.7%.
+
+    Asserts the whole sequence, not just the first element -- an
+    implementation that flagged every tick, or that never cleared the flag,
+    would pass a `flags[0] is True` check."""
+    flags: list[bool] = []
+
+    def _fake_score_window(path, since, until, *, cold_start=False):
+        flags.append(cold_start)
+        return _fake_event(since, until)
+
+    monkeypatch.setattr(affective_state_module, "_score_window", _fake_score_window)
+
+    async def _loop():
+        await affective_state_module.affective_state_loop(
+            bus=fake_bus, channel="orion:substrate:juniper_affective_state", source=source,
+            claude_projects_path=str(tmp_path), poll_interval_sec=0.01, cold_start_lookback_sec=0.01,
+            stop=stop_event,
+        )
+
+    await _run_until_calls(_loop, stop_event, target_calls=3, call_list=flags)
+
+    assert flags[0] is True
+    assert all(flag is False for flag in flags[1:])
+
+
+@pytest.mark.asyncio
+async def test_cold_start_flag_survives_a_failed_publish(
+    fake_bus, source, stop_event, monkeypatch, tmp_path
+) -> None:
+    """The flag clears on a SUCCESSFUL publish, not merely on having ticked.
+
+    A failed publish leaves `last_until` parked, so the retry covers an even
+    WIDER range that still overlaps rows a previous run published. Clearing
+    the flag unconditionally would hand that retry out as an ordinary tiling
+    window -- the exact row a consumer would then wrongly include in a sum."""
+    async def _raising_publish(channel, envelope):
+        raise ConnectionError("transient redis failure")
+
+    fake_bus.publish = _raising_publish
+
+    flags: list[bool] = []
+
+    def _fake_score_window(path, since, until, *, cold_start=False):
+        flags.append(cold_start)
+        return _fake_event(since, until)
+
+    monkeypatch.setattr(affective_state_module, "_score_window", _fake_score_window)
+
+    async def _loop():
+        await affective_state_module.affective_state_loop(
+            bus=fake_bus, channel="orion:substrate:juniper_affective_state", source=source,
+            claude_projects_path=str(tmp_path), poll_interval_sec=0.01, cold_start_lookback_sec=0.01,
+            stop=stop_event,
+        )
+
+    await _run_until_calls(_loop, stop_event, target_calls=3, call_list=flags)
+
+    assert all(flag is True for flag in flags), flags

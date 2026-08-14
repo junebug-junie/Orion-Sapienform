@@ -42,7 +42,7 @@ logger = logging.getLogger("orion.cocreation_signals.affective_state")
 
 
 def _score_window(
-    claude_projects_path: str, since: datetime, until: datetime
+    claude_projects_path: str, since: datetime, until: datetime, *, cold_start: bool = False
 ) -> JuniperAffectiveStateV1:
     """Real, synchronous scan+score -- caller runs this via asyncio.to_thread
     (parsing+spellchecking a real transcript tree is blocking I/O/CPU work,
@@ -66,6 +66,7 @@ def _score_window(
         word_count=agg.word_count,
         swear_count=agg.swear_count,
         swear_frequency=agg.swear_frequency,
+        cold_start=cold_start,
     )
 
 
@@ -114,13 +115,34 @@ async def affective_state_loop(
         return
 
     last_until = datetime.now(timezone.utc) - timedelta(seconds=cold_start_lookback_sec)
+    is_cold_start = True
     while not stop.is_set():
         try:
             until = datetime.now(timezone.utc)
-            event = await asyncio.to_thread(_score_window, claude_projects_path, last_until, until)
+            # `cold_start` marks the FIRST tick after a (re)start, whose window
+            # is cold_start_lookback_sec wide rather than one poll interval --
+            # 3600s against a 900s poll in the live config, so it re-covers up
+            # to four windows a previous run already published.
+            #
+            # Ordinary ticks tile exactly (this tick's window_since is the last
+            # one's window_until), so they can be summed. A cold-start window
+            # cannot be summed with them without double-counting: confirmed on
+            # the first two real rows ever persisted, where a 913s window sat
+            # entirely inside a 3600s one and summing inflated the hour by
+            # +34.7%. Flagging it lets a consumer sum the tiling rows and use
+            # cold-start rows only to fill genuine downtime gaps.
+            event = await asyncio.to_thread(
+                _score_window, claude_projects_path, last_until, until, cold_start=is_cold_start
+            )
             published = await _publish(bus, channel, source, event)
             if published:
                 last_until = until
+                # Cleared only on a SUCCESSFUL publish, for the same reason
+                # last_until is: a failed publish leaves the cursor parked, so
+                # the retry covers an even wider range that still overlaps rows
+                # a previous run published. Clearing the flag unconditionally
+                # would hand that retry out as an ordinary tiling window.
+                is_cold_start = False
             # else: leave last_until unchanged so the next tick's window
             # extends to cover this failed range too, instead of silently
             # dropping it (same reasoning as pr_lifecycle_loop).

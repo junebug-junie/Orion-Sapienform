@@ -8,6 +8,9 @@ described an intermediate state (profile-only, DFlash intentionally not wired) t
 commit (`3949d5c72`) changed. That version is stale; this one reflects what the branch
 actually ships as of `HEAD`.
 
+**Update 2026-08-14**: live-deployed and boot-verified. See "Docker/build/smoke checks" —
+the main open gap from the prior version of this report (no live boot attempted) is closed.
+
 ## Summary
 
 - Adds `muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision` to `config/llm_profiles.yaml`: `unsloth/Muse-Glimmer-30B-GGUF` UD-Q4_K_XL text weights + Q8_0 mmproj, tools + vision + **DFlash speculative decoding** enabled.
@@ -20,7 +23,7 @@ actually ships as of `HEAD`.
 
 ## Outcome moved
 
-New GPU lane (Circe, agent/tool-use + vision + speculative decoding) has a schema-checked, CLI-builder-tested model card. **Not yet deploy-ready as-is**: it requires bumping this worker's `LLAMACPP_IMAGE_TAG` past a 3-day-old upstream merge, which has not been live-smoke-tested from this environment (no Docker/GPU access here).
+New agent/tool-use + vision + speculative-decoding GPU lane, live-verified booting 2026-08-14 (deployed on Atlas's agent lane, `ATLAS_AGENT_CUDA_VISIBLE_DEVICES=2`, `LLAMACPP_IMAGE_TAG=server-cuda-b10398` — not Circe as originally planned; see "Docker/build/smoke checks"). Target architecture recognized, vision encoder loaded, DFlash drafter loaded with self-reported parameters matching the model card. Not yet verified: actual completion output quality / tokens-per-sec with the drafter active.
 
 ## Current architecture
 
@@ -88,11 +91,40 @@ Also manually validated the new profile parses cleanly against the live `LLMProf
 
 ## Evals run
 
-No eval harness exists for `orion-llamacpp-host`; this is a config-card + CLI-builder addition, not a behavior change to an existing running model. No live-inference eval is possible pre-deploy (model not yet downloaded to Circe, and the required build tag has not been smoke-tested).
+No eval harness exists for `orion-llamacpp-host`; this is a config-card + CLI-builder addition, not a behavior change to an existing running model. Model is now live-deployed (see "Docker/build/smoke checks") but no completion-quality eval has been run against it yet.
 
 ## Docker/build/smoke checks
 
-Not run — no Docker/GPU access from this environment. **This is the main open gap**: the profile and CLI-builder logic are schema- and unit-tested, but no live `llama-server` boot has been attempted against `server-cuda-b10398` with this model, its mmproj, or its DFlash drafter. Required before trusting this in production — see "Restart required".
+**Live-verified 2026-08-14** (operator-run; this dev environment has no Docker/GPU access). Deployed to Atlas's `atlas-agent` worker (not Circe — `ATLAS_AGENT_CUDA_VISIBLE_DEVICES=2`, `LLAMACPP_IMAGE_TAG=server-cuda-b10398`). Clean boot, confirmed via the actual `llama-server` log:
+
+```text
+Effective llama-server argv: /app/llama-server -m .../Muse-Glimmer-30B-UD-Q4_K_XL.gguf
+  --ctx-size 32768 --n-gpu-layers 99 --parallel 1 --batch-size 1024 --jinja
+  --mmproj .../mmproj-Muse-Glimmer-30B-Q8_0.gguf --ubatch-size 1024
+  --image-min-tokens 256 --image-max-tokens 1024 --temp 1.0 --top-k 64 --top-p 0.95
+  --model-draft .../dflash-kquant.gguf --spec-type draft-dflash --spec-draft-n-max 16
+
+common_speculative_impl_draft_dflash: adding speculative implementation 'draft-dflash'
+common_speculative_impl_draft_dflash: - n_max=16, n_min=0, p_min=0.00
+common_speculative_impl_draft_dflash: - block_size=16, mask_token_id=201818, n_extract=5
+srv load_model: loaded multimodal model, 'mmproj-Muse-Glimmer-30B-Q8_0.gguf'
+srv llama_server: model loaded
+srv llama_server: listening on http://0.0.0.0:8080
+```
+
+Confirms all three previously-`UNVERIFIED` items: target architecture recognized (PR #26841's gate), vision encoder loaded, DFlash drafter loaded with `n_extract=5` matching the model card's "Draft layers: 5" exactly. No `"DFlash model requires 'target_layers'"` error — upstream issue #25116 does not appear to affect this GGUF.
+
+Two benign log lines worth knowing, not bugs: an `E`-level `"dflash requires ctx_other to be set (this warning is normal during memory fitting)"` during llama.cpp's intentionally-failing first memory-probe pass (real load succeeds on the second pass, as shown above), and `"requested draft size (n_max=16, n_min=0) exceeds the trained block size 16 -- clamping to 15"` (upstream's own `>=` vs `>` boundary check on an exact-equal value; auto-clamps, no action needed).
+
+**Still not verified**: actual completion output quality and tokens/sec with the drafter active — boot success confirms the process didn't crash, not that generation is correct or that DFlash is actually accelerating anything. Recommended next check:
+
+```bash
+curl -fsS http://localhost:8014/health
+curl -fsS http://localhost:8014/completion \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "Explain the difference between a list and a tuple in Python.", "n_predict": 200}'
+```
+Watch for coherent (not garbled) output — this repo has prior history of tensor-split configs producing "token salad" (see `qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition`'s notes), and speculative decoding has its own verify/accept correctness surface worth a first look even though this is single-GPU, not tensor-split.
 
 ## Review findings fixed
 
@@ -118,18 +150,19 @@ Not run — no Docker/GPU access from this environment. **This is the main open 
 
 ## Restart required
 
+Already live on Atlas's `atlas-agent` worker as of 2026-08-14 (see "Docker/build/smoke checks"). For any other worker (e.g. moving it to Circe as originally planned, or a redeploy):
+
 ```bash
-# On whichever host/compose invocation runs Circe's atlas-agent worker, set an
-# explicit override (do NOT touch the repo-wide LLAMACPP_IMAGE_TAG default):
+# Set on whichever worker's .env this runs from (confirm co-located workers first —
+# LLAMACPP_IMAGE_TAG is one shared build arg per compose invocation):
 #   ATLAS_AGENT_PROFILE_NAME=muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision
 #   LLAMACPP_IMAGE_TAG=server-cuda-b10398
-# Confirm first whether Circe's chat lane shares this same .env/compose invocation
-# (config/biometrics/node_catalog.yaml confirms orion-atlas-llamacpp-chat already
-# runs there continuously) -- if so, this tag change also rebuilds that lane, and
-# that needs its own explicit sign-off, not a silent side effect.
 
 scripts/safe_docker_build.sh orion-llamacpp-host up -d --build atlas-agent
 curl -fsS http://localhost:8014/health
+curl -fsS http://localhost:8014/completion \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "Explain the difference between a list and a tuple in Python.", "n_predict": 200}'
 docker compose -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml logs --tail=200 atlas-agent
 # Check specifically for a "DFlash model requires 'target_layers'" error (upstream
 # issue #25116's signature) if the container fails to become healthy.
@@ -137,14 +170,17 @@ docker compose -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml 
 
 ## Risks / concerns
 
-- Severity: medium
-  - Concern: no live boot has been attempted against `server-cuda-b10398` with this model. Schema and CLI-argv construction are tested; actual model load (target arch, vision encoder, DFlash drafter, and whether upstream issue #25116 applies to this specific GGUF) is unverified.
-  - Mitigation: exact smoke-test commands are in "Restart required"; profile `notes` include a hard-load-error signature to check logs for first.
+- Severity: low (downgraded 2026-08-14 — was medium pre-live-boot)
+  - Concern: actual completion output quality / tokens-per-sec with the DFlash drafter active is not yet verified — boot success confirms the process didn't crash, not that generation is correct or accelerated.
+  - Mitigation: `curl .../completion` command above; watch for coherent (not garbled) output.
 - Severity: low
-  - Concern: bumping `LLAMACPP_IMAGE_TAG` for Circe's agent worker may also affect its already-running chat worker if they share a compose env — topology not confirmed from this environment.
-  - Mitigation: flagged explicitly in the profile header, notes, and "Restart required"; needs a human check of Circe's actual `.env`/compose layout before deploy.
+  - Concern: this profile's naming/notes assumed Circe; the first live deploy actually landed on Atlas's agent lane instead. Not a functional problem, but if Circe was the intended long-term home, that hasn't happened yet.
+  - Mitigation: noted in the profile header/notes; confirm intended target with whoever owns the deploy plan.
 - Severity: low
-  - Concern: first boot will pull ~17.8GB of GGUF weights (Q4_K_XL text + Q8_0 mmproj) plus the DFlash drafter from HuggingFace; VRAM headroom with the draft model loaded hasn't been benched.
+  - Concern: bumping `LLAMACPP_IMAGE_TAG` on a worker's `.env` may also affect other workers sharing that same compose invocation/env file — topology not fully confirmed from this environment for either Atlas or Circe.
+  - Mitigation: flagged explicitly in the profile header, notes, and "Restart required".
+- Severity: low
+  - Concern: first boot pulls ~17.8GB of GGUF weights (Q4_K_XL text + Q8_0 mmproj) plus the DFlash drafter from HuggingFace; VRAM headroom with the draft model loaded hasn't been separately benched beyond "it booted."
   - Mitigation: `notes` field documents an OOM fallback ladder, including dropping `spec_type`/`hf_draft_*` entirely to fall back to plain non-speculative decoding without touching anything else.
 
 ## PR link

@@ -187,6 +187,42 @@ def _base_definitions() -> tuple[dict | None, str]:
     return None, f"no merge base against any of {', '.join(BASE_REFS)}"
 
 
+def _base_is_head() -> bool:
+    """True when the merge base IS this commit -- i.e. we are standing on the base.
+
+    The recomputation below asks "what does this BRANCH change relative to the merge
+    base?". On ``main`` itself that question has no meaning: the merge base is HEAD,
+    so the diff is empty by construction and the derived block collapses to "no
+    definition changes" -- while the committed block still states what the branch that
+    last landed here actually changed. The two can never agree, so the gate failed on
+    ``main`` after every definition change, by construction.
+
+    That is not hypothetical. Both post-gate commits on main -- 4cca1eb5f (the PR that
+    introduced this file) and b4a697a9d -- were red for exactly this reason, and any
+    branch cut from a red main inherited the failure, so re-locking alone would have
+    been a treadmill rather than a fix.
+
+    Skipping the check here does not weaken it: on a real PR branch HEAD is never the
+    merge base, so hand-editing ``_last_change`` to erase an alert is still caught
+    where it matters -- in the PR that does the editing.
+    """
+    import subprocess
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True
+    )
+    if head.returncode != 0:
+        return False
+    for ref in BASE_REFS:
+        merge_base = subprocess.run(
+            ["git", "merge-base", "HEAD", ref], cwd=REPO_ROOT, capture_output=True, text=True
+        )
+        if merge_base.returncode != 0:
+            continue
+        return merge_base.stdout.strip() == head.stdout.strip()
+    return False
+
+
 def _last_change_block(base: dict | None, current: dict, note: str) -> dict:
     """The alert block, derived from the merge base. Pure given its inputs."""
     if base is None:
@@ -280,7 +316,8 @@ def main(argv: list[str] | None = None) -> int:
     # be. Without this the sentence is a convention an agent can hand-edit
     # away; with it, erasing the alert fails the gate.
     stale_alert: str | None = None
-    if lock_exists and base is not None:
+    on_base_branch = _base_is_head()
+    if lock_exists and base is not None and not on_base_branch:
         expected = _last_change_block(base, locked, base_note)
         committed = whole.get("_last_change") or {}
         if committed.get("changes") != expected["changes"]:
@@ -335,6 +372,12 @@ def main(argv: list[str] | None = None) -> int:
         if base is None:
             print(f"\nNOTE: {BASE_UNAVAILABLE} ({base_note});")
             print("      committed _last_change was NOT verified this run.")
+        elif on_base_branch:
+            # Stated, never silent -- a silently-skipped integrity check is the
+            # failure this file's own docstring calls out.
+            print("\nNOTE: HEAD is the merge base (on the base branch, not a PR);")
+            print("      _last_change describes the branch that landed here and is")
+            print("      not recomputable from this vantage point. Not verified.")
 
     if args.gate and (diff or not lock_exists or stale_alert):
         print("\ndefinition drift gate: FAIL", file=sys.stderr)

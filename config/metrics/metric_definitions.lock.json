@@ -2,11 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 595,
   "_last_change": {
-    "base": "merge base f835c737c (origin/main) has no lock yet",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base b4a697a9d (origin/main)",
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "initial lock -- no prior state to diff against"
+      "high   routing_changed metric://bus_channel/*/orion:spark:signal (declared_consumers: ['orion-state-service'] -> -)"
     ]
   },
   "definitions": {
@@ -126,9 +126,6 @@
       "schema_id": "SparkSignalV1",
       "all_producers": [
         "*"
-      ],
-      "declared_consumers": [
-        "orion-state-service"
       ],
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

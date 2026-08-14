@@ -121,6 +121,17 @@ check-activation-saturation:
 concept-relation-digest:
 	@python scripts/concept_relation_digest.py
 
+# Ratchet gate for merge domination: fails if a merge point NOT in
+# config/metrics/merge_domination_baseline.json has one source winning the
+# majority of non-tied merges while carrying an order of magnitude fewer
+# informative distinct values than a contender that never wins. Two instances
+# are on record (thermal_pressure 2026-08-11, node:substrate.codebase
+# 2026-08-14) and BOTH were caught by a person reading a diff. Requires
+# POSTGRES_URI. Not in orion-static-gates -- that workflow has no infra.
+# Run on a schedule via host crontab, same as concept-relation-digest.
+check-merge-domination:
+	@$(METRIC_PYTHON) scripts/check_merge_domination.py --gate $(if $(TICKS),--ticks $(TICKS),)
+
 # Fail-safe for the above: fails if the oldest undigested
 # memory_concept_relation_decisions row is older than --max-age-hours (default 3h),
 # which only happens if the digest cron entry died, was dropped after a host

@@ -393,6 +393,68 @@ def test_generation_sends_configured_lane_and_no_write(monkeypatch) -> None:
     assert seen["req"].options["use_recall"] is False
 
 
+class _FakeBus:
+    def __init__(self) -> None:
+        self.published: list = []
+        self.enabled = True
+
+    async def publish(self, channel, envelope) -> None:
+        self.published.append((channel, envelope))
+
+
+def test_notification_payload_validates_against_the_real_schema() -> None:
+    """Exercises HubNotificationEvent for real, not a monkeypatched stand-in.
+
+    ``message_id`` is a UUID field but the outreach carries it around as a str,
+    so a coercion mistake here would only ever surface at runtime.
+    """
+    from uuid import UUID, uuid4
+
+    outreach = _outreach()
+    bus = _FakeBus()
+    outreach._bus = bus
+    message_id = str(uuid4())
+    # BaseEnvelope.correlation_id is UUID-typed; maybe_outreach always mints
+    # str(uuid4()), so the fixture must match production rather than a label.
+    correlation_id = str(uuid4())
+
+    asyncio.run(
+        outreach._publish_notification(
+            text="the execution node has been noisy",
+            session_id="sess-abc",
+            correlation_id=correlation_id,
+            message_id=message_id,
+        )
+    )
+
+    assert len(bus.published) == 1
+    channel, envelope = bus.published[0]
+    assert channel == "orion:notify:in_app"
+    assert envelope.kind == "notify.in_app.v1"
+    payload = envelope.payload
+    assert payload["body_text"] == "the execution node has been noisy"
+    assert payload["event_kind"] == "hub.endogenous_outreach.v1"
+    assert payload["session_id"] == "sess-abc"
+    assert payload["tags"] == ["endogenous_outreach"]
+    assert UUID(payload["message_id"]) == UUID(message_id)
+
+
+def test_notification_failure_does_not_propagate() -> None:
+    class _BrokenBus:
+        async def publish(self, channel, envelope):
+            raise RuntimeError("bus down")
+
+    outreach = _outreach()
+    outreach._bus = _BrokenBus()
+
+    # Must not raise: a delivery failure cannot be allowed to kill the loop.
+    asyncio.run(
+        outreach._publish_notification(
+            text="x", session_id="s", correlation_id="c", message_id=str(__import__("uuid").uuid4())
+        )
+    )
+
+
 def test_probability_zero_never_rolls(monkeypatch) -> None:
     outreach = _outreach(probability=0.0, rng=random.Random(1234))
     _stub_context(monkeypatch)

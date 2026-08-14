@@ -317,6 +317,36 @@ def test_second_outreach_blocked_by_cooldown(monkeypatch) -> None:
     assert second["reason"] == "cooldown"
 
 
+def test_session_hello_lets_an_idle_tab_be_reachable_in_thread() -> None:
+    """Confirmed live on the first real firing (2026-08-14).
+
+    `connections: 1` but `session_id: "orion_outreach"` -- the browser was open
+    and had never sent a message, so note_session had never fired and the
+    outreach landed in the fallback session instead of the thread on screen.
+    The connect-time session_hello frame closes that.
+    """
+    outreach = _outreach()
+    outreach.register_connection("c1", asyncio.Queue(), {"correlation_id": None, "kind": None})
+
+    # Open tab, nothing typed yet: fallback.
+    assert outreach._active_session_id() == "orion_outreach"
+
+    # session_hello arrives on connect.
+    outreach.note_session("c1", "sess-from-hello")
+    assert outreach._active_session_id() == "sess-from-hello"
+
+
+def test_session_hello_with_no_session_id_is_ignored() -> None:
+    """A tab with no stored session must not blank an already-known one."""
+    outreach = _outreach()
+    outreach.register_connection("c1", asyncio.Queue(), {"correlation_id": None, "kind": None})
+    outreach.note_session("c1", "sess-real")
+
+    for empty in (None, "", "   "):
+        outreach.note_session("c1", empty)
+        assert outreach._active_session_id() == "sess-real"
+
+
 def test_falls_back_to_configured_session_when_no_socket_reported_one(monkeypatch) -> None:
     outreach = _outreach()
     outreach.register_connection("c1", asyncio.Queue(), {"correlation_id": None, "kind": None})

@@ -304,3 +304,21 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   -c 'grep ...'` before starting the container catches it in one command; "Container Started"
   does not. This is the same class as the graphify destructive-update incident -- tooling
   reporting success while silently shipping older content.
+
+- **`BiometricsClusterV1` has no live producer anywhere -- the whole cluster path is dead.**
+  `publish_cluster()` only runs when `BIOMETRICS_MODE in {"hub","both"}`, and the mode is
+  **`agent`** in `.env`, `.env_example` and the settings default -- so no node runs it.
+  Verified by subscribing to `orion:biometrics:cluster` for 20 s against a 15 s publish
+  interval: zero messages. (An earlier `xrevrange` check was invalid -- the bus is redis
+  pub/sub, not streams.) Meanwhile `orion/inner_state_registry.py:386` registers
+  `services.orion-cortex-exec.app.executor:_metacog_biometrics_cue` as a cognition consumer of
+  this signal, and `channels.yaml` lists producers/consumers for it -- a fully specified
+  contract with nothing on either end. **Anything that reads `biometrics.cluster` in cognition
+  is reading an empty dict today**, which includes the fleet-power consumer just built.
+
+- **Enabling hub mode is not a free flip.** `publish_cluster()` also emits a `SparkSignalV1`
+  (`signal_type="resource"`, `intensity=strain`) to `orion:spark:signal`, consumed by
+  orion-state-service. So `BIOMETRICS_MODE=both` turns on a new cognition-adjacent signal
+  producer as well as the cluster channel -- and it would carry the *diluted* strain figure
+  (see the 7x dilution entry above) as its intensity. Juniper's call, not a unilateral env
+  change.

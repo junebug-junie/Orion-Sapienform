@@ -1,5 +1,9 @@
 {
   "dependencies": {
+    "http-proxy-agent": "^9.1.0",
     "puppeteer": "^23.11.1"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
   }
 }

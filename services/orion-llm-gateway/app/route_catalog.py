@@ -26,6 +26,7 @@ class RouteHealthEntry:
     latency_ms: Optional[int]
     last_checked_at: Optional[str]
     model: Optional[str] = None
+    vision: Optional[bool] = None
 
 
 _cache: Dict[str, RouteHealthEntry] = {}
@@ -70,6 +71,40 @@ async def _probe_model(target: RouteTarget) -> Optional[str]:
     return model_id if isinstance(model_id, str) and model_id.strip() else None
 
 
+async def _probe_vision(target: RouteTarget) -> Optional[bool]:
+    """Best-effort read of whether this route's worker can actually see.
+
+    llama.cpp reports `modalities.vision` on `/props`, and it is the only
+    trustworthy answer: it reflects whether the server was started with
+    `--mmproj`, which the profile registry's `supports_vision` flag does not.
+    Confirmed live 2026-08-14 that the two disagree -- the chat lane's weights
+    and chat template are VL-capable and its HF repo ships an mmproj, but the
+    worker was launched without one, so it reports false while a config reader
+    would have said otherwise (and nothing read the config flag at all).
+
+    Publishing this on /routes is what lets the Hub enable or grey out its
+    attach button against the truth rather than against a YAML claim.
+
+    Fails open to None ("unknown") on any error -- a route health check must
+    never fail because a modality couldn't be read. None is rendered distinctly
+    from False so a probe failure is never mistaken for a confirmed blindness.
+    """
+    url = f"{target.url.rstrip('/')}/props"
+    try:
+        timeout = float(settings.llm_route_health_timeout_sec or 1.5)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+    except Exception:
+        return None
+    modalities = payload.get("modalities") if isinstance(payload, dict) else None
+    if not isinstance(modalities, dict):
+        return None
+    return bool(modalities.get("vision"))
+
+
 async def _probe_health(target: RouteTarget) -> tuple[str, Optional[int]]:
     url = f"{target.url.rstrip('/')}/health"
     start = time.monotonic()
@@ -96,11 +131,12 @@ async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
     # firing it unconditionally costs one (fail-open, cheap) extra request
     # when a route is down, in exchange for a bounded refresh in the common
     # case where routes are healthy.
-    (status, latency_ms), model = await asyncio.gather(
-        _probe_health(target), _probe_model(target)
+    (status, latency_ms), model, vision = await asyncio.gather(
+        _probe_health(target), _probe_model(target), _probe_vision(target)
     )
     if status != "up":
         model = None
+        vision = None
     return RouteHealthEntry(
         route_id=route_id,
         served_by=target.served_by,
@@ -109,6 +145,7 @@ async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
         latency_ms=latency_ms,
         last_checked_at=_utc_now_iso(),
         model=model,
+        vision=vision,
     )
 
 
@@ -147,6 +184,7 @@ def _entry_to_dict(entry: RouteHealthEntry) -> Dict[str, Any]:
         "latency_ms": entry.latency_ms,
         "last_checked_at": entry.last_checked_at,
         "model": entry.model,
+        "vision": entry.vision,
     }
 
 
@@ -169,6 +207,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "latency_ms": None,
                     "last_checked_at": None,
                     "model": None,
+                    "vision": None,
                 }
             )
         else:
@@ -181,6 +220,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "latency_ms": None,
                     "last_checked_at": None,
                     "model": None,
+                    "vision": None,
                 }
             )
     return {

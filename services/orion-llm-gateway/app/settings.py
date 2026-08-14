@@ -146,6 +146,50 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Vision / chat attachments ---
+    # Capability is read from the worker's own /props, never from the profile
+    # registry's supports_vision claim -- see app/vision.py for why.
+    llm_gateway_vision_enabled: bool = Field(
+        default=True,
+        alias="LLM_GATEWAY_VISION_ENABLED",
+        description="Master switch. When false, every route is treated as blind and images are refused.",
+    )
+    llm_gateway_vision_props_cache_ttl_sec: float = Field(
+        default=300.0,
+        alias="LLM_GATEWAY_VISION_PROPS_CACHE_TTL_SEC",
+        description="How long a worker's /props modality report is trusted before re-probing.",
+    )
+    llm_gateway_vision_props_timeout_sec: float = Field(
+        default=5.0,
+        alias="LLM_GATEWAY_VISION_PROPS_TIMEOUT_SEC",
+    )
+    llm_gateway_attachment_base_url: str = Field(
+        default="",
+        alias="LLM_GATEWAY_ATTACHMENT_BASE_URL",
+        description=(
+            "Trusted base the gateway builds attachment fetch URLs from, as "
+            "'<base>/<sha256>'. The ref's own source_url is client-controlled and is "
+            "deliberately NOT used. Empty means refuse to fetch attachments at all."
+        ),
+    )
+    llm_gateway_attachment_allowed_hosts: str = Field(
+        default="",
+        alias="LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS",
+        description=(
+            "Comma-separated hostnames the derived fetch URL may resolve to. "
+            "Defence in depth over the base URL above, not the primary control. "
+            "Empty means refuse everything."
+        ),
+    )
+    llm_gateway_attachment_max_bytes: int = Field(
+        default=8_388_608,
+        alias="LLM_GATEWAY_ATTACHMENT_MAX_BYTES",
+    )
+    llm_gateway_attachment_fetch_timeout_sec: float = Field(
+        default=10.0,
+        alias="LLM_GATEWAY_ATTACHMENT_FETCH_TIMEOUT_SEC",
+    )
+
     class Config:
         env_file = ".env"
         extra = "ignore"

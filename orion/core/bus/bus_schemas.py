@@ -167,6 +167,40 @@ class LLMMessage(BaseModel):
     content: str
 
 
+class AttachmentRefV1(BaseModel):
+    """A reference to caller-supplied binary content, carried beside message text.
+
+    Deliberately a *sibling* of ``LLMMessage.content``, never a widening of it.
+    Every downstream reader of a turn -- Spark ingest, recall, chat_history, the
+    memory-graph bridge, every reducer and trace consumer -- assumes ``content``
+    is a ``str``. Widening that type to accept OpenAI content-part lists would
+    regress all of them at once. Keeping attachments alongside means a turn with
+    no attachments serializes exactly as it does today.
+
+    Carries a *reference*, never the bytes. A 2MB image is ~2.7MB of base64, and
+    it would be replicated through Redis streams, chat_history, and every trace
+    store mirroring the turn. Per-event blobs into Postgres already took this
+    host down once (TOAST OOM crash loop, 2026-07-23).
+
+    ``source_url`` must be reachable from the LLM gateway, which is the only
+    service on the final leg to the model and the only place that resolves
+    whether the target route can actually see.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    kind: Literal["image"] = "image"
+    sha256: str = Field(..., description="Content address of the stored bytes; also the storage key.")
+    mime: str = Field(..., description="Concrete media type, e.g. 'image/png'.")
+    # ge=1, not ge=0: a zero-byte image is meaningless, and a ref declaring 0
+    # used to skip the gateway's size cross-check entirely.
+    bytes: int = Field(..., ge=1, description="Stored size in bytes, after any client-side downscale.")
+    width: Optional[int] = Field(default=None, ge=1, description="Pixel width, when known.")
+    height: Optional[int] = Field(default=None, ge=1, description="Pixel height, when known.")
+    source_url: str = Field(..., description="Gateway-reachable URL serving the raw bytes.")
+    filename: Optional[str] = Field(default=None, description="Original client filename, for display only.")
+
+
 class ChatRequestPayload(BaseModel):
     """
     Request payload for LLM chat.
@@ -188,6 +222,14 @@ class ChatRequestPayload(BaseModel):
         description="Optional routing key for LLM gateway (e.g., chat, metacog, latents).",
     )
     options: Dict[str, Any] = Field(default_factory=dict)
+    attachments: List[AttachmentRefV1] = Field(
+        default_factory=list,
+        description=(
+            "Caller-supplied binary references for this turn. Empty for every "
+            "text-only turn, which keeps the outbound gateway payload "
+            "byte-identical to the pre-attachment behavior."
+        ),
+    )
 
     # Optional provenance
     user_id: Optional[str] = None

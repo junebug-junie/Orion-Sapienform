@@ -136,6 +136,10 @@ def _build_context(req: CortexClientRequest) -> Dict[str, Any]:
         "user_id": req.context.user_id,
         "trace_id": req.context.trace_id,
         "metadata": req.context.metadata,
+        # Serialized rather than passed as models: ctx is a plain dict that gets
+        # JSON-round-tripped across the exec hop, and cortex-exec re-validates
+        # these back into AttachmentRefV1 before they reach the gateway.
+        "attachments": [a.model_dump(mode="json") for a in (req.context.attachments or [])],
         "packs": req.packs,
         "mode": req.mode,
         "diagnostic": _diagnostic_enabled(req),

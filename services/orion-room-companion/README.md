@@ -1,0 +1,141 @@
+# orion-room-companion
+
+Runs Claude as a third participant in Orion's social room.
+
+One bus consumer, one `claude -p` subprocess, one credential. It takes a
+`RoomClaudeRequestV1` off `orion:room:claude:request`, produces one Claude
+turn, and publishes a `RoomClaudeUtteranceV1` on
+`orion:room:claude:utterance`. That is the whole service.
+
+Design doc: `docs/architecture/hub-social-room-claude-companion.md`.
+
+## Why this is a separate service
+
+The obvious build puts the subprocess in `orion-hub`, next to the chat box it
+serves. Don't. Audited live 2026-08-14, the Hub container runs as **root** and
+already exposes readable `/root/.ssh`, `/root/.config/gh`,
+`/var/run/docker.sock`, `/root/.fcc/.env`, and the repo mount — and Orion's own
+FCC turns run *in that container* with `bypassPermissions` and full Bash.
+
+So a Claude credential in Hub is a credential Orion can read. Today that is
+merely untidy, because v1 is explicit-invite only and a human clicks the
+button. In v2, when Orion can invite Claude itself, it becomes the difference
+between a spend cap that is **enforced** and one that is **advisory** — Orion
+could spawn `claude` directly and never appear in the meter.
+
+This container is therefore built to be worth nothing to break into: no repo
+mount, no SSH keys, no gh config, no docker socket, no host networking, no
+git, no gh. `tests/test_credential_isolation.py` fails if any of that returns.
+
+## Credential isolation
+
+Identical in shape and rationale to `orion-self-study-enrichment` — read that
+service's "Credential isolation (safety requirement)" section too; it carries
+the incident history.
+
+- Authenticates as the operator's **already-logged-in Claude Code session**,
+  reusing the existing subscription. Never `ANTHROPIC_API_KEY`, which would
+  open a second pay-per-token billing relationship.
+- `docker-compose.yml` bind-mounts **only** the host's `.credentials.json`
+  file, read-only. Not the whole `~/.claude`, which also holds session
+  transcripts, `history.jsonl`, and caches.
+- `ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH` has **no default in code** —
+  compose uses `:?`, so a missing value fails loudly rather than silently
+  mounting nothing and leaving the room mysteriously unauthenticated.
+- `CLAUDE_CONFIG_DIR` must point at the directory that mount lands in. The two
+  interpolations in `docker-compose.yml` must stay identical; if they diverge
+  the credential becomes invisible to `claude` with no error.
+- This service never writes to, logs, or echoes any part of that file.
+
+`build_subprocess_env()` additionally strips `ANTHROPIC_BASE_URL` and
+`ANTHROPIC_AUTH_TOKEN`. Those are what Hub's FCC lane
+(`services/orion-hub/scripts/fcc_claude_bridge.py:262-263`) sets to redirect
+`claude` at a **local** gateway. If either leaked in here, the room would keep
+producing fluent text that was never Claude — the hardest failure in this
+service to catch by eye, and why every utterance records the CLI's own
+reported `model` and `cost_usd`.
+
+### Known issue, inherited from the pattern
+
+The `:ro` mount cannot refresh. It depends on the host's own Claude Code
+rewriting `.credentials.json` **in place**. The CLI polls
+`stat(.credentials.json).mtimeMs` and reloads on change, so external updates
+are clearly anticipated — but if a refresh ever writes via atomic rename, the
+bind pins to a stale inode and auth dies silently. Unconfirmed either way, and
+it affects `orion-self-study-enrichment` equally. Baseline for the test at the
+next real refresh: `inode=5936136 mtime=1786697381`, host and container
+agreeing as of 2026-08-14.
+
+## Session continuity
+
+One room is one durable Claude session. The first turn mints a uuid and passes
+`--session-id`; every later turn passes `--resume`. The map lives in
+`ROOM_COMPANION_SESSION_STATE_PATH` on this service's own volume.
+
+That is what makes Claude a *participant* rather than a stateless helper, and
+it means a turn sends only the new message — the transcript in the request is
+first-turn seeding and a recovery path, not the memory mechanism.
+
+If a `--resume` fails because the CLI no longer holds that session, the
+mapping is dropped so the next turn can mint a fresh one. Without that, the
+room would be wedged forever: the same resume would fail identically on every
+retry.
+
+## What Claude receives
+
+Room-native context and nothing from Orion's interior. Specifically:
+
+- The room framing (`SYSTEM_PROMPT` in `app/room_prompt.py`), on the first
+  turn of a session only.
+- The roster and room continuity from the `social_memory` summary, passed
+  through an **allowlist** (`_SUMMARY_KEYS`) rather than wholesale — this is a
+  third-party-bound payload, so "everything we happened to have" is the wrong
+  default.
+- The new message, prefixed with who said it.
+
+Not sent: recall results, self-state, drives, journals, mirrors. Tools are off
+(`--tools ""`), so Claude cannot read a file, the repo, or the network.
+`ROOM_COMPANION_SETTING_SOURCES` is `user` — deliberately not `user,local` —
+so a room conversation does not inherit this repo's own development contract
+as if it were room context.
+
+## Run
+
+```bash
+docker compose \
+  --env-file .env \
+  --env-file services/orion-room-companion/.env \
+  -f services/orion-room-companion/docker-compose.yml \
+  up -d --build
+```
+
+Prefer `scripts/safe_docker_build.sh orion-room-companion up -d --build` — it
+refuses to run from the shared checkout.
+
+### Live smoke
+
+The phase-1 acceptance surface. Runs the real subprocess against the real
+credential and prints the real utterance — no UI, no Hub:
+
+```bash
+docker compose -f services/orion-room-companion/docker-compose.yml \
+  exec room-companion python -m scripts.smoke_room_turn
+```
+
+Two turns, because one cannot demonstrate continuity: turn 2 resumes and is
+asked to recall a token only turn 1 was told. It exits non-zero unless both
+turns produced text, turn 2 recalled the token, both share one Claude session,
+cost was metered above zero, and a Claude model served it. An empty or free
+turn is a failure, not a warning.
+
+## Tests
+
+```bash
+cd services/orion-room-companion
+PYTHONPATH=<repo-root>:. pytest tests -q
+```
+
+`tests/test_credential_isolation.py` is the load-bearing one — it asserts on
+the parsed compose file, not on Python settings, and it has been
+mutation-tested against the real file (adding a docker.sock mount or widening
+the credential bind to a directory both make it fail).

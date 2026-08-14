@@ -157,6 +157,12 @@ from orion.schemas.social_chat import (
     SocialRoomTurnStoredV1,
     SocialRoomTurnV1,
 )
+from orion.schemas.room_claude import (
+    ExternalRoomResponderV1,
+    RoomClaudeRequestV1,
+    RoomClaudeUtteranceV1,
+    RoomTranscriptEntryV1,
+)
 from orion.schemas.social_bridge import (
     CallSyneRoomMessageV1,
     ExternalRoomMessageV1,
@@ -880,6 +886,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SocialRedactionScoreV1": SocialRedactionScoreV1,
     "SocialRoomTurnV1": SocialRoomTurnV1,
     "SocialRoomTurnStoredV1": SocialRoomTurnStoredV1,
+    "RoomClaudeRequestV1": RoomClaudeRequestV1,
+    "RoomClaudeUtteranceV1": RoomClaudeUtteranceV1,
+    "RoomTranscriptEntryV1": RoomTranscriptEntryV1,
+    "ExternalRoomResponderV1": ExternalRoomResponderV1,
     "SocialCommitmentV1": SocialCommitmentV1,
     "SocialCommitmentResolutionV1": SocialCommitmentResolutionV1,
     "SocialBridgeSummaryV1": SocialBridgeSummaryV1,
@@ -1303,6 +1313,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # 2026-08-12-substrate-action-perception-design.md option B(2)). Registered
     # in BOTH this dict and `_REGISTRY` above -- they are separate maps and a
     # schema present in only one is half-registered.
+    # Claude as a third social-room participant (2026-08-14, design doc
+    # hub-social-room-claude-companion.md). Only these two carry a message
+    # kind; RoomTranscriptEntryV1 and ExternalRoomResponderV1 are nested
+    # payload models, so they live in `_REGISTRY` alone by design.
+    "RoomClaudeRequestV1": SchemaRegistration(
+        model=RoomClaudeRequestV1,
+        kind="room.claude.request.v1",
+    ),
+    "RoomClaudeUtteranceV1": SchemaRegistration(
+        model=RoomClaudeUtteranceV1,
+        kind="room.claude.utterance.v1",
+    ),
     "SubstrateReadQueryV1": SchemaRegistration(
         model=SubstrateReadQueryV1,
         kind="substrate_read.query.v1",

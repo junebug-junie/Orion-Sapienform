@@ -1,0 +1,72 @@
+services:
+  room-companion:
+    build:
+      context: ../..
+      dockerfile: services/orion-room-companion/Dockerfile
+    container_name: ${PROJECT}-room-companion
+    restart: unless-stopped
+    networks:
+      - app-net
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - NODE_NAME=${NODE_NAME}
+      - INSTANCE_ID=${INSTANCE_ID}
+
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC}
+
+      - ROOM_COMPANION_NODE_NAME=${ROOM_COMPANION_NODE_NAME}
+      - CHANNEL_ROOM_CLAUDE_REQUEST=${CHANNEL_ROOM_CLAUDE_REQUEST:-orion:room:claude:request}
+      - CHANNEL_ROOM_CLAUDE_UTTERANCE=${CHANNEL_ROOM_CLAUDE_UTTERANCE:-orion:room:claude:utterance}
+
+      # Authenticate `claude -p` as the operator's already-logged-in Claude
+      # Code session -- never a separate ANTHROPIC_API_KEY billing path. Same
+      # pattern, for the same reasons, as orion-self-study-enrichment; see
+      # that service's README "Credential isolation (safety requirement)" and
+      # this one's README for why the credential lives here and NOT in
+      # orion-hub. CLAUDE_CONFIG_DIR is Claude Code's own env var for
+      # relocating where it looks for `.credentials.json`; the volumes: block
+      # below bind-mounts only that one file (read-only) into this directory.
+      # This interpolation MUST stay identical to the one in the volumes:
+      # bind-mount target below -- if they diverge, the credential mount
+      # becomes invisible to the `claude` binary with no error.
+      - CLAUDE_CONFIG_DIR=${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}
+      - ROOM_COMPANION_CLAUDE_CONFIG_DIR=${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}
+      - ROOM_COMPANION_CLAUDE_BIN=${ROOM_COMPANION_CLAUDE_BIN:-claude}
+      - ROOM_COMPANION_MODEL=${ROOM_COMPANION_MODEL:-claude-sonnet-5}
+      - ROOM_COMPANION_EFFORT=${ROOM_COMPANION_EFFORT:-medium}
+      - ROOM_COMPANION_TIMEOUT_SEC=${ROOM_COMPANION_TIMEOUT_SEC:-180}
+      - ROOM_COMPANION_SETTING_SOURCES=${ROOM_COMPANION_SETTING_SOURCES:-user}
+      - ROOM_COMPANION_WORKSPACE=${ROOM_COMPANION_WORKSPACE:-/data/workspace}
+
+      - ROOM_COMPANION_PARTICIPANT_ID=${ROOM_COMPANION_PARTICIPANT_ID:-claude}
+      - ROOM_COMPANION_PARTICIPANT_NAME=${ROOM_COMPANION_PARTICIPANT_NAME:-Claude}
+      - ROOM_COMPANION_SESSION_STATE_PATH=${ROOM_COMPANION_SESSION_STATE_PATH:-/data/state/room_companion_sessions.json}
+    volumes:
+      # Real Claude Code login credential -- a single-file, read-only bind
+      # mount of the host's `.credentials.json` (600 perms, owner-only), NOT
+      # the whole `~/.claude` directory (which also holds session
+      # transcripts, history.jsonl, caches). This service never writes to,
+      # logs, or echoes any part of this file. CLAUDE_CONFIG_DIR above must
+      # point at the same directory this is mounted into.
+      - ${ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH:?ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH must be set -- see .env_example}:${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}/.credentials.json:ro
+      # Writable volume for the room->session map and the neutral workspace.
+      - room_companion_data:/data
+    # DELIBERATELY ABSENT, and a review should treat any of these appearing
+    # here as a regression -- this container exists to be the one place the
+    # Claude credential lives, so it must not also be a place worth breaking
+    # into: no repo mount, no ${HOME}/.ssh, no ${HOME}/.config/gh, no
+    # /var/run/docker.sock, no network_mode: host. orion-hub has all of
+    # those, which is exactly why the credential is not there.
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true
+
+volumes:
+  room_companion_data:
+    name: ${PROJECT}-room-companion-data

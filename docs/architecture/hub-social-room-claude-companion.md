@@ -24,12 +24,17 @@ from inside the Hub container. What is missing is small and specific:
 
 Three thin seams. No new table, no room server, no cathedral.
 
-One new service, and only for a boundary that pays for itself: Hub runs as root
-with SSH keys, a gh token, and the docker socket all readable by Orion's own FCC
-turns, so a Claude credential there is a credential Orion can take. The room's
-subprocess therefore lives in a minimal-privilege container cloned from
+One new service, for defense in depth: Hub runs as root with SSH keys, a gh
+token, and the docker socket all readable by Orion's own FCC turns, so a Claude
+credential *stored* there is one Orion reads by default. The room's subprocess
+therefore lives in a minimal-privilege container cloned from
 `orion-self-study-enrichment`'s already-hardened shape. The UI, the button, and
 the room state all stay in Hub.
+
+Not a wall, though -- see the Risk 3 correction below. Hub's docker socket
+makes the companion's credential reachable by `docker exec` regardless, so this
+separation reduces accident surface without enforcing anything against a
+determined Hub-resident agent.
 
 ## Current architecture
 
@@ -184,8 +189,27 @@ This does not weaken the "in the Hub chat box" requirement — the chat box, the
 invite button, and the room state all stay in Hub. Only the credential and the
 subprocess move behind a boundary.
 
-Net: Risk 3 is eliminated, Risk 2 is neutralised, Risk 1 is reduced to a known
-unknown (below), and no new secret-handling concept is invented.
+Net: Risk 2 is neutralised, Risk 1 is reduced to a known unknown (below), and
+no new secret-handling concept is invented.
+
+**Risk 3 is REDUCED, not eliminated -- correcting an earlier claim in this
+doc.** Code review caught it and it is confirmed live:
+`services/orion-hub/docker-compose.yml:62` mounts `/var/run/docker.sock`
+read-write and the Hub image ships the `docker` CLI, so from inside Hub
+`docker exec orion-athena-room-companion cat /root/.claude/.credentials.json`
+returns the credential. Docker-socket access is root-equivalent on the host,
+so no arrangement of the companion's own mounts closes it.
+
+What moving the credential DOES buy: it is no longer stored where Orion reads
+by default, no longer in the repo tree, backups or graphify index, and the
+companion container is worth nothing to break into on its own. That is real
+defense in depth and a real accident-surface reduction -- it is not a wall.
+
+**This changes the v2 budget design.** A cap enforced by owning the credential
+is advisory for as long as Hub holds the docker socket. Honest options: drop
+the socket from Hub, enforce budget on the bus in a service Orion cannot
+reach, or ship an advisory cap and label it as such. Do not build v2 on the
+assumption that this boundary enforces anything.
 
 **Rejected alternative: `claude setup-token`.** The CLI does ship a purpose-built
 long-lived-token command, verified working in-container (bogus token →
@@ -348,11 +372,13 @@ across turns; a `social_room_turns` row carrying `external_responder`; and
 `active_participants` containing all three names. Empty text or `cost_usd == 0`
 is a failure, never a success (AGENTS.md §0A "No empty-shell cognition").
 
-**Dangerous failure modes.** (a) Credential exposure — the credential never
-enters the Hub container, which is root and already holds SSH keys, a gh token,
-and the docker socket readable by Orion's own FCC turns. It lives only in a
+**Dangerous failure modes.** (a) Credential exposure — the credential is never
+*stored* in the Hub container (root; holds SSH keys, a gh token, the docker
+socket, all readable by Orion's own FCC turns). It lives only in a
 minimal-privilege companion service, as a single `:ro` file bind from outside
-the repo, never in an env var and never written by the container.
+the repo, never in an env var and never written by the container. Residual, and
+not closable from this service: Hub's docker socket still allows
+`docker exec` into the companion, so this is depth, not a boundary.
 (b) Runaway AI↔AI loop — structurally impossible
 in v1, since only a human click emits a request. (c) Silent fallback to the FCC
 gateway producing a local model's text labelled "Claude" — guarded by asserting

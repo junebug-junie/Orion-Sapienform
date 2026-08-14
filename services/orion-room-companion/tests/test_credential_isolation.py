@@ -1,11 +1,22 @@
 """Regression guards for the reason this service exists as its own container.
 
-The credential boundary is not a style preference. orion-hub runs as root
-with readable SSH keys, a gh token and the docker socket, and Orion's own FCC
-turns run in that container with full Bash. In v2 Orion triggers these Claude
-calls -- so if the credential were reachable from Hub, Orion could spawn
-Claude outside the room's meter and any spend cap would be advisory rather
-than enforced. These tests fail if that boundary erodes.
+These guard DEPTH, not a wall -- an earlier version of this docstring
+overclaimed and is corrected here.
+
+The credential is not stored in orion-hub, which runs as root with readable
+SSH keys, a gh token and the docker socket, and where Orion's own FCC turns
+run with full Bash. That removes the default read path and the accident
+surface (repo tree, backups, graphify index, `docker inspect` on Hub).
+
+It does NOT make the credential unreachable from Hub: Hub mounts
+/var/run/docker.sock read-write and ships the docker CLI, so
+`docker exec orion-athena-room-companion cat /root/.claude/.credentials.json`
+works -- confirmed live 2026-08-14. Docker-socket access is root-equivalent,
+and nothing in THIS service's config can close it. The v2 budget cap must
+therefore not be built on the premise that owning the credential enforces it.
+
+What these tests do enforce: this container stays worth nothing to break into
+on its own, and no redirection vector reaches the subprocess env.
 """
 
 from __future__ import annotations
@@ -161,3 +172,44 @@ def test_setting_sources_excludes_project_scope():
     repo's AGENTS.md development contract or its project hooks as room
     context. Claude is a participant here, not a coding agent on this repo."""
     assert Settings().ROOM_COMPANION_SETTING_SOURCES == "user"
+
+
+def test_subprocess_env_is_an_allowlist_not_a_denylist():
+    """A denylist has to enumerate every redirection vector, and the first
+    draft missed CLAUDE_CODE_OAUTH_TOKEN -- the one variable proven to bypass
+    the mounted credential entirely."""
+    hostile = {
+        "ANTHROPIC_API_KEY": "sk-leaked",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8082",
+        "ANTHROPIC_AUTH_TOKEN": "fcc-token",
+        "ANTHROPIC_MODEL": "some-local-model",
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-someone-elses",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "AWS_SECRET_ACCESS_KEY": "leaked",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/x/creds.json",
+        "SOME_FUTURE_REDIRECT_VAR": "whatever",
+    }
+    with patch.dict(os.environ, hostile, clear=False):
+        env = build_subprocess_env(_settings())
+
+    for key in hostile:
+        assert key not in env, f"{key} must not reach the claude subprocess"
+    # PATH still has to survive or the binary is unfindable.
+    assert "PATH" in env
+    assert env["CLAUDE_CONFIG_DIR"] == "/root/.claude"
+
+
+def test_compose_persists_the_claude_session_store():
+    """The room->uuid map and the sessions it points at must survive a rebuild
+    together, or the first turn in every room after `up -d --build` resumes a
+    session that no longer exists."""
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    service = compose["services"]["room-companion"]
+    volumes = service["volumes"]
+    config_dir_mounts = [v for v in volumes if v.startswith("room_companion_claude:")]
+    assert config_dir_mounts, f"CLAUDE_CONFIG_DIR must be on a named volume, got {volumes}"
+    # And it must be mounted before the credential file bind, so the :ro file
+    # layers on top of the volume rather than being shadowed by it.
+    cred_index = next(i for i, v in enumerate(volumes) if ".credentials.json" in v)
+    vol_index = next(i for i, v in enumerate(volumes) if v.startswith("room_companion_claude:"))
+    assert vol_index < cred_index, "config-dir volume must be declared before the credential bind"

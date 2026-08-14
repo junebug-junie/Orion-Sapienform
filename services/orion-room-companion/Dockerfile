@@ -34,6 +34,11 @@ COPY services/orion-room-companion/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/orion-room-companion/app /app/app
+# scripts/ ships in the image on purpose: README documents the live smoke as
+# `docker compose exec room-companion python -m scripts.smoke_room_turn`, and
+# an acceptance surface that has to be hand-copied into a running container is
+# not reproducible from the committed artifact.
+COPY services/orion-room-companion/scripts /app/scripts
 COPY orion /app/orion
 
 CMD ["python", "-m", "app.main"]

@@ -17,15 +17,37 @@ already exposes readable `/root/.ssh`, `/root/.config/gh`,
 `/var/run/docker.sock`, `/root/.fcc/.env`, and the repo mount — and Orion's own
 FCC turns run *in that container* with `bypassPermissions` and full Bash.
 
-So a Claude credential in Hub is a credential Orion can read. Today that is
-merely untidy, because v1 is explicit-invite only and a human clicks the
-button. In v2, when Orion can invite Claude itself, it becomes the difference
-between a spend cap that is **enforced** and one that is **advisory** — Orion
-could spawn `claude` directly and never appear in the meter.
+So a Claude credential *stored* in Hub is one Orion can read directly.
+Moving it here removes that, and removes the accident surface with it: no
+config file in the repo tree, nothing in `/mnt/scripts` backups, nothing
+graphify indexes, nothing a stray `docker inspect` on Hub reveals.
 
-This container is therefore built to be worth nothing to break into: no repo
-mount, no SSH keys, no gh config, no docker socket, no host networking, no
-git, no gh. `tests/test_credential_isolation.py` fails if any of that returns.
+**What this does NOT do — stated plainly, because an earlier draft of this
+README claimed otherwise.** This is not an enforcement boundary against a
+Hub-resident agent. `services/orion-hub/docker-compose.yml:62` mounts
+`/var/run/docker.sock` read-write and the Hub image ships the `docker` CLI, so
+an FCC turn with Bash in Hub can simply run:
+
+```bash
+docker exec orion-athena-room-companion cat /root/.claude/.credentials.json
+```
+
+Verified live 2026-08-14: that returns the credential. Docker-socket access is
+root-equivalent on the host, so no arrangement of *this* service's mounts can
+close it.
+
+Consequence for v2: a spend cap enforced by owning the credential would be
+**advisory, not enforced**, for exactly as long as Hub holds the docker
+socket. Do not build the v2 budget on the assumption that this container is a
+wall. The honest options are (a) drop the docker socket from Hub, (b) enforce
+budget somewhere Orion cannot reach — an accounting service on the bus that
+gates requests — or (c) accept an advisory cap and say so.
+
+What the separation genuinely buys: defense in depth, a much smaller accident
+surface, and a container that is worth nothing to break into on its own — no
+repo mount, no SSH keys, no gh config, no docker socket, no host networking,
+no git, no gh. `tests/test_credential_isolation.py` fails if any of that
+returns.
 
 ## Credential isolation
 

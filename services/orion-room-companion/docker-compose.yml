@@ -52,6 +52,12 @@ services:
       # transcripts, history.jsonl, caches). This service never writes to,
       # logs, or echoes any part of this file. CLAUDE_CONFIG_DIR above must
       # point at the same directory this is mounted into.
+      # Claude Code's own session store (CLAUDE_CONFIG_DIR) on a named volume,
+      # mounted BEFORE the credential file so the :ro file bind layers on top.
+      # Without this the room->uuid map survived a rebuild on /data while every
+      # session it pointed at died with the container layer, so the first turn
+      # in each room after any `up -d --build` burned a doomed --resume.
+      - room_companion_claude:${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}
       - ${ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH:?ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH must be set -- see .env_example}:${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}/.credentials.json:ro
       # Writable volume for the room->session map and the neutral workspace.
       - room_companion_data:/data
@@ -70,3 +76,5 @@ networks:
 volumes:
   room_companion_data:
     name: ${PROJECT}-room-companion-data
+  room_companion_claude:
+    name: ${PROJECT}-room-companion-claude

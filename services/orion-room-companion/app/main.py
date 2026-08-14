@@ -18,8 +18,8 @@ from orion.schemas.room_claude import (
 )
 
 from .claude_session import ClaudeTurnResult, run_room_turn
-from .room_prompt import SYSTEM_PROMPT, build_turn_prompt
-from .session_store import forget_session, get_or_create_session
+from .room_prompt import SYSTEM_PROMPT, build_turn_prompt, filtered_summary
+from .session_store import forget_session, peek_or_mint_session, remember_session
 from .settings import Settings, get_settings
 
 logger = logging.getLogger("orion-room-companion")
@@ -49,22 +49,49 @@ def build_heartbeat_chassis(settings: Settings) -> HeartbeatOnly:
     )
 
 
-def build_subprocess_env(settings: Settings) -> Dict[str, str]:
-    """Env for the `claude` subprocess.
+# Env the subprocess is allowed to inherit. An ALLOWLIST, not a denylist:
+# a denylist has to enumerate every way Claude Code can be redirected to a
+# different provider or credential, and the first draft of this function
+# already missed CLAUDE_CODE_OAUTH_TOKEN -- which is exactly the variable
+# proven to bypass the mounted credential entirely -- plus the Bedrock/Vertex
+# switches and ANTHROPIC_MODEL. Anything genuinely needed gets added here
+# deliberately; nothing arrives by accident.
+_ENV_ALLOWLIST = frozenset(
+    {
+        "PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM",
+        "HOSTNAME", "PWD", "SHELL", "USER", "LOGNAME",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+        # Claude Code's own root-sandbox gate; without it the CLI refuses to
+        # start under bypassPermissions as root. See
+        # orion/fcc/claude_spawn.py::claude_permission_argv.
+        "IS_SANDBOX", "CLAUDE_CODE_BUBBLEWRAP",
+    }
+)
 
-    The three pops are the load-bearing part, not hygiene. orion-hub's FCC
-    lane sets ANTHROPIC_BASE_URL to a local gateway and ANTHROPIC_AUTH_TOKEN
-    alongside it (services/orion-hub/scripts/fcc_claude_bridge.py), which
-    turns `claude` into a harness driving local models. If either leaked into
-    this container's env, the room would still produce fluent text -- it just
-    would not be Claude. ANTHROPIC_API_KEY is popped for the separate reason
-    that it would open a second, pay-per-token billing relationship instead
-    of reusing the operator's subscription.
+# Names that must never reach the subprocess even if someone adds them to the
+# allowlist by mistake. Belt to the allowlist's braces, and the thing the
+# credential-isolation tests assert on directly.
+_ENV_DENY_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_OAUTH", "AWS_", "GOOGLE_", "GCP_")
+
+
+def build_subprocess_env(settings: Settings) -> Dict[str, str]:
+    """Env for the `claude` subprocess, built from an allowlist.
+
+    This is the load-bearing part, not hygiene. orion-hub's FCC lane sets
+    ANTHROPIC_BASE_URL to a local gateway and ANTHROPIC_AUTH_TOKEN alongside
+    it (services/orion-hub/scripts/fcc_claude_bridge.py), which turns `claude`
+    into a harness driving LOCAL models. If either reached this subprocess the
+    room would still produce fluent text -- it just would not be Claude, which
+    is the hardest failure here to notice by eye. ANTHROPIC_API_KEY would open
+    a second pay-per-token billing relationship instead of reusing the
+    operator's subscription. CLAUDE_CODE_OAUTH_TOKEN would authenticate as
+    some other credential entirely, bypassing the mounted one.
     """
-    env = dict(os.environ)
-    env.pop("ANTHROPIC_API_KEY", None)
-    env.pop("ANTHROPIC_BASE_URL", None)
-    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOWLIST}
+    env = {
+        k: v for k, v in env.items()
+        if not any(k.startswith(prefix) for prefix in _ENV_DENY_PREFIXES)
+    }
     env["CLAUDE_CONFIG_DIR"] = settings.ROOM_COMPANION_CLAUDE_CONFIG_DIR
     return env
 
@@ -98,13 +125,16 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
     """
     ensure_runtime_dirs(settings)
     key = room_key(request)
-    session_id, resume = get_or_create_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
+    session_id, resume = peek_or_mint_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
 
     prompt = build_turn_prompt(
         prompt=request.prompt,
         invited_by_name=request.invited_by,
         transcript=request.transcript,
-        social_memory_summary=request.social_memory_summary,
+        # filtered_summary(), not the raw dict. This is the privacy boundary:
+        # the summary is third-party-bound, so it goes through the allowlist
+        # rather than whatever orion-social-memory happens to include today.
+        social_memory_summary=filtered_summary(request.social_memory_summary),
         first_turn=not resume,
     )
 
@@ -117,7 +147,21 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         session_id=session_id,
         resume=resume,
         timeout_sec=settings.ROOM_COMPANION_TIMEOUT_SEC,
-        append_system_prompt=SYSTEM_PROMPT if not resume else None,
+        # EVERY turn, not just the first. An earlier version passed this only
+        # when minting a session, on the assumption that `--resume` carried the
+        # framing forward. It does not: verified live in this container with a
+        # marker instruction, a resumed turn WITHOUT the flag reverted to
+        # Claude Code's default CLI persona ("Goodbye! Let me know if you need
+        # anything else.") -- the assistant-taking-orders voice this room is
+        # explicitly not for. Re-passing it on resume restores the framing,
+        # 3/3 runs.
+        #
+        # Do NOT "fix" this by moving the framing into the user-role text
+        # instead: that was tried and Claude correctly refused it as a
+        # prompt-injection pattern ("it's embedded in a user-turn message
+        # formatted to look like a system directive"). System framing has to
+        # arrive as system framing.
+        append_system_prompt=SYSTEM_PROMPT,
         env=build_subprocess_env(settings),
         cwd=settings.ROOM_COMPANION_WORKSPACE,
     )
@@ -128,6 +172,20 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
     if not result.ok and resume and _looks_like_missing_session(result.error):
         logger.warning("room_companion_session_lost room=%s session=%s -- forgetting", key, session_id)
         forget_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
+    elif result.ok:
+        # Persist only after the turn that creates the session actually
+        # succeeds. Writing at mint time meant a failed first turn left the map
+        # pointing at a session the CLI never created, so the NEXT turn had to
+        # burn a doomed --resume before self-healing.
+        #
+        # Record what the CLI reported rather than what was asked for: today
+        # --session-id is honored exactly, but nothing would notice if that
+        # changed, and a drifted map resumes the wrong conversation.
+        remember_session(
+            settings.ROOM_COMPANION_SESSION_STATE_PATH,
+            key,
+            result.claude_session_id or session_id,
+        )
 
     return _to_utterance(settings, request, result)
 
@@ -136,7 +194,10 @@ def _looks_like_missing_session(error: Optional[str]) -> bool:
     if not error:
         return False
     lowered = error.lower()
-    return "no conversation found" in lowered or "session" in lowered and "not found" in lowered
+    # Parenthesised for readability; `and` already binds tighter than `or`,
+    # so this was never a precedence bug -- but the second clause is broad
+    # enough to matter, so it should be obvious what it means.
+    return ("no conversation found" in lowered) or ("session" in lowered and "not found" in lowered)
 
 
 def _to_utterance(
@@ -202,7 +263,23 @@ async def handle_message(settings: Settings, bus: OrionBusAsync, raw: Any) -> No
     )
     # Blocking subprocess work off the event loop so the heartbeat keeps
     # beating and a slow turn does not stall the consumer.
-    utterance = await asyncio.to_thread(run_turn, settings, request)
+    try:
+        utterance = await asyncio.to_thread(run_turn, settings, request)
+    except Exception as exc:
+        # An unexpected crash must still be audible. Without this, the
+        # consumer's blanket handler logs and drops the request, and the room
+        # sees silence -- indistinguishable from Claude choosing not to speak,
+        # which is exactly what makes an outage invisible.
+        logger.exception("room_companion_turn_crashed request=%s", request.request_id)
+        utterance = _to_utterance(
+            settings,
+            request,
+            ClaudeTurnResult(
+                ok=False, text="", claude_session_id=None, model=None,
+                cost_usd=0.0, duration_ms=0, exit_code=-1,
+                error=f"room companion crashed: {type(exc).__name__}: {exc}"[:2000],
+            ),
+        )
     logger.info(
         "room_companion_turn_done room=%s request=%s ok=%s model=%s cost_usd=%.6f ms=%d chars=%d%s",
         request.room_id, request.request_id, utterance.ok, utterance.model,

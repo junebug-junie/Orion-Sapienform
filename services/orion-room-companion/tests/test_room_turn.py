@@ -14,8 +14,8 @@ import pytest
 
 from app.claude_session import ClaudeTurnResult
 from app.main import build_subprocess_env, parse_request, room_key, run_turn
-from app.room_prompt import build_turn_prompt, filtered_summary
-from app.session_store import get_session, get_or_create_session
+from app.room_prompt import SYSTEM_PROMPT, build_turn_prompt, filtered_summary
+from app.session_store import get_session, peek_or_mint_session, remember_session
 from app.settings import Settings
 from orion.schemas.room_claude import RoomClaudeRequestV1, RoomTranscriptEntryV1
 
@@ -59,21 +59,37 @@ def test_first_turn_mints_a_session_and_second_turn_resumes_it(settings):
         run_turn(settings, _request())
 
     assert calls[0]["resume"] is False, "first turn must mint, not resume"
-    assert calls[1]["resume"] is True, "second turn must resume the same session"
-    assert calls[0]["session_id"] == calls[1]["session_id"]
+    assert calls[1]["resume"] is True, "second turn must resume"
+    # Turn 2 resumes the id the CLI REPORTED on turn 1, not the one that was
+    # optimistically minted for it -- that is the point of recording the
+    # reported id rather than trusting --session-id was honored.
+    assert calls[1]["session_id"] == _ok().claude_session_id
 
 
-def test_system_prompt_only_on_first_turn(settings):
-    """Re-appending the persona every turn would be wasted tokens: the CLI
-    already holds it under --resume."""
+def test_system_prompt_is_passed_on_every_turn_including_resumes(settings):
+    """The room framing must be re-sent on resumed turns.
+
+    This test previously asserted the OPPOSITE -- that the flag belongs only
+    on the first turn because "the CLI already holds it under --resume". That
+    rationale was false, and the test locked in a bug that made the feature
+    stop being the feature after one turn: verified live, a resumed turn
+    without the flag reverts to Claude Code's default CLI persona.
+
+    Asserts the flag on turn 2 specifically, not merely that it is non-None
+    somewhere, because turn 2 is where the regression lived.
+    """
     calls = []
 
     with patch("app.main.run_room_turn", side_effect=lambda p, **kw: calls.append(kw) or _ok()):
         run_turn(settings, _request())
         run_turn(settings, _request())
 
-    assert calls[0]["append_system_prompt"], "first turn needs the room framing"
-    assert calls[1]["append_system_prompt"] is None
+    assert calls[1]["resume"] is True, "second turn must be the resumed one"
+    assert calls[0]["append_system_prompt"] == SYSTEM_PROMPT
+    assert calls[1]["append_system_prompt"] == SYSTEM_PROMPT, (
+        "a resumed turn without the room framing reverts to the default "
+        "assistant persona -- see the docstring"
+    )
 
 
 def test_transcript_only_sent_on_first_turn(settings):
@@ -97,7 +113,7 @@ def test_lost_session_is_forgotten_so_the_room_can_recover(settings):
     """A --resume against a session the CLI no longer has fails identically
     forever. Without forgetting it, the room is permanently wedged."""
     key = room_key(_request())
-    session_id, _ = get_or_create_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
+    remember_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key, "sess-1")
 
     failure = ClaudeTurnResult(
         ok=False, text="", claude_session_id=None, model=None, cost_usd=0.0,
@@ -116,7 +132,7 @@ def test_ordinary_failure_does_not_drop_the_session(settings):
     """A timeout is not a lost session -- discarding continuity on every
     transient error would quietly amnesia the room."""
     key = room_key(_request())
-    get_or_create_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
+    remember_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key, "sess-1")
 
     failure = ClaudeTurnResult(
         ok=False, text="", claude_session_id=None, model=None, cost_usd=0.0,
@@ -197,3 +213,73 @@ def test_filtered_summary_drops_keys_outside_the_allowlist():
 def test_build_subprocess_env_sets_config_dir(settings):
     env = build_subprocess_env(settings)
     assert env["CLAUDE_CONFIG_DIR"] == "/root/.claude"
+
+
+def test_session_is_not_persisted_until_a_turn_succeeds(settings):
+    """Writing the minted uuid at mint time recorded a session the CLI had
+    never created, so a failed first turn left the map pointing at nothing and
+    the next turn burned a doomed --resume before recovering."""
+    key = room_key(_request())
+    failure = ClaudeTurnResult(
+        ok=False, text="", claude_session_id=None, model=None, cost_usd=0.0,
+        duration_ms=10, exit_code=1, error="timeout after 180s",
+    )
+    with patch("app.main.run_room_turn", return_value=failure):
+        run_turn(settings, _request())
+
+    assert get_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key) is None
+
+
+def test_session_recorded_is_the_one_the_cli_reported(settings):
+    """--session-id is honored today, but nothing would notice if it stopped
+    being -- and a drifted map resumes the wrong conversation."""
+    key = room_key(_request())
+    with patch("app.main.run_room_turn", return_value=_ok(session="cli-chosen-id")):
+        run_turn(settings, _request())
+
+    assert get_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key) == "cli-chosen-id"
+
+
+def test_social_memory_summary_is_filtered_before_it_reaches_claude(settings):
+    """The privacy boundary must be applied in the real call path, not merely
+    available as a helper -- an uncalled safeguard is decoration."""
+    prompts = []
+    summary = {
+        "room": {"active_participants": ["Juniper", "Oríon"]},
+        "self_state": {"drives": {"curiosity": 0.9}},
+        "recall_debug": {"documents": ["a private journal entry"]},
+    }
+    with patch("app.main.run_room_turn", side_effect=lambda p, **kw: prompts.append(p) or _ok()):
+        run_turn(settings, _request(social_memory_summary=summary))
+
+    assert "Juniper, Oríon" in prompts[0]
+    assert "curiosity" not in prompts[0]
+    assert "journal" not in prompts[0]
+
+
+def test_missing_session_matcher_does_not_fire_on_unrelated_errors(settings):
+    """The 'session'+'not found' clause is broad; a false positive silently
+    amnesias a live room."""
+    from app.main import _looks_like_missing_session
+
+    assert _looks_like_missing_session("No conversation found with session ID: abc")
+    assert _looks_like_missing_session("session abc not found")
+    assert not _looks_like_missing_session("timeout after 180s")
+    assert not _looks_like_missing_session("401 OAuth access token is invalid")
+    assert not _looks_like_missing_session("model not found")
+    assert not _looks_like_missing_session(None)
+
+
+def test_corrupt_state_file_is_quarantined_not_silently_overwritten(settings, tmp_path):
+    """Returning {} on a parse error and then rewriting would discard EVERY
+    room's mapping, not just the bad entry."""
+    from app.session_store import _read_all, remember_session
+
+    path = tmp_path / "sessions.json"
+    path.write_bytes(b"\xff\xfe not valid utf-8 or json")
+
+    assert _read_all(path) == {}
+    assert path.with_suffix(".json.corrupt").exists(), "bad content must be kept for inspection"
+
+    remember_session(path, "hub:r", "fresh")
+    assert get_session(path, "hub:r") == "fresh"

@@ -81,6 +81,26 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_CORTEX_EXEC_REQUEST",
     )
 
+    # --- Reverie perception context (default-off, read-only) ---
+    # Feeds the most recent orion-vision-council narrative(s) from `vision_events`
+    # into the reverie prompt as ungrounded sensory context -- reverie is
+    # otherwise 100% blind to the camera (build_reverie_context only ever
+    # carried coalition/loop state). Deliberately does NOT widen evidence_refs
+    # grounding to vision event ids (SpontaneousThoughtV1.grounding_ids() stays
+    # coalition-only) -- that is a bigger, separate schema question. This patch
+    # is step one of "event substrate first": get the percept into the context
+    # a human can read before building any prediction/outcome scorer on top of
+    # it (see docs/superpowers/specs/2026-08-12-perception-frontier-design.md,
+    # Movement III -- the scorer is explicitly deferred until there is real
+    # percept-grounded interpretation text to design a checker against).
+    reverie_perception_enabled: bool = Field(False, alias="ORION_REVERIE_PERCEPTION_ENABLED")
+    reverie_perception_max_age_sec: float = Field(
+        180.0, alias="ORION_REVERIE_PERCEPTION_MAX_AGE_SEC"
+    )
+    reverie_perception_max_events: int = Field(
+        3, alias="ORION_REVERIE_PERCEPTION_MAX_EVENTS"
+    )
+
     # --- Reverie chain (Phase C, default-off) ---
     reverie_chain_enabled: bool = Field(False, alias="ORION_REVERIE_CHAIN_ENABLED")
     reverie_chain_max_steps: int = Field(4, alias="ORION_REVERIE_CHAIN_MAX_STEPS")

@@ -215,10 +215,12 @@ def build_reverie_context(
     *,
     concern_cards: list[ConcernCardV1] | None = None,
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
+    recent_percepts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    percepts = recent_percepts or []
     if concern_cards:
         coalition_refs = coalition_audit_refs(broadcast)
-        return {
+        ctx: dict[str, Any] = {
             "user_message": None,
             "concern_cards": [c.model_dump(mode="json") for c in concern_cards],
             "coalition_refs": coalition_refs,
@@ -227,8 +229,11 @@ def build_reverie_context(
             "llm_route": "metacog",
             "options": {"llm_lane": "background", "allow_chat_fallback": False},
         }
+        if percepts:
+            ctx["recent_percepts"] = percepts
+        return ctx
     open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
-    return {
+    ctx = {
         "user_message": None,  # the defining difference from stance_react
         "coalition_projection": {
             "projection_id": broadcast.projection_id,
@@ -244,6 +249,9 @@ def build_reverie_context(
         "has_settled_loops": any("outcome" in loop for loop in open_loops),
         "metadata": {"mode": "reverie", "llm_profile": "brain"},
     }
+    if percepts:
+        ctx["recent_percepts"] = percepts
+    return ctx
 
 
 def build_reverie_plan_request(
@@ -252,6 +260,7 @@ def build_reverie_plan_request(
     correlation_id: str,
     concern_cards: list[ConcernCardV1] | None = None,
     loop_outcomes: dict[str, dict[str, Any]] | None = None,
+    recent_percepts: list[dict[str, Any]] | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -271,7 +280,10 @@ def build_reverie_plan_request(
             extra=extra,
         ),
         context=build_reverie_context(
-            broadcast, concern_cards=concern_cards, loop_outcomes=loop_outcomes
+            broadcast,
+            concern_cards=concern_cards,
+            loop_outcomes=loop_outcomes,
+            recent_percepts=recent_percepts,
         ),
     )
 
@@ -374,20 +386,42 @@ async def run_reverie_once(
         ),
     )
     try:
-        loop_outcomes: dict[str, dict[str, Any]] | None = None
-        if not (settings.reverie_semantic_lift_enabled and concern_cards):
-            # Offloaded to a thread: a blocking DB round-trip here must not stall
-            # this coroutine's shared event loop (same rationale as chain.py's
-            # asyncio.to_thread use around its own blocking DB/HTTP calls).
-            loop_outcomes = await asyncio.to_thread(
+        # Both reads below are independent Postgres round-trips with no data
+        # dependency between them -- run concurrently (each still offloaded to
+        # a thread, same rationale as chain.py's asyncio.to_thread use around
+        # its own blocking DB/HTTP calls) so a tick pays max(latency), not the
+        # sum, before the cortex-exec plan-execution call.
+        want_loop_outcomes = not (settings.reverie_semantic_lift_enabled and concern_cards)
+        want_percepts = settings.reverie_perception_enabled
+
+        async def _fetch_loop_outcomes() -> dict[str, dict[str, Any]] | None:
+            if not want_loop_outcomes:
+                return None
+            return await asyncio.to_thread(
                 load_recent_loop_outcomes,
                 [loop.id for loop in broadcast.frame.open_loops],
             )
+
+        async def _fetch_percepts() -> list[dict[str, Any]] | None:
+            if not want_percepts:
+                return None
+            from .vision_reader import read_recent_vision_events
+
+            return await asyncio.to_thread(
+                read_recent_vision_events,
+                max_age_sec=settings.reverie_perception_max_age_sec,
+                limit=settings.reverie_perception_max_events,
+            )
+
+        loop_outcomes, recent_percepts = await asyncio.gather(
+            _fetch_loop_outcomes(), _fetch_percepts()
+        )
         plan_request = build_reverie_plan_request(
             broadcast,
             correlation_id=correlation_id,
             concern_cards=concern_cards,
             loop_outcomes=loop_outcomes,
+            recent_percepts=recent_percepts,
         )
         exec_result = await client.execute_plan(
             source=_source(),

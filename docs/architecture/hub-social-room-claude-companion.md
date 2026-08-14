@@ -22,7 +22,14 @@ from inside the Hub container. What is missing is small and specific:
 3. `RoomPlatform` is `Literal["callsyne"]` while Hub already emits
    `platform="hub"`. The live code contradicts the contract.
 
-Three thin seams. No new service, no new table, no room server, no cathedral.
+Three thin seams. No new table, no room server, no cathedral.
+
+One new service, and only for a boundary that pays for itself: Hub runs as root
+with SSH keys, a gh token, and the docker socket all readable by Orion's own FCC
+turns, so a Claude credential there is a credential Orion can take. The room's
+subprocess therefore lives in a minimal-privilege container cloned from
+`orion-self-study-enrichment`'s already-hardened shape. The UI, the button, and
+the room state all stay in Hub.
 
 ## Current architecture
 
@@ -132,38 +139,86 @@ container holding its own copy of the credentials and refreshing independently,
 a rotating refresh token would invalidate the host's copy — breaking Juniper's
 own Claude Code login, not just the room.
 
-**Resolution: `claude setup-token`.** The CLI ships a purpose-built command for
-this ("Set up a long-lived authentication token (requires Claude subscription)").
-It issues a long-lived `CLAUDE_CODE_OAUTH_TOKEN` passed as an env var. Verified
-live in `orion-athena-hub`: the token path is active in 2.1.232, and the config
-dir is created **without** a `.credentials.json`.
+**Risk 3 — the Hub container is the wrong place for any credential.** Audited
+live: `orion-athena-hub` runs as **root** and already exposes readable
+`/root/.ssh`, `/root/.config/gh`, `/var/run/docker.sock`, `/root/.fcc/.env`, and
+`/repo/services/orion-hub/.env`. Orion's own FCC turns run *in that container*
+with `bypassPermissions` and full Bash, so Orion can read all of it.
+`orion/fcc/claude_spawn.py` already carries a warning about exactly this.
 
-Consequences:
+This matters for the stated goal, not as abstract hygiene: in v2, Orion triggers
+the Claude calls. If Orion can read the room credential, Orion can spawn Claude
+directly with its own Bash and bypass the cap and the meter — the spend ledger
+silently stops being the whole picture. **The credential boundary is what makes
+the v2 budget enforceable rather than advisory.**
 
-- No credentials file in the container ⇒ no bind mount ⇒ Risk 1 does not exist.
-- The container never writes credentials ⇒ it cannot rotate or invalidate the
-  host's token ⇒ Risk 2 does not exist. Juniper's own login is untouchable
-  from the room.
-- The room's token is **independently revocable** without disturbing Juniper's
-  session — a real operational win over sharing one credential.
-- Still the subscription, not API billing (`setup-token` requires a Claude
-  subscription; `subscriptionType: "max"`).
+**Resolution: reuse `orion-self-study-enrichment`'s credential pattern, in a
+minimal-privilege container of its own.** This repo already solved this problem,
+with an incident behind it — see that service's README, "Credential isolation
+(safety requirement)", corrected 2026-08-12 after an `ANTHROPIC_API_KEY` version
+was shipped and rejected as "a real mistake, not a style choice":
 
-`CLAUDE_CONFIG_DIR` is still set to a dedicated `rw` dir, now purely to keep the
-room's Claude sessions (`projects/`, `sessions/`) separate from Juniper's own and
-out of `orion/dev_economics/claude_code_ingest.py`'s ledger. It holds no secret.
+- The host path lives **outside the repo** and is set explicitly in the
+  operator's local `.env` with **no default baked into code**:
+  `SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH` is `:?`-required.
+- The mount is a **single read-only file bind**, deliberately not a directory
+  mount, so the rest of `~/.claude` (transcripts, plugins, caches) never enters
+  the container.
+- `CLAUDE_CONFIG_DIR` is relocated so the CLI resolves that one file.
+- `ANTHROPIC_API_KEY` is forbidden and guarded by a regression test
+  (`tests/test_main.py::test_claude_subprocess_env_has_no_api_key`).
 
-Operator action required once, interactively (cannot be automated — it is a
-browser OAuth flow):
+Verified live: the self-study container holds the credential at
+`/root/.claude/.credentials.json` (mode 600) and has **no `/root/.ssh` and no
+docker socket**. It is already the minimal-privilege boundary this design needs.
+Hub is not.
 
-```bash
-claude setup-token          # then put the token in services/orion-hub/.env as HUB_ROOM_CLAUDE_OAUTH_TOKEN
+So the room's `claude` subprocess moves out of Hub into its own small service
+modelled on self-study. `services/orion-self-study-enrichment/app/claude_runner.py`
+is the base to extend: it already does a one-shot `claude -p` with `--tools ""`
+and reuses only the argv helpers, not the FCC harness. It needs
+`--session-id`/`--resume` added for room continuity.
+
+**Hub keeps the UI and the room orchestration and never holds the credential.**
+This does not weaken the "in the Hub chat box" requirement — the chat box, the
+invite button, and the room state all stay in Hub. Only the credential and the
+subprocess move behind a boundary.
+
+Net: Risk 3 is eliminated, Risk 2 is neutralised, Risk 1 is reduced to a known
+unknown (below), and no new secret-handling concept is invented.
+
+**Rejected alternative: `claude setup-token`.** The CLI does ship a purpose-built
+long-lived-token command, verified working in-container (bogus token →
+`401 OAuth access token is invalid`; no token and no creds → `Not logged in ·
+Please run /login` — two distinct code paths, and the config dir is created with
+no `.credentials.json`). It would give an **independently revocable** credential,
+which sharing `.credentials.json` does not. Rejected for v1 anyway: it invents a
+second credential pattern where a tested one exists, and an env-var secret is
+visible to `docker inspect` while a `:ro` file bind is not. Revisit if
+independent revocation becomes worth the divergence — the mount mechanics stay
+identical, only the file's contents change.
+
+**Residual on Risks 1 and 2, inherited from the self-study pattern.** Because
+the mount is `:ro` the container cannot write credentials, so it cannot rotate
+or invalidate the host's token — Risk 2 is neutralised. But it also cannot
+refresh, so it depends on the host's own Claude Code rewriting the file **in
+place**. Evidence it is designed for this: the CLI polls
+`stat(.credentials.json).mtimeMs` and reloads on change, so external credential
+updates are an anticipated case. Still unconfirmed: whether refresh writes in
+place or via atomic rename. A rename creates a new inode, and a single-file bind
+would pin to the old one and silently go stale — which would affect
+`orion-self-study-enrichment` **today**, not merely this feature.
+
+Baseline recorded for that test (host and container currently agree):
+
+```text
+inode=5936136  mtime=1786697381  perms=600   # host ~/.claude/.credentials.json
+inode=5936136  mtime=1786697381  perms=600   # same file inside orion-athena-self-study-enrichment
 ```
 
-Residual, accepted: the long-lived token does eventually expire, and nothing in
-the token is introspectable for an expiry date. Mitigation is honesty, not
-prediction — an auth failure must surface as a visible room error, never as a
-silent skip or a fallback to another model (see failure mode (c)).
+After the next real token refresh, re-compare. If the host inode changes and the
+container's does not, both services need a directory-scoped mount or a re-seed
+step. Filed as a follow-up against self-study, since it owns the pattern.
 
 ## Decisions taken (Juniper, 2026-08-14)
 
@@ -173,8 +228,9 @@ silent skip or a fallback to another model (see failure mode (c)).
 | Transport into the chat box | **Bus-native, whole message.** No token streaming in v1. |
 | Spend cap | **No cap.** Meter `total_cost_usd`, never refuse — collect clean unconstrained data to size the v2 autonomy budget. |
 | What Claude sees | **Room-native: same as any participant.** Transcript + the `social_memory /summary` block (roster, room continuity, stance, open threads) under the existing strict redaction posture. Tools off. |
-| Where it runs | **Inside the Hub container.** No host daemon, no new service. |
-| How it authenticates | **`claude setup-token`** — a dedicated, revocable, long-lived `CLAUDE_CODE_OAUTH_TOKEN`. No credentials file in the container. |
+| Where the UI and room state live | **Hub**, in the existing chat box. Unchanged. |
+| Where the subprocess runs | **A minimal-privilege companion service**, not Hub — Hub is root with SSH keys, gh token, and the docker socket, all readable by Orion's own FCC turns. |
+| How it authenticates | **`orion-self-study-enrichment`'s pattern**: single `:ro` bind of a host `.credentials.json` from outside the repo, `CLAUDE_CONFIG_DIR` relocated, `ANTHROPIC_API_KEY` forbidden and test-guarded. |
 
 ## Proposed schema / API changes
 
@@ -235,25 +291,28 @@ Utterance carries `{room_id, correlation_id, text, claude_session_id, model, cos
 | `orion/schemas/social_chat.py` | optional `external_responder` on the turn payload |
 | `orion/schemas/room_claude.py` *(new)* | the two channel payloads above |
 | `orion/schemas/registry.py`, `orion/bus/channels.yaml` | register both |
-| `services/orion-hub/scripts/claude_companion.py` *(new)* | spawn + session resume + cost extraction; a sibling of `fcc_claude_bridge.py`, NOT a modification of it |
+| `services/orion-room-companion/` *(new service)* | owns the credential and the `claude` subprocess. Compose modelled on `orion-self-study-enrichment`: single `:ro` creds bind, relocated `CLAUDE_CONFIG_DIR`, **no** `/root/.ssh`, **no** gh config, **no** docker socket, **no** repo mount. Extends `claude_runner.py` with `--session-id`/`--resume` |
 | `services/orion-hub/scripts/social_room.py` | register Claude as a room participant; build its room-native context |
 | `services/orion-hub/scripts/websocket_handler.py` | relay the utterance frame into the socket |
 | `services/orion-hub/scripts/chat_history.py` | stamp `external_responder` on published turns |
 | `services/orion-hub/templates/index.html` | invite button by `#presenceOpenButton` (`:344`) |
 | `services/orion-hub/static/js/app.js` | `'Claude'` speaker in `appendMessage` (`:7011`); markdown currently renders only for `'Orion'` (`:7054`) |
-| `services/orion-hub/docker-compose.yml`, `.env_example`, `app/settings.py` | config dir mount + new `HUB_ROOM_CLAUDE_*` keys |
+| `services/orion-hub/docker-compose.yml`, `.env_example`, `app/settings.py` | `HUB_ROOM_CLAUDE_*` keys — **no credential**, Hub only publishes requests |
 | `services/orion-social-memory/app/synthesizer.py` | fold responder into the roster |
 
-New settings, all `HUB_ROOM_CLAUDE_*` prefixed to stay clear of the
-`HUB_AGENT_CLAUDE_*` (FCC) namespace: `ENABLED`, `MODEL`, `EFFORT`,
-`CONFIG_DIR`, `TIMEOUT_SEC`, `PARTICIPANT_NAME`, `OAUTH_TOKEN` (secret — empty
-placeholder in `.env_example`, real value only in local `.env`).
+Settings split along the credential boundary. Hub gets `HUB_ROOM_CLAUDE_ENABLED`
+and `PARTICIPANT_NAME` only — **no secret**, since it merely publishes requests.
+The companion service gets `ROOM_COMPANION_CLAUDE_*`: `MODEL`, `EFFORT`,
+`TIMEOUT_SEC`, `CONFIG_DIR`, and `CREDENTIALS_HOST_PATH` — the last mirroring
+self-study's `:?`-required, no-default-in-code convention, so the operator sets
+the host path explicitly in local `.env` and it never lands in the repo.
 
 The spawned subprocess env must **explicitly clear** `ANTHROPIC_BASE_URL`,
-`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` before setting
-`CLAUDE_CODE_OAUTH_TOKEN`. The first two are what `fcc_claude_bridge.py:262-263`
-sets, and inheriting any of the three would silently route the room to a
-different provider or to API billing.
+`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_API_KEY`. The first two are what
+`fcc_claude_bridge.py:262-263` sets; inheriting any of the three would silently
+route the room to a different provider or open a second billing relationship.
+Guard it with a test copied from
+`services/orion-self-study-enrichment/tests/test_main.py::test_claude_subprocess_env_has_no_api_key`.
 
 ## Non-goals
 
@@ -289,9 +348,11 @@ across turns; a `social_room_turns` row carrying `external_responder`; and
 `active_participants` containing all three names. Empty text or `cost_usd == 0`
 is a failure, never a success (AGENTS.md §0A "No empty-shell cognition").
 
-**Dangerous failure modes.** (a) Credential exposure — structurally reduced: the
-container holds a dedicated, independently revocable `setup-token`, never
-Juniper's `~/.claude` credentials, and never writes a credentials file.
+**Dangerous failure modes.** (a) Credential exposure — the credential never
+enters the Hub container, which is root and already holds SSH keys, a gh token,
+and the docker socket readable by Orion's own FCC turns. It lives only in a
+minimal-privilege companion service, as a single `:ro` file bind from outside
+the repo, never in an env var and never written by the container.
 (b) Runaway AI↔AI loop — structurally impossible
 in v1, since only a human click emits a request. (c) Silent fallback to the FCC
 gateway producing a local model's text labelled "Claude" — guarded by asserting
@@ -326,11 +387,16 @@ Required before `cost_usd` is wired anywhere downstream.
 
 ## Acceptance checks
 
-1. `claude -p` from inside `orion-athena-hub`, authenticated only by
-   `CLAUDE_CODE_OAUTH_TOKEN`, returns `is_error:false` — and the container's
-   `CLAUDE_CONFIG_DIR` contains no `.credentials.json` afterwards.
-1b. Revoking the room's token stops the room and leaves Juniper's own
-   `claude` session working — proves the credentials are genuinely separate.
+1. `claude -p` from inside the companion container returns `is_error:false`
+   with no `ANTHROPIC_API_KEY` anywhere in the subprocess env (test-guarded).
+1b. **The Hub container holds no Claude credential**: `grep -r` over Hub's env,
+   its `.env`, and its mounts finds none, and a shell in `orion-athena-hub`
+   cannot read the companion's credential path. This is the check that makes the
+   v2 budget enforceable rather than advisory — if it fails, Orion can spawn
+   Claude outside the meter.
+1c. The companion container has no `/root/.ssh`, no `/root/.config/gh`, and no
+   `/var/run/docker.sock` — verified the same way it was verified for
+   `orion-athena-self-study-enrichment`.
 2. Two consecutive invites reuse one `claude_session_id`, and Claude
    demonstrably recalls turn 1 in turn 2.
 3. A `social_room_turns` row exists with `external_responder.participant_name ==

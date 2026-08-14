@@ -1783,6 +1783,38 @@ def _journal_pageindex_query(user_text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+# Accepted caller-supplied llm_route overrides. Historically missing "agent":
+# Hub's "Compute" selector (services/orion-hub/scripts/cortex_request_builder.py)
+# sends options.llm_route="agent" for ANY Hub Mode (not just Mode: Agent, which
+# is a separate context_exec_agent_bridge.py code path entirely) whenever an
+# operator picks Compute: Agent -- but this allowlist silently rejected it,
+# falling through to the verb-based default mapping below (which never resolves
+# to "agent" for a normal chat_general turn), so the selection had no effect.
+# Confirmed live 2026-08-14: Hub Mode: Quick + Compute: Agent produced a response
+# but nothing reached Circe's dedicated agent worker -- traced to this allowlist.
+_ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
+
+
+def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Optional[str]:
+    """Normalize a caller-supplied llm_route override, or None if absent/invalid.
+
+    Accepts ctx["llm_route"] or ctx["options"]["llm_route"] (Hub's Compute
+    selector sends the latter). "chat_quick"/"quick_chat"/"chat_kids_story" are
+    legacy aliases for "quick". Returns None (not the raw value) for anything
+    outside _ACCEPTED_LLM_ROUTE_OVERRIDES so callers fall through to their own
+    verb-based default mapping instead of forwarding an unrecognized route key.
+    """
+    raw = ctx.get("llm_route") or (
+        (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
+    )
+    override = str(raw or "").strip().lower()
+    if override in {"chat_quick", "quick_chat", "chat_kids_story"}:
+        override = "quick"
+    if override in _ACCEPTED_LLM_ROUTE_OVERRIDES:
+        return override
+    return None
+
+
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
     """Skip journal PageIndex for compose paths that would self-loop on journal_entry_index / digest echoes."""
     md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
@@ -3836,23 +3868,13 @@ async def call_step_services(
                 )
 
                 # Keep lane selection explicit by internal flow, with optional caller override.
-                # Accepted override values: chat, quick, metacog, quick_background.
+                # Accepted override values: see _ACCEPTED_LLM_ROUTE_OVERRIDES.
                 # quick_background: same upstream/model as quick, gated by the gateway's
                 # background-priority admission (services/orion-llm-gateway/app/
                 # priority_admission.py) so a caller opting into it never makes other
                 # quick consumers wait behind it -- see that service's README.
-                llm_route_override_raw = (
-                    ctx.get("llm_route")
-                    or (
-                        (ctx.get("options") or {}).get("llm_route")
-                        if isinstance(ctx.get("options"), dict)
-                        else None
-                    )
-                )
-                llm_route_override = str(llm_route_override_raw or "").strip().lower()
-                if llm_route_override in {"chat_quick", "quick_chat", "chat_kids_story"}:
-                    llm_route_override = "quick"
-                if llm_route_override in {"chat", "quick", "metacog", "quick_background"}:
+                llm_route_override = _resolve_llm_route_override(ctx)
+                if llm_route_override is not None:
                     llm_route = llm_route_override
                 else:
                     # Default lane mapping:

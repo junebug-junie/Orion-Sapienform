@@ -96,7 +96,9 @@ Hub     --> CortexChatRequest.attachments      --> cortex-gateway
 gateway --> CortexClientContext.attachments    --> cortex-orch --> cortex-exec
 exec    --> ChatRequestPayload.attachments     --> llm-gateway
 llm-gateway: resolve route capability from /props
-             -> can see:  GET source_url, build data: URI parts, send multimodal
+             -> can see:  GET <TRUSTED_BASE>/<sha256>  (the ref's own source_url
+                          is IGNORED -- it is client-controlled), verify the bytes
+                          hash to that sha, build data: URI parts, send multimodal
              -> is blind: explicit refusal (never a silent text-only answer)
 ```
 
@@ -475,11 +477,14 @@ Nothing is broken in the meantime; the feature is simply inert on that lane.
 
 - **Severity: low — the gateway now makes an outbound HTTP fetch to the Hub.**
   Concern: a new inter-service dependency on the final leg of a chat turn.
-  Mitigation: only fires when a turn carries attachments; host-allowlisted (empty
-  allowlist refuses everything, so it cannot become an SSRF proxy into the mesh);
-  read-capped so a lying `Content-Length` cannot make it buffer unboundedly; size
-  is checked against the ref; and a fetch failure degrades to a visible error rather
-  than a silent text-only answer.
+  Mitigation: only fires when a turn carries attachments. The URL is **derived**
+  from `LLM_GATEWAY_ATTACHMENT_BASE_URL` + a regex-validated sha256 — the ref's
+  client-controlled `source_url` is never used — so there is no path or authority
+  for a caller to inject. Redirects are not followed, the host is allowlisted as
+  defence in depth, the read is capped so a lying `Content-Length` cannot make it
+  buffer unboundedly, the bytes must hash to the requested content address, they
+  must sniff as the declared mime, and a fetch failure degrades to a visible error
+  rather than a silent text-only answer.
 
 - **Severity: low — attachments are not in recall, `chat_history`, or the memory
   graph.**

@@ -385,7 +385,42 @@ profiles:
       # and 400s long prompts as exceed_context).
       n_parallel: 1
       batch_size: 1024
-      #ubatch_size: 551
+      # mmproj_filename alone is not sufficient for images to actually work --
+      # ubatch_size/image_min_tokens/image_max_tokens were unset here (the prior
+      # #ubatch_size: 551 above was dead/commented, and this lane is the only one
+      # of the four mmproj profiles in this file missing all three). Every other
+      # working mmproj profile in this file sets all three together; without
+      # image_max_tokens the mtmd vision encoder's token budget is whatever
+      # llama-server defaults to (unverified for this build), and without
+      # ubatch_size >= image_max_tokens (vision encoder is non-causal, same
+      # constraint documented on the gemma4/muse-glimmer profiles below) an image
+      # request can fail or silently truncate instead of just being slow.
+      #
+      # 280/560 chosen over muse-glimmer-agent-vision's 256/1024: this lane ties
+      # gemma4-e4b at the largest ctx (131072) of the four mmproj profiles in
+      # this file, but on 2 GPUs instead of gemma4-e4b's 1 -- and carries the
+      # tightest documented VRAM margin per GPU (see the "VRAM is the real
+      # risk" note above) -- matching gemma4-31b's 2x-V100 numbers (the closest
+      # hardware analog) is the more conservative starting point.
+      # ubatch_size kept at the already-proven-stable batch_size (1024, unchanged)
+      # rather than raised to 2048 like gemma4-31b, since headroom here is
+      # smaller and 1024 already clears >= image_max_tokens with margin.
+      #
+      # IMPORTANT: 280/560 is a GPU-hardware-similarity analogy to gemma4-31b,
+      # not a Qwen3-VL-specific number -- image_min/max_tokens governs the mtmd
+      # vision encoder's own patch/resolution token budget, a property of the
+      # vision tower, not of GPU capacity. Gemma's figure comes from Google's
+      # SigLIP tower sizing; whether Qwen3-VL's tower maps images to a similar
+      # token count per image is genuinely unverified for this build/gguf (same
+      # "unverified" status as the mmproj-recognition risk noted above). A wrong
+      # number here degrades silently (over/under-budgeted visual detail, no
+      # crash) -- confirm with a real image-description smoke test, not just a
+      # clean boot, before trusting image quality on this lane.
+      # If OOM: lower image_max_tokens to 280 (matches image_min_tokens, same
+      # fallback gemma4-31b's notes use) before touching ctx_size or n_gpu_layers.
+      ubatch_size: 1024
+      image_min_tokens: 280
+      image_max_tokens: 560
 
       reasoning: "off"
       reasoning_budget: 0

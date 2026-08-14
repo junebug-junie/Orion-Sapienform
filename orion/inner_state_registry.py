@@ -394,9 +394,14 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         notes=(
             "Third independent reimplementation of 'how much should each "
             "node's health count' alongside field-topology edges and "
-            "orion-hub's BIOMETRICS_ROLE_WEIGHTS_JSON fallback. Dark in "
-            "orion-biometrics (BIOMETRICS_MODE=agent); the hub fallback is "
-            "what's actually live. Resolution already recommended "
+            "orion-hub's BIOMETRICS_ROLE_WEIGHTS_JSON fallback. NO LONGER "
+            "DARK as of 2026-08-14: athena runs BIOMETRICS_MODE=both, so "
+            "orion-biometrics publishes this for real and it reaches cognition "
+            "via orion-state-service -> BiometricsContext.cluster -> "
+            "_metacog_biometrics_cue (verified live: fleet_watts=927 W, "
+            "sources=[athena,atlas,circe]). That makes the triple-"
+            "reimplementation of role weighting an ACTIVE duplication rather "
+            "than a dormant one. Resolution already recommended "
             "(docs/notes/2026-07-12-phase4-cluster-weighting-research.md), "
             "not this registry's job."
         ),

@@ -22,6 +22,8 @@ value, so those routing entries produced values nothing ever read).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from orion.schemas.field_state import FieldStateV1
 
 PRESSURE_CHANNELS = frozenset({
@@ -227,15 +229,167 @@ def collect_field_channel_pressures(
     return out, provenance
 
 
-def map_channels_to_dimensions(channel_pressures: dict[str, float]) -> dict[str, float]:
-    """max()-merge raw channel pressures into the 7 real named categories."""
+@dataclass(frozen=True)
+class DimensionContributor:
+    """One channel that fed a dimension's max()-merge this tick."""
+
+    channel: str
+    value: float
+    # The source_id that won this CHANNEL's own merge inside
+    # collect_field_channel_pressures() -- a node_id, capability_id, or the
+    # resolved capability_provenance entry.
+    #
+    # None means "not threaded through", NOT "produced by nobody". Two ways to
+    # get it: the caller passed no channel-provenance dict at all (the
+    # map_channels_to_dimensions back-compat path), or it passed one lacking
+    # this key. The second is unreachable via field_pressures_with_provenance()
+    # today -- the only channel collect_field_channel_pressures() writes
+    # without a provenance entry is recent_perturbation_count, which has no
+    # CHANNEL_DIMENSION_MAP entry and so never reaches a dimension -- but the
+    # type does not enforce that, so do not read None as a claim about a
+    # producer.
+    source_id: str | None
+
+
+@dataclass(frozen=True)
+class DimensionProvenance:
+    """Why a dimension reads what it reads this tick.
+
+    R1 of the phase-5 roadmap, PR #1622 (branch docs/phase5-liveness-scope).
+    Cited by PR number, not path: that doc is NOT on main as of this commit,
+    and this file already learned at CHANNEL_DIMENSION_MAP above that a code
+    comment pointing at a file which does not resolve is how a "tracked
+    follow-up" becomes tracked nowhere. Every number below is restated inline
+    so this docstring stands alone if the doc never lands.
+
+    The merge that produces a dimension is a max() across channels, and the
+    channel merge feeding it is itself a max() across sources -- so a
+    dimension's value is one source's number, and until now which source that
+    was got discarded before any consumer saw it.
+
+    That discard is not hypothetical harm. Measured 2026-08-13 over the most
+    recent 20,000 `substrate_field_state` ticks (11.4h at a 2.04s cadence):
+    `node:substrate.codebase` won the merged `prediction_error` channel on
+    54.2% of ticks while contributing 5 distinct values in 20,000 (an
+    effective constant of 0.3357, so the channel has a hard floor it can never
+    read calm below), while `node:substrate.biometrics` (1,188 distinct) and
+    `node:substrate.bus_synaptic` (341 distinct) won 0% and contributed
+    nothing at all.
+
+    Same defect class as the `thermal_pressure` domination fixed on
+    2026-08-11, one layer down. NOTE the two measurements of that older case
+    in this file are from different windows and are not interchangeable: the
+    CHANNEL_DIMENSION_MAP comment above reports 39 vs 1,895 distinct over
+    28,735 ticks / 24h (the window the fix was made on), while the same
+    comparison over this docstring's 20,000-tick / 11.4h window reads 18 vs
+    1,325. Same conclusion, different sample -- neither is the "true" count,
+    and a shorter window necessarily sees fewer distinct values.
+
+    Neither case was findable without knowing who won.
+
+    `contributors` is every channel that mapped into this dimension, not just
+    the winner -- R3's commensurability detector needs the losers to tell a
+    real max() from a walkover.
+    """
+
+    dimension_id: str
+    value: float
+    winning_channel: str
+    winning_source_id: str | None
+    contributors: tuple[DimensionContributor, ...]
+    # False when at least one other contributor tied the winning value, in
+    # which case `winning_channel` is whichever tied contender the dict
+    # happened to iterate last -- an arbitrary pick, not a fact about the
+    # world. R3 MUST exclude these before tallying a win rate, or it will
+    # systematically credit whichever channel sorts later and report a
+    # domination that never happened.
+    #
+    # Not a rare edge case. `repair_pressure` and `conversation_load` are both
+    # in PRESSURE_CHANNELS, so a 0.0 reading is stored rather than filtered
+    # (see the `channel in PRESSURE_CHANNELS or v > 0` branch in
+    # collect_field_channel_pressures) -- every calm tick where both read 0.0
+    # is a tie with a confidently-named winner. Surfaced by code review of
+    # this patch, which demonstrated the winner flipping purely by reordering
+    # the input dict.
+    winner_is_unique: bool
+
+
+def map_channels_to_dimensions_with_provenance(
+    channel_pressures: dict[str, float],
+    channel_provenance: dict[str, str] | None = None,
+) -> tuple[dict[str, float], dict[str, DimensionProvenance]]:
+    """max()-merge raw channel pressures into the 7 real named categories,
+    keeping a record of which channel (and which source behind that channel)
+    won each dimension.
+
+    The single implementation. `map_channels_to_dimensions()` is a thin
+    wrapper that drops the second element, so the two can never drift into
+    disagreeing about a value -- the failure mode that a parallel
+    "provenance-aware copy" of this function would have invited.
+
+    Ties: `>=` on the running max, matching
+    `collect_field_channel_pressures()`'s own `>=` convention, so the
+    last-iterated channel at an equal value wins. Deterministic given
+    Python's insertion-ordered dicts, and consistent between the two layers.
+    """
+    provenance = {} if channel_provenance is None else channel_provenance
     dims: dict[str, float] = {}
+    winners: dict[str, tuple[str, float]] = {}
+    contributors: dict[str, list[DimensionContributor]] = {}
+
     for channel, pressure in channel_pressures.items():
         dim_id = CHANNEL_DIMENSION_MAP.get(channel)
         if not dim_id:
             continue
-        dims[dim_id] = max(dims.get(dim_id, 0.0), clamp01(pressure))
+        value = clamp01(pressure)
+        contributors.setdefault(dim_id, []).append(
+            DimensionContributor(
+                channel=channel,
+                value=value,
+                source_id=provenance.get(channel),
+            )
+        )
+        if dim_id not in dims or value >= dims[dim_id]:
+            winners[dim_id] = (channel, value)
+        dims[dim_id] = max(dims.get(dim_id, 0.0), value)
+
+    detail: dict[str, DimensionProvenance] = {}
+    for dim_id, value in dims.items():
+        winning_channel, _winning_value = winners[dim_id]
+        dim_contributors = tuple(contributors[dim_id])
+        tied = sum(1 for c in dim_contributors if c.value == value)
+        detail[dim_id] = DimensionProvenance(
+            dimension_id=dim_id,
+            value=value,
+            winning_channel=winning_channel,
+            winning_source_id=provenance.get(winning_channel),
+            contributors=dim_contributors,
+            winner_is_unique=tied == 1,
+        )
+    return dims, detail
+
+
+def map_channels_to_dimensions(channel_pressures: dict[str, float]) -> dict[str, float]:
+    """max()-merge raw channel pressures into the 7 real named categories."""
+    dims, _detail = map_channels_to_dimensions_with_provenance(channel_pressures)
     return dims
+
+
+def field_pressures_with_provenance(
+    field: FieldStateV1,
+) -> tuple[dict[str, float], dict[str, DimensionProvenance]]:
+    """`field_pressures()`, plus the record of who produced each dimension.
+
+    Same values as `field_pressures()` by construction -- that function calls
+    this one. Additive: no existing caller changes behavior, and nothing here
+    touches the merge itself. Changing how the merge picks a winner is a
+    cognition-loop change (it moves proposal ranking and feedback credit) and
+    goes through proposal mode, not through this patch.
+    """
+    channel_pressures, channel_provenance = collect_field_channel_pressures(field)
+    return map_channels_to_dimensions_with_provenance(
+        channel_pressures, channel_provenance
+    )
 
 
 def field_pressures(field: FieldStateV1) -> dict[str, float]:
@@ -247,5 +401,5 @@ def field_pressures(field: FieldStateV1) -> dict[str, float]:
     degradation behavior orion/proposals/scoring.py already had for dimension
     IDs with no scorer (e.g. "contract_pressure", which was already always
     0.0 before this burn)."""
-    channel_pressures, _provenance = collect_field_channel_pressures(field)
-    return map_channels_to_dimensions(channel_pressures)
+    dims, _detail = field_pressures_with_provenance(field)
+    return dims

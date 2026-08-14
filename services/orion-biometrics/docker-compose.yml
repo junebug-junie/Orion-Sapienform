@@ -46,6 +46,8 @@ services:
       - THERMAL_MAX_C=${THERMAL_MAX_C}
       - DISK_BW_MBPS=${DISK_BW_MBPS}
       - NET_BW_MBPS=${NET_BW_MBPS}
+      - HOST_PROC_PATH=${HOST_PROC_PATH:-/host_proc}
+      - HOST_SYS_PATH=${HOST_SYS_PATH:-/host_sys}
       - POWER_BAND_ALPHA=${POWER_BAND_ALPHA}
       - DISK_CAPACITY_MOUNTS=${DISK_CAPACITY_MOUNTS}
       - ILO_HOST=${ILO_HOST}
@@ -62,6 +64,15 @@ services:
       # SystemHealthV1 heartbeat's `details.disk_usage_pct` -- see README.md).
       # Mounted under a parallel /host_mnt/* prefix, not the host's real absolute
       # path, so container code never confuses a host path with a container-real one.
+      # Read-only HOST /proc and /sys, so the collector measures the NODE and not itself.
+      # Network counters and sysfs are per-namespace: from inside a bridged container,
+      # /proc/net/dev shows only this service's own veth (measured on athena 2026-08-14:
+      # 1,357 B/s against the host's 159,304 B/s) and /sys/class/net shows no real NIC, so
+      # link speed is unreadable. /host_proc/1/net/dev is the host init's namespace -- the
+      # real one. Same /host_* prefix convention as the disk-capacity mounts below.
+      # Read-only, and nothing is written through either path.
+      - /proc:/host_proc:ro
+      - /sys:/host_sys:ro
       - /mnt/docker:/host_mnt/docker:ro
       - /mnt/scripts:/host_mnt/scripts:ro
       - /mnt/postgres:/host_mnt/postgres:ro

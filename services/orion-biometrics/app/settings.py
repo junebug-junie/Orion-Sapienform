@@ -45,8 +45,28 @@ class Settings(BaseSettings):
 
     THERMAL_MIN_C: float = Field(default=50.0)
     THERMAL_MAX_C: float = Field(default=85.0)
+    # Denominator for disk_pressure. Still a per-node constant because the kernel does not
+    # report block-device throughput the way it reports link speed -- there is nothing to
+    # measure it from without benchmarking. Treat it as an order-of-magnitude anchor, not a
+    # precise ceiling: athena spans ten devices from a 10k SAS spinner to a Samsung 990 PRO,
+    # so no single scalar is right for all of them. The raw byte rate is now published in
+    # `measurements.disk_bytes_per_sec`; prefer that when you need the real number.
     DISK_BW_MBPS: float = Field(default=200.0)
+    # FALLBACK ONLY. The live denominator for net_pressure is the summed link speed of the
+    # node's up physical NICs, read from the kernel via HOST_SYS_PATH (see
+    # BiometricsCollector._link_speed_mbps). This constant applies only when that read fails,
+    # e.g. the host sysfs mount is absent. It was previously the sole source: one value,
+    # 125 MB/s, for three heterogeneous hosts -- right for athena's 1 GbE by coincidence and
+    # never verified on atlas or circe.
     NET_BW_MBPS: float = Field(default=125.0)
+
+    # Read-only bind mounts of the HOST /proc and /sys, so the collector can measure the node
+    # rather than its own container. Network counters and sysfs are namespaced; /proc/diskstats
+    # is not, which is why disk needed a different fix. Empty disables the host read and makes
+    # the collector fall back to its own namespace, reporting `network.scope="container"` so a
+    # consumer can tell the difference instead of reading veth traffic as node traffic.
+    HOST_PROC_PATH: str = Field(default="/host_proc")
+    HOST_SYS_PATH: str = Field(default="/host_sys")
     POWER_BAND_ALPHA: float = Field(default=0.1)
 
     TABLE_NAME: str = Field(default="biometrics_raw")

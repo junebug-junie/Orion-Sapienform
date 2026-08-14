@@ -170,3 +170,20 @@ class BiometricsClusterV1(BaseModel):
     headroom: Dict[str, float] = Field(default_factory=dict)
     composites: Dict[str, float] = Field(default_factory=dict)
     constraint: Optional[str] = None
+
+    # Fleet-level raw physical units, in the units themselves -- NOT the weighted, clamped
+    # 0-1 mean the three fields above use. Watts do not normalise: `min(1.0, sum/weight)`
+    # applied to 663 W is not a smaller number, it is a different kind of thing.
+    #
+    # Extensive quantities (chassis_watts, gpu_watts_total, gpu_count, cpu_cores) are summed;
+    # intensive ones (temp_c_max, fan_pct_max) are maxed; load averages are deliberately
+    # absent because they are relative to each machine's own core count. See
+    # FLEET_SUM_KEYS / FLEET_MAX_KEYS in orion/telemetry/biometrics_pipeline.py.
+    measurements: Optional[Dict[str, float]] = None
+
+    # Which source nodes did NOT report each key in `measurements`. This is not diagnostics --
+    # it is what makes the total honest. circe has no reachable BMC, so a fleet chassis_watts
+    # is a real number that is missing an entire machine, and nothing in the number itself
+    # says so. Reading `measurements["chassis_watts"]` without checking this is reading a
+    # partial sum as a complete one.
+    measurements_missing: Optional[Dict[str, List[str]]] = None

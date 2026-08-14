@@ -20,7 +20,11 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from app.metrics import collect_biometrics, collect_disk_capacity
 from app.ilo import IloPoller
-from orion.telemetry.biometrics_pipeline import BiometricsPipeline, PipelineConfig
+from orion.telemetry.biometrics_pipeline import (
+    BiometricsPipeline,
+    PipelineConfig,
+    aggregate_fleet_measurements,
+)
 from app.settings import settings
 
 logging.basicConfig(
@@ -353,6 +357,13 @@ class BiometricsHub:
             if value >= 0.7:
                 constraint = key.upper()
 
+        # Raw physical units aggregate separately from the pressures above: watts are summed
+        # in watts, not weighted-averaged and clamped to 1.0. `measurements_missing` travels
+        # with the totals so a partial fleet sum cannot be read as a complete one.
+        fleet_measurements, fleet_missing = aggregate_fleet_measurements(
+            {node: summary.measurements for node, summary in self._latest_summary.items()}
+        )
+
         cluster = BiometricsClusterV1(
             timestamp=datetime.now(timezone.utc),
             sources=sources,
@@ -361,6 +372,8 @@ class BiometricsHub:
             headroom=headroom,
             composites=composites,
             constraint=constraint,
+            measurements=fleet_measurements or None,
+            measurements_missing=fleet_missing or None,
         )
         global _CLUSTER
         _CLUSTER = {"payload": cluster.model_dump(mode="json"), "timestamp": cluster.timestamp}

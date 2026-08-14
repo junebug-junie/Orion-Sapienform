@@ -9,11 +9,12 @@ Service: `orion-sql-writer`
   every 300s over a 24h trailing window and sends an alert to **Hub (in_app) and
   email** each time the count crosses a new multiple of 5.
 - One alert per level. The high-water mark is persisted in a new single-row
-  table `bus_fallback_alert_state`, so redeploys do not re-send, and it ratchets
-  back down as the backlog drains so recovery re-arms the lower levels.
-- Severity is `error` — read off the live notify policy, not chosen by feel. It
-  is the lowest severity that routes to both channels and the lowest that
-  survives quiet hours.
+  table `bus_fallback_alert_state`, so redeploys do not re-send, and only a full
+  drain below the step re-arms — a partial dip does not, because the window is
+  trailing and dips constantly on its own.
+- Severity is `error` — traced to the gate that actually decides
+  (`should_send_email()` on the `/notify` path), not to the policy file, which
+  looks authoritative and is not on this path.
 - Alerts carry kinds and counts only, never payloads.
 - Found and documented (not fixed here) that `legacy.message` — 80 of the 87
   fallback rows — is real cognition being silently dropped, and that the one
@@ -71,7 +72,9 @@ land in the fallback log every few hours.
   network in reach.
 - `services/orion-sql-writer/app/models/fallback_alert_state.py` (new):
   single-row high-water-mark table.
-- `services/orion-sql-writer/tests/test_fallback_watch.py` (new): 32 tests.
+- `services/orion-sql-writer/tests/test_fallback_watch.py` (new): 40 tests.
+- `services/orion-sql-writer/requirements.txt`: `requests`, which
+  `NotifyClient` needs and this service did not have.
 - `services/orion-sql-writer/app/main.py`: start/cancel the watch task.
 - `services/orion-sql-writer/app/settings.py`: 4 watcher keys + 2 notify keys.
 - `services/orion-sql-writer/app/models/__init__.py`: export the new model.
@@ -90,33 +93,41 @@ alerted. Consequences, all pinned by tests:
 - A jump past several levels (0 → 17) sends **one** alert naming 15, not three.
 - A drain below `step` resets the mark to 0, and a later climb alerts again —
   that is a new incident, not a repeat.
-- A partial drain (15 → 11) only gives back the levels actually released.
+- A partial drain (15 → 11) re-arms **nothing**. Only a full drain below `step`
+  does. Ratcheting down level-by-level is the intuitive implementation and it is
+  wrong — see the oscillation finding under review, where it produced six
+  "crossed 5" alerts in three weeks against the real data.
 - `count >= threshold`, not `count > threshold`. Off by one in the noisy
   direction, which is the correct direction for a monitor whose entire history
   is failing silently.
 
 ## Why severity is `error`
 
-From `services/orion-notify/app/policy/rules.yaml`:
+Traced through the handler this actually calls — `POST /notify`
+(`services/orion-notify/app/main.py:194`). The policy file looks authoritative
+and is **not on this path**; an earlier draft of this report justified the
+choice from `rules.yaml` and was right about the answer for the wrong reason
+(caught in review).
 
-| severity | channels |
-|---|---|
-| `critical` | `email`, `in_app` |
-| `error` | `email`, `in_app` |
-| `warning` | `in_app` only |
-| `info` | `[]` — delivered nowhere |
+- **email** is gated solely by `should_send_email()`
+  (`app/email_delivery.py:15`): true when severity is `error` or `critical`, or
+  when `channels_requested` contains `email`.
+- **in_app** is published unconditionally at `main.py:233` whenever the bus and
+  `NOTIFY_IN_APP_ENABLED` are up — "we do this blindly as a router", per the
+  comment there. Severity is not consulted.
+- `Policy.evaluate` — and therefore the `channels` lists, the `throttle` blocks,
+  and quiet hours — runs only on `/attention/request` (`main.py:274`).
 
-and `Policy.evaluate` (`policy.py:81`) drops channels to `[]` during quiet hours
-(22:00–07:00 America/Denver) for anything that is not `critical` or `error`.
+So `error` is what makes the email go out. Both the severity *and*
+`channels_requested=["email","in_app"]` are set, so the alert survives an edit
+to either gate. Deliberately **not** escalating to `critical` at higher
+thresholds: it buys no additional channel on this path, so it would be
+decoration.
 
-Hub *and* email, at any hour, therefore means `error` at minimum. Deliberately
-**not** escalating to `critical` at higher thresholds: it buys no additional
-channel and no additional urgency in the policy, so it would be decoration.
-
-Pinned by `test_severity_reaches_both_email_and_in_app_in_the_live_policy` and
-`test_severity_survives_quiet_hours`, which assert against the real rules file
-and the real `Policy` class rather than a copy — a plausible "don't be alarmist"
-edit to `warning` would silently switch the email off and mute it overnight.
+Pinned by `test_error_severity_is_what_actually_triggers_the_email` and
+`test_the_real_outbound_request_passes_the_real_email_gate`, which build the
+real outbound request and feed it to the real `should_send_email` — not to a
+copy, and not to `rules.yaml`.
 
 ## Privacy
 
@@ -208,10 +219,10 @@ comment block in `services/orion-notify-digest/.env_example`).
 
 ```text
 $ pytest tests/test_fallback_watch.py -q
-32 passed, 3 warnings in 1.06s
+40 passed, 8 warnings in 1.14s
 
 $ pytest tests -q
-10 failed, 272 passed, 3 skipped, 29 warnings in 13.29s
+10 failed, 280 passed, 3 skipped, 34 warnings in 13.76s
 
 $ pytest tests -q --ignore=tests/test_fallback_watch.py
 10 failed, 240 passed, 3 skipped, 27 warnings in 12.74s
@@ -220,7 +231,7 @@ $ pytest tests -q --ignore=tests/test_fallback_watch.py
 The 10 failures are byte-identical with and without this patch — pre-existing
 cross-test isolation failures in `test_grammar_truth.py`,
 `test_journal_entry_payload_boundary.py`, `test_notify_attention_ack.py`, and
-`test_notify_attention_escalate.py`. This patch adds 32 passing tests and no
+`test_notify_attention_escalate.py`. This patch adds 40 passing tests and no
 failures.
 
 ### Mutation testing
@@ -277,9 +288,130 @@ $ docker exec orion-athena-sql-writer python3 -c "urlopen('http://notify:7140/he
 {"ok":true,"service":"notify","mode":"router_with_escalation","smtp_configured":true}
 ```
 
+The real query against live Postgres, run from inside the built image before
+deploy:
+
+```text
+live 24h count = 17
+by kind        = [('legacy.message', 12), ('juniper.affective_state.v1', 5)]
+would alert at = (15, 15)
+```
+
+Post-deploy:
+
+```text
+$ scripts/safe_docker_build.sh orion-sql-writer up -d --build
+Container orion-athena-sql-writer Started
+
+$ docker inspect -f 'Running={{.State.Running}} Restarts={{.RestartCount}}'
+Running=true Restarts=0
+
+$ docker logs orion-athena-sql-writer | grep fallback_watch
+[SQL_WRITER] INFO - sql-writer.fallback_watch -
+  fallback_watch_started interval_sec=300 window_sec=86400 step=5
+```
+
+Unrelated pre-existing condition observed while verifying, NOT caused by this
+patch and not fixed here: `/health` reports `degraded=true` with
+`degraded_reasons: ['grammar_retention_failed']` — the startup `grammar_events`
+retention pass dies on the 10s `statement_timeout`
+(`psycopg2.errors.QueryCanceled`, `rows_pruned=0 batches=0 elapsed_sec=10.04`).
+The same log recommends applying `idx_grammar_events_source_created` via
+`services/orion-sql-db/manual_migration_grammar_atlas.sql`. Worth its own patch.
+
 ## Review findings fixed
 
-_(pending — code review subagent running)_
+Five findings, one of which meant the feature could never have worked.
+
+- **Finding (must-fix): the alert could never have been sent.**
+  `orion/notify/client.py:10` imports `requests` at module level;
+  `services/orion-sql-writer/requirements.txt` did not list it and nothing
+  pulled it in transitively. Every other `NotifyClient` consumer declares it;
+  this service was the exception. The import sat *outside* `_send_alert`'s
+  `try`, so the first crossing would have raised `ModuleNotFoundError`,
+  propagated through `evaluate_once`'s `rollback; raise`, and discarded the
+  diagnostic state write along with the alert — 288 ERROR lines a day, zero
+  alerts, and an empty state row implying the watcher had never run. The
+  monitor built to end silent failures, failing silently.
+  - Fix: `requests==2.32.3` added; `_send_alert` now has everything inside the
+    `try`; two tests added (one asserts the dependency is declared, one performs
+    the import eagerly).
+  - Evidence: before — `docker exec orion-athena-sql-writer python -c "from
+    orion.notify.client import NotifyClient"` → `ModuleNotFoundError: No module
+    named 'requests'`. After rebuild — `NotifyClient import: ok`.
+  - My own in-image check missed this because `app/fallback_watch.py` imports
+    `NotifyClient` lazily inside the send path, so importing the module proved
+    nothing about the module it needed.
+
+- **Finding (should-fix): the escalation rule re-alerted on oscillation.**
+  The mark ratcheted down to whatever level the count currently sat at. The
+  count is taken over a **trailing** window and therefore drifts in both
+  directions all day as rows age out, so a backlog crossing a level boundary
+  re-armed and re-alerted that level every crossing.
+  - Evidence: review replayed the shipped functions over the real 87
+    `created_at_ts` values in live `bus_fallback_log` at 300s/86400s/step-5 —
+    **12 alerts across 20 days, six of them "crossed 5"**. A count alternating
+    14/15 between polls alerted every other poll, ≈144 emails/day. Exactly the
+    alert fatigue this module's docstring claims to prevent.
+  - Fix: only a full drain below `step` re-arms. Two new tests, including the
+    literal 15/14/15 oscillation.
+  - Confirmed in-image after the fix: `oscillation 15,14,15 -> [None, None, None]`.
+
+- **Finding (should-fix): `_send_alert`'s "Never raises" docstring was false.**
+  Both imports and the `NotificationRequest` construction were outside the
+  `try`. Not a crash-loop risk (the loop's catch-all holds) but it threw away
+  the state write with the alert.
+  - Fix: everything inside the `try`.
+
+- **Finding (should-fix): shutdown could skip cancelling `watch_task`.**
+  `CancelledError` derives from `BaseException`, so `contextlib.suppress(
+  Exception)` does not catch it, and the bus chassis's `start()` has no handler
+  — awaiting the first task re-raised out of the loop before the second was
+  ever cancelled, leaving it pending at loop close, possibly mid-DB-query.
+  Converting the single-task shutdown into a loop is what made the pre-existing
+  suppress bug bite.
+  - Fix: `await asyncio.gather(*pending, return_exceptions=True)`.
+
+- **Finding (should-fix): the severity rationale documented a path `/notify`
+  does not execute.** `Policy.evaluate` runs only on `/attention/request`
+  (`main.py:274`). On `/notify`, email is gated solely by `should_send_email()`
+  (`email_delivery.py:15`) and in_app is published unconditionally by the
+  router. The conclusion (`error`) was right; the stated mechanism was wrong,
+  and **both tests asserted against `rules.yaml`** — they would have kept
+  passing if `should_send_email` changed to exclude `error`.
+  - Fix: docstring corrected to the real path; request construction extracted to
+    `build_alert_request()` so the outbound request is fed to the *real*
+    `should_send_email` gate in a test; `channels_requested=["email","in_app"]`
+    added as belt-and-braces so the mail survives an edit to either gate.
+
+Nits also taken: an unconfigured `NOTIFY_SERVICE_URL` no longer consumes the
+crossing (no network cost to retrying, and burning the level permanently would
+be worse); `last_alert_sent_at` is stamped only on a real send; the state commit
+now happens before the blocking 10s HTTP call rather than holding a pool
+connection and a row lock across it; a non-positive `step` logs at ERROR instead
+of going silently inert; and the production `now` default is exercised by a test.
+
+Review confirmed clean, with no findings, on: privacy (traced end to end —
+`count_backlog` never has `payload`/`correlation_id`/`error` in scope), the env
+sync change (`NOTIFY_SERVICE_URL` appears in three `.env_example` files all with
+the identical value, only one is in `DEFAULT_SERVICES`, and diverged-detection
+protects the rest), import-time side effects, event-loop blocking, session
+cleanup, and pool pressure. Review also independently confirmed the
+`dedupe_key`-is-never-enforced finding and noted it is understated: since
+`/notify` skips policy entirely, the `throttle` blocks are equally decorative
+there.
+
+### Re-run mutation testing after the fixes
+
+```text
+revert to level-by-level ratchet-down (the original bug) -> 3 failed
+soften severity to warning and drop channels_requested   -> 1 failed
+unconfigured notify consumes the crossing anyway         -> 1 failed
+stamp last_alert_sent_at even when the send failed       -> 1 failed
+```
+
+The last mutation initially passed — no test covered it. Added the assertion,
+then re-ran to confirm it fails.
 
 ## Restart required
 

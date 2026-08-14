@@ -331,6 +331,20 @@ Order matters — `MemoryTurnPersistedV1` is `extra="forbid"`, so the consumer m
 learn the field before the producer starts sending it.
 
 ```bash
+# 0. MIGRATION FIRST, BEFORE ANY RESTART.
+#    This branch adds `source_platform` to memory_consolidation_windows, and
+#    _get_open_window() SELECTs on it. There is no auto-DDL anywhere in
+#    services/orion-memory-consolidation/app/ -- this file is applied by hand.
+#    Restarting without it means UndefinedColumnError on every
+#    memory.turn.persisted.v1 and window formation stops completely.
+#    (Already applied on athena, which is precisely why it is easy to forget.)
+psql -h localhost -p 55432 -U postgres -d conjourney \
+  -f services/orion-sql-db/manual_migration_memory_consolidation_v1.sql
+
+# Optional but recommended: backfill the new column by the same unanimity rule
+# the code uses, so historical rows are not all silently labelled "direct".
+# The exact statement used on athena is in the PR body's Docker/smoke section.
+
 # 1. CONSUMER FIRST
 ./scripts/safe_docker_build.sh orion-memory-consolidation up -d --build
 
@@ -355,12 +369,19 @@ curl -fsS localhost:8080/api/memory/crystallizations/proposals | jq '.count'
   restart block above. No silent-drop fallback was added, because `extra="forbid"`
   failing loudly is better than a field being silently ignored.
 
-- Severity: **medium**
-  Concern: the global open-window cursor still mixes platforms (26 windows
-  historically). Not fixed here — it changes window lifecycle semantics and wants
-  its own proposal.
-  Mitigation: the gate requires unanimity, so mixed windows keep reaching the
-  human queue rather than auto-activating with Juniper's words inside them.
+- Severity: **medium** — *superseded, now FIXED in `b6ab77068`.*
+  Original concern: the global open-window cursor mixed platforms (26 windows
+  historically), deferred as a separate proposal.
+  What changed: it is fixed in this branch. `_get_open_window()` is partitioned
+  on `source_platform`, which also removed two things not visible when the
+  concern was written — `classify_turn()` was scoring novelty against an
+  unrelated conversation, and `close_current_window()`'s closing-turn carry-over
+  made the *next* window permanently mixed. This is a window-lifecycle change
+  plus a schema column, an index and 7 new tests; review it as such rather than
+  trusting this register's earlier "not fixed here".
+  Remaining coarseness: partitioning is by platform, not `(platform, session_id)`
+  — 302 ai-town sessions still share one rolling window. Harmless for the queue,
+  but it blurs separate NPC conversations; recorded as a follow-up.
 
 - Severity: **low**
   Concern: the backlog was *rejected* while future ai-town windows will be

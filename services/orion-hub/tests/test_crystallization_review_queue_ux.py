@@ -331,6 +331,34 @@ def test_ui_handles_open_detail_rejection():
     assert "closeDetail" in open_handler
 
 
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "static/js/vendor/dompurify-3.2.4.min.js",  # nested: glob("js/*.js") missed it
+        "templates/substrate.html",  # a template that is not index.html
+        "templates/concept_atlas.html",
+    ],
+)
+def test_cache_bust_covers_nested_assets_and_every_template(rel):
+    """A first pass at the glob fix still only matched `js/*.js` and
+    `index.html`, which is the same hardcoded-list bug one directory down."""
+    import time
+
+    from scripts.main import _ui_asset_mtime_token
+
+    target = HUB_ROOT / rel
+    assert target.exists(), rel
+    before = _ui_asset_mtime_token()
+    original = target.stat().st_mtime
+    stamp = time.time() + 10_000
+    try:
+        os.utime(target, (stamp, stamp))
+        assert _ui_asset_mtime_token() != before, f"editing {rel} must move the ?v= token"
+    finally:
+        os.utime(target, (original, original))
+    assert _ui_asset_mtime_token() == before
+
+
 def test_ui_has_multi_select_and_bulk_actions():
     ui = UI_JS.read_text(encoding="utf-8")
     assert 'type = "checkbox"' in ui
@@ -376,14 +404,17 @@ def test_ui_asset_cache_bust_covers_this_module():
     for the glob: a grep passes for any implementation that merely *mentions*
     the right shape, including one that globs a directory this file is not in.
     """
-    import os
+    import time
 
     from scripts.main import _ui_asset_mtime_token
 
     before = _ui_asset_mtime_token()
     original = UI_JS.stat().st_mtime
+    # now-ish, not original+delta: the token is max(mtimes), and a real edit sets
+    # the mtime to now, which necessarily exceeds every other asset's.
+    stamp = time.time() + 10_000
     try:
-        os.utime(UI_JS, (original + 10_000, original + 10_000))
+        os.utime(UI_JS, (stamp, stamp))
         assert _ui_asset_mtime_token() != before, (
             "editing memory-crystallization-ui.js must move the ?v= token"
         )

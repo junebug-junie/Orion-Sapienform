@@ -98,8 +98,17 @@ class WindowStore:
         )
 
     async def close_current_window(
-        self, closing_correlation_id: str, *, source_platform: str | None = None
+        self, closing_correlation_id: str, *, source_platform: str | None
     ) -> dict[str, Any]:
+        """`source_platform` is REQUIRED (keyword, no default) even though None is
+        a legal value.
+
+        None is a real partition -- Juniper's direct conversation -- not a
+        sentinel meaning "any". A default would make a forgotten kwarg silently
+        close and reseed HER window instead of the intended one, with nothing in
+        the signature, the types, or the runtime to make the omission visible.
+        Passing None must be a decision, not an oversight.
+        """
         row = await self._get_open_window(source_platform)
         if row is None:
             return {"memory_window_id": str(uuid4()), "turn_correlation_ids": [], "turns": []}

@@ -69,10 +69,26 @@ def _log(handle, message: str) -> None:
     handle.flush()
 
 
-def _classify(rows) -> tuple[list[dict], list[dict]]:
+def _platform_allowlist() -> frozenset[str]:
+    """The SAME allowlist the running service uses, not the module default.
+
+    resolve_formation_policy() falls back to DEFAULT_AUTO_ACTIVATE_PLATFORMS when
+    given nothing, so calling it bare silently ignores
+    MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS. An operator who had set that key to
+    the empty string -- documented in .env_example as disabling the gate -- would
+    still have had 599 rows mass-rejected by a script whose docstring promised it
+    mirrored the runtime predicate.
+    """
+    raw = os.environ.get("MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS")
+    if raw is None:
+        return DEFAULT_AUTO_ACTIVATE_PLATFORMS
+    return frozenset(p.strip() for p in raw.split(",") if p.strip())
+
+
+def _classify(rows, *, platforms: frozenset[str]) -> tuple[list[dict], list[dict]]:
     """(external, keep) -- external is what the runtime gate would auto-activate."""
     grouped: dict[str, dict] = {}
-    for cid, window_id, subject, created_at, corr, prompt, response, platform in rows:
+    for cid, window_id, subject, created_at, kind, corr, prompt, response, platform in rows:
         entry = grouped.setdefault(
             cid,
             {
@@ -80,6 +96,7 @@ def _classify(rows) -> tuple[list[dict], list[dict]]:
                 "window_id": window_id,
                 "subject": subject,
                 "created_at": created_at,
+                "kind": kind,
                 "turns": [],
             },
         )
@@ -104,8 +121,16 @@ def _classify(rows) -> tuple[list[dict], list[dict]]:
                 action="propose", dominant_shift="STANCE", grammar_event_ids=[]
             ),
         )
+        # The row's REAL kind, not whatever dominant_shift="STANCE" reconstructs.
+        # EXTERNAL_PLATFORM_BYPASSABLE_KINDS deliberately excludes decision /
+        # contradiction / attractor / failure_mode, so rebuilding every proposal
+        # as a stance made this purge strictly broader than the gate it claims to
+        # mirror: an ai-town-sourced `contradiction` would have been rejected here
+        # even though the runtime gate would have left it for review.
+        if entry.get("kind"):
+            crys.kind = entry["kind"]
         entry["resolved_platform"] = crys.provenance.get("source_platform")
-        policy, _ = resolve_formation_policy(crys)
+        policy, _ = resolve_formation_policy(crys, auto_activate_platforms=platforms)
         (external if policy == FormationPolicy.AUTO_ACTIVATE else keep).append(entry)
     return external, keep
 
@@ -128,7 +153,9 @@ def main() -> int:
             with conn.cursor() as cur:
                 cur.execute(QUERY)
                 rows = cur.fetchall()
-            external, keep = _classify(rows)
+            platforms = _platform_allowlist()
+            _log(progress, f"platform allowlist={sorted(platforms) or '(empty -- gate disabled)'}")
+            external, keep = _classify(rows, platforms=platforms)
             total = len(external) + len(keep)
             _log(progress, f"proposed={total} external={len(external)} keep={len(keep)}")
 
@@ -235,18 +262,32 @@ def main() -> int:
             # must not be able to say APPLIED while the database disagrees --
             # that is exactly the failure the savepoints above prevent, so prove
             # it rather than trusting it.
+            #
+            # Scoped to the ids we touched, NOT a global `proposed` count. The
+            # consolidation worker keeps producing proposals while this runs, so
+            # a global comparison against a pre-run count fails the moment one
+            # real conversation lands mid-run -- reporting APPLY FAILED
+            # VERIFICATION and exit 1 over a run where every intended row
+            # committed correctly. That already happened once in this queue's
+            # history ("23, not 22, because a real conversation landed").
             verified = True
             if args.apply:
-                still_proposed = after_counts.get("proposed", 0)
-                verified = still_proposed == len(keep)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT count(*) FROM memory_crystallizations "
+                        "WHERE crystallization_id = ANY(%s::uuid[]) AND status <> 'rejected'",
+                        (ids,),
+                    )
+                    not_rejected = cur.fetchone()[0]
+                verified = not_rejected == 0
                 if not verified:
                     _log(
                         progress,
-                        f"VERIFY FAILED: expected proposed={len(keep)} after apply, "
-                        f"database reports {still_proposed}",
+                        f"VERIFY FAILED: {not_rejected} of the {len(ids)} targeted rows "
+                        "are not 'rejected' after commit",
                     )
                 else:
-                    _log(progress, f"verified proposed={still_proposed} == keep={len(keep)}")
+                    _log(progress, f"verified all {len(ids)} targeted rows are rejected")
 
             report = JOB_DIR / "report.md"
             report.write_text(

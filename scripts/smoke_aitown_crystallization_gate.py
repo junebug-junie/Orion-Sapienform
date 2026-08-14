@@ -51,7 +51,8 @@ WITH prop AS (
     SELECT crystallization_id,
            provenance->>'memory_window_id' AS window_id,
            subject,
-           created_at
+           created_at,
+           kind
     FROM memory_crystallizations
     WHERE status = 'proposed'
 ),
@@ -64,6 +65,7 @@ SELECT p.crystallization_id,
        p.window_id,
        p.subject,
        p.created_at,
+       p.kind,
        w.correlation_id,
        h.prompt,
        h.response,
@@ -73,6 +75,23 @@ LEFT JOIN window_turns w ON w.memory_window_id = p.window_id
 LEFT JOIN chat_history_log h ON h.correlation_id = w.correlation_id
 ORDER BY p.created_at DESC, w.correlation_id
 """
+
+
+def find_leaked(
+    service_written: list[tuple[str, str | None]],
+    *,
+    platforms: frozenset[str] = DEFAULT_AUTO_ACTIVATE_PLATFORMS,
+) -> list[tuple[str, str | None]]:
+    """Queued crystallizations the DEPLOYED service stamped with an allowlisted
+    platform. Any such row means the live gate did not fire on it.
+
+    Extracted as a function purely so its FAIL branch can be proved reachable in
+    a test. The previous version of this check was inline and was provably always
+    empty -- it compared the replay's own platform resolution against the replay's
+    own policy decision, which are equivalent by construction. A check that cannot
+    fail is worse than no check, because it reads as passing evidence.
+    """
+    return [row for row in service_written if str(row[1] or "") in platforms]
 
 
 def main() -> int:
@@ -89,15 +108,31 @@ def main() -> int:
         with conn.cursor() as cur:
             cur.execute(QUERY)
             rows = cur.fetchall()
+            # Independent of the replay: what the DEPLOYED service actually
+            # stamped on rows it left in the queue. The replay below recomputes
+            # provenance from live chat rows, so it can only ever agree with
+            # itself; this reads what the running worker wrote.
+            cur.execute(
+                "SELECT crystallization_id::text, provenance->>'source_platform' "
+                "FROM memory_crystallizations "
+                "WHERE status = 'proposed' AND provenance ? 'source_platform'"
+            )
+            db_written_platforms = cur.fetchall()
     finally:
         conn.close()
 
     # group turns per crystallization, preserving window identity
     grouped: dict[str, dict] = {}
-    for cid, window_id, subject, created_at, corr, prompt, response, platform in rows:
+    for cid, window_id, subject, created_at, kind, corr, prompt, response, platform in rows:
         entry = grouped.setdefault(
             cid,
-            {"window_id": window_id, "subject": subject, "created_at": created_at, "turns": []},
+            {
+                "window_id": window_id,
+                "subject": subject,
+                "created_at": created_at,
+                "kind": kind,
+                "turns": [],
+            },
         )
         if corr is None:
             continue
@@ -128,6 +163,12 @@ def main() -> int:
                 action="propose", dominant_shift="STANCE", grammar_event_ids=[]
             ),
         )
+        # Real stored kind, not the one dominant_shift="STANCE" reconstructs --
+        # EXTERNAL_PLATFORM_BYPASSABLE_KINDS only covers stance, so replaying a
+        # decision/contradiction as a stance would report a bypass that the
+        # runtime gate would never grant.
+        if entry.get("kind"):
+            crys.kind = entry["kind"]
         entry["resolved_platform"] = crys.provenance.get("source_platform")
         platforms[str(entry["resolved_platform"])] += 1
         policy, why = resolve_formation_policy(crys)
@@ -150,6 +191,7 @@ def main() -> int:
                     "queued_ids": [c for c, _ in queued],
                     "window_platforms": dict(platforms),
                     "queue_reasons": dict(reasons),
+                    "service_written_platforms": [list(r) for r in db_written_platforms],
                 },
                 indent=2,
             )
@@ -172,32 +214,42 @@ def main() -> int:
     for cid, subject in queued[: args.show]:
         print(f"  {cid[:8]}  {subject}")
 
-    # Failure condition is "a unanimous-external window is sitting in the queue",
-    # NOT "nothing would auto-activate".
+    # What this script can and cannot prove -- stated plainly, because two
+    # previous versions of this check were wrong in opposite directions.
     #
-    # The obvious check -- `if total and not auto: fail` -- inverts the moment the
-    # gate starts working: in steady state no ai-town window ever reaches
-    # status='proposed', so `auto` is legitimately empty and the smoke would fail
-    # forever. Worse, it cannot distinguish that success from the gate being
-    # inert, which is the only thing it exists to detect.
+    # It REPLAYS live rows through the real policy functions. Both the platform
+    # resolution and the policy decision therefore come from the same pure code
+    # path, which means any check comparing one against the other is a
+    # tautology. The first attempt (`if total and not auto: fail`) inverted once
+    # the gate worked; the second (`resolved_platform is allowlisted but not in
+    # auto`) was provably always empty, since with dominant_shift hardcoded to
+    # STANCE and sensitivity hardcoded to "private" those two conditions are
+    # literally equivalent. A replay cannot detect an inert gate. Only the
+    # deployed service can.
     #
-    # This asks the question the other way round: of the proposals actually in the
-    # queue, does any window resolve to an allowlisted platform? If one does, the
-    # gate did not fire on a row it should have. An empty queue passes, as it
-    # should.
-    leaked = [
-        cid
-        for cid, entry in grouped.items()
-        if str(entry.get("resolved_platform") or "") in DEFAULT_AUTO_ACTIVATE_PLATFORMS
-        and cid not in {c for c, _ in auto}
-    ]
+    # So the check is now about the SERVICE's own output, which is independent
+    # evidence: a crystallization written by the live consolidation worker from
+    # an allowlisted platform must never be sitting in `proposed`. That row was
+    # produced by the deployed code, not by this script.
+    leaked = find_leaked(db_written_platforms)
     if leaked:
         print(
-            f"\nFAIL: {len(leaked)} allowlisted-platform window(s) still queued -- "
-            f"the gate did not fire on them: {leaked[:5]}",
+            f"\nFAIL: the live service left {len(leaked)} allowlisted-platform "
+            f"crystallization(s) in the review queue -- the deployed gate is not "
+            f"firing: {[r[0] for r in leaked[:5]]}",
             file=sys.stderr,
         )
         return 1
+
+    if not db_written_platforms:
+        print(
+            "\nINCONCLUSIVE: no queued crystallization carries provenance."
+            "source_platform, so the deployed gate has not been exercised yet. "
+            "The replay above only shows the policy functions are self-consistent. "
+            "This is NOT evidence the live gate works.",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 

@@ -185,7 +185,7 @@ async def test_close_tolerates_a_row_predating_the_platform_column():
     )
     pool.execute = AsyncMock()
 
-    closed = await WindowStore(pool).close_current_window("c1")
+    closed = await WindowStore(pool).close_current_window("c1", source_platform=None)
 
     assert closed["memory_window_id"] == "win-legacy"
     assert pool.execute.await_args.args[4] is None

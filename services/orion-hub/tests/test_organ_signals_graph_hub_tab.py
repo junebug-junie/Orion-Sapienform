@@ -52,13 +52,21 @@ def test_main_mtime_token_includes_organ_signals_js() -> None:
     (found 2026-08-14). main.py now globs static/js, so assert the behavior
     the grep was standing in for: touching this file changes the token.
     """
+    import time
+
     from scripts.main import _ui_asset_mtime_token
 
     assert ORG_SIGNALS_JS.exists()
     before = _ui_asset_mtime_token()
     original = ORG_SIGNALS_JS.stat().st_mtime
+    # The token is max(mtimes), so simulate what an edit actually does: set the
+    # mtime to *now-ish*, which necessarily exceeds every other file's. Bumping
+    # this file's own old mtime by a fixed delta does not, since some other
+    # asset may still be newer -- that made an earlier version of this test pass
+    # for the wrong reason and then fail once more files entered the candidate set.
+    stamp = time.time() + 10_000
     try:
-        os.utime(ORG_SIGNALS_JS, (original + 10_000, original + 10_000))
+        os.utime(ORG_SIGNALS_JS, (stamp, stamp))
         assert _ui_asset_mtime_token() != before
     finally:
         os.utime(ORG_SIGNALS_JS, (original, original))

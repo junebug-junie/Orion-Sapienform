@@ -51,7 +51,7 @@ async def test_close_current_window_returns_all_turns_including_closer():
     pool.execute = AsyncMock()
 
     store = WindowStore(pool)
-    closed = await store.close_current_window("c3")
+    closed = await store.close_current_window("c3", source_platform=None)
 
     assert closed["memory_window_id"] == "win-1"
     assert closed["turn_correlation_ids"] == ["c1", "c2", "c3"]

@@ -403,22 +403,57 @@ async def crystallization_bulk_decide(
                     after=history.get("after"),
                     reason=reason,
                 )
-                await emit_crystallization_lifecycle(
-                    await _bus(),
-                    lifecycle="rejected",
-                    crystallization=updated,
-                    service_name=_settings().SERVICE_NAME,
-                    node_name=_settings().NODE_NAME,
-                )
+                # Post-commit. The decision is already durable, so a bus outage
+                # must not be reported as a failed decision: the caller would
+                # keep the id selected and every retry would answer
+                # already_rejected, leaving a "N failed" the operator can never
+                # clear except by deselecting by hand.
+                try:
+                    await emit_crystallization_lifecycle(
+                        await _bus(),
+                        lifecycle="rejected",
+                        crystallization=updated,
+                        service_name=_settings().SERVICE_NAME,
+                        node_name=_settings().NODE_NAME,
+                    )
+                except Exception:
+                    logger.exception("crystallization_bulk_reject_emit_failed id=%s", cid)
+                    results.append(
+                        {"crystallization_id": cid, "ok": True, "warning": "lifecycle_emit_failed"}
+                    )
+                    continue
             results.append({"crystallization_id": cid, "ok": True})
-        except HTTPException as exc:
-            results.append({"crystallization_id": cid, "ok": False, "error": str(exc.detail)})
-        except GovernorError as exc:
-            results.append({"crystallization_id": cid, "ok": False, "error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
-            _http_if_missing_schema(exc)
-            logger.warning("crystallization_bulk_%s_failed id=%s error=%s", action, cid, exc)
-            results.append({"crystallization_id": cid, "ok": False, "error": "decide_failed"})
+        except (HTTPException, GovernorError, Exception) as exc:  # noqa: BLE001
+            if not isinstance(exc, (HTTPException, GovernorError)):
+                _http_if_missing_schema(exc)
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+            # Did the decision actually land before the failure? The approve path
+            # writes the row and THEN emits/projects, so a bus or chroma outage
+            # raises after the status is already durable. Reporting that as
+            # failed keeps the id selected and makes every retry answer
+            # already_active -- a "N failed" the operator can never clear.
+            landed = False
+            try:
+                after = await get_crystallization(pool, cid)
+                landed = after is not None and after.status not in ("proposed", "quarantined")
+            except Exception:  # noqa: BLE001
+                landed = False
+            if landed:
+                logger.warning(
+                    "crystallization_bulk_%s_post_commit_failure id=%s error=%s", action, cid, exc
+                )
+                results.append(
+                    {"crystallization_id": cid, "ok": True, "warning": f"post_commit: {detail}"}
+                )
+            else:
+                logger.warning("crystallization_bulk_%s_failed id=%s error=%s", action, cid, exc)
+                results.append(
+                    {
+                        "crystallization_id": cid,
+                        "ok": False,
+                        "error": detail if isinstance(exc, (HTTPException, GovernorError)) else "decide_failed",
+                    }
+                )
 
     succeeded = sum(1 for r in results if r["ok"])
     return {

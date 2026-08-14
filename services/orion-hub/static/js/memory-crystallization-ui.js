@@ -376,9 +376,20 @@
     count.textContent = selected.size ? `${selected.size} selected` : "select all";
     bar.appendChild(count);
 
+    let deciding = false;
     const decide = async (action) => {
+      // In-flight guard. Without it a double-click on "Reject selected" launches
+      // two concurrent chunked runs over the same id snapshot: the second gets
+      // already_rejected for everything the first already decided, reports a
+      // large spurious failure count, and both mutate `selected` and call
+      // loadInbox() concurrently.
+      if (deciding) return;
       const ids = [...selected];
       if (!ids.length) return;
+      deciding = true;
+      buttons.forEach((b) => {
+        b.disabled = true;
+      });
       // Chunked client-side. The server caps a batch at BULK_DECIDE_MAX (500)
       // and 400s the whole request past it -- which is precisely the case this
       // feature exists for, since the backlog that motivated it was 621 items.
@@ -424,6 +435,13 @@
         // list reflects reality rather than the pre-decision state.
         await loadInbox(listEl, statusEl, detailEl).catch(() => {});
         setStatus(statusEl, `${action} stopped after ${succeeded}: ${e.message || String(e)}`, true);
+      } finally {
+        deciding = false;
+        // loadInbox() above rebuilds the bar, so re-enabling these only matters
+        // on the paths where it did not run; harmless either way.
+        buttons.forEach((b) => {
+          b.disabled = selected.size === 0;
+        });
       }
     };
 

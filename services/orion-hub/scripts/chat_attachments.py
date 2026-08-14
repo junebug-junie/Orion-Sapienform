@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import struct
 from pathlib import Path
@@ -187,10 +188,14 @@ def store_bytes(data: bytes, filename: Optional[str] = None) -> AttachmentRefV1:
     sha256 = hashlib.sha256(data).hexdigest()
     target = _path_for(sha256)
     if not target.exists():
-        # Write-then-rename so a concurrent GET never sees a partial file.
-        tmp = target.with_suffix(".part")
+        # Write-then-rename so a concurrent GET never sees a partial file. The
+        # temp name carries the pid so two workers storing the same content do
+        # not write the same scratch path at once -- content-addressing means
+        # concurrent uploads of one image collide on the sha, which is exactly
+        # when this matters.
+        tmp = target.with_suffix(f".{os.getpid()}.part")
         tmp.write_bytes(data)
-        tmp.rename(target)
+        tmp.replace(target)
         _mime_path_for(sha256).write_text(mime, encoding="utf-8")
         logger.info("stored chat attachment sha=%s mime=%s bytes=%s", sha256[:12], mime, len(data))
 

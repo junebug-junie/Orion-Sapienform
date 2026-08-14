@@ -175,3 +175,39 @@ def test_text_only_payload_matches_the_pre_attachment_shape(monkeypatch):
     )
     assert payload["model"] == "test-model"
     assert payload["stream"] is False
+
+
+# ── Backend paths that cannot carry images must refuse, not drop ─────────
+
+@pytest.mark.parametrize(
+    "executor,args,label",
+    [
+        (lambda b: B._execute_ollama_chat(b, "m", "http://o:11434"), None, "ollama"),
+        (
+            lambda b: B._execute_llamacpp_native_completion(b, "m", "http://w:8080", "llamacpp"),
+            None,
+            "native completion",
+        ),
+    ],
+)
+def test_non_openai_paths_refuse_attachments(monkeypatch, executor, args, label):
+    """Only the OpenAI path builds content parts.
+
+    Ollama uses its own images:[b64] field and llama.cpp's /completion takes a
+    flat prompt string. Neither is wired, so both must refuse rather than answer
+    from the text alone -- dropping the image and replying anyway is the exact
+    'Orion appears to have looked' failure this feature exists to prevent.
+    """
+    def should_not_be_called(*a, **k):
+        raise AssertionError(f"{label} sent a request despite carrying attachments")
+
+    monkeypatch.setattr(B, "_common_http_client", should_not_be_called)
+    result = executor(body(True))
+    assert "cannot accept image attachments" in result["text"]
+    assert result["vision"]["status"] == "refused"
+    assert result["vision"]["source"] == "unsupported-backend-path"
+
+
+def test_non_openai_paths_are_unaffected_without_attachments(monkeypatch):
+    """The guard must be inert on every text-only turn."""
+    assert B._refuse_attachments_on_unsupported_path(body(False), "ollama") is None

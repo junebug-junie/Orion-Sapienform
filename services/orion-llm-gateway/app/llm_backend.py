@@ -708,6 +708,39 @@ def _build_ollama_payload(body: ChatBody, model: str) -> Dict[str, Any]:
     }
 
 
+def _refuse_attachments_on_unsupported_path(
+    body: ChatBody, path_label: str
+) -> Optional[Dict[str, Any]]:
+    """Refuse a turn carrying images on a backend path that cannot send them.
+
+    Only the OpenAI-compatible path builds multimodal content parts. Ollama uses
+    its own `images: [b64]` field, and llama.cpp's native /completion path takes
+    a flat prompt string -- neither is wired here.
+
+    Without this guard those paths would drop the attachments and answer from the
+    text alone, which is precisely the failure the whole feature exists to
+    prevent: Orion would appear to have looked at something it never received.
+    Returning None means "no attachments, carry on".
+    """
+    attachments = list(getattr(body, "attachments", None) or [])
+    if not attachments:
+        return None
+    err = f"{path_label} cannot accept image attachments"
+    logger.error("[LLM-GW] refusing attachments: %s (count=%s)", err, len(attachments))
+    return {
+        "text": f"[Error: {err}]",
+        "spark_meta": {},
+        "raw": {},
+        "vision": {
+            "attachment_count": len(attachments),
+            "status": "refused",
+            "vision": False,
+            "source": "unsupported-backend-path",
+            "detail": err,
+        },
+    }
+
+
 def _execute_ollama_chat(
     body: ChatBody,
     model: str,
@@ -719,6 +752,10 @@ def _execute_ollama_chat(
         err = "ollama URL not configured"
         logger.error(f"[LLM-GW] {err}")
         return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {}}
+
+    refusal = _refuse_attachments_on_unsupported_path(body, "ollama")
+    if refusal is not None:
+        return refusal
 
     spark_meta = _spark_ingest_for_body(body)
     url = f"{base_url.rstrip('/')}/api/chat"
@@ -797,6 +834,10 @@ def _execute_llamacpp_native_completion(
         err = f"{backend_name} URL not configured"
         logger.error(f"[LLM-GW] {err}")
         return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {}}
+
+    refusal = _refuse_attachments_on_unsupported_path(body, f"{backend_name} native completion")
+    if refusal is not None:
+        return refusal
 
     spark_meta = _spark_ingest_for_body(body)
     opts = body.options or {}

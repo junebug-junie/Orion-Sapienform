@@ -46,6 +46,123 @@ def normalize_rate(rate: Optional[float], *, scale: float) -> float:
     return clamp01(rate / scale)
 
 
+def _as_float(value: object) -> Optional[float]:
+    """Strict: None for anything that is not a real, finite number.
+
+    Booleans are rejected too -- `float(True)` is 1.0, which would enter a watt field as a
+    perfectly plausible reading. nvidia-smi values arrive as space-padded strings
+    (`" 58.08"`), so strings are parsed rather than refused.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if out != out or out in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    return out
+
+
+def _sum_of(values: object) -> Optional[Tuple[float, int]]:
+    """(sum, count) only if EVERY element parses. None if any element does not.
+
+    All-or-nothing, deliberately. A partial sum is the absent-is-not-zero failure moved
+    inside a key instead of between keys: on a 3-GPU box where one card reports `[N/A]`
+    (nvidia-smi really does emit that), summing the survivors yields a number that is
+    byte-identical to a genuine 2-GPU total and understates while looking complete. The
+    caller pairs the sum with its count so a consumer can check it against the hardware.
+    """
+    if not isinstance(values, list) or not values:
+        return None
+    parsed = [_as_float(v) for v in values]
+    if any(f is None for f in parsed):
+        return None
+    return sum(parsed), len(parsed)  # type: ignore[arg-type]
+
+
+def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
+    """Raw physical quantities from a biometrics sample, in their own units.
+
+    ROADMAP B1. Everything else on BiometricsSummaryV1 is normalised to 0-1, which cannot be
+    summed across hosts or compared over time. These are the numbers Juniper actually pays.
+
+    THE INVARIANT: a key is absent when the quantity is not measured. Never 0.0, never a
+    placeholder. circe has no reachable BMC, so writing `chassis_watts: 0.0` for it would
+    make a fleet total silently understate by a whole machine while looking complete. Callers
+    must use `.get(key)` and handle None, not `.get(key, 0.0)`.
+
+    CONTAINMENT, and a consumer must not sum across it: `chassis_watts` is the whole-node
+    draw measured at the PSU and ALREADY INCLUDES `gpu_watts_total`. On athena, live, that
+    is 410 W total of which 45 W is GPU -- so `SUM(chassis_watts) + SUM(gpu_watts_total)`
+    over-reports by ~11%. For a fleet total use `chassis_watts` alone where present;
+    `gpu_watts_total` is for the nodes that have no BMC, and for attributing what share of a
+    node's draw is inference.
+
+    WHAT IS DELIBERATELY NOT HERE: disk and network byte rates. Both are collected
+    (`services/orion-biometrics/app/metrics.py`) and both are wrong as *node-scale physical
+    quantities*, which is what this dict claims to hold:
+
+      - network reads a network-namespaced /proc/net/dev from inside a bridged container, so
+        it sees its own veth. Measured on athena: host 5,093,078 B/s vs container ~4,000 B/s,
+        a factor of ~1000.
+      - disk sums /proc/diskstats rows for whole disks AND their partitions, double-counting.
+        Measured on athena over the same window: 26,147,226 vs 13,288,243 B/s, a factor of 1.97.
+
+    Both are survivable as self-relative 0-1 bands (which is all `disk_pressure`/`net_pressure`
+    ever claimed) and neither is survivable as a number someone might sum. Fixing them means
+    changing the collector, which moves the shipped pressures too -- a live behaviour change
+    that belongs in its own patch. Parked, not silently emitted.
+    """
+    out: Dict[str, float] = {}
+
+    def put(key: str, value: Optional[float]) -> None:
+        if value is not None:
+            out[key] = value
+
+    ilo = sample.get("ilo") if isinstance(sample.get("ilo"), dict) else {}
+    power = sample.get("power") if isinstance(sample.get("power"), dict) else {}
+    gpu = sample.get("gpu") if isinstance(sample.get("gpu"), dict) else {}
+    cpu = sample.get("cpu") if isinstance(sample.get("cpu"), dict) else {}
+    temps = sample.get("temps") if isinstance(sample.get("temps"), dict) else {}
+
+    # Chassis draw from the BMC. The dominant cost term, and the only one that composes
+    # across hosts. Present on nodes with iLO configured; absent elsewhere.
+    watts = _as_float(ilo.get("ilo_power_watts"))
+    if watts is not None and watts >= 0.0:  # a negative draw is a sensor fault, not a reading
+        out["chassis_watts"] = watts
+
+    # SUM, deliberately. `_power_pressure` takes the *mean* of the same list, which makes a
+    # 3-GPU box normalise like a 1-GPU box -- fine for a self-relative band, wrong for a
+    # fleet total. The two numbers are different quantities and both are kept.
+    totals = _sum_of(power.get("gpu_power_watts"))
+    if totals is None:
+        # Fall back to the per-GPU entries when the flat list is absent or partial.
+        gpus = gpu.get("gpus")
+        if isinstance(gpus, list):
+            totals = _sum_of([e.get("power_draw_watts") for e in gpus if isinstance(e, dict)])
+    if totals is not None and totals[0] >= 0.0:
+        out["gpu_watts_total"] = totals[0]
+        out["gpu_count"] = float(totals[1])  # so a consumer can check the total against the box
+
+    fan_map = ilo.get("ilo_fan_pct")
+    if isinstance(fan_map, dict):
+        fan_values = [f for f in (_as_float(v) for v in fan_map.values()) if f is not None]
+        if fan_values:
+            out["fan_pct_max"] = max(fan_values)
+
+    put("temp_c_max", _as_float(temps.get("max_c")))
+    put("cpu_cores", _as_float(cpu.get("cores")))
+    loadavg = cpu.get("loadavg") if isinstance(cpu.get("loadavg"), dict) else {}
+    put("load_1m", _as_float(loadavg.get("1m")))
+    put("load_15m", _as_float(loadavg.get("15m")))
+    return out
+
+
 CONSTRAINTS = {
     "thermal": "THERMAL",
     "power": "POWER",
@@ -198,6 +315,7 @@ class BiometricsPipeline:
             composites=composites,
             constraint=constraint,
             telemetry_error_rate=telemetry_error_rate,
+            measurements=extract_measurements(sample),
         )
 
     def _gpu_pressures(self, gpu: Dict[str, object]) -> Tuple[float, float]:

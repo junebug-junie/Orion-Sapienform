@@ -253,3 +253,52 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   from saturation. Same session also dropped 60% of gateway requests by matching
   `route=([a-z_]+)` against lines carrying `route=None`. Both caught before the spec was
   written; both are the same family as the four sampling errors already logged today.
+
+## 2026-08-14 (A1 / B1 build)
+
+- **The `agent` route points at a dead host while a live worker sits at the same port on
+  another one.** PR #1636 repointed `agent` from circe to `atlas-worker-agent-1` at
+  `100.121.214.30:8014`, which is unreachable (HTTP 000, 9,326 consecutive unreachable samples
+  over 2.64 h). The agent worker is actually **on circe**: `100.112.254.99:8014` answers
+  HTTP 200. The service name `atlas-worker-agent-1` is a misnomer (confirmed by Juniper). A
+  one-line route-table fix would restore Orion's agent lane. **Not taken** -- scope changes go
+  to Juniper (leash rule 7), and this is a live routing change.
+
+- **`_power_pressure` averages GPU watts where it should sum them.**
+  `orion/telemetry/biometrics_pipeline.py` takes `mean(power.gpu_power_watts)`, so a 3-GPU box
+  normalises identically to a 1-GPU box. Defensible for a self-relative EwmaBand, wrong for
+  anything cost-shaped. B1 adds `measurements.gpu_watts_total` as the sum and leaves the
+  pressure alone -- they are different quantities and both are now kept. Changing the pressure
+  itself is a live behaviour change to a shipped signal.
+
+- **A biometrics sample with no `timestamp` crashes the pipeline.** `_summarize` passes
+  `sample.get("timestamp")` straight into `BiometricsSummaryV1`, and an explicit `None`
+  overrides the field's `default_factory` rather than falling back to it, raising
+  `ValidationError`. Real collectors always send one, so this is latent -- found because a
+  test fixture omitted it. One-line fix (`or utc_now()`), not taken inside B1.
+
+- **B1 is only half-deployed and the missing half is the important one.** `orion-biometrics`
+  runs per-node (one compose parameterised by `NODE_NAME`), so rebuilding it on athena gives
+  athena real `chassis_watts` while **atlas and circe keep writing empty `measurements`**
+  (verified: 27 rows each in 15 min, 0 with measurements). atlas is the node with the highest
+  chassis draw and all the inference traffic, so the fleet-total gate stays unmet until the
+  merged image is deployed there. circe has no reachable BMC either way, so it will report
+  GPU and CPU units but never `chassis_watts` -- which is exactly what absent-is-not-zero is
+  for.
+
+- **First measured confirmation of "price the machine, not the chip":** athena live at
+  `chassis_watts 428-430` against `gpu_watts_total 48-53`. **The GPU is ~11% of the node's
+  draw.** Every cost estimate in this arc that priced GPU watts was pricing a ninth of the
+  bill, and this is now a stored number rather than an inference.
+
+- **A `docker compose up -d --build` served a stale layer and silently reverted a
+  live-verified change.** During B1, the second build of `orion-sql-writer` produced an image
+  whose `/app/app/models/biometrics_summary.py` lacked the `measurements` column even though
+  the file on disk in the build context had it -- so every summary row went back to NULL and
+  the deploy looked successful. `--no-cache` produced a correct image immediately. Root cause
+  not established: either Docker layer caching or a concurrent deploy from the shared checkout
+  (the collision already documented in `scripts/safe_docker_build.sh`'s header). **Operational
+  lesson: verify the artefact, not the build output.** `docker run --rm --entrypoint sh <image>
+  -c 'grep ...'` before starting the container catches it in one command; "Container Started"
+  does not. This is the same class as the graphify destructive-update incident -- tooling
+  reporting success while silently shipping older content.

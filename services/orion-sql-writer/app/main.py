@@ -30,6 +30,19 @@ async def lifespan(app: FastAPI):
 
     try:
         with engine.begin() as conn:
+            # ROADMAP B1. This MUST be applied before the writer serves traffic: _write_row
+            # filters payload keys against the mapper's columns, so the moment
+            # BiometricsSummarySQL declares `measurements` the key enters the INSERT. Against
+            # a database without the column that is psycopg2 UndefinedColumn -> ProgrammingError,
+            # and the only handlers here catch IntegrityError -- so ALL biometrics-summary
+            # persistence would stop, not just the new field, while the bus publish and the Hub
+            # panel keep looking healthy. Boot-time DDL is the existing convention for exactly
+            # this hazard (the chat_* statements below), so it lives here rather than in a
+            # hand-applied file an operator has to remember.
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS orion_biometrics_summary "
+                "ADD COLUMN IF NOT EXISTS measurements JSONB;"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )

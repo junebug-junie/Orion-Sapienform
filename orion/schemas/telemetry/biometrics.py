@@ -113,6 +113,32 @@ class BiometricsSummaryV1(BaseModel):
     constraint: Optional[str] = None
     telemetry_error_rate: float = 0.0
 
+    # Raw physical quantities in their own units, keyed with the unit in the name
+    # (chassis_watts, gpu_watts_total, fan_pct_max, temp_c_max, cpu_cores, load_1m, load_15m).
+    # Every other field on this model is normalised to 0-1, which is useful for anomaly
+    # detection and useless for cost: a band fraction cannot be summed across hosts, compared
+    # to last week, or turned into a kWh. `power_pressure = 0.798` says atlas is high against
+    # its own recent history and cannot say how many watts -- while iLO was reporting the real
+    # number all along.
+    #
+    # A key is ABSENT when the quantity is not measured on that node -- never 0.0. circe has
+    # no reachable BMC, so a zero would silently understate any fleet total that sums this
+    # dict. Absent-is-not-zero is the same rule the lane-occupancy instrument enforces for
+    # unreachable hosts, and for the same reason.
+    #
+    # None vs {} is a real distinction and consumers must respect it:
+    #   None -> the producer predates this field. Says NOTHING about the node.
+    #   {}   -> a current producer measured nothing it could vouch for.
+    # Defaulting this to {} would collapse the two and let a fleet total count a
+    # not-yet-upgraded node as "0 W measured" -- which is exactly what atlas looks like
+    # today, mid-rollout, while its iLO is demonstrably live.
+    #
+    # CONTAINMENT: `chassis_watts` is measured at the PSU and already includes
+    # `gpu_watts_total`. Never sum the two. For a fleet total use `chassis_watts` where
+    # present; `gpu_watts_total` is for nodes with no BMC, and for attributing what share of a
+    # node's draw is inference.
+    measurements: Optional[Dict[str, float]] = None
+
 
 class BiometricsInductionMetricV1(BaseModel):
     level: float = Field(0.0, ge=0.0, le=1.0)

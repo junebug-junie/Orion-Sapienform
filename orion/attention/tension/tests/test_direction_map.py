@@ -89,3 +89,35 @@ def test_channel_both_mapped_and_unmapped_raises(tmp_path):
     body = "channels:\n  cpu_pressure: up\nunmapped:\n  - cpu_pressure\n"
     with pytest.raises(DirectionMapError, match="both mapped and unmapped"):
         load_direction_map(_write(tmp_path, body))
+
+
+# ---------------------------------------------------------------------------
+# Regression: malformed sections must fail loudly, not silently (review)
+# ---------------------------------------------------------------------------
+
+
+def test_unmapped_as_scalar_raises_instead_of_becoming_a_set_of_characters(tmp_path):
+    """Caught in review 2026-08-14. `unmapped: context_gathering_ratio` (a scalar
+    instead of a list) silently became `frozenset({'_','n','a','i','r',...})`, so
+    the channel it named stayed mapped and kept voting -- a quietly-wrong map,
+    which is worse than a missing one because the run still reports clean."""
+    body = "channels:\n  cpu_pressure: up\nunmapped: context_gathering_ratio\n"
+    with pytest.raises(DirectionMapError, match="'unmapped' must be a list"):
+        load_direction_map(_write(tmp_path, body))
+
+
+def test_channels_as_list_raises_direction_map_error_not_attribute_error(tmp_path):
+    body = "channels:\n  - cpu_pressure\n"
+    with pytest.raises(DirectionMapError, match="'channels' must be a dict"):
+        load_direction_map(_write(tmp_path, body))
+
+
+def test_suffix_rules_as_list_raises(tmp_path):
+    body = "suffix_rules:\n  - '*_pressure'\n"
+    with pytest.raises(DirectionMapError, match="'suffix_rules' must be a dict"):
+        load_direction_map(_write(tmp_path, body))
+
+
+def test_non_mapping_top_level_raises(tmp_path):
+    with pytest.raises(DirectionMapError, match="top level must be a mapping"):
+        load_direction_map(_write(tmp_path, "- just\n- a\n- list\n"))

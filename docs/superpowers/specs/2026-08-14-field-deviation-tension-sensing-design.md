@@ -84,9 +84,21 @@ Per `(node, channel)` it holds an EWMA `(mu, var)` and a warm-up counter; an obs
 admits only when it deviates past `z_threshold` in the channel's *worse* direction.
 
 ```
-z      = (x - mu) / max(sqrt(var), sigma_floor)
+sigma  = max(sqrt(var), relative_sigma_floor * |mu|, 1e-12)
+z      = (x - mu) / sigma
 excess = relu(direction * z - z_threshold)
 ```
+
+**The floor is relative, and that is load-bearing** (fixed in review — the restored
+original used an absolute `sigma_floor = 0.02`). An absolute floor silently breaks the
+scale-freedom this whole design rests on, in the worst direction: a channel whose real
+variation is smaller than the floor can never admit anything, however large its *relative*
+move. Live evidence — `node:atlas / memory_pressure` over 10,528 ticks ranges 0.1109–0.1171
+(pstdev 8.8e-4), real continuous variation, and admitted **0 of 10,528** under the absolute
+floor because clearing it needed a ~0.03 absolute jump, a 26% relative move. It then
+appeared in the measurement's `never_admitted` list indistinguishable from a genuinely calm
+channel: an instrument structurally incapable of reading the state it reports. Post-fix,
+`memory_pressure` admits 539 times in the same 24h window.
 
 This solves scale disparity **within a channel over time**: a `thermal_pressure` rise and a
 `memory_pressure` rise both become "N sigma above this channel's own learned baseline."
@@ -128,11 +140,13 @@ abstention rather than a vote for last place.
 |---|---|
 | `impulse_k` | **Cancels outright.** A monotonic scaling cannot change a rank. Removed from the gate's competition path. |
 | `alpha` (EWMA memory) | One global scalar, derivable from channel autocorrelation time. |
+| `relative_sigma_floor` | One global scalar, and *relative* — so it scales with each channel rather than acting as a hidden absolute admission threshold. |
 | `z_threshold` | One global scalar with a single objective: admission rate. Not a per-signal weight. |
 | `worse` direction | One bit per channel, semantically known and falsifiable — get it backwards and the metric reads inverted, visibly. |
 | ~~signal→drive weights~~ | **Gone.** 69 lines of YAML replaced by zero. |
 
-Total hand-authored surface: **two global scalars and one sign bit per channel.**
+Total hand-authored surface: **three global scalars and one sign bit per channel** — none
+of them a cross-channel exchange rate, which is the property that matters.
 
 ### 4. The honest limit, and where magnitude re-enters
 
@@ -202,34 +216,38 @@ collateral damage last time.
    nothing on the wrong side; monotonic rescaling of one channel does not change the Borda
    ranking (the scale-freedom property, asserted directly).
 
-## Results (live, 2026-08-14)
+## Results (live, 2026-08-14, post-review)
 
 `scripts/analysis/measure_field_tension_admission.py --hours 24` against real
-`substrate_field_state`, **42,048 ticks**, 2026-08-13 15:55 → 2026-08-14 15:55 UTC:
+`substrate_field_state`, **42,047 ticks**, 2026-08-13 16:15 → 2026-08-14 16:15 UTC.
+
+These are the numbers **after** the review fixes below. The pre-fix run reported 36.47% /
+53.13% with an absolute `sigma_floor`; those figures were depressed by the floor silently
+excluding every small-variance channel, and are superseded rather than merely improved on.
 
 | Metric | Value | Note |
 |---|---|---|
-| **Admission rate** | **36.47%** | vs **0.064%** drives-era baseline — ~570× |
-| Mean admissions / admitting tick | 1.73 | |
-| **Top-1 share** | **53.13%** | vs the 96% `relational` monoculture that killed the old economy |
-| Distinct winners | 9 | `athena`, `atlas`, `substrate.execution`, `substrate.biometrics`, `circe`, `substrate.bus_synaptic`, `rpc_timeout`, `substrate.codebase`, `substrate.vision` |
-| Scorer disagreement rate | 25.72% | channels genuinely disagree about what matters ~¼ of ticks |
+| **Admission rate** | **48.30%** | vs **0.064%** drives-era baseline — ~755× |
+| Mean admissions / admitting tick | 1.93 | |
+| **Top-1 share** | **50.56%** | vs the 96% `relational` monoculture that killed the old economy |
+| Distinct winners | 10 | `athena`, `atlas`, `circe`, `substrate.bus_synaptic`, `substrate.execution`, `substrate.biometrics`, `substrate.route`, `rpc_timeout`, `substrate.codebase`, `substrate.vision` |
+| Scorer disagreement rate | 28.44% | channels genuinely disagree about what matters ~¼ of ticks |
 | Channels admitting ≥once | 23 of 33 | |
 
-**`z_threshold` sensitivity** (10,000-tick window), confirming it behaves as a single knob
-with a monotonic, interpretable response rather than a weight needing calibration:
+**`z_threshold` sensitivity** (10,000 most-recent ticks), confirming it behaves as a single
+knob with a monotonic, interpretable response rather than a weight needing calibration:
 
 | `z_threshold` | Admission rate | Top-1 share | Disagreement |
 |---|---|---|---|
-| 1.5 | 39.01% | 0.609 | 0.272 |
-| 2.5 | 16.71% | 0.548 | 0.150 |
-| 3.5 | 8.53% | 0.525 | 0.082 |
-| 5.0 | 6.08% | 0.497 | 0.059 |
-| 8.0 | 3.62% | 0.461 | 0.014 |
+| 1.5 | 49.94% | 0.520 | 0.289 |
+| 2.5 | 24.03% | 0.488 | 0.155 |
+| 3.5 | 13.50% | 0.462 | 0.092 |
+| 5.0 | 10.11% | 0.451 | 0.069 |
+| 8.0 | 6.49% | 0.378 | 0.032 |
 
-Even at the most conservative setting tried, admission is **3.62% — 56× the drives-era
-rate**. Discrimination *improves* as the threshold rises (top-1 share falls toward 0.5),
-so there is no admission-vs-monoculture tradeoff to split here.
+Even at the most conservative setting tried, admission is **6.49% — 101× the drives-era
+rate**. Discrimination *improves* as the threshold rises (top-1 share falls toward and past
+0.5), so there is no admission-vs-monoculture tradeoff to split here.
 
 ### Live-data findings worth their own follow-ups (not fixed in this patch)
 
@@ -239,17 +257,33 @@ so there is no admission-vs-monoculture tradeoff to split here.
   legitimately quiet; `transport_pressure`/`execution_load` are renamed-lane survivors and
   `staleness` is known-degenerate (below). Each needs its own metric-gate pass before anyone
   treats its silence as meaning "calm."
-- **560,007 subnormal coercions in 24h** (~13/tick). The `node:circe` decay-to-subnormal
-  pathology is not one node — it is widespread. These are channels nothing refreshes, being
-  multiplied toward zero by a generic decay loop, and they read as *calm* to any consumer that
-  does not check. This patch collapses them to a clean 0.0 and counts them; it does not fix
-  the producers.
-- **The decay-ratio probe caught the documented artifact live, mid-decay**, on two series:
-  `node:circe / reasoning_load` and `node:rpc_timeout / reliability_pressure`, both at
-  **ratio = 0.92 exactly** — the `NODE_DECAY_CHANNELS` generic staleness-decay loop in
-  `services/orion-field-digester/app/digestion/decay.py`, multiplying an unrefreshed channel
-  by 0.92 every tick. Neither channel is calm; both are unmaintained and heading to zero,
-  and any consumer reading them without this check would score them as at-rest.
+- **19 distinct (node, channel) series** are decayed into subnormal territory — out of ~130
+  live series. These are channels nothing refreshes, being multiplied toward zero by a
+  generic decay loop, and they read as *calm* to any consumer that does not check. This
+  patch collapses them to a clean 0.0 and counts them; it does not fix the producers.
+
+  An earlier draft cited **559,291 subnormal coercions** here and concluded the pathology was
+  "widespread." That number is an observation×tick count — 19 permanently dead series times
+  the tick count — and supported no such conclusion. Caught in review; the report now carries
+  a distinct-series field alongside it. The conclusion happens to survive (19 of ~130 is real),
+  but it did not follow from the number originally cited for it.
+- **The decay probe caught the documented artifact live in both of its states.**
+
+  *Mid-decay*, 4 series all at **ratio = 0.92 exactly** — the `NODE_DECAY_CHANNELS` generic
+  staleness-decay loop in `services/orion-field-digester/app/digestion/decay.py`, multiplying
+  an unrefreshed channel by 0.92 every tick: `node:athena / conversation_load`,
+  `node:athena / repair_pressure`, `node:circe / reasoning_load`,
+  `node:rpc_timeout / reliability_pressure`.
+
+  *Bottomed out*, 7 series pinned at ~2.96e-323 and completely invisible to the ratio probe
+  (successive ratios are exactly 1.0, so it rejects them): `staleness` on **three** nodes,
+  plus `node:athena`'s `avg_step_chars_pressure`, `field_coherence_warning`,
+  `harness_step_load`, and `turn_incompletion`. This explains an entry in the
+  `never_admitted` list above — **`staleness` never admits because it is dead, not because
+  it is calm**, which is exactly the confusion this whole detector exists to prevent.
+
+  Neither state is calm; all 11 are unmaintained, and any consumer reading them without this
+  check would score them as at-rest.
 
   **A first version of this patch reported "decay-suspect series: none" here, and that was a
   bug in the instrument, not a clean result.** The probe was being fed the subnormal-coerced
@@ -260,3 +294,12 @@ so there is no admission-vs-monoculture tradeoff to split here.
   regression test (`test_raw_value_survives_coercion_so_the_decay_probe_can_still_see_it`).
   Recorded here rather than quietly fixed because it is a textbook instance of this repo's
   own recurring failure mode: a metric that cannot represent the state it claims to measure.
+
+  **A second, deeper instance of the same bug was then found by the review**, in the same
+  function: the ratio-constancy check used an *absolute* tolerance (`1e-6`). Subnormal floats
+  carry only ~10 significant bits, so a perfect 0.92 decay at 3e-321 has a successive-ratio
+  spread of ~1.7e-3 — far outside that tolerance. The probe was blind in precisely the
+  magnitude band it exists to police. Worse, the regression test written for the *first* fix
+  asserted on `1e-300` — a normal float — while naming `3e-321` two lines above it, so it
+  passed for the wrong reason and concealed this. Tolerance is now relative; the test fixture
+  now uses genuine subnormals and asserts that it does.

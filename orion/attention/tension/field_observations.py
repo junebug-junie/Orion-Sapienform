@@ -70,9 +70,25 @@ def iter_observations(field_json: Mapping[str, Any]) -> Iterator[Observation]:
             )
 
 
+# Ratios of a real decay loop agree to within this *relative* tolerance.
+#
+# Absolute tolerance was wrong and was caught in review (2026-08-14): subnormal
+# floats carry only ~10 significant bits, so a perfect 0.92-per-tick decay in the
+# 3e-321 range has a successive-ratio spread of ~1.7e-3 -- far outside the 1e-6
+# absolute tolerance originally used. The probe was therefore blind in exactly
+# the magnitude range it exists to police, while reporting "none". 2% is
+# comfortably above subnormal quantisation noise and far below the spread of any
+# genuinely varying channel (whose successive ratios swing by tens of percent).
+_DECAY_RATIO_REL_TOL = 2e-2
+
+# Values at or below this are the *end state* of the decay artifact rather than
+# any real reading -- ~1e-308 is the smallest normal double.
+SUBNORMAL_PINNED_CEILING = 1e-300
+
+
 def geometric_decay_ratio(series: list[float]) -> float | None:
     """Return the constant successive ratio of `series` if it is a clean
-    geometric decay, else None.
+    geometric decay *in progress*, else None.
 
     Detects the decayed-to-zero artifact CLAUDE.md documents for
     `node:substrate.route` (a generic staleness-decay loop multiplying an
@@ -81,8 +97,13 @@ def geometric_decay_ratio(series: list[float]) -> float | None:
     calm -- it is unmaintained -- and the measurement names it rather than
     folding it into an admission-rate denominator as if it were healthy signal.
 
+    Catches only decay *in progress*. A series that has already bottomed out --
+    pinned at a constant subnormal, or at exactly 0.0 -- has no informative
+    ratio and is reported by `subnormal_pinned()` instead. Both are needed: the
+    end state is what most dead channels actually look like at any given moment.
+
     Returns None for series that are too short, contain a non-positive value, or
-    whose successive ratios are not near-constant.
+    whose successive ratios are not near-constant in relative terms.
     """
     if len(series) < 4:
         return None
@@ -92,9 +113,33 @@ def geometric_decay_ratio(series: list[float]) -> float | None:
             return None
         ratios.append(cur / prev)
     mean = sum(ratios) / len(ratios)
-    # A real decay loop is exact to floating point; a live channel is not.
+    # A real decay loop holds its ratio; a live channel does not.
     if mean <= 0.0 or mean >= 1.0:
         return None
-    if any(abs(r - mean) > 1e-6 for r in ratios):
+    if any(abs(r - mean) > _DECAY_RATIO_REL_TOL * mean for r in ratios):
         return None
     return mean
+
+
+def subnormal_pinned(series: list[float]) -> bool:
+    """True when `series` has bottomed out at the end state of the decay artifact.
+
+    The shape caught: every value a non-zero magnitude at or below
+    `SUBNORMAL_PINNED_CEILING`. Successive ratios are then exactly 1.0, so
+    `geometric_decay_ratio()` rejects it (`mean >= 1.0`) -- yet no real channel
+    naturally rests at 3e-323. Only a decay loop produces that, so it is positive
+    evidence of an unmaintained channel rather than a calm one.
+
+    **Exactly-0.0 series are deliberately NOT reported here**, even though they
+    are the other end state of the same artifact. A channel genuinely at rest
+    reads 0.0 too (`repair_pressure` with nothing to repair, say), and the two
+    are indistinguishable without history predating the decay. Flagging them
+    would trade a false-clean for a false-alarm on most of the channel set; the
+    honest position is that this detector cannot separate them and does not try.
+
+    Added in review 2026-08-14 after a live check found 15 series sitting in the
+    `0 < v < 1e-300` band in a 30-minute window with zero of them flagged.
+    """
+    if len(series) < 4:
+        return False
+    return all(0.0 < abs(v) <= SUBNORMAL_PINNED_CEILING for v in series)

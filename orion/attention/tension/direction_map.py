@@ -64,6 +64,22 @@ def load_direction_map(path: Path | str | None = None) -> DirectionMap:
     if not resolved.is_file():
         raise DirectionMapError(f"direction map not found: {resolved}")
     raw = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise DirectionMapError(f"{resolved}: top level must be a mapping, got {type(raw).__name__}")
+
+    # Shape-check each section before iterating. Without this, `channels:` given
+    # as a list raises a bare AttributeError, and -- caught in review 2026-08-14
+    # -- `unmapped:` given as a scalar string silently becomes a frozenset of its
+    # *characters*, so the channel it names stays mapped and keeps voting. A
+    # malformed map must fail loudly; a quietly-wrong one is worse than a missing
+    # one because the run still reports clean.
+    for section, expected in (("channels", dict), ("suffix_rules", dict), ("unmapped", list)):
+        value = raw.get(section)
+        if value is not None and not isinstance(value, expected):
+            raise DirectionMapError(
+                f"{resolved}: '{section}' must be a {expected.__name__}, "
+                f"got {type(value).__name__}"
+            )
 
     exact: Dict[str, Worse] = {}
     for channel, worse in (raw.get("channels") or {}).items():

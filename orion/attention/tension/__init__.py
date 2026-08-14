@@ -18,6 +18,7 @@ from orion.attention.tension.field_observations import (
     Observation,
     geometric_decay_ratio,
     iter_observations,
+    subnormal_pinned,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "geometric_decay_ratio",
     "iter_observations",
     "load_direction_map",
+    "subnormal_pinned",
 ]

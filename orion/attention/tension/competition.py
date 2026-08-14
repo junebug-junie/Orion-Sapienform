@@ -13,9 +13,17 @@ The scale-disparity argument this module exists to embody
   combined by Borda count (`orion.attention.rank_aggregation`), which is
   commensurable across scorers by construction.
 
-Targets are nodes. Scorers are channels. A channel with nothing admitted this
-tick submits an empty ballot, which `aggregate_borda` already treats as
-abstention rather than a vote for last place.
+Targets are nodes. Scorers are channels. **A channel with nothing admitted this
+tick is omitted from the ballot set entirely** -- `admitted` only gains a key when
+something is admitted -- so a quiet channel contributes no points to anyone.
+
+(An earlier version of this docstring claimed such a channel "submits an empty
+ballot, which `aggregate_borda` treats as abstention." Both halves were wrong and
+were corrected in review 2026-08-14: no ballot is submitted at all, and an
+actually-empty ballot passed to `_borda_points_for_scorer` sorts every target to
+`-inf` and hands each the same `(n-1)/2` points -- harmless only because it is a
+constant offset, not because it is abstention. Noted for any future caller that
+does pass empty ballots explicitly.)
 """
 from __future__ import annotations
 

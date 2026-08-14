@@ -39,6 +39,7 @@ from orion.attention.tension.direction_map import load_direction_map  # noqa: E4
 from orion.attention.tension.field_observations import (  # noqa: E402
     geometric_decay_ratio,
     iter_observations,
+    subnormal_pinned,
 )
 
 logger = logging.getLogger("measure_field_tension_admission")
@@ -81,16 +82,47 @@ def open_readonly_connection(dsn: str):
 
 
 def fetch_ticks(conn, hours: int, limit: int | None):
-    sql = (
-        "SELECT generated_at, field_json FROM substrate_field_state "
-        "WHERE generated_at > now() - make_interval(hours => %s) "
-        "ORDER BY generated_at ASC"
-    )
-    params: list = [hours]
+    """Stream ticks in chronological order.
+
+    Two review fixes (2026-08-14) are load-bearing here:
+
+    1. **Server-side (named) cursor.** psycopg2's default client-side cursor
+       buffers the entire result set on `execute` despite this function reading
+       like a generator -- measured at ~58 MB RSS per 2,000 rows, i.e. ~1.2 GB
+       for the documented 24h/42k-tick run and ~8.5 GB at `--hours 168`. On a
+       host with a documented OOM-freeze incident that is a real risk, not a
+       tidiness point.
+    2. **`--limit` takes the most RECENT N ticks, not the oldest.** `ORDER BY
+       generated_at ASC LIMIT n` returns the *start* of the window; the gate
+       needs chronological order, so `DESC` is not the fix. The subquery below
+       selects the newest N and re-sorts them ascending.
+    """
     if limit:
-        sql += " LIMIT %s"
-        params.append(limit)
-    with conn.cursor() as cur:
+        sql = (
+            "SELECT generated_at, field_json FROM ("
+            "  SELECT generated_at, field_json FROM substrate_field_state"
+            "  WHERE generated_at > now() - make_interval(hours => %s)"
+            "  ORDER BY generated_at DESC LIMIT %s"
+            ") recent ORDER BY generated_at ASC"
+        )
+        params: list = [hours, limit]
+    else:
+        sql = (
+            "SELECT generated_at, field_json FROM substrate_field_state "
+            "WHERE generated_at > now() - make_interval(hours => %s) "
+            "ORDER BY generated_at ASC"
+        )
+        params = [hours]
+
+    # psycopg2 refuses a named cursor outside a transaction, and the connection
+    # is opened with autocommit on. The read-only enforcement is a *session*
+    # setting (`SET default_transaction_read_only`) already committed by then, so
+    # it survives this flip.
+    conn.autocommit = False
+
+    # Named cursor => server-side, streamed in `itersize` batches.
+    with conn.cursor(name="field_tension_ticks") as cur:
+        cur.itersize = 2000
         cur.execute(sql, params)
         for generated_at, field_json in cur:
             if isinstance(field_json, str):
@@ -107,7 +139,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--z-threshold", type=float, default=1.5)
-    parser.add_argument("--sigma-floor", type=float, default=0.02)
+    parser.add_argument(
+        "--relative-sigma-floor",
+        type=float,
+        default=0.01,
+        help="minimum sigma as a fraction of the channel's own |mean| (see DeviationGate)",
+    )
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = parser.parse_args()
@@ -123,7 +160,7 @@ def main() -> int:
         gate=DeviationGate(
             alpha=args.alpha,
             z_threshold=args.z_threshold,
-            sigma_floor=args.sigma_floor,
+            relative_sigma_floor=args.relative_sigma_floor,
             warmup=args.warmup,
         ),
         directions=load_direction_map(),
@@ -133,6 +170,12 @@ def main() -> int:
     admitting_ticks = 0
     total_admissions = 0
     subnormal_total = 0
+    # Observation-count vs distinct-series count are very different claims. The
+    # first draft cited only the former (560,166 in 24h) to argue the decay
+    # pathology was "widespread" -- but that number is a handful of permanently
+    # dead series multiplied by the tick count, and supports no such conclusion.
+    # Caught in review 2026-08-14.
+    subnormal_series: set[tuple[str, str]] = set()
     winners: Counter[str] = Counter()
     disagreements = 0
     channel_admissions: Counter[str] = Counter()
@@ -151,6 +194,8 @@ def main() -> int:
 
             for obs in iter_observations(field_json):
                 channels_seen.add(obs.channel)
+                if obs.coerced_subnormal:
+                    subnormal_series.add((obs.node_id, obs.channel))
                 tail = tails[(obs.node_id, obs.channel)]
                 # RAW, not coerced: `geometric_decay_ratio` rejects series with a
                 # non-positive value, so feeding it the subnormal-collapsed value
@@ -191,17 +236,20 @@ def main() -> int:
     unmapped_seen = sorted(channels_seen - mapped)
 
     decay_suspect = []
+    pinned = []
     for (node_id, channel), tail in sorted(tails.items()):
         ratio = geometric_decay_ratio(tail)
         if ratio is not None:
             decay_suspect.append({"node": node_id, "channel": channel, "ratio": round(ratio, 6)})
+        elif subnormal_pinned(tail):
+            pinned.append({"node": node_id, "channel": channel, "value": tail[-1]})
 
     report = {
         "window_hours": args.hours,
         "params": {
             "alpha": args.alpha,
             "z_threshold": args.z_threshold,
-            "sigma_floor": args.sigma_floor,
+            "relative_sigma_floor": args.relative_sigma_floor,
             "warmup": args.warmup,
         },
         "ticks": ticks,
@@ -230,8 +278,10 @@ def main() -> int:
             "unmapped_seen": unmapped_seen,
         },
         "data_quality": {
-            "subnormal_coercions": subnormal_total,
+            "subnormal_coercion_observations": subnormal_total,
+            "subnormal_distinct_series": len(subnormal_series),
             "decay_suspect_series": decay_suspect,
+            "subnormal_pinned_series": pinned,
         },
     }
 
@@ -262,13 +312,21 @@ def main() -> int:
     if unmapped_seen:
         print(f"unmapped (inert by design): {', '.join(unmapped_seen)}")
     print(f"\n=== Data quality ===")
-    print(f"subnormal coercions       {subnormal_total}")
+    print(f"subnormal observations    {subnormal_total}")
+    print(f"subnormal DISTINCT series {len(subnormal_series)}   (the observation count above "
+          f"is this x tick count, not independent evidence)")
     if decay_suspect:
-        print(f"decay-suspect series ({len(decay_suspect)}) -- NOT calm, unmaintained:")
+        print(f"decay-suspect, mid-decay ({len(decay_suspect)}) -- NOT calm, unmaintained:")
         for entry in decay_suspect[:10]:
             print(f"  {entry['node']:<22} {entry['channel']:<30} ratio={entry['ratio']}")
     else:
-        print("decay-suspect series      none")
+        print("decay-suspect, mid-decay  none")
+    if pinned:
+        print(f"decay-suspect, bottomed out ({len(pinned)}) -- pinned subnormal, reads as calm:")
+        for entry in pinned[:10]:
+            print(f"  {entry['node']:<22} {entry['channel']:<30} value={entry['value']:.3e}")
+    else:
+        print("decay-suspect, bottomed out none")
     print()
     return 0
 

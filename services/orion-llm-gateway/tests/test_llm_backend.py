@@ -12,6 +12,7 @@ from app.llm_backend import (  # noqa: E402
     _extract_text_from_openai_response,
     _extract_text_from_ollama_response,
     _extract_vector_from_openai_response,
+    _served_model,
     _split_think_blocks,
     _serialize_messages,
     _execute_llamacpp_native_completion,
@@ -98,6 +99,30 @@ class TestLLMBackendHelpers(unittest.TestCase):
             ]
         }
         self.assertEqual(_extract_reasoning_from_openai_response(data), "hidden rationale")
+
+    def test_served_model_prefers_raw_echoed_model_over_requested_label(self) -> None:
+        """Confirmed live 2026-08-14: requesting "Active-GGUF-Model" against
+        the chat route actually served "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf" --
+        the backend's own echoed model id, not the route-alias label, is the
+        honest value."""
+        result = {"raw": {"model": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"}}
+        self.assertEqual(
+            _served_model(result, "Active-GGUF-Model"),
+            "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
+        )
+
+    def test_served_model_falls_back_to_requested_label_when_raw_has_no_model(self) -> None:
+        # llama.cpp's native /completion endpoint and every error-path return
+        # in llm_backend.py return "raw": {} -- must degrade to the request
+        # label, never to None.
+        self.assertEqual(_served_model({"raw": {}}, "Active-GGUF-Model"), "Active-GGUF-Model")
+        self.assertEqual(_served_model({}, "Active-GGUF-Model"), "Active-GGUF-Model")
+        self.assertEqual(_served_model({"raw": None}, "Active-GGUF-Model"), "Active-GGUF-Model")
+
+    def test_served_model_falls_back_when_raw_model_is_blank_or_wrong_type(self) -> None:
+        self.assertEqual(_served_model({"raw": {"model": ""}}, "req"), "req")
+        self.assertEqual(_served_model({"raw": {"model": "   "}}, "req"), "req")
+        self.assertEqual(_served_model({"raw": {"model": 123}}, "req"), "req")
 
 
 class TestLLMBackendExecution(unittest.TestCase):

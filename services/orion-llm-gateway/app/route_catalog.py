@@ -25,6 +25,7 @@ class RouteHealthEntry:
     status: str
     latency_ms: Optional[int]
     last_checked_at: Optional[str]
+    model: Optional[str] = None
 
 
 _cache: Dict[str, RouteHealthEntry] = {}
@@ -36,7 +37,40 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
+async def _probe_model(target: RouteTarget) -> Optional[str]:
+    """Best-effort read of the model actually loaded behind a route.
+
+    `target.model` (the route table's configured label, e.g.
+    "Active-GGUF-Model") names a route, not necessarily a specific weights
+    file -- confirmed live 2026-08-14: llama.cpp's OpenAI-compat
+    `/v1/models` echoes the real served model
+    ("Qwen3.6-35B-A3B-UD-Q5_K_M.gguf") regardless of what alias was
+    requested, the same fact `_served_model()` in llm_backend.py uses for
+    per-call responses. This is the equivalent for the route catalog: a
+    point-in-time "what's actually loaded right now" read, not a per-request
+    value. Fails open to None on any error, timeout, or unexpected shape --
+    a route health check must never fail because a model name couldn't be
+    read.
+    """
+    url = f"{target.url.rstrip('/')}/v1/models"
+    try:
+        timeout = float(settings.llm_route_health_timeout_sec or 1.5)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+    except Exception:
+        return None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list) or not data:
+        return None
+    first = data[0]
+    model_id = first.get("id") if isinstance(first, dict) else None
+    return model_id if isinstance(model_id, str) and model_id.strip() else None
+
+
+async def _probe_health(target: RouteTarget) -> tuple[str, Optional[int]]:
     url = f"{target.url.rstrip('/')}/health"
     start = time.monotonic()
     status = "down"
@@ -51,6 +85,22 @@ async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
         if latency_ms is None:
             latency_ms = int((time.monotonic() - start) * 1000)
         status = "down"
+    return status, latency_ms
+
+
+async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
+    # Health and model are two independent HTTP calls to the same backend --
+    # run them concurrently rather than sequentially (review finding,
+    # 2026-08-14: sequential could ~double worst-case refresh latency across
+    # 4 routes). The model result is only trusted when health reports "up";
+    # firing it unconditionally costs one (fail-open, cheap) extra request
+    # when a route is down, in exchange for a bounded refresh in the common
+    # case where routes are healthy.
+    (status, latency_ms), model = await asyncio.gather(
+        _probe_health(target), _probe_model(target)
+    )
+    if status != "up":
+        model = None
     return RouteHealthEntry(
         route_id=route_id,
         served_by=target.served_by,
@@ -58,6 +108,7 @@ async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
         status=status,
         latency_ms=latency_ms,
         last_checked_at=_utc_now_iso(),
+        model=model,
     )
 
 
@@ -95,6 +146,7 @@ def _entry_to_dict(entry: RouteHealthEntry) -> Dict[str, Any]:
         "status": entry.status,
         "latency_ms": entry.latency_ms,
         "last_checked_at": entry.last_checked_at,
+        "model": entry.model,
     }
 
 
@@ -116,6 +168,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "status": "not_configured",
                     "latency_ms": None,
                     "last_checked_at": None,
+                    "model": None,
                 }
             )
         else:
@@ -127,6 +180,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "status": "unknown",
                     "latency_ms": None,
                     "last_checked_at": None,
+                    "model": None,
                 }
             )
     return {

@@ -20,6 +20,7 @@ from orion.schemas.situation import (
     PlaceContextV1,
     PresenceContextV1,
     RequestorContextV1,
+    RuntimeContextV1,
     SituationAffordanceV1,
     SituationBriefV1,
     SituationDiagnosticsV1,
@@ -35,6 +36,7 @@ from orion.schemas.situation import (
 _LOCK = threading.Lock()
 _SITUATION_CACHE: dict[str, tuple[datetime, SituationBriefV1, SituationPromptFragmentV1]] = {}
 _WEATHER_CACHE: dict[str, tuple[datetime, EnvironmentContextV1]] = {}
+_RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
 _SESSION_LAST_USER_TURN: dict[str, datetime] = {}
 _SESSION_LAST_ORION_TURN: dict[str, datetime] = {}
 
@@ -65,6 +67,11 @@ class SituationSettings:
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
+    runtime_enabled: bool
+    runtime_route: str
+    runtime_ttl_seconds: int
+    runtime_probe_timeout_sec: float
+    llm_gateway_base_url: str
     default_requestor: str
     presence_persist_allowed: bool
 
@@ -106,6 +113,15 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_perception_stream_id", "cam0")
         ),
         lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
+        runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
+        runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
+        runtime_ttl_seconds=int(getattr(settings, "orion_situation_runtime_ttl_seconds", 120)),
+        runtime_probe_timeout_sec=float(
+            getattr(settings, "orion_situation_runtime_probe_timeout_sec", 2.0)
+        ),
+        llm_gateway_base_url=str(
+            getattr(settings, "cortex_exec_llm_gateway_url", "http://llm-gateway:8210")
+        ),
         default_requestor=str(getattr(settings, "orion_presence_default_requestor", "Juniper")),
         presence_persist_allowed=bool(getattr(settings, "orion_presence_persist_allowed", False)),
     )
@@ -164,6 +180,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
     perception_ctx = _build_perception_context(cfg, diagnostics)
+    runtime_ctx = _build_runtime_context(cfg, diagnostics)
     surface_ctx = _build_surface_context(ctx)
     affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
@@ -177,6 +194,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
             "phase": phase_ctx.phase_change,
             "surface": surface_ctx.surface,
             "perception": perception_ctx.source,
+            "runtime": runtime_ctx.source,
         },
         requestor=presence.requestor,
         presence=presence,
@@ -187,6 +205,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
         agenda=agenda_ctx,
         lab=lab_ctx,
         perception=perception_ctx,
+        runtime=runtime_ctx,
         surface=surface_ctx,
         affordances=affordances,
         diagnostics=diagnostics,
@@ -496,6 +515,58 @@ def _build_lab_context(cfg: SituationSettings) -> LabContextV1:
     return LabContextV1(available=False, source=cfg.lab_provider, thermal_risk="unknown", power_risk="unknown")
 
 
+def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
+    """Live read of what model is actually serving `cfg.runtime_route`.
+
+    Hits orion-llm-gateway's GET /routes (already health-cached there 15s;
+    see route_catalog.py's `_probe_model`) rather than probing the backend
+    directly -- the gateway already owns route->backend resolution, so this
+    reuses that instead of re-deriving it. Mirrors `_fetch_weather`'s shape:
+    a plain urlopen with a short timeout, raising on any failure so the
+    caller's try/except degrades to unavailable rather than partial/guessed
+    data.
+    """
+    url = f"{cfg.llm_gateway_base_url.rstrip('/')}/routes"
+    with urlopen(url, timeout=cfg.runtime_probe_timeout_sec) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    routes = payload.get("routes") if isinstance(payload, dict) else None
+    if not isinstance(routes, list):
+        raise ValueError("routes payload missing/malformed")
+    entry = next((r for r in routes if isinstance(r, dict) and r.get("id") == cfg.runtime_route), None)
+    if entry is None:
+        raise ValueError(f"route {cfg.runtime_route!r} not in /routes response")
+    model_id = entry.get("model")
+    return RuntimeContextV1(
+        available=bool(entry.get("status") == "up" and isinstance(model_id, str) and model_id.strip()),
+        route=cfg.runtime_route,
+        model_id=model_id if isinstance(model_id, str) and model_id.strip() else None,
+        served_by=entry.get("served_by"),
+        backend=entry.get("backend"),
+        source="orion-llm-gateway",
+    )
+
+
+def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationDiagnosticsV1) -> RuntimeContextV1:
+    if not cfg.runtime_enabled:
+        diagnostics.provider_status["runtime"] = "disabled"
+        return RuntimeContextV1(available=False, route=cfg.runtime_route, source="disabled")
+    cache_key = cfg.runtime_route
+    with _LOCK:
+        cached = _RUNTIME_CACHE.get(cache_key)
+        if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.runtime_ttl_seconds:
+            return cached[1]
+    try:
+        runtime_ctx = _fetch_runtime_context(cfg)
+        with _LOCK:
+            _RUNTIME_CACHE[cache_key] = (datetime.now(UTC), runtime_ctx)
+        diagnostics.provider_status["runtime"] = "ok" if runtime_ctx.available else "unavailable"
+        return runtime_ctx
+    except Exception as exc:
+        diagnostics.provider_status["runtime"] = "error"
+        diagnostics.provider_errors["runtime"] = str(exc)
+        return RuntimeContextV1(available=False, route=cfg.runtime_route, source="error")
+
+
 def _build_perception_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> PerceptionContextV1:
@@ -655,6 +726,10 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Never phrase this as "the room is empty/quiet" -- not seeing and
         # seeing nothing are different claims, and only one of them is true.
         lines.append("Room: haven't seen anything recently; do not infer.")
+    if brief.runtime.available and brief.runtime.model_id:
+        lines.append(f"You are currently running on model: {brief.runtime.model_id} (route={brief.runtime.route}).")
+    else:
+        lines.append("Current model: unavailable; do not infer or guess a name.")
     relevance = [f"{a.kind}: {a.suggestion}" for a in brief.affordances if a.trigger_relevance == "active"]
     cautions = [
         "Situation context is grounding, not a requirement to mention.",

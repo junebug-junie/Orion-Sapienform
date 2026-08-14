@@ -15,7 +15,13 @@ The gateway no longer runs tissue ingest on chat turns. Result `spark_meta` is t
 
 Turn novelty and shift classification live in `spark_meta.turn_change_appraisal`, patched asynchronously by `orion-memory-consolidation` on `orion:chat:history:spark_meta:patch`. See `services/orion-memory-consolidation/README.md`.
 
-## Contracts
+### Model identity (`model_used`, 2026-08-14)
+
+`ChatResultPayload.model_used` is meant to be the model that actually served the request. Before this date it was silently wrong for every route: `run_llm_chat()` stamped it from the **requested route-table label** (e.g. `"Active-GGUF-Model"`), not the served weights -- confirmed live, that placeholder even leaked into a log line claiming the metacog route ran `llama-3-8b-instruct-q4_k_m` when it was actually running Qwen3-8B.
+
+Fix: `llm_backend.py`'s `_served_model()` now prefers the backend's own echoed model id (present in `result["raw"]["model"]` for both the OpenAI-compat and Ollama-native response shapes) and only falls back to the requested label when the backend didn't echo one (llama.cpp's native `/completion` endpoint, or any error path). This is a live-serving-time fix, not a schema change -- `model_used` was already a first-class field, it just held the wrong value.
+
+`route_catalog.py`'s `GET /routes` got the equivalent point-in-time fix: `_probe_model()` does a live `/v1/models` read against each route's backend (only when its `/health` probe is up) and surfaces the real id as the `model` field, cached with the same 15s TTL as route health. `services/orion-cortex-exec`'s situation brief reads this endpoint to tell Orion what it's currently running on -- see that service's README, "Situation brief" section.
 
 ### Consumed Channels
 | Channel | Env Var | Kind | Description |
@@ -61,7 +67,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | Path | Description |
 | :--- | :--- |
 | `GET /health` | Service liveness and configured route keys. |
-| `GET /routes` | Route catalog from `LLM_GATEWAY_ROUTE_TABLE_JSON` with `default_route=chat` and per-route `id`, `served_by`, `backend`, `status`, `latency_ms`, `last_checked_at`. |
+| `GET /routes` | Route catalog from `LLM_GATEWAY_ROUTE_TABLE_JSON` with `default_route=chat` and per-route `id`, `served_by`, `backend`, `status`, `latency_ms`, `last_checked_at`, `model` (live-probed `/v1/models` id of what's actually loaded, `null` if the route is down or the probe fails -- see "Model identity" below). |
 | `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `POST /v1/messages` | Anthropic Messages passthrough to upstream llama.cpp `/v1/messages` via route table. |

@@ -180,6 +180,28 @@ class Settings(BaseSettings):
         "cam0", alias="ORION_SITUATION_PERCEPTION_STREAM_ID"
     )
     orion_situation_lab_provider: str = Field("stub", alias="ORION_SITUATION_LAB_PROVIDER")
+    # 2026-08-14: "does Orion know what model it's running on" (Juniper).
+    # Default ON -- unlike perception, this carries no private-home content,
+    # just a route name and a model id already visible in orion-llm-gateway's
+    # own logs. Probes orion-llm-gateway's GET /routes (already cached there
+    # 15s) for the `orion_situation_runtime_route`'s live model id; never
+    # infers, degrades to unavailable on any failure. See RuntimeContextV1
+    # in orion/schemas/situation.py.
+    orion_situation_runtime_enabled: bool = Field(True, alias="ORION_SITUATION_RUNTIME_ENABLED")
+    orion_situation_runtime_route: str = Field("chat", alias="ORION_SITUATION_RUNTIME_ROUTE")
+    cortex_exec_llm_gateway_url: str = Field(
+        "http://llm-gateway:8210", alias="CORTEX_EXEC_LLM_GATEWAY_URL"
+    )
+    orion_situation_runtime_probe_timeout_sec: float = Field(
+        2.0, alias="ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC"
+    )
+    # Shorter than weather_ttl_seconds (600s): a model swap on the chat route
+    # is an operator action Orion should reflect fairly promptly, and the
+    # underlying orion-llm-gateway /routes read is already cached there 15s,
+    # so this cache is a second, cheap layer on top, not the only one.
+    orion_situation_runtime_ttl_seconds: int = Field(
+        120, alias="ORION_SITUATION_RUNTIME_TTL_SECONDS"
+    )
     orion_presence_session_ttl_seconds: int = Field(14400, alias="ORION_PRESENCE_SESSION_TTL_SECONDS")
     orion_presence_default_requestor: str = Field("Juniper", alias="ORION_PRESENCE_DEFAULT_REQUESTOR")
     orion_presence_persist_allowed: bool = Field(False, alias="ORION_PRESENCE_PERSIST_ALLOWED")

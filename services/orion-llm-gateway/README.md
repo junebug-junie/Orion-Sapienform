@@ -85,8 +85,8 @@ Optional per-route upstream model alias in the route table:
 ```json
 {
   "agent": {
-    "url": "http://100.121.214.30:8011",
-    "served_by": "atlas-worker-1",
+    "url": "http://100.112.254.99:8014",
+    "served_by": "circe-worker-agent-1",
     "backend": "llamacpp",
     "model": "qwen-coder-local"
   }
@@ -158,14 +158,22 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > Route isolation should be expressed through `LLM_GATEWAY_ROUTE_TABLE_JSON`, not by running multiple gateways.
 > **Updated 2026-08-14**: `agent` split off from `chat` as the default. It used to alias
 > `chat`'s worker (merged mode, below) because no distinct agent-lane model existed yet.
-> Now that Muse Glimmer is live on Atlas's dedicated agent-lane worker
-> (`atlas-worker-agent-1`, port 8014), `agent` points there instead by default.
+> Now that Muse Glimmer is live on Circe's dedicated agent-lane worker (port 8014),
+> `agent` points there instead by default.
+>
+> **Do not infer physical host from the `atlas-*` naming** anywhere in this file --
+> `ATLAS_AGENT_*` env vars and the `atlas-agent` compose service/container name are a
+> fixed naming convention for this worker *pattern*, reused across whichever physical
+> host runs it (the same reason `orion-atlas-llamacpp-chat`, below, runs on Circe
+> hardware despite its name). An earlier version of this doc pointed `agent` at
+> Atlas's IP based on that naming alone -- wrong; nothing was listening there, and the
+> gateway correctly reported `agent` as down until this was corrected the same day.
 
 ### Route table example (default: split agent mode)
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.121.214.30:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.112.254.99:8014","served_by":"circe-worker-agent-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
   "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
 }'

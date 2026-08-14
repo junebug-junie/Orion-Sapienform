@@ -294,7 +294,12 @@ async def handle_memory_turn_persisted(
         and existing_appraisal.get("turn_change_status") == "ok"
     ):
         return
-    open_row = await window_store._get_open_window()
+    # Prior turns for classification come from this turn's OWN platform window.
+    # Classifying a Juniper turn against a backdrop of NPC dialogue (or the
+    # reverse) was scoring novelty and topic shift against an unrelated
+    # conversation -- the same global-cursor bug, showing up in the classifier
+    # rather than in the queue.
+    open_row = await window_store._get_open_window(turn.source_platform)
     prior_turns = (
         await window_store.get_window_turns(open_row["memory_window_id"])
         if open_row is not None
@@ -311,13 +316,15 @@ async def handle_memory_turn_persisted(
     except Exception:
         logger.exception("turn_change_signal_publish_failed corr=%s", turn.correlation_id)
     await window_store.append_turn(turn, scores=patch_fields)
-    open_row = await window_store._get_open_window()
+    open_row = await window_store._get_open_window(turn.source_platform)
     window_turns = (
         await window_store.get_window_turns(open_row["memory_window_id"])
         if open_row is not None
         else []
     )
     if should_close_turn(turn, patch_fields, window_turns=window_turns):
-        closed = await window_store.close_current_window(turn.correlation_id)
+        closed = await window_store.close_current_window(
+            turn.correlation_id, source_platform=turn.source_platform
+        )
         if closed.get("turn_correlation_ids"):
             await suggest_runner.consolidate_window(closed, bus=bus)

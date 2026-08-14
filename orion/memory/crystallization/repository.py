@@ -351,12 +351,24 @@ async def update_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
         )
 
 
-async def get_crystallization(pool: asyncpg.Pool, crystallization_id: str) -> MemoryCrystallizationV1 | None:
-    cid = crystallization_id
-    if cid.startswith("crys_"):
-        hex_id = cid.replace("crys_", "")
+def normalize_crystallization_id(crystallization_id: str) -> str:
+    """`crys_<hex32>` (what new_crystallization_id() mints) -> dashed UUID.
+
+    Every query binding a crystallization id as $1::uuid must go through this,
+    or a caller passing the crys_ form clears the lookup guards and then dies on
+    the cast. Was duplicated inline in get_crystallization/insert_history;
+    extracted when a third call site (evidence delete) was added without it.
+    Anything that is not the crys_ form is returned unchanged.
+    """
+    if crystallization_id.startswith("crys_"):
+        hex_id = crystallization_id.replace("crys_", "")
         if len(hex_id) == 32:
-            cid = f"{hex_id[:8]}-{hex_id[8:12]}-{hex_id[12:16]}-{hex_id[16:20]}-{hex_id[20:]}"
+            return f"{hex_id[:8]}-{hex_id[8:12]}-{hex_id[12:16]}-{hex_id[16:20]}-{hex_id[20:]}"
+    return crystallization_id
+
+
+async def get_crystallization(pool: asyncpg.Pool, crystallization_id: str) -> MemoryCrystallizationV1 | None:
+    cid = normalize_crystallization_id(crystallization_id)
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -423,11 +435,7 @@ async def insert_history(
     after: dict | None,
     reason: str | None = None,
 ) -> None:
-    cid = crystallization_id
-    if cid.startswith("crys_"):
-        hex_id = cid.replace("crys_", "")
-        if len(hex_id) == 32:
-            cid = f"{hex_id[:8]}-{hex_id[8:12]}-{hex_id[12:16]}-{hex_id[16:20]}-{hex_id[20:]}"
+    cid = normalize_crystallization_id(crystallization_id)
 
     async with pool.acquire() as conn:
         await conn.execute(

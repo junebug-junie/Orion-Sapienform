@@ -8,6 +8,8 @@ proposal whose status was no longer "proposed" and errored.
 """
 from __future__ import annotations
 
+import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +18,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+# scripts.main constructs the full hub Settings at import time; the cache-bust
+# test below imports it. Same convention as test_organ_signals_graph_hub_tab.py.
+for _key, _value in (
+    ("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript"),
+    ("CHANNEL_VOICE_LLM", "orion:voice:llm"),
+    ("CHANNEL_VOICE_TTS", "orion:voice:tts"),
+    ("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake"),
+    ("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage"),
+):
+    os.environ.setdefault(_key, _value)
 
 HUB_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -162,6 +175,27 @@ def test_bulk_caps_batch_size(ctx):
         json={"ids": [str(i) for i in range(BULK_DECIDE_MAX + 1)], "action": "reject"},
     )
     assert res.status_code == 400
+    assert str(BULK_DECIDE_MAX) in str(res.json()["detail"])
+
+
+def test_approve_has_a_much_lower_cap_than_reject(ctx):
+    """Each approve also runs a card/chroma projection and a second write, so a
+    reject-sized batch of them would be minutes of serialized I/O in one HTTP
+    request -- the client disconnects mid-way over a half-applied batch."""
+    from scripts.crystallization_routes import BULK_APPROVE_MAX, BULK_DECIDE_MAX
+
+    assert BULK_APPROVE_MAX < BULK_DECIDE_MAX
+    ids = [str(i) for i in range(BULK_APPROVE_MAX + 1)]
+    approve = ctx["client"].post(
+        "/api/memory/crystallizations/proposals/bulk", json={"ids": ids, "action": "approve"}
+    )
+    assert approve.status_code == 400
+    assert str(BULK_APPROVE_MAX) in str(approve.json()["detail"])
+    # the same batch size is fine for reject
+    reject = ctx["client"].post(
+        "/api/memory/crystallizations/proposals/bulk", json={"ids": ids, "action": "reject"}
+    )
+    assert reject.status_code == 200
 
 
 def test_bulk_path_is_not_captured_as_a_crystallization_id(ctx):
@@ -238,6 +272,63 @@ def test_cannot_drop_from_an_active_crystallization(ctx):
 # UI wiring (text smoke -- this page has no browser harness; same convention as
 # test_memory_crystallization_ui.py)
 # --------------------------------------------------------------------------
+
+
+def test_drop_turn_normalizes_a_crys_prefixed_id(ctx):
+    """new_crystallization_id() mints `crys_<hex32>`. Every repository helper
+    rewrites that to dashed UUID form before binding ::uuid; the inline DELETE
+    here originally did not, so such an id cleared the 404/409 guards and then
+    died on the cast with a misleading 503."""
+    cid = "crys_" + "ab" * 16
+    ctx["rows"][cid] = _crys(crystallization_id=cid, evidence_ids=("t1", "t2"))
+    conn = AsyncMock()
+    conn.execute = AsyncMock(return_value="DELETE 1")
+    ctx["app"].state.memory_pg_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    ctx["app"].state.memory_pg_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    res = ctx["client"].request("DELETE", f"/api/memory/crystallizations/{cid}/evidence/t2")
+    assert res.status_code == 200
+    _sql, bound_id, _src = conn.execute.await_args.args
+    assert bound_id == "abababab-abab-abab-abab-abababababab"
+
+
+def test_ui_surfaces_server_error_detail_not_just_the_status():
+    """A bare "HTTP 400" hid the bulk endpoint's own too_many_ids_max_N."""
+    ui = UI_JS.read_text(encoding="utf-8")
+    assert "body.detail" in ui
+
+
+def test_ui_chunks_bulk_requests_under_the_server_caps():
+    from scripts.crystallization_routes import BULK_APPROVE_MAX, BULK_DECIDE_MAX
+
+    ui = UI_JS.read_text(encoding="utf-8")
+    approve_chunk = int(re.search(r"const APPROVE_CHUNK = (\d+)", ui).group(1))
+    reject_chunk = int(re.search(r"const REJECT_CHUNK = (\d+)", ui).group(1))
+    assert approve_chunk <= BULK_APPROVE_MAX
+    assert reject_chunk <= BULK_DECIDE_MAX
+
+
+def test_ui_toggling_a_checkbox_does_not_refetch_the_queue():
+    """Every tick used to fire an un-awaited loadInbox(): three quick ticks
+    launched three overlapping loads whose innerHTML="" and appends interleaved.
+    Selection is local state and must be reflected locally."""
+    ui = UI_JS.read_text(encoding="utf-8")
+    toggle = ui[ui.index("(row, isChecked) => {") : ui.index("selected.has(item.crystallization_id),")]
+    assert "refreshSelectionUi()" in toggle
+    assert "loadInbox" not in toggle
+
+
+def test_ui_select_all_excludes_undecidable_rows():
+    ui = UI_JS.read_text(encoding="utf-8")
+    assert "function isDecidable" in ui
+    assert "const decidable = items.filter(isDecidable)" in ui
+
+
+def test_ui_handles_open_detail_rejection():
+    ui = UI_JS.read_text(encoding="utf-8")
+    open_handler = ui[ui.index("(row) => {") : ui.index("(row, isChecked) => {")]
+    assert ".catch(" in open_handler
+    assert "closeDetail" in open_handler
 
 
 def test_ui_has_multi_select_and_bulk_actions():

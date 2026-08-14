@@ -152,13 +152,50 @@ def test_duplicate_still_wins_over_platform_gate():
 
 
 # --------------------------------------------------------------------------
+# only "stance" is bypassable
+# --------------------------------------------------------------------------
+
+
+def test_other_gated_kinds_are_not_bypassed_by_the_platform_gate():
+    """An allowlisted platform must not push a contradiction/decision/attractor/
+    failure_mode straight to active. Unreachable from this producer today
+    (_KIND_FOR_SHIFT cannot emit them), which is exactly why it is pinned: the
+    hazard would arrive silently with the next shift mapping, and fictional NPC
+    roleplay writing a "contradiction" into active memory unreviewed is not a
+    failure anyone would notice from the outside."""
+    for kind in ("contradiction", "decision", "attractor", "failure_mode"):
+        crys = _stance_window([_turn("c1", "aitown"), _turn("c2", "aitown")])
+        crys.kind = kind
+        policy, reasons = resolve_formation_policy(crys)
+        assert policy == FormationPolicy.GOVERNOR_QUEUE, kind
+        assert reasons == [f"gated_kind:{kind}"], kind
+
+
+def test_non_gated_kinds_are_unaffected_by_the_platform_gate():
+    """semantic/episode/open_loop auto-activate on their own; the platform gate
+    must not be what is doing the work for them."""
+    for kind in ("semantic", "episode", "open_loop", "procedure"):
+        crys = _stance_window([_turn("c1", "aitown"), _turn("c2", "aitown")])
+        crys.kind = kind
+        policy, reasons = resolve_formation_policy(crys, auto_activate_platforms=frozenset())
+        assert policy == FormationPolicy.AUTO_ACTIVATE, kind
+        assert reasons == [], kind
+
+
+# --------------------------------------------------------------------------
 # privacy boundaries outrank the convenience gate
+#
+# HONESTY NOTE: both tests below hand-mutate the object after construction,
+# because build_crystallization_from_window() hardcodes sensitivity="private"
+# and scope=["memory_window:<id>"] -- so neither guard can actually fire for the
+# only producer that currently sets source_platform. These pin the ORDERING for
+# a future producer that can set them; they are not evidence of a live rail.
 # --------------------------------------------------------------------------
 
 
 def test_intimate_aitown_window_still_queues():
     crys = _stance_window([_turn("c1", "aitown"), _turn("c2", "aitown")])
-    crys.governance.sensitivity = "intimate"
+    crys.governance.sensitivity = "intimate"  # not reachable via this producer
     policy, reasons = resolve_formation_policy(crys)
     assert policy == FormationPolicy.GOVERNOR_QUEUE
     assert reasons == ["intimate_sensitivity"]
@@ -166,10 +203,18 @@ def test_intimate_aitown_window_still_queues():
 
 def test_identity_scoped_aitown_window_still_queues():
     crys = _stance_window([_turn("c1", "aitown"), _turn("c2", "aitown")])
-    crys.scope = ["identity:orion"]
+    crys.scope = ["identity:orion"]  # not reachable via this producer
     policy, reasons = resolve_formation_policy(crys)
     assert policy == FormationPolicy.GOVERNOR_QUEUE
     assert reasons == ["identity_scope"]
+
+
+def test_window_producer_cannot_actually_reach_those_guards():
+    """Pins the honesty note above, so it cannot quietly become false. If this
+    starts failing, the two tests above became real rails and the note should go."""
+    crys = _stance_window([_turn("c1", "aitown"), _turn("c2", "aitown")])
+    assert crys.governance.sensitivity == "private"
+    assert all(not s.startswith("identity:") for s in crys.scope)
 
 
 # --------------------------------------------------------------------------

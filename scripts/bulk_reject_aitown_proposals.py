@@ -177,6 +177,18 @@ def main() -> int:
                 errors = 0
                 with conn.cursor() as cur:
                     for i, cid in enumerate(ids, start=1):
+                        # SAVEPOINT per row, not a bare try/except. psycopg2 puts
+                        # the whole transaction into INERROR on the first failing
+                        # statement: without this, every later execute would raise
+                        # InFailedSqlTransaction (caught, counted, logged as a
+                        # per-row error) and the final commit() would be silently
+                        # converted to a ROLLBACK by PostgreSQL *without raising*.
+                        # The run would report "committed", write verdict: APPLIED,
+                        # and have changed nothing. Rolling back to the savepoint
+                        # confines a bad row to itself and keeps the transaction
+                        # usable, so a partial-error run really does commit the
+                        # rows the report claims.
+                        cur.execute("SAVEPOINT row_sp")
                         try:
                             cur.execute(
                                 "UPDATE memory_crystallizations SET status='rejected', "
@@ -202,7 +214,10 @@ def main() -> int:
                             )
                         except Exception as exc:  # noqa: BLE001
                             errors += 1
+                            cur.execute("ROLLBACK TO SAVEPOINT row_sp")
                             _log(progress, f"ERROR cid={cid} {exc}")
+                        else:
+                            cur.execute("RELEASE SAVEPOINT row_sp")
                         if i % 100 == 0 or i == len(ids):
                             pct = 100.0 * i / len(ids)
                             _log(
@@ -216,16 +231,34 @@ def main() -> int:
                 cur.execute("SELECT status, count(*) FROM memory_crystallizations GROUP BY 1")
                 after_counts = dict(cur.fetchall())
 
+            # Read-back check, not a restatement of what we intended. The report
+            # must not be able to say APPLIED while the database disagrees --
+            # that is exactly the failure the savepoints above prevent, so prove
+            # it rather than trusting it.
+            verified = True
+            if args.apply:
+                still_proposed = after_counts.get("proposed", 0)
+                verified = still_proposed == len(keep)
+                if not verified:
+                    _log(
+                        progress,
+                        f"VERIFY FAILED: expected proposed={len(keep)} after apply, "
+                        f"database reports {still_proposed}",
+                    )
+                else:
+                    _log(progress, f"verified proposed={still_proposed} == keep={len(keep)}")
+
             report = JOB_DIR / "report.md"
             report.write_text(
                 f"""# ai-town crystallization purge
 
-- verdict: {"APPLIED" if args.apply else "DRY RUN"}
+- verdict: {("APPLIED" if verified else "APPLY FAILED VERIFICATION") if args.apply else "DRY RUN"}
 - proposed before: {total}
 - classified external (unanimous ai-town window): {len(external)}
 - kept for review: {len(keep)}
 - errors: {errors}
-- needs another pass: {"yes" if errors else "no"}
+- post-apply read-back verified: {verified if args.apply else "n/a (dry run)"}
+- needs another pass: {"yes" if (errors or not verified) else "no"}
 
 ## Outcome
 
@@ -261,7 +294,7 @@ WHERE status='rejected' AND crystallization_id IN (
             )
             _log(progress, f"report -> {report}")
             _log(progress, f"after={after_counts}")
-            return 1 if errors else 0
+            return 1 if (errors or not verified) else 0
         finally:
             conn.close()
 

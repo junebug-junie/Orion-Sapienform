@@ -26,7 +26,11 @@
       body = { raw: text };
     }
     if (!res.ok) {
-      const err = new Error(`HTTP ${res.status}`);
+      // Include the server's own detail in the message, not just the status.
+      // setStatus renders e.message, so a bare "HTTP 400" told the operator
+      // nothing -- e.g. the bulk endpoint's "too_many_ids_max_500" was invisible.
+      const detail = body && (body.detail || body.raw);
+      const err = new Error(detail ? `HTTP ${res.status}: ${JSON.stringify(detail)}` : `HTTP ${res.status}`);
       err.status = res.status;
       err.body = body;
       throw err;
@@ -186,16 +190,24 @@
       "flex items-start gap-2 border border-gray-800 rounded px-2 py-1 bg-gray-900/60 cursor-pointer hover:border-gray-600";
     const turns = chatTurnCount(item);
 
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.className = "mt-1 shrink-0 cursor-pointer";
-    box.checked = !!checked;
-    box.setAttribute("aria-label", `select ${item.subject || item.crystallization_id}`);
-    // Selection and opening are separate intents on the same row: clicking the
-    // box must not also swap the detail pane out from under a bulk selection.
-    box.addEventListener("click", (ev) => ev.stopPropagation());
-    box.addEventListener("change", () => onToggle(item, box.checked));
-    row.appendChild(box);
+    if (isDecidable(item)) {
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.className = "mt-1 shrink-0 cursor-pointer";
+      box.checked = !!checked;
+      box.dataset.selectId = item.crystallization_id;
+      box.setAttribute("aria-label", `select ${item.subject || item.crystallization_id}`);
+      // Selection and opening are separate intents on the same row: clicking the
+      // box must not also swap the detail pane out from under a bulk selection.
+      box.addEventListener("click", (ev) => ev.stopPropagation());
+      box.addEventListener("change", () => onToggle(item, box.checked));
+      row.appendChild(box);
+    } else {
+      // Keeps the rows aligned without offering a control the server refuses.
+      const spacer = document.createElement("span");
+      spacer.className = "w-3 shrink-0";
+      row.appendChild(spacer);
+    }
 
     const body = document.createElement("div");
     body.className = "flex-1 min-w-0";
@@ -230,6 +242,20 @@
   // Survives across loadInbox() re-renders so a bulk selection is not silently
   // dropped by a background refresh. Pruned to what still exists on every load.
   const selected = new Set();
+
+  // Server cap is BULK_DECIDE_MAX (500) per request. Approve is chunked far
+  // smaller because each approved item also runs a card/chroma projection and
+  // a second write, so 500 of them in one request is minutes of serialized I/O
+  // and the browser or proxy gives up while the server keeps going.
+  const REJECT_CHUNK = 200;
+  const APPROVE_CHUNK = 25;
+
+  // Only proposals can be bulk-decided. Retirement candidates are status
+  // "active"; the bulk endpoint answers already_active for each, so including
+  // them in select-all guarantees "N failed" on every sweep.
+  function isDecidable(item) {
+    return item && (item.status === "proposed" || item.status === "quarantined");
+  }
 
   function closeDetail(detailEl) {
     // The old build re-rendered the list after a decision but left the detail
@@ -306,20 +332,42 @@
   }
 
   function renderBulkBar(items, listEl, statusEl, detailEl, summarize) {
+    const decidable = items.filter(isDecidable);
     const bar = document.createElement("div");
     bar.className =
       "flex items-center gap-2 text-xs border border-gray-800 rounded px-2 py-1 bg-gray-900/80 sticky top-0 z-10";
+
+    const buttons = [];
+    // Selection is purely local state. Reflect it by mutating the DOM in place
+    // rather than calling loadInbox(): that re-fetched the whole queue on every
+    // single tick, and because the call was not awaited, three quick ticks
+    // launched three overlapping loads whose innerHTML="" and appends
+    // interleaved -- duplicated or vanishing rows, and checkbox state rendered
+    // from a stale snapshot of `selected`.
+    const refreshSelectionUi = () => {
+      count.textContent = selected.size ? `${selected.size} selected` : "select all";
+      all.checked = decidable.length > 0 && decidable.every((i) => selected.has(i.crystallization_id));
+      buttons.forEach((b) => {
+        b.disabled = selected.size === 0;
+      });
+      listEl.querySelectorAll("input[data-select-id]").forEach((box) => {
+        box.checked = selected.has(box.dataset.selectId);
+      });
+      setStatus(statusEl, summarize(), false);
+    };
 
     const all = document.createElement("input");
     all.type = "checkbox";
     all.className = "cursor-pointer";
     all.setAttribute("aria-label", "select all proposals");
-    all.checked = items.length > 0 && items.every((i) => selected.has(i.crystallization_id));
+    all.checked = decidable.length > 0 && decidable.every((i) => selected.has(i.crystallization_id));
     all.addEventListener("change", () => {
-      items.forEach((i) =>
+      // `decidable`, not `items`: retirement candidates are active and the bulk
+      // endpoint always refuses them.
+      decidable.forEach((i) =>
         all.checked ? selected.add(i.crystallization_id) : selected.delete(i.crystallization_id),
       );
-      loadInbox(listEl, statusEl, detailEl);
+      refreshSelectionUi();
     });
     bar.appendChild(all);
 
@@ -331,28 +379,51 @@
     const decide = async (action) => {
       const ids = [...selected];
       if (!ids.length) return;
-      setStatus(statusEl, `${action}ing ${ids.length}…`, false);
+      // Chunked client-side. The server caps a batch at BULK_DECIDE_MAX (500)
+      // and 400s the whole request past it -- which is precisely the case this
+      // feature exists for, since the backlog that motivated it was 621 items.
+      // Approve is far more expensive per item than reject (each one also runs
+      // a card/chroma projection), so it gets a much smaller chunk to keep any
+      // single request inside a normal proxy timeout.
+      const chunkSize = action === "approve" ? APPROVE_CHUNK : REJECT_CHUNK;
+      let succeeded = 0;
+      let failed = 0;
+      const firstErrors = [];
       try {
-        const res = await apiFetch("/api/memory/crystallizations/proposals/bulk", {
-          method: "POST",
-          body: JSON.stringify({ ids, action }),
-        });
-        // Only clear what actually succeeded, so a partial failure leaves the
-        // still-undecided rows selected and retryable instead of silently
-        // dropping them from the selection.
-        (res.results || []).forEach((r) => {
-          if (r.ok) selected.delete(r.crystallization_id);
-        });
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const chunk = ids.slice(i, i + chunkSize);
+          setStatus(
+            statusEl,
+            `${action}ing ${Math.min(i + chunk.length, ids.length)}/${ids.length}…`,
+            false,
+          );
+          const res = await apiFetch("/api/memory/crystallizations/proposals/bulk", {
+            method: "POST",
+            body: JSON.stringify({ ids: chunk, action }),
+          });
+          // Only clear what actually succeeded, so a partial failure leaves the
+          // still-undecided rows selected and retryable instead of silently
+          // dropping them from the selection.
+          (res.results || []).forEach((r) => {
+            if (r.ok) selected.delete(r.crystallization_id);
+            else if (firstErrors.length < 3) firstErrors.push(r.error);
+          });
+          succeeded += res.succeeded || 0;
+          failed += res.failed || 0;
+        }
         closeDetail(detailEl);
         await loadInbox(listEl, statusEl, detailEl);
-        const failed = res.failed || 0;
         setStatus(
           statusEl,
-          `${action}ed ${res.succeeded}/${res.requested}` + (failed ? ` — ${failed} failed` : ""),
+          `${action}ed ${succeeded}/${ids.length}` +
+            (failed ? ` — ${failed} failed (${firstErrors.join(", ")})` : ""),
           failed > 0,
         );
       } catch (e) {
-        setStatus(statusEl, e.message || String(e), true);
+        // A mid-run throw means earlier chunks already landed; reload so the
+        // list reflects reality rather than the pre-decision state.
+        await loadInbox(listEl, statusEl, detailEl).catch(() => {});
+        setStatus(statusEl, `${action} stopped after ${succeeded}: ${e.message || String(e)}`, true);
       }
     };
 
@@ -366,10 +437,11 @@
       btn.textContent = label;
       btn.disabled = selected.size === 0;
       btn.addEventListener("click", () => decide(action));
+      buttons.push(btn);
       bar.appendChild(btn);
     });
 
-    return bar;
+    return { bar, refreshSelectionUi };
   }
 
   async function loadInbox(listEl, statusEl, detailEl) {
@@ -404,16 +476,26 @@
         return;
       }
       setStatus(statusEl, summarize(), false);
-      listEl.appendChild(renderBulkBar(items, listEl, statusEl, detailEl, summarize));
+      const { bar, refreshSelectionUi } = renderBulkBar(items, listEl, statusEl, detailEl, summarize);
+      listEl.appendChild(bar);
       items.forEach((item) => {
         listEl.appendChild(
           renderRow(
             item,
-            (row) => openDetail(row, listEl, statusEl, detailEl, summarize),
+            (row) => {
+              // openDetail is async and its rejections were unhandled from this
+              // click path: if the proposal was decided in another tab the
+              // /proposals/{id} fetch 404s and the pane is left visible-but-empty
+              // with a dead id still in its dataset.
+              openDetail(row, listEl, statusEl, detailEl, summarize).catch((e) => {
+                closeDetail(detailEl);
+                setStatus(statusEl, e.message || String(e), true);
+              });
+            },
             (row, isChecked) => {
               if (isChecked) selected.add(row.crystallization_id);
               else selected.delete(row.crystallization_id);
-              loadInbox(listEl, statusEl, detailEl);
+              refreshSelectionUi();
             },
             selected.has(item.crystallization_id),
           ),

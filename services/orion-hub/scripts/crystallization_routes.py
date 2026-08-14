@@ -31,6 +31,7 @@ from orion.memory.crystallization.repository import (
     insert_history,
     insert_retrieval_event,
     list_crystallizations,
+    normalize_crystallization_id,
     update_crystallization,
 )
 from orion.memory.crystallization.schemas import CrystallizationLinkV1, MemoryCrystallizationProposeRequestV1, MemoryCrystallizationV1
@@ -322,6 +323,13 @@ async def crystallization_reject_proposal(
 
 
 BULK_DECIDE_MAX = 500
+# Approve is an order of magnitude more expensive per item than reject: each one
+# re-runs get/update/history/lifecycle-emit AND (with
+# CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE, default True) a chroma/card projection
+# plus a second update. 500 of those serialized in one request is minutes of I/O
+# with no timeout budget -- the client disconnects while the server keeps
+# writing, so the operator sees a network error over a half-applied batch.
+BULK_APPROVE_MAX = 50
 
 
 @router.post("/api/memory/crystallizations/proposals/bulk")
@@ -352,8 +360,9 @@ async def crystallization_bulk_decide(
         raise HTTPException(status_code=400, detail="action_must_be_approve_or_reject")
     if not isinstance(raw_ids, list) or not raw_ids:
         raise HTTPException(status_code=400, detail="ids_required")
-    if len(raw_ids) > BULK_DECIDE_MAX:
-        raise HTTPException(status_code=400, detail=f"too_many_ids_max_{BULK_DECIDE_MAX}")
+    cap = BULK_APPROVE_MAX if action == "approve" else BULK_DECIDE_MAX
+    if len(raw_ids) > cap:
+        raise HTTPException(status_code=400, detail=f"too_many_ids_max_{cap}")
 
     # Dedup while preserving order -- a double-click on "select all" must not
     # attempt the same row twice and report a spurious already_decided failure.
@@ -467,7 +476,11 @@ async def crystallization_delete_evidence(
             deleted = await conn.execute(
                 "DELETE FROM memory_crystallization_sources "
                 "WHERE crystallization_id = $1::uuid AND source_id = $2",
-                crystallization_id,
+                # Same normalization every other repository helper applies. A
+                # caller passing the crys_<hex32> form new_crystallization_id()
+                # mints clears the lookup and the 404/409 guards above, then
+                # dies on the ::uuid cast without it.
+                normalize_crystallization_id(crystallization_id),
                 source_id,
             )
     except Exception as exc:

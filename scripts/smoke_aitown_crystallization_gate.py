@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from orion.memory.consolidation_gate import ConsolidationGateResult  # noqa: E402
 from orion.memory.crystallization.formation_policy import (  # noqa: E402
+    DEFAULT_AUTO_ACTIVATE_PLATFORMS,
     FormationPolicy,
     resolve_formation_policy,
 )
@@ -127,7 +128,8 @@ def main() -> int:
                 action="propose", dominant_shift="STANCE", grammar_event_ids=[]
             ),
         )
-        platforms[str(crys.provenance.get("source_platform"))] += 1
+        entry["resolved_platform"] = crys.provenance.get("source_platform")
+        platforms[str(entry["resolved_platform"])] += 1
         policy, why = resolve_formation_policy(crys)
         subject = " ".join((entry["subject"] or "").split())[:90]
         if policy == FormationPolicy.AUTO_ACTIVATE:
@@ -170,8 +172,31 @@ def main() -> int:
     for cid, subject in queued[: args.show]:
         print(f"  {cid[:8]}  {subject}")
 
-    if total and not auto:
-        print("\nFAIL: gate matched nothing on live data -- it is inert.", file=sys.stderr)
+    # Failure condition is "a unanimous-external window is sitting in the queue",
+    # NOT "nothing would auto-activate".
+    #
+    # The obvious check -- `if total and not auto: fail` -- inverts the moment the
+    # gate starts working: in steady state no ai-town window ever reaches
+    # status='proposed', so `auto` is legitimately empty and the smoke would fail
+    # forever. Worse, it cannot distinguish that success from the gate being
+    # inert, which is the only thing it exists to detect.
+    #
+    # This asks the question the other way round: of the proposals actually in the
+    # queue, does any window resolve to an allowlisted platform? If one does, the
+    # gate did not fire on a row it should have. An empty queue passes, as it
+    # should.
+    leaked = [
+        cid
+        for cid, entry in grouped.items()
+        if str(entry.get("resolved_platform") or "") in DEFAULT_AUTO_ACTIVATE_PLATFORMS
+        and cid not in {c for c, _ in auto}
+    ]
+    if leaked:
+        print(
+            f"\nFAIL: {len(leaked)} allowlisted-platform window(s) still queued -- "
+            f"the gate did not fire on them: {leaked[:5]}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

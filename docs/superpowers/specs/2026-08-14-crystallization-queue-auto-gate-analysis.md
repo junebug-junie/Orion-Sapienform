@@ -51,6 +51,16 @@ proposal). The gate is written to *tolerate* it: a window only counts as externa
 when every turn agrees, so mixed windows still reach the human queue rather than
 being auto-activated with Juniper's words inside them.
 
+**Known coverage cost of tolerating it**, surfaced in review: `close_current_window()`
+(`window_state.py:113`) seeds the *next* window with the turn that closed the
+previous one — `next_turns = [closing_turn]`. If that closing turn is a direct
+conversation with Juniper, the following window is permanently "mixed" no matter
+how many pure ai-town turns land in it, so a burst of NPC dialogue immediately
+after Juniper speaks still reaches the queue. This fails in the safe direction,
+but it is indistinguishable from "gate working as designed" in the numbers, so
+it is recorded here rather than left to be rediscovered. It disappears when the
+window cursor is partitioned properly.
+
 ---
 
 ## 2. Why no existing score can gate anything

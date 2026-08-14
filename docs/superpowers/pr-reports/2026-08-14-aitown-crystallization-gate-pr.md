@@ -181,9 +181,103 @@ is that the policy functions decide correctly on the real corpus.
 
 ## Review findings fixed
 
-- Finding:
-  - Fix:
-  - Evidence:
+`/code-review high` against this branch returned 11 findings. All 11 were real;
+10 are fixed in code, 1 is recorded as a documented open item.
+
+- Finding (HIGH): `bulk_reject_aitown_proposals.py` ran 600+ statements in one
+  `autocommit=False` transaction with a per-row `try/except`. psycopg2 puts the
+  transaction into `INERROR` on the first failure, so every later `execute` raises
+  `InFailedSqlTransaction` (caught and counted) and `commit()` is silently
+  converted to ROLLBACK **without raising** — the run would log `committed`,
+  write `verdict: APPLIED`, and have changed nothing.
+  - Fix: `SAVEPOINT`/`ROLLBACK TO SAVEPOINT`/`RELEASE` per row, plus a post-commit
+    read-back that compares the DB's actual `proposed` count against `len(keep)`
+    and downgrades the verdict to `APPLY FAILED VERIFICATION` on mismatch.
+  - Evidence: the real run had 0 errors so nothing was lost, but the script was
+    wrong. Report now carries `post-apply read-back verified: True`.
+
+- Finding (MEDIUM): the smoke's failure condition inverted once the gate worked —
+  `if total and not auto: return 1` fails forever in steady state, and cannot
+  distinguish "gate working" from "gate inert".
+  - Fix: inverted the question — fail if any *queued* proposal resolves to an
+    allowlisted platform (i.e. the gate failed to fire on a row it should have).
+  - Evidence: live run now reports 23 proposed / 0 auto-activate / **exit 0**.
+    The old condition would have returned 1 on this exact state.
+
+- Finding (MEDIUM): the platform gate sat above the whole of `GATED_KINDS`, so an
+  allowlisted platform could auto-activate `decision`/`contradiction`/`attractor`/
+  `failure_mode` — latent today, but fictional NPC roleplay writing a
+  `contradiction` straight to active would arrive silently with the next
+  `_KIND_FOR_SHIFT` mapping.
+  - Fix: `EXTERNAL_PLATFORM_BYPASSABLE_KINDS = {"stance"}` — the only gated kind
+    this producer can emit.
+  - Evidence: `test_other_gated_kinds_are_not_bypassed_by_the_platform_gate`.
+
+- Finding (MEDIUM): the in-code comment presented the intimate/identity guards as
+  live safety rails, but `build_crystallization_from_window` hardcodes
+  `sensitivity="private"` and `scope=["memory_window:…"]`, so neither can fire for
+  the only producer that sets `source_platform`. The two tests covering them pass
+  only by hand-mutating the object.
+  - Fix: no behavior change (the ordering is still correct defense-in-depth) —
+    the comment and both test docstrings now say plainly that they are
+    unreachable via this producer, and a new test pins that claim so it cannot
+    quietly become false.
+  - Evidence: `test_window_producer_cannot_actually_reach_those_guards`.
+
+- Finding (MEDIUM): every checkbox tick fired an un-awaited full `loadInbox()`;
+  three quick ticks launched three overlapping loads whose `innerHTML=""` and
+  appends interleaved, producing duplicated/vanishing rows and stale checkbox state.
+  - Fix: selection is local state — `refreshSelectionUi()` mutates the bulk bar
+    and the existing boxes in place, no refetch.
+  - Evidence: `test_ui_toggling_a_checkbox_does_not_refetch_the_queue`.
+
+- Finding (MEDIUM): no client-side cap against the server's batch limit, and
+  `apiFetch` discarded `err.body` — so "select all → Reject" on the 621-item
+  backlog this feature was written for would fail with an opaque `HTTP 400`.
+  - Fix: client chunks (200 reject / 25 approve) and error messages now include
+    the server's `detail`.
+  - Evidence: `test_ui_chunks_bulk_requests_under_the_server_caps`,
+    `test_ui_surfaces_server_error_detail_not_just_the_status`.
+
+- Finding (LOW): "select all" included retirement candidates (`status=active`),
+  which the bulk endpoint always refuses — so every sweep reported `N failed`.
+  - Fix: `isDecidable()`; undecidable rows get a spacer instead of a checkbox and
+    are excluded from select-all.
+  - Evidence: `test_ui_select_all_excludes_undecidable_rows`.
+
+- Finding (LOW/MEDIUM): bulk approve ran the full single-item approve — including
+  a chroma/card projection and a second write — up to 500 times in one request.
+  - Fix: `BULK_APPROVE_MAX = 50` separate from `BULK_DECIDE_MAX = 500`.
+  - Evidence: `test_approve_has_a_much_lower_cap_than_reject`.
+
+- Finding (LOW): the new evidence-DELETE bound the raw path parameter to
+  `$1::uuid`, skipping the `crys_<hex32>` → dashed-UUID normalization every other
+  repository helper performs — a well-formed `crys_` id would clear the 404/409
+  guards and then 503 on the cast.
+  - Fix: extracted the (previously duplicated) normalization into
+    `repository.normalize_crystallization_id()` and used it at all three sites.
+  - Evidence: `test_drop_turn_normalizes_a_crys_prefixed_id`.
+
+- Finding (LOW): `openDetail`'s rejections were unhandled from the row-click path,
+  leaving the pane visible-but-empty with a dead id in its dataset.
+  - Fix: `.catch()` → `closeDetail` + error status.
+  - Evidence: `test_ui_handles_open_detail_rejection`.
+
+- Finding (LOW, **not fixed — documented**): `close_current_window()` seeds the
+  next window with the closing turn, so a direct turn from Juniper makes the
+  following window permanently "mixed" and NPC dialogue right after she speaks
+  still queues.
+  - Why not fixed: it is the same global-window-cursor bug already listed as an
+    open item; changing window lifecycle belongs in its own proposal.
+  - Recorded in the analysis doc, because it fails safe and is otherwise
+    indistinguishable from the gate working correctly.
+
+Two findings from the review are **not** attributable to this branch and were
+handled separately: the first `/code-review` invocation mis-scoped to the shared
+checkout on `main` and reported a graphify destructive-update incident there
+(`graph.json` 28,306 → 2,480 nodes, caused by `.git/hooks/post-checkout` firing on
+this session's `git switch main`). Artifacts were restored from the hook's own
+dated snapshot; `git status --short graphify-out/` is clean.
 
 ## Restart required
 

@@ -170,7 +170,7 @@ Re-verified live: "Orion, what do you think..." now correctly falls back to plai
 | `VECTOR_DB_COLLECTION` | `orion_main_store` | default collection name (global knob) |
 
 `RECALL_VECTOR_COLLECTIONS` was removed 2026-08-14 (vestigial dead config
-from before the vector amputation below; never consumed by a live query
+from before the May 2026 vector amputation; never consumed by a live query
 path). This whole "Vector / Chroma" section documents a backend that was
 already deleted in May 2026 -- see `app/source_policy.py`
 (`recall_vector_allowed()` always returns `False`, `reason=

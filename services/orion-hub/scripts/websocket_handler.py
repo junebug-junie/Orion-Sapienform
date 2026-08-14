@@ -743,6 +743,13 @@ async def websocket_endpoint(websocket: WebSocket):
     # to the /api/chat/turn/cancel endpoint's lookup, no separate sync needed.
     _ACTIVE_TURNS_BY_CONNECTION[connection_id] = active_turn
 
+    # Endogenous outreach needs the same two things by reference: this socket's
+    # outbound queue (to push an unsolicited Orion bubble) and active_turn (so it
+    # never speaks over a turn in flight). Best-effort: outreach is optional.
+    endogenous_outreach = getattr(scripts.main, "endogenous_outreach", None)
+    if endogenous_outreach is not None:
+        endogenous_outreach.register_connection(connection_id, tts_q, active_turn)
+
     try:
         while True:
             raw = await websocket.receive_text()
@@ -762,6 +769,11 @@ async def websocket_endpoint(websocket: WebSocket):
             )
             session_id = data.get("session_id")
             publish_session_id = session_id or "unknown"
+            if endogenous_outreach is not None:
+                # session_id is client-side (localStorage) and only reaches Hub
+                # here, so this is the one place outreach can learn which thread
+                # to post into.
+                endogenous_outreach.note_session(connection_id, session_id)
             if not session_id and diagnostic:
                 logger.warning("Missing session_id; publishing chat history with session_id=unknown")
             no_write = bool(data.get("no_write", settings.HUB_DEFAULT_NO_WRITE))
@@ -1914,6 +1926,8 @@ async def websocket_endpoint(websocket: WebSocket):
             )
     finally:
         _ACTIVE_TURNS_BY_CONNECTION.pop(connection_id, None)
+        if endogenous_outreach is not None:
+            endogenous_outreach.unregister_connection(connection_id)
         drain_task.cancel()
         biometrics_task.cancel()
         if notification_cache is not None:

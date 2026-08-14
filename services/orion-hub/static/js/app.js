@@ -10325,6 +10325,23 @@ document.addEventListener("DOMContentLoaded", () => {
             activeConnectionId = d.connection_id || null;
             return;
           }
+          if (d.kind === 'orion_outreach') {
+            // Orion spoke first (no turn of ours). Handled before the generic
+            // assistant branch and returns early on purpose: that branch also
+            // runs updateMemoryPanelFromResponse(), which would blank the recall
+            // panel still showing the last real turn.
+            const outreachText = String(d.llm_response || '').trim();
+            if (outreachText) {
+              appendMessage('Orion', outreachText, 'text-white', {
+                correlationId: d.correlation_id,
+                messageId: d.message_id || null,
+                turnId: d.correlation_id,
+                mode: d.mode || 'orion',
+                unsolicited: true,
+              });
+            }
+            return;
+          }
           if (d.type === 'turn_deferred') {
             appendMessage(
               'System',

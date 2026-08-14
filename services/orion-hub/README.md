@@ -217,6 +217,71 @@ The panel calls:
 - `GET /api/notify/recipients/{recipient_group}/preferences`
 - `PUT /api/notify/recipients/{recipient_group}/preferences`
 
+### 4.1 Endogenous outreach — Orion speaks first
+
+`scripts/endogenous_outreach.py`. The only path by which Hub emits chat text
+nobody asked for. **Off by default** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=false`).
+
+**The trigger is a deliberate stub.** Orion has no endogenous "I want to speak
+now" signal yet, so a randomized timer stands in: every
+`HUB_ENDOGENOUS_OUTREACH_TICK_SEC` the loop rolls
+`HUB_ENDOGENOUS_OUTREACH_PROBABILITY`. When a real signal exists, replace
+`EndogenousOutreach._should_roll()` — nothing else in the module assumes a
+timer. Only the trigger is stubbed: the message itself is generated from live
+substrate signals and real chat history, and lands on the same rails a normal
+turn uses.
+
+Pipeline:
+
+```text
+tick -> gates -> grounding read -> quick/metacog cortex call -> 3 delivery rails
+```
+
+Grounding (a tick with none of this is skipped, never filled with placeholder
+text — AGENTS.md §0A):
+
+- fresh endogenous-curiosity candidates from
+  `substrate_endogenous_curiosity_candidates` (via `curiosity_hint._fetch_fresh_candidates`,
+  widened to a 1h window for this slower cadence)
+- `hub_presence.presence_snapshot()` — how long since the last real turn
+- the last few turns from `chat_history_log`, scoped to the live session
+
+Orion may also decline: the prompt permits a literal `PASS` reply, which is
+dropped without consuming the daily budget.
+
+Delivery — three rails, all pre-existing:
+
+| Rail | Mechanism | Survives reload? |
+| --- | --- | --- |
+| Live chat bubble | in-process push to each socket's `tts_q`, `{"kind":"orion_outreach"}` | no |
+| Chat history | `chat.history.message.v1` on the bus, `role=assistant`, tag `endogenous_outreach` | yes |
+| Notification | `HubNotificationEvent` on `NOTIFY_IN_APP_CHANNEL` | yes |
+
+The frontend handles `orion_outreach` in its own early-return branch
+(`static/js/app.js`) rather than falling through to the generic assistant
+branch — that branch also runs `updateMemoryPanelFromResponse()`, which would
+blank the recall panel still showing the last real turn.
+
+**Single-process assumption:** the live-bubble rail is in-process. Hub runs one
+uvicorn worker (`Dockerfile` CMD has no `--workers`). If that changes, this rail
+must move onto the bus like the other two already are.
+
+Safety gates, checked in this order (first hit wins, reported by the status
+endpoint): `disabled`, `turn_in_flight`, `quiet_hours`, `daily_cap`, `cooldown`.
+Generation uses `no_write=true` and `use_recall=false`, so no autonomy or goal
+state is mutated. Every failure is swallowed and logged; no chat turn,
+websocket, or bus consumer is affected.
+
+Operator surfaces:
+
+```bash
+curl -fsS http://localhost:8080/api/debug/endogenous-outreach/status | jq
+curl -fsS -XPOST http://localhost:8080/api/debug/endogenous-outreach/trigger | jq
+```
+
+`trigger` skips **only** the random roll; every safety gate still applies, so it
+cannot be used to talk over a live turn.
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.

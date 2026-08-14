@@ -140,6 +140,8 @@ SYNC_PREFIXES = (
     "ORION_VECTOR_HOST_",
     "VECTOR_HOST_",
     "HUB_CONTEXT_EXEC_",
+    # Endogenous outreach (Orion speaks first) -- services/orion-hub
+    "HUB_ENDOGENOUS_OUTREACH_",
     "CONTEXT_EXEC_",
     "CHANNEL_CONTEXT_EXEC_",
     "SELF_EXPERIMENTS_",

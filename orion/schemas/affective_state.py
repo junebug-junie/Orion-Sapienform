@@ -22,13 +22,22 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class JuniperAffectiveStateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["juniper_affective_state.v1"] = "juniper_affective_state.v1"
+    # Derived from the window bounds, not a uuid4, so a redelivered event
+    # upserts onto the same row instead of inflating the sample count.
+    #
+    # Keyed on BOTH bounds rather than window_since alone: windows tile
+    # contiguously tick-to-tick, but a container restart seeds
+    # ``last_until = now - cold_start_lookback_sec``, which produces a window
+    # that overlaps ones already published. Those are genuinely different
+    # observations over different spans and must not collapse onto one row.
+    event_id: str = ""
     observed_at: datetime
     # Half-open [window_since, window_until) tiling real transcript time,
     # same convention as CodebaseDeltaV1's pr_lifecycle domain -- this
@@ -42,3 +51,15 @@ class JuniperAffectiveStateV1(BaseModel):
     # (no real typed messages fell in it) is a different fact from a calm
     # one (messages existed and none were swears).
     swear_frequency: float | None = None
+
+    @model_validator(mode="after")
+    def _fill_event_id(self) -> "JuniperAffectiveStateV1":
+        # Fills a blank only -- never clobbers a value that arrived on the
+        # wire, or a replayed historical event would be rewritten under a
+        # new key and duplicate the row it was meant to update.
+        if not self.event_id:
+            self.event_id = (
+                "juniper-affective-state:"
+                f"{self.window_since.isoformat()}:{self.window_until.isoformat()}"
+            )
+        return self

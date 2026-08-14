@@ -2274,7 +2274,11 @@ channels:
     schema_id: "JuniperAffectiveStateV1"
     message_kind: "juniper.affective_state.v1"
     producer_services: ["orion-cocreation-signals"]
-    consumer_services: []
+    # First real consumer, added 2026-08-14. This was the LAST channel in the
+    # PR #1491 four-domain family still on consumer_services: [] -- and on a
+    # pub/sub bus that meant every event was dropped on publish (PUBSUB NUMSUB
+    # returned 0, confirmed live). Three days of real readings exist nowhere.
+    consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-11"
 
@@ -2320,8 +2324,8 @@ channels:
     # observability.md) -- orion-sql-writer persists DevEconomicsLedgerSQL
     # rows so the Hub's cocreation-signals tab has real data to read.
     # Shadow-write phase is over for this channel. doc_semantic_drift got
-    # the same treatment 2026-08-13; juniper_affective_state is the last
-    # one still on consumer_services: [], i.e. still dropping every event.
+    # the same treatment 2026-08-13, and juniper_affective_state on
+    # 2026-08-14 -- the four-domain family all persists now.
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-12"

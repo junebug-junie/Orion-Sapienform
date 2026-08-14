@@ -106,9 +106,10 @@ holds **1**. Flagged below.
   fill-only (never overwrites stored text); re-asserts the fill-only guard inside
   the `UPDATE` so a concurrent writer cannot be clobbered; snapshots the plan to
   `/tmp/chat-history-backfill/` before writing.
-- `tests/test_backfill_chat_history_from_bus_fallback.py`: new. 8 tests covering
+- `tests/test_backfill_chat_history_from_bus_fallback.py`: new. 14 tests covering
   the fill-only contract, whitespace-only stored values, payloads missing a half,
-  JSON-encoded payloads, and undecodable payloads.
+  JSON-encoded payloads, undecodable payloads, NULL `created_at`, the spark_meta
+  snapshot, and the `build_fill_only_guard` SQL.
 - `docs/superpowers/pr-reports/2026-08-14-chat-history-turn-write-race-backfill-pr.md`: this report.
 
 ## Schema / bus / API changes
@@ -123,12 +124,15 @@ None. No `.env_example` touched, so no sync was required.
 
 ```text
 pytest tests/test_backfill_chat_history_from_bus_fallback.py -q
-8 passed in 0.11s
+14 passed in 0.11s
 
-# mutation check: the fill-only guard was inverted to confirm the tests can fail
+# mutation check 1: fill-only planning guard inverted -> tests must fail
 2 failed, 6 passed   (test_never_overwrites_text_that_is_already_stored,
                       test_row_needing_nothing_is_dropped_from_the_plan)
-# guard restored -> 8 passed
+# mutation check 2: reintroduced the reviewed spark_meta-by-name guard bug
+2 failed, 12 passed  (test_spark_meta_uses_is_null_not_empty_string,
+                      test_spark_meta_only_plan_does_not_degenerate_to_true)
+# both reverted -> 14 passed
 ```
 
 ## Evals run
@@ -152,6 +156,8 @@ Live data verification:
                                 the source IS NULL predicate)
   spot-checked 3 restored pairs by hand; each restored half is the correct
   counterpart of the half already stored.
+  post-review: hardened candidate query re-run against the 16 repaired ids
+  still matches 16/16, so the added shape/dedup filters lose nothing.
 ```
 
 ## Remaining 7 half-rows — all correct or genuinely unrecoverable
@@ -161,6 +167,50 @@ Live data verification:
 | 3 | "Run your dream cycle." — dream workflow is card-only metadata; `services/orion-hub/scripts/websocket_handler.py:1561` sets `orion_response_text = ""` | no response ever existed |
 | 2 | Hub error path during the llamacpp 400 window — `websocket_handler.py:1590-1598` `continue`s past both publishes | no response ever produced |
 | 2 | Endogenous outreach — Orion speaking unprompted, assistant-only by design | not broken |
+
+## Review findings fixed
+
+All six were latent (none firing on live data), all verified before fixing rather
+than taken on faith.
+
+- **Finding:** `legacy.message` is not Hub-exclusive — six services accept that
+  kind, and `correlation_id` is turn-scoped, so a foreign envelope carrying a
+  `prompt` key could be spliced in as Juniper's turn.
+  - **Fix:** the candidate query now requires a known Hub `source` label plus
+    both halves present, not just kind + correlation_id.
+  - **Evidence:** `grep` confirms six producers (`orion-llm-gateway/app/main.py:189`,
+    `orion-state-service/app/main.py:147`, `orion-cortex-orch/app/main.py:181`,
+    `orion-context-exec`, `orion-harness-governor` ×2). All 80 live fallback rows
+    carry `source in (hub_orion, hub)`, so the filter is precise, not lossy.
+- **Finding:** `spark_meta` was excluded from the in-`UPDATE` guard *by name*, so
+  a spark_meta-only plan degenerated to `where ... and (true)` and could clobber
+  a concurrent write; the snapshot also recorded no prior value, making that
+  unrecoverable.
+  - **Fix:** extracted `build_fill_only_guard()`, which guards every written
+    column (`is null` for JSONB, `coalesce(...) = ''` for text) and raises on an
+    empty column list; `before` now records `spark_meta` verbatim.
+  - **Evidence:** reproduced the degeneration (`cols=['spark_meta'] -> 'true'`),
+    then mutation-tested — reintroducing the old expression fails 2 of the 14 tests.
+- **Finding:** `item['created_at'][:19]` raises `TypeError` on a NULL
+  `created_at`, which `plan_updates` explicitly tolerates — crashing before the
+  snapshot is written.
+  - **Fix:** falls back to `"unknown-date"`. Added a test.
+  - **Evidence:** `created_at` is `server_default`, not `nullable=False`
+    (`models/chat_history_log.py:30`). 0 NULLs live today.
+- **Finding:** no dedup, and `''` correlation_id unguarded — `_write_fallback`
+  stores a correlation-less envelope as `''` (`worker.py:2368`), which would
+  cross-product.
+  - **Fix:** `coalesce(b.correlation_id,'') <> ''` plus
+    `distinct on (h.id) ... order by h.id, b.created_at_ts desc`, so the most
+    recent fallback wins deterministically.
+  - **Evidence:** live `blank_corr = 0`, `dupe_corr = 0`; re-running the hardened
+    query against the 16 repaired ids still matches **16/16**.
+- **Finding:** a planned row whose `UPDATE` matched nothing was invisible.
+  - **Fix:** per-row skip list printed after `applied: N`.
+  - **Evidence:** silence would have read as success.
+- **Finding:** idempotency depended on the payload happening to carry `source`.
+  - **Fix:** the shape filter now *requires* `source`, so a repaired row always
+    stops matching `source is null`. The property is enforced, not accidental.
 
 ## Restart required
 

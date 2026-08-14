@@ -44,8 +44,21 @@ import psycopg2.extras
 
 JOB_DIR = Path("/tmp/chat-history-backfill")
 
+# `legacy.message` is NOT Hub-exclusive: at least six services accept that kind
+# (orion-llm-gateway, orion-state-service, orion-cortex-orch, orion-context-exec,
+# orion-harness-governor, orion-whisper-tts), and correlation_id is turn-scoped,
+# so it propagates across all of them. Matching on kind + correlation_id alone
+# would let a foreign envelope that happens to carry a `prompt` key -- an LLM
+# request dict, say -- be spliced into the chat log as if it were Juniper's turn.
+# So the payload must also *look* like a Hub turn: a known Hub source label plus
+# both halves present. Requiring `source` additionally makes idempotency a
+# property rather than an accident -- a repaired row always gets `source` set, so
+# it stops matching `source is null` on the next run.
+_HUB_SOURCES = ("hub_orion", "hub_ws", "hub_http", "hub")
+
 SELECT_CANDIDATES = """
-    select h.id,
+    select distinct on (h.id)
+           h.id,
            h.correlation_id,
            coalesce(h.prompt, '')   as cur_prompt,
            coalesce(h.response, '') as cur_response,
@@ -60,7 +73,16 @@ SELECT_CANDIDATES = """
       on b.correlation_id = h.correlation_id
      and b.kind = 'legacy.message'
     where h.source is null
-    order by h.created_at
+      -- _write_fallback stores a correlation-less envelope as '' rather than
+      -- NULL (worker.py:2368), and '' = '' would cross-product every such row.
+      and coalesce(b.correlation_id, '') <> ''
+      and b.payload::jsonb ->> 'source' in %(hub_sources)s
+      and b.payload::jsonb ? 'prompt'
+      and b.payload::jsonb ? 'response'
+    -- distinct on + this ordering picks the most recent fallback per row, so two
+    -- fallbacks sharing a correlation_id cannot silently double-count or let row
+    -- order decide which payload wins.
+    order by h.id, b.created_at_ts desc
 """
 
 
@@ -121,11 +143,32 @@ def plan_updates(rows) -> list[dict]:
                     "response_len": len(row["cur_response"]),
                     "source": row["cur_source"],
                     "session_id": row["cur_session_id"],
+                    # Recorded verbatim, not as a length: spark_meta is the one
+                    # column the UPDATE can replace wholesale, so the snapshot
+                    # has to be enough to reconstruct it (CLAUDE.md section 14).
+                    "spark_meta": row["cur_spark_meta"],
                 },
                 "updates": updates,
             }
         )
     return planned
+
+
+def build_fill_only_guard(cols: list[str]) -> str:
+    """SQL re-asserting 'this column is still empty' for every column we write.
+
+    Lives inside the UPDATE so a concurrent writer that filled the row between
+    planning and applying wins over this backfill. Every planned column must be
+    represented: an earlier version skipped spark_meta by name, which let a
+    spark_meta-only plan collapse to `true` and clobber a concurrent write.
+    """
+    if not cols:
+        raise ValueError("refusing to build an unguarded UPDATE")
+    return " and ".join(
+        # spark_meta is JSONB -- coalesce(col,'') would not even typecheck.
+        f"{c} is null" if c == "spark_meta" else f"coalesce({c}, '') = ''"
+        for c in cols
+    )
 
 
 def write_snapshot(planned: list[dict]) -> Path:
@@ -148,7 +191,7 @@ def main() -> int:
     conn = _connect(args.dsn)
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(SELECT_CANDIDATES)
+            cur.execute(SELECT_CANDIDATES, {"hub_sources": _HUB_SOURCES})
             rows = cur.fetchall()
 
         planned = plan_updates(rows)
@@ -160,7 +203,11 @@ def main() -> int:
                 f"{k}(+{len(str(v))}ch)" if k in ("prompt", "response") else k
                 for k, v in item["updates"].items()
             )
-            print(f"  {item['id'][:8]}  {item['created_at'][:19]}  restore: {restored}")
+            # created_at is server_default, not NOT NULL, so a legacy row can
+            # carry NULL here -- plan_updates already tolerates it, and slicing
+            # None would crash before the snapshot is even written.
+            when = (item["created_at"] or "unknown-date")[:19]
+            print(f"  {item['id'][:8]}  {when:19}  restore: {restored}")
 
         if not planned:
             print("\nnothing to do.")
@@ -174,25 +221,31 @@ def main() -> int:
             return 0
 
         applied = 0
+        skipped: list[str] = []
         with conn.cursor() as cur:
             for item in planned:
                 cols = list(item["updates"].keys())
                 assignments = ", ".join(f"{c} = %s" for c in cols)
                 values = [item["updates"][c] for c in cols]
-                # Re-assert the fill-only guard inside the UPDATE itself so a
-                # concurrent writer that filled the row since we planned cannot
-                # be overwritten by this backfill.
-                guards = " and ".join(
-                    f"coalesce({c}, '') = ''" for c in cols if c != "spark_meta"
-                ) or "true"
+                guards = build_fill_only_guard(cols)
                 cur.execute(
                     f"update chat_history_log set {assignments} "
                     f"where id = %s and source is null and ({guards})",
                     values + [item["id"]],
                 )
-                applied += cur.rowcount
+                if cur.rowcount:
+                    applied += cur.rowcount
+                else:
+                    # Planned but not written: the row changed under us between
+                    # plan and apply. Silence here would look like success.
+                    skipped.append(item["id"])
         conn.commit()
+
         print(f"\napplied: {applied} row(s) updated")
+        if skipped:
+            print(f"SKIPPED {len(skipped)} planned row(s) -- changed since planning:")
+            for row_id in skipped:
+                print(f"  {row_id}")
         return 0
     finally:
         conn.close()

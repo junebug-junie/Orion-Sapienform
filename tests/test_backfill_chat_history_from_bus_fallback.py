@@ -115,3 +115,52 @@ def test_json_encoded_payload_is_parsed():
 
 def test_undecodable_payload_is_skipped_rather_than_raising():
     assert backfill.plan_updates([_row(fallback_payload="{not json")]) == []
+
+
+def test_snapshot_records_spark_meta_verbatim_not_just_a_length():
+    """spark_meta is the one column the UPDATE replaces wholesale, so the
+    snapshot must be enough to reconstruct it (CLAUDE.md section 14)."""
+    prior = {"mode": "orion", "harness_step_count": 7}
+    (planned,) = backfill.plan_updates([_row(cur_prompt="kept", cur_spark_meta=None)])
+
+    assert "spark_meta" in planned["before"]
+
+    (unchanged,) = backfill.plan_updates(
+        [_row(cur_prompt="kept", cur_response="", cur_spark_meta=prior)]
+    )
+    assert unchanged["before"]["spark_meta"] == prior
+    assert "spark_meta" not in unchanged["updates"]
+
+
+def test_null_created_at_is_planned_without_raising():
+    """created_at is server_default, not NOT NULL -- a legacy row can be NULL,
+    and the plan must survive it so the snapshot still gets written."""
+    (planned,) = backfill.plan_updates([_row(created_at=None)])
+
+    assert planned["created_at"] is None
+
+
+class TestFillOnlyGuard:
+    def test_every_written_column_is_guarded(self):
+        guard = backfill.build_fill_only_guard(["prompt", "response", "source"])
+
+        for col in ("prompt", "response", "source"):
+            assert f"coalesce({col}, '') = ''" in guard
+
+    def test_spark_meta_uses_is_null_not_empty_string(self):
+        """JSONB: coalesce(spark_meta, '') would not even typecheck."""
+        guard = backfill.build_fill_only_guard(["spark_meta"])
+
+        assert guard == "spark_meta is null"
+
+    def test_spark_meta_only_plan_does_not_degenerate_to_true(self):
+        """Regression: guarding spark_meta *by name* produced a bare `true`,
+        so a concurrent writer's spark_meta was silently overwritten."""
+        guard = backfill.build_fill_only_guard(["spark_meta"])
+
+        assert guard != "true"
+        assert "true" not in guard
+
+    def test_empty_column_list_refuses_rather_than_emitting_an_open_update(self):
+        with pytest.raises(ValueError):
+            backfill.build_fill_only_guard([])

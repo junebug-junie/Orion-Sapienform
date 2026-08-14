@@ -256,13 +256,15 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
 
 ## 2026-08-14 (A1 / B1 build)
 
-- **The `agent` route points at a dead host while a live worker sits at the same port on
-  another one.** PR #1636 repointed `agent` from circe to `atlas-worker-agent-1` at
-  `100.121.214.30:8014`, which is unreachable (HTTP 000, 9,326 consecutive unreachable samples
-  over 2.64 h). The agent worker is actually **on circe**: `100.112.254.99:8014` answers
-  HTTP 200. The service name `atlas-worker-agent-1` is a misnomer (confirmed by Juniper). A
-  one-line route-table fix would restore Orion's agent lane. **Not taken** -- scope changes go
-  to Juniper (leash rule 7), and this is a live routing change.
+- **CORRECTED (2026-08-14): the `agent` route is fine, and the earlier entry here was an
+  instrument artifact.** This originally read "the agent route points at a dead host". The live
+  route table routes `agent` to `http://100.112.254.99:8014` (circe-worker-agent-1), which
+  answers with 1 slot, and Juniper confirmed agent turns had run. The "9,326 consecutive
+  unreachable samples" came from `record_lane_occupancy.py` snapshotting the route table once
+  at startup and never re-reading it, so it kept polling the pre-fix atlas address for the whole
+  window and reported a live lane as `0 measured`. Fixed by re-reading the route table every
+  `--route-refresh-sec` (default 300s). **The lesson is the one this arc keeps relearning: a
+  measurement that disagrees with the operator is a hypothesis about the instrument first.**
 
 - **`_power_pressure` averages GPU watts where it should sum them.**
   `orion/telemetry/biometrics_pipeline.py` takes `mean(power.gpu_power_watts)`, so a 3-GPU box

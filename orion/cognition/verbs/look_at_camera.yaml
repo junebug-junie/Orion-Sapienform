@@ -1,0 +1,35 @@
+name: look_at_camera
+label: Look At Camera
+description: >
+  Look at what the camera currently shows -- captions, top object labels, and
+  detection count from the current window projection. Use when the user asks
+  what Orion can see, what's in the room/camera view, or "look around"/"what
+  do you see". Does NOT trigger a fresh capture; reads the passive windowed
+  pipeline's own cadence. Do NOT use for GPU, Docker, disk, or mesh status.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - perception
+side_effect_level: none
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

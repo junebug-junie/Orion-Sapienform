@@ -747,18 +747,38 @@ def _merge_spark_meta(
     return _json_sanitize(base)
 
 
-def _chat_history_conflict_updates(cols: Iterable[str], stmt: Any) -> dict[str, Any]:
-    """Per-column ON CONFLICT rule: a non-empty incoming value wins, else keep.
+def _chat_history_conflict_updates(
+    cols: Iterable[str], stmt: Any, *, incoming_wins: bool
+) -> dict[str, Any]:
+    """Per-column ON CONFLICT rule for chat_history_log.
 
-    ``chat_history_log`` is not an append-only table -- one row is assembled from
-    three separate bus events (user message, assistant message, turn), each
-    carrying a different subset of the columns. So a conflict is never "we
-    already have this, skip"; it is "merge what this event knows into what is
-    already there".
+    ``chat_history_log`` is not append-only -- one row is assembled from three
+    separate bus events (user message, assistant message, turn), each carrying a
+    different subset of the columns. So a conflict is never "we already have
+    this, skip"; it is "merge what this event knows into what is already there".
 
-    Text columns additionally treat '' as absent, because
-    ``_ensure_chat_history_from_message`` seeds prompt/response as '' rather than
-    NULL, and a later event carrying the real text must still be able to fill it.
+    The two producers deliberately keep DIFFERENT policies, matching what each
+    did before the upsert replaced their read-modify-write:
+
+    ``incoming_wins=True`` (turn path) -- ``coalesce(nullif(excluded.c,''), c)``.
+        The turn event is authoritative: it carries ``source`` and the enriched
+        metadata, and its caller has already folded prior state into
+        ``spark_meta``/``thought_process`` before calling, so those merged values
+        must land. Equivalent to the old ``sess.merge()`` plus
+        ``_coalesce_chat_history_turn_fields``' protection of prompt/response.
+
+    ``incoming_wins=False`` (message path) -- ``coalesce(c, nullif(excluded.c,''))``.
+        Fill-only. Reproduces exactly what ``_ensure_chat_history_from_message``
+        used to do field by field (``if not existing.prompt: ...``,
+        ``if session_id and not existing.session_id: ...``). Without this the
+        assistant message -- published AFTER the turn on the WS path
+        (``websocket_handler.py`` ~1802 then ~1911) -- would clobber the turn's
+        canonical ``client_meta``/``memory_status``/``memory_tier``.
+
+    ``nullif(..., '')`` is required either way because ``ChatHistoryTurnV1``
+    declares ``prompt``/``response`` as required ``str``: the turn event always
+    carries both keys and either can legitimately be the empty string, which must
+    not overwrite real text.
     """
     table = ChatHistoryLogSQL.__table__
     updates: dict[str, Any] = {}
@@ -770,13 +790,15 @@ def _chat_history_conflict_updates(cols: Iterable[str], stmt: Any) -> dict[str, 
             continue
         incoming = getattr(stmt.excluded, name)
         if isinstance(column.type, (String, Text)):
-            updates[name] = func.coalesce(func.nullif(incoming, ""), column)
-        else:
-            updates[name] = func.coalesce(incoming, column)
+            incoming = func.nullif(incoming, "")
+        ordered = (incoming, column) if incoming_wins else (column, incoming)
+        updates[name] = func.coalesce(*ordered)
     return updates
 
 
-def upsert_chat_history_row(sess: Any, values: dict[str, Any]) -> None:
+def upsert_chat_history_row(
+    sess: Any, values: dict[str, Any], *, incoming_wins: bool = True
+) -> None:
     """Atomically merge one event's contribution into a chat_history_log row.
 
     Replaces a SELECT-then-INSERT/merge. That pattern was not safe here: the
@@ -789,13 +811,24 @@ def upsert_chat_history_row(sess: Any, values: dict[str, Any]) -> None:
 
     A single INSERT ... ON CONFLICT DO UPDATE has no window between the read and
     the write, so concurrent contributors merge instead of racing.
+
+    Conflicts on the primary key only. Every current producer sets ``id`` equal
+    to ``correlation_id`` (``scripts/chat_history.py`` passes ``turn_id`` == the
+    correlation id at all call sites, and ``_write_row`` back-fills ``id`` from
+    ``correlation_id`` when absent), so this is the same row the old
+    ``id OR correlation_id`` lookup found. A producer that ever sends an explicit
+    ``id`` different from its ``correlation_id`` would insert a second row rather
+    than merge -- narrower than the old lookup, and worth keeping in mind if a
+    new producer appears.
     """
     if not values.get("id"):
         raise ValueError("chat_history_log upsert requires an id")
     stmt = pg_insert(ChatHistoryLogSQL).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=[ChatHistoryLogSQL.id],
-        set_=_chat_history_conflict_updates(values.keys(), stmt),
+        set_=_chat_history_conflict_updates(
+            values.keys(), stmt, incoming_wins=incoming_wins
+        ),
     )
     sess.execute(stmt)
 
@@ -1147,7 +1180,9 @@ def _ensure_chat_history_from_message(
     # caller's session out from under it.
     own_sess = session_factory()
     try:
-        upsert_chat_history_row(own_sess, values)
+        # Fill-only: a message must never overwrite what the turn event already
+        # wrote. Reproduces the old per-field `if not existing.<col>` guards.
+        upsert_chat_history_row(own_sess, values, incoming_wins=False)
         own_sess.commit()
     except Exception:
         own_sess.rollback()

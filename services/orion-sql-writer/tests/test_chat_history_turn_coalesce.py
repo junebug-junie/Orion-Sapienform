@@ -15,7 +15,7 @@ if str(SQL_WRITER_ROOT) not in sys.path:
 SPEC.loader.exec_module(worker)
 
 
-def _compiled_conflict_sql(values: dict) -> str:
+def _compiled_conflict_sql(values: dict, *, incoming_wins: bool = True) -> str:
     """Render the real ON CONFLICT clause upsert_chat_history_row would emit."""
     from sqlalchemy.dialects import postgresql
 
@@ -25,7 +25,9 @@ def _compiled_conflict_sql(values: dict) -> str:
         def execute(self, stmt):
             captured["stmt"] = stmt
 
-    worker.upsert_chat_history_row(_CapturingSession(), values)
+    worker.upsert_chat_history_row(
+        _CapturingSession(), values, incoming_wins=incoming_wins
+    )
     # No literal_binds: it cannot render a JSONB value, and the '' argument to
     # nullif compiles to a bind param either way, so assertions match on
     # `nullif(excluded.<col>, ` rather than on the literal.
@@ -93,3 +95,50 @@ def test_merge_spark_meta_telemetry_does_not_clobber_classify_novelty():
     merged = worker._merge_spark_meta(existing, telemetry, source="telemetry")
     assert merged["novelty"] == 0.91
     assert merged["turn_effect"] == existing["turn_effect"]
+
+
+class TestMergePolicyPerProducer:
+    """The turn event and the message events deliberately merge differently.
+
+    Collapsing them into one policy was a real regression: the assistant message
+    is published AFTER the turn on the WS path, so a last-writer-wins rule let a
+    message clobber the turn's canonical source/client_meta/memory_* values.
+    """
+
+    def test_turn_path_lets_a_non_empty_incoming_value_win(self):
+        sql = _compiled_conflict_sql(
+            {"id": "abc", "source": "hub_orion"}, incoming_wins=True
+        )
+
+        assert "source = coalesce(nullif(excluded.source, " in sql
+        assert "), chat_history_log.source)" in sql
+
+    def test_message_path_keeps_what_is_already_stored(self):
+        sql = _compiled_conflict_sql(
+            {"id": "abc", "client_meta": {"origin": "x"}}, incoming_wins=False
+        )
+
+        # existing first -> a stored value is never overwritten by a message
+        assert "client_meta = coalesce(chat_history_log.client_meta, excluded.client_meta)" in sql
+
+    def test_message_path_still_fills_an_empty_column(self):
+        """Fill-only must still FILL -- nullif keeps '' from counting as stored."""
+        sql = _compiled_conflict_sql({"id": "abc", "prompt": "hi"}, incoming_wins=False)
+
+        assert "prompt = coalesce(chat_history_log.prompt, nullif(excluded.prompt, " in sql
+
+    def test_the_two_policies_are_actually_different(self):
+        values = {"id": "abc", "response": "r"}
+
+        turn = _compiled_conflict_sql(values, incoming_wins=True)
+        message = _compiled_conflict_sql(values, incoming_wins=False)
+
+        assert turn != message
+
+    def test_turn_path_is_the_default(self):
+        """_write_row calls it without the keyword; the turn is authoritative."""
+        values = {"id": "abc", "source": "hub_orion"}
+
+        assert _compiled_conflict_sql(values) == _compiled_conflict_sql(
+            values, incoming_wins=True
+        )

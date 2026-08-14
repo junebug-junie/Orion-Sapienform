@@ -750,6 +750,22 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
         "constraint": constraint,
         **composites,
     }
+    # Fleet power, in watts. Every other number in this cue is a normalised 0-1 pressure --
+    # useful for "is something strained", useless for "what does thinking cost". This is the
+    # one quantity here that Juniper actually pays, and the only reason it can be surfaced is
+    # that the cluster now carries raw units alongside the bands (ROADMAP B1).
+    #
+    # `_partial` names the nodes excluded from the sum. It ships whenever coverage is
+    # incomplete, because a fleet wattage missing a whole machine (circe has no reachable BMC)
+    # would otherwise read as the total.
+    fleet = cluster.get("measurements") if isinstance(cluster.get("measurements"), dict) else {}
+    chassis_watts = fleet.get("chassis_watts")
+    if isinstance(chassis_watts, (int, float)):
+        draft_payload["fleet_watts"] = round(float(chassis_watts))
+        missing = cluster.get("measurements_missing")
+        absent = missing.get("chassis_watts") if isinstance(missing, dict) else None
+        if absent:
+            draft_payload["fleet_watts_partial"] = list(absent)
     freshness_s = _metacog_cue_freshness_s(biometrics)
     if freshness_s is not None:
         draft_payload["freshness_s"] = freshness_s

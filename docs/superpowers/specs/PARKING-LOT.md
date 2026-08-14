@@ -304,3 +304,44 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   -c 'grep ...'` before starting the container catches it in one command; "Container Started"
   does not. This is the same class as the graphify destructive-update incident -- tooling
   reporting success while silently shipping older content.
+
+- **`BiometricsClusterV1` has no live producer anywhere -- the whole cluster path is dead.**
+  `publish_cluster()` only runs when `BIOMETRICS_MODE in {"hub","both"}`, and the mode is
+  **`agent`** in `.env`, `.env_example` and the settings default -- so no node runs it.
+  Verified by subscribing to `orion:biometrics:cluster` for 20 s against a 15 s publish
+  interval: zero messages. (An earlier `xrevrange` check was invalid -- the bus is redis
+  pub/sub, not streams.) Meanwhile `orion/inner_state_registry.py:386` registers
+  `services.orion-cortex-exec.app.executor:_metacog_biometrics_cue` as a cognition consumer of
+  this signal, and `channels.yaml` lists producers/consumers for it -- a fully specified
+  contract with nothing on either end. **Anything that reads `biometrics.cluster` in cognition
+  is reading an empty dict today**, which includes the fleet-power consumer just built.
+
+- **Enabling hub mode is not a free flip.** `publish_cluster()` also emits a `SparkSignalV1`
+  (`signal_type="resource"`, `intensity=strain`) to `orion:spark:signal`, consumed by
+  orion-state-service. So `BIOMETRICS_MODE=both` turns on a new cognition-adjacent signal
+  producer as well as the cluster channel -- and it would carry the *diluted* strain figure
+  (see the 7x dilution entry above) as its intensity. Juniper's call, not a unilateral env
+  change.
+
+- **`orion:spark:signal` has ZERO live subscribers -- publishing to it is a no-op.** Traced
+  because it was the stated risk of enabling biometrics hub mode. Live `PUBSUB NUMSUB` on the
+  real bus: `orion:spark:signal` = **0**. In code: `orion-state-service` (which `channels.yaml`
+  names as its consumer) has **zero references** to it; `orion-cortex-exec/app/executor.py`
+  imports `SparkSignalV1` once and never uses it (dead import); `orion-equilibrium-service`
+  *produces* it. The two `orion/signals/registry.py` hits are organ metadata, not
+  subscriptions. Consistent with the spark-introspector kill and the deleted SparkEngine
+  facade. **`channels.yaml`'s consumer_services for this channel is wrong.**
+
+- **`orion:biometrics:cluster` has 2 live subscribers receiving nothing.** Same live check:
+  cluster = **2**, summary = 3, metacognition:tick = 2. The two are `orion-hub`'s biometrics
+  cache (`services/orion-hub/scripts/biometrics_cache.py:110`) and `orion-state-service`
+  (`app/settings.py:37`) -- and state-service is what populates `BiometricsContext.cluster`,
+  which is exactly what `_metacog_biometrics_cue` reads out of ctx. So the full path
+  publish_cluster -> cluster channel -> state-service -> BiometricsContext -> metacog cue is
+  real and wired end to end, with the producer switched off at the very top.
+
+- **Correction to the earlier "enabling hub mode is not a free flip" entry.** The stated risk
+  was that `publish_cluster()` also emits a SparkSignalV1. It does -- into a channel with no
+  listeners. The real situation is the opposite of what that entry implied: hub mode feeds two
+  starved consumers and the spark emission is inert. The diluted-strain concern only becomes
+  live if something ever subscribes to spark:signal.

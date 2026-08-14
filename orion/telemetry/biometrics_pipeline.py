@@ -163,6 +163,66 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     return out
 
 
+# How each raw measurement composes across the fleet. An explicit table, not a heuristic:
+# guessing an aggregation from a key name is how you end up summing temperatures.
+#
+# EXTENSIVE -- adding a machine adds to the total.
+FLEET_SUM_KEYS = ("chassis_watts", "gpu_watts_total", "gpu_count", "cpu_cores")
+# INTENSIVE -- adding a machine cannot raise the fleet figure above its own hottest member.
+FLEET_MAX_KEYS = ("temp_c_max", "fan_pct_max")
+# DELIBERATELY NEITHER: load_1m / load_15m. A load average is relative to its own machine's
+# core count (80 vs 96 vs 72 here), so summing is meaningless and taking a max compares
+# incomparable scales. A fleet load figure would need per-core normalisation first, which is a
+# different metric with its own justification -- so this omits it rather than inventing one.
+# Any key not listed above is skipped for the same reason: unknown composition is not a licence
+# to guess.
+
+
+def aggregate_fleet_measurements(
+    per_node: Dict[str, Optional[Dict[str, float]]],
+) -> Tuple[Dict[str, float], Dict[str, List[str]]]:
+    """Combine per-node raw measurements into fleet figures, carrying their coverage.
+
+    ROADMAP B1's consumer. Returns (totals, missing) where `missing[k]` names the source nodes
+    that did NOT report `k`.
+
+    THE INVARIANT HAS TO SURVIVE AGGREGATION, which is the whole difficulty. Per-node,
+    absent-is-not-zero is enforced by omitting the key. A naive `sum(...)` over nodes silently
+    re-introduces exactly the error it was protecting against: circe has no reachable BMC, so a
+    fleet `chassis_watts` computed from athena+atlas is a real number that is missing an entire
+    machine, and nothing in the number itself says so.
+
+    So a total is never returned alone. `missing` travels with it, and a consumer that reads
+    `totals["chassis_watts"]` without checking `missing.get("chassis_watts")` is reading a
+    partial sum as a complete one -- which is the same mistake, one level up.
+
+    A node whose `measurements` is None (a producer predating the field) counts as missing for
+    every key, not as a node with nothing to report.
+    """
+    totals: Dict[str, float] = {}
+    missing: Dict[str, List[str]] = {}
+    if not per_node:
+        return totals, missing
+
+    all_nodes = sorted(per_node)
+    for key in (*FLEET_SUM_KEYS, *FLEET_MAX_KEYS):
+        values: List[float] = []
+        absent: List[str] = []
+        for node in all_nodes:
+            m = per_node.get(node)
+            value = _as_float(m.get(key)) if isinstance(m, dict) else None
+            if value is None:
+                absent.append(node)
+            else:
+                values.append(value)
+        if not values:
+            continue  # nobody measured it: absent at the fleet level too, not zero
+        totals[key] = sum(values) if key in FLEET_SUM_KEYS else max(values)
+        if absent:
+            missing[key] = absent
+    return totals, missing
+
+
 CONSTRAINTS = {
     "thermal": "THERMAL",
     "power": "POWER",

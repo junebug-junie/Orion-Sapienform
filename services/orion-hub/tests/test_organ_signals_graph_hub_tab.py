@@ -43,8 +43,26 @@ def test_app_js_wires_signals_hash_and_graph() -> None:
 
 
 def test_main_mtime_token_includes_organ_signals_js() -> None:
-    main_src = MAIN_PY.read_text(encoding="utf-8")
-    assert '"organ-signals-graph-ui.js"' in main_src or "organ-signals-graph-ui.js" in main_src
+    """The cache-bust token must move when this module changes.
+
+    Was a grep of main.py for the literal filename, back when
+    _ui_asset_mtime_token() hardcoded a four-file list. That list was the bug --
+    it silently excluded every other JS module the template loads, so editing
+    one produced no new ?v= and browsers kept serving the cached copy
+    (found 2026-08-14). main.py now globs static/js, so assert the behavior
+    the grep was standing in for: touching this file changes the token.
+    """
+    from scripts.main import _ui_asset_mtime_token
+
+    assert ORG_SIGNALS_JS.exists()
+    before = _ui_asset_mtime_token()
+    original = ORG_SIGNALS_JS.stat().st_mtime
+    try:
+        os.utime(ORG_SIGNALS_JS, (original + 10_000, original + 10_000))
+        assert _ui_asset_mtime_token() != before
+    finally:
+        os.utime(ORG_SIGNALS_JS, (original, original))
+    assert _ui_asset_mtime_token() == before
 
 
 def test_organ_signals_graph_ui_exports_attach() -> None:

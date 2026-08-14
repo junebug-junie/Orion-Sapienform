@@ -276,8 +276,26 @@ def test_ui_actions_are_pinned_to_the_top_of_the_detail_pane():
     assert "sticky top-0" in ui
 
 
-def test_ui_asset_cache_bust_covers_every_js_module():
-    """The cache-bust token globbed nothing but a hardcoded four-file list until
-    2026-08-14, so an edit to this very module produced no new ?v=."""
-    main_py = (HUB_ROOT / "scripts" / "main.py").read_text(encoding="utf-8")
-    assert 'STATIC_DIR.glob("js/*.js")' in main_py
+def test_ui_asset_cache_bust_covers_this_module():
+    """Until 2026-08-14 the cache-bust token read a hardcoded four-file list that
+    did not include memory-crystallization-ui.js, so every edit in this PR would
+    have shipped behind a stale browser cache.
+
+    Asserted behaviorally against the real file rather than by grepping main.py
+    for the glob: a grep passes for any implementation that merely *mentions*
+    the right shape, including one that globs a directory this file is not in.
+    """
+    import os
+
+    from scripts.main import _ui_asset_mtime_token
+
+    before = _ui_asset_mtime_token()
+    original = UI_JS.stat().st_mtime
+    try:
+        os.utime(UI_JS, (original + 10_000, original + 10_000))
+        assert _ui_asset_mtime_token() != before, (
+            "editing memory-crystallization-ui.js must move the ?v= token"
+        )
+    finally:
+        os.utime(UI_JS, (original, original))
+    assert _ui_asset_mtime_token() == before

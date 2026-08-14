@@ -5937,6 +5937,14 @@ document.addEventListener("DOMContentLoaded", () => {
         handleChatMessageReceipt(notification.message_id, notification.session_id, 'seen');
       }
     }
+    if (notification.notification_type === 'endogenous_outreach') {
+      // Live sockets already rendered this as a chat bubble (the orion_outreach
+      // branch in socket.onmessage), and the notification rides the same tts_q,
+      // so toasting it too would show the identical text twice. It still lands
+      // in the notification list, which is how a browser opened after the fact
+      // finds it.
+      return;
+    }
     showToast(notification);
   }
 
@@ -10323,6 +10331,23 @@ document.addEventListener("DOMContentLoaded", () => {
           const d = JSON.parse(e.data);
           if (d.type === 'connection_ready') {
             activeConnectionId = d.connection_id || null;
+            return;
+          }
+          if (d.kind === 'orion_outreach') {
+            // Orion spoke first (no turn of ours). Handled before the generic
+            // assistant branch and returns early on purpose: that branch also
+            // runs updateMemoryPanelFromResponse(), which would blank the recall
+            // panel still showing the last real turn.
+            const outreachText = String(d.llm_response || '').trim();
+            if (outreachText) {
+              appendMessage('Orion', outreachText, 'text-white', {
+                correlationId: d.correlation_id,
+                messageId: d.message_id || null,
+                turnId: d.correlation_id,
+                mode: d.mode || 'orion',
+                unsolicited: true,
+              });
+            }
             return;
           }
           if (d.type === 'turn_deferred') {

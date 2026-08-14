@@ -743,8 +743,22 @@ async def websocket_endpoint(websocket: WebSocket):
     # to the /api/chat/turn/cancel endpoint's lookup, no separate sync needed.
     _ACTIVE_TURNS_BY_CONNECTION[connection_id] = active_turn
 
+    # Endogenous outreach needs the same two things by reference: this socket's
+    # outbound queue (to push an unsolicited Orion bubble) and active_turn (so it
+    # never speaks over a turn in flight). Best-effort: outreach is optional.
+    endogenous_outreach = getattr(scripts.main, "endogenous_outreach", None)
+    if endogenous_outreach is not None:
+        endogenous_outreach.register_connection(connection_id, tts_q, active_turn)
+
     try:
         while True:
+            # Idle marker for endogenous outreach. Control reaches this line
+            # only when the previous message has been fully handled -- every
+            # `continue` in this loop body passes through here -- so it is the
+            # one reliable "this socket is done" point without restructuring the
+            # loop. Paired with note_busy() just below.
+            if endogenous_outreach is not None:
+                endogenous_outreach.note_idle(connection_id)
             raw = await websocket.receive_text()
             if presence_state:
                 presence_state.heartbeat()
@@ -752,6 +766,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 data: Dict[str, Any] = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            if endogenous_outreach is not None:
+                # Set for EVERY mode. active_turn["correlation_id"] is only
+                # populated by the unified-orion and agent-claude lanes, so the
+                # UI's Quick / Story / Agent modes would otherwise look idle to
+                # outreach for the whole duration of a real turn.
+                endogenous_outreach.note_busy(connection_id)
 
             mode = data.get("mode") or ("auto" if settings.HUB_AUTO_DEFAULT_ENABLED else "brain")
             client_mode = str(mode or "").strip().lower()
@@ -762,6 +782,11 @@ async def websocket_endpoint(websocket: WebSocket):
             )
             session_id = data.get("session_id")
             publish_session_id = session_id or "unknown"
+            if endogenous_outreach is not None:
+                # session_id is client-side (localStorage) and only reaches Hub
+                # here, so this is the one place outreach can learn which thread
+                # to post into.
+                endogenous_outreach.note_session(connection_id, session_id)
             if not session_id and diagnostic:
                 logger.warning("Missing session_id; publishing chat history with session_id=unknown")
             no_write = bool(data.get("no_write", settings.HUB_DEFAULT_NO_WRITE))
@@ -1914,6 +1939,8 @@ async def websocket_endpoint(websocket: WebSocket):
             )
     finally:
         _ACTIVE_TURNS_BY_CONNECTION.pop(connection_id, None)
+        if endogenous_outreach is not None:
+            endogenous_outreach.unregister_connection(connection_id)
         drain_task.cancel()
         biometrics_task.cancel()
         if notification_cache is not None:

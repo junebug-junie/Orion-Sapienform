@@ -1249,6 +1249,31 @@ async def api_debug_self_experiments_trigger_daily(req: SelfExperimentsTriggerRe
 
 
 
+@router.get("/api/debug/endogenous-outreach/status")
+def api_debug_endogenous_outreach_status() -> Dict[str, Any]:
+    """Live outreach gate state: why the last tick did or did not speak."""
+    from .main import endogenous_outreach
+
+    if endogenous_outreach is None:
+        return {"ok": False, "reason": "not_initialized"}
+    return {"ok": True, "status": endogenous_outreach.status()}
+
+
+@router.post("/api/debug/endogenous-outreach/trigger")
+async def api_debug_endogenous_outreach_trigger() -> Dict[str, Any]:
+    """Force one outreach decision cycle, skipping only the random roll.
+
+    Every safety gate still applies (turn-in-flight, quiet hours, cooldown,
+    daily cap), so this cannot be used to talk over a live turn.
+    """
+    from .main import endogenous_outreach
+
+    if endogenous_outreach is None:
+        return {"ok": False, "reason": "not_initialized"}
+    result = await endogenous_outreach.maybe_outreach(force=True)
+    return {"ok": True, "result": result}
+
+
 @router.get("/api/service-logs/services")
 def api_service_logs_services() -> Dict[str, Any]:
     return collect_service_inventory()

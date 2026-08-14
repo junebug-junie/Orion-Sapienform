@@ -282,6 +282,57 @@ class Settings(BaseSettings):
     NOTIFY_BASE_URL: str = Field(default="http://orion-notify:7140", alias="NOTIFY_BASE_URL")
     NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
 
+    # --- Endogenous outreach (Orion speaks first; stub random trigger) ---
+    # See scripts/endogenous_outreach.py. The only path by which Orion emits
+    # chat text nobody asked for. Enabled in .env_example / the live .env; this
+    # Field default stays False so an absent key fails closed rather than
+    # silently enabling outreach.
+    HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
+        default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
+    )
+    # How often the loop wakes to consider reaching out.
+    HUB_ENDOGENOUS_OUTREACH_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
+    )
+    # STUB trigger: chance per tick that Orion considers speaking. Replaced by a
+    # real endogenous signal when autonomy provides one.
+    HUB_ENDOGENOUS_OUTREACH_PROBABILITY: float = Field(
+        default=0.15, alias="HUB_ENDOGENOUS_OUTREACH_PROBABILITY"
+    )
+    HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC: float = Field(
+        default=2700.0, alias="HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC"
+    )
+    # Max outreaches per local calendar day; -1 disables the cap.
+    HUB_ENDOGENOUS_OUTREACH_DAILY_CAP: int = Field(
+        default=4, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP"
+    )
+    # Quiet window [start, end) in HUB_ENDOGENOUS_OUTREACH_TZ; equal values or
+    # -1 disable it.
+    HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR: int = Field(
+        default=23, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR"
+    )
+    HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR: int = Field(
+        default=8, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR"
+    )
+    # IANA zone for quiet hours and the daily-cap reset. Hub's container sets no
+    # TZ, so the process timezone is UTC -- leaving this at UTC means the quiet
+    # window is UTC hours, not Juniper's. Set it to the operator's real zone.
+    HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
+        default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
+    )
+    # LLM gateway compute lane for generation: "quick" or "metacog".
+    HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE: str = Field(
+        default="quick", alias="HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE"
+    )
+    HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC: float = Field(
+        default=60.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
+    )
+    # Session used for chat-history persistence when no live socket has
+    # reported one (session_id lives in browser localStorage).
+    HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID: str = Field(
+        default="orion_outreach", alias="HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID"
+    )
+
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(
         default="orion:cortex:gateway:request",

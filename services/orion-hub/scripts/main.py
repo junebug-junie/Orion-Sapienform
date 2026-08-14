@@ -32,6 +32,7 @@ from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
+from scripts.endogenous_outreach import EndogenousOutreach
 from scripts.agent_step_relay import AgentStepRelay
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
@@ -255,6 +256,7 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
+endogenous_outreach: Optional[EndogenousOutreach] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -356,7 +358,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -420,6 +422,24 @@ async def startup_event():
                 notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
             )
             await bus_synaptic_trigger_notifier.start(bus)
+
+            # Orion speaks first (stub random trigger). Off unless explicitly
+            # enabled -- see scripts/endogenous_outreach.py for the safety gates.
+            endogenous_outreach = EndogenousOutreach(
+                enabled=settings.HUB_ENDOGENOUS_OUTREACH_ENABLED,
+                tick_interval_sec=settings.HUB_ENDOGENOUS_OUTREACH_TICK_SEC,
+                probability=settings.HUB_ENDOGENOUS_OUTREACH_PROBABILITY,
+                min_cooldown_sec=settings.HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC,
+                daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
+                quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
+                quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
+                llm_route=settings.HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE,
+                timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,
+                notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
+                fallback_session_id=settings.HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID,
+                timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+            )
+            await endogenous_outreach.start(bus, cortex_client)
 
             agent_step_relay = AgentStepRelay(channel=settings.HUB_CONTEXT_EXEC_EVENT_CHANNEL)
             await agent_step_relay.start(bus)
@@ -725,7 +745,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -770,6 +790,12 @@ async def shutdown_event() -> None:
             await bus_synaptic_trigger_notifier.stop()
         except Exception:
             pass
+    if endogenous_outreach is not None:
+        try:
+            await endogenous_outreach.stop()
+        except Exception:
+            pass
+        endogenous_outreach = None
     if agent_step_relay is not None:
         try:
             await agent_step_relay.stop()

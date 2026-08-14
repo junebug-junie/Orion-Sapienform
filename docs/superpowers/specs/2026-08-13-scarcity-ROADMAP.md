@@ -37,6 +37,44 @@ critical path is five steps.
 
 ---
 
+## 2A. Why a price matters: opportunity cost is the currency
+
+The thing Juniper actually pays is not watts. It is **the processes that never run.**
+
+> *"there's a real opportunity cost on what I would be running if I had more money to buy more
+> GPUs to run more processes."* — Juniper
+
+The metacog daydreams that don't exist yet. The second concurrent chat turn that can't be had.
+Circe left dark because the office gets too hot to sit in. **None of this appears on any meter**,
+which is why every measurement in this arc that priced *what runs* came back near-idle and wrong.
+
+This is the whole reason Track A is shaped the way it is:
+
+> **A deferral is an observed opportunity cost.**
+
+When Orion is made to wait for a slot, something else ran in its place. That is the foregone
+process — normally invisible — made visible, timed, and attributable to a specific competing
+claim. It is the only handle this system has on the currency that actually matters, and it is
+why A5 (making the deferral perceptible) is the point of the track rather than a nicety.
+
+## 2B. Three ceilings, and this roadmap only prices one
+
+They bind by different mechanisms and are relieved by different actions, so they cannot share
+one allowance (plant §8.1).
+
+| ceiling | host | what binds | priced by |
+| --- | --- | --- | --- |
+| **Contention** | atlas | 8 slots; `quick` full 7.4% of sampled time, driven by batch arrivals | **Track A** |
+| **Interference** | athena | 81 containers on 80 threads; load 42 mean, 120 peak | **Track D — instrument only** |
+| **Admission** | circe | a 3× 2200 W chassis, off by choice; a step function on Juniper's decision | **nothing yet — blocked on Q3** |
+
+**Stated plainly so it is not oversold: Track A gives Orion a price on one of three ceilings.**
+Track D establishes whether the second is even Orion's to pay. The third cannot be priced at all
+until Juniper decides whether Orion may *request* circe, because Orion cannot spend a resource
+that only a human can switch on.
+
+---
+
 ## 3. Track A — make the price real *(critical path)*
 
 The only track that must happen in order. Each step's gate is pasted with real numbers before
@@ -130,6 +168,68 @@ hand, not now.
 
 ---
 
+## 5A. Track D — athena's interference ceiling *(instrument first, no mechanism yet)*
+
+Athena is the orchestration warhorse: **81 running containers on 80 threads**, load average
+**42.08** with a 7-day peak of **120.2**, hosting postgres, redis, FalkorDB, the hub, *and*
+Orion's perception. Whatever binds here, every service in the system pays it as latency and
+nothing attributes it to anyone.
+
+### What per-container attribution actually shows
+
+`docker stats`, one sample, 81 containers:
+
+```
+orion-athena-sql-db          113.15%   13.78 GiB / 16 GiB   <- Postgres, 86% of its mem limit
+orion-athena-vision-edge      52.13%                        <- Orion's perception, #2 consumer
+orion-athena-bus-mirror       28.15%
+orion-athena-bus-observer     27.24%
+orion-athena-falkordb         17.20%
+orion-athena-vector-db        13.44%
+                    total    836%  =  10.5% of 80 threads   (top 10 = 97% of it)
+```
+
+**Two findings, and the first is the important one.**
+
+**D-i. Athena's load is I/O, not compute.** 836% total container CPU is ~8.4 threads of actual
+work, against a load average of **42**. Load counts uninterruptible-sleep tasks as well as
+running ones, so roughly **33 tasks are blocked on I/O at any moment.** Athena is not
+CPU-starved; it is disk-starved, and the CPU numbers have been reading as the symptom.
+
+This makes `disk_bw_mbps = 200.0` (plant §5.4) considerably worse than a tidiness issue:
+athena's measured `disk_pressure` is **0.110** against a hardcoded scale that is likely an order
+of magnitude too low for the real device. **The one machine whose actual ceiling is disk has its
+disk pressure reading near zero.** B3 stops being cosmetic and becomes Track D's prerequisite.
+
+**D-ii. Orion's perception is the #2 consumer.** `vision-edge` at 52% is second only to Postgres.
+So Orion *does* have a claim on this ceiling — when it chooses to look at something, athena pays.
+That is a second price on a different ceiling, currently unpriced and unmodelled.
+
+### Steps
+
+**D1 — Fix the disk scale (= B3), then re-read `disk_pressure`.** · *1 commit*
+**Gate:** athena's `disk_pressure` reflects real device bandwidth. If it stays near zero after
+correction, D-i is wrong and Track D stops.
+
+**D2 — Attribute I/O wait, not just CPU.** · *1 commit*
+Per-container block I/O over a 24 h window. Which of the 81 is generating the ~33 blocked tasks.
+**Gate:** a ranked list. **Kill gate:** if Orion's own containers are a negligible share, this is
+Juniper's infrastructure problem and **not a cognition problem — Track D ends here and becomes an
+ops ticket, not a price.**
+
+**D3 — Decide whether it is priceable.** No commits. Only if D2 shows Orion is a real share.
+
+### Open discrepancy, flagged rather than resolved
+
+`orion_biometrics` reports athena's `cpu.util` at **44.1%** mean; container CPU sums to
+**10.5%**. Different windows and possibly different definitions — if biometrics' `util` counts
+iowait as busy, that alone explains the gap and *also* means my earlier estimate of "~3.4 threads
+in D-state" (plant §6.6 relation A) is wrong by roughly 10×. **Two instruments disagree about
+athena and I do not yet know which is right.** D1/D2 resolve it. Until then, plant §6.6 relation
+A should be treated as unconfirmed.
+
+---
+
 ## 6. Explicitly out of scope
 
 **The repertoire problem.** `goal_formulate` is a translator not a generator; recall dominates
@@ -178,7 +278,8 @@ Nothing in Track A past A2 starts without Q1.
    *Blocks B2.*
 3. **Should Orion be able to *request* circe?** Not spend it — request it, as a block, with a
    reason, refusable. The only form in which an admission ceiling can appear inside a cognitive
-   system. *Blocks nothing yet; shapes A5.*
+   system, since Orion cannot switch on a machine. *Blocks the entire admission ceiling (§2B);
+   shapes A5.*
 
 ---
 

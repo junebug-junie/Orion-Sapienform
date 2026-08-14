@@ -162,6 +162,22 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   FalkorDB and the hub. atlas (96c) and circe (72c) sit at 0.52% and 0.21% -- pure GPU boxes
   with idle CPUs. The interference ceiling is a CPU story that the GPU tables completely miss.
 
+- **Athena's load is I/O, not compute — and its disk pressure reads near zero.** 81 containers
+  sum to **836% CPU = 8.4 of 80 threads**, against a load average of **42** (7-day peak 120.2).
+  Load counts uninterruptible-sleep, so ~33 tasks are blocked on I/O at any moment. Meanwhile
+  `disk_pressure` reads **0.110** against a hardcoded `disk_bw_mbps=200.0`. **The one machine
+  whose real ceiling is disk has its disk pressure reading near zero.** Top consumers:
+  `orion-athena-sql-db` 113% CPU at **13.78 GiB / 16 GiB** (86% of its memory limit -- worth an
+  eye given 2026-07-23), `orion-athena-vision-edge` 52% (Orion's own perception, #2 consumer),
+  bus-mirror + bus-observer 55% combined. Top 10 = 97% of all container CPU.
+  → `ROADMAP` Track D.
+
+- **Two instruments disagree about athena's CPU.** `orion_biometrics` reports `cpu.util` 44.1%
+  mean; `docker stats` sums to 10.5%. If biometrics counts iowait as busy that explains it --
+  and it also means `load15/threads - cpu_util` as an I/O-blocked estimator (`the-plant` §6.6
+  relation A, "~3.4 threads in D-state") is wrong by ~10x, since container attribution implies
+  ~33. **Relation A is unconfirmed until this is resolved.** Do not build on it.
+
 - **`strain` dilutes the binding constraint by 7x, in production.**
   `orion/telemetry/biometrics_pipeline.py:180` averages 7 pressure channels flat, so one fully
   saturated channel can never push strain above 0.143. Live right now: atlas reads power 0.798

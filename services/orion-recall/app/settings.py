@@ -150,8 +150,13 @@ class Settings(BaseSettings):
     GRAPHDB_PASS: str = Field(default="admin", validation_alias=AliasChoices("GRAPHDB_PASS"))
 
     # ── Vector backend (recall-specific overrides) ────────────────────
+    # RECALL_VECTOR_COLLECTIONS removed 2026-08-14: vestigial dead config
+    # left over from before the May 2026 vector amputation
+    # (docs/superpowers/pr-reports/2026-05-29-orion-recall-vector-amputation-pr.md).
+    # Recall's Chroma retrieval path was already deleted then
+    # (RECALL_ENABLE_VECTOR defaults false above); this setting was only ever
+    # echoed back by /debug/settings, never consumed by a live query path.
     RECALL_VECTOR_BASE_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_BASE_URL"))
-    RECALL_VECTOR_COLLECTIONS: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_COLLECTIONS"))
     RECALL_VECTOR_EMBEDDING_URL: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("RECALL_VECTOR_EMBEDDING_URL"),
@@ -469,7 +474,6 @@ class Settings(BaseSettings):
     # ── Helpers ───────────────────────────────────────────────────────
     @field_validator(
         "RECALL_VECTOR_BASE_URL",
-        "RECALL_VECTOR_COLLECTIONS",
         "RECALL_VECTOR_EMBEDDING_URL",
         "RECALL_CARDS_EMBEDDING_URL",
         "RECALL_RDF_ENDPOINT_URL",
@@ -491,10 +495,6 @@ class Settings(BaseSettings):
         # If recall-specific base URL is not set, build from VECTOR_DB_HOST/PORT
         if not self.RECALL_VECTOR_BASE_URL:
             self.RECALL_VECTOR_BASE_URL = f"http://{self.VECTOR_DB_HOST}:{self.VECTOR_DB_PORT}"
-
-        # If recall-specific collections are not set, fall back to the chat collection
-        if not self.RECALL_VECTOR_COLLECTIONS:
-            self.RECALL_VECTOR_COLLECTIONS = "orion_chat_turns,orion_chat"
 
         # Default Juniper filter only for collapse_mirror timelines.
         if self.RECALL_SQL_TIMELINE_REQUIRE_JUNIPER_OBSERVER is None:

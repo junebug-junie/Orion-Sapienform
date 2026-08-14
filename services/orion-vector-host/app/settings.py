@@ -81,14 +81,12 @@ class Settings(BaseSettings):
         default="orion_main_store",
         alias="VECTOR_HOST_SEMANTIC_COLLECTION",
     )
-    VECTOR_HOST_CHAT_MESSAGE_COLLECTION: str = Field(
-        default="orion_chat",
-        alias="VECTOR_HOST_CHAT_MESSAGE_COLLECTION",
-    )
-    VECTOR_HOST_CHAT_TURN_COLLECTION: str = Field(
-        default="orion_chat_turns",
-        alias="VECTOR_HOST_CHAT_TURN_COLLECTION",
-    )
+    # VECTOR_HOST_CHAT_MESSAGE_COLLECTION / VECTOR_HOST_CHAT_TURN_COLLECTION
+    # removed 2026-08-14: they only targeted the now-dead orion_chat /
+    # orion_chat_turns Chroma vector-upsert writes (see main.py's
+    # _handle_chat_history / _handle_chat_turn docstrings). Chat/turn
+    # embeddings still feed OrionTissue directly; they no longer target a
+    # Chroma collection at all.
     VECTOR_HOST_GPT_MESSAGE_COLLECTION: str = Field(
         default="orion_chat_gpt",
         alias="VECTOR_HOST_GPT_MESSAGE_COLLECTION",

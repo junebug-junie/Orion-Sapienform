@@ -166,6 +166,20 @@ async def _publish_semantic_upsert(
 
 
 async def _handle_chat_history(env: BaseEnvelope) -> None:
+    """Feed OrionTissue from real chat-message embeddings only.
+
+    Vector-upsert-to-Chroma for this channel was killed 2026-08-14: the only
+    reader, orion-recall's Chroma retrieval path, was already amputated in
+    May 2026 (RECALL_ENABLE_VECTOR defaults false --
+    docs/superpowers/pr-reports/2026-05-29-orion-recall-vector-amputation-pr.md),
+    so nothing has consumed writes to the `orion_chat` collection since then.
+    This handler still embeds the text and calls `feed_tissue()` directly
+    (in-process, no bus publish) because that is a separate, still-live
+    OrionTissue stimulus source documented in `tissue_feed.py`'s own
+    docstring -- not a fallback to the killed write. No `vector.upsert.v1`
+    is published from this path anymore, so orion-vector-writer never writes
+    to `orion_chat` again.
+    """
     if embedder is None:
         logger.warning("Embedding skipped: embedder unavailable.")
         return
@@ -190,46 +204,21 @@ async def _handle_chat_history(env: BaseEnvelope) -> None:
         return
 
     doc_id = message.message_id or str(env.correlation_id)
-    timestamp = message.timestamp or env.created_at.isoformat()
 
-    meta = _base_meta(
-        env,
-        original_channel=settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
-        role=role,
-        timestamp=timestamp,
-    )
-    meta.update(
-        {
-            "message_id": message.message_id,
-            "session_id": message.session_id,
-            "speaker": message.speaker,
-            "provider": message.provider,
-            "model": message.model,
-            "tags": message.tags,
-            "memory_status": message.memory_status,
-            "memory_tier": message.memory_tier,
-            "memory_reason": message.memory_reason,
-            "client_meta": message.client_meta,
-        }
-    )
     try:
-        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+        embedding, _embedding_model, _embedding_dim = await embedder.embed(text)
     except Exception as exc:
         logger.warning("Embedding failed doc_id=%s error=%s", doc_id, exc)
         return
 
-    await _publish_semantic_upsert(
-        env=env,
-        text=text,
-        doc_id=doc_id,
-        role=role,
-        meta=meta,
-        embedding=embedding,
-        embedding_model=embedding_model,
-        embedding_dim=embedding_dim,
-        original_channel=settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
-        collection_name=settings.VECTOR_HOST_CHAT_MESSAGE_COLLECTION,
-    )
+    try:
+        await feed_tissue(
+            embedding,
+            doc_id=doc_id,
+            correlation_id=str(env.correlation_id or doc_id),
+        )
+    except Exception as exc:
+        logger.warning("OrionTissue feed failed doc_id=%s error=%s", doc_id, exc)
 
 
 async def _handle_chat_gpt_message(env: BaseEnvelope) -> None:
@@ -291,6 +280,15 @@ async def _handle_chat_gpt_message(env: BaseEnvelope) -> None:
     )
 
 async def _handle_chat_turn(env: BaseEnvelope) -> None:
+    """Feed OrionTissue from real chat-turn embeddings only.
+
+    Same 2026-08-14 kill as `_handle_chat_history` above: vector-upsert-to-
+    Chroma for `orion_chat_turns` is removed (dead pipeline, no reader since
+    the May 2026 orion-recall vector amputation), but the embed + in-process
+    `feed_tissue()` call is kept because it is a separate, still-live
+    OrionTissue stimulus source. No `vector.upsert.v1` is published from this
+    path anymore.
+    """
     if embedder is None:
         logger.warning("Embedding skipped: embedder unavailable.")
         return
@@ -312,45 +310,20 @@ async def _handle_chat_turn(env: BaseEnvelope) -> None:
     if not (turn.prompt or turn.response):
         return
 
-    timestamp = env.created_at.isoformat() if env.created_at else ""
-    meta = _base_meta(
-        env,
-        original_channel=settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
-        role="turn",
-        timestamp=timestamp,
-    )
-    meta.update(
-        {
-            "correlation_id": doc_id,
-            "turn_id": turn.id,
-            "user_id": turn.user_id,
-            "session_id": turn.session_id,
-            "source_label": turn.source,
-            "spark_meta": json.dumps(turn.spark_meta) if turn.spark_meta else None,
-            "memory_status": turn.memory_status,
-            "memory_tier": turn.memory_tier,
-            "memory_reason": turn.memory_reason,
-            "client_meta": turn.client_meta,
-        }
-    )
     try:
-        embedding, embedding_model, embedding_dim = await embedder.embed(text)
+        embedding, _embedding_model, _embedding_dim = await embedder.embed(text)
     except Exception as exc:
         logger.warning("Embedding failed doc_id=%s error=%s", doc_id, exc)
         return
 
-    await _publish_semantic_upsert(
-        env=env,
-        text=text,
-        doc_id=doc_id,
-        role="turn",
-        meta=meta,
-        embedding=embedding,
-        embedding_model=embedding_model,
-        embedding_dim=embedding_dim,
-        original_channel=settings.VECTOR_HOST_CHAT_TURN_CHANNEL,
-        collection_name=settings.VECTOR_HOST_CHAT_TURN_COLLECTION,
-    )
+    try:
+        await feed_tissue(
+            embedding,
+            doc_id=doc_id,
+            correlation_id=str(env.correlation_id or doc_id),
+        )
+    except Exception as exc:
+        logger.warning("OrionTissue feed failed doc_id=%s error=%s", doc_id, exc)
 
 
 async def _handle_social_room_turn(env: BaseEnvelope) -> None:

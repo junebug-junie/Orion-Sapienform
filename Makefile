@@ -291,3 +291,16 @@ field-tension-report:
 		$(if $(Z),--z-threshold $(Z),) \
 		$(if $(ALPHA),--alpha $(ALPHA),) \
 		$(if $(JSON),--json,)
+
+# Layer 5 attention input starvation -- is attention choosing between competing
+# inputs, or idling for lack of any? Read-only. Companion to
+# field-tension-report; the two rates are NOT directly comparable (different
+# table, cadence, and kind of event -- the script says so in its own output).
+#
+#   make attention-starvation-report            # last 72h
+#   make attention-starvation-report HOURS=24
+#   make attention-starvation-report JSON=1
+attention-starvation-report:
+	@$(METRIC_PYTHON) scripts/analysis/measure_attention_input_starvation.py \
+		$(if $(HOURS),--hours $(HOURS),) \
+		$(if $(JSON),--json,)

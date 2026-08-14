@@ -350,3 +350,59 @@ doc; not addressed here.
   that designed decay channels were broken could have driven someone to "fix" the decay loop
   those consumers depend on — including re-adding `prediction_error` to a set it was
   deliberately removed from. That is the actual risk this correction closes.
+
+## Continuing the arc: what is downstream actually waiting for?
+
+With tension sensing measurable, the next question decides whether wiring it is worth
+anything: **is Layer 5 attention currently choosing between competing inputs, or idling for
+lack of any?** If it already selects richly, tension must prove it adds information. If it is
+starved, tension is not competing with an incumbent — a different and much weaker claim to
+have to defend, but far more useful to know first.
+
+Measured with `scripts/analysis/measure_attention_input_starvation.py`
+(`make attention-starvation-report`) against `substrate_attention_broadcast_log`:
+
+| | 72h (8,594 frames) | 24h (2,865 frames) |
+|---|---|---|
+| Frames with ≥1 signal | 26.2% | 19.4% |
+| **Frames with ≥1 open loop** | **5.7%** | **0.2%** (6 frames) |
+| Frames with ≥1 candidate action | 5.7% | 0.2% |
+| **Frames selecting any action** | **5.7%** | 0.2% |
+| Action types ever selected | `defer` 387, `watch` 105, `none` 8,102 | — |
+
+Three things fall out, and the third is the arc's actual finding:
+
+1. **Candidate supply *is* open-loop supply.** `frames_with_any_open_loop`,
+   `frames_with_any_candidate_action` and `frames_selecting_an_action` are the same number
+   (492 over 72h) — attention selects exactly when it has an open loop, and never otherwise.
+2. **It never acts.** Every selection in the window is `defer` or `watch`. Even with a
+   candidate, the outcome is to not do anything yet.
+3. **Its only candidate source is conversation.** `orion/substrate/attention/scoring.py:145`
+   builds every `OpenLoopV1` from the current turn — `user_text`, `direct_turn`,
+   `_EMOTION_RE.search(user_text)`, literal `"my "` / `"our "` / `"juniper"` token checks. The
+   second producer (`services/orion-hub/scripts/attention_loops_store.py:256`) re-surfaces
+   *stored* themes rather than generating candidates from internal state. **Nothing anywhere
+   generates an attention candidate from interoceptive state.**
+
+So the structure is: no user turn → no open loop → nothing to attend to → `none`, 94.3% of
+the time over 3 days and 99.8% over the last day. Orion's attention architecture is
+structurally reactive — it has something to attend to when Juniper is talking to it, and
+essentially not otherwise.
+
+That is the same starvation the drives program died of, one layer up, and it lands exactly on
+the founding charter's bar: *"Orion must sometimes choose not to respond optimally in the
+moment in order to preserve long-term coherence. This is where Orion stops being reactive and
+starts being self-directed."*
+
+**What this does and does not establish.** It establishes that tension would not be competing
+with an incumbent selector — the competition currently has no entrants for all but a fraction
+of frames. It does **not** establish that tension is *good* input: a high admission rate of
+noise would be worse than an empty frame. It also does not explain why `defer`/`watch` are the
+only outcomes ever selected; that is a separate gate, untraced here.
+
+**Next rung, and the one this arc must not skip.** The drives program's fatal habit was
+building instruments and never an outcome measure. Before tension supplies a single attention
+candidate, the missing piece is: *what would count as this having helped?* An
+interoceptively-sourced open loop is only worth building if there is a number that moves when
+it works and does not when it doesn't. That number does not exist yet, and inventing candidate
+supply before it exists would repeat the exact cycle this program was chartered to end.

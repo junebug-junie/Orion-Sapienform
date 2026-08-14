@@ -489,6 +489,16 @@ class Settings(BaseSettings):
     # --- Hub Prompt Context (UI-side rolling history) ---
     # Number of *turns* (user+assistant pairs) to include as inline context
     HUB_CONTEXT_TURNS: int = Field(default=12, alias="HUB_CONTEXT_TURNS")
+    # Rebuild a reconnecting socket's conversation context from chat_history_log.
+    # Without this, `history` is in-memory only and every Hub restart silently
+    # discards the running conversation -- see scripts/chat_history_rehydrate.py.
+    HUB_HISTORY_REHYDRATE_ENABLED: bool = Field(
+        default=True, alias="HUB_HISTORY_REHYDRATE_ENABLED"
+    )
+    # Age bound so a reused session id does not resurrect a stale conversation.
+    HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS: float = Field(
+        default=48.0, alias="HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS"
+    )
     # Hard cap to avoid runaway prompts when users paste long text
     HUB_CONTEXT_MAX_CHARS: int = Field(default=12000, alias="HUB_CONTEXT_MAX_CHARS")
 

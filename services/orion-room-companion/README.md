@@ -39,9 +39,24 @@ close it.
 Consequence for v2: a spend cap enforced by owning the credential would be
 **advisory, not enforced**, for exactly as long as Hub holds the docker
 socket. Do not build the v2 budget on the assumption that this container is a
-wall. The honest options are (a) drop the docker socket from Hub, (b) enforce
-budget somewhere Orion cannot reach — an accounting service on the bus that
-gates requests — or (c) accept an advisory cap and say so.
+wall.
+
+Direction settled with Juniper 2026-08-14, so next phase does not re-derive it:
+
+- **Keeping the socket.** It powers `scripts/service_logs.py` (the service-log
+  viewer) and `api_routes.py:1128` (operator container bringup) — both live
+  features. Dropping it is not free.
+- **"Enforce budget somewhere Orion cannot reach" does not work either.** With
+  the docker socket, a Hub-resident agent is root-equivalent on the host, so no
+  software cap is enforceable wherever the logic lives. Real enforcement would
+  mean moving Orion's FCC turns out of the socket-holding container — a much
+  bigger change than this room warrants.
+- **Next-phase shape: advisory cap + reconciliation.** This service is the only
+  legitimate producer of room utterances, and
+  `orion/dev_economics/claude_code_ingest.py` already reads
+  `~/.claude/projects/*.jsonl`. Total observed spend can therefore be
+  reconciled against metered spend and a gap surfaced. Detect; do not pretend
+  to prevent.
 
 What the separation genuinely buys: defense in depth, a much smaller accident
 surface, and a container that is worth nothing to break into on its own — no

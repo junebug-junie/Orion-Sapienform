@@ -727,18 +727,14 @@ def _refuse_attachments_on_unsupported_path(
         return None
     err = f"{path_label} cannot accept image attachments"
     logger.error("[LLM-GW] refusing attachments: %s (count=%s)", err, len(attachments))
-    return {
-        "text": f"[Error: {err}]",
-        "spark_meta": {},
-        "raw": {},
-        "vision": {
-            "attachment_count": len(attachments),
-            "status": "refused",
-            "vision": False,
-            "source": "unsupported-backend-path",
-            "detail": err,
-        },
+    diag = {
+        "attachment_count": len(attachments),
+        "status": "refused",
+        "vision": False,
+        "source": "unsupported-backend-path",
+        "detail": err,
     }
+    return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {"vision": diag}, "vision": diag}
 
 
 def _execute_ollama_chat(
@@ -1009,22 +1005,28 @@ def _execute_openai_chat(
                 f"({capability.detail or 'no vision modality'})"
             )
             logger.error("[LLM-GW] refusing attachments: %s", err)
+            refused = {**vision_diag, "status": "refused"}
+            # Also inside `raw`: handle_chat forwards result["raw"] plus an
+            # explicit key list, and "vision" is not on that list -- so a
+            # top-level-only diagnostic is dropped before it reaches the Hub,
+            # on precisely the path where it matters most.
             return {
                 "text": f"[Error: {err}]",
                 "spark_meta": spark_meta,
-                "raw": {},
-                "vision": {**vision_diag, "status": "refused"},
+                "raw": {"vision": refused},
+                "vision": refused,
             }
         try:
             serialized_messages = build_multimodal_messages(serialized_messages, attachments)
             vision_diag["status"] = "attached"
         except AttachmentFetchError as exc:
             logger.error("[LLM-GW] attachment resolution failed: %s", exc)
+            failed = {**vision_diag, "status": "fetch_failed", "detail": str(exc)}
             return {
                 "text": f"[Error: attachments could not be read: {exc}]",
                 "spark_meta": spark_meta,
-                "raw": {},
-                "vision": {**vision_diag, "status": "fetch_failed", "detail": str(exc)},
+                "raw": {"vision": failed},
+                "vision": failed,
             }
 
     payload = {

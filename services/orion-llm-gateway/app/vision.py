@@ -19,14 +19,16 @@ before the model, so nothing upstream ever stores or replicates them.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
-import requests
+import httpx
 
 from app.settings import settings
 
@@ -34,6 +36,27 @@ logger = logging.getLogger("orion.llm.gateway.vision")
 
 # Mirrors the Hub's accepted set. A model is handed only what we can name.
 ALLOWED_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# Magic-byte prefixes for the formats we accept. The gateway re-checks these
+# against the FETCHED bytes rather than trusting the ref's declared mime, which
+# is what it hands to the model.
+_MAGIC = (
+    ("image/png", (b"\x89PNG\r\n\x1a\n",)),
+    ("image/jpeg", (b"\xff\xd8",)),
+    ("image/gif", (b"GIF87a", b"GIF89a")),
+    ("image/webp", (b"RIFF",)),
+)
+
+
+def sniff_mime(data: bytes) -> Optional[str]:
+    for mime, prefixes in _MAGIC:
+        if any(data.startswith(p) for p in prefixes):
+            if mime == "image/webp" and not (len(data) >= 12 and data[8:12] == b"WEBP"):
+                continue
+            return mime
+    return None
 
 
 class AttachmentFetchError(RuntimeError):
@@ -86,10 +109,10 @@ def resolve_vision_capability(base_url: str, *, now: Optional[float] = None) -> 
             return cached[1]
 
     try:
-        response = requests.get(
-            f"{base}/props",
+        with httpx.Client(
             timeout=float(getattr(settings, "llm_gateway_vision_props_timeout_sec", 5.0)),
-        )
+        ) as client:
+            response = client.get(f"{base}/props")
         response.raise_for_status()
         props = response.json()
         modalities = props.get("modalities") if isinstance(props, dict) else None
@@ -119,61 +142,95 @@ def _allowed_hosts() -> set[str]:
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
 
 
-def _check_host_allowed(url: str) -> str:
-    parsed = urlparse(url)
+def resolve_attachment_url(attachment: Any) -> str:
+    """Build the fetch URL from the content address and a TRUSTED base.
+
+    The ref's own ``source_url`` is **not used**. It round-trips through the
+    browser (`_attachments_from_payload` re-validates the shape but never
+    re-derives the URL), so by the time it reaches here it is client-controlled
+    in full -- scheme, host, port, and path. A host-only allowlist does not
+    contain that: the allowlisted value is the Tailscale node IP that also
+    fronts the bus, Postgres, the Hub, and every other Orion service, so any
+    ``http://<node>:<port>/<path>`` would have passed and the gateway would have
+    base64'd an internal endpoint's response straight into the model prompt.
+
+    Instead the URL is reconstructed as ``<configured base>/<sha256>``, with the
+    sha256 regex-validated. The only caller-supplied component is a 64-char hex
+    string, so there is no path or authority to inject into.
+    """
+    sha256 = str(getattr(attachment, "sha256", "") or "").strip().lower()
+    if not _SHA256_RE.match(sha256):
+        raise AttachmentFetchError("attachment sha256 is not a 64-char hex digest")
+
+    base = str(getattr(settings, "llm_gateway_attachment_base_url", "") or "").strip().rstrip("/")
+    if not base:
+        raise AttachmentFetchError(
+            "LLM_GATEWAY_ATTACHMENT_BASE_URL is not set; refusing to fetch attachments"
+        )
+
+    parsed = urlparse(base)
     if parsed.scheme not in ("http", "https"):
-        raise AttachmentFetchError(f"attachment scheme {parsed.scheme!r} is not http(s)")
+        raise AttachmentFetchError(f"attachment base scheme {parsed.scheme!r} is not http(s)")
     host = (parsed.hostname or "").lower()
     if not host:
-        raise AttachmentFetchError("attachment url has no host")
+        raise AttachmentFetchError("attachment base url has no host")
+
+    # Defence in depth: the base is operator config, but a typo that points it
+    # somewhere unexpected should still fail closed.
     allowed = _allowed_hosts()
     if not allowed:
         raise AttachmentFetchError(
             "LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS is empty; refusing to fetch attachments"
         )
     if host not in allowed:
-        # An allowlist, not a denylist: source_url arrives from upstream and a
-        # blind fetch would make the gateway an SSRF proxy into the mesh.
         raise AttachmentFetchError(f"attachment host {host!r} is not allowlisted")
-    return host
+
+    return f"{base}/{sha256}"
 
 
 def fetch_attachment_data_uri(attachment: Any) -> str:
-    """Fetch an AttachmentRefV1's bytes and return a ``data:`` URI.
+    """Fetch an attachment's bytes and return a ``data:`` URI.
 
-    Verifies the fetched bytes against the ref: declared mime must be one we
-    accept, and the byte count must match what the Hub recorded. A mismatch
-    means the store and the ref disagree, which is a bug worth failing on
-    rather than silently feeding a model something unexpected.
+    Three checks on the fetched bytes, in increasing order of strength:
+
+    1. The declared mime must be one we accept.
+    2. The bytes must *sniff* as that same mime -- the declared value is what
+       gets handed to the model, so it is not taken on trust.
+    3. **The bytes must hash to the ref's sha256.** This is the real guarantee:
+       the store is content-addressed, so if the content does not hash to the
+       requested address, something served the wrong thing and we refuse. It
+       subsumes the old byte-count check (which a ref declaring ``bytes: 0``
+       skipped entirely) and holds even if the transport were somehow diverted.
     """
     mime = str(getattr(attachment, "mime", "") or "").strip().lower()
     if mime not in ALLOWED_IMAGE_MIMES:
         raise AttachmentFetchError(f"attachment mime {mime!r} is not an accepted image type")
 
-    url = str(getattr(attachment, "source_url", "") or "").strip()
-    _check_host_allowed(url)
+    sha256 = str(getattr(attachment, "sha256", "") or "").strip().lower()
+    url = resolve_attachment_url(attachment)
 
     max_bytes = int(getattr(settings, "llm_gateway_attachment_max_bytes", 8_388_608))
     declared = int(getattr(attachment, "bytes", 0) or 0)
     if declared > max_bytes:
         raise AttachmentFetchError(f"attachment declares {declared} bytes, gateway limit is {max_bytes}")
 
+    timeout = float(getattr(settings, "llm_gateway_attachment_fetch_timeout_sec", 10.0))
     try:
-        response = requests.get(
-            url,
-            timeout=float(getattr(settings, "llm_gateway_attachment_fetch_timeout_sec", 10.0)),
-            stream=True,
-        )
-        response.raise_for_status()
-        # Cap the read itself; a lying Content-Length must not let the gateway
-        # buffer an unbounded body.
-        chunks: List[bytes] = []
-        total = 0
-        for chunk in response.iter_content(chunk_size=65536):
-            total += len(chunk)
-            if total > max_bytes:
-                raise AttachmentFetchError(f"attachment body exceeded {max_bytes} bytes")
-            chunks.append(chunk)
+        # httpx, not requests: httpx is already a declared gateway dependency and
+        # is used throughout this service. It also does NOT follow redirects by
+        # default, which closes the "allowlisted host 302s elsewhere" bypass.
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            with client.stream("GET", url) as response:
+                response.raise_for_status()
+                # Cap the read itself; a lying Content-Length must not let the
+                # gateway buffer an unbounded body.
+                chunks: List[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes(65536):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise AttachmentFetchError(f"attachment body exceeded {max_bytes} bytes")
+                    chunks.append(chunk)
         data = b"".join(chunks)
     except AttachmentFetchError:
         raise
@@ -182,9 +239,17 @@ def fetch_attachment_data_uri(attachment: Any) -> str:
 
     if not data:
         raise AttachmentFetchError("attachment fetch returned no bytes")
-    if declared and len(data) != declared:
+
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != sha256:
         raise AttachmentFetchError(
-            f"attachment size mismatch: ref says {declared}, store returned {len(data)}"
+            f"attachment content address mismatch: asked for {sha256[:12]}, got {actual[:12]}"
+        )
+
+    sniffed = sniff_mime(data)
+    if sniffed != mime:
+        raise AttachmentFetchError(
+            f"attachment bytes sniff as {sniffed or 'unknown'}, ref declares {mime}"
         )
 
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"

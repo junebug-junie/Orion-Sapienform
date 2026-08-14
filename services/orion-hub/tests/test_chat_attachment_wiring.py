@@ -86,12 +86,28 @@ def test_per_turn_cap_is_enforced(monkeypatch):
     assert len(out) == 2
 
 
-def test_zero_cap_refuses_everything(monkeypatch):
-    """0 is a kill switch, not 'unlimited'."""
+def test_zero_cap_means_unlimited_not_silent_drop(monkeypatch):
+    """0 must NOT silently drop everything.
+
+    It used to: `raw[:limit] if limit else []` iterated nothing at limit==0, and
+    the warning below it was guarded by `if limit and ...` so nothing was logged
+    either. The turn then reached the gateway with attachments == [], so the
+    gateway's "refuse loudly" path never fired and Orion answered text-only after
+    Juniper attached an image -- the exact silent failure this feature exists to
+    prevent, reachable by an operator setting 0 to mean "unlimited".
+    """
     from scripts import cortex_request_builder as crb
 
     monkeypatch.setattr(crb, "settings", SimpleNamespace(HUB_CHAT_ATTACHMENT_MAX_PER_TURN=0))
-    assert crb._attachments_from_payload({"attachments": [ref()]}) == []
+    out = crb._attachments_from_payload({"attachments": [ref(sha256=c * 64) for c in "abcde"]})
+    assert len(out) == 5
+
+
+def test_unparseable_cap_falls_back_to_unlimited(monkeypatch):
+    from scripts import cortex_request_builder as crb
+
+    monkeypatch.setattr(crb, "settings", SimpleNamespace(HUB_CHAT_ATTACHMENT_MAX_PER_TURN="nope"))
+    assert len(crb._attachments_from_payload({"attachments": [ref()]})) == 1
 
 
 def test_default_cap_applies_without_patching():

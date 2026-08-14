@@ -218,3 +218,30 @@ describe('downscale returns the original when the image cannot be decoded', asyn
   const png = fakeFile('image/png', 'x.png');
   assert.equal(await api.downscale(png, api.DEFAULTS), png);
 });
+
+// ── dragover protected mode ──────────────────────────────────────────────
+
+test('dragCarriesImage reads kind/type, which is all that is readable mid-drag', () => {
+  const { dragCarriesImage } = require('./chat-attachments.js');
+  // During dragover the DataTransfer is protected: getAsFile() returns null and
+  // .files is empty. Only kind and type are visible.
+  const protectedDrag = {
+    items: [{ kind: 'file', type: 'image/png', getAsFile: () => null }],
+    files: [],
+  };
+  assert.equal(dragCarriesImage(protectedDrag), true);
+  assert.equal(
+    require('./chat-attachments.js').imageFilesFrom(protectedDrag).length,
+    0,
+    'imageFilesFrom must NOT be usable for the dragover decision',
+  );
+});
+
+test('dragCarriesImage accepts a typeless file drag and rejects plain text', () => {
+  const { dragCarriesImage } = require('./chat-attachments.js');
+  assert.equal(dragCarriesImage({ items: [{ kind: 'file', type: '' }] }), true);
+  assert.equal(dragCarriesImage({ items: [{ kind: 'string', type: 'text/plain' }] }), false);
+  assert.equal(dragCarriesImage({ types: ['Files'] }), true);
+  assert.equal(dragCarriesImage({ types: ['text/plain'] }), false);
+  assert.equal(dragCarriesImage(null), false);
+});

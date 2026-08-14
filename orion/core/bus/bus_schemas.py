@@ -192,7 +192,9 @@ class AttachmentRefV1(BaseModel):
     kind: Literal["image"] = "image"
     sha256: str = Field(..., description="Content address of the stored bytes; also the storage key.")
     mime: str = Field(..., description="Concrete media type, e.g. 'image/png'.")
-    bytes: int = Field(..., ge=0, description="Stored size in bytes, after any client-side downscale.")
+    # ge=1, not ge=0: a zero-byte image is meaningless, and a ref declaring 0
+    # used to skip the gateway's size cross-check entirely.
+    bytes: int = Field(..., ge=1, description="Stored size in bytes, after any client-side downscale.")
     width: Optional[int] = Field(default=None, ge=1, description="Pixel width, when known.")
     height: Optional[int] = Field(default=None, ge=1, description="Pixel height, when known.")
     source_url: str = Field(..., description="Gateway-reachable URL serving the raw bytes.")

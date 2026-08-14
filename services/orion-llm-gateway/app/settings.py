@@ -163,13 +163,22 @@ class Settings(BaseSettings):
         default=5.0,
         alias="LLM_GATEWAY_VISION_PROPS_TIMEOUT_SEC",
     )
+    llm_gateway_attachment_base_url: str = Field(
+        default="",
+        alias="LLM_GATEWAY_ATTACHMENT_BASE_URL",
+        description=(
+            "Trusted base the gateway builds attachment fetch URLs from, as "
+            "'<base>/<sha256>'. The ref's own source_url is client-controlled and is "
+            "deliberately NOT used. Empty means refuse to fetch attachments at all."
+        ),
+    )
     llm_gateway_attachment_allowed_hosts: str = Field(
         default="",
         alias="LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS",
         description=(
-            "Comma-separated hostnames the gateway may fetch attachment bytes from. "
-            "Empty means refuse everything: source_url arrives from upstream, so an "
-            "unrestricted fetch would make the gateway an SSRF proxy into the mesh."
+            "Comma-separated hostnames the derived fetch URL may resolve to. "
+            "Defence in depth over the base URL above, not the primary control. "
+            "Empty means refuse everything."
         ),
     )
     llm_gateway_attachment_max_bytes: int = Field(

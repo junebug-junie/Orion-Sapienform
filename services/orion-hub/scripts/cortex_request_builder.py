@@ -231,14 +231,26 @@ def _attachments_from_payload(payload: Dict[str, Any]) -> List[AttachmentRefV1]:
     raw = payload.get("attachments")
     if not isinstance(raw, list) or not raw:
         return []
-    limit = max(0, int(getattr(settings, "HUB_CHAT_ATTACHMENT_MAX_PER_TURN", 4) or 0))
+
+    # 0 (or a negative/unparseable value) means UNLIMITED, not "silently drop
+    # everything". The old behavior returned [] with no log line at all, so the
+    # turn reached the gateway looking attachment-free -- which means the
+    # gateway's "refuse loudly" path never fired and Orion would answer
+    # text-only after Juniper attached an image. That is the exact silent
+    # failure this feature exists to prevent, reintroduced by a config typo.
+    try:
+        limit = int(getattr(settings, "HUB_CHAT_ATTACHMENT_MAX_PER_TURN", 4) or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    kept = raw if limit <= 0 else raw[:limit]
+
     refs: List[AttachmentRefV1] = []
-    for item in raw[:limit] if limit else []:
+    for item in kept:
         try:
             refs.append(AttachmentRefV1.model_validate(item))
         except Exception as exc:  # noqa: BLE001
             logger.warning("dropping malformed chat attachment ref: %s", exc)
-    if limit and len(raw) > limit:
+    if len(kept) < len(raw):
         logger.warning(
             "chat turn carried %s attachments; capped to %s", len(raw), limit
         )

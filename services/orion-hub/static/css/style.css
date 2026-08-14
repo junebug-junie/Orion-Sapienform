@@ -358,3 +358,13 @@ input[type=range]::-moz-range-thumb {
   cursor: zoom-in;
 }
 .om-msg-thumb:hover { border-color: rgba(129, 140, 248, 0.8); }
+
+/* Placeholder shown where a remote image in a reply was refused. */
+.om-img-blocked {
+  display: inline-block;
+  border: 1px dashed rgba(71, 85, 105, 0.9);
+  border-radius: 0.35rem;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.78em;
+  color: rgb(148 163 184);
+}

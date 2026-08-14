@@ -16,6 +16,24 @@ if str(REPO_ROOT) not in sys.path:
 if str(SQL_WRITER_ROOT) not in sys.path:
     sys.path.insert(0, str(SQL_WRITER_ROOT))
 
+# Imported as a MODULE OBJECT, and every monkeypatch below targets it
+# directly rather than through the "app.grammar_truth.<name>" string form.
+#
+# pytest re-resolves the string form at call time by walking
+# sys.modules["app"] and getattr-ing each segment. Mid-suite that walk raised
+#
+#   AttributeError: module 'app' has no attribute 'grammar_truth'
+#
+# so monkeypatch.setattr never applied, the real grammar_engine stayed bound,
+# and every assertion here failed against a live Postgres connection attempt
+# ("could not translate host name orion-athena-sql-db") instead of the mock.
+# All 7 failures in this file were that, not a defect in app/grammar_truth.py
+# -- confirmed by the file passing in isolation, where nothing has disturbed
+# the walk.
+#
+# A module reference captured at import time cannot be re-resolved and so
+# cannot break this way, whatever else the suite does to sys.modules.
+import app.grammar_truth as grammar_truth_module  # noqa: E402
 from app.grammar_truth import (
     apply_grammar_events_retention,
     build_grammar_truth_snapshot,
@@ -46,7 +64,7 @@ def _mock_settings(**overrides):
 
 
 def _patch_truth_deps(monkeypatch, settings) -> None:
-    monkeypatch.setattr("app.grammar_truth.get_settings", lambda: settings)
+    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
     monkeypatch.setattr(
         "app.worker.grammar_queue_snapshot",
         lambda: {"workers": 4, "total_depth": 0, "shards": []},
@@ -55,7 +73,7 @@ def _patch_truth_deps(monkeypatch, settings) -> None:
         "app.grammar_truth._fallback_counts",
         lambda: {"total": 0, "last_5m": 0, "last_30m": 0, "last_60m": 0},
     )
-    monkeypatch.setattr("app.grammar_truth._latest_events_by_source", lambda: [])
+    monkeypatch.setattr(grammar_truth_module, "_latest_events_by_source", lambda: [])
     monkeypatch.setattr(
         "app.grammar_truth._grammar_index_valid",
         lambda: {"idx_grammar_events_source_created": True, "indexdef": "CREATE INDEX ..."},
@@ -66,7 +84,11 @@ def test_build_grammar_truth_snapshot_flags_degraded_when_grammar_disabled(monke
     settings = _mock_settings(sql_writer_enable_grammar_channel=False)
     _patch_truth_deps(monkeypatch, settings)
     reset_retention_state_for_tests()
-    from app import grammar_truth as gt
+    # Use the module captured at import, NOT a fresh `from app import ...`:
+    # re-resolving here can hand back a DIFFERENT module object than the
+    # one build_grammar_truth_snapshot() closes over, so the state set
+    # below would be written to one copy and read from the other.
+    gt = grammar_truth_module
 
     gt._retention_state.last_run_at = datetime.now(timezone.utc)
 
@@ -79,7 +101,11 @@ def test_retention_failure_marks_truth_degraded(monkeypatch) -> None:
     settings = _mock_settings()
     _patch_truth_deps(monkeypatch, settings)
 
-    from app import grammar_truth as gt
+    # Use the module captured at import, NOT a fresh `from app import ...`:
+    # re-resolving here can hand back a DIFFERENT module object than the
+    # one build_grammar_truth_snapshot() closes over, so the state set
+    # below would be written to one copy and read from the other.
+    gt = grammar_truth_module
 
     gt._retention_state.last_run_at = datetime.now(timezone.utc)
     gt._retention_state.failure_reason = "timeout"
@@ -98,7 +124,7 @@ def test_accepted_pressure_not_in_default_subscribe_channels() -> None:
 
 
 def test_apply_grammar_events_retention_skips_non_positive_days(monkeypatch) -> None:
-    monkeypatch.setattr("app.grammar_truth.get_settings", lambda: _mock_settings())
+    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: _mock_settings())
     assert apply_grammar_events_retention(0).rows_pruned_last_run == 0
 
 
@@ -107,7 +133,7 @@ def test_retention_uses_bounded_batches_not_single_unbounded_delete(monkeypatch)
         grammar_events_retention_batch_size=100,
         grammar_events_retention_max_batches_per_startup=3,
     )
-    monkeypatch.setattr("app.grammar_truth.get_settings", lambda: settings)
+    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
 
     delete_results = [MagicMock(rowcount=100), MagicMock(rowcount=100), MagicMock(rowcount=25)]
 
@@ -127,7 +153,7 @@ def test_retention_uses_bounded_batches_not_single_unbounded_delete(monkeypatch)
     engine = MagicMock()
     engine.connect.return_value = conn
     engine.begin.return_value = begin_conn
-    monkeypatch.setattr("app.grammar_truth.grammar_engine", engine)
+    monkeypatch.setattr(grammar_truth_module, "grammar_engine", engine)
 
     result = apply_grammar_events_retention(30)
     assert result.rows_pruned_last_run == 225
@@ -144,7 +170,7 @@ def test_retention_stops_at_max_batch_cap_and_reports_debt(monkeypatch) -> None:
         grammar_events_retention_max_batches_per_startup=2,
         grammar_events_retention_max_elapsed_sec=120.0,
     )
-    monkeypatch.setattr("app.grammar_truth.get_settings", lambda: settings)
+    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
 
     conn = MagicMock()
     conn.execute.side_effect = [
@@ -162,7 +188,7 @@ def test_retention_stops_at_max_batch_cap_and_reports_debt(monkeypatch) -> None:
     engine = MagicMock()
     engine.connect.return_value = conn
     engine.begin.return_value = begin_conn
-    monkeypatch.setattr("app.grammar_truth.grammar_engine", engine)
+    monkeypatch.setattr(grammar_truth_module, "grammar_engine", engine)
 
     result = apply_grammar_events_retention(30)
     assert result.batches_attempted == 2
@@ -173,7 +199,7 @@ def test_retention_stops_at_max_batch_cap_and_reports_debt(monkeypatch) -> None:
 
 def test_fk_unsafe_state_prevents_prune_and_marks_degraded(monkeypatch) -> None:
     settings = _mock_settings()
-    monkeypatch.setattr("app.grammar_truth.get_settings", lambda: settings)
+    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
 
     conn = MagicMock()
     conn.execute.return_value = MagicMock(scalar_one=lambda: 2)
@@ -181,7 +207,7 @@ def test_fk_unsafe_state_prevents_prune_and_marks_degraded(monkeypatch) -> None:
     conn.__exit__ = MagicMock(return_value=False)
     engine = MagicMock()
     engine.connect.return_value = conn
-    monkeypatch.setattr("app.grammar_truth.grammar_engine", engine)
+    monkeypatch.setattr(grammar_truth_module, "grammar_engine", engine)
 
     result = apply_grammar_events_retention(30)
     assert result.rows_pruned_last_run == 0
@@ -196,7 +222,11 @@ def test_fk_unsafe_state_prevents_prune_and_marks_degraded(monkeypatch) -> None:
 def test_retention_debt_marks_degraded(monkeypatch) -> None:
     settings = _mock_settings()
     _patch_truth_deps(monkeypatch, settings)
-    from app import grammar_truth as gt
+    # Use the module captured at import, NOT a fresh `from app import ...`:
+    # re-resolving here can hand back a DIFFERENT module object than the
+    # one build_grammar_truth_snapshot() closes over, so the state set
+    # below would be written to one copy and read from the other.
+    gt = grammar_truth_module
 
     gt._retention_state.last_run_at = datetime.now(timezone.utc)
     gt._retention_state.remaining_debt = 42
@@ -210,7 +240,11 @@ def test_accepted_pressure_subscribed_without_allow_flag_degraded(monkeypatch) -
         sql_writer_allow_accepted_pressure_ingest=False,
     )
     _patch_truth_deps(monkeypatch, settings)
-    from app import grammar_truth as gt
+    # Use the module captured at import, NOT a fresh `from app import ...`:
+    # re-resolving here can hand back a DIFFERENT module object than the
+    # one build_grammar_truth_snapshot() closes over, so the state set
+    # below would be written to one copy and read from the other.
+    gt = grammar_truth_module
 
     gt._retention_state.last_run_at = datetime.now(timezone.utc)
     snap = build_grammar_truth_snapshot()

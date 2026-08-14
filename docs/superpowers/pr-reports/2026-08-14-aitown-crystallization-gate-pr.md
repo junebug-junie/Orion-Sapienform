@@ -107,11 +107,13 @@ downstream could tell an NPC line from Juniper's.
 Final counts, after the review fixes below:
 
 ```text
-services/orion-memory-consolidation/tests           97 passed          (71 on main; +26 new)
+services/orion-memory-consolidation/tests          103 passed          (71 on main; +32 new)
 services/orion-sql-writer/tests                    307 passed, 10 failed, 3 skipped
                                                    (295 passed / identical 10 failures on main — pre-existing)
-services/orion-hub/tests (full)                   1261 passed, 32 failed, 5 skipped
-                                                   (1253/33 on main before this branch)
+tests/test_aitown_gate_smoke_predicate.py            6 passed
+services/orion-hub/tests (full)                   1265 passed, 31 failed, 5 skipped
+                                                   (1253 passed on main; ZERO worktree-only failures —
+                                                    failure set now identical to the main baseline)
 ```
 
 Hub failure sets were compared against a `main` baseline run rather than eyeballed.
@@ -220,10 +222,29 @@ committed
 after={'active': 589, 'proposed': 22, 'rejected': 609}
 ```
 
-**No container was rebuilt.** Neither `orion-memory-consolidation` nor
-`orion-sql-writer` bind-mounts `app/`, so both run pre-patch code right now. The
-gate is `UNVERIFIED` on the live rail until the restart below — what *is* verified
-is that the policy functions decide correctly on the real corpus.
+**Deployed on athena**, consumer-first, all three healthy with no `extra="forbid"`
+validation errors:
+
+```text
+migration + backfill applied  -> 1058 windows tagged aitown, 122 direct, 1 open (direct)
+orion-memory-consolidation    -> running, MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS=aitown
+orion-sql-writer              -> running
+orion-hub                     -> running, /health {"status":"ok","service":"hub"}
+```
+
+**The gate is still `UNVERIFIED` end-to-end**, and the smoke now says so itself
+(exit 2, `INCONCLUSIVE`). Not for lack of deployment — for lack of traffic.
+`max(created_at)` on `chat_history_log` where `platform='aitown'` is
+**2026-07-31 22:25**: ai-town has produced nothing for two weeks because
+`orion-athena-embodiment` is crash-looping on
+`AitownClientError: Convex unreachable: [Errno 111] Connection refused`.
+`~/.fcc/.env` points `AITOWN_CONVEX_URL` at `100.121.214.30` (atlas), which is
+alive over tailscale but has nothing listening on 3210/3211/5173, while the
+running `orion-ai-town-backend-1` is on athena and healthy. Operator decision
+required — see Risks.
+
+What *is* verified: the policy functions decide correctly on the real corpus, and
+the deployed services accept the new schema without error.
 
 ## Review findings fixed
 
@@ -361,13 +382,26 @@ curl -fsS localhost:8080/api/memory/crystallizations/proposals | jq '.count'
 
 ## Risks / concerns
 
-- Severity: **medium**
+- Severity: **medium** — *resolved on athena, still applies to any other host.*
   Concern: deploy-order coupling. Starting sql-writer first makes every
   `memory.turn.persisted.v1` fail validation in the old consolidation consumer,
-  stalling window formation until the consumer catches up.
+  stalling window formation until the consumer catches up. The schema migration
+  is a second, harder ordering constraint: without the `ALTER`,
+  `_get_open_window()` throws `UndefinedColumnError` on every turn.
   Mitigation: documented in the schema docstring, the commit message, and the
-  restart block above. No silent-drop fallback was added, because `extra="forbid"`
-  failing loudly is better than a field being silently ignored.
+  restart block above (migration is now step 0). No silent-drop fallback was
+  added, because `extra="forbid"` failing loudly beats a field silently ignored.
+
+- Severity: **high (pre-existing, not caused by this branch)**
+  Concern: **Orion has had no AI Town world contact since 2026-07-31.**
+  `orion-athena-embodiment` crash-loops on `Convex unreachable`; the configured
+  `AITOWN_CONVEX_URL` names atlas, which has nothing listening, while the healthy
+  ai-town backend runs on athena. Two readings with opposite fixes — repoint at
+  athena, or start ai-town on atlas — and other config (`HUB_AITOWN_UI_URL`)
+  agrees with atlas, so this is genuinely ambiguous.
+  Mitigation: none applied; deliberately not guessed. It is the reason the gate
+  cannot be verified end-to-end, and it is worth fixing on its own terms
+  regardless of this PR.
 
 - Severity: **medium** — *superseded, now FIXED in `b6ab77068`.*
   Original concern: the global open-window cursor mixed platforms (26 windows

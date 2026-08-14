@@ -41,6 +41,7 @@ from orion.attention.tension.field_observations import (  # noqa: E402
     iter_observations,
     subnormal_pinned,
 )
+from orion.attention.tension.liveness import classify_producer_liveness  # noqa: E402
 from orion.field.channel_glossary import classify_channel_series  # noqa: E402
 
 # The field digester's designed decay set. A channel in here decaying toward
@@ -286,6 +287,15 @@ def main() -> int:
     liveness_counts = Counter(liveness.values())
     liveness_sample_depth = max((len(s) for s in liveness_samples.values()), default=0)
 
+    # Producer liveness -- the one that catches the resource_pressure defect a
+    # per-channel ratio check structurally cannot. See liveness.py.
+    producer: dict[str, str] = {}
+    for (node_id, channel), samples in sorted(liveness_samples.items()):
+        producer[f"{node_id}/{channel}"] = classify_producer_liveness(samples)
+    producer_counts = Counter(producer.values())
+    silent_producers = sorted(k for k, v in producer.items() if v == "silent_producer")
+    at_floor = sorted(k for k, v in producer.items() if v == "at_floor")
+
     report = {
         "window_hours": args.hours,
         "params": {
@@ -331,6 +341,9 @@ def main() -> int:
             # Expected behaviour, reported for visibility only. NOT findings.
             "decay_by_design_count": len(decay_by_design),
             "pinned_by_design_count": len(pinned_by_design),
+            "producer_liveness_counts": dict(producer_counts.most_common()),
+            "silent_producers": silent_producers,
+            "producer_at_floor": at_floor,
         },
     }
 
@@ -375,6 +388,19 @@ def main() -> int:
             print(f"  {entry['node']:<22} {entry['channel']:<30} ratio={entry['ratio']}")
     else:
         print("\nFINDING -- undesigned decay   none")
+    print(f"\nproducer liveness         {dict(producer_counts.most_common())}")
+    if silent_producers:
+        print(f"\nFINDING -- SILENT PRODUCER ({len(silent_producers)}): decaying untouched, "
+              f"reads as calm to every consumer")
+        for key in silent_producers[:15]:
+            print(f"  {key}")
+    else:
+        print("FINDING -- silent producers   none")
+    if at_floor:
+        print(f"\nunanswerable ({len(at_floor)}): already at floor, series cannot tell "
+              f"silent-producer from calm")
+        for key in at_floor[:10]:
+            print(f"  {key}")
     if pinned_undesigned:
         print(f"FINDING -- pinned subnormal, NOT in NODE_DECAY_CHANNELS "
               f"({len(pinned_undesigned)}):")

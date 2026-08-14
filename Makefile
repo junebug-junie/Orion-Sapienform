@@ -269,3 +269,25 @@ worktree-status-stale:
 # scripts/prune_merged_worktrees.py.
 prune-merged-worktrees:
 	@python3 scripts/prune_merged_worktrees.py $(if $(YES),--yes,) $(if $(BASE),--base $(BASE),)
+
+# Field tension report -- admission rate, rank discrimination, channel liveness,
+# and producer liveness over real substrate_field_state history. Read-only:
+# opens a read-only Postgres session, writes nothing, publishes nothing.
+#
+#   make field-tension-report                      # last 24h, human-readable
+#   make field-tension-report HOURS=72             # wider window
+#   make field-tension-report Z=3.5                # tighter admission threshold
+#   make field-tension-report JSON=1               # machine-readable
+#   make field-tension-report LIMIT=10000          # newest N ticks only (fast)
+#
+# POSTGRES_URI defaults to the in-container host; from the host machine pass:
+#   POSTGRES_URI=postgresql://postgres:postgres@localhost:55432/conjourney
+#
+# See orion/attention/tension/README.md for what each number means.
+field-tension-report:
+	@$(METRIC_PYTHON) scripts/analysis/measure_field_tension_admission.py \
+		$(if $(HOURS),--hours $(HOURS),) \
+		$(if $(LIMIT),--limit $(LIMIT),) \
+		$(if $(Z),--z-threshold $(Z),) \
+		$(if $(ALPHA),--alpha $(ALPHA),) \
+		$(if $(JSON),--json,)

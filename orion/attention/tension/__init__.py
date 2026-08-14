@@ -14,6 +14,9 @@ from orion.attention.tension.direction_map import (
     DirectionMapError,
     load_direction_map,
 )
+from orion.attention.tension.liveness import (
+    classify_producer_liveness,
+)
 from orion.attention.tension.field_observations import (
     Observation,
     geometric_decay_ratio,
@@ -27,6 +30,7 @@ __all__ = [
     "DirectionMapError",
     "FieldTensionCompetition",
     "Observation",
+    "classify_producer_liveness",
     "TickResult",
     "geometric_decay_ratio",
     "iter_observations",

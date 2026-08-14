@@ -28,7 +28,10 @@ os.environ.setdefault("ORION_BUS_ENABLED", "false")
 
 from app import main as vector_writer_main  # noqa: E402
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
-from orion.schemas.chat_history import CHAT_HISTORY_MESSAGE_KIND  # noqa: E402
+from orion.schemas.chat_history import (  # noqa: E402
+    CHAT_HISTORY_MESSAGE_KIND,
+    CHAT_HISTORY_TURN_KIND,
+)
 
 
 def test_app_chat_history_module_is_gone():
@@ -56,3 +59,28 @@ def test_normalize_to_request_returns_none_for_chat_history_envelope():
         },
     )
     assert vector_writer_main.normalize_to_request(env) is None
+
+
+def test_normalize_to_request_has_no_resurrectable_chat_branch():
+    """Guards the landmine code review flagged 2026-08-14: the generic
+    fallback used to have `elif kind in ("chat.message", "chat.history"):`
+    hard-coding `collection="orion_chat"` -- the exact collection this kill
+    removed. `CHAT_HISTORY_TURN_KIND == "chat.history"` (a literal match),
+    so re-subscribing orion-vector-writer to orion:chat:history:turn (or any
+    future producer emitting these kinds on an already-subscribed channel)
+    would otherwise silently resurrect the killed write with zero code
+    changes. Both literal kind strings must now fall through to the inert
+    "generic text/event" fallback (payload has no `text`/`summary` key here,
+    so content is empty and normalize_to_request returns None)."""
+    for kind in (CHAT_HISTORY_TURN_KIND, "chat.message", "chat.history"):
+        env = BaseEnvelope(
+            kind=kind,
+            source=ServiceRef(name="orion-hub", node="athena", version="0.1.0"),
+            correlation_id=uuid4(),
+            payload={
+                "role": "user",
+                "session_id": "sess-1",
+                "content": "would have hard-coded collection=orion_chat before this kill",
+            },
+        )
+        assert vector_writer_main.normalize_to_request(env) is None, kind

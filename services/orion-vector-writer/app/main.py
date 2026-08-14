@@ -141,13 +141,16 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
             "observer": payload.get("observer", "unknown"),
             "type": payload.get("type", "unknown")
         })
-    elif kind in ("chat.message", "chat.history"):
-        collection = "orion_chat"
-        content = payload.get("content") or payload.get("message", "")
-        meta.update({
-            "role": payload.get("role", "unknown"),
-            "session_id": payload.get("session_id", "")
-        })
+    # kind in ("chat.message", "chat.history") deliberately removed
+    # 2026-08-14 (code review on the chat-history vector-write kill, same
+    # patch as app/chat_history.py's deletion above): this branch
+    # hard-coded collection="orion_chat", the exact Chroma collection that
+    # kill removed. `orion.schemas.chat_history.CHAT_HISTORY_TURN_KIND ==
+    # "chat.history"` -- a literal match -- so re-subscribing to
+    # orion:chat:history:turn (or any future producer emitting
+    # kind="chat.message"/"chat.history" on an already-subscribed channel)
+    # would have silently resurrected the killed write with zero code
+    # changes. Do not re-add without a real reason and a subscription.
     elif kind == "rag.document":
         collection = "orion_knowledge"
         content = payload.get("text") or payload.get("content", "")

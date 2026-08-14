@@ -163,4 +163,43 @@ EOF
     fi
 fi
 
+# --- Gate 3: refuse a commit that guts graphify-out/graph.json --------------
+#
+# `graphify update .` can silently discard ~95% of the graph while claiming to
+# have kept it. scripts/safe_graphify_update.sh guards the COMMAND and works --
+# but only when someone chooses to call it, and the 2026-07-14 incident got
+# committed and merged to main before anyone noticed. As of 2026-08-14 it still
+# recurs several times a day.
+#
+# This gate guards the ARTIFACT instead, so it fires however the damage
+# happened: a bare `graphify update`, another tool, a human's terminal, an
+# agent not running under Claude Code, or a bypassed wrapper. Only runs when
+# graphify-out/graph.json is actually staged, so it costs nothing on a normal
+# commit.
+#
+# Pure-stdlib checker on purpose -- no pydantic, so plain python3 always works
+# and this can never silently skip for want of an interpreter.
+#
+# Escape hatch: ORION_ALLOW_GRAPH_SHRINK=1 for a genuine full re-extraction.
+if [ "$ORION_ALLOW_GRAPH_SHRINK" != "1" ]; then
+    _GRAPH_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || _GRAPH_REPO_ROOT=""
+    if [ -n "$_GRAPH_REPO_ROOT" ] && [ -f "$_GRAPH_REPO_ROOT/scripts/check_graph_node_loss.py" ]; then
+        if ! python3 "$_GRAPH_REPO_ROOT/scripts/check_graph_node_loss.py"; then
+            cat >&2 <<'EOF'
+[git-safety] COMMIT BLOCKED: graphify-out/graph.json lost too many nodes.
+
+This is the known destructive-`graphify update` bug (CLAUDE.md, graphify
+section). The graph is almost certainly gutted, not legitimately smaller.
+
+Do NOT re-run `graphify update .` and commit anyway. Either:
+  - restore the graph (git checkout -- graphify-out/) and use
+    scripts/safe_graphify_update.sh, which compares and auto-restores; or
+  - if this really is an intentional full re-extraction:
+      ORION_ALLOW_GRAPH_SHRINK=1 git commit ...
+EOF
+            exit 1
+        fi
+    fi
+fi
+
 exit 0

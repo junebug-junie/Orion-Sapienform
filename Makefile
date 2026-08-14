@@ -269,3 +269,52 @@ worktree-status-stale:
 # scripts/prune_merged_worktrees.py.
 prune-merged-worktrees:
 	@python3 scripts/prune_merged_worktrees.py $(if $(YES),--yes,) $(if $(BASE),--base $(BASE),)
+
+# Field tension report -- admission rate, rank discrimination, channel liveness,
+# and producer liveness over real substrate_field_state history. Read-only:
+# opens a read-only Postgres session, writes nothing, publishes nothing.
+#
+#   make field-tension-report                      # last 24h, human-readable
+#   make field-tension-report HOURS=72             # wider window
+#   make field-tension-report Z=3.5                # tighter admission threshold
+#   make field-tension-report JSON=1               # machine-readable
+#   make field-tension-report LIMIT=10000          # newest N ticks only (fast)
+#
+# POSTGRES_URI defaults to the in-container host; from the host machine pass:
+#   POSTGRES_URI=postgresql://postgres:postgres@localhost:55432/conjourney
+#
+# See orion/attention/tension/README.md for what each number means.
+field-tension-report:
+	@$(METRIC_PYTHON) scripts/analysis/measure_field_tension_admission.py \
+		$(if $(HOURS),--hours $(HOURS),) \
+		$(if $(LIMIT),--limit $(LIMIT),) \
+		$(if $(Z),--z-threshold $(Z),) \
+		$(if $(ALPHA),--alpha $(ALPHA),) \
+		$(if $(JSON),--json,)
+
+# Layer 5 attention input starvation -- is attention choosing between competing
+# inputs, or idling for lack of any? Read-only. Companion to
+# field-tension-report; the two rates are NOT directly comparable (different
+# table, cadence, and kind of event -- the script says so in its own output).
+#
+#   make attention-starvation-report            # last 72h
+#   make attention-starvation-report HOURS=24
+#   make attention-starvation-report JSON=1
+attention-starvation-report:
+	@$(METRIC_PYTHON) scripts/analysis/measure_attention_input_starvation.py \
+		$(if $(HOURS),--hours $(HOURS),) \
+		$(if $(JSON),--json,)
+
+# Attention-loop outcome coverage -- the label half of the salience refit's
+# input/label join, and the outcome measure the drives program never had.
+# Read-only by default; --emit writes derived implicit labels (snapshots first,
+# never overwrites a human verdict, idempotent).
+#
+#   make attention-outcome-coverage             # coverage + derivable labels
+#   make attention-outcome-coverage SWEEP=1     # horizon sensitivity
+#   make attention-outcome-coverage JSON=1
+attention-outcome-coverage:
+	@$(METRIC_PYTHON) scripts/analysis/measure_attention_outcome_coverage.py \
+		$(if $(SWEEP),--sweep,) \
+		$(if $(HOURS),--min-silence-hours $(HOURS),) \
+		$(if $(JSON),--json,)

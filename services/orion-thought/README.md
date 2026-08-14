@@ -48,6 +48,29 @@ Set `ORION_REVERIE_SEMANTIC_LIFT_ENABLED=true` (default `false`) to lift coaliti
 `substrate_turn_referent` before `reverie_narrate`. Requires referent rows from
 unresolved post-turn closures and routes narration through the background/metacog lane.
 
+## Reverie perception context
+
+Set `ORION_REVERIE_PERCEPTION_ENABLED=true` (default `false`) to feed the most
+recent `orion-vision-council` narrative(s) from the `vision_events` table into
+the reverie prompt as ungrounded sensory context — reverie is otherwise 100%
+blind to the camera. `ORION_REVERIE_PERCEPTION_MAX_AGE_SEC` (default `180`)
+bounds staleness; `ORION_REVERIE_PERCEPTION_MAX_EVENTS` (default `3`) caps how
+many recent narratives are included. Read-only (`app/vision_reader.py` never
+writes `vision_events`), fail-open (any DB error degrades to no percepts, never
+raises), and narrative-only — same privacy contract as the situation brief's
+`PerceptionContextV1` (`orion/schemas/situation.py`): no entities, tags,
+embeddings, or anything identity-bearing crosses into the prompt. Does **not**
+widen `evidence_refs` grounding to vision ids; `SpontaneousThoughtV1`'s
+anti-hollow guard stays coalition-only.
+
+First, unverified cut of Movement III in
+`docs/superpowers/specs/2026-08-12-perception-frontier-design.md` — the
+prediction/outcome scorer that design doc also proposes is deliberately not
+built yet ("event substrate first": get a real percept into the trace before
+building a reducer that scores it). Leave this flag off until a live tick has
+been eyeballed for whether the BLIP-base narratives actually add anything
+worth narrating.
+
 ## Resonance health monitor (Phase H+)
 
 `ORION_REVERIE_RESONANCE_ALERT_ENABLED` (default `true`) already runs an observation-only

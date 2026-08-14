@@ -10,131 +10,153 @@ WHY THIS IS NOT classify_channel_series()
 `orion.field.channel_glossary.classify_channel_series()` already exists, is
 live behind Hub's glossary panel, and is NOT replaced here -- it stays the
 single-label verdict and can be layered on top of this. This module exists
-because a single label cannot carry four independent facts, and the collapse
-loses exactly the distinction that keeps being asked for:
+because a single label cannot carry several independent facts, and the
+collapse loses exactly the distinction that keeps being asked for:
 
 1. **Level and dispersion are one axis there, two here.** A channel sitting at
-   0.813 with dispersion 0.001 and a channel sitting at 0.02 with dispersion
-   0.001 both return `quiet`. "Very busy at near max, but steady, so actually
-   peaceful" is not expressible in one word, and that reading is the whole
-   point of a regime readout.
+   0.813 with dispersion 0.001 and one idling at 0.02 with dispersion 0.001
+   both return `quiet`. "Very busy at near max, but steady, so actually
+   peaceful" is not expressible in one word.
 
 2. **There is no window there.** It takes a bare `list[float]`. The caller
    decides what window that is and nobody records it. Live cadence on
-   `substrate_field_state` measured 2026-08-13 was a 2.04s median tick, so a
-   "600-tick window" silently means ~20 minutes -- a fact that appeared
-   nowhere. Windows here are declared in SECONDS and carried on the result.
+   `substrate_field_state` is a 2.0417s median tick (measured over 125,236
+   ticks, 2026-08-11 -> 2026-08-14), so a "600-tick window" silently means
+   ~20 minutes -- a fact that appeared nowhere. Windows are declared in
+   SECONDS here and carried on the result.
 
 3. **`dead` conflates a decayed remnant with a legitimately idle producer.**
    Its docstring says so outright: the folded-away, unproduced, and
-   subnormal-noise cases "mean the same thing". They do not. `repair_pressure`
-   and `conversation_load` are chat-gated (see their glossary meanings:
-   "happening in chat", "turn volume/complexity"). When nobody is talking to
-   Orion they decay toward zero and read `dead` -- but that is CORRECT
-   behavior, not a defect. Calling it dead cries wolf on every idle channel.
-   This module reports `refresh_state` as its own axis and deliberately makes
-   NO claim about whether silence is correct: that depends on whether the
-   producer had reason to fire, which is not knowable from the series.
+   subnormal-noise cases "mean the same thing". They do not.
+   `repair_pressure` and `conversation_load` are chat-gated (glossary:
+   "happening in chat", "turn volume/complexity"). With nobody talking to
+   Orion they decay toward zero and read `dead` -- CORRECT behavior, not a
+   defect. Calling it dead cries wolf on every idle channel. `refresh_state`
+   is its own axis here and makes NO claim about whether silence is right:
+   that depends on whether the producer had reason to fire, which the series
+   cannot tell you.
 
-WHAT IT DOES CLAIM
-------------------
-`refresh_state` is mechanical, not a judgement:
+REFRESH STATE: PREFER THE TIMESTAMP, INFER ONLY AS FALLBACK
+-----------------------------------------------------------
+`FieldStateV1.node_vector_updated_at` is a real, live-populated per-node,
+per-channel write timestamp -- `apply_decay()` already reads it for this exact
+fresh-vs-stale question. 74 of 149 live node channels carry one (capability
+vectors carry none; there is no `capability_vector_updated_at`).
 
-- `producer_written` -- at least one change in the window is not explained by
-  the decay constant.
-- `decay_only` -- every change is a multiplication by the same ratio, matching
-  a known decay rate. Nothing refreshed this; the movement is the decay loop
-  touching it. This is the signature of the documented `node:substrate.route`
-  incident (0.92/tick for 48h) and it is why "the numbers move" is not
-  evidence a metric is alive.
-- `static` -- no change at all in the window.
-- `insufficient_samples` -- fewer than two points.
+When timestamps are supplied, `refresh_state` is AUTHORITATIVE and
+`refresh_evidence == "timestamp"`. Only without them does this module fall
+back to inferring from value ratios, and that inference has a hard limit:
 
-KNOWN LIMIT of `static`: a producer writing the SAME value every tick is
-indistinguishable from no producer writing at all. Both are `static`. Live
-example (2026-08-13): the six HIGHER_IS_BETTER channels -- availability,
-available_capacity, bus_health, confidence, delivery_confidence,
-stream_backlog_health -- all sit at exactly 1.0 with zero dispersion, and this
-module cannot tell you whether something is asserting 1.0 every tick or
-nothing has touched them since boot. Separating those needs a producer-side
-write timestamp, which no field channel carries today. Do not read `static` as
-"nothing wrote it".
+**Ratio inference does not work in the subnormal range.** Below roughly
+5e-318, float quantization (ulp fixed at 4.94e-324) makes the relative error
+of `b / a` exceed `DECAY_RATIO_EPSILON`, so a genuine 0.92 decay reads
+`producer_written`. Measured: a decay starting at 1e-317 is detected, one
+starting at 1e-318 is not (observed step ratios 0.91996, 0.919979, 0.920023).
+Seven live channels transit that band -- avg_step_chars_pressure,
+conversation_load, field_coherence_warning, harness_step_load,
+reliability_pressure, repair_pressure, tool_failure_streak_pressure -- and it
+is precisely the TERMINAL phase of the `node:substrate.route` incident this
+detector cites ("went subnormal, and was heading to exactly 0.0"). It fails in
+the dangerous direction: it says a producer wrote this.
+
+An earlier draft of this docstring claimed the two social channels "stepped at
+an exact 0.92000 ratio for 42,000+ transitions". The real counts are 41,762 of
+42,141 and 41,725 of 42,106 -- 379 and 381 steps were NOT at 0.92, and those
+exceptions ARE this limitation. The measurement that would have caught it was
+run, and the residue was rounded away into a "+". Kept visible here on
+purpose.
+
+POLARITY
+--------
+`collect_field_channel_pressures()` does NOT polarity-correct. It only flips
+the MERGE direction (`min()` instead of `max()`) for
+`HIGHER_IS_BETTER_CHANNELS`; the values keep their native higher-is-better
+sense. The `1 - value` inversion lives only in
+`orion/attention/field_attention/selectors.py::_current_pressure_proxy` and
+never touches the pressure dict.
+
+An earlier version of this module asserted the opposite and composed labels
+directly on raw level. Live consequence: `confidence` (median 0.8678,
+meaning HEALTHY) came out `loaded_volatile` in 159 of 208 windows, and
+`available_capacity` in 142 of 208. This module now corrects polarity itself,
+by channel name, into `pressure_equivalent_level` -- raw `level` stays native
+so a consumer reading it gets the real number.
 
 ON CONSTANTS
 ------------
 `SUBNORMAL_CUTOFF` is reused from `channel_glossary` because "is this
 functionally zero" is scale-free and transfers. The level and dispersion
-thresholds are NOT reused, and that is deliberate -- see their definitions
-below for the live case that forced the split. Borrowing a constant across
-domains without re-verifying it at the new scale is a known, repeated failure
-mode in this repo, and the first draft of this module committed it.
+thresholds are NOT reused -- see their definitions for the live cases that
+forced the split, and for which of them is derived and which is merely
+declared. Borrowing a constant across domains without re-verifying it at the
+new scale is a known, repeated failure mode in this repo, and the first draft
+of this module committed it twice.
 """
 from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
+from datetime import datetime
 
 from orion.field.channel_glossary import SUBNORMAL_CUTOFF
+from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS
 
-# services/orion-field-digester/app/digestion/decay.py applies this rate to
-# NODE_DECAY_CHANNELS/CAPABILITY_DECAY_CHANNELS (BIOMETRICS_FIELD_DECAY_RATE).
-# Confirmed live 2026-08-13 against 120,000 substrate_field_state ticks: both
-# social channels stepped at an exact 0.92000 ratio for 42,000+ transitions.
+# services/orion-field-digester/app/digestion/decay.py applies this to
+# NODE_DECAY_CHANNELS/CAPABILITY_DECAY_CHANNELS.
+#
+# CONFIG DRIFT RISK, stated rather than hidden: the producer reads this from
+# BIOMETRICS_FIELD_DECAY_RATE (services/orion-field-digester/settings.py,
+# docker-compose.yml `${BIOMETRICS_FIELD_DECAY_RATE:-0.92}`, .env_example).
+# If an operator changes it, ratio inference silently degrades to "always
+# producer_written" with no failing gate. The timestamp path above is immune,
+# which is another reason to prefer it.
 KNOWN_DECAY_RATES: tuple[float, ...] = (0.92,)
 
-# Successive-ratio tolerance for calling a step "decay". Tight on purpose --
-# floating-point multiplication by a fixed constant reproduces to ~1e-12, so
-# anything looser starts absorbing real producer writes that happen to land
-# near the decay ratio.
+# Successive-ratio tolerance for calling a step "decay", used ONLY by the
+# fallback path. Normal-range float multiplication by a fixed constant
+# reproduces to ~1e-12; live subnormal steps deviate by up to ~4e-6 and by
+# ~8.6e-3 near the floor, which is exactly why the subnormal carve-out above
+# exists rather than this value being loosened to cover it. Loosening it to
+# 0.05 would make any ratio in [0.87, 0.97] read as decay.
 DECAY_RATIO_EPSILON: float = 1e-6
 
-# A value within this of either rail counts as saturated. Distinct from
-# SUBNORMAL_CUTOFF (1e-100), which asks "is this functionally zero" -- this
-# asks "is this pinned against a bound and therefore unable to report a
-# further move in that direction".
+# Minimum number of CHANGES before the fallback will assert `decay_only`.
+# channel_glossary.py:109-114 already established this convention
+# (RATCHET_MIN_SAMPLES = 4, because a 2-point monotonicity claim "is a coin
+# flip, not a monotonicity signal"); an earlier draft of this module did not
+# carry that lesson across and would call a single 1.0 -> 0.92 step -- an
+# ordinary two-decimal move, and many channels sit pinned at 1.0 -- a
+# confident `decay_only`.
+MIN_DECAY_CHANGES: int = 4
+
+# A value within this of either rail counts as saturated at that rail.
 RAIL_EPSILON: float = 1e-3
 
 # Below this many samples, dispersion and drift are artifacts rather than
-# readings. Matches the repo's standing lesson that short-window distribution
-# statistics produce false floor/spread claims.
+# readings, and are reported as None rather than as plausible floats.
 MIN_REGIME_SAMPLES: int = 8
 
-# Neither threshold below reuses channel_glossary's LIVE_VARIANCE_THRESHOLD
-# (0.05). That constant is calibrated for `max - median` SPREAD; the first
-# draft of this module borrowed it for the LEVEL axis and the error surfaced
-# immediately on live data -- cpu_pressure at a median of 0.2594 came out
-# "loaded" because 0.2594 > 0.05. SUBNORMAL_CUTOFF is still imported, since
-# "is this functionally zero" is scale-free and genuinely does transfer.
+# DECLARED, not derived -- and the earlier draft's claim that it WAS derived
+# is retracted here.
 #
-# Both thresholds are ABSOLUTE, which is legitimate here and only here: every
-# field channel is clamp01'd to [0,1] by collect_field_channel_pressures(),
-# and (after HIGHER_IS_BETTER_CHANNELS polarity correction) they share a
-# direction. That shared scale is a real commensurability property of this
-# surface, not an assumption. Do not copy these thresholds to a surface that
-# lacks it.
+# That draft measured one 600-sample window, saw dispersion values 0.0,
+# 0.000046, 0.000447, 0.000525 then a jump to 0.0449+, and called the gap
+# structural. Re-measured across all 208 non-overlapping 600-sample windows in
+# the full 3-day history: 206 of 208 windows have at least one channel inside
+# that supposedly-empty region. disk_pressure lands in it in 146 windows and
+# its steady/volatile verdict at this threshold is a coin flip across windows
+# (106 steady / 102 volatile); reliability_pressure 108/100.
 #
-# The relative readings (level_percentile, dispersion_ratio) are still
-# computed and reported -- they answer "unusual for this channel right now",
-# a drift question. The composed label uses the absolute pair because the
-# question it exists to answer is "near max but steady", which is a statement
-# about the scale, not about recent history. A second draft composed on the
-# percentile instead and collapsed every live channel to one label, because a
-# stationary channel always sits mid-baseline.
-
-# DERIVED, not chosen. Measured across all 41 live channels over a 600-sample
-# window (2026-08-13): dispersion values were 0.0, 0.000046, 0.000447,
-# 0.000525, then jumped straight to 0.0449, 0.0715, 0.102, 0.117, 0.118,
-# 0.131, 0.144, 0.190, 0.227. Nothing at all occupies the two orders of
-# magnitude between 0.0005 and 0.045, so this threshold sits inside an empty
-# region and no real channel is near enough to flip on noise.
+# So there is NO natural gap, the single-window measurement was an alignment
+# artifact, and this is a convention. Channels whose dispersion sits near it
+# will flip between adjacent windows -- read `dispersion` and
+# `dispersion_ratio` directly rather than trusting the label at the boundary.
 STEADY_DISPERSION: float = 0.02
 
-# DECLARED convention, NOT derived -- stated plainly because the same
-# measurement found no natural gap here (levels ran 0.6906, 0.7107, 0.7335,
-# 0.8125 with no space between them). Reads as "in the top 30% of the
-# available range" on a [0,1] pressure scale. A channel just under it is a
-# judgement call, and the raw `level` is on the result for exactly that
-# reason.
+# DECLARED convention. Reads as "in the top 30% of the available range" on the
+# polarity-corrected [0,1] pressure scale. Levels ran 0.6906, 0.7107, 0.7335,
+# 0.8125 with no space between them, so there is no natural boundary here
+# either; the raw `level` is on the result for exactly that reason.
 LOADED_LEVEL: float = 0.70
 
 
@@ -143,7 +165,7 @@ class ChannelRegime:
     """One channel's regime over one declared window.
 
     Every field is a separate reading. `regime` is a convenience composition
-    of the others, NOT a substitute for them -- a consumer that only reads
+    of the others, NOT a substitute for them -- a consumer that reads only
     `regime` has re-created the single-label collapse this module exists to
     undo.
     """
@@ -152,43 +174,62 @@ class ChannelRegime:
     # DECLARED, never inferred. The caller states what window it sampled.
     window_seconds: float
     sample_count: int
-    # Median over the window. Robust to the 1.0 spikes several channels show.
+    # Median over the window, in the channel's NATIVE direction. For a
+    # HIGHER_IS_BETTER channel a high value here means healthy.
     level: float
-    # Population stdev over the window.
-    dispersion: float
-    # Where this window's level sits inside the baseline distribution
-    # (fraction of baseline samples below it). This -- not the raw level -- is
-    # what "loaded" means, because channels have different natural ranges.
-    # None without a baseline: explicitly not 0.5, which would read as
-    # "perfectly typical".
+    # `level` mapped so that high always means "more pressure" (1 - level for
+    # HIGHER_IS_BETTER_CHANNELS). This, not `level`, is what "loaded" is
+    # computed from.
+    pressure_equivalent_level: float
+    polarity_inverted: bool
+    # Population stdev. None below MIN_REGIME_SAMPLES: an artifact, not a
+    # reading.
+    dispersion: float | None
+    # Relative readings, None without a baseline -- explicitly not 0.0/0.5,
+    # which would read as "no drift"/"perfectly typical".
     level_percentile: float | None
-    # This window's dispersion over the baseline's. 1.0 means as variable as
-    # usual, <1 steadier than usual. None without a baseline.
     dispersion_ratio: float | None
-    # |mean(window) - mean(baseline)| / stdev(baseline). None when no baseline
-    # was supplied -- explicitly not 0.0, which would read as "no drift".
     drift: float | None
-    # Fraction of samples pinned within RAIL_EPSILON of 0.0 or 1.0.
-    saturation: float
+    # Split by rail, because one float cannot say WHICH bound. For a pressure
+    # channel the low rail is the calm, healthy state and the high rail is the
+    # alarming one; for a HIGHER_IS_BETTER channel that inverts. Live, 495 of
+    # 505 `saturated` labels from a combined-rail draft were the CALM rail --
+    # failure_pressure reporting no failures at all got the most alarming word
+    # in the vocabulary.
+    saturation_low: float
+    saturation_high: float
     refresh_state: str
+    # "timestamp" (authoritative) or "value_ratio" (inferred, and blind in the
+    # subnormal range -- see module docstring).
+    refresh_evidence: str
     regime: str
 
 
-def _refresh_state(values: list[float]) -> str:
-    """Is this series moving because a producer wrote it, or because a decay
-    loop touched it?
+def _refresh_from_timestamps(stamps: list[datetime | None]) -> str:
+    """Authoritative path: did the producer's write timestamp advance?"""
+    real = [s for s in stamps if s is not None]
+    if not real:
+        return "unknown"
+    return "producer_written" if len(set(real)) > 1 else "no_write_in_window"
 
-    A step counts as decay when `b / a` matches a known decay rate. A series
-    is `decay_only` when it has at least one change and EVERY change is such a
-    step -- one genuine producer write is enough to disqualify it, which is
-    the conservative direction: mislabelling a live channel as decay-only
-    would be the damaging error.
+
+def _refresh_from_values(values: list[float]) -> str:
+    """Fallback inference. See the module docstring for its subnormal blind
+    spot; this cannot be fixed by loosening DECAY_RATIO_EPSILON without
+    absorbing real producer writes.
+
+    A series is `decay_only` only when it has at least MIN_DECAY_CHANGES
+    changes and EVERY change is a known-rate multiplication -- one genuine
+    producer write disqualifies it, which is the conservative direction, since
+    mislabelling a live channel as decay-only is the damaging error.
     """
     if len(values) < 2:
         return "insufficient_samples"
     changes = [(a, b) for a, b in zip(values, values[1:]) if a != b]
     if not changes:
         return "static"
+    if len(changes) < MIN_DECAY_CHANGES:
+        return "producer_written"
     for a, b in changes:
         if a <= 0.0:
             return "producer_written"
@@ -199,33 +240,37 @@ def _refresh_state(values: list[float]) -> str:
 
 
 def _compose(
-    level: float,
-    dispersion: float,
-    saturation: float,
+    pressure_level: float,
+    dispersion: float | None,
+    saturation_low: float,
+    saturation_high: float,
     refresh_state: str,
+    polarity_inverted: bool,
 ) -> str:
     """Compose the axes into one label, for surfaces that can only show one.
 
-    Ordering is deliberate: refresh state dominates, because a number nothing
-    wrote is not a reading about the world regardless of its level. Saturation
-    comes next, because a pinned channel's level and dispersion are both
-    artifacts of the rail.
-
-    Needs no baseline: both thresholds are absolute on the shared [0,1]
-    pressure scale, so a regime is readable from the window alone.
+    Refresh state dominates: a number nothing wrote is not a reading about the
+    world regardless of its level.
     """
-    if refresh_state == "insufficient_samples":
+    if refresh_state == "insufficient_samples" or dispersion is None:
         return "insufficient_samples"
-    if refresh_state in ("decay_only", "static"):
-        # No claim about whether this is correct -- see module docstring.
-        return "no_input"
-    if saturation > 0.5:
-        return "saturated"
+    if refresh_state in ("decay_only", "no_write_in_window", "static"):
+        # Named for what is observed, not for a conclusion. `static` in
+        # particular does NOT mean "nothing wrote it" -- see the note on
+        # refresh_state below.
+        return "no_new_input"
+    # Rails, in pressure-equivalent terms.
+    pinned_max = saturation_high > 0.5 if not polarity_inverted else saturation_low > 0.5
+    pinned_min = saturation_low > 0.5 if not polarity_inverted else saturation_high > 0.5
+    if pinned_max:
+        return "pinned_max"
+    if pinned_min:
+        # The floor. Uninformative, but for a pressure channel it is also the
+        # healthiest possible reading -- deliberately not called "saturated".
+        return "pinned_min"
     steady = dispersion <= STEADY_DISPERSION
-    loaded = level >= LOADED_LEVEL
+    loaded = pressure_level >= LOADED_LEVEL
     if loaded and steady:
-        # The reading this module was built for: busy near the top of its
-        # range, and not moving. Loaded is not the same as alarming.
         return "loaded_steady"
     if loaded:
         return "loaded_volatile"
@@ -239,71 +284,85 @@ def channel_regime(
     values: list[float],
     window_seconds: float,
     baseline: list[float] | None = None,
+    updated_at: list[datetime | None] | None = None,
 ) -> ChannelRegime:
     """Read one channel's regime over a window the caller declares.
 
-    `values` are the in-window samples, oldest first (ordering matters --
-    `refresh_state` reads successive ratios). `baseline` is an optional longer
-    series for the drift comparison; when omitted, `drift` is None rather than
-    a fabricated 0.0.
+    `values` are in-window samples, oldest first (ordering matters).
+    `baseline` is an optional longer series for the relative readings.
+    `updated_at` is the per-sample producer write timestamp from
+    `FieldStateV1.node_vector_updated_at`; supply it whenever available -- it
+    makes `refresh_state` authoritative instead of inferred.
     """
     n = len(values)
+    inverted = channel in HIGHER_IS_BETTER_CHANNELS
     if n == 0:
         return ChannelRegime(
             channel=channel,
             window_seconds=window_seconds,
             sample_count=0,
             level=0.0,
-            dispersion=0.0,
+            pressure_equivalent_level=0.0,
+            polarity_inverted=inverted,
+            dispersion=None,
             level_percentile=None,
             dispersion_ratio=None,
             drift=None,
-            saturation=0.0,
+            saturation_low=0.0,
+            saturation_high=0.0,
             refresh_state="insufficient_samples",
+            refresh_evidence="value_ratio",
             regime="insufficient_samples",
         )
 
     level = statistics.median(values)
-    dispersion = statistics.pstdev(values) if n > 1 else 0.0
-    saturation = sum(
-        1
-        for v in values
-        if abs(v) < RAIL_EPSILON or abs(v - 1.0) < RAIL_EPSILON
-    ) / n
+    pressure_level = (1.0 - level) if inverted else level
+    dispersion = statistics.pstdev(values) if n >= MIN_REGIME_SAMPLES else None
+    saturation_low = sum(1 for v in values if abs(v) < RAIL_EPSILON) / n
+    saturation_high = sum(1 for v in values if abs(v - 1.0) < RAIL_EPSILON) / n
 
     drift: float | None = None
     level_percentile: float | None = None
     dispersion_ratio: float | None = None
-    if baseline and len(baseline) > 1:
+    if baseline and len(baseline) >= MIN_REGIME_SAMPLES:
         base_sd = statistics.pstdev(baseline)
         level_percentile = sum(1 for b in baseline if b < level) / len(baseline)
         if base_sd > SUBNORMAL_CUTOFF:
             drift = abs(statistics.fmean(values) - statistics.fmean(baseline)) / base_sd
-            dispersion_ratio = dispersion / base_sd
-        else:
-            # A baseline with no spread cannot say whether this window is
-            # steadier than usual. None, not a divide-by-near-zero.
-            dispersion_ratio = None
+            if dispersion is not None:
+                dispersion_ratio = dispersion / base_sd
 
-    refresh_state = _refresh_state(values)
-    if n < MIN_REGIME_SAMPLES:
-        # refresh_state needs only 2 points and stays readable; dispersion and
-        # drift do not mean anything yet, so the composed label refuses rather
-        # than reporting a regime derived from artifacts.
-        regime = "insufficient_samples"
-    else:
-        regime = _compose(level, dispersion, saturation, refresh_state)
+    refresh_evidence = "value_ratio"
+    refresh_state = _refresh_from_values(values)
+    if updated_at:
+        from_stamps = _refresh_from_timestamps(updated_at)
+        if from_stamps != "unknown":
+            refresh_state = from_stamps
+            refresh_evidence = "timestamp"
+
+    regime = _compose(
+        pressure_level,
+        dispersion,
+        saturation_low,
+        saturation_high,
+        refresh_state,
+        inverted,
+    )
 
     return ChannelRegime(
         channel=channel,
         window_seconds=window_seconds,
         sample_count=n,
         level=level,
+        pressure_equivalent_level=pressure_level,
+        polarity_inverted=inverted,
         dispersion=dispersion,
         level_percentile=level_percentile,
         dispersion_ratio=dispersion_ratio,
         drift=drift,
-        saturation=saturation,
+        saturation_low=saturation_low,
+        saturation_high=saturation_high,
         refresh_state=refresh_state,
+        refresh_evidence=refresh_evidence,
         regime=regime,
     )

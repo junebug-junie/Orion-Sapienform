@@ -97,11 +97,22 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     must use `.get(key)` and handle None, not `.get(key, 0.0)`.
 
     CONTAINMENT, and a consumer must not sum across it: `chassis_watts` is the whole-node
-    draw measured at the PSU and ALREADY INCLUDES `gpu_watts_total`. On athena, live, that
-    is 410 W total of which 45 W is GPU -- so `SUM(chassis_watts) + SUM(gpu_watts_total)`
-    over-reports by ~11%. For a fleet total use `chassis_watts` alone where present;
-    `gpu_watts_total` is for the nodes that have no BMC, and for attributing what share of a
-    node's draw is inference.
+    draw measured at the PSU and ALREADY INCLUDES BOTH `gpu_watts_total` AND `cpu_watts_total`.
+    Live on athena 2026-08-14: 407 W at the PSU, of which 210 W is the two CPU packages and
+    44 W the GPU. So `chassis + cpu + gpu` reports 661 W for a 407 W machine -- a 62%
+    over-count, and the error grows as the decomposition gets more complete.
+
+    Use `chassis_watts` for what a node COSTS. Use the other two for what that cost is MADE OF:
+
+        athena, 407 W at the wall
+          210 W  cpu_watts_total   two packages, RAPL          52%
+           44 W  gpu_watts_total   one P100, nvidia-smi        11%
+          153 W  everything else   10 disks, RAM, fans, PSU    37%
+                                   loss, NICs -- not measured
+
+    That residual is a real unmeasured remainder, not a rounding error, and nothing in this
+    dict claims to cover it. `gpu_watts_total` doubles as the only power figure available on a
+    node with no reachable BMC (circe), where there is no `chassis_watts` to be contained by.
 
     DISK AND NETWORK BYTE RATES were withheld here until 2026-08-14 because both were wrong as
     *node-scale physical quantities*, which is what this dict claims to hold. Both collector
@@ -151,6 +162,17 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
         out["gpu_watts_total"] = totals[0]
         out["gpu_count"] = float(totals[1])  # so a consumer can check the total against the box
 
+    # CPU package power from RAPL, summed over sockets. The largest previously-unattributed
+    # term on athena: chassis 407 W, GPU 44 W, CPU 210 W across two packages -- more than half
+    # the machine, invisible until now, on the node whose whole job is CPU orchestration.
+    #
+    # SAME CONTAINMENT RULE AS gpu_watts_total: this is already inside `chassis_watts`, which
+    # is measured at the PSU. chassis + cpu + gpu is not a total, it is triple-counting. Use
+    # `chassis_watts` for what a node costs and these two for what the cost is made of.
+    cpu_watts = _as_float(power.get("cpu_package_watts"))
+    if cpu_watts is not None and cpu_watts >= 0.0:
+        out["cpu_watts_total"] = cpu_watts
+
     fan_map = ilo.get("ilo_fan_pct")
     if isinstance(fan_map, dict):
         fan_values = [f for f in (_as_float(v) for v in fan_map.values()) if f is not None]
@@ -196,6 +218,7 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
 FLEET_SUM_KEYS = (
     "chassis_watts",
     "gpu_watts_total",
+    "cpu_watts_total",
     "gpu_count",
     "cpu_cores",
     "disk_bytes_per_sec",

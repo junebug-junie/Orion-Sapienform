@@ -197,3 +197,37 @@ def test_the_degenerate_reading_this_replaces():
     assert _pipe()._summarize(veth).pressures["net"] < 1e-4
     assert _pipe()._summarize(host).pressures["net"] == pytest.approx(159_304 / 125_000_000)
     assert _pipe()._summarize(saturated).pressures["net"] == pytest.approx(1.0)
+
+
+# ------------------------------------------------------------- CPU package power (B4)
+
+def test_cpu_package_watts_reaches_measurements():
+    m = extract_measurements({"power": {"cpu_package_watts": 210.35, "gpu_power_watts": [44.63]}})
+    assert m["cpu_watts_total"] == pytest.approx(210.35)
+
+
+def test_cpu_watts_is_absent_when_the_node_has_no_rapl():
+    m = extract_measurements({"power": {"gpu_power_watts": [44.63]}})
+    assert "cpu_watts_total" not in m   # not 0.0
+
+
+def test_cpu_watts_sums_across_the_fleet_and_names_what_is_missing():
+    per_node = {
+        "athena": {"cpu_watts_total": 210.35, "chassis_watts": 407.0},
+        "atlas": {"cpu_watts_total": 95.0, "chassis_watts": 273.0},
+        "circe": {"gpu_watts_total": 172.96},          # no BMC, and no RAPL reading yet
+    }
+    totals, missing = aggregate_fleet_measurements(per_node)
+    assert totals["cpu_watts_total"] == pytest.approx(305.35)
+    assert missing["cpu_watts_total"] == ["circe"]
+
+
+def test_the_containment_rule_is_why_these_must_not_be_added_together():
+    """Documentation as a test. athena is a 407 W machine; chassis + cpu + gpu reports 661 W,
+    a 62% over-count. Anything summing every watt-keyed measurement is wrong by construction."""
+    athena = {"chassis_watts": 407.0, "cpu_watts_total": 210.35, "gpu_watts_total": 44.63}
+    naive_total = sum(v for k, v in athena.items() if k.endswith("_watts") or k.endswith("watts_total"))
+    assert naive_total == pytest.approx(661.98)
+    assert athena["chassis_watts"] == 407.0
+    # And the decomposition must not exceed the whole.
+    assert athena["cpu_watts_total"] + athena["gpu_watts_total"] < athena["chassis_watts"]

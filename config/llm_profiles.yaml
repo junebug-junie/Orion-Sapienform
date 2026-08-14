@@ -1023,17 +1023,25 @@ profiles:
   # default would rebuild any already-stable co-located worker onto a very recent
   # master build with no bench pass on it specifically.
   #
-  # LIVE-VERIFIED 2026-08-14: booted clean on Atlas (ATLAS_AGENT_CUDA_VISIBLE_DEVICES=2,
-  # LLAMACPP_IMAGE_TAG=server-cuda-b10398) -- not Circe as this profile's naming/notes
-  # originally assumed; deployed to Atlas's agent lane instead. Confirms all three of:
-  # target architecture recognized, mmproj vision loaded ("loaded multimodal model"),
-  # DFlash drafter loaded and self-described correctly (n_extract=5 matches the model
-  # card's "Draft layers: 5", block_size=16 matches spec_draft_n_max's clamp target).
-  # No "DFlash model requires 'target_layers'" error -- upstream issue #25116 does not
-  # appear to affect this GGUF. Full argv + log excerpt in the PR report. NOT yet
-  # verified: actual completion quality/tokens-per-sec with the drafter active (boot
-  # success only proves the process didn't crash, not that generation is correct or
-  # faster) -- run a real /completion request before trusting output quality.
+  # LIVE-VERIFIED 2026-08-14: booted clean on Circe (CUDA_VISIBLE_DEVICES=2,
+  # LLAMACPP_IMAGE_TAG=server-cuda-b10398), matching this profile's original design.
+  # CORRECTION (same day): an earlier version of this note said "Atlas" -- wrong. The
+  # ATLAS_AGENT_* env var names / atlas-agent compose service name are a fixed naming
+  # convention for this worker *pattern*, reused across whichever physical host runs
+  # it (same as orion-atlas-llamacpp-chat already running on Circe hardware) -- do not
+  # infer physical host from that naming. It was Circe the whole time. See
+  # services/orion-llm-gateway/.env_example's own agent-route comment for the same
+  # correction applied there (an earlier gateway-routing fix pointed "agent" at
+  # Atlas's IP based on this same wrong inference; nothing was listening there).
+  # Confirms all three of: target architecture recognized, mmproj vision loaded
+  # ("loaded multimodal model"), DFlash drafter loaded and self-described correctly
+  # (n_extract=5 matches the model card's "Draft layers: 5", block_size=16 matches
+  # spec_draft_n_max's clamp target). No "DFlash model requires 'target_layers'"
+  # error -- upstream issue #25116 does not appear to affect this GGUF. Full argv +
+  # log excerpt in the PR report. NOT yet verified: actual completion quality/
+  # tokens-per-sec with the drafter active (boot success only proves the process
+  # didn't crash, not that generation is correct or faster) -- run a real
+  # /completion request before trusting output quality.
   muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision:
     display_name: "Muse Glimmer 30B – UD-Q4_K_XL + mmproj (llama.cpp, 1x V100 32GB, Circe Agent lane, text+image)"
     task_type: multimodal
@@ -1123,18 +1131,19 @@ profiles:
 
     notes: |
       Agent-lane Muse Glimmer 30B (dense, text+image, tool-calling, DFlash speculative
-      decoding) for 1x V100-class 32GB GPU, Agent compute GPU lane (wire via
-      ATLAS_AGENT_PROFILE_NAME). Named/sized for Circe originally; first live deploy
-      (2026-08-14) actually landed on Atlas's agent lane instead
-      (ATLAS_AGENT_CUDA_VISIBLE_DEVICES=2) -- worked cleanly there too, but if this is
-      meant to live on Circe specifically going forward, confirm that's still the plan.
+      decoding) for 1x V100-class 32GB GPU on Circe, Agent compute GPU lane (wire via
+      ATLAS_AGENT_PROFILE_NAME -- that env var name is a fixed naming convention for
+      this worker pattern, not a statement of physical host; see the profile header
+      above for a prior mix-up on exactly this point, corrected 2026-08-14).
       - REQUIRES LLAMACPP_IMAGE_TAG=server-cuda-b10398 (or later) — do not rely on the
         repo-wide default fallback (server-cuda-b8740, ~April 2026). llama.cpp did not
         recognize this model's architecture at all before ggml-org/llama.cpp PR #26841
         merged 2026-08-10; this gates text+vision, not just DFlash. LLAMACPP_IMAGE_TAG is
         one shared build arg per compose invocation across co-located workers on the same
-        .env — confirm which other workers share this worker's env before bumping it there.
-        LIVE-VERIFIED 2026-08-14 on Atlas at this tag: clean boot, target arch recognized,
+        .env — Circe already runs orion-atlas-llamacpp-chat continuously
+        (config/biometrics/node_catalog.yaml), so confirm whether that worker shares this
+        one's env before bumping the tag.
+        LIVE-VERIFIED 2026-08-14 on Circe at this tag: clean boot, target arch recognized,
         mmproj vision loaded, DFlash drafter loaded and self-described correctly
         (n_extract=5 matches the model card's "Draft layers: 5"). No "DFlash model
         requires 'target_layers'" error — upstream issue #25116 does not appear to affect
@@ -1171,5 +1180,5 @@ profiles:
         is still tight with the draft model loaded, dropping spec_type/hf_draft_* entirely
         falls back to plain (non-speculative) decoding without changing anything else.
       - Wire: ATLAS_AGENT_PROFILE_NAME=muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision,
-        LLAMACPP_IMAGE_TAG=server-cuda-b10398 (set on whichever worker's .env this is
-        deployed to — confirm it doesn't silently affect co-located workers first)
+        LLAMACPP_IMAGE_TAG=server-cuda-b10398 (Circe's agent worker .env — confirm it
+        doesn't silently affect Circe's already-running chat worker if they share one env)

@@ -103,20 +103,22 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     `gpu_watts_total` is for the nodes that have no BMC, and for attributing what share of a
     node's draw is inference.
 
-    WHAT IS DELIBERATELY NOT HERE: disk and network byte rates. Both are collected
-    (`services/orion-biometrics/app/metrics.py`) and both are wrong as *node-scale physical
-    quantities*, which is what this dict claims to hold:
+    DISK AND NETWORK BYTE RATES were withheld here until 2026-08-14 because both were wrong as
+    *node-scale physical quantities*, which is what this dict claims to hold. Both collector
+    bugs are now fixed and both quantities are published:
 
-      - network reads a network-namespaced /proc/net/dev from inside a bridged container, so
-        it sees its own veth. Measured on athena: host 5,093,078 B/s vs container ~4,000 B/s,
-        a factor of ~1000.
-      - disk sums /proc/diskstats rows for whole disks AND their partitions, double-counting.
-        Measured on athena over the same window: 26,147,226 vs 13,288,243 B/s, a factor of 1.97.
+      - network read a network-namespaced /proc/net/dev from inside a bridged container, so it
+        saw its own veth. Measured on athena: host 159,304 B/s vs container 1,357 B/s (117x);
+        the day before, ~1000x. The ratio is unstable because these are different quantities,
+        not a miscalibration. Fixed by reading the host namespace via /host_proc/1/net/dev and
+        restricting to up physical NICs.
+      - disk summed /proc/diskstats rows for whole disks AND their partitions, double-counting.
+        Measured 19,378,995 vs 9,905,766 B/s over one window, a factor of 1.956 (1.97 the day
+        before). Fixed by matching whole devices only.
 
-    Both are survivable as self-relative 0-1 bands (which is all `disk_pressure`/`net_pressure`
-    ever claimed) and neither is survivable as a number someone might sum. Fixing them means
-    changing the collector, which moves the shipped pressures too -- a live behaviour change
-    that belongs in its own patch. Parked, not silently emitted.
+    `net_bytes_per_sec` appears ONLY when the host namespace was actually readable
+    (`network.scope == "host"`). A container-scoped reading is withheld entirely rather than
+    published with a caveat, because absent-is-not-zero also means absent-is-not-approximately.
     """
     out: Dict[str, float] = {}
 
@@ -160,6 +162,30 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     loadavg = cpu.get("loadavg") if isinstance(cpu.get("loadavg"), dict) else {}
     put("load_1m", _as_float(loadavg.get("1m")))
     put("load_15m", _as_float(loadavg.get("15m")))
+
+    # Disk throughput. Previously withheld because the collector summed whole disks AND their
+    # partitions (measured 1.956x over-count on athena). Fixed in
+    # BiometricsCollector._is_disk_device, so the number is now a real node-scale quantity and
+    # is published rather than only surviving as a 0-1 band.
+    disk = sample.get("disk") if isinstance(sample.get("disk"), dict) else {}
+    disk_rate = _sum_of([disk.get("read_bytes_per_sec"), disk.get("write_bytes_per_sec")])
+    if disk_rate is not None and disk_rate[0] >= 0.0:
+        out["disk_bytes_per_sec"] = disk_rate[0]
+
+    # Network throughput, and ONLY when it was read from the host namespace. A container-scoped
+    # reading is this service's own veth traffic -- a different quantity, not a scaled one, so
+    # it is withheld entirely rather than published with a caveat. That leaves the node absent
+    # from the fleet total, which `measurements_missing` reports honestly; publishing 1,357 B/s
+    # as a node's network load would not.
+    network = sample.get("network") if isinstance(sample.get("network"), dict) else {}
+    if network.get("scope") == "host":
+        net_rate = _sum_of([network.get("rx_bytes_per_sec"), network.get("tx_bytes_per_sec")])
+        if net_rate is not None and net_rate[0] >= 0.0:
+            out["net_bytes_per_sec"] = net_rate[0]
+        # Link capacity in Mb/s (bits), summed over up physical NICs. Kept alongside the rate
+        # so a consumer can compute utilisation without re-deriving the denominator, and so
+        # fleet uplink capacity is a fact rather than a config value repeated three times.
+        put("net_link_mbps", _as_float(network.get("link_mbps")))
     return out
 
 
@@ -167,7 +193,15 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
 # guessing an aggregation from a key name is how you end up summing temperatures.
 #
 # EXTENSIVE -- adding a machine adds to the total.
-FLEET_SUM_KEYS = ("chassis_watts", "gpu_watts_total", "gpu_count", "cpu_cores")
+FLEET_SUM_KEYS = (
+    "chassis_watts",
+    "gpu_watts_total",
+    "gpu_count",
+    "cpu_cores",
+    "disk_bytes_per_sec",
+    "net_bytes_per_sec",
+    "net_link_mbps",
+)
 # INTENSIVE -- adding a machine cannot raise the fleet figure above its own hottest member.
 FLEET_MAX_KEYS = ("temp_c_max", "fan_pct_max")
 # DELIBERATELY NEITHER: load_1m / load_15m. A load average is relative to its own machine's
@@ -287,7 +321,16 @@ class BiometricsPipeline:
         disk_pressure = normalize_rate(disk_rate, scale=self.cfg.disk_bw_mbps * 1_000_000)
 
         net_rate = (network.get("rx_bytes_per_sec") or 0.0) + (network.get("tx_bytes_per_sec") or 0.0)
-        net_pressure = normalize_rate(net_rate, scale=self.cfg.net_bw_mbps * 1_000_000)
+        # Prefer the link speed the kernel reports for this node's physical NICs over the
+        # configured NET_BW_MBPS. `link_mbps` is Mb/s (bits); the scale here is bytes/sec, so
+        # divide by 8. A wrong factor of 8 here would be invisible in a 0-1 band, which is
+        # exactly the class of error that made this metric worthless in the first place.
+        link_mbps = network.get("link_mbps")
+        if isinstance(link_mbps, (int, float)) and not isinstance(link_mbps, bool) and link_mbps > 0:
+            net_scale = float(link_mbps) * 1_000_000 / 8.0
+        else:
+            net_scale = self.cfg.net_bw_mbps * 1_000_000
+        net_pressure = normalize_rate(net_rate, scale=net_scale)
         net_error_rate = float(network.get("error_rate") or 0.0)
         net_pressure = clamp01(max(net_pressure, net_error_rate))
 

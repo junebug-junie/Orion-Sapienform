@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -16,6 +17,12 @@ from app.utils import collect_gpu_stats
 from orion.telemetry.biometrics_pipeline import filter_temps
 
 logger = logging.getLogger("orion-biometrics")
+
+# Block-device name grammar for /proc/diskstats. Whole devices vs their partitions:
+#   sda / sda1        nvme0n1 / nvme0n1p1        vda / vda1        mmcblk0 / mmcblk0p1
+# NVMe and mmc separate the partition with a literal 'p'; SCSI/SATA/virtio just append digits.
+_WHOLE_DISK_RE = re.compile(r"^(sd[a-z]+|nvme\d+n\d+|vd[a-z]+|mmcblk\d+)")
+_PARTITION_RE = re.compile(r"^(sd[a-z]+\d+|nvme\d+n\d+p\d+|vd[a-z]+\d+|mmcblk\d+p\d+)$")
 
 
 @dataclass
@@ -47,6 +54,7 @@ class BiometricsCollector:
         self._prev_cpu: Optional[_CpuTimes] = None
         self._prev_disk: Optional[_DiskStats] = None
         self._prev_net: Optional[_NetStats] = None
+        self._prev_net_scope: Optional[str] = None
         self._prev_ts: Optional[float] = None
 
     def collect(self) -> Dict[str, Any]:
@@ -179,19 +187,128 @@ class BiometricsCollector:
         return _DiskStats(read_bytes=read_sectors * 512, write_bytes=write_sectors * 512)
 
     def _is_disk_device(self, name: str) -> bool:
+        """Whole block devices only -- never their partitions.
+
+        `/proc/diskstats` has a row for `sda` AND a row for `sda1`, and the partition's
+        counters are also included in the whole disk's. Accepting both double-counts every
+        byte on any partitioned device. Measured on athena 2026-08-14 over the same 10 s
+        window: 19,378,995 B/s counting partitions vs 9,905,766 B/s without -- a factor of
+        1.956, matching the 1.97 measured independently on 2026-08-13.
+
+        athena has ten devices of which six are partitioned (nvme0n1p1, sdd1-3, sde1, sdf1,
+        sdg1-2), so this is not an edge case here, it is the normal reading.
+        """
         if name.startswith("loop") or name.startswith("ram"):
             return False
-        if name.startswith("sd") or name.startswith("nvme") or name.startswith("vd") or name.startswith("mmc"):
-            return True
-        return False
+        if not _WHOLE_DISK_RE.match(name):
+            return False
+        return not _PARTITION_RE.match(name)
+
+    # ---------------------------------------------------------------- host namespace
+
+    def _host_path(self, kind: str, rel: str) -> Optional[str]:
+        """Resolve a path under the read-only host /proc or /sys bind mount, if mounted.
+
+        Returns None when the mount is absent, which is the correct answer for a collector
+        running outside a container or in a deployment that predates these mounts -- the
+        callers fall back to the container's own view and SAY SO in the payload rather than
+        silently reporting a container-scoped number as a node-scoped one.
+        """
+        root = settings.HOST_PROC_PATH if kind == "proc" else settings.HOST_SYS_PATH
+        if not root:
+            return None
+        candidate = os.path.join(root, rel)
+        return candidate if os.path.exists(candidate) else None
+
+    def _physical_interfaces(self) -> Optional[List[str]]:
+        """Up physical NICs, from the host sysfs mount. None when it is unavailable.
+
+        Two filters, both load-bearing:
+
+        - `device` symlink present -> a real NIC behind a real driver. docker0, br-*, veth*,
+          tailscale0 and lo have no `device` and are excluded. This matters for the DENOMINATOR
+          because the docker bridges report a fabricated `speed` of 10000 Mb/s on athena, which
+          would inflate a link-capacity sum by 40 Gb/s of hardware that does not exist.
+        - `operstate == up` -> athena has eno1..eno6 and only eno1 is plugged in. Counting the
+          five dark ports would claim 6 Gb/s of capacity against one 1 Gb link.
+
+        It matters for the NUMERATOR too: a packet leaving a container traverses veth -> bridge
+        -> eno1 and is counted once on each, so summing every interface multiply-counts
+        container traffic. Physical-only is the definition that answers "how close is this
+        node's uplink to saturation", which is the only question `net_pressure` ever claimed to
+        answer.
+        """
+        base = self._host_path("sys", "class/net")
+        if not base:
+            return None
+        found: List[str] = []
+        try:
+            for name in sorted(os.listdir(base)):
+                iface = os.path.join(base, name)
+                if not os.path.exists(os.path.join(iface, "device")):
+                    continue
+                try:
+                    with open(os.path.join(iface, "operstate"), "r", encoding="utf-8") as fh:
+                        if fh.read().strip() != "up":
+                            continue
+                except OSError:
+                    continue
+                found.append(name)
+        except OSError:
+            return None
+        return found
+
+    def _link_speed_mbps(self, interfaces: List[str]) -> Optional[float]:
+        """Summed link speed of the given NICs, in Mb/s, read from the kernel.
+
+        This replaces the `NET_BW_MBPS` guess with a measurement. The constant was 125 MB/s
+        (1 Gb/s) fleet-wide across three heterogeneous hosts -- correct for athena by
+        coincidence, unverified for atlas and circe. A number the kernel already knows should
+        not be a hand-maintained env key on three machines.
+
+        Returns None (not 0.0) when nothing could be read, so the caller falls back to the
+        configured constant instead of dividing by zero or treating "unknown" as "no capacity".
+        """
+        base = self._host_path("sys", "class/net")
+        if not base:
+            return None
+        total = 0.0
+        for name in interfaces:
+            try:
+                with open(os.path.join(base, name, "speed"), "r", encoding="utf-8") as fh:
+                    value = float(fh.read().strip())
+            except (OSError, ValueError):
+                continue
+            # -1 means "unknown to the driver" (tailscale0 reports this); not a capacity.
+            if value > 0:
+                total += value
+        return total if total > 0 else None
 
     def _collect_network(self, errors: List[str], dt: Optional[float]) -> Dict[str, Any]:
         try:
-            stats = self._read_netdev()
+            interfaces = self._physical_interfaces()
+            host_netdev = self._host_path("proc", "1/net/dev")
+            # PID 1 on the host is the host init, so its /proc/<pid>/net/dev is the HOST network
+            # namespace -- the one where the real NICs live. The container's own /proc/net/dev is
+            # namespaced to its veth pair and sees only this service's own traffic. Measured on
+            # athena 2026-08-14: host 159,304 B/s vs container 1,357 B/s. On 2026-08-13 the same
+            # comparison gave ~1000x. The ratio is unstable BECAUSE it is not a scale error --
+            # the two numbers are different quantities, and no calibration constant could have
+            # rescued the container-scoped one.
+            if host_netdev and interfaces:
+                stats = self._read_netdev(path=host_netdev, only=interfaces)
+                scope = "host"
+            else:
+                stats = self._read_netdev()
+                scope = "container"
             rx_rate = 0.0
             tx_rate = 0.0
             err_rate = 0.0
-            if self._prev_net and dt:
+            # Counters from different namespaces are not comparable. If the scope flips between
+            # ticks (the host mount appears on redeploy, or disappears), the previous sample
+            # belongs to a different set of interfaces and the delta would be meaningless --
+            # usually a huge positive spike. Drop the baseline and report 0 for one tick.
+            if self._prev_net and dt and self._prev_net_scope == scope:
                 rx_rate = max(0.0, (stats.rx_bytes - self._prev_net.rx_bytes) / dt)
                 tx_rate = max(0.0, (stats.tx_bytes - self._prev_net.tx_bytes) / dt)
                 err_delta = (stats.rx_errors - self._prev_net.rx_errors) + (stats.tx_errors - self._prev_net.tx_errors)
@@ -200,25 +317,40 @@ class BiometricsCollector:
                 if pkt_delta > 0:
                     err_rate = max(0.0, (err_delta + drop_delta) / pkt_delta)
             self._prev_net = stats
-            return {
+            self._prev_net_scope = scope
+            out: Dict[str, Any] = {
                 "rx_bytes_per_sec": rx_rate,
                 "tx_bytes_per_sec": tx_rate,
                 "error_rate": err_rate,
+                # Which namespace produced the bytes above. A consumer that sums these across
+                # nodes needs to know a "container" reading is this service's own veth traffic
+                # and NOT the node's, so it can exclude the node rather than understate the sum.
+                "scope": scope,
             }
+            if interfaces:
+                out["interfaces"] = list(interfaces)
+                link_mbps = self._link_speed_mbps(interfaces)
+                if link_mbps is not None:
+                    # The measured denominator for net_pressure, replacing NET_BW_MBPS.
+                    out["link_mbps"] = link_mbps
+            return out
         except Exception as exc:
             errors.append(f"network:{exc}")
             return {"error": str(exc)}
 
-    def _read_netdev(self) -> _NetStats:
+    def _read_netdev(self, path: str = "/proc/net/dev", only: Optional[List[str]] = None) -> _NetStats:
+        allowed = set(only) if only is not None else None
         rx_bytes = tx_bytes = rx_packets = tx_packets = 0
         rx_errors = tx_errors = rx_drops = tx_drops = 0
-        with open("/proc/net/dev", "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8") as handle:
             for line in handle:
                 if ":" not in line:
                     continue
                 iface, rest = line.split(":", 1)
                 iface = iface.strip()
                 if iface == "lo":
+                    continue
+                if allowed is not None and iface not in allowed:
                     continue
                 parts = rest.split()
                 rx_bytes += int(parts[0])

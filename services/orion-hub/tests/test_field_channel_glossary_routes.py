@@ -179,3 +179,62 @@ def test_health_endpoint_reverses_desc_rows_back_to_chronological_order(client):
     assert cpu["last"] == pytest.approx(0.7)
     assert cpu["min"] == pytest.approx(0.1)
     assert cpu["max"] == pytest.approx(0.7)
+
+
+# --------------------------------------------------------------------------
+# R2 regime readout (PR #1633), wired into /health alongside the verdict
+# --------------------------------------------------------------------------
+
+def test_regime_splits_the_window_and_declares_the_span() -> None:
+    """The split IS the window: `regime.window_seconds` must report the sliced
+    span, not the requested `hours`, or a consumer reads a 15-minute reading as
+    an hour-long one.
+
+    Hand-computed: 100 samples, REGIME_WINDOW_FRACTION 0.25 -> split at 75, so
+    the window is the last 25 and the baseline the first 75.
+      window_seconds = 3600 * (25/100) = 900.0
+    """
+    from scripts.field_channel_glossary_routes import _regime_for
+
+    values = [0.1 + (i % 10) * 0.01 for i in range(100)]
+    r = _regime_for("cpu_pressure", values, 1)
+
+    assert r.sample_count == 25
+    assert r.window_seconds == 900.0
+    # The baseline half is real, so the relative axes are populated rather
+    # than None.
+    assert r.level_percentile is not None
+    assert r.drift is not None
+
+
+def test_regime_separates_two_channels_the_verdict_calls_the_same_word() -> None:
+    """The whole reason R2 exists. Both series below classify as "quiet"
+    (max - median <= 0.05), but one is idling near zero and the other is
+    running near its ceiling.
+
+    Hand-computed: flat 0.02 vs flat 0.81, 100 samples each.
+    """
+    from orion.field.channel_glossary import classify_channel_series
+    from scripts.field_channel_glossary_routes import _regime_for
+
+    idle = [0.02] * 100
+    loaded = [0.81] * 100
+    assert classify_channel_series(idle) == classify_channel_series(loaded) == "quiet"
+
+    # Flat series have no producer writes to infer, so both read no_new_input;
+    # the LEVEL axis is what distinguishes them and it survives.
+    assert _regime_for("cpu_pressure", idle, 1).level == 0.02
+    assert _regime_for("cpu_pressure", loaded, 1).level == 0.81
+
+
+def test_regime_survives_an_empty_series_without_fabricating() -> None:
+    from scripts.field_channel_glossary_routes import _regime_for
+
+    r = _regime_for("absent_channel", [], 1)
+    assert r.sample_count == 0
+    assert r.regime == "insufficient_samples"
+    assert r.dispersion is None
+    assert r.drift is None
+    # Falls back to the full requested span rather than 0.0, which would read
+    # as "measured over no time at all".
+    assert r.window_seconds == 3600.0

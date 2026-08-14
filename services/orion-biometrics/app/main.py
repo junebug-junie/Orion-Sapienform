@@ -364,9 +364,20 @@ class BiometricsHub:
             {node: summary.measurements for node, summary in self._latest_summary.items()}
         )
 
+        # Which known nodes are absent entirely. `measurements_missing` only names nodes that
+        # DID report and lacked a key -- a node that stops publishing never reaches `sources`
+        # and would otherwise vanish without trace, leaving a partial fleet total looking whole.
+        contributed = {
+            _NODE_CATALOG.resolve(node).node_id for node in self._latest_summary
+        }
+        nodes_absent = sorted(
+            node_id for node_id in _NODE_CATALOG.profiles if node_id not in contributed
+        )
+
         cluster = BiometricsClusterV1(
             timestamp=datetime.now(timezone.utc),
             sources=sources,
+            nodes_absent=nodes_absent or None,
             role_weights=weights,
             pressures=pressures,
             headroom=headroom,

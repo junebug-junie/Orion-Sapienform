@@ -187,3 +187,19 @@ class BiometricsClusterV1(BaseModel):
     # says so. Reading `measurements["chassis_watts"]` without checking this is reading a
     # partial sum as a complete one.
     measurements_missing: Optional[Dict[str, List[str]]] = None
+
+    # Nodes the catalog knows about that did NOT contribute to this cluster at all.
+    #
+    # `measurements_missing` closes the gap for a source that reported but lacked a key. It
+    # cannot close this one: a node that stops publishing entirely never enters `sources`, so
+    # it leaves no trace anywhere and the totals look complete. Observed live 2026-08-14 while
+    # circe was down -- `chassis_watts: 646.0` with `measurements_missing: null`, a two-machine
+    # sum presenting as the whole fleet.
+    #
+    # This is deliberately a STATEMENT OF FACT, not an alarm. Whether an absence is a problem
+    # is policy that depends on the node: circe is run intermittently to save cost, so its
+    # silence is expected, while the same silence from athena would be an outage. The catalog's
+    # `expected_online` flag cannot settle it either -- it is already doing a different job
+    # (gating whether `pressure_organ.py` suppresses a node's strain as expected staleness).
+    # So the aggregate reports who is absent and leaves the judgement to the consumer.
+    nodes_absent: Optional[List[str]] = None

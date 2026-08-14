@@ -564,3 +564,76 @@ def test_review_record_rejects_nonpositive_interval_and_duration(tmp_path):
         rlo.record([lane], str(tmp_path / "o.jsonl"), interval=0.0, duration=10.0)
     with pytest.raises(SystemExit, match="duration"):
         rlo.record([lane], str(tmp_path / "o.jsonl"), interval=1.0, duration=-5.0)
+
+
+# --------------------------------------------------- route-table refresh (mid-run)
+
+
+def _fake_poll(lane, **kw):
+    return rlo.Sample(ts=1000.0, url=lane.url, reachable=True, slots_total=4, slots_busy=0)
+
+
+def test_review_record_rereads_the_route_table_mid_run(monkeypatch, tmp_path):
+    """The defect this fixes: the lane set was snapshotted once at startup.
+
+    `agent` was repointed from atlas to circe mid-run and the recorder kept polling the old
+    address, reporting "0 measured over 3.67 h" for a lane that was live and serving turns.
+    Over a 24 h gate window that is a fabricated finding, not a stale label.
+    """
+    tables = [
+        {"agent": {"url": "http://old:8014"}},
+        {"agent": {"url": "http://new:8014"}},
+    ]
+    calls = {"n": 0}
+
+    def fake_read(env_files):
+        calls["n"] += 1
+        return tables[min(calls["n"] - 1, len(tables) - 1)]
+
+    monkeypatch.setattr(rlo, "read_route_table", fake_read)
+    monkeypatch.setattr(rlo, "poll_lane", _fake_poll)
+    out = tmp_path / "s.jsonl"
+    rlo.record(
+        rlo.lanes_from_route_table(tables[0]), str(out),
+        interval=0.01, duration=0.15, route_refresh_sec=0.02,
+    )
+    urls = {json.loads(l)["url"] for l in out.read_text().splitlines() if l.strip()}
+    assert "http://old:8014" in urls  # polled before the change
+    assert "http://new:8014" in urls  # and after -- the whole point
+
+
+def test_route_refresh_zero_pins_the_lane_set(monkeypatch, tmp_path):
+    def fake_read(env_files):
+        raise AssertionError("must not re-read when pinned")
+
+    monkeypatch.setattr(rlo, "read_route_table", fake_read)
+    monkeypatch.setattr(rlo, "poll_lane", _fake_poll)
+    out = tmp_path / "s.jsonl"
+    rlo.record(
+        [rlo.Lane(url="http://a:1", routes=("q",), served_by="w")], str(out),
+        interval=0.01, duration=0.08, route_refresh_sec=0.0,
+    )
+    assert out.read_text().strip()
+
+
+def test_a_failed_refresh_keeps_recording_rather_than_ending_the_run(monkeypatch, tmp_path):
+    """A 24h run must not die because the env file was briefly unreadable."""
+    def fake_read(env_files):
+        raise SystemExit("env vanished")
+
+    monkeypatch.setattr(rlo, "read_route_table", fake_read)
+    monkeypatch.setattr(rlo, "poll_lane", _fake_poll)
+    out = tmp_path / "s.jsonl"
+    n = rlo.record(
+        [rlo.Lane(url="http://a:1", routes=("q",), served_by="w")], str(out),
+        interval=0.01, duration=0.1, route_refresh_sec=0.02,
+    )
+    assert n > 0
+
+
+def test_negative_route_refresh_is_rejected(tmp_path):
+    with pytest.raises(SystemExit, match="route-refresh-sec"):
+        rlo.record(
+            [rlo.Lane(url="http://a:1", routes=("q",), served_by="w")],
+            str(tmp_path / "o.jsonl"), interval=1.0, duration=1.0, route_refresh_sec=-1.0,
+        )

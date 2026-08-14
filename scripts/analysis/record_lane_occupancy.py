@@ -93,6 +93,10 @@ SLOTS_TIMEOUT_SEC = 3.0
 # second. An earlier value of 5x was wrong: it classified an ordinary slow tick as a
 # discontinuity and silently reverted every statistic to sample-counting.
 DISCONTINUITY_FACTOR = 30.0
+# Re-read the route table this often during a `record` run. See record()'s docstring: a route
+# repointed mid-run otherwise makes the recorder poll a dead address for the rest of the window
+# and report a live lane as "0 measured".
+DEFAULT_ROUTE_REFRESH_SEC = 300.0
 
 
 # --------------------------------------------------------------------------- config
@@ -247,32 +251,75 @@ def poll_lane(lane: Lane, *, timeout: float = SLOTS_TIMEOUT_SEC, now: Optional[f
     return Sample(ts=ts, url=lane.url, reachable=True, slots_total=total, slots_busy=busy)
 
 
+def _describe_lanes(lanes: Sequence[Lane], stderr) -> None:
+    for lane in lanes:
+        reserved = f", reserves {lane.reserved_free_slots}" if lane.reserved_free_slots else ""
+        print(f"  {lane.label}  <- {lane.url}{reserved}", file=stderr)
+
+
 def record(
     lanes: Sequence[Lane],
     out_path: str,
     *,
     interval: float,
     duration: float,
+    env_files: Sequence[str] = DEFAULT_ENV_FILES,
+    route_refresh_sec: float = DEFAULT_ROUTE_REFRESH_SEC,
     stderr=sys.stderr,
 ) -> int:
+    """Poll every lane at `interval`, re-reading the route table every `route_refresh_sec`.
+
+    THE REFRESH IS NOT A CONVENIENCE. The first version snapshotted the route table once at
+    startup and never looked again, which produced exactly the class of confident wrong answer
+    this instrument exists to prevent: the `agent` route was repointed from atlas to circe
+    mid-run, and the recorder kept polling the old address and reported "0 measured over
+    3.67 h" for a lane that was live and serving turns. Over a 24 h gate window that is not a
+    stale label, it is a fabricated finding. Caught by Juniper, not by the instrument.
+
+    Set --route-refresh-sec 0 to pin the lane set (useful when replaying a fixed topology).
+    """
     if interval <= 0:
         raise SystemExit("--interval must be > 0 (a zero interval hammers /slots)")
     if duration <= 0:
         raise SystemExit("--duration must be > 0")
+    if route_refresh_sec < 0:
+        raise SystemExit("--route-refresh-sec must be >= 0 (0 pins the lane set)")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     deadline = time.time() + duration
     written = 0
     overruns = 0
+    route_changes = 0
+    lanes = list(lanes)
+    next_refresh = time.time() + route_refresh_sec if route_refresh_sec else float("inf")
     print(
-        f"recording {len(lanes)} lane(s) every {interval}s for {duration/3600:.2f}h -> {out_path}",
+        f"recording {len(lanes)} lane(s) every {interval}s for {duration/3600:.2f}h -> {out_path}"
+        + (f" (route table re-read every {route_refresh_sec:.0f}s)" if route_refresh_sec else " (lane set PINNED)"),
         file=stderr,
     )
-    for lane in lanes:
-        reserved = f", reserves {lane.reserved_free_slots}" if lane.reserved_free_slots else ""
-        print(f"  {lane.label}  <- {lane.url}{reserved}", file=stderr)
+    _describe_lanes(lanes, stderr)
     with open(out_path, "a", encoding="utf-8") as fh:
         while time.time() < deadline:
             tick = time.time()
+            if tick >= next_refresh:
+                next_refresh = tick + route_refresh_sec
+                try:
+                    fresh = lanes_from_route_table(read_route_table(env_files))
+                except SystemExit as exc:  # unreadable env mid-run must not end the recording
+                    print(f"WARNING: route-table refresh failed, keeping current lanes: {exc}", file=stderr)
+                    fresh = []
+                if fresh and fresh != lanes:
+                    route_changes += 1
+                    gone = {l.url for l in lanes} - {l.url for l in fresh}
+                    added = {l.url for l in fresh} - {l.url for l in lanes}
+                    print(
+                        f"ROUTE TABLE CHANGED at {tick:.0f}: "
+                        f"{len(gone)} lane(s) removed, {len(added)} added. Statistics for a "
+                        f"removed url cover only the period it was routed -- check its coverage "
+                        f"against the others before comparing them.",
+                        file=stderr,
+                    )
+                    lanes = fresh
+                    _describe_lanes(lanes, stderr)
             for lane in lanes:
                 fh.write(poll_lane(lane).to_json() + "\n")
                 written += 1
@@ -282,6 +329,8 @@ def record(
                 time.sleep(slack)
             else:
                 overruns += 1
+    if route_changes:
+        print(f"NOTE: the route table changed {route_changes} time(s) during this run.", file=stderr)
     if overruns:
         print(
             f"WARNING: {overruns} tick(s) took longer than --interval {interval}s. Sampling "
@@ -651,6 +700,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rec.add_argument("--interval", type=float, default=1.0)
     rec.add_argument("--duration", type=float, default=86400.0, help="seconds (default 24h)")
     rec.add_argument("--env-file", action="append", default=None)
+    rec.add_argument(
+        "--route-refresh-sec", type=float, default=DEFAULT_ROUTE_REFRESH_SEC,
+        help="re-read the route table this often; 0 pins the lane set",
+    )
 
     rep = sub.add_parser("report", help="compute ceiling statistics from JSONL")
     rep.add_argument("--in", dest="in_path", required=True)
@@ -666,7 +719,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         lanes = lanes_from_route_table(read_route_table(env_files))
         if not lanes:
             raise SystemExit("route table produced no lanes")
-        n = record(lanes, args.out, interval=args.interval, duration=args.duration)
+        n = record(
+            lanes, args.out, interval=args.interval, duration=args.duration,
+            env_files=env_files, route_refresh_sec=args.route_refresh_sec,
+        )
         print(f"wrote {n} samples to {args.out}", file=sys.stderr)
         return 0
 

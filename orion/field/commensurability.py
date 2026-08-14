@@ -64,7 +64,9 @@ from dataclasses import dataclass, field
 
 from orion.field.pressure import (
     HIGHER_IS_BETTER_CHANNELS,
+    MERGE_STALENESS_THRESHOLD_SEC,
     PRESSURE_CHANNELS,
+    _stale_node_channels,
     clamp01,
     field_pressures_with_provenance,
 )
@@ -92,6 +94,13 @@ MASK_RATIO: float = 10.0
 # Same reasoning as channel_glossary's RATCHET_MIN_SAMPLES and regime.py's
 # MIN_REGIME_SAMPLES: a short window makes any contender look dominant.
 MIN_MERGE_SAMPLES: int = 30
+
+# Decay rate applied by services/orion-field-digester/app/digestion/decay.py.
+# Duplicated from regime.py's KNOWN_DECAY_RATES rather than imported so R3
+# stays usable without R2; kept honest by
+# test_decay_rate_matches_the_regime_module.
+DECAY_RATE: float = 0.92
+DECAY_RATIO_EPSILON: float = 1e-6
 
 LAYER_SOURCE_TO_CHANNEL = "source_to_channel"
 LAYER_CHANNEL_TO_DIMENSION = "channel_to_dimension"
@@ -156,12 +165,25 @@ def analyse_merge(
     wins: dict[str, int] = defaultdict(int)
     values: dict[str, set[float]] = defaultdict(set)
     appearances: dict[str, int] = defaultdict(int)
+    last_value: dict[str, float] = {}
     tied = 0
 
     for winner, contributions in observations:
         for name, value in contributions.items():
-            values[name].add(value)
             appearances[name] += 1
+            prev = last_value.get(name)
+            last_value[name] = value
+            # A value the decay loop produced is not information this
+            # contender carries. Counting it was a real false positive:
+            # node:circe's reasoning_load showed 943 distinct values live, of
+            # which 99.8% of transitions were exact 0.92 decay steps -- one
+            # producer write of 0.05 decaying toward zero, a fresh float every
+            # tick. Counted raw, that outranked every genuine signal in the
+            # merge and manufactured a finding.
+            if prev is not None and value != prev:
+                if prev > 0.0 and abs(value / prev - DECAY_RATE) < DECAY_RATIO_EPSILON:
+                    continue
+            values[name].add(value)
         if winner is None:
             tied += 1
         else:
@@ -257,21 +279,39 @@ def analyse_merge(
 
 def observe_source_to_channel(
     field: FieldStateV1,
+    staleness_threshold_sec: float | None = MERGE_STALENESS_THRESHOLD_SEC,
 ) -> dict[str, tuple[str | None, dict[str, float]]]:
     """Per-channel: who won this tick's source merge, and what each source
     contributed.
 
     Mirrors `collect_field_channel_pressures()`'s own rules rather than
     re-deriving them: `clamp01`, `min()` for HIGHER_IS_BETTER_CHANNELS and
-    `max()` otherwise, and the `channel in PRESSURE_CHANNELS or v > 0` gate
-    that decides whether a zero is stored at all.
+    `max()` otherwise, the `channel in PRESSURE_CHANNELS or v > 0` gate that
+    decides whether a zero is stored at all, and -- via the shared
+    `_stale_node_channels()` -- the staleness exclusion.
+
+    That last one is not optional decoration. The first version of this
+    function was written before the staleness rule shipped and kept the old
+    semantics, so the gate reported `prediction_error` dominated by
+    `node:substrate.codebase` at 72.4% AFTER production had stopped merging
+    that way. A detector that has drifted from the thing it detects reports
+    fixed defects as live ones, which is worse than not running: it teaches
+    the reader to ignore it. Default matches the merge's own default so the
+    two move together; pass None to analyse pre-2026-08-14 semantics.
 
     Winner is None when two or more sources tie at the winning value -- see
     the module docstring on why ties must not be counted as wins.
     """
+    stale_pairs = (
+        set()
+        if staleness_threshold_sec is None
+        else _stale_node_channels(field, staleness_threshold_sec)
+    )
     per_channel: dict[str, dict[str, float]] = defaultdict(dict)
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
+            if (source_id, channel) in stale_pairs:
+                continue
             v = clamp01(float(value))
             if channel in HIGHER_IS_BETTER_CHANNELS or channel in PRESSURE_CHANNELS or v > 0:
                 per_channel[channel][source_id] = v

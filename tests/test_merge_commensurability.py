@@ -287,3 +287,76 @@ def test_dimension_merge_reads_r1_provenance_including_the_tie_flag() -> None:
     )
     tied_winner, _ = tied["social_pressure"]
     assert tied_winner is None
+
+
+# --------------------------------------------------------------------------
+# drift guards: this module duplicates two facts that live elsewhere
+# --------------------------------------------------------------------------
+
+def test_decay_rate_matches_the_regime_module() -> None:
+    """DECAY_RATE is duplicated here rather than imported, so R3 stays usable
+    without R2. Duplication is only safe with a test that fails when the two
+    diverge."""
+    from orion.field.commensurability import DECAY_RATE
+    from orion.field.regime import KNOWN_DECAY_RATES
+
+    assert DECAY_RATE in KNOWN_DECAY_RATES
+
+
+def test_observation_default_matches_the_real_merge_default() -> None:
+    """The detector must analyse the semantics production actually uses.
+
+    The first version of observe_source_to_channel() predated the staleness
+    rule and kept the old semantics, so the gate reported prediction_error
+    dominated at 72.4% AFTER production had stopped merging that way. A
+    detector drifted from the thing it detects reports fixed defects as live
+    ones.
+    """
+    import inspect
+
+    from orion.field.commensurability import observe_source_to_channel
+    from orion.field.pressure import (
+        MERGE_STALENESS_THRESHOLD_SEC,
+        collect_field_channel_pressures,
+    )
+
+    observed = inspect.signature(observe_source_to_channel).parameters[
+        "staleness_threshold_sec"
+    ].default
+    real = inspect.signature(collect_field_channel_pressures).parameters[
+        "staleness_threshold_sec"
+    ].default
+    assert observed == real == MERGE_STALENESS_THRESHOLD_SEC
+
+
+def test_a_stale_source_is_excluded_from_the_observed_merge() -> None:
+    """Hand-computed: node:slow's 0.90 is 600s old and node:fast has a fresh
+    write, so only node:fast contributes and it wins uncontested."""
+    from datetime import datetime, timedelta, timezone
+
+    from orion.field.commensurability import observe_source_to_channel
+
+    now = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
+    state = FieldStateV1(
+        generated_at=now,
+        tick_id="t",
+        node_vectors={
+            "node:slow": {"prediction_error": 0.90},
+            "node:fast": {"prediction_error": 0.20},
+        },
+        node_vector_updated_at={
+            "node:slow": {"prediction_error": now - timedelta(seconds=600)},
+            "node:fast": {"prediction_error": now - timedelta(seconds=5)},
+        },
+    )
+    winner, contributions = observe_source_to_channel(state)["prediction_error"]
+    assert winner == "node:fast"
+    assert contributions == {"node:fast": 0.20}
+
+    # Opting out restores the pre-2026-08-14 view, which the gate needs to
+    # reproduce historical findings.
+    winner_old, contrib_old = observe_source_to_channel(
+        state, staleness_threshold_sec=None
+    )["prediction_error"]
+    assert winner_old == "node:slow"
+    assert set(contrib_old) == {"node:slow", "node:fast"}

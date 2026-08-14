@@ -1,0 +1,6 @@
+{
+  "_comment": "Ratchet baseline for scripts/check_merge_domination.py --gate. May shrink, never grow. Regenerate deliberately with --update-baseline when a fix lands or a finding is accepted.",
+  "_finding_comment": "A merge where one source wins the majority of non-tied merges while carrying an order of magnitude fewer informative distinct values than a contender that never wins. See orion/field/commensurability.py.",
+  "ticks_analysed": 6000,
+  "known_dominated_merges": {}
+}

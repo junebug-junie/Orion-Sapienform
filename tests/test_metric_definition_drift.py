@@ -434,8 +434,27 @@ def _stub_graph(mod, monkeypatch, nodes):
     monkeypatch.setattr(mod, "build_graph", lambda: graph)
 
 
-def _stub_base(mod, monkeypatch, definitions, note="merge base abc123 (origin/main)"):
+def _stub_base(
+    mod,
+    monkeypatch,
+    definitions,
+    note="merge base abc123 (origin/main)",
+    *,
+    on_base_branch=False,
+):
+    """Stub the merge base AND whether HEAD is it.
+
+    `_base_is_head()` (PR fixing "the gate could never be green on main")
+    correctly skips alert-block verification when HEAD *is* the merge base,
+    because `_last_change` there describes the branch that already landed and
+    cannot be recomputed. These tests stubbed only `_base_definitions`, so they
+    inherited the REAL answer from whatever checkout they ran in -- passing on
+    a feature branch and failing on a main checkout, which is exactly what
+    happened once this landed on main. Default False: these tests are modelling
+    a PR branch, which is the only place the check is meant to run.
+    """
     monkeypatch.setattr(mod, "_base_definitions", lambda: (definitions, note))
+    monkeypatch.setattr(mod, "_base_is_head", lambda: on_base_branch)
 
 
 def _block(mod) -> dict:
@@ -507,7 +526,14 @@ def test_clobbered_lock_is_not_treated_as_a_first_run(drift_cli, monkeypatch):
 
 def test_gate_fails_when_the_alert_block_was_hand_edited(drift_cli, monkeypatch):
     """The claim "an agent cannot re-lock quietly" is only true if the gate
-    verifies the block. Before this check it was a convention."""
+    verifies the block. Before this check it was a convention.
+
+    Overlaps `test_off_the_base_branch_a_hand_edited_alert_still_fails` on the
+    assertion and differs on the path: that one constructs the bad lock
+    directly, this one drives the real `--update` round trip first, so it also
+    proves the block `--update` writes is one the gate then ACCEPTS. A stub
+    that only ever hand-builds locks cannot catch the two disagreeing.
+    """
     mod = drift_cli
     _stub_base(mod, monkeypatch, {"metric://field_channel/p/x": {"meaning": "old"}})
     _stub_graph(mod, monkeypatch, [_node("x", meaning="new", producer_service="p")])

@@ -12,10 +12,18 @@ session (see ``websocket_handler.py``'s connect-time setup, before the per-turn 
 not per-turn, since Juniper's own description of the workflow is "each time hub is
 refreshed on the browser, that would trigger a refresh on the sandbox".
 
-The refresh is a hard reset to ``origin/main`` guarded on there being no dirty or
-unpushed work checked out -- on *any* branch, including ``main`` itself, since a prior
-sync leaves the sandbox sitting on ``main`` and that's exactly where Orion's next turn
-would add uncommitted or unpushed-on-main work if it doesn't branch first.
+The refresh is a hard reset to ``origin/main``. It never destroys work to get there:
+anything dirty in the worktree is first rescued into a labelled ``git stash`` entry, and
+branch refs survive a ``checkout main`` untouched, so unpushed commits stay reachable by
+branch name. Only if the rescue itself fails does the sync decline to reset.
+
+That rescue exists because the original guard -- skip the sync outright whenever the
+worktree was dirty or the branch unpushed -- was a permanent trap, confirmed live on
+2026-08-14. Orion left staged edits behind on ``test/orion-live-push-proof-aacd41ef``
+on 2026-08-13; every browser refresh after that logged ``skipped_dirty_worktree`` and
+returned, so the sandbox sat 294 commits behind ``main`` with nothing able to clear it.
+A guard whose only exit is manual intervention nobody is told to perform is not a guard,
+it is a silent freeze. Rescue-then-reset keeps the work *and* keeps the sync honest.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger("orion-hub.fcc_sandbox_sync")
@@ -115,6 +124,83 @@ def _git_or_abort(
     return result
 
 
+def _rescue_dirty_worktree(workspace: Path, branch: str) -> bool:
+    """Stash everything dirty (including untracked) under a findable label.
+
+    Returns True when the worktree is clean afterwards and the caller may reset.
+
+    ``stash push -u`` is the rescue rather than a throwaway commit because it
+    leaves the branch's own history untouched -- Orion's next turn on that branch
+    sees the commits it expects, and the rescued edits are one ``git stash list``
+    away instead of buried in a commit nobody looks for. Stashes accumulate at
+    most one entry per dirty episode: the following sync sees a clean tree.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    label = f"orion-sandbox-autorescue/{branch or 'main'}/{stamp}"
+    result = _run_git(workspace, "stash", "push", "-u", "-m", label)
+    if result.returncode != 0:
+        logger.warning(
+            "fcc_sandbox_sync_rescue_failed branch=%s err=%s",
+            branch or "main",
+            result.stderr.strip(),
+        )
+        return False
+    logger.info("fcc_sandbox_sync_rescued_dirty_work branch=%s stash=%s", branch or "main", label)
+    return True
+
+
+_LAST_SYNC: dict[str, object] = {"result": None, "at": None, "workspace": None}
+
+
+def last_sync_state() -> dict[str, object]:
+    """Snapshot of the most recent sync attempt, for the Hub status endpoint.
+
+    Exists because the wedge this module now rescues from was invisible for two
+    days: the only evidence was a log line inside the hub container, and Hub's UI
+    reported nothing at all. A stale sandbox is a cognition-affecting condition --
+    Orion reasons about a repo 294 commits out of date -- so it needs a surface,
+    not just a log.
+    """
+    return dict(_LAST_SYNC)
+
+
+def _record(workspace: str | None, result: str, **extra: object) -> str:
+    _LAST_SYNC.clear()
+    _LAST_SYNC.update(
+        {
+            "result": result,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "workspace": workspace,
+            **extra,
+        }
+    )
+    return result
+
+
+def record_sync_skip(workspace: str | None, result: str) -> str:
+    """Record a skip decided by the *caller* (e.g. an FCC turn already in flight).
+
+    Public so ``websocket_handler`` can keep the status surface truthful for the
+    skips it makes before ever calling ``sync_fcc_sandbox``.
+    """
+    return _record(workspace, result)
+
+
+def _behind_main(workspace: Path) -> int | None:
+    """How many commits the checked-out HEAD trails ``origin/main`` by.
+
+    Best-effort and read-only: reads the already-fetched remote ref, never
+    fetches. ``None`` when it cannot be determined (no origin/main ref yet).
+    """
+    result = _run_git(workspace, "rev-list", "--count", "HEAD..origin/main")
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def sync_fcc_sandbox(workspace: str | None) -> str:
     """Best-effort sync of ``workspace`` to ``origin/main``.
 
@@ -123,11 +209,11 @@ def sync_fcc_sandbox(workspace: str | None) -> str:
     not break Hub's WebSocket connect.
     """
     if not workspace:
-        return "skipped_no_workspace"
+        return _record(workspace, "skipped_no_workspace")
 
     path = Path(workspace)
     if not (path / ".git").exists():
-        return "skipped_not_a_git_repo"
+        return _record(workspace, "skipped_not_a_git_repo")
 
     # Idempotent, cheap -- runs every sync regardless of whether a full reset
     # happens below, so push auth is set up even on a skipped-dirty/unpushed
@@ -139,29 +225,53 @@ def sync_fcc_sandbox(workspace: str | None) -> str:
             path, "branch", "--show-current", error_status="error_branch_check"
         ).stdout.strip()
 
-        # Dirty/unpushed check applies unconditionally, including when already on
-        # main -- a prior sync leaves the sandbox on main, so "no branch checked
-        # out" must not be read as "nothing to protect".
+        # Fetch before deciding anything. It is needed for the reset regardless, and
+        # doing it up front is what makes ``behind_main`` truthful on the paths that
+        # *decline* to reset -- those are exactly the ones a human reads. Computed
+        # against a stale refs/remotes/origin/main it would report "0 behind" for a
+        # sandbox hundreds of commits back, reproducing the silent-staleness failure
+        # this surface exists to expose.
+        _git_or_abort(path, "fetch", "origin", "main", error_status="error_fetch")
+
+        # The dirty check applies unconditionally, including when already on main --
+        # a prior sync leaves the sandbox on main, so "no branch checked out" must
+        # not be read as "nothing to protect". Protection now means *rescue*, not
+        # *refuse*: refusing left the sandbox frozen forever (see module docstring).
         status = _git_or_abort(
             path, "status", "--porcelain", error_status="error_status_check"
         )
+        rescued = False
         if status.stdout.strip():
-            logger.info("fcc_sandbox_sync_skipped_dirty branch=%s", current_branch or "main")
-            return "skipped_dirty_worktree"
+            if not _rescue_dirty_worktree(path, current_branch):
+                # Rescue failed, so a reset would genuinely destroy work. Decline,
+                # under a status distinct from the ordinary skips so a wedge here
+                # reads as "needs a human" rather than "working as designed".
+                return _record(
+                    workspace,
+                    "skipped_dirty_rescue_failed",
+                    branch=current_branch or "main",
+                    behind_main=_behind_main(path),
+                )
+            rescued = True
 
         if current_branch and current_branch != "main":
+            # Unpushed commits are NOT a reason to skip: `checkout main` leaves
+            # refs/heads/<branch> exactly where it was, so they stay reachable by
+            # branch name in this same clone. Log what we stepped off so the branch
+            # is findable later; the sync itself proceeds.
             # refs/heads/<branch> keeps a branch name that starts with "-" (e.g.
             # "-x") from being parsed as a flag instead of a ref.
             ref = f"refs/heads/{current_branch}"
-            fetch = _run_git(path, "fetch", "origin", ref)
-            unpushed = _run_git(path, "rev-list", f"origin/{current_branch}..{ref}")
-            if fetch.returncode != 0 or unpushed.returncode != 0 or unpushed.stdout.strip():
-                logger.info(
-                    "fcc_sandbox_sync_skipped_unpushed_work branch=%s", current_branch
-                )
-                return "skipped_unpushed_branch"
+            head = _run_git(path, "rev-parse", ref)
+            _run_git(path, "fetch", "origin", ref)
+            unpushed = _run_git(path, "rev-list", "--count", f"origin/{current_branch}..{ref}")
+            logger.info(
+                "fcc_sandbox_sync_left_branch branch=%s head=%s unpushed=%s",
+                current_branch,
+                head.stdout.strip()[:12] or "unknown",
+                unpushed.stdout.strip() or "unknown",
+            )
 
-        _git_or_abort(path, "fetch", "origin", "main", error_status="error_fetch")
         _git_or_abort(path, "checkout", "main", error_status="error_checkout")
         _git_or_abort(
             path, "reset", "--hard", "origin/main", error_status="error_reset"
@@ -171,13 +281,23 @@ def sync_fcc_sandbox(workspace: str | None) -> str:
         if clean.returncode != 0:
             logger.warning("fcc_sandbox_sync_clean_failed err=%s", clean.stderr.strip())
 
-        logger.info("fcc_sandbox_sync_ok workspace=%s", workspace)
-        return "synced"
+        logger.info(
+            "fcc_sandbox_sync_ok workspace=%s rescued=%s", workspace, rescued
+        )
+        head = _run_git(path, "rev-parse", "HEAD").stdout.strip()[:12]
+        return _record(
+            workspace,
+            "synced_after_rescue" if rescued else "synced",
+            branch="main",
+            head=head or None,
+            behind_main=_behind_main(path),
+            rescued_from=(current_branch or "main") if rescued else None,
+        )
     except _SyncAbort as exc:
-        return exc.status
+        return _record(workspace, exc.status)
     except subprocess.TimeoutExpired:
         logger.warning("fcc_sandbox_sync_timeout workspace=%s", workspace)
-        return "error_timeout"
+        return _record(workspace, "error_timeout")
     except OSError as exc:
         logger.warning("fcc_sandbox_sync_os_error workspace=%s err=%s", workspace, exc)
-        return "error_os"
+        return _record(workspace, "error_os")

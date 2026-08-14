@@ -1377,6 +1377,25 @@ async def api_fcc_model_labels():
     return payload
 
 
+@router.get("/api/fcc-sandbox-sync")
+def api_fcc_sandbox_sync():
+    """Orion capability: report whether Orion's FCC sandbox is current with main.
+
+    The sandbox (``HUB_AGENT_CLAUDE_WORKSPACE``, /mnt/orion-fcc/repo) is refreshed
+    to origin/main on every Hub WebSocket connect. When that refresh declines --
+    an FCC turn in flight, or dirty work the rescue stash could not capture --
+    Orion keeps reasoning from a stale checkout with no outward sign. This exposes
+    the last attempt's verdict so "the sync isn't happening" is answerable without
+    tailing container logs, which is how it went unnoticed for two days.
+
+    Runtime evidence: ``result`` is written by orion/fcc/sandbox_sync.py on every
+    attempt; ``behind_main`` is read from the sandbox's own git refs.
+    """
+    from orion.fcc.sandbox_sync import last_sync_state
+
+    return {"workspace": settings.HUB_AGENT_CLAUDE_WORKSPACE, **last_sync_state()}
+
+
 @router.get("/api/presence")
 def api_presence(x_orion_session_id: Optional[str] = Header(None)):
     from .main import presence_context_store

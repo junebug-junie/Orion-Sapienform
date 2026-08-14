@@ -1,5 +1,12 @@
 # Vector Memory Cleanup — Audit, Plan, Verification
 
+> **HISTORICAL / SUPERSEDED (2026-08-14).** Predates the May 2026
+> orion-recall vector amputation (`docs/superpowers/pr-reports/
+> 2026-05-29-orion-recall-vector-amputation-pr.md`) and the 2026-08-14 kill
+> of the chat-history/chat-turn vector-write pipeline this doc describes
+> (see `services/orion-vector-host/README.md`'s "Dead pipeline killed"
+> section). Kept for historical context only.
+
 ## Executive Summary
 - **Session-scoped recall is failing** because most vectors in `orion_main_store` are embedding_request artifacts that do not carry `session_id`. Chat history vectors should live in `orion_chat` and include `session_id`, `role`, and `speaker` metadata. 【F:services/orion-vector-host/app/main.py†L248-L306】【F:services/orion-vector-writer/app/chat_history.py†L18-L61】
 - **Chroma metadata constraints** require primitive values only; hub emits `tags` as a list, which breaks vector-writer upserts without sanitization. 【F:services/orion-vector-writer/app/main.py†L32-L74】

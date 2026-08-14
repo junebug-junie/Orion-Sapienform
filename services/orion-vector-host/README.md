@@ -11,10 +11,27 @@ Vector-host computes semantic embeddings for **all assistant texts** regardless 
 ### Consumed Channels
 | Channel | Schema | Description |
 | :--- | :--- | :--- |
-| `orion:chat:history:log` | `ChatHistoryMessageV1` | Embeds chat messages and publishes semantic upserts. |
+| `orion:chat:history:log` | `ChatHistoryMessageV1` | Embeds chat messages and feeds OrionTissue directly (`app/tissue_feed.py`). Does **not** publish a vector upsert -- see "Dead pipeline killed" below. |
+| `orion:chat:history:turn` | `ChatHistoryTurnV1` | Embeds chat turns and feeds OrionTissue directly. Does **not** publish a vector upsert -- same kill as above. |
 | `orion:chat:gpt:log` | `ChatGptMessageV1` | Embeds ChatGPT imported messages into `orion_chat_gpt` when GPT ingest is enabled. |
 | `orion:chat:gpt:turn` | `ChatGptLogTurnV1` | Embeds ChatGPT imported turns into `orion_chat_gpt_turns` when GPT ingest is enabled. |
 | `orion:embedding:generate` | `EmbeddingGenerateV1` | Generates semantic embeddings and replies with `EmbeddingResultV1` while also emitting semantic upserts. |
+
+### Dead pipeline killed (2026-08-14)
+
+`_handle_chat_history` / `_handle_chat_turn` used to publish `VectorUpsertV1`
+on `orion:vector:semantic:upsert` targeting the `orion_chat` /
+`orion_chat_turns` Chroma collections. That write path had no reader:
+orion-recall's Chroma retrieval path was already amputated in May 2026
+(`RECALL_ENABLE_VECTOR` defaults `false`, see
+`docs/superpowers/pr-reports/2026-05-29-orion-recall-vector-amputation-pr.md`).
+The vector-upsert publish was removed outright (killed, not narrowed) so
+`orion-vector-writer` never writes to those two collections again. The
+embed + `feed_tissue()` call was kept in both handlers because it is a
+separate, still-live OrionTissue stimulus source, not a fallback to the
+killed write -- see `app/tissue_feed.py`'s module docstring. Existing
+`orion_chat` / `orion_chat_turns` Chroma data is orphaned but was not
+deleted by this change.
 
 ### Published Channels
 | Channel | Schema | Description |
@@ -37,6 +54,9 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `VECTOR_HOST_GPT_MESSAGE_COLLECTION` | `orion_chat_gpt` | Collection for ChatGPT imported message embeddings. |
 | `VECTOR_HOST_GPT_TURN_COLLECTION` | `orion_chat_gpt_turns` | Collection for ChatGPT imported turn embeddings. |
 | `VECTOR_HOST_EMBED_ROLES` | `["user","assistant"]` | Chat roles to embed from history. |
+
+`VECTOR_HOST_CHAT_MESSAGE_COLLECTION` / `VECTOR_HOST_CHAT_TURN_COLLECTION` were
+removed 2026-08-14 along with the dead vector-upsert write -- see above.
 
 ## Substrate Brain State page (`/spark/ui`)
 
@@ -68,10 +88,10 @@ Full candidate-rejection trace (why `self_state`, `node_kind`/`lane` `max()`/`mi
 
 ## Smoke Tests
 
-1) **Semantic path**  
+1) **Chat tissue-feed path (no vector write)**  
 Publish `ChatHistoryMessageV1` on `orion:chat:history:log`, confirm:
-   - `orion-vector-host` emits `VectorUpsertV1` on `orion:vector:semantic:upsert`.
-   - `orion-vector-writer` writes into the semantic collection.
+   - `orion-vector-host` computes the embedding and calls `feed_tissue()` (check `GET /api/tissue/state` for movement).
+   - `orion-vector-host` does **not** emit `VectorUpsertV1` for this envelope (killed 2026-08-14).
 
 2) **Request path**  
 Publish `EmbeddingGenerateV1` on `orion:embedding:generate`, confirm:

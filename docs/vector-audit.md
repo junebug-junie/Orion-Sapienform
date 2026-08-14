@@ -1,5 +1,18 @@
 # Vector Audit — Orion (Athena)
 
+> **HISTORICAL / SUPERSEDED (2026-08-14).** This audit predates two later
+> changes and no longer reflects live behavior:
+> 1. `services/orion-recall`'s Chroma retrieval path was deleted in May 2026
+>    (`RECALL_ENABLE_VECTOR` defaults `false`) --
+>    `docs/superpowers/pr-reports/2026-05-29-orion-recall-vector-amputation-pr.md`.
+> 2. The chat-history/chat-turn `-> orion_chat` / `-> orion_chat_turns`
+>    vector-upsert write path this doc describes (`orion-vector-host`'s
+>    `_handle_chat_history`/`_handle_chat_turn` -> `orion-vector-writer`) was
+>    killed outright the same day this note was added -- see
+>    `services/orion-vector-host/README.md`'s "Dead pipeline killed" section
+>    and the PR report for this change. Kept for historical context only; do
+>    not use this doc to reason about current vector behavior.
+
 ## Executive Summary
 - Recall’s vector backend can return zero results because it **only queries collections listed in `RECALL_VECTOR_COLLECTIONS`** and returns `[]` when that setting is empty (no fallback).【F:services/orion-recall/app/storage/vector_adapter.py†L64-L97】【F:services/orion-recall/app/settings.py†L135-L139】
 - Vector ingestion is split between **vector-host (embedding + semantic upsert)** and **vector-writer (Chroma ingestion)**. Semantic embeddings are produced by `orion-vector-host` and written by `orion-vector-writer`.【F:services/orion-vector-host/app/main.py†L39-L197】【F:services/orion-vector-writer/app/main.py†L164-L279】

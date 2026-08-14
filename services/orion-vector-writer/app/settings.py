@@ -23,12 +23,12 @@ class Settings(BaseSettings):
         default='["orion:vector:semantic:upsert", "orion:vector:latent:upsert", "orion:vector:write", "orion:memory:vector:upsert", "orion:metacog:trace"]',
         alias="VECTOR_WRITER_SUBSCRIBE_CHANNELS"
     )
-    VECTOR_WRITER_CHAT_HISTORY_CHANNEL: str = Field(
-        default="orion:chat:history:log", alias="VECTOR_WRITER_CHAT_HISTORY_CHANNEL"
-    )
-    VECTOR_WRITER_CHAT_COLLECTION: str = Field(
-        default="orion_chat", alias="VECTOR_WRITER_CHAT_COLLECTION"
-    )
+    # VECTOR_WRITER_CHAT_HISTORY_CHANNEL / VECTOR_WRITER_CHAT_COLLECTION
+    # removed 2026-08-14: the dedicated chat-history normalization path
+    # (`app/chat_history.py`, deleted) was already dead code -- this service
+    # never subscribed to `orion:chat:history:log` by default, so
+    # `chat_history_envelope_to_request` was never reachable. See
+    # orion-vector-host's README for the live half of this kill.
     VECTOR_WRITER_METACOG_COLLECTION: str = Field(
         default="orion_metacog_store", alias="VECTOR_WRITER_METACOG_COLLECTION"
     )

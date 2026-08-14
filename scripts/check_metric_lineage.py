@@ -9,6 +9,8 @@ Usage:
     python scripts/check_metric_lineage.py --json          # full joined graph
     python scripts/check_metric_lineage.py --metric cpu_pressure   # lineage card
     python scripts/check_metric_lineage.py --drift         # declared vs discovered consumers
+    python scripts/check_metric_lineage.py --generic-consumers  # whole-vector readers
+    python scripts/check_metric_lineage.py --unwritten     # declared but never written
 """
 from __future__ import annotations
 
@@ -28,6 +30,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orion.metrics.consumers import HIGH_CONFIDENCE_KINDS, scan_repo  # noqa: E402
+from orion.metrics.generic_consumers import (  # noqa: E402
+    CONFIRMED,
+    LIKELY,
+    VECTOR_SURFACES,
+    scan_generic_consumers,
+)
 from orion.metrics.lineage import build_graph, to_dict  # noqa: E402
 
 
@@ -146,13 +154,80 @@ def cmd_metric(graph, scan, token: str, as_json: bool = False) -> int:
         and h.kind in HIGH_CONFIDENCE_KINDS
         and h.path not in sources
     ]
+    writers = scan.producers_for(
+        token,
+        include_tests=False,
+        exclude_paths=sources,
+        schema_ids={n.schema_id for n in nodes if n.schema_id},
+    )
     print(f"  declared in    {', '.join(sorted(sources))} (excluded from blast radius)")
+    print(f"  WRITTEN BY (discovered, non-test): {len(writers)}")
+    for hit in writers:
+        print(f"      {hit.path}:{hit.line}  [{hit.kind}]")
+    if not writers:
+        print("      none found -- declared but never written, or written via a")
+        print("      path this scan cannot see (see --generic-consumers).")
     print(f"  BLAST RADIUS (discovered, non-test, high-confidence): {len(prod)}")
     for hit in prod:
         print(f"      {hit.path}:{hit.line}  [{hit.kind}]")
     print(f"\n  test/eval references: {len(tests)}")
+
+    # A field channel lives inside a node/capability vector, so any site that
+    # enumerates a whole vector reads it WITHOUT naming it -- invisible to the
+    # string-literal scan above. Printing the blast radius without this line
+    # is how `field_coherence_warning` read as "zero consumers" on 2026-08-14
+    # while attention's `_current_pressure_proxy()` max()'d over it every tick.
+    generic = _generic_consumers_cached()
+    # `any(n...)`, NOT `node.surface` -- `node` here would be whatever the
+    # per-node print loop above left bound, i.e. the LAST node for this token.
+    # Three tokens span surfaces (`confidence`, `memory_pressure`,
+    # `repair_pressure` -- named in gate.py's own orphan_nodes docstring), and
+    # for all three the last node is organ_signal/inner_state, so the field
+    # channel's floor warning was silently suppressed on exactly the tokens
+    # most likely to be misread. Caught in review; no test covered cmd_metric.
+    if any(n.surface in VECTOR_SURFACES for n in nodes) and generic:
+        confirmed = [c for c in generic if c.confidence == CONFIRMED]
+        print(
+            f"\n  PLUS {len(generic)} generic whole-vector consumer(s) "
+            f"({len(confirmed)} confirmed) that read this channel without naming it."
+        )
+        print("  Run --generic-consumers to list them. Blast radius above is a")
+        print("  FLOOR, not a total -- do not retire this channel on it alone.")
+
     print("\n  Liveness verdict: NOT COMPUTED (phase 5).")
     print("  Do not treat absence of a verdict as 'this metric is fine'.")
+    return 0
+
+
+_GENERIC_CACHE: list | None = None
+
+
+def _generic_consumers_cached() -> list:
+    global _GENERIC_CACHE
+    if _GENERIC_CACHE is None:
+        _GENERIC_CACHE = scan_generic_consumers(REPO_ROOT)
+    return _GENERIC_CACHE
+
+
+def cmd_generic_consumers() -> int:
+    """Sites that consume whole channel vectors without naming any channel."""
+    found = _generic_consumers_cached()
+    print("Generic whole-vector consumers\n")
+    print("  These read every channel in a node/capability vector at once, so")
+    print("  no field channel is safely retirable without reading them. The")
+    print("  string-literal blast radius cannot see any of this.\n")
+    for tier, label in ((CONFIRMED, "confirmed"), (LIKELY, "likely")):
+        rows = [c for c in found if c.confidence == tier]
+        print(f"  {label} ({len(rows)})")
+        for c in rows:
+            print(f"      {c.path}:{c.line}  {c.function}")
+            print(f"          {c.evidence}")
+        print()
+    print("  `likely` is a prompt to go read the call site, not proof: the")
+    print("  detector keys on a `dict[str, float]` parameter in a module that")
+    print("  also touches a vector, which is a shape plus a neighbourhood, not")
+    print("  a dataflow proof. An UNANNOTATED vector parameter is missed")
+    print("  entirely, so an empty result means 'none found', never 'none exist'.")
     return 0
 
 
@@ -216,11 +291,108 @@ def cmd_gate(update_baseline: bool = False) -> int:
     return 1
 
 
+def cmd_unwritten(graph, scan) -> int:
+    """Metrics with a declaration and no discovered write site.
+
+    The exact mirror of the orphan list, and NOT derivable from it: a metric
+    can have real consumers and no reachable producer, which is what
+    `expected_offline_suppression` is. It has a live consumer
+    (`suppression.py`), a real writer (`state_deltas.py`), and that writer is
+    gated on `expected_online is False` -- true for zero of the five nodes in
+    `config/biometrics/node_catalog.yaml`. Zero of 126,983 stored ticks carry
+    a nonzero value. Finding that took a manual trace; the writer half of it
+    is now mechanical.
+
+    What this CANNOT tell you is whether a writer's guard is ever satisfiable.
+    A listed writer means "something can set this", not "something does".
+    """
+    print("Declared metrics with no discovered write site\n")
+    print("  A missing writer means one of: never implemented, retired without")
+    print("  removing the declaration, or written through a path this scan")
+    print("  cannot see (config-driven, cross-language, or a whole-dict copy).")
+    print("  It is evidence to go look, not a verdict.\n")
+
+    by_surface: dict[str, list[str]] = {}
+    checked: dict[str, bool] = {}
+    for node in graph.nodes.values():
+        token = node.scan_token
+        if token not in checked:
+            checked[token] = bool(
+                scan.producers_for(
+                    token,
+                    exclude_paths=graph.registry_sources_for(token),
+                    schema_ids={
+                        n.schema_id for n in graph.by_token(token) if n.schema_id
+                    },
+                )
+            )
+        if not checked[token]:
+            by_surface.setdefault(node.surface, []).append(token)
+
+    assessable = {s: v for s, v in by_surface.items() if s not in _WRITER_BLIND_SURFACES}
+    total = sum(len(set(v)) for v in assessable.values())
+    # Tokens, not URNs: 595 URNs collapse to 397 scan tokens, and a write is
+    # discovered per token. Saying "URNs" here would overstate by the
+    # multi-node factor.
+    print(f"  {total} unwritten scan tokens on surfaces this detector can assess\n")
+    for surface in sorted(assessable):
+        toks = sorted(set(assessable[surface]))
+        print(f"    {surface:<14} {len(toks):>4}   {_WRITER_RELIABILITY.get(surface, '')}")
+        for tok in toks[:6]:
+            print(f"        {tok}")
+        if len(toks) > 6:
+            print(f"        ... and {len(toks) - 6} more")
+
+    # Reported, never silently dropped -- but kept out of the headline, because
+    # a surface where the detector finds 260 of 260 is measuring itself, not
+    # the repo. Same discipline as _ORPHAN_RELIABILITY's "WEAK" labels.
+    for surface in sorted(_WRITER_BLIND_SURFACES):
+        n = len(set(by_surface.get(surface, [])))
+        if n:
+            print(f"\n    {surface:<14} {n:>4}   NOT ASSESSABLE -- {_WRITER_RELIABILITY[surface]}")
+
+    print("\n  Write kinds this detects: `vec[\"metric\"] = ...` (Store context),")
+    print("  `F(channel=\"metric\", ...)`, and `Model(metric=0.5)`. A metric")
+    print("  written by copying a whole dict, or from config, is invisible.")
+    return 0
+
+
+# Surfaces where "no writer found" says nothing about the repo, because the
+# write idiom is one this detector structurally cannot see. bus_channel came
+# back 260 of 260 on the first run -- channels are published positionally
+# (`publish(name, payload)`) or resolved from config, never as `x["name"] = `.
+_WRITER_BLIND_SURFACES = frozenset({"bus_channel"})
+
+_WRITER_RELIABILITY = {
+    # Checked rather than assumed: `cpu_pressure` IS caught (a literal
+    # `Perturbation(channel="cpu_pressure")` in state_deltas.py), while
+    # `cortex_exec_step_load` has no literal write anywhere in Python despite
+    # being declared, decayed, merged, and read. So this surface is mixed, not
+    # strong -- an entry here means "go find the writer", not "there is none".
+    "field_channel": "MIXED -- biometric channels are literal perturbations; "
+    "execution/harness channels may be written dynamically",
+    "organ_signal": "MIXED -- emitted via adapters, some by dict construction",
+    "inner_state": "MIXED -- pydantic kwargs are caught, dict-splat writes are not",
+    "bus_channel": "channels are published positionally or from config, "
+    "never as a named write; use channels.yaml producer_services instead",
+}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--json", action="store_true", help="dump the joined graph as JSON")
     ap.add_argument("--metric", help="print a lineage card for one metric token")
     ap.add_argument("--drift", action="store_true", help="declared vs discovered consumers")
+    ap.add_argument(
+        "--generic-consumers",
+        action="store_true",
+        help="sites that read whole channel vectors without naming any channel",
+    )
+    ap.add_argument(
+        "--unwritten",
+        action="store_true",
+        help="metrics with no discovered write site (mirror of the orphan list)",
+    )
     ap.add_argument(
         "--gate",
         action="store_true",
@@ -236,6 +408,9 @@ def main() -> int:
     if args.gate or args.update_baseline:
         return cmd_gate(update_baseline=args.update_baseline)
 
+    if args.generic_consumers:
+        return cmd_generic_consumers()
+
     graph = build_graph()
 
     if args.json and not args.metric:
@@ -248,6 +423,8 @@ def main() -> int:
         return cmd_metric(graph, scan, args.metric, as_json=args.json)
     if args.drift:
         return cmd_drift(graph, scan)
+    if args.unwritten:
+        return cmd_unwritten(graph, scan)
     return cmd_summary(graph, scan)
 
 

@@ -1795,14 +1795,25 @@ def _journal_pageindex_query(user_text: str) -> bool:
 _ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
 
 
-def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Optional[str]:
-    """Normalize a caller-supplied llm_route override, or None if absent/invalid.
+def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Normalize a caller-supplied llm_route override.
 
     Accepts ctx["llm_route"] or ctx["options"]["llm_route"] (Hub's Compute
     selector sends the latter). "chat_quick"/"quick_chat"/"chat_kids_story" are
-    legacy aliases for "quick". Returns None (not the raw value) for anything
-    outside _ACCEPTED_LLM_ROUTE_OVERRIDES so callers fall through to their own
-    verb-based default mapping instead of forwarding an unrecognized route key.
+    legacy aliases for "quick".
+
+    Returns (accepted, attempted):
+    - accepted: the value to actually route with, or None if no override was
+      supplied or it was outside _ACCEPTED_LLM_ROUTE_OVERRIDES -- callers fall
+      through to their own verb-based default mapping in that case, rather
+      than forwarding an unrecognized route key.
+    - attempted: the normalized value the caller asked for, or None only when
+      genuinely no override was supplied at all. Kept distinct from `accepted`
+      specifically so a rejected-but-attempted override (e.g. a typo, or the
+      "agent" gap this function itself was extracted to fix) stays visible in
+      the llm_route_selected log line instead of looking identical to "no
+      override was ever attempted" -- that exact log line is what traced the
+      original "agent" bug live.
     """
     raw = ctx.get("llm_route") or (
         (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
@@ -1810,9 +1821,10 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Optional[str]:
     override = str(raw or "").strip().lower()
     if override in {"chat_quick", "quick_chat", "chat_kids_story"}:
         override = "quick"
+    attempted = override or None
     if override in _ACCEPTED_LLM_ROUTE_OVERRIDES:
-        return override
-    return None
+        return override, attempted
+    return None, attempted
 
 
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
@@ -3873,7 +3885,7 @@ async def call_step_services(
                 # background-priority admission (services/orion-llm-gateway/app/
                 # priority_admission.py) so a caller opting into it never makes other
                 # quick consumers wait behind it -- see that service's README.
-                llm_route_override = _resolve_llm_route_override(ctx)
+                llm_route_override, llm_route_override_attempted = _resolve_llm_route_override(ctx)
                 if llm_route_override is not None:
                     llm_route = llm_route_override
                 else:
@@ -3903,13 +3915,14 @@ async def call_step_services(
                         else None
                     )
                 logger.info(
-                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s",
+                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s override_attempted=%s",
                     correlation_id,
                     ctx.get("mode"),
                     step.verb_name,
                     step.step_name,
                     llm_route,
-                    llm_route_override or None,
+                    llm_route_override,
+                    llm_route_override_attempted,
                 )
                 lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
                 logger.info(

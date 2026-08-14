@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from orion.core.bus.bus_schemas import LLMMessage
+from orion.core.bus.bus_schemas import AttachmentRefV1, LLMMessage
 from orion.schemas.cortex.types import StepExecutionResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
@@ -46,6 +46,14 @@ class CortexClientContext(BaseModel):
     user_id: Optional[str] = None
     trace_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    attachments: List[AttachmentRefV1] = Field(
+        default_factory=list,
+        description=(
+            "Binary references supplied with this turn. Carried beside message "
+            "content so the text path is unchanged; resolved to model input only "
+            "at the LLM gateway, and only when the target route can see."
+        ),
+    )
 
 
 class CortexClientRequest(BaseModel):
@@ -189,6 +197,10 @@ class CortexChatRequest(BaseModel):
     user_id: Optional[str] = Field(default=None, description="User identifier")
     trace_id: Optional[str] = Field(default=None, description="Trace identifier")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional context metadata")
+    attachments: List[AttachmentRefV1] = Field(
+        default_factory=list,
+        description="Binary references (images) supplied with this turn.",
+    )
 
 
 class CortexChatResult(BaseModel):

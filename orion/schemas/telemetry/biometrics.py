@@ -113,6 +113,19 @@ class BiometricsSummaryV1(BaseModel):
     constraint: Optional[str] = None
     telemetry_error_rate: float = 0.0
 
+    # Raw physical quantities in their own units, keyed with the unit in the name
+    # (chassis_watts, temp_c_max, disk_bytes_per_sec, ...). Every other field on this model
+    # is normalised to 0-1, which is useful for anomaly detection and useless for cost: a
+    # band fraction cannot be summed across hosts, compared to last week, or turned into a
+    # kWh. `power_pressure = 0.798` says atlas is high against its own recent history and
+    # cannot say how many watts -- while iLO was reporting the real number all along.
+    #
+    # A key is ABSENT when the quantity is not measured on that node -- never 0.0. circe has
+    # no reachable BMC, so a zero would silently understate any fleet total that sums this
+    # dict. Absent-is-not-zero is the same rule the lane-occupancy instrument enforces for
+    # unreachable hosts, and for the same reason.
+    measurements: Dict[str, float] = Field(default_factory=dict)
+
 
 class BiometricsInductionMetricV1(BaseModel):
     level: float = Field(0.0, ge=0.0, le=1.0)

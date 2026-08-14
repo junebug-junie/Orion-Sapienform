@@ -104,25 +104,47 @@ downstream could tell an NPC line from Juniper's.
 
 ## Tests run
 
+Final counts, after the review fixes below:
+
 ```text
-services/orion-memory-consolidation/tests           94 passed   (71 before; +23 new)
+services/orion-memory-consolidation/tests           97 passed          (71 on main; +26 new)
 services/orion-sql-writer/tests                    307 passed, 10 failed, 3 skipped
-                                                   (295 passed / same 10 failed on main — pre-existing)
-services/orion-hub/tests/test_crystallization_routes_contract.py
-services/orion-hub/tests/test_memory_crystallization_ui.py
-services/orion-hub/tests/test_crystallization_review_queue_ux.py
-services/orion-hub/tests/test_workflow_schedule_runtime_paths.py
-                                                    39 passed
-services/orion-hub/tests (full)                   1253 passed, 33 failed
-                                                   (failure set identical to main — pre-existing)
+                                                   (295 passed / identical 10 failures on main — pre-existing)
+services/orion-hub/tests (full)                   1261 passed, 32 failed, 5 skipped
+                                                   (1253/33 on main before this branch)
 ```
 
-New coverage, 41 tests:
+Hub failure sets were compared against a `main` baseline run rather than eyeballed.
+The single worktree-only entry is `test_substrate_mutation_manual_route_routing.py`,
+which failed a **different test from the same file on each of four runs**
+(`..._changes_real_live_routing_surface`, `..._succeeds_for_auto_promote_and_can_rollback`,
+`..._dry_run_produces_trial_and_decision`, then `..._succeeds_for_auto_promote...` again)
+— order/state-dependent, and reverting this branch's three hub files in the same
+worktree only moved the failure rather than clearing it.
+
+One genuine regression was caught this way and fixed:
+`test_main_mtime_token_includes_organ_signals_js` grepped `main.py` for a filename
+literal that the cache-bust glob removed. Both it and its new counterpart are now
+behavioral (touch the file → token must move; restore → token must return) and
+were mutation-tested against the real `main.py`: reverting to a hardcoded
+`["app.js", index.html]` list fails both, and only both.
+
+New coverage, 63 tests:
+- `test_external_platform_gate.py` — 23
+- `test_window_state_source_platform.py` — 3
+- `test_memory_turn_source_platform.py` — 12
+- `test_crystallization_review_queue_ux.py` — 25
+
+Covering:
 - unanimity in both directions (all-external, all-direct, mixed, two platforms,
   empty, missing key, empty-string platform)
 - policy routing (external auto-activates, direct/mixed/unlisted still queue,
   empty allowlist disables, duplicate still wins)
-- privacy precedence (intimate and identity-scoped windows queue regardless of source)
+- kind scoping (only `stance` is bypassable; `contradiction`/`decision`/
+  `attractor`/`failure_mode` still queue for an allowlisted platform)
+- privacy precedence — with an explicit test pinning that these two guards are
+  **unreachable** via this producer today, so the ordering is not mistaken for a
+  live rail
 - `formation_executor.auto_activate` honors a caller-supplied allowlist — it
   re-resolves policy independently, so an unforwarded set would be silently
   dropped on the deciding path
@@ -131,10 +153,13 @@ New coverage, 41 tests:
 - `window_state.append_turn` persists the platform on both the new-window and
   append branches
 - bulk decide: all-succeed, partial failure, dedup, bad action, empty ids, size
-  cap, path not captured as an id
-- evidence delete: correct row targeted, history written, 404 unknown, 409 last
-  turn, 409 on active
-- UI wiring smokes incl. a regression test that the cache-bust token globs
+  cap, a lower approve cap than reject, path not captured as an id
+- evidence delete: correct row targeted, history written, `crys_` id normalized,
+  404 unknown, 409 last turn, 409 on active
+- UI: no refetch on checkbox toggle, select-all excludes undecidable rows,
+  client chunks stay under the server caps, server error detail surfaced,
+  `openDetail` rejection handled, actions above the detail body, and a
+  mutation-tested cache-bust gate
 
 ## Evals run
 
@@ -147,6 +172,8 @@ The closest thing to an eval here is the live replay smoke below, which measures
 the gate's real decision on the real corpus rather than on fixtures.
 
 ## Docker/build/smoke checks
+
+Before the purge:
 
 ```text
 $ python3 scripts/smoke_aitown_crystallization_gate.py
@@ -161,6 +188,25 @@ resolved window platform (unanimous across all turns, else None):
 why the survivors stayed queued:
          gated_kind:stance: 22
 ```
+
+After the purge (and after the review fix to the smoke's failure condition — the
+original `if total and not auto: fail` would have returned 1 on exactly this
+state, which is what made it wrong):
+
+```text
+$ python3 scripts/smoke_aitown_crystallization_gate.py; echo $?
+live proposed crystallizations: 23
+  would AUTO-ACTIVATE (leave the queue): 0
+  would STAY QUEUED (real review work):  23
+
+resolved window platform (unanimous across all turns, else None):
+          None: 23
+0
+```
+
+23, not 22, because a real conversation landed during the session — the queue is
+now doing what it should. `bulk_reject_aitown_proposals.py` re-run confirms
+`proposed=23 external=0 keep=23 / nothing to do`.
 
 Independently confirmed in SQL that all 22 survivors genuinely contain a
 non-ai-town turn, and that zero are artifacts of a pruned `chat_history_log` row.

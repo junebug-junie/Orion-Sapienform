@@ -77,14 +77,17 @@ def _discover_git_sha() -> str:
 
 
 def _ui_asset_mtime_token() -> str:
-    """Best-effort mtime token so uncommitted UI edits bust browser caches."""
-    candidates = [
-        STATIC_DIR / "js" / "app.js",
-        STATIC_DIR / "js" / "memory-graph-draft-ui.js",
-        STATIC_DIR / "js" / "organ-signals-graph-ui.js",
-        STATIC_DIR / "js" / "workflow-ui.js",
-        TEMPLATES_DIR / "index.html",
-    ]
+    """Best-effort mtime token so uncommitted UI edits bust browser caches.
+
+    Globs static/js rather than naming files. The previous hardcoded four-file
+    list silently excluded every other module the template loads -- confirmed
+    2026-08-14 when an edit to memory-crystallization-ui.js produced no new ?v=,
+    so a browser with the old file cached would keep running it. A list like
+    that goes stale on the exact patch that needed it, and the failure is
+    invisible: the server is serving new code, the browser just never asks for
+    it. sorted() keeps the token stable for a given set of mtimes.
+    """
+    candidates = [*sorted(STATIC_DIR.glob("js/*.js")), TEMPLATES_DIR / "index.html"]
     mtimes: list[int] = []
     for path in candidates:
         try:

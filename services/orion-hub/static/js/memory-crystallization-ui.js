@@ -41,6 +41,13 @@
       .replace(/>/g, "&gt;");
   }
 
+  // escapeHtml is safe for text nodes but leaves quotes intact, which would
+  // break out of an attribute value. source_id is a free-text column, so
+  // anything interpolated into an attribute goes through this instead.
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
   function setStatus(el, msg, isErr) {
     if (!el) return;
     el.textContent = msg || "";
@@ -93,7 +100,7 @@
     return rows.join("");
   }
 
-  function renderEvidence(evidence) {
+  function renderEvidence(evidence, editable) {
     const items = Array.isArray(evidence) ? evidence : [];
     const chatTurns = items.filter((e) => e && e.source_kind === "chat_turn");
     const grammar = items.filter((e) => e && e.source_kind === "grammar_event");
@@ -105,8 +112,15 @@
       parts.push(`<div class="font-medium text-gray-300 mt-2">Chat turns (${chatTurns.length})</div>`);
       chatTurns.forEach((ev, idx) => {
         const { prompt, response } = splitExcerpt(ev.excerpt);
+        // The last remaining turn has no drop control: the server rejects
+        // removing it (a proposal with zero evidence is not reviewable), so
+        // offering a button that always 409s would be worse than offering none.
+        const canDrop = editable && chatTurns.length > 1;
         parts.push(`<div class="border border-gray-800 rounded p-2 mt-1 bg-gray-950/40">
-          <div class="text-[10px] text-gray-500">Turn ${idx + 1} · <code>${escapeHtml(ev.source_id || "")}</code></div>
+          <div class="flex justify-between gap-2 items-start">
+            <div class="text-[10px] text-gray-500">Turn ${idx + 1} · <code>${escapeHtml(ev.source_id || "")}</code></div>
+            ${canDrop ? `<button type="button" data-drop-turn="${escapeAttr(ev.source_id || "")}" title="Remove this turn from the proposal" class="text-[10px] px-1 rounded border border-gray-700 text-gray-400 hover:text-red-300 hover:border-red-800">drop</button>` : ""}
+          </div>
           ${ev.note ? `<div class="text-[10px] text-indigo-300/90 mt-1">${escapeHtml(ev.note)}</div>` : ""}
           <div class="mt-1"><span class="text-gray-500">User:</span> ${escapeHtml(prompt)}</div>
           <div class="mt-1"><span class="text-gray-500">Orion:</span> ${escapeHtml(response)}</div>
@@ -117,6 +131,13 @@
       parts.push(`<div class="text-gray-500 mt-2">${grammar.length} grammar event ref(s)</div>`);
     }
     return parts.join("");
+  }
+
+  function platformBadge(item) {
+    const provenance = item && typeof item.provenance === "object" ? item.provenance : {};
+    const platform = provenance && provenance.source_platform;
+    if (!platform) return "";
+    return `<span class="text-[9px] border rounded px-1 py-0.5 bg-sky-900/40 text-sky-300 border-sky-700 ml-1">${escapeHtml(platform)}</span>`;
   }
 
   function retirementBadge(item) {
@@ -131,8 +152,20 @@
     const turnCount = chatTurnCount(row);
     const isActive = row.status === "active";
     const decayedActivation = row.decayed_activation != null ? Number(row.decayed_activation).toFixed(3) : "—";
+    // Actions live at the TOP and stick there. They used to be the last element
+    // of a max-h-72 overflow-auto pane, which meant scrolling to the bottom of
+    // the detail view for every single decision and then scrolling back up to
+    // reach the next item.
+    const actions = `<div class="flex gap-2 sticky top-0 bg-gray-900 py-1 -mt-1 z-10 border-b border-gray-800">
+        ${!isActive ? `<button type="button" data-act="approve" class="px-2 py-1 rounded border border-emerald-700 text-emerald-200">Approve</button>` : ""}
+        ${!isActive ? `<button type="button" data-act="reject" class="px-2 py-1 rounded border border-red-800 text-red-200">Reject</button>` : ""}
+        ${!isActive ? `<button type="button" data-act="validate" class="px-2 py-1 rounded border border-gray-600 text-gray-200">Validate</button>` : ""}
+        <button type="button" data-act="sync-graphiti" class="px-2 py-1 rounded border border-sky-700 text-sky-200">Sync Graphiti</button>
+        ${isActive ? `<button type="button" data-act="deprecate" class="px-2 py-1 rounded border border-amber-700 text-amber-200">Deprecate</button>` : ""}
+      </div>`;
     return `<div class="space-y-2">
-      <div><strong>${escapeHtml(row.subject)}</strong> <span class="text-gray-500">[${escapeHtml(row.kind)}]</span>${retirementBadge(row)}</div>
+      ${actions}
+      <div><strong>${escapeHtml(row.subject)}</strong> <span class="text-gray-500">[${escapeHtml(row.kind)}]</span>${platformBadge(row)}${retirementBadge(row)}</div>
       <div>${escapeHtml(row.summary)}</div>
       <div class="text-gray-500">Status: ${escapeHtml(row.status)} · Confidence: ${escapeHtml(row.confidence)} · Salience: ${escapeHtml(String(row.salience ?? ""))}</div>
       <div class="text-gray-500">Activation: ${escapeHtml(String(dyn.activation ?? "0"))} · Decayed activation: ${decayedActivation} · Reinforcements: ${escapeHtml(String(dyn.reinforcement_count ?? "0"))}</div>
@@ -140,32 +173,45 @@
       <div class="border border-gray-800 rounded p-2">${renderProvenance(row.provenance)}</div>
       ${planning.length ? `<div><span class="text-gray-500">Planning:</span><ul class="list-disc ml-4">${planning.map((p) => `<li>${escapeHtml(p)}</li>`).join("")}</ul></div>` : ""}
       ${retrieval.length ? `<div><span class="text-gray-500">Retrieval:</span> ${escapeHtml(retrieval.join(", "))}</div>` : ""}
-      <div class="border border-gray-800 rounded p-2 max-h-48 overflow-y-auto">${renderEvidence(row.evidence)}</div>
+      <div class="border border-gray-800 rounded p-2 max-h-48 overflow-y-auto">${renderEvidence(row.evidence, !isActive)}</div>
       <div class="text-gray-500">Projection refs: cards=${(row.projection_refs && row.projection_refs.memory_card_ids || []).length}, chroma=${(row.projection_refs && row.projection_refs.chroma_doc_ids || []).length}, graphiti_eps=${((row.projection_refs && row.projection_refs.graphiti_episode_ids) || []).length}, graphiti_edges=${((row.projection_refs && row.projection_refs.graphiti_edge_ids) || []).length}</div>
       <div class="text-gray-500">Links: ${(links.items || []).length}</div>
       <div class="text-gray-500">Health: chroma=${escapeHtml(health.chroma_collection || "")}, graphiti=${health.graphiti_enabled ? "on" : "off"}</div>
-      <div class="flex gap-2 mt-2">
-        ${!isActive ? `<button type="button" data-act="approve" class="px-2 py-1 rounded border border-emerald-700 text-emerald-200">Approve</button>` : ""}
-        ${!isActive ? `<button type="button" data-act="reject" class="px-2 py-1 rounded border border-red-800 text-red-200">Reject</button>` : ""}
-        ${!isActive ? `<button type="button" data-act="validate" class="px-2 py-1 rounded border border-gray-600 text-gray-200">Validate</button>` : ""}
-        <button type="button" data-act="sync-graphiti" class="px-2 py-1 rounded border border-sky-700 text-sky-200">Sync Graphiti</button>
-        ${isActive ? `<button type="button" data-act="deprecate" class="px-2 py-1 rounded border border-amber-700 text-amber-200">Deprecate</button>` : ""}
-      </div>
     </div>`;
   }
 
-  function renderRow(item, onOpen) {
+  function renderRow(item, onOpen, onToggle, checked) {
     const row = document.createElement("div");
-    row.className = "flex justify-between gap-2 border border-gray-800 rounded px-2 py-1 bg-gray-900/60";
+    row.className =
+      "flex items-start gap-2 border border-gray-800 rounded px-2 py-1 bg-gray-900/60 cursor-pointer hover:border-gray-600";
     const turns = chatTurnCount(item);
-    row.innerHTML = `<div><div class="font-medium text-gray-100">${escapeHtml(item.subject || "")}${retirementBadge(item)}</div>
-      <div class="text-[10px] text-gray-500">${escapeHtml(item.kind || "")} · ${escapeHtml(item.status || "")} · salience ${escapeHtml(String(item.salience ?? ""))}${turns ? ` · ${turns} turn(s)` : ""}</div></div>`;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "text-indigo-300 text-xs";
-    btn.textContent = "Open";
-    btn.addEventListener("click", () => onOpen(item));
-    row.appendChild(btn);
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "mt-1 shrink-0 cursor-pointer";
+    box.checked = !!checked;
+    box.setAttribute("aria-label", `select ${item.subject || item.crystallization_id}`);
+    // Selection and opening are separate intents on the same row: clicking the
+    // box must not also swap the detail pane out from under a bulk selection.
+    box.addEventListener("click", (ev) => ev.stopPropagation());
+    box.addEventListener("change", () => onToggle(item, box.checked));
+    row.appendChild(box);
+
+    const body = document.createElement("div");
+    body.className = "flex-1 min-w-0";
+    body.innerHTML = `<div class="font-medium text-gray-100 truncate">${escapeHtml(item.subject || "")}${platformBadge(item)}${retirementBadge(item)}</div>
+      <div class="text-[10px] text-gray-500">${escapeHtml(item.kind || "")} · ${escapeHtml(item.status || "")} · salience ${escapeHtml(String(item.salience ?? ""))}${turns ? ` · ${turns} turn(s)` : ""}</div>`;
+    row.appendChild(body);
+
+    const hint = document.createElement("span");
+    hint.className = "text-indigo-300 text-xs shrink-0 self-center";
+    hint.textContent = "Open";
+    row.appendChild(hint);
+
+    // The whole row is the open affordance now -- the old build put the only
+    // handler on the "Open" label at the far right, which meant crossing the
+    // full width of the panel for every single item.
+    row.addEventListener("click", () => onOpen(item));
     return row;
   }
 
@@ -181,6 +227,151 @@
     }
   }
 
+  // Survives across loadInbox() re-renders so a bulk selection is not silently
+  // dropped by a background refresh. Pruned to what still exists on every load.
+  const selected = new Set();
+
+  function closeDetail(detailEl) {
+    // The old build re-rendered the list after a decision but left the detail
+    // pane showing the item that had just been approved/rejected, with its
+    // buttons still bound to that id. Clicking Approve there hit a proposal
+    // whose status was no longer "proposed" and 404'd -- the "it gets pissed at
+    // the next one" behavior. A decision now always closes its own pane.
+    detailEl.innerHTML = "";
+    detailEl.classList.add("hidden");
+    detailEl.dataset.crystallizationId = "";
+  }
+
+  async function openDetail(row, listEl, statusEl, detailEl, summarize) {
+    detailEl.classList.remove("hidden");
+    detailEl.dataset.crystallizationId = row.crystallization_id;
+    setStatus(statusEl, "Loading detail…", false);
+    // crystallization_get (unlike the list endpoint) does not compute
+    // decayed_activation/retirement_candidate -- carry the values already
+    // known from the list row forward so the badge doesn't vanish on open.
+    const full = row.retirement_candidate
+      ? { ...(await apiFetch(`/api/memory/crystallizations/${encodeURIComponent(row.crystallization_id)}`)), decayed_activation: row.decayed_activation, retirement_candidate: row.retirement_candidate }
+      : await apiFetch(`/api/memory/crystallizations/proposals/${encodeURIComponent(row.crystallization_id)}`);
+    const links = await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/links`).catch(() => ({ items: [] }));
+    const health = await apiFetch("/api/memory/crystallizations/projection/health").catch(() => ({}));
+    detailEl.innerHTML = renderDetail(full, links, health);
+    setStatus(statusEl, summarize(), false);
+    detailEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    detailEl.querySelectorAll("button[data-act]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const act = btn.getAttribute("data-act");
+        try {
+          if (act === "sync-graphiti") {
+            await apiFetch(`/api/memory/graphiti/sync/${row.crystallization_id}`, { method: "POST", body: "{}" });
+          } else if (act === "deprecate") {
+            await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/deprecate`, { method: "POST", body: "{}" });
+          } else {
+            await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
+          }
+          setStatus(statusEl, `${act} ok`, false);
+          // "validate" annotates the proposal in place and leaves it in the
+          // queue, so the pane must stay open for it -- only a terminal
+          // decision closes.
+          if (act !== "validate") {
+            selected.delete(row.crystallization_id);
+            closeDetail(detailEl);
+          }
+          await loadInbox(listEl, statusEl, detailEl);
+          if (act === "validate") {
+            await openDetail(row, listEl, statusEl, detailEl, summarize);
+          }
+        } catch (e) {
+          setStatus(statusEl, e.message || String(e), true);
+        }
+      });
+    });
+
+    detailEl.querySelectorAll("button[data-drop-turn]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const sourceId = btn.getAttribute("data-drop-turn");
+        try {
+          await apiFetch(
+            `/api/memory/crystallizations/${encodeURIComponent(row.crystallization_id)}/evidence/${encodeURIComponent(sourceId)}`,
+            { method: "DELETE" },
+          );
+          setStatus(statusEl, `dropped turn ${sourceId.slice(0, 8)}`, false);
+          await loadInbox(listEl, statusEl, detailEl);
+          await openDetail(row, listEl, statusEl, detailEl, summarize);
+        } catch (e) {
+          setStatus(statusEl, e.message || String(e), true);
+        }
+      });
+    });
+  }
+
+  function renderBulkBar(items, listEl, statusEl, detailEl, summarize) {
+    const bar = document.createElement("div");
+    bar.className =
+      "flex items-center gap-2 text-xs border border-gray-800 rounded px-2 py-1 bg-gray-900/80 sticky top-0 z-10";
+
+    const all = document.createElement("input");
+    all.type = "checkbox";
+    all.className = "cursor-pointer";
+    all.setAttribute("aria-label", "select all proposals");
+    all.checked = items.length > 0 && items.every((i) => selected.has(i.crystallization_id));
+    all.addEventListener("change", () => {
+      items.forEach((i) =>
+        all.checked ? selected.add(i.crystallization_id) : selected.delete(i.crystallization_id),
+      );
+      loadInbox(listEl, statusEl, detailEl);
+    });
+    bar.appendChild(all);
+
+    const count = document.createElement("span");
+    count.className = "text-gray-400 flex-1";
+    count.textContent = selected.size ? `${selected.size} selected` : "select all";
+    bar.appendChild(count);
+
+    const decide = async (action) => {
+      const ids = [...selected];
+      if (!ids.length) return;
+      setStatus(statusEl, `${action}ing ${ids.length}…`, false);
+      try {
+        const res = await apiFetch("/api/memory/crystallizations/proposals/bulk", {
+          method: "POST",
+          body: JSON.stringify({ ids, action }),
+        });
+        // Only clear what actually succeeded, so a partial failure leaves the
+        // still-undecided rows selected and retryable instead of silently
+        // dropping them from the selection.
+        (res.results || []).forEach((r) => {
+          if (r.ok) selected.delete(r.crystallization_id);
+        });
+        closeDetail(detailEl);
+        await loadInbox(listEl, statusEl, detailEl);
+        const failed = res.failed || 0;
+        setStatus(
+          statusEl,
+          `${action}ed ${res.succeeded}/${res.requested}` + (failed ? ` — ${failed} failed` : ""),
+          failed > 0,
+        );
+      } catch (e) {
+        setStatus(statusEl, e.message || String(e), true);
+      }
+    };
+
+    [
+      ["Approve selected", "approve", "border-emerald-700 text-emerald-200"],
+      ["Reject selected", "reject", "border-red-800 text-red-200"],
+    ].forEach(([label, action, cls]) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `px-2 py-0.5 rounded border ${cls} disabled:opacity-40 disabled:cursor-not-allowed`;
+      btn.textContent = label;
+      btn.disabled = selected.size === 0;
+      btn.addEventListener("click", () => decide(action));
+      bar.appendChild(btn);
+    });
+
+    return bar;
+  }
+
   async function loadInbox(listEl, statusEl, detailEl) {
     setStatus(statusEl, "Loading proposals…", false);
     listEl.innerHTML = "";
@@ -191,46 +382,41 @@
       const items = [...retirementItems, ...proposalItems];
       const summarize = () =>
         `${proposalItems.length} proposal(s)` +
-        (retirementItems.length ? `, ${retirementItems.length} retirement candidate(s)` : "");
+        (retirementItems.length ? `, ${retirementItems.length} retirement candidate(s)` : "") +
+        (selected.size ? ` · ${selected.size} selected` : "");
+
+      // Drop selections for anything that left the queue (decided here, decided
+      // in another tab, or auto-activated by the formation gate) so the count
+      // never claims more than the bulk call could actually act on.
+      const live = new Set(items.map((i) => i.crystallization_id));
+      [...selected].forEach((id) => {
+        if (!live.has(id)) selected.delete(id);
+      });
+
+      // A detail pane left open on an item that is no longer in the queue is the
+      // stale-button trap; close it on every refresh, not only after our own
+      // decisions.
+      const openId = detailEl.dataset.crystallizationId;
+      if (openId && !live.has(openId)) closeDetail(detailEl);
+
       if (!items.length) {
         setStatus(statusEl, "No proposals in inbox.", false);
         return;
       }
       setStatus(statusEl, summarize(), false);
+      listEl.appendChild(renderBulkBar(items, listEl, statusEl, detailEl, summarize));
       items.forEach((item) => {
         listEl.appendChild(
-          renderRow(item, async (row) => {
-            detailEl.classList.remove("hidden");
-            setStatus(statusEl, "Loading detail…", false);
-            // crystallization_get (unlike the list endpoint) does not compute
-            // decayed_activation/retirement_candidate -- carry the values already
-            // known from the list row forward so the badge doesn't vanish on open.
-            const full = row.retirement_candidate
-              ? { ...(await apiFetch(`/api/memory/crystallizations/${encodeURIComponent(row.crystallization_id)}`)), decayed_activation: row.decayed_activation, retirement_candidate: row.retirement_candidate }
-              : await apiFetch(`/api/memory/crystallizations/proposals/${encodeURIComponent(row.crystallization_id)}`);
-            const links = await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/links`).catch(() => ({ items: [] }));
-            const health = await apiFetch("/api/memory/crystallizations/projection/health").catch(() => ({}));
-            detailEl.innerHTML = renderDetail(full, links, health);
-            setStatus(statusEl, summarize(), false);
-            detailEl.querySelectorAll("button[data-act]").forEach((btn) => {
-              btn.addEventListener("click", async () => {
-                const act = btn.getAttribute("data-act");
-                try {
-                  if (act === "sync-graphiti") {
-                    await apiFetch(`/api/memory/graphiti/sync/${row.crystallization_id}`, { method: "POST", body: "{}" });
-                  } else if (act === "deprecate") {
-                    await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/deprecate`, { method: "POST", body: "{}" });
-                  } else {
-                    await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
-                  }
-                  setStatus(statusEl, `${act} ok`, false);
-                  await loadInbox(listEl, statusEl, detailEl);
-                } catch (e) {
-                  setStatus(statusEl, e.message || String(e), true);
-                }
-              });
-            });
-          }),
+          renderRow(
+            item,
+            (row) => openDetail(row, listEl, statusEl, detailEl, summarize),
+            (row, isChecked) => {
+              if (isChecked) selected.add(row.crystallization_id);
+              else selected.delete(row.crystallization_id);
+              loadInbox(listEl, statusEl, detailEl);
+            },
+            selected.has(item.crystallization_id),
+          ),
         );
       });
     } catch (e) {

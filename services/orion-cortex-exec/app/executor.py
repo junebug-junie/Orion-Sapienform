@@ -1783,6 +1783,50 @@ def _journal_pageindex_query(user_text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+# Accepted caller-supplied llm_route overrides. Historically missing "agent":
+# Hub's "Compute" selector (services/orion-hub/scripts/cortex_request_builder.py)
+# sends options.llm_route="agent" for ANY Hub Mode (not just Mode: Agent, which
+# is a separate context_exec_agent_bridge.py code path entirely) whenever an
+# operator picks Compute: Agent -- but this allowlist silently rejected it,
+# falling through to the verb-based default mapping below (which never resolves
+# to "agent" for a normal chat_general turn), so the selection had no effect.
+# Confirmed live 2026-08-14: Hub Mode: Quick + Compute: Agent produced a response
+# but nothing reached Circe's dedicated agent worker -- traced to this allowlist.
+_ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
+
+
+def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Normalize a caller-supplied llm_route override.
+
+    Accepts ctx["llm_route"] or ctx["options"]["llm_route"] (Hub's Compute
+    selector sends the latter). "chat_quick"/"quick_chat"/"chat_kids_story" are
+    legacy aliases for "quick".
+
+    Returns (accepted, attempted):
+    - accepted: the value to actually route with, or None if no override was
+      supplied or it was outside _ACCEPTED_LLM_ROUTE_OVERRIDES -- callers fall
+      through to their own verb-based default mapping in that case, rather
+      than forwarding an unrecognized route key.
+    - attempted: the normalized value the caller asked for, or None only when
+      genuinely no override was supplied at all. Kept distinct from `accepted`
+      specifically so a rejected-but-attempted override (e.g. a typo, or the
+      "agent" gap this function itself was extracted to fix) stays visible in
+      the llm_route_selected log line instead of looking identical to "no
+      override was ever attempted" -- that exact log line is what traced the
+      original "agent" bug live.
+    """
+    raw = ctx.get("llm_route") or (
+        (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
+    )
+    override = str(raw or "").strip().lower()
+    if override in {"chat_quick", "quick_chat", "chat_kids_story"}:
+        override = "quick"
+    attempted = override or None
+    if override in _ACCEPTED_LLM_ROUTE_OVERRIDES:
+        return override, attempted
+    return None, attempted
+
+
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
     """Skip journal PageIndex for compose paths that would self-loop on journal_entry_index / digest echoes."""
     md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
@@ -3836,23 +3880,13 @@ async def call_step_services(
                 )
 
                 # Keep lane selection explicit by internal flow, with optional caller override.
-                # Accepted override values: chat, quick, metacog, quick_background.
+                # Accepted override values: see _ACCEPTED_LLM_ROUTE_OVERRIDES.
                 # quick_background: same upstream/model as quick, gated by the gateway's
                 # background-priority admission (services/orion-llm-gateway/app/
                 # priority_admission.py) so a caller opting into it never makes other
                 # quick consumers wait behind it -- see that service's README.
-                llm_route_override_raw = (
-                    ctx.get("llm_route")
-                    or (
-                        (ctx.get("options") or {}).get("llm_route")
-                        if isinstance(ctx.get("options"), dict)
-                        else None
-                    )
-                )
-                llm_route_override = str(llm_route_override_raw or "").strip().lower()
-                if llm_route_override in {"chat_quick", "quick_chat", "chat_kids_story"}:
-                    llm_route_override = "quick"
-                if llm_route_override in {"chat", "quick", "metacog", "quick_background"}:
+                llm_route_override, llm_route_override_attempted = _resolve_llm_route_override(ctx)
+                if llm_route_override is not None:
                     llm_route = llm_route_override
                 else:
                     # Default lane mapping:
@@ -3881,13 +3915,14 @@ async def call_step_services(
                         else None
                     )
                 logger.info(
-                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s",
+                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s override_attempted=%s",
                     correlation_id,
                     ctx.get("mode"),
                     step.verb_name,
                     step.step_name,
                     llm_route,
-                    llm_route_override or None,
+                    llm_route_override,
+                    llm_route_override_attempted,
                 )
                 lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
                 logger.info(

@@ -23,6 +23,7 @@ value, so those routing entries produced values nothing ever read).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from orion.schemas.field_state import FieldStateV1
 
@@ -156,8 +157,58 @@ RECENT_PERTURBATION_ZSCORE_SATURATION = 3.0
 RECENT_PERTURBATION_EWMA_MIN_SAMPLES = 5
 
 
+def _aware_utc(stamp: datetime) -> datetime:
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def _stale_node_channels(
+    field: FieldStateV1,
+    staleness_threshold_sec: float,
+) -> set[tuple[str, str]]:
+    """(node_id, channel) pairs whose last real producer write is older than
+    the threshold, but ONLY where some other node has a fresh write for the
+    same channel.
+
+    The guard matters: if every source for a channel is stale, excluding them
+    all would fabricate an absence. A channel that is quiet everywhere is
+    quiet, not missing -- the same "absent beats a fake 0.0" rule the rest of
+    this module follows.
+
+    Staleness is measured against the TICK's own `generated_at`, never against
+    wall-clock. Three reasons, and the first was found by a failing test:
+    wall-clock makes the threshold boundary depend on how long the process has
+    been running, so an exact-boundary test is flaky by construction; it makes
+    this function impure and unreplayable, giving different answers for the
+    same stored tick depending on when you ask; and it is simply the wrong
+    question -- "was this value stale when the tick was taken" is what a
+    consumer of that tick needs to know.
+    """
+    now = _aware_utc(field.generated_at)
+
+    def _age(stamp: datetime) -> float:
+        return (now - _aware_utc(stamp)).total_seconds()
+
+    fresh_channels: set[str] = set()
+    stale_pairs: set[tuple[str, str]] = set()
+    for node_id, vector in field.node_vectors.items():
+        stamps = field.node_vector_updated_at.get(node_id, {})
+        for channel in vector:
+            stamp = stamps.get(channel)
+            if stamp is None:
+                # No timestamp is not evidence of staleness. Untimestamped
+                # sources always participate, exactly as before this patch.
+                continue
+            if _age(stamp) > staleness_threshold_sec:
+                stale_pairs.add((node_id, channel))
+            else:
+                fresh_channels.add(channel)
+    return {(n, c) for (n, c) in stale_pairs if c in fresh_channels}
+
+
 def collect_field_channel_pressures(
     field: FieldStateV1,
+    *,
+    staleness_threshold_sec: float | None = None,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Merge node_vectors + capability_vectors into one channel-name-keyed
     pressure dict, plus a parallel provenance dict recording which source_id
@@ -166,11 +217,41 @@ def collect_field_channel_pressures(
     Moved verbatim (imports aside) from orion/self_state/scoring.py's function
     of the same name -- this logic was never part of the hand-tuned-coefficient
     problem, it's a real merge mechanism with live-verified correctness.
+
+    `staleness_threshold_sec` (opt-in; None reproduces the historical
+    behaviour exactly) drops a node's contribution to a channel when its last
+    real producer write is older than the threshold AND some other node has a
+    fresh write for that same channel.
+
+    WHY. `prediction_error` is not in NODE_DECAY_CHANNELS (verified
+    2026-08-14: 28 entries, absent), so a value written by a slow producer
+    never fades -- it persists byte-identical until that producer fires again.
+    `codebase_prediction_error()`'s three inputs (git churn, PR lifecycle,
+    graphify structural change) each run on their own coarse interval, so
+    `node:substrate.codebase` changed value 6 times in 6,000 live ticks while
+    winning the max() merge on 69.6% of them. Measured live: its stale 0.5837
+    outranked `node:substrate.biometrics` (588 informative distinct values),
+    `node:substrate.execution` (290) and `node:substrate.bus_synaptic` (175),
+    two of which never won a single merge.
+
+    That is not a scale problem and normalising would not fix it --
+    `codebase_prediction_error()` is already a correctly z-scored, saturated
+    composite. It is a staleness problem: max() has no notion of when a
+    contender last heard from the world, and `node_vector_updated_at` (which
+    `apply_decay()` already reads for exactly this question) was sitting
+    unused right here.
     """
+    stale_pairs: set[tuple[str, str]] = (
+        set()
+        if staleness_threshold_sec is None
+        else _stale_node_channels(field, staleness_threshold_sec)
+    )
     out: dict[str, float] = {}
     provenance: dict[str, str] = {}
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
+            if (source_id, channel) in stale_pairs:
+                continue
             v = clamp01(float(value))
             if channel in HIGHER_IS_BETTER_CHANNELS:
                 if v <= out.get(channel, 1.0):

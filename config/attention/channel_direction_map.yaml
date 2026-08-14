@@ -1,0 +1,57 @@
+# Structural field-channel direction map.
+#
+# This is the WHOLE mapping surface for field tension sensing. It is typed and
+# closed: a channel declares which direction is "worse" and nothing else. There
+# is deliberately NO free text, NO keyword lists, NO regex, and -- unlike the
+# 2026-07-30-deleted `config/autonomy/signal_drive_map.yaml` this shape is
+# derived from -- NO per-drive weights. Those weights were an attempt to price a
+# thermal spike against a coherence drop; there is no such exchange rate, and
+# combination is done in rank space instead (`orion/attention/rank_aggregation.py`).
+#
+# An unmapped channel contributes nothing. The map cannot be grown by prose,
+# only by adding a typed entry here with a test.
+#
+# worse: "down" -> a fall below the channel's own learned baseline is admitted.
+#        "up"   -> a rise above it is admitted.
+#
+# A key beginning with "*" is a SUFFIX rule matching the field-digester's typed
+# channel naming convention. This is structural -- it matches the dimension-name
+# suffix, not any natural-language content. Exact keys win over suffix rules.
+version: 1
+
+suffix_rules:
+  # Every `*_pressure` / `*_load` / `*_deficit` / `*_friction` / `*_error` /
+  # `*_warning` / `*_incompletion` channel is a cost that rises when things get
+  # worse. This covers 28 of the 33 live channels as of 2026-08-14.
+  "*_pressure": up
+  "*_load": up
+  "*_deficit": up
+  "*_friction": up
+  "*_error": up
+  "*_warning": up
+  "*_incompletion": up
+
+channels:
+  # Health/availability readings: a FALL is the tension.
+  availability: down
+  delivery_confidence: down
+  stream_backlog_health: down
+
+  # Staleness rises as data ages. Note (live, 2026-08-14): `staleness` is NOT a
+  # trustworthy liveness signal on its own -- `node:circe` reads staleness=0.0 /
+  # availability=1.0 while every one of its channels has decayed to subnormal
+  # floats. Mapped here because a real rise is genuine tension, but the
+  # measurement reports decay-suspect channels separately rather than trusting it.
+  staleness: up
+
+# Deliberately unmapped in v1 -- these contribute nothing and that is the intent.
+# Listed explicitly so an unmapped channel reads as a decision, not an oversight.
+# Adding either one needs a real theory anchor first, per CLAUDE.md's metric gate.
+unmapped:
+  # A ratio with no defended "worse" direction. High could mean thorough or
+  # could mean thrashing; there is no anchor to pick one, so it does not vote.
+  - context_gathering_ratio
+  # A static-config-driven suppression flag, not a tension. CLAUDE.md records
+  # that it cannot self-clear (expected_online comes from node_catalog.yaml, not
+  # live state), so any "deviation" in it is an operator edit, not Orion's state.
+  - expected_offline_suppression

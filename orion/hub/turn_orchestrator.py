@@ -653,27 +653,21 @@ async def _publish_unified_turn_chat_history(
     )
     await publish_chat_turn(bus, env_turn)
 
-    if hub_settings.PUBLISH_CHAT_HISTORY_LOG:
-        try:
-            await bus.publish(
-                hub_settings.chat_history_channel,
-                {
-                    "correlation_id": correlation_id,
-                    "source": source_label,
-                    "prompt": user_message,
-                    "response": response_text,
-                    "session_id": session,
-                    "mode": mode_tag,
-                    "spark_meta": spark_meta,
-                    "reasoning_trace": reasoning_trace,
-                },
-            )
-        except Exception:
-            logger.warning(
-                "unified_turn legacy chat_history publish failed corr=%s",
-                correlation_id,
-                exc_info=True,
-            )
+    # 2026-08-14: the third, raw-dict legacy publish to `chat_history_channel`
+    # was deleted here (the WS twin of the one in
+    # services/orion-hub/scripts/api_routes.py). Published with no `kind`, so
+    # `orion/core/bus/codec.py:72` stamped it `legacy.message` -- no sql-writer
+    # route matched, so every one landed in `bus_fallback_log` and was written
+    # nowhere else. The calls above already carry this turn as registered
+    # envelopes: `publish_chat_history` sends two `chat.history.message.v1` on
+    # this same log channel, and `publish_chat_turn` sends one `chat.history` on
+    # the separate *turn* channel (`orion:chat:history:turn`). Note the log
+    # channel therefore no longer carries a prompt/response pairing at all --
+    # only the two independent message envelopes. The turn channel is where
+    # paired turn data lives.
+    # Note: do NOT "fix" this by flipping PUBLISH_CHAT_HISTORY_LOG -- that flag
+    # also gates those two real publishes (services/orion-hub/scripts/
+    # chat_history.py:288 and :392), so turning it off kills real persistence.
 
     logger.info(
         "unified_turn chat_history published corr=%s session=%s source=%s",

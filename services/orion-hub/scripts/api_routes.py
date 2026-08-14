@@ -3038,8 +3038,6 @@ async def api_chat(
             if isinstance(user_messages, list) and user_messages:
                 latest_user_prompt = user_messages[-1].get("content", "") or ""
 
-            use_recall = bool(result.get("use_recall", True))
-
             # If we didn't get a correlation_id from gateway, fallback to new UUID
             # (but ideally we got it).
             final_corr_id = correlation_id or str(uuid4())
@@ -3174,40 +3172,18 @@ async def api_chat(
             # orion-vector-host's real OrionTissue physics feed
             # (app/tissue_feed.py) in-process on every semantic upsert.
 
-            # Legacy log for downstream SQL-writer compatibility
-            chat_log_payload = {
-                "correlation_id": final_corr_id,
-                "source": settings.SERVICE_NAME,
-                "prompt": latest_user_prompt,
-                "response": text,
-                "session_id": session_id,
-                "mode": result.get("mode", "brain"),
-                "recall": use_recall,
-                "user_id": None,
-                "spark_meta": spark_meta,
-                "reasoning_trace": selected_reasoning_trace,
-            }
-            if _thought_debug_enabled():
-                reasoning_trace = chat_log_payload.get("reasoning_trace")
-                reasoning_content = chat_log_payload.get("reasoning_content")
-                thought_candidate = (
-                    (reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None)
-                    or reasoning_content
-                )
-                logger.info(
-                    "THOUGHT_DEBUG_HUB stage=legacy_chat_history_publish corr=%s channel=%s target=chat.history.turn_payload reasoning_trace_exists=%s reasoning_content_exists=%s thought_candidate_len=%s thought_candidate_snippet=%r",
-                    final_corr_id,
-                    settings.chat_history_channel,
-                    isinstance(reasoning_trace, dict),
-                    bool(str(reasoning_content or "").strip()),
-                    _debug_len(thought_candidate),
-                    _debug_snippet(thought_candidate),
-                )
-
-            await bus.publish(
-                settings.chat_history_channel,
-                chat_log_payload,
-            )
+            # 2026-08-14: the third, raw-dict "legacy log for downstream
+            # SQL-writer compatibility" publish to `chat_history_channel` was
+            # deleted here. It was published with no `kind`, so
+            # `orion/core/bus/codec.py:72` stamped it `legacy.message`, which
+            # matches no entry in the sql-writer route map -- every one of them
+            # landed in `bus_fallback_log` and was written nowhere else.
+            # Nothing was lost: `publish_chat_history` above sends two
+            # `chat.history.message.v1` envelopes on this same log channel and
+            # `publish_chat_turn` sends one `chat.history` on the separate turn
+            # channel, and all 80 fallback rows were verified 1:1 against
+            # `chat_history_log` with byte-identical response lengths. See
+            # docs/superpowers/pr-reports/2026-08-14-hub-legacy-chat-publish-kill.md
         except Exception as e:
             logger.warning(
                 "Failed to publish HTTP chat to chat history log: %s",

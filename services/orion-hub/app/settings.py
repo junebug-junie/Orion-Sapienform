@@ -315,8 +315,10 @@ class Settings(BaseSettings):
         default=8, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR"
     )
     # IANA zone for quiet hours and the daily-cap reset. Hub's container sets no
-    # TZ, so the process timezone is UTC -- leaving this at UTC means the quiet
-    # window is UTC hours, not Juniper's. Set it to the operator's real zone.
+    # TZ, so the process timezone is UTC -- this must name the operator's real
+    # zone or the quiet window silences the wrong nine hours. The Field default
+    # stays UTC (a safe, always-resolvable zone) rather than duplicating the
+    # deployment's answer; .env_example carries the real one.
     HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
         default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
     )

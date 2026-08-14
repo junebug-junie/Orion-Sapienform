@@ -654,3 +654,27 @@ def test_disabled_instance_starts_no_task() -> None:
 
     assert outreach.status()["running"] is False
     assert outreach.status()["block_reason"] == "disabled"
+
+
+def test_shipped_timezone_is_a_real_iana_zone() -> None:
+    """A typo in .env_example's TZ degrades silently to UTC.
+
+    The constructor's fallback is deliberate (a bad zone must not crash Hub
+    startup), which means a misspelling would quietly shift the quiet window by
+    hours with only a log line to show for it. This gate turns that into a
+    failing test instead.
+    """
+    import re
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    example = Path(__file__).resolve().parents[1] / ".env_example"
+    match = re.search(r"^HUB_ENDOGENOUS_OUTREACH_TZ=(.+)$", example.read_text(), re.M)
+    assert match, "HUB_ENDOGENOUS_OUTREACH_TZ missing from .env_example"
+
+    zone = match.group(1).strip()
+    ZoneInfo(zone)  # raises if the zone is not real
+
+    # Round-trip through the real constructor: proves it did not fall back.
+    outreach = _outreach(timezone_name=zone)
+    assert outreach.status()["timezone"] == zone

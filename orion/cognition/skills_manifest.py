@@ -77,6 +77,8 @@ def _family_for_skill(skill_id: str) -> str:
         return "runtime_housekeeping"
     if "nvidia_smi" in sid or "gpu.nvidia" in sid:
         return "gpu_presence"
+    if "skills.perception." in sid or ("perception" in sid and "look_at_camera" in sid):
+        return "perception"
     if "biometrics.raw_recent" in sid or ("biometrics" in sid and "raw_recent" in sid):
         return "biometrics_recent"
     if "biometrics.snapshot" in sid or ("biometrics" in sid and "snapshot" in sid):

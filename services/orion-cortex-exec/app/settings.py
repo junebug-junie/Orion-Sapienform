@@ -253,6 +253,15 @@ class Settings(BaseSettings):
     # PageIndex query provenance includes enriched journal trigger/stance/facet metadata.
     journal_pageindex_service_url: str = Field("http://orion-pageindex:8360", alias="JOURNAL_PAGEINDEX_SERVICE_URL")
     biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
+    # skills.perception.look_at_camera.v1 -- reads orion-vision-window's already-
+    # projected current-window snapshot (GET /api/vision-window/current). Does
+    # NOT trigger a fresh capture; that would need a direct vision-host RPC, out
+    # of scope for this first cut. Internal container port (8000), not the
+    # host-mapped VISION_WINDOW_HTTP_PORT (8019 by convention).
+    vision_window_service_url: str = Field(
+        "http://orion-athena-vision-window:8000", alias="VISION_WINDOW_SERVICE_URL"
+    )
+    vision_window_http_timeout_sec: float = Field(5.0, alias="VISION_WINDOW_HTTP_TIMEOUT_SEC")
     endogenous_runtime_enabled: bool = Field(False, alias="ENDOGENOUS_RUNTIME_ENABLED")
     endogenous_runtime_surface_chat_reflective_enabled: bool = Field(
         False,

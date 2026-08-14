@@ -196,13 +196,14 @@ skipped keys requiring operator action: none.
 ## Tests run
 
 ```text
-services/orion-hub:      pytest tests/test_chat_attachments.py -q          -> 22 passed
-services/orion-hub:      pytest tests/test_chat_attachment_wiring.py -q    ->  8 passed
-services/orion-hub:      pytest tests/test_chat_attachments_http.py -q     ->  5 passed
-services/orion-llm-gateway: pytest tests/test_vision_attachments.py -q     -> 24 passed
-services/orion-llm-gateway: pytest tests -q                                -> 146 passed
+services/orion-hub:      pytest tests/test_chat_attachments.py -q            -> 22 passed
+services/orion-hub:      pytest tests/test_chat_attachment_wiring.py -q      ->  8 passed
+services/orion-hub:      pytest tests/test_chat_attachments_http.py -q       ->  5 passed
+services/orion-llm-gateway: pytest tests/test_vision_attachments.py -q       -> 24 passed
+services/orion-llm-gateway: pytest tests/test_vision_gate_integration.py -q  ->  8 passed
+services/orion-llm-gateway: pytest tests -q                                  -> 154 passed
 repo root:               pytest tests/test_attachment_contract_end_to_end.py -q -> 6 passed
-services/orion-hub:      node --test static/js/                            -> 56 passed
+services/orion-hub:      node --test static/js/                              -> 56 passed
 ```
 
 Full Hub suite, compared against a detached worktree at this branch's true base
@@ -251,6 +252,44 @@ the primary checkout. That compose file is **unchanged** by this patch (only its
 Not run: an actual container build or bring-up. See "Restart required".
 
 ## Review findings fixed
+
+### Self-review (found while the review subagent was still running)
+
+- Finding: **the ollama and native-completion backend paths silently dropped
+  attachments.** Only `_execute_openai_chat` builds multimodal content parts.
+  `_execute_ollama_chat` (ollama uses its own `images: [b64]` field) and
+  `_execute_llamacpp_native_completion` (flat prompt via `/apply-template` +
+  `/completion`) would have discarded the images and answered from the text
+  alone — the precise "Orion appears to have looked at something it never
+  received" failure this whole feature exists to prevent.
+  - Fix: `_refuse_attachments_on_unsupported_path()` guards both, returning an
+    explicit error. Inert when a turn has no attachments.
+  - Evidence: `test_non_openai_paths_refuse_attachments` asserts the refusal
+    *and* that `_common_http_client` is never called;
+    `test_non_openai_paths_are_unaffected_without_attachments` pins the inert case.
+- Finding: **the attach button gated on the wrong route.**
+  `refreshVisionCapability()` issued its own fetch to `/api/llm-routes` —
+  duplicating and racing the one `loadLlmRouteCatalog()` already makes — and then
+  read `data.default_route` instead of `selectedLlmRoute`. Picking the agent lane
+  while chat was the default left the button reflecting chat's capability.
+  - Fix: read the already-loaded `llmRouteCatalog` for the selected route, and
+    re-evaluate from `syncComputeSelection()` so switching lanes updates it.
+  - Evidence: 56 JS tests still green; the duplicate fetch is gone.
+- Finding: **the attachment store's temp file could be written by two workers at
+  once.** Write-then-rename used a path derived only from the sha, and
+  content-addressing means concurrent uploads of the *same* image collide on
+  exactly that name.
+  - Fix: temp name carries the pid; `.replace()` instead of `.rename()` so the
+    swap is unconditionally atomic.
+  - Evidence: 27 store + HTTP tests green.
+- Finding: the refusal text `[Error: ...]` might have been swallowed downstream,
+  which would have falsified the "visible refusal" guarantee.
+  - Fix: none needed — verified `app.js:6827`
+    `contentLooksLikeGatewayFailureBlurb()` explicitly matches `[Error:` and
+    surfaces it as an error hint.
+  - Evidence: traced the call site at `app.js:6857`.
+
+### Test-quality findings
 
 - Finding: five attachment-controller tests failed because the test fixture built
   plain objects instead of real `File`s.
@@ -364,4 +403,4 @@ Nothing is broken in the meantime; the feature is simply inert on that lane.
 
 ## PR link
 
-<to be filled after push>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1661

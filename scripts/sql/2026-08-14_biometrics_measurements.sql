@@ -29,3 +29,17 @@ COMMENT ON COLUMN orion_biometrics_summary.measurements IS
     'COALESCE(...,0). NULL means the producer predates this column and says nothing about '
     'the node; ''{}'' means a current producer measured nothing. CONTAINMENT: chassis_watts '
     'is measured at the PSU and ALREADY INCLUDES gpu_watts_total -- never sum the two.';
+
+-- Normalise the JSONB scalar `null` to SQL NULL.
+--
+-- SQLAlchemy's JSONB stores Python None as JSON `null` unless the column is declared with
+-- none_as_null=True (it now is). Rows written before that fix carry jsonb 'null', which means
+-- the same thing as SQL NULL -- "this producer sent no measurements" -- but is invisible to
+-- `measurements IS NULL`. Two encodings of one state is one too many when the whole contract
+-- is about telling absence apart from zero.
+--
+-- Idempotent. Safe to re-run.
+UPDATE orion_biometrics_summary
+    SET measurements = NULL
+    WHERE measurements IS NOT NULL
+      AND jsonb_typeof(measurements) = 'null';

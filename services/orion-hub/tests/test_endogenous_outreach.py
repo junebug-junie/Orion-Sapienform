@@ -20,6 +20,7 @@ from scripts.endogenous_outreach import (
     build_outreach_prompt,
     in_quiet_hours,
     is_pass_response,
+    looks_like_error_text,
     outreach_block_reason,
 )
 
@@ -410,7 +411,13 @@ def test_generation_sends_configured_lane(monkeypatch) -> None:
     class _Cortex:
         async def chat(self, req, correlation_id=None, **kwargs):
             seen["req"] = req
-            return SimpleNamespace(final_text="a real unprompted thought")
+            return SimpleNamespace(
+                final_text="a real unprompted thought",
+                # Mirror the real contract: CortexChatResult always carries a
+                # cortex_result, and the ok/error fields on it are what the
+                # ship/drop gate reads.
+                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
+            )
 
     outreach._cortex_client = _Cortex()
     _stub_context(monkeypatch)
@@ -562,7 +569,10 @@ def test_generation_pins_execution_policies_and_disables_recall(monkeypatch) -> 
     class _Cortex:
         async def chat(self, req, correlation_id=None, **kwargs):
             seen["req"] = req
-            return SimpleNamespace(final_text="an unprompted thought")
+            return SimpleNamespace(
+                final_text="an unprompted thought",
+                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
+            )
 
     outreach._cortex_client = _Cortex()
     _stub_context(monkeypatch)
@@ -662,6 +672,113 @@ def test_daily_cap_resets_on_the_configured_zones_date_boundary() -> None:
 
     assert outreach_block_reason(outreach._gate_inputs(now=early_on_14th)) is None
     assert outreach._sent_today == 0
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # The exact string that reached Juniper's chat thread on 2026-08-14.
+        "[Error: llamacpp failed: Client error '400 Bad Request' for url "
+        "'http://100.121.214.30:8013/v1/chat/completions']",
+        "Error: connection refused",
+        "Traceback (most recent call last):\n  File ...",
+        "Internal Server Error",
+        "llamacpp failed: read timeout after 60s",
+    ],
+)
+def test_error_shaped_text_is_recognised(raw) -> None:
+    assert looks_like_error_text(raw) is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        # Orion's real first outreach -- must NOT be swallowed by the backstop.
+        "The codebase is throwing errors I can't map yet. It's like trying to fix "
+        "a machine without knowing which parts are broken.",
+        "I keep hitting errors in the same place and I think that means something.",
+        "There is something about the way a timeout feels from the inside.",
+    ],
+)
+def test_real_prose_about_errors_is_not_swallowed(raw) -> None:
+    assert looks_like_error_text(raw) is False
+
+
+def test_cortex_not_ok_is_dropped_even_with_nonempty_text(monkeypatch) -> None:
+    """Regression: emptiness alone was the only gate, so a failure shipped.
+
+    Confirmed live 2026-08-14 -- a llamacpp 400 arrived as a non-empty
+    final_text and was delivered and persisted into the real chat thread.
+    """
+    outreach = _outreach()
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+
+    class _FailingCortex:
+        async def chat(self, req, correlation_id=None, **kwargs):
+            return SimpleNamespace(
+                final_text="[Error: llamacpp failed: Client error '400 Bad Request']",
+                cortex_result=SimpleNamespace(ok=False, status="llm_failed", error={"code": 400}),
+            )
+
+    outreach._cortex_client = _FailingCortex()
+    _stub_context(monkeypatch)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["reason"] == "empty_generation"
+    assert result["generation"]["error"] == "cortex_not_ok"
+    assert queue.empty()
+    assert outreach.status()["sent_today"] == 0
+
+
+def test_error_shaped_text_dropped_even_when_cortex_reports_ok(monkeypatch) -> None:
+    """Backstop for an upstream that reports failure only in the prose."""
+    outreach = _outreach()
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+
+    class _LyingCortex:
+        async def chat(self, req, correlation_id=None, **kwargs):
+            return SimpleNamespace(
+                final_text="[Error: llamacpp failed: Client error '400 Bad Request']",
+                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
+            )
+
+    outreach._cortex_client = _LyingCortex()
+    _stub_context(monkeypatch)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["generation"]["error"] == "error_shaped_text"
+    assert queue.empty()
+
+
+def test_healthy_cortex_result_still_sends(monkeypatch) -> None:
+    """Guards the two tests above: the happy path must not be over-gated."""
+    outreach = _outreach()
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+
+    class _HealthyCortex:
+        async def chat(self, req, correlation_id=None, **kwargs):
+            return SimpleNamespace(
+                final_text="I keep circling the same unresolved thing.",
+                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
+            )
+
+    outreach._cortex_client = _HealthyCortex()
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert queue.get_nowait()["llm_response"] == "I keep circling the same unresolved thing."
 
 
 def test_probability_zero_never_rolls(monkeypatch) -> None:

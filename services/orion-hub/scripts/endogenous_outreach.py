@@ -281,6 +281,43 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
     return "\n".join(lines)
 
 
+_ERROR_TEXT_PREFIXES = (
+    "[error",
+    "error:",
+    "traceback (most recent call last)",
+    "internal server error",
+)
+_ERROR_TEXT_MARKERS = (
+    "llamacpp failed",
+    "client error '4",
+    "client error '5",
+    "server error '5",
+    "connection refused",
+    "read timeout",
+)
+
+
+def looks_like_error_text(text: str) -> bool:
+    """True when generated 'prose' is really a plumbing error report.
+
+    Backstop only — the ok/error fields on the result contract are the primary
+    gate. This exists because an upstream can report failure purely in the text
+    (confirmed live: a llamacpp 400 arrived as a non-empty final_text). Kept
+    deliberately narrow: it matches error *framing*, not the mere presence of
+    the word "error", so Orion can still say "the codebase is throwing errors
+    I can't map yet" -- which it genuinely has.
+    """
+    stripped = str(text or "").strip().lower()
+    if not stripped:
+        return False
+    if stripped.startswith(_ERROR_TEXT_PREFIXES):
+        return True
+    # Markers only count near the start; a long reflective passage that happens
+    # to mention a timeout deep in the body is not an error report.
+    head = stripped[:200]
+    return any(marker in head for marker in _ERROR_TEXT_MARKERS)
+
+
 def is_pass_response(text: str) -> bool:
     """True when Orion declined to reach out this tick."""
     stripped = str(text or "").strip().strip(".!\"'` ")
@@ -679,10 +716,49 @@ class EndogenousOutreach:
             return "", {"error": type(exc).__name__, "detail": str(exc)[:240]}
 
         text = str(getattr(resp, "final_text", "") or "").strip()
+        elapsed = round(time.monotonic() - started, 3)
+        cortex_result = getattr(resp, "cortex_result", None)
+        ok = bool(getattr(cortex_result, "ok", False))
+        status = str(getattr(cortex_result, "status", "") or "")
+        cortex_error = getattr(cortex_result, "error", None)
+
+        # An emptiness check is NOT sufficient. Confirmed live 2026-08-14: a
+        # llamacpp 400 came back through this path as a perfectly non-empty
+        # final_text ("[Error: llamacpp failed: Client error '400 Bad
+        # Request'...]"), sailed past `if not text`, and got delivered and
+        # persisted into Juniper's real chat thread as if Orion had said it.
+        # That is exactly the "fallback text masquerading as generated
+        # cognition" AGENTS.md §0A bans. Gate on the result contract's own
+        # ok/error fields, and refuse error-shaped prose as a backstop for
+        # upstreams that report failure only in the text.
+        if not ok or cortex_error:
+            return "", {
+                "error": "cortex_not_ok",
+                "status": status,
+                "ok": ok,
+                "cortex_error": str(cortex_error)[:240] if cortex_error else None,
+                "elapsed_sec": elapsed,
+                "llm_route": self.llm_route,
+            }
+        if looks_like_error_text(text):
+            logger.warning(
+                "endogenous_outreach_error_shaped_text corr=%s status=%s text=%r",
+                correlation_id,
+                status,
+                text[:200],
+            )
+            return "", {
+                "error": "error_shaped_text",
+                "status": status,
+                "elapsed_sec": elapsed,
+                "llm_route": self.llm_route,
+            }
+
         debug = {
-            "elapsed_sec": round(time.monotonic() - started, 3),
+            "elapsed_sec": elapsed,
             "llm_route": self.llm_route,
             "final_len": len(text),
+            "status": status,
         }
         return text, debug
 

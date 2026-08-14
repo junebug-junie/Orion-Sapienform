@@ -304,3 +304,17 @@ attention-starvation-report:
 	@$(METRIC_PYTHON) scripts/analysis/measure_attention_input_starvation.py \
 		$(if $(HOURS),--hours $(HOURS),) \
 		$(if $(JSON),--json,)
+
+# Attention-loop outcome coverage -- the label half of the salience refit's
+# input/label join, and the outcome measure the drives program never had.
+# Read-only by default; --emit writes derived implicit labels (snapshots first,
+# never overwrites a human verdict, idempotent).
+#
+#   make attention-outcome-coverage             # coverage + derivable labels
+#   make attention-outcome-coverage SWEEP=1     # horizon sensitivity
+#   make attention-outcome-coverage JSON=1
+attention-outcome-coverage:
+	@$(METRIC_PYTHON) scripts/analysis/measure_attention_outcome_coverage.py \
+		$(if $(SWEEP),--sweep,) \
+		$(if $(HOURS),--min-silence-hours $(HOURS),) \
+		$(if $(JSON),--json,)

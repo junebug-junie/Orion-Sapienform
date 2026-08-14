@@ -406,3 +406,68 @@ candidate, the missing piece is: *what would count as this having helped?* An
 interoceptively-sourced open loop is only worth building if there is a number that moves when
 it works and does not when it doesn't. That number does not exist yet, and inventing candidate
 supply before it exists would repeat the exact cycle this program was chartered to end.
+
+## The outcome measure — built, and what it revealed
+
+The rung this arc must not skip: *what would count as an interoceptively-sourced attention
+candidate having helped?* Built before any candidate supply, deliberately — the drives
+program's fatal habit was instruments with no way to tell whether they worked.
+
+**An outcome mechanism already existed and was half-built.** `AttentionLoopOutcomeV1` has
+always specified three verdicts. Two are human clicks in the Hub (`resolved`, `dismissed`).
+The third, `decayed_unattended`, is documented in `orion/schemas/attention_salience.py` as
+"the human verdict (Resolve/Dismiss) **or implicit decay** — the sparse-but-clean label the
+refit later trains on", and `orion/substrate/attention/verdicts.py` already handles it
+correctly on the read side.
+
+**It has never been written once.** All 4 live rows are `resolved`/`juniper`. The label
+stream is 100% hand-clicked — which cannot scale to judging a machine-generated candidate
+stream, and is precisely why an outcome measure never materialised.
+
+`orion/substrate/attention/implicit_outcome.py` supplies the missing producer: a loop that
+was scored, never explicitly closed, and then stopped being re-scored has decayed unattended.
+Real outcome, machine-derivable, and the negative class any refit needs. A human verdict is
+never overwritten. The 24h floor reuses `attention_loops_store.py::suppress_loop`'s existing
+cooldown rather than inventing a second constant.
+
+Measured with `make attention-outcome-coverage`:
+
+| | Value |
+|---|---|
+| Loops ever scored | **7** |
+| Labelled | 4 (57.1%) — all human |
+| Implicit labels | **0** |
+| Derivable now | 2 (`open-loop-9d84d08cddf5`, silent **509h**; `open-loop-5038aeb46982`, 39h) |
+
+### The finding: the outcome measure was never the bottleneck
+
+7 distinct loops in 3 weeks, re-scored 803 times. Label coverage is 57% — **the labels are
+not sparse, the candidates are.** Building a labeller for 3 unlabelled loops does not produce
+an outcome measure anyone can learn from; it produces an instrument with a denominator of 3.
+
+That is now the *third independent measurement* agreeing on one diagnosis:
+
+| Measurement | Result |
+|---|---|
+| Drives-era tension firing | 0.064% of ticks |
+| Layer 5 attention open loops | 0.2–5.7% of frames |
+| Distinct salience-scored loops | **7, in 3 weeks** |
+
+Every layer of this stack is starved at the input. The tension gate (48% admission, 10
+distinct winners) is the first thing in the chain that produces candidates at a real rate.
+
+### Disclosed: one knob here is currently inert
+
+`cadence_multiple` produces **identical label counts at 1× / 3× / 10×** across every floor
+tried, because all 7 loops were scored in tight bursts (median gap ~0h) so the absolute floor
+always binds. Kept — it is a real guard with a real regression test, and slow-cadence loops
+are exactly what an interoceptive stream would produce — but it is **not validated**, and if
+it is still inert once candidate diversity exists it should be deleted rather than kept as a
+knob that provably does nothing. Same call already made for `DeviationGate.impulse_k`.
+
+### Not emitted
+
+`--emit` exists, snapshots first, never overwrites a human verdict, and is idempotent. **It
+was not run.** Writing 2 labels into a table a future refit trains on is a data write to a
+learning surface with near-zero information value at this denominator. The deliverable is
+that the measure now exists and will start producing labels the moment candidate supply does.

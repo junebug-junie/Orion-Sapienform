@@ -295,7 +295,11 @@ Three details that are easy to get wrong and are enforced by tests:
   dropped with reason `<gate>_after_generation`.
 - **Quiet hours and the daily-cap reset use `HUB_ENDOGENOUS_OUTREACH_TZ`,** not
   the container clock. Hub's compose and Dockerfile set no `TZ`, so the process
-  timezone is UTC; leaving this at `UTC` means the quiet window is UTC hours.
+  timezone is UTC; this key must name the operator's real zone or the window
+  silences the wrong nine hours. Set to `America/Denver` in `.env_example`, so
+  the 23→08 window is 23:00–08:00 Mountain. Getting this wrong is not cosmetic:
+  under the old `UTC` value the same window silenced 17:00–02:00 Mountain — the
+  whole evening — while leaving outreach open across the working day.
 
 Generation pins `tool_execution_policy` and `action_execution_policy` to `none`
 and sets `no_write_active`, which are the keys `orion-cortex-exec`'s supervisor

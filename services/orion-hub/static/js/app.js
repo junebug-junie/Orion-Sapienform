@@ -10317,6 +10317,18 @@ document.addEventListener("DOMContentLoaded", () => {
           wsReadyResolve = null;
         }
         updateStatus('Connected.');
+        // Tell the server which thread this socket is in, before any turn.
+        // session_id otherwise only reaches Hub on an outbound chat message, so
+        // a tab that is open but idle looks session-less to endogenous
+        // outreach -- and outreach then posts to its fallback session instead
+        // of the thread Juniper is actually looking at, breaking reply-in-place.
+        if (orionSessionId) {
+          try {
+            socket.send(JSON.stringify({ type: 'session_hello', session_id: orionSessionId }));
+          } catch (err) {
+            console.warn('[WS] session_hello failed', err);
+          }
+        }
         // A reconnect means any turn from the previous socket is unreachable now
         // (its closing "state": "idle" frame, if any, will never arrive) — clear
         // stale client-side turn-in-flight state rather than leave the Stop button

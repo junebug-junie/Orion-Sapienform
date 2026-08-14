@@ -773,6 +773,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 # outreach for the whole duration of a real turn.
                 endogenous_outreach.note_busy(connection_id)
 
+            # Connect-time handshake carrying this tab's session_id. Handled
+            # before any turn logic and never treated as a chat message: without
+            # it, an open-but-idle tab is session-less to outreach (session_id
+            # otherwise only arrives on an outbound message), so outreach posts
+            # to its fallback session rather than the thread on screen.
+            if str(data.get("type") or "").strip() == "session_hello":
+                if endogenous_outreach is not None:
+                    endogenous_outreach.note_session(connection_id, data.get("session_id"))
+                logger.debug(
+                    "ws_session_hello connection=%s session=%s",
+                    connection_id,
+                    data.get("session_id"),
+                )
+                continue
+
             mode = data.get("mode") or ("auto" if settings.HUB_AUTO_DEFAULT_ENABLED else "brain")
             client_mode = str(mode or "").strip().lower()
             disable_tts = data.get("disable_tts", False)

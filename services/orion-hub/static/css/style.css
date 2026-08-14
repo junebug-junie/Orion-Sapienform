@@ -143,3 +143,218 @@ input[type=range]::-moz-range-thumb {
   border-radius: 0.5rem;
   padding: 0.4rem 0.55rem;
 }
+
+/* ── Chat markdown rendering ──────────────────────────────────────────────
+   Scoped under .om-md so nothing here can leak into the rest of the Hub.
+   Tailwind's preflight strips list markers and heading sizes globally, so
+   these have to be restated rather than inherited. */
+
+.om-md {
+  line-height: 1.55;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.om-md > *:first-child { margin-top: 0; }
+.om-md > *:last-child { margin-bottom: 0; }
+
+.om-md p { margin: 0.45rem 0; }
+.om-md h1, .om-md h2, .om-md h3, .om-md h4, .om-md h5, .om-md h6 {
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0.85rem 0 0.4rem;
+  color: rgb(226 232 240);
+}
+.om-md h1 { font-size: 1.15rem; }
+.om-md h2 { font-size: 1.08rem; }
+.om-md h3 { font-size: 1.02rem; }
+.om-md h4, .om-md h5, .om-md h6 { font-size: 0.96rem; }
+
+.om-md ul, .om-md ol { margin: 0.45rem 0; padding-left: 1.35rem; }
+.om-md ul { list-style: disc; }
+.om-md ol { list-style: decimal; }
+.om-md li { margin: 0.18rem 0; }
+.om-md li > ul, .om-md li > ol { margin: 0.18rem 0; }
+
+.om-md blockquote {
+  margin: 0.55rem 0;
+  padding: 0.15rem 0 0.15rem 0.75rem;
+  border-left: 3px solid rgba(99, 102, 241, 0.55);
+  color: rgb(203 213 225);
+}
+
+.om-md hr {
+  margin: 0.85rem 0;
+  border: 0;
+  border-top: 1px solid rgba(55, 65, 81, 0.9);
+}
+
+.om-md a.om-link {
+  color: rgb(165 180 252);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.om-md a.om-link:hover { color: rgb(199 210 254); }
+
+.om-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(55, 65, 81, 0.9);
+}
+
+/* Inline code — the :not() keeps this off code inside a fenced block. */
+.om-md code:not(pre code) {
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(51, 65, 85, 0.9);
+  border-radius: 0.3rem;
+  padding: 0.08rem 0.32rem;
+  font-size: 0.86em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  color: rgb(226 232 240);
+}
+
+/* Tables scroll inside their own box; the chat column must never scroll
+   sideways because one reply contained a wide table. */
+.om-md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  font-size: 0.85em;
+}
+.om-md th, .om-md td {
+  border: 1px solid rgba(55, 65, 81, 0.9);
+  padding: 0.3rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+.om-md th { background: rgba(30, 41, 59, 0.75); font-weight: 600; }
+.om-md tbody tr:nth-child(even) { background: rgba(15, 23, 42, 0.45); }
+
+/* ── Fenced code blocks ── */
+
+.om-code {
+  margin: 0.6rem 0;
+  border: 1px solid rgba(51, 65, 85, 0.9);
+  border-radius: 0.55rem;
+  overflow: hidden;
+  background: rgba(2, 6, 23, 0.85);
+}
+.om-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background: rgba(30, 41, 59, 0.75);
+  border-bottom: 1px solid rgba(51, 65, 85, 0.9);
+}
+.om-code-lang {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(148 163 184);
+}
+.om-code-body {
+  margin: 0;
+  padding: 0.6rem 0.7rem;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  color: rgb(226 232 240);
+}
+.om-code-body code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+/* ── Copy buttons ── */
+
+.om-copy {
+  border: 1px solid rgba(71, 85, 105, 0.9);
+  background: rgba(15, 23, 42, 0.8);
+  color: rgb(203 213 225);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.om-copy:hover { color: #fff; border-color: rgba(148, 163, 184, 0.9); }
+.om-copy-ok { color: rgb(134 239 172); border-color: rgba(74, 222, 128, 0.7); }
+
+/* Per-message copy stays out of the way until the message is hovered. */
+.om-msg-copy { opacity: 0; transition: opacity 120ms ease-in-out; }
+[data-role]:hover .om-msg-copy,
+.om-msg-copy:focus-within { opacity: 1; }
+
+/* ── Composer attachments ── */
+
+.om-attach-status { font-size: 0.7rem; color: rgb(148 163 184); min-height: 0.9rem; }
+.om-attach-status-error { color: rgb(252 165 165); }
+.om-attach-status-busy { color: rgb(165 180 252); }
+
+.om-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 1.5rem 0.3rem 0.3rem;
+  border: 1px solid rgba(55, 65, 81, 0.9);
+  border-radius: 0.6rem;
+  background: rgba(15, 23, 42, 0.7);
+  max-width: 15rem;
+}
+.om-chip-thumb {
+  width: 2.25rem;
+  height: 2.25rem;
+  object-fit: cover;
+  border-radius: 0.4rem;
+  border: 1px solid rgba(71, 85, 105, 0.9);
+  cursor: zoom-in;
+  flex: none;
+}
+.om-chip-meta { min-width: 0; }
+.om-chip-name {
+  font-size: 0.7rem;
+  color: rgb(226 232 240);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.om-chip-size { font-size: 0.62rem; color: rgb(148 163 184); }
+.om-chip-remove {
+  position: absolute;
+  top: 0.1rem;
+  right: 0.3rem;
+  color: rgb(148 163 184);
+  font-size: 1rem;
+  line-height: 1;
+}
+.om-chip-remove:hover { color: rgb(252 165 165); }
+
+.om-attach-disabled { opacity: 0.45; cursor: not-allowed; }
+
+#composerRow.om-drop-active {
+  outline: 2px dashed rgba(129, 140, 248, 0.8);
+  outline-offset: 4px;
+  border-radius: 0.6rem;
+}
+
+/* ── Attachment thumbnails inside a sent message ── */
+
+.om-msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.35rem 0;
+}
+.om-msg-thumb {
+  max-height: 8rem;
+  max-width: 12rem;
+  object-fit: cover;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(55, 65, 81, 0.9);
+  cursor: zoom-in;
+}
+.om-msg-thumb:hover { border-color: rgba(129, 140, 248, 0.8); }

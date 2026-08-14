@@ -128,6 +128,8 @@ SYNC_PREFIXES = (
     "REPAIR_PRESSURE_PROBE_",
     "TRANSPORT_PROPOSAL_",
     "TRANSPORT_SUBSTRATE_",
+    # bus_fallback_log backlog watcher (orion-sql-writer)
+    "SQL_WRITER_FALLBACK_WATCH_",
     "HUB_PROPOSAL_REVIEW_",
     "HUB_LLM_GATEWAY_",
     "HUB_AGENT_CONTEXT_EXEC_",
@@ -233,6 +235,10 @@ SYNC_EXACT = frozenset(
         # Mind run artifact channel (reused by unified-turn enrichment, mode=orion)
         "CHANNEL_MIND_ARTIFACT",
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
+        # bus_fallback_log backlog watcher (orion-sql-writer). NOTIFY_API_TOKEN is
+        # deliberately absent: it is a credential, .env_example carries it empty, and
+        # the settings default of "" already makes the key optional.
+        "NOTIFY_SERVICE_URL",
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
         "LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED",

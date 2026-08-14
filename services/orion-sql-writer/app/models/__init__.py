@@ -24,6 +24,7 @@ from .notify_models import (
     NotificationPreferenceDB,
 )
 from .fallback_log import BusFallbackLog
+from .fallback_alert_state import BusFallbackAlertState
 from .cognition_trace import CognitionTraceSQL
 from .thought_decision import ThoughtDecisionSQL
 from .metacognition_tick import MetacognitionTickSQL
@@ -148,4 +149,5 @@ __all__ = [
     "GrammarTemporalHopSQL",
     "GrammarCompactionSQL",
     "GrammarProjectionSQL",
+    "BusFallbackAlertState",
 ]

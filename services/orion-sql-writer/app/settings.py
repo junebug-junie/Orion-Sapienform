@@ -302,6 +302,37 @@ class Settings(BaseSettings):
         return mode
 
 
+    # bus_fallback_log backlog watcher (app/fallback_watch.py).
+    #
+    # Nothing watched the fallback log until 2026-08-14, which is how two
+    # separate routing failures each ran for hours looking healthy. On by
+    # default: a monitor that ships disabled is a monitor that is off in
+    # production, and the whole failure mode here is silence being mistaken
+    # for health.
+    sql_writer_fallback_watch_enabled: bool = Field(
+        True, alias="SQL_WRITER_FALLBACK_WATCH_ENABLED"
+    )
+    sql_writer_fallback_watch_interval_sec: int = Field(
+        300, alias="SQL_WRITER_FALLBACK_WATCH_INTERVAL_SEC"
+    )
+    # Trailing window the count is taken over. 24h rather than something short:
+    # the observed failures dribbled a handful of events per hour for hours, and
+    # a 15-minute window would never have accumulated enough to cross a
+    # threshold before someone noticed by hand anyway.
+    sql_writer_fallback_watch_window_sec: int = Field(
+        86400, alias="SQL_WRITER_FALLBACK_WATCH_WINDOW_SEC"
+    )
+    # Alerts fire at each multiple of this: 5, 10, 15, ...
+    sql_writer_fallback_watch_threshold_step: int = Field(
+        5, alias="SQL_WRITER_FALLBACK_WATCH_THRESHOLD_STEP"
+    )
+
+    # Notify service, used only by the watcher above. This service already
+    # PERSISTS notify records (models/notify_models.py) but had never SENT one,
+    # so these keys are new here.
+    notify_service_url: str = Field("", alias="NOTIFY_SERVICE_URL")
+    notify_api_token: str = Field("", alias="NOTIFY_API_TOKEN")
+
     # DB
     # Ensure default matches prod environment (Postgres), not SQLite.
     postgres_uri: str = Field("postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney", alias="POSTGRES_URI")

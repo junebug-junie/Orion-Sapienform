@@ -107,6 +107,8 @@ from orion.schemas.dev_economics import DevEconomicsLedgerV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 from orion.schemas.affective_state import JuniperAffectiveStateV1
 
+from app.route_coverage import log_route_coverage
+
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
 from orion.schemas.metacog_entry import MetacogEntryV1
@@ -2370,6 +2372,11 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
 def build_hunter() -> Hunter:
     patterns = settings.effective_subscribe_channels
+    # Startup gate: a subscribed channel with no route silently sends every
+    # event to bus_fallback_log while the service looks perfectly healthy.
+    # Happened twice on 2026-08-13/14 -- see app/route_coverage.py for why
+    # this is a log line and not a hard failure.
+    log_route_coverage(patterns, settings.route_map)
     holder: dict[str, Any] = {}
 
     async def _handler(env: BaseEnvelope) -> None:

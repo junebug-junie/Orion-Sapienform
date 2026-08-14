@@ -290,3 +290,15 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   `chassis_watts 428-430` against `gpu_watts_total 48-53`. **The GPU is ~11% of the node's
   draw.** Every cost estimate in this arc that priced GPU watts was pricing a ninth of the
   bill, and this is now a stored number rather than an inference.
+
+- **A `docker compose up -d --build` served a stale layer and silently reverted a
+  live-verified change.** During B1, the second build of `orion-sql-writer` produced an image
+  whose `/app/app/models/biometrics_summary.py` lacked the `measurements` column even though
+  the file on disk in the build context had it -- so every summary row went back to NULL and
+  the deploy looked successful. `--no-cache` produced a correct image immediately. Root cause
+  not established: either Docker layer caching or a concurrent deploy from the shared checkout
+  (the collision already documented in `scripts/safe_docker_build.sh`'s header). **Operational
+  lesson: verify the artefact, not the build output.** `docker run --rm --entrypoint sh <image>
+  -c 'grep ...'` before starting the container catches it in one command; "Container Started"
+  does not. This is the same class as the graphify destructive-update incident -- tooling
+  reporting success while silently shipping older content.

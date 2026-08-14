@@ -15,11 +15,72 @@ if str(SQL_WRITER_ROOT) not in sys.path:
 SPEC.loader.exec_module(worker)
 
 
-def test_coalesce_preserves_existing_response_when_incoming_empty():
-    filtered = {"correlation_id": "abc", "prompt": "hi", "response": ""}
-    existing = SimpleNamespace(prompt="hi", response="assistant reply")
-    worker._coalesce_chat_history_turn_fields(filtered, existing)
-    assert filtered["response"] == "assistant reply"
+def _compiled_conflict_sql(values: dict) -> str:
+    """Render the real ON CONFLICT clause upsert_chat_history_row would emit."""
+    from sqlalchemy.dialects import postgresql
+
+    captured = {}
+
+    class _CapturingSession:
+        def execute(self, stmt):
+            captured["stmt"] = stmt
+
+    worker.upsert_chat_history_row(_CapturingSession(), values)
+    # No literal_binds: it cannot render a JSONB value, and the '' argument to
+    # nullif compiles to a bind param either way, so assertions match on
+    # `nullif(excluded.<col>, ` rather than on the literal.
+    return str(captured["stmt"].compile(dialect=postgresql.dialect())).lower()
+
+
+def test_upsert_merges_on_conflict_instead_of_skipping():
+    """The bug: a same-primary-key collision was treated as 'already have it'.
+
+    chat_history_log is assembled from three events that each carry a different
+    subset of columns, so DO NOTHING / skip loses real content. The statement
+    must be DO UPDATE.
+    """
+    sql = _compiled_conflict_sql({"id": "abc", "correlation_id": "abc", "response": "reply"})
+
+    assert "on conflict (id)" in sql
+    assert "do update set" in sql
+    assert "do nothing" not in sql
+
+
+def test_a_non_empty_incoming_text_value_fills_but_an_empty_one_never_clobbers():
+    """`''` counts as absent for text: prompt/response were seeded as empty
+    strings, so a later event carrying the real text must still win -- while an
+    empty incoming value must leave stored text alone."""
+    sql = _compiled_conflict_sql({"id": "abc", "prompt": "hi", "response": ""})
+
+    for col in ("prompt", "response"):
+        assert f"{col} = coalesce(nullif(excluded.{col}, " in sql
+        assert f"), chat_history_log.{col})" in sql
+
+
+def test_jsonb_and_scalar_columns_coalesce_without_the_empty_string_test():
+    """coalesce(spark_meta, '') would not typecheck against JSONB."""
+    sql = _compiled_conflict_sql({"id": "abc", "spark_meta": {"mode": "orion"}})
+
+    assert "coalesce(excluded.spark_meta, chat_history_log.spark_meta)" in sql
+    assert "nullif(excluded.spark_meta" not in sql
+
+
+def test_the_conflict_target_is_not_also_an_update_target():
+    sql = _compiled_conflict_sql({"id": "abc", "correlation_id": "abc"})
+
+    set_clause = sql.split("do update set", 1)[1]
+    assert "correlation_id = coalesce" in set_clause
+    # `id` is the conflict target; assigning it in SET is a no-op at best.
+    assert " id = " not in set_clause
+
+
+def test_upsert_refuses_a_row_with_no_id():
+    """Without an id there is no conflict target, so the statement would insert
+    a duplicate turn on every retry instead of merging."""
+    import pytest
+
+    with pytest.raises(ValueError):
+        worker.upsert_chat_history_row(SimpleNamespace(execute=lambda s: None), {"prompt": "hi"})
 
 
 def test_merge_spark_meta_telemetry_does_not_clobber_classify_novelty():

@@ -10,15 +10,16 @@ import uuid
 from collections import deque
 from copy import deepcopy
 from datetime import date, datetime, timezone
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, Optional, Tuple, Type
 
-from sqlalchemy import inspect, update
-from sqlalchemy.types import DateTime, String
+from sqlalchemy import func, inspect, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.types import DateTime, String, Text
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 
 from app.settings import settings
-from app.db import get_session, remove_session
+from app.db import get_session, remove_session, session_factory
 from app.models import (
     BiometricsTelemetry,
     BiometricsSummarySQL,
@@ -746,17 +747,57 @@ def _merge_spark_meta(
     return _json_sanitize(base)
 
 
-def _coalesce_chat_history_turn_fields(filtered_data: dict, existing: Any) -> None:
-    """Do not let a partial chat.history turn overwrite prompt/response already filled."""
-    if existing is None:
-        return
-    for field in ("prompt", "response"):
-        if field not in filtered_data:
+def _chat_history_conflict_updates(cols: Iterable[str], stmt: Any) -> dict[str, Any]:
+    """Per-column ON CONFLICT rule: a non-empty incoming value wins, else keep.
+
+    ``chat_history_log`` is not an append-only table -- one row is assembled from
+    three separate bus events (user message, assistant message, turn), each
+    carrying a different subset of the columns. So a conflict is never "we
+    already have this, skip"; it is "merge what this event knows into what is
+    already there".
+
+    Text columns additionally treat '' as absent, because
+    ``_ensure_chat_history_from_message`` seeds prompt/response as '' rather than
+    NULL, and a later event carrying the real text must still be able to fill it.
+    """
+    table = ChatHistoryLogSQL.__table__
+    updates: dict[str, Any] = {}
+    for name in cols:
+        if name == "id":
+            continue  # the conflict target itself
+        column = table.c.get(name)
+        if column is None:
             continue
-        incoming = filtered_data.get(field)
-        prior = getattr(existing, field, None)
-        if _is_missing_scalar(incoming) and not _is_missing_scalar(prior):
-            filtered_data[field] = prior
+        incoming = getattr(stmt.excluded, name)
+        if isinstance(column.type, (String, Text)):
+            updates[name] = func.coalesce(func.nullif(incoming, ""), column)
+        else:
+            updates[name] = func.coalesce(incoming, column)
+    return updates
+
+
+def upsert_chat_history_row(sess: Any, values: dict[str, Any]) -> None:
+    """Atomically merge one event's contribution into a chat_history_log row.
+
+    Replaces a SELECT-then-INSERT/merge. That pattern was not safe here: the
+    three events for a single turn are dispatched as independent chassis tasks
+    (``orion/core/bus/bus_service_chassis.py``) and executed in parallel threads
+    via ``asyncio.to_thread`` with thread-local sessions, so all three could
+    SELECT-miss together, all three would INSERT, and two would take a 23505 that
+    the caller discarded as an idempotent duplicate. Roughly one Hub turn in five
+    lost its prompt or its response that way.
+
+    A single INSERT ... ON CONFLICT DO UPDATE has no window between the read and
+    the write, so concurrent contributors merge instead of racing.
+    """
+    if not values.get("id"):
+        raise ValueError("chat_history_log upsert requires an id")
+    stmt = pg_insert(ChatHistoryLogSQL).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[ChatHistoryLogSQL.id],
+        set_=_chat_history_conflict_updates(values.keys(), stmt),
+    )
+    sess.execute(stmt)
 
 
 def _apply_spark_meta_patch(payload: dict) -> bool:
@@ -1061,7 +1102,6 @@ def _safe_set(obj: Any, field: str, value: Any) -> None:
 
 
 def _ensure_chat_history_from_message(
-    sess,
     correlation_id: str,
     session_id: str | None,
     role: str,
@@ -1070,42 +1110,50 @@ def _ensure_chat_history_from_message(
     memory_tier: str | None,
     client_meta: Any,
 ) -> None:
+    """Merge a single chat message into its turn's chat_history_log row.
+
+    Runs in its OWN session, deliberately. This used to share the caller's
+    session with the ``chat_message`` write, which meant a conflict raised here
+    rolled the whole transaction back and silently destroyed the chat_message
+    row too -- while the log line blamed ``chat_message``, a table that never had
+    a duplicate. Chat history is a best-effort projection of the message; it must
+    never be able to take the message itself down with it.
+    """
     if not correlation_id:
         return
     rid = str(correlation_id)
 
-    existing = (
-        sess.query(ChatHistoryLogSQL)
-        .filter(ChatHistoryLogSQL.id == rid)
-        .first()
-    )
-
-    if existing is None:
-        existing = ChatHistoryLogSQL(
-            id=rid,
-            correlation_id=rid,
-        )
-        _safe_set(existing, "session_id", session_id)
-        _safe_set(existing, "prompt", "")
-        _safe_set(existing, "response", "")
-        _safe_set(existing, "spark_meta", None)
-        sess.add(existing)
-
+    values: dict[str, Any] = {"id": rid, "correlation_id": rid}
+    # Only the half this message actually carries. The other half stays absent
+    # rather than being seeded as '', so it is never a candidate for overwrite.
     if role == "user":
-        if hasattr(existing, "prompt") and not (existing.prompt or "").strip():
-            existing.prompt = content
+        values["prompt"] = content
     elif role == "assistant":
-        if hasattr(existing, "response") and not (existing.response or "").strip():
-            existing.response = content
+        values["response"] = content
+    else:
+        return
+    if session_id:
+        values["session_id"] = str(session_id)
+    if memory_status:
+        values["memory_status"] = memory_status
+    if memory_tier:
+        values["memory_tier"] = memory_tier
+    if client_meta:
+        values["client_meta"] = _json_sanitize(client_meta)
 
-    if session_id and hasattr(existing, "session_id") and not getattr(existing, "session_id", None):
-        existing.session_id = session_id
-    if memory_status and hasattr(existing, "memory_status") and not getattr(existing, "memory_status", None):
-        existing.memory_status = memory_status
-    if memory_tier and hasattr(existing, "memory_tier") and not getattr(existing, "memory_tier", None):
-        existing.memory_tier = memory_tier
-    if client_meta and hasattr(existing, "client_meta") and not getattr(existing, "client_meta", None):
-        existing.client_meta = _json_sanitize(client_meta)
+    # session_factory(), not get_session(): the latter is a thread-local
+    # scoped_session and would hand back the caller's own session, so the
+    # transactions would still be shared and remove_session() would tear the
+    # caller's session out from under it.
+    own_sess = session_factory()
+    try:
+        upsert_chat_history_row(own_sess, values)
+        own_sess.commit()
+    except Exception:
+        own_sess.rollback()
+        raise
+    finally:
+        own_sess.close()
 
 
 def _write_row(sql_model_cls, data: dict) -> bool:
@@ -1262,7 +1310,6 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 memory_tier = data.get("memory_tier")
                 if corr_id and role in ("user", "assistant") and isinstance(content, str) and content.strip():
                     _ensure_chat_history_from_message(
-                        sess=sess,
                         correlation_id=str(corr_id),
                         session_id=str(session_id) if session_id else None,
                         role=role,
@@ -1272,6 +1319,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                         client_meta=client_meta,
                     )
             except Exception as ex:
+                # Its own session now, so this really is contained: the
+                # chat_message write below still commits.
                 logger.warning(f"Failed to upsert chat_history_log from chat_message: {ex}")
 
         if sql_model_cls is ChatGptMessageSQL:
@@ -1315,31 +1364,44 @@ def _write_row(sql_model_cls, data: dict) -> bool:
 
         try:
             if sql_model_cls is ChatHistoryLogSQL:
-                lookup_id = filtered_data.get("id") or filtered_data.get("correlation_id")
-                existing_turn = None
-                if lookup_id:
-                    existing_turn = (
-                        sess.query(ChatHistoryLogSQL)
-                        .filter(
-                            (ChatHistoryLogSQL.id == str(lookup_id))
-                            | (ChatHistoryLogSQL.correlation_id == str(lookup_id))
-                        )
-                        .first()
-                    )
-                if existing_turn is not None:
-                    _coalesce_chat_history_turn_fields(filtered_data, existing_turn)
+                # Atomic merge, no SELECT first. The previous SELECT-then-merge
+                # raced with the two chat.history.message writes for the same
+                # turn: all three could miss, all three would INSERT, and two
+                # took a 23505 that the handler below discarded as a duplicate.
+                # The turn event is the only one carrying `source`, so it was the
+                # reliable casualty -- hence every corrupted row having
+                # source IS NULL and exactly one of prompt/response.
+                upsert_chat_history_row(sess, filtered_data)
+                sess.commit()
+                return True
             sess.merge(sql_model_cls(**filtered_data))
             sess.commit()
             return True
         except IntegrityError as e:
             sess.rollback()
+            duplicate = (
+                (hasattr(e.orig, "pgcode") and e.orig.pgcode == "23505")
+                or "unique constraint" in str(e).lower()
+                or "duplicate key" in str(e).lower()
+            )
+            # chat_history_log is NOT idempotent-by-duplicate. One row is
+            # assembled from three events that each carry a different subset of
+            # columns, so "we already have this id" never means "we already have
+            # this content" -- treating it that way is what silently dropped the
+            # prompt or the response on ~1 Hub turn in 5. The upsert above should
+            # make this unreachable; if it fires anyway, that is a real defect
+            # and must be loud, not swallowed.
+            if duplicate and sql_model_cls is ChatHistoryLogSQL:
+                logger.error(
+                    "chat_history_log_duplicate_not_idempotent id=%s corr=%s -- "
+                    "upsert path should have merged this; data may be lost",
+                    filtered_data.get("id"),
+                    filtered_data.get("correlation_id"),
+                )
+                raise
             # Handle unique constraint violations gracefully (idempotency)
             # Postgres unique violation code is 23505
-            if hasattr(e.orig, 'pgcode') and e.orig.pgcode == '23505':
-                logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
-                return False
-            # Also catch generic duplicates if pgcode not available or different driver
-            if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+            if duplicate:
                 logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
                 return False
             logger.error(f"IntegrityError writing to {sql_model_cls.__tablename__}: {e}")

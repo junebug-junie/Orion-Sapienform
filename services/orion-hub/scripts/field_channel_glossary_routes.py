@@ -30,6 +30,7 @@ from orion.field.channel_glossary import (
     load_glossary,
 )
 from orion.field.pressure import collect_field_channel_pressures
+from orion.field.regime import channel_regime
 from orion.schemas.field_state import FieldStateV1
 
 router = APIRouter(prefix="/api/field-channel-glossary", tags=["field-channel-glossary"])
@@ -133,6 +134,39 @@ async def channels() -> dict[str, Any]:
     }
 
 
+# Fraction of the fetched window used as the regime's OWN window; the earlier
+# remainder becomes its baseline.
+#
+# Without a baseline, ChannelRegime reports level_percentile/dispersion_ratio/
+# drift as None -- correct (absent beats a fabricated 0.0) but it throws away
+# the relative half of the readout. Splitting gives all axes a real value at
+# the cost of a shorter window, and 1/4 of an hour-long fetch is ~15 minutes,
+# comfortably above MIN_REGIME_SAMPLES at the live ~2s cadence.
+#
+# Stated rather than silent because the split IS the window: a consumer
+# reading `regime.window_seconds` gets the sliced span, not `hours`.
+REGIME_WINDOW_FRACTION: float = 0.25
+
+
+def _regime_for(channel: str, values: list[float], window_hours: int):
+    """Regime readout for one channel over a declared sub-window.
+
+    R2 (PR #1633) exists because `classify_channel_series()` collapses level
+    and dispersion into one word: a channel at 0.81 with dispersion 0.0006 and
+    one idling at 0.02 both return "quiet". This computes them separately, so
+    "busy at near max but steady" is expressible.
+    """
+    n = len(values)
+    split = int(n * (1.0 - REGIME_WINDOW_FRACTION))
+    window = values[split:] if n else []
+    baseline = values[:split] if split else None
+    span = window_hours * 3600.0
+    window_seconds = span * (len(window) / n) if n else span
+    return channel_regime(
+        channel, window, window_seconds=window_seconds, baseline=baseline
+    )
+
+
 @router.get("/health")
 async def health(hours: int = Query(DEFAULT_HOURS)) -> dict[str, Any]:
     window_hours = normalize_hours(hours)
@@ -167,6 +201,7 @@ async def health(hours: int = Query(DEFAULT_HOURS)) -> dict[str, Any]:
     for entry in glossary["entries"]:
         values = series.get(entry.channel, [])
         verdict = classify_channel_series(values)
+        regime = _regime_for(entry.channel, values, window_hours)
         out.append(
             {
                 "channel": entry.channel,
@@ -178,6 +213,24 @@ async def health(hours: int = Query(DEFAULT_HOURS)) -> dict[str, Any]:
                 "min": min(values) if values else None,
                 "max": max(values) if values else None,
                 "last": values[-1] if values else None,
+                # R2 (PR #1633): the axes the single-word verdict collapses.
+                # `verdict` stays authoritative for the panel's clean/dirty
+                # colouring; this sits beside it, it does not replace it.
+                "regime": {
+                    "label": regime.regime,
+                    "window_seconds": regime.window_seconds,
+                    "level": regime.level,
+                    "pressure_equivalent_level": regime.pressure_equivalent_level,
+                    "polarity_inverted": regime.polarity_inverted,
+                    "dispersion": regime.dispersion,
+                    "level_percentile": regime.level_percentile,
+                    "dispersion_ratio": regime.dispersion_ratio,
+                    "drift": regime.drift,
+                    "saturation_low": regime.saturation_low,
+                    "saturation_high": regime.saturation_high,
+                    "refresh_state": regime.refresh_state,
+                    "refresh_evidence": regime.refresh_evidence,
+                },
             }
         )
 

@@ -61,7 +61,8 @@ EXCLUDED_DIR_NAMES = frozenset(
 SCAN_ROOTS = ("orion", "services", "scripts", "tests", "config")
 
 # Access kinds, ordered most to least confident that this is a real read.
-KIND_SUBSCRIPT = "subscript"  # x["metric"]
+KIND_SUBSCRIPT = "subscript"  # x["metric"] read
+KIND_SUBSCRIPT_WRITE = "subscript_write"  # x["metric"] = ... / del x["metric"]
 KIND_GET = "get"  # x.get("metric")
 KIND_DICT_KEY = "dict_key"  # {"metric": ...}
 KIND_ATTRIBUTE = "attribute"  # x.metric  -- pydantic scalar fields
@@ -69,6 +70,22 @@ KIND_COLLECTION = "collection_member"  # ("metric", ...) / ["metric"] / {"metric
 KIND_COMPARE = "compare"  # x == "metric", "metric" in y
 KIND_LITERAL = "literal"  # bare string constant elsewhere
 KIND_CONFIG = "config"  # YAML/JSON key or value
+KIND_CHANNEL_KWARG = "channel_kwarg"  # F(channel="metric") -- names a write target
+KIND_FIELD_KWARG = "field_kwarg"  # Model(metric=0.5) -- sets a value FOR the metric
+
+# Kinds that evidence a metric being WRITTEN rather than read. The layer had no
+# producer concept at all until 2026-08-14, which is how
+# `expected_offline_suppression` -- a channel with a real producer at
+# services/orion-field-digester/app/ingest/state_deltas.py:87, gated on a
+# config flag that is false for every node in the fleet -- could be traced only
+# by hand. `declared but never written` is the exact mirror of the existing
+# orphan (`registered but never read`) detector and neither is derivable from
+# the other.
+WRITE_KINDS = frozenset({KIND_SUBSCRIPT_WRITE, KIND_CHANNEL_KWARG, KIND_FIELD_KWARG})
+
+# Keyword-argument names that mean "this call targets that metric". Narrow on
+# purpose: `name=`/`key=`/`id=` are far too common to carry the meaning.
+CHANNEL_KWARG_NAMES = frozenset({"channel", "signal_kind", "metric"})
 
 # Field-channel and organ metrics are string keys; inner-state pydantic scalar
 # fields are attributes. Both are real reads, so both count as high confidence.
@@ -156,7 +173,15 @@ class _MetricVisitor(ast.NodeVisitor):
     def visit_Subscript(self, node: ast.Subscript) -> None:
         sl = node.slice
         if isinstance(sl, ast.Constant) and isinstance(sl.value, str) and sl.value in self.tokens:
-            self._record(sl, sl.value, KIND_SUBSCRIPT)
+            # Load vs Store, the same discrimination visit_Attribute has always
+            # made. Without it a PRODUCER reads as a consumer: the blast radius
+            # for `field_coherence_warning` listed worker.py:272 and :282, and
+            # both are `state.node_vectors[...]["field_coherence_warning"] =
+            # suspicion` -- the thing that WRITES it. Two of its five reported
+            # call sites were its own producer, which is how a channel with no
+            # real named reader looked like it had blast radius.
+            kind = KIND_SUBSCRIPT if isinstance(node.ctx, ast.Load) else KIND_SUBSCRIPT_WRITE
+            self._record(sl, sl.value, kind)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -173,6 +198,23 @@ class _MetricVisitor(ast.NodeVisitor):
                 and first.value in self.tokens
             ):
                 self._record(first, first.value, KIND_GET)
+        # F(channel="cpu_pressure") -- how a perturbation names the channel it
+        # is about to write. `Perturbation(node_id=..., channel="expected_
+        # offline_suppression", intensity=1.0)` in state_deltas.py is the
+        # canonical case, and until this existed it scored as a bare literal.
+        for kw in node.keywords:
+            if (
+                kw.arg in CHANNEL_KWARG_NAMES
+                and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
+                and kw.value.value in self.tokens
+            ):
+                self._record(kw.value, kw.value.value, KIND_CHANNEL_KWARG)
+            # Model(reasoning_load=0.5) -- the kwarg NAME is the metric. This
+            # is how every pydantic-backed inner_state scalar is produced, and
+            # without it that whole surface reads as never-written.
+            elif kw.arg in self.tokens:
+                self.hits.append((kw.arg, getattr(kw.value, "lineno", 0), KIND_FIELD_KWARG))
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
@@ -326,6 +368,34 @@ class ScanResult:
         out = [h for h in self.hits if h.token == token and h.path not in excluded]
         if high_confidence_only:
             out = [h for h in out if h.kind in HIGH_CONFIDENCE_KINDS]
+        if not include_tests:
+            out = [h for h in out if not h.is_test]
+        return sorted(out, key=lambda h: (h.path, h.line))
+
+    def producers_for(
+        self,
+        token: str,
+        include_tests: bool = False,
+        exclude_paths: Iterable[str] = (),
+    ) -> list[ConsumerHit]:
+        """Sites that WRITE `token`, the mirror of `consumers_for`.
+
+        Same `exclude_paths` contract and for the same reason: a registry that
+        declares a metric is not writing a value for it.
+
+        A metric with consumers and no producer is the shape that took a
+        three-hour manual trace on 2026-08-14 -- `expected_offline_suppression`
+        has a live consumer (`suppression.py`) and a real producer whose guard
+        is false for all five nodes, and the layer could report neither half.
+        This finds the writer; whether its guard can ever be true is a
+        question for a human, and the report says so rather than guessing.
+        """
+        excluded = set(exclude_paths)
+        out = [
+            h
+            for h in self.hits
+            if h.token == token and h.kind in WRITE_KINDS and h.path not in excluded
+        ]
         if not include_tests:
             out = [h for h in out if not h.is_test]
         return sorted(out, key=lambda h: (h.path, h.line))

@@ -186,3 +186,54 @@ def test_explicit_event_id_is_not_overwritten() -> None:
 def test_event_id_is_the_primary_key() -> None:
     pk = [c.name for c in JuniperAffectiveStateSQL.__table__.primary_key.columns]
     assert pk == ["event_id"]
+
+
+# --------------------------------------------------------------------------
+# Summability (the reason this table exists)
+# --------------------------------------------------------------------------
+
+
+def test_cold_start_is_persisted_and_indexed() -> None:
+    """`WHERE cold_start IS FALSE` is the qualifier on every correct aggregate
+    over this table, so it must be both stored and indexed.
+
+    Without it the table's whole justification is false: a consumer summing
+    counts to re-derive the rate over an hour silently double-counts. Caught
+    by review on the first two rows this table ever held -- a 913s window
+    entirely inside a 3600s one, SUM returning 7669 words against a true
+    5913 (+34.7%)."""
+    columns = JuniperAffectiveStateSQL.__table__.columns
+    assert "cold_start" in columns
+    assert columns["cold_start"].nullable is False
+    assert columns["cold_start"].index is True
+
+
+def test_cold_start_defaults_false_so_old_events_are_not_misread() -> None:
+    """An event published before this field existed carries no `cold_start`.
+    Defaulting True would mark every historical row unsummable; defaulting
+    False treats it as an ordinary tiling window, which is what those events
+    were -- the overlap only ever comes from a restart tick."""
+    assert _event().cold_start is False
+
+
+def test_a_restart_window_is_flagged_and_a_normal_one_is_not() -> None:
+    """The real shape, taken from the live rows that exposed this.
+
+    Both windows are legitimate observations and both are kept -- the
+    cold-start row is the only record of a span crossing a restart. The flag
+    is what lets a consumer sum the tiling rows and use the cold-start row
+    only to fill a genuine downtime gap."""
+    normal = _event()
+    restart = _event(
+        window_since=_SINCE - timedelta(seconds=2700),
+        window_until=_UNTIL,
+        cold_start=True,
+    )
+    assert normal.cold_start is False
+    assert restart.cold_start is True
+    # ...and the overlap the flag exists to warn about is real: the normal
+    # window sits entirely inside the restart window.
+    assert restart.window_since < normal.window_since
+    assert restart.window_until >= normal.window_until
+    # They stay distinct rows -- flagging is not deduplication.
+    assert normal.event_id != restart.event_id

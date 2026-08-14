@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String
 from sqlalchemy.sql import func
 
 from app.db import Base
@@ -25,11 +25,29 @@ class JuniperAffectiveStateSQL(Base):
     0.077 off 13 words).
 
     Persisting ``swear_count`` and ``word_count`` rather than only the ratio
-    means the window choice is no longer baked in: any consumer can re-derive
+    means the window choice is no longer baked in: a consumer can re-derive
     the rate over an hour, a day, or a session by summing counts, which is
     exactly how ``aggregate_scores()`` weights correctly across messages of
     very different lengths. A stored ratio could not be re-aggregated without
     reintroducing the short-message bias.
+
+    SUM ONLY WHERE ``cold_start IS FALSE``.
+    ---------------------------------------
+    Ordinary ticks tile exactly -- this tick's ``window_since`` is the last
+    one's ``window_until`` -- so they sum cleanly. A cold-start tick does not:
+    it is ``cold_start_lookback_sec`` wide (3600s against a 900s poll live),
+    so it re-covers up to four windows a previous run already published.
+
+    This is not theoretical. It was caught by review on the FIRST TWO ROWS
+    this table ever held -- a 913s window sitting entirely inside a 3600s
+    one, where the obvious query returned 7669 words against a true 5913,
+    +34.7%. An earlier version of this docstring promised summability with no
+    such caveat, which would have been wrong for every consumer that believed
+    it.
+
+    Cold-start rows are kept rather than dropped: they are the only record of
+    windows spanning a restart, so they are what fills a genuine downtime gap.
+    They are just not summable alongside the tiling rows.
 
     Deliberately no consumer behaviour, no threshold, and no Hub panel in
     this patch -- same discipline as ``DocSemanticDriftSQL``. Just stop
@@ -63,5 +81,9 @@ class JuniperAffectiveStateSQL(Base):
     # with a 0.0 default would silently merge the two and make every
     # downstream average wrong.
     swear_frequency = Column(Float, nullable=True)
+
+    # Indexed because `WHERE cold_start IS FALSE` is the qualifier on every
+    # correct aggregate over this table -- see the class docstring.
+    cold_start = Column(Boolean, nullable=False, default=False, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

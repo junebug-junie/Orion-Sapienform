@@ -51,6 +51,18 @@ class JuniperAffectiveStateV1(BaseModel):
     # (no real typed messages fell in it) is a different fact from a calm
     # one (messages existed and none were swears).
     swear_frequency: float | None = None
+    # True on the FIRST tick after a producer (re)start, whose window is
+    # cold_start_lookback_sec wide instead of one poll interval -- 3600s
+    # against a 900s poll in the live config, so it re-covers up to four
+    # windows a previous run already published.
+    #
+    # Ordinary ticks tile exactly and can be summed. Cold-start windows
+    # OVERLAP them and cannot. Proven on the first two rows ever persisted
+    # (2026-08-14): a 913s window sat entirely inside a 3600s one, and the
+    # obvious SUM(word_count) over that hour returned 7669 against a true
+    # 5913 -- +34.7%. Defaults False so an event predating this field is not
+    # silently misread as a cold start.
+    cold_start: bool = False
 
     @model_validator(mode="after")
     def _fill_event_id(self) -> "JuniperAffectiveStateV1":

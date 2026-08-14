@@ -121,6 +121,18 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_REPL_ENABLED",
     )
     # --- Hub Agent Claude (FCC harness in chat) ---
+    # ── Room companion (Claude as a third social-room participant) ────
+    # Hub publishes an invite and relays the reply; it never spawns `claude`
+    # and never holds the Claude credential -- that lives in
+    # orion-room-companion. See services/orion-room-companion/README.md for
+    # why the credential is deliberately NOT in this container.
+    HUB_ROOM_CLAUDE_ENABLED: bool = Field(default=False)
+    HUB_ROOM_CLAUDE_ROOM_ID: str = Field(default="hub-direct")
+    HUB_ROOM_CLAUDE_PARTICIPANT_NAME: str = Field(default="Claude")
+    HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS: int = Field(default=12)
+    CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
+    CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
+
     HUB_AGENT_CLAUDE_ENABLED: bool = Field(
         default=False,
         alias="HUB_AGENT_CLAUDE_ENABLED",

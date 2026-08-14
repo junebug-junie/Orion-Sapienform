@@ -34,6 +34,7 @@ from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from scripts.endogenous_outreach import EndogenousOutreach
+from scripts.room_claude_relay import RoomClaudeRelay
 from scripts.agent_step_relay import AgentStepRelay
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
@@ -258,6 +259,7 @@ biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 endogenous_outreach: Optional[EndogenousOutreach] = None
+room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -359,7 +361,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -441,6 +443,20 @@ async def startup_event():
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
             )
             await endogenous_outreach.start(bus, cortex_client)
+
+            # Claude as a third room participant. Hub only publishes the
+            # invite and relays the reply -- orion-room-companion owns the
+            # credential and the subprocess.
+            room_claude_relay = RoomClaudeRelay(
+                request_channel=settings.CHANNEL_ROOM_CLAUDE_REQUEST,
+                utterance_channel=settings.CHANNEL_ROOM_CLAUDE_UTTERANCE,
+                participant_name=settings.HUB_ROOM_CLAUDE_PARTICIPANT_NAME,
+                service_name=settings.SERVICE_NAME,
+                service_version=settings.SERVICE_VERSION,
+                node_name=settings.NODE_NAME,
+                enabled=settings.HUB_ROOM_CLAUDE_ENABLED,
+            )
+            await room_claude_relay.start(bus)
 
             agent_step_relay = AgentStepRelay(channel=settings.HUB_CONTEXT_EXEC_EVENT_CHANNEL)
             await agent_step_relay.start(bus)
@@ -746,7 +762,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -797,6 +813,12 @@ async def shutdown_event() -> None:
         except Exception:
             pass
         endogenous_outreach = None
+    if room_claude_relay is not None:
+        try:
+            await room_claude_relay.stop()
+        except Exception:
+            pass
+        room_claude_relay = None
     if agent_step_relay is not None:
         try:
             await agent_step_relay.stop()

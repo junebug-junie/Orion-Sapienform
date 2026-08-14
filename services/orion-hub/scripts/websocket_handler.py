@@ -772,6 +772,11 @@ async def websocket_endpoint(websocket: WebSocket):
     endogenous_outreach = getattr(scripts.main, "endogenous_outreach", None)
     if endogenous_outreach is not None:
         endogenous_outreach.register_connection(connection_id, tts_q, active_turn)
+    # Same queue, so a Claude reply reaches the browser by the identical path
+    # an Orion outreach bubble does.
+    room_relay = getattr(scripts.main, "room_claude_relay", None)
+    if room_relay is not None:
+        room_relay.register_connection(connection_id, tts_q)
 
     try:
         while True:
@@ -804,6 +809,9 @@ async def websocket_endpoint(websocket: WebSocket):
             if str(data.get("type") or "").strip() == "session_hello":
                 if endogenous_outreach is not None:
                     endogenous_outreach.note_session(connection_id, data.get("session_id"))
+                _rr = getattr(scripts.main, "room_claude_relay", None)
+                if _rr is not None:
+                    _rr.note_session(connection_id, data.get("session_id"))
                 # Rebuild conversation context from persisted turns. `history`
                 # is in-memory and scoped to this socket, so before this every
                 # Hub restart silently discarded the running conversation -- and
@@ -835,6 +843,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # here, so this is the one place outreach can learn which thread
                 # to post into.
                 endogenous_outreach.note_session(connection_id, session_id)
+            _rr = getattr(scripts.main, "room_claude_relay", None)
+            if _rr is not None:
+                _rr.note_session(connection_id, session_id)
             if not session_id and diagnostic:
                 logger.warning("Missing session_id; publishing chat history with session_id=unknown")
             no_write = bool(data.get("no_write", settings.HUB_DEFAULT_NO_WRITE))
@@ -1989,6 +2000,9 @@ async def websocket_endpoint(websocket: WebSocket):
         _ACTIVE_TURNS_BY_CONNECTION.pop(connection_id, None)
         if endogenous_outreach is not None:
             endogenous_outreach.unregister_connection(connection_id)
+        _room_relay = getattr(scripts.main, "room_claude_relay", None)
+        if _room_relay is not None:
+            _room_relay.unregister_connection(connection_id)
         drain_task.cancel()
         biometrics_task.cancel()
         if notification_cache is not None:

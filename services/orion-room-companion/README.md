@@ -144,16 +144,55 @@ producing fluent text that was never Claude — the hardest failure in this
 service to catch by eye, and why every utterance records the CLI's own
 reported `model` and `cost_usd`.
 
-### Known issue, inherited from the pattern
+### CONFIRMED BUG: the `:ro` credential mount goes stale on token refresh
 
-The `:ro` mount cannot refresh. It depends on the host's own Claude Code
-rewriting `.credentials.json` **in place**. The CLI polls
-`stat(.credentials.json).mtimeMs` and reloads on change, so external updates
-are clearly anticipated — but if a refresh ever writes via atomic rename, the
-bind pins to a stale inode and auth dies silently. Unconfirmed either way, and
-it affects `orion-self-study-enrichment` equally. Baseline for the test at the
-next real refresh: `inode=5936136 mtime=1786697381`, host and container
-agreeing as of 2026-08-14.
+Predicted on 2026-08-14 as "unconfirmed either way", then confirmed the same
+day. **This breaks the room roughly every 7.5 hours, and it breaks
+`orion-self-study-enrichment` identically.**
+
+Claude Code refreshes the OAuth token by **atomic rename**, which creates a new
+inode. A single-file bind mount is bound to the *inode*, not the path, so the
+container keeps reading the old file forever. The old token is revoked
+server-side at refresh, so every subsequent turn fails:
+
+```text
+Failed to authenticate. API Error: 401 OAuth access token has been revoked.
+```
+
+Observed directly:
+
+```text
+baseline (morning)   inode=5936136 mtime=1786697381   host == container
+after refresh        host      inode=5936397 mtime=1786725885
+                     container inode=5936136 mtime=1786697381   <- pinned, stale
+```
+
+`orion-self-study-enrichment` was silently in this state too, with the same
+revoked-token error, and had been since the refresh.
+
+**Band-aid**: `docker restart` re-resolves the mount to the current inode.
+Verified — both containers came back on inode 5936397 and the smoke passed
+again. It buys ~7.5 hours.
+
+**Real fix, not yet applied** (needs a decision, see below): the single-file
+`:ro` mount is *structurally* wrong for a credential that refreshes. Options:
+
+1. **`claude setup-token`** — a long-lived token passed as an env var. It never
+   refreshes, so there is no rename and nothing to go stale. This is the third
+   time this option has surfaced as correct for a different reason; it was
+   rejected in phase 1 when the question was "how do we authenticate", where a
+   tested mount pattern beat a new one. That reasoning does not survive a
+   credential that structurally cannot stay fresh.
+2. **Mount the `~/.claude` directory** instead of the one file. Directory
+   mounts track renames correctly. Costs the narrow exposure this pattern was
+   specifically designed to preserve — transcripts, plugins and caches would
+   enter the container.
+3. **Re-copy the credential into `CLAUDE_CONFIG_DIR` before each turn**, from a
+   directory-mounted source. Keeps turns fresh; still needs the directory
+   mount, so it inherits option 2's exposure.
+
+Until one is applied, treat a `401 ... has been revoked` in this service as
+"the mount went stale", not "the operator logged out".
 
 ## Session continuity
 

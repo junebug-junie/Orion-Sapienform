@@ -804,11 +804,17 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for background in (task, watch_task):
-            if background:
-                background.cancel()
-                with contextlib.suppress(Exception):
-                    await background
+        pending = [t for t in (task, watch_task) if t is not None]
+        for background in pending:
+            background.cancel()
+        if pending:
+            # gather(return_exceptions=True) rather than a loop of
+            # `suppress(Exception)`: CancelledError derives from BaseException,
+            # not Exception, so suppress(Exception) does NOT catch it. The bus
+            # chassis's start() has no CancelledError handler, so awaiting it
+            # re-raised out of the loop and the SECOND task was never cancelled
+            # at all -- left pending at loop close, possibly mid-DB-query.
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 app = FastAPI(

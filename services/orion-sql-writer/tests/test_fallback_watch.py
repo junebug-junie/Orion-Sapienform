@@ -103,12 +103,46 @@ def test_a_new_incident_after_recovery_alerts_again() -> None:
     assert next_alert_threshold(5, STEP, mark) == (5, 5)
 
 
-def test_partial_drain_only_re_arms_the_levels_actually_given_back() -> None:
-    """15 -> 11 is still a 10-level backlog, so 10 must NOT re-alert."""
+def test_a_partial_drain_does_not_re_arm_anything() -> None:
+    """15 -> 11 holds the mark at 15. It does not ratchet down to 10.
+
+    Ratcheting down level-by-level is the intuitive implementation and it is
+    wrong, because the count is taken over a TRAILING window and drifts in both
+    directions all day as rows age out. See the next test.
+    """
     threshold, mark = next_alert_threshold(11, STEP, 15)
     assert threshold is None
-    assert mark == 10
-    assert next_alert_threshold(11, STEP, mark) == (None, 10)
+    assert mark == 15
+
+
+def test_oscillating_across_a_boundary_does_not_re_alert() -> None:
+    """The bug this file shipped in its first version.
+
+    Review replayed the escalation functions over the real 87 created_at_ts
+    values in the live bus_fallback_log at the shipped 300s/86400s/step-5
+    settings: 12 alerts across 20 days, SIX of them "crossed 5". A count
+    alternating 14/15 between polls alerted every other poll -- about 144 emails
+    a day. The window is trailing, so this oscillation is the normal state of
+    the metric, not an edge case.
+    """
+    mark = 0
+    fired = []
+    for count in [15, 14, 15, 13, 15, 14, 15, 11, 15, 14, 15]:
+        threshold, mark = next_alert_threshold(count, STEP, mark)
+        if threshold is not None:
+            fired.append(threshold)
+    assert fired == [15], f"oscillation across the 15 boundary re-alerted: {fired}"
+
+
+def test_only_a_full_drain_below_the_step_re_arms() -> None:
+    _, mark = next_alert_threshold(22, STEP, 0)
+    assert mark == 20
+    for count in (19, 12, 7, 5):
+        threshold, mark = next_alert_threshold(count, STEP, mark)
+        assert threshold is None, f"count={count} re-alerted"
+        assert mark == 20, f"count={count} ratcheted the mark down to {mark}"
+    threshold, mark = next_alert_threshold(4, STEP, mark)
+    assert (threshold, mark) == (None, 0)
 
 
 @pytest.mark.parametrize("step", [0, -1])
@@ -349,6 +383,52 @@ def test_no_payload_content_reaches_the_alert(db, sent) -> None:
         assert sentinel not in rendered, sentinel
 
 
+def test_an_unconfigured_notify_url_does_not_consume_the_crossing(db, sent) -> None:
+    """The one failure that must NOT advance the mark.
+
+    A failed HTTP send does advance it, deliberately -- otherwise one unreachable
+    notify service becomes an alert attempt every 300s. But an empty
+    NOTIFY_SERVICE_URL costs no network to retry, and burning the only alert for
+    a level because the key happened to be blank would lose it permanently.
+    """
+    import app.fallback_watch as fw
+    from app.models.fallback_alert_state import BusFallbackAlertState
+
+    _, factory = db
+
+    class _Unconfigured(_Settings):
+        notify_service_url = ""
+
+    _add_fallback_rows(factory, 6)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = fw.evaluate_once(_Unconfigured(), factory, now=now)
+
+    assert result["threshold"] is None
+    assert sent == []
+    session = factory()
+    state = session.get(BusFallbackAlertState, STATE_ROW_ID)
+    assert state.last_alerted_threshold == 0, "the crossing was consumed with nowhere to send it"
+    session.close()
+
+    # ...and once configured, the same backlog still alerts.
+    result = fw.evaluate_once(_Settings(), factory, now=now)
+    assert [c["threshold"] for c in sent] == [5]
+
+
+def test_production_defaults_now_to_wall_clock(db, sent) -> None:
+    """Every other DB test passes an explicit `now`, so the `now or
+    datetime.now(timezone.utc)` default -- the only branch production takes --
+    would otherwise never be exercised."""
+    import app.fallback_watch as fw
+
+    _, factory = db
+    _add_fallback_rows(factory, 6, age_seconds=60)
+    result = fw.evaluate_once(_Settings(), factory)
+
+    assert result["count"] == 6
+    assert [c["threshold"] for c in sent] == [5]
+
+
 def test_by_kind_breakdown_is_busiest_first(db, sent) -> None:
     _, factory = db
     _add_fallback_rows(factory, 2, kind="thought.event.v1")
@@ -384,6 +464,10 @@ def test_a_failed_send_does_not_retry_forever(db, monkeypatch: pytest.MonkeyPatc
     state = session.get(BusFallbackAlertState, STATE_ROW_ID)
     assert state.last_alerted_threshold == 5
     assert state.last_alert_status == "failed"
+    # A column named `last_alert_sent_at` must not be stamped by an alert that
+    # was never sent -- otherwise the state row tells an operator the opposite
+    # of what happened.
+    assert state.last_alert_sent_at is None
     session.close()
 
 
@@ -411,6 +495,33 @@ def test_drain_then_climb_alerts_again_through_the_database(db, sent) -> None:
 # --------------------------------------------------------------------------
 # Wiring
 # --------------------------------------------------------------------------
+
+
+def test_requests_is_a_declared_dependency() -> None:
+    """No unit test can catch this one -- the dev venv has `requests`.
+
+    orion/notify/client.py imports it at module level, and this service's
+    requirements.txt did not list it. Verified against the live image before this
+    was added: `from orion.notify.client import NotifyClient` raised
+    ModuleNotFoundError inside orion-athena-sql-writer. The watcher would have
+    logged fallback_watch_tick_failed every 300s and never sent anything --
+    the monitor built to end silent failures, failing silently.
+    """
+    text = (SERVICE_ROOT / "requirements.txt").read_text()
+    declared = {
+        line.split("==")[0].split(">=")[0].strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    assert "requests" in declared
+
+
+def test_notify_client_import_chain_is_satisfiable() -> None:
+    """The actual import the alert path performs, exercised eagerly rather than
+    only at the moment the first real alert fires."""
+    from orion.notify.client import NotifyClient
+
+    assert NotifyClient is not None
 
 
 def test_watcher_is_on_by_default() -> None:
@@ -450,25 +561,105 @@ def test_notify_host_is_the_compose_service_name() -> None:
     assert "NOTIFY_SERVICE_URL=http://notify:7140" in text
 
 
-def test_severity_reaches_both_email_and_in_app_in_the_live_policy() -> None:
-    """The alert is useless if the notify policy routes it nowhere.
+_NOTIFY_PKG = "_orion_notify_under_test"
 
-    `info` maps to `channels: []` and `warning` to in_app only, so a plausible
-    "don't be alarmist" edit to the severity would silently switch the email
-    off. Asserted against the real rules file rather than a copy.
+
+def _load_notify_module(modname: str):
+    """Import a module from services/orion-notify/app under a private package name.
+
+    Two constraints force this shape rather than a plain import:
+
+    - orion-notify's package is ALSO called `app`. Importing it normally
+      replaces this service's `app` in sys.modules and breaks every other test
+      in the directory depending on collection order -- cross-test contamination
+      is already a live problem here.
+    - `email_delivery.py` does `from .policy import Policy`, so a bare
+      spec_from_file_location load raises "attempted relative import with no
+      known parent package". A synthetic parent package with __path__ set gives
+      the relative import something to resolve against.
+
+    Modules are registered in sys.modules before exec because @dataclass
+    resolves string annotations through sys.modules[cls.__module__].
     """
-    import yaml
+    import importlib.util
+    import types
 
-    rules = yaml.safe_load((REPO_ROOT / "services/orion-notify/app/policy/rules.yaml").read_text())
-    by_severity = {}
-    for rule in rules["rules"]:
-        match = rule.get("match", {})
-        if match.get("event_kind"):
-            continue
-        for severity in match.get("severity", []) or []:
-            by_severity[severity] = rule["action"].get("channels", [])
+    app_dir = REPO_ROOT / "services/orion-notify/app"
+    if _NOTIFY_PKG not in sys.modules:
+        pkg = types.ModuleType(_NOTIFY_PKG)
+        pkg.__path__ = [str(app_dir)]
+        sys.modules[_NOTIFY_PKG] = pkg
 
-    assert set(by_severity["error"]) >= {"email", "in_app"}
+    full = f"{_NOTIFY_PKG}.{modname}"
+    spec = importlib.util.spec_from_file_location(full, app_dir / f"{modname}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[full] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _unload_notify_modules() -> None:
+    for name in [n for n in sys.modules if n == _NOTIFY_PKG or n.startswith(_NOTIFY_PKG + ".")]:
+        sys.modules.pop(name, None)
+
+
+def test_error_severity_is_what_actually_triggers_the_email() -> None:
+    """Asserted against the real gate on the real path.
+
+    `POST /notify` -- the handler NotifyClient.send() calls -- never invokes
+    Policy.evaluate. Email is decided solely by should_send_email() in
+    app/email_delivery.py. An earlier version of this test asserted on
+    rules.yaml, which is a real file that this path does not read: it would have
+    kept passing if someone changed should_send_email to exclude `error`.
+    """
+    try:
+        module = _load_notify_module("email_delivery")
+        from orion.schemas.notify import NotificationRequest
+
+        def _request(**kw):
+            return NotificationRequest(
+                source_service="orion-sql-writer",
+                event_kind="sqlwriter.fallback_backlog",
+                title="t",
+                **kw,
+            )
+
+        sends, reason = module.should_send_email(_request(severity="error"))
+        assert sends, reason
+        # And the belt-and-braces channels_requested keeps it sending even if the
+        # severity is later softened.
+        sends, _ = module.should_send_email(
+            _request(severity="warning", channels_requested=["email", "in_app"])
+        )
+        assert sends
+        # Sanity: the gate is real, not always-true.
+        assert not module.should_send_email(_request(severity="warning"))[0]
+    finally:
+        _unload_notify_modules()
+
+
+def test_the_real_outbound_request_passes_the_real_email_gate() -> None:
+    """End to end without a network call: build the actual request this watcher
+    sends, then feed it to orion-notify's actual email gate."""
+    from app.fallback_watch import build_alert_request
+
+    try:
+        module = _load_notify_module("email_delivery")
+        request = build_alert_request("title", "body", 15, 17, 86400)
+        sends, reason = module.should_send_email(request)
+        assert sends, f"the alert would not be emailed: {reason}"
+        assert "in_app" in (request.channels_requested or [])
+    finally:
+        _unload_notify_modules()
+
+
+def test_the_outbound_request_context_carries_no_row_content() -> None:
+    """`context` is echoed into the Hub card and the durable notify record."""
+    from app.fallback_watch import build_alert_request
+
+    request = build_alert_request("title", "body", 15, 17, 86400)
+    assert set(request.context) == {"threshold", "count", "window_seconds"}
+    assert all(isinstance(v, int) for v in request.context.values())
 
 
 def test_severity_survives_quiet_hours() -> None:

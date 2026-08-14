@@ -190,7 +190,7 @@ class Settings(BaseSettings):
     orion_situation_runtime_enabled: bool = Field(True, alias="ORION_SITUATION_RUNTIME_ENABLED")
     orion_situation_runtime_route: str = Field("chat", alias="ORION_SITUATION_RUNTIME_ROUTE")
     cortex_exec_llm_gateway_url: str = Field(
-        "http://orion-llm-gateway:8210", alias="CORTEX_EXEC_LLM_GATEWAY_URL"
+        "http://llm-gateway:8210", alias="CORTEX_EXEC_LLM_GATEWAY_URL"
     )
     orion_situation_runtime_probe_timeout_sec: float = Field(
         2.0, alias="ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC"

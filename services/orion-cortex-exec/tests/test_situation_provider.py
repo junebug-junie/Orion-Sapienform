@@ -39,7 +39,7 @@ def _settings(**overrides):
         "orion_situation_runtime_route": "chat",
         "orion_situation_runtime_ttl_seconds": 120,
         "orion_situation_runtime_probe_timeout_sec": 2.0,
-        "cortex_exec_llm_gateway_url": "http://orion-llm-gateway:8210",
+        "cortex_exec_llm_gateway_url": "http://llm-gateway:8210",
         "orion_presence_default_requestor": "Juniper",
         "orion_presence_persist_allowed": False,
     }

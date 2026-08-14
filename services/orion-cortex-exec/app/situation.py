@@ -120,7 +120,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_runtime_probe_timeout_sec", 2.0)
         ),
         llm_gateway_base_url=str(
-            getattr(settings, "cortex_exec_llm_gateway_url", "http://orion-llm-gateway:8210")
+            getattr(settings, "cortex_exec_llm_gateway_url", "http://llm-gateway:8210")
         ),
         default_requestor=str(getattr(settings, "orion_presence_default_requestor", "Juniper")),
         presence_persist_allowed=bool(getattr(settings, "orion_presence_persist_allowed", False)),

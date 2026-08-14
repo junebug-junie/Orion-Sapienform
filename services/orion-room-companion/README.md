@@ -122,8 +122,12 @@ retry.
 
 Room-native context and nothing from Orion's interior. Specifically:
 
-- The room framing (`SYSTEM_PROMPT` in `app/room_prompt.py`), on the first
-  turn of a session only.
+- The room framing (`SYSTEM_PROMPT` in `app/room_prompt.py`), re-sent as
+  `--append-system-prompt` on **every** turn. Not just the first: `--resume`
+  does not carry it, and a resumed turn without it reverts to Claude Code's
+  default assistant persona (verified live). It also cannot be moved into the
+  user-role text instead — Claude correctly refuses that as a prompt-injection
+  pattern. System framing has to arrive as system framing.
 - The roster and room continuity from the `social_memory` summary, passed
   through an **allowlist** (`_SUMMARY_KEYS`) rather than wholesale — this is a
   third-party-bound payload, so "everything we happened to have" is the wrong

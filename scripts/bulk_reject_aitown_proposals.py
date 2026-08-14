@@ -39,6 +39,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from orion.memory.consolidation_gate import ConsolidationGateResult  # noqa: E402
 from orion.memory.crystallization.formation_policy import (  # noqa: E402
+    DEFAULT_AUTO_ACTIVATE_PLATFORMS,
     FormationPolicy,
     resolve_formation_policy,
 )

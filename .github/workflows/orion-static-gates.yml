@@ -64,6 +64,14 @@ jobs:
       - name: Metric lineage gate (consumer existence, orphan ratchet)
         run: python scripts/check_metric_lineage.py --gate
 
+      # R4 definition-change alert. Red means a metric's meaning, schema,
+      # producers or consumers changed without config/metrics/
+      # metric_definitions.lock.json being regenerated -- the fix is to run
+      # `--update` and commit, which writes the change into the lock in plain
+      # English so it lands in the PR diff Juniper reads.
+      - name: Metric definition drift (re-lock required on any def change)
+        run: python scripts/check_definition_drift.py --gate
+
       - name: Inner-state registry completeness
         run: python scripts/check_inner_state_registry.py
 

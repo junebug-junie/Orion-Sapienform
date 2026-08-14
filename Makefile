@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-gate check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -81,6 +81,20 @@ check-metric-lineage:
 # ratcheting the debt UPWARD and exiting 0 without ever gating.
 check-metric-lineage-gate:
 	@$(METRIC_PYTHON) scripts/check_metric_lineage.py $(if $(filter 1 true yes TRUE YES,$(UPDATE_BASELINE)),--update-baseline,--gate)
+
+# Definition-change alert (R4): fails when a metric's resolved DEFINITION --
+# meaning, schema, producers, consumers, upstream -- changed without the lock
+# being regenerated. The lock's diff is the alert; see
+# scripts/check_definition_drift.py.
+#
+#   make check-definition-drift              # report
+#   make check-definition-drift GATE=1       # exit 1 on drift (what CI runs)
+#   make check-definition-drift UPDATE=1     # re-lock and print the deltas
+#
+# GATE/UPDATE use the same explicit-true matching as UPDATE_BASELINE above,
+# for the same reason: UPDATE=0 must not rewrite the lock.
+check-definition-drift:
+	@$(METRIC_PYTHON) scripts/check_definition_drift.py $(if $(filter 1 true yes TRUE YES,$(UPDATE)),--update,)$(if $(filter 1 true yes TRUE YES,$(GATE)),--gate,)
 
 # Live-bus gate: every channel marked single_consumer: true in
 # orion/bus/channels.yaml must have exactly one live subscriber

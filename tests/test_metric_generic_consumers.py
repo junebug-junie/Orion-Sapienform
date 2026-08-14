@@ -40,6 +40,7 @@ from orion.metrics.generic_consumers import (  # noqa: E402
     LIKELY,
     _GenericVisitor,
     _is_channel_vector_annotation,
+    module_touches_vectors,
     scan_generic_consumers,
     surfaces_at_risk,
 )
@@ -48,7 +49,13 @@ from orion.metrics.generic_consumers import (  # noqa: E402
 def _kinds(source: str, tokens: set[str]) -> list[tuple[str, str]]:
     visitor = _MetricVisitor(frozenset(tokens))
     visitor.visit(ast.parse(textwrap.dedent(source)))
-    return [(tok, kind) for tok, _line, kind in visitor.hits]
+    return [(tok, kind) for tok, _line, kind, _callee in visitor.hits]
+
+
+def _kinds_full(source: str, tokens: set[str]) -> list[tuple[str, str, str | None]]:
+    visitor = _MetricVisitor(frozenset(tokens))
+    visitor.visit(ast.parse(textwrap.dedent(source)))
+    return [(tok, kind, callee) for tok, _line, kind, callee in visitor.hits]
 
 
 # ------------------------------------------------- read vs write
@@ -108,8 +115,13 @@ def _generic(source: str, *, touches: bool = True):
     return visitor.found
 
 
-def test_max_over_an_annotated_vector_is_a_generic_consumer():
-    """`_current_pressure_proxy` in one line -- the exact miss."""
+def test_enumerator_over_an_annotated_vector_is_a_generic_consumer():
+    """`_current_pressure_proxy` in one line -- the exact miss.
+
+    Named for the ENUMERATORS branch it actually exercises: `.items()` inside
+    the max() matches before AGGREGATORS is reached. The aggregator path has
+    its own test below; conflating them let AGGREGATORS go untested.
+    """
     found = _generic(
         """
         def proxy(vector: dict[str, float]) -> float:
@@ -140,13 +152,80 @@ def test_named_subscript_only_is_not_generic():
 
 def test_module_not_touching_vectors_is_skipped():
     """`dict[str, float]` is a shape, not a meaning. Without this filter the
-    first run reported topic shares and rank scores as channel consumers."""
+    first run reported topic shares and rank scores as channel consumers.
+
+    Only asserts the flag is HONORED. `module_touches_vectors` is what decides
+    the flag, and it is tested separately below -- mutation testing found that
+    pinning it to True left all 27 tests green while the live output grew to
+    every `dict[str, float]` parameter in the repo.
+    """
     source = """
         def top_share(shares: dict[str, float]) -> float:
             return max(shares.values())
     """
     assert _generic(source, touches=True) != []
     assert _generic(source, touches=False) == []
+
+
+def _touches(source: str) -> bool:
+    return module_touches_vectors(ast.parse(textwrap.dedent(source)))
+
+
+def test_module_scope_needs_a_real_reference_not_prose():
+    """A docstring mentioning `node_vectors` is not a reference to one.
+
+    The first version substring-matched the source, so 20 of 58 matching
+    modules had zero AST reference -- including this detector's own module,
+    and including both false positives in the `likely` tier.
+    """
+    assert not _touches('"""Talks about node_vectors and FieldStateV1."""')
+    assert not _touches("# node_vectors appears only in this comment\nx = 1")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "for nid, v in field.node_vectors.items(): pass",
+        "x = state.capability_vectors",
+        "from orion.schemas.field_state import FieldStateV1",
+        "def f(s: FieldStateV1): pass",
+    ],
+)
+def test_module_scope_accepts_real_references(source):
+    assert _touches(source)
+
+
+def test_aggregator_path_fires_without_an_enumerator():
+    """`max(vector)` with no `.items()` anywhere.
+
+    Mutation testing caught this: the previous max() test wrote
+    `max(v for k, v in vector.items())`, which matches on the ENUMERATORS
+    branch before AGGREGATORS is ever reached -- emptying AGGREGATORS left all
+    27 tests green. All 11 aggregator builtins were untested.
+    """
+    found = _generic(
+        """
+        def proxy(vector: dict[str, float]) -> float:
+            return max(vector)
+        """
+    )
+    assert len(found) == 1
+    assert "max()" in found[0].evidence
+
+
+def test_capability_vectors_is_a_confirmed_root():
+    """5 of the 13 live confirmed sites come from capability_vectors; dropping
+    it from VECTOR_ATTRS previously broke no test."""
+    found = _generic("for cid, v in field.capability_vectors.items(): pass")
+    assert [c.confidence for c in found] == [CONFIRMED]
+    assert "capability_vectors" in found[0].evidence
+
+
+def test_both_vector_roots_appear_in_the_live_scan():
+    found = scan_generic_consumers(REPO_ROOT)
+    evidence = " ".join(c.evidence for c in found)
+    assert "node_vectors" in evidence
+    assert "capability_vectors" in evidence
 
 
 def test_comprehension_reports_a_real_line_number():
@@ -247,3 +326,82 @@ def test_expected_offline_suppression_producer_is_discoverable():
         h.path == "services/orion-field-digester/app/ingest/state_deltas.py"
         for h in writers
     ), [h.path for h in writers]
+
+
+def test_field_kwarg_counts_only_for_the_declaring_schema():
+    """An unqualified `x=0.5` kwarg is not evidence that x was written.
+
+    Live: `confidence=` appears 425 non-test times across 142 callees and NOT
+    ONE targets a schema declaring `confidence`. Counting them unqualified
+    produced a 434-row "WRITTEN BY" list with zero real writers, and held 19
+    metrics off --unwritten on passthrough like `max_gap_sec=args.max_gap_sec`.
+    """
+    from orion.metrics.consumers import scan_repo
+    from orion.metrics.lineage import build_graph
+
+    graph = build_graph()
+    scan = scan_repo(graph.scan_tokens().keys())
+    sources = graph.registry_sources_for("confidence")
+    schemas = {n.schema_id for n in graph.by_token("confidence") if n.schema_id}
+    assert schemas, "confidence must resolve to schema-bearing nodes"
+
+    gated = scan.producers_for("confidence", exclude_paths=sources, schema_ids=schemas)
+    assert all(
+        h.kind != KIND_FIELD_KWARG or h.callee in schemas for h in gated
+    ), [(h.path, h.line, h.callee) for h in gated if h.kind == KIND_FIELD_KWARG]
+    # The conservative default: no schema_ids means no field_kwarg evidence,
+    # which can leave a metric ON the unwritten list but never silently off it.
+    ungated = scan.producers_for("confidence", exclude_paths=sources)
+    assert all(h.kind != KIND_FIELD_KWARG for h in ungated)
+
+
+def test_callee_is_recorded_for_kwarg_hits():
+    hits = _kinds_full("Model(m=0.5)", {"m"})
+    assert hits == [("m", KIND_FIELD_KWARG, "Model")]
+    hits = _kinds_full('P(channel="m")', {"m"})
+    assert hits == [("m", KIND_CHANNEL_KWARG, "P")]
+
+
+def test_dotted_callee_records_the_attribute_name():
+    assert _kinds_full("mod.Model(m=0.5)", {"m"}) == [("m", KIND_FIELD_KWARG, "Model")]
+
+
+def test_floor_warning_prints_for_a_multi_surface_token(capsys):
+    """The FLOOR warning must key on ALL nodes for the token, not the last one.
+
+    `cmd_metric` prints a per-node block in a `for node in nodes:` loop, then
+    checked `node.surface` afterwards -- the leaked binding, i.e. the LAST
+    node. `confidence`, `memory_pressure` and `repair_pressure` are the three
+    multi-surface tokens (named in gate.py's own orphan_nodes docstring), and
+    for all three the last node is organ_signal/inner_state, so the field
+    channel's "do not retire on this alone" warning silently never printed --
+    on exactly the tokens most likely to be misread.
+
+    Mutation testing found this fix untested: reverting it to `node.surface`
+    left every other test green, because nothing covered cmd_metric at all.
+    """
+    import importlib.util
+
+    from orion.metrics.consumers import scan_repo
+    from orion.metrics.lineage import build_graph
+
+    spec = importlib.util.spec_from_file_location(
+        "check_metric_lineage", REPO_ROOT / "scripts" / "check_metric_lineage.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    graph = build_graph()
+    scan = scan_repo(graph.scan_tokens().keys())
+
+    for token in ("confidence", "memory_pressure", "repair_pressure"):
+        surfaces = {n.surface for n in graph.by_token(token)}
+        assert "field_channel" in surfaces and len(surfaces) > 1, (token, surfaces)
+        # The last node must NOT be the field channel, or the bug would have
+        # been invisible for this token and the test would prove nothing.
+        assert graph.by_token(token)[-1].surface != "field_channel", token
+
+        capsys.readouterr()
+        mod.cmd_metric(graph, scan, token)
+        out = capsys.readouterr().out
+        assert "FLOOR, not a total" in out, f"{token} lost its retirement warning"

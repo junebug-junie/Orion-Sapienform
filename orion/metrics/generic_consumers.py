@@ -54,6 +54,11 @@ KNOWN MISSES, stated rather than discovered later:
 - an unannotated vector parameter (`def f(vector):`) -- no signal to key on
   without type inference;
 - a vector stored on an object attribute and iterated in another method;
+- **the whole vector handed onward**: `helper(vector)` and `return vector`
+  are NOT detected, and they are two of the commonest ways a vector escapes.
+  Probed rather than assumed -- also missed: `{**vector}`, `vector | other`,
+  and `vector.get(k)` inside a loop. Detected: `.items()/.values()/.keys()`,
+  `for k in vector`, comprehensions, and `max/sum/sorted/dict(vector)`;
 - generic consumption in a non-Python surface.
 
 So a clean result here means "no generic consumer *found*", never "none
@@ -189,13 +194,42 @@ class _GenericVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def module_touches_vectors(tree: ast.AST) -> bool:
+    """Does this module make a REAL reference to a channel vector?
+
+    AST, not a substring search over the source. The first version asked
+    `"node_vectors" in source`, which is true for any module that merely
+    mentions the word in a comment or docstring: 20 of 58 matching modules had
+    zero AST reference, and both false positives in the `likely` tier came from
+    that set -- `normalize_across_targets` (keys are target_ids) and
+    `magnitude_scorer` (keys are producer domains), the exact "rank score" and
+    "prediction-error domain" categories this filter was introduced to remove.
+    This module itself would have matched its own docstring.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in VECTOR_ATTRS:
+            return True
+        if isinstance(node, ast.Name) and node.id in ("FieldStateV1", *VECTOR_ATTRS):
+            return True
+        # `from orion.schemas.field_state import FieldStateV1`
+        if isinstance(node, ast.ImportFrom):
+            if any(a.name == "FieldStateV1" for a in node.names):
+                return True
+        # A `vector: dict[str, float]` parameter in a module that annotates
+        # against FieldStateV1 is covered by the cases above; a bare string in
+        # a docstring is deliberately NOT.
+    return False
+
+
 def _generic_use_of(func: ast.AST, param: str) -> tuple[int, str] | None:
     """Is `param` used as a whole, rather than subscripted by name?
 
-    Returns (lineno, description) for the first generic use, or None. Reporting
-    only the first keeps one function from emitting a dozen near-identical
-    rows; the point is to name the SITE, not to enumerate every expression in
-    it.
+    Returns (lineno, description) for the first generic use found in
+    `ast.walk` order -- which is breadth-first, NOT source order, so a shallow
+    use on a later line can be reported ahead of a nested one on an earlier
+    line. Accepted deliberately: the point is to name the SITE so a human goes
+    and reads the function, not to pinpoint an expression. Stated because an
+    earlier docstring said "the first generic use" and meant source order.
     """
     for node in ast.walk(func):
         # param.items() / .values() / .keys()
@@ -239,12 +273,14 @@ def scan_generic_consumers(
         if is_test and not include_tests:
             continue
         try:
+            # Parsed once and reused -- the module-scope check runs on this
+            # same tree rather than re-reading the file.
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
         except (SyntaxError, ValueError):
             continue
-        source = path.read_text(encoding="utf-8", errors="replace")
-        touches = any(attr in source for attr in VECTOR_ATTRS) or "FieldStateV1" in source
-        visitor = _GenericVisitor(rel, is_test, module_touches_vectors=touches)
+        visitor = _GenericVisitor(
+            rel, is_test, module_touches_vectors=module_touches_vectors(tree)
+        )
         visitor.visit(tree)
         out.extend(visitor.found)
     out.sort(key=lambda c: (c.confidence != CONFIRMED, c.path, c.line))

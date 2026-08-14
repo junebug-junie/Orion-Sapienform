@@ -154,7 +154,12 @@ def cmd_metric(graph, scan, token: str, as_json: bool = False) -> int:
         and h.kind in HIGH_CONFIDENCE_KINDS
         and h.path not in sources
     ]
-    writers = scan.producers_for(token, include_tests=False, exclude_paths=sources)
+    writers = scan.producers_for(
+        token,
+        include_tests=False,
+        exclude_paths=sources,
+        schema_ids={n.schema_id for n in nodes if n.schema_id},
+    )
     print(f"  declared in    {', '.join(sorted(sources))} (excluded from blast radius)")
     print(f"  WRITTEN BY (discovered, non-test): {len(writers)}")
     for hit in writers:
@@ -173,7 +178,14 @@ def cmd_metric(graph, scan, token: str, as_json: bool = False) -> int:
     # is how `field_coherence_warning` read as "zero consumers" on 2026-08-14
     # while attention's `_current_pressure_proxy()` max()'d over it every tick.
     generic = _generic_consumers_cached()
-    if node.surface in VECTOR_SURFACES and generic:
+    # `any(n...)`, NOT `node.surface` -- `node` here would be whatever the
+    # per-node print loop above left bound, i.e. the LAST node for this token.
+    # Three tokens span surfaces (`confidence`, `memory_pressure`,
+    # `repair_pressure` -- named in gate.py's own orphan_nodes docstring), and
+    # for all three the last node is organ_signal/inner_state, so the field
+    # channel's floor warning was silently suppressed on exactly the tokens
+    # most likely to be misread. Caught in review; no test covered cmd_metric.
+    if any(n.surface in VECTOR_SURFACES for n in nodes) and generic:
         confirmed = [c for c in generic if c.confidence == CONFIRMED]
         print(
             f"\n  PLUS {len(generic)} generic whole-vector consumer(s) "
@@ -306,14 +318,23 @@ def cmd_unwritten(graph, scan) -> int:
         token = node.scan_token
         if token not in checked:
             checked[token] = bool(
-                scan.producers_for(token, exclude_paths=graph.registry_sources_for(token))
+                scan.producers_for(
+                    token,
+                    exclude_paths=graph.registry_sources_for(token),
+                    schema_ids={
+                        n.schema_id for n in graph.by_token(token) if n.schema_id
+                    },
+                )
             )
         if not checked[token]:
             by_surface.setdefault(node.surface, []).append(token)
 
     assessable = {s: v for s, v in by_surface.items() if s not in _WRITER_BLIND_SURFACES}
     total = sum(len(set(v)) for v in assessable.values())
-    print(f"  {total} unwritten URNs on surfaces this detector can actually assess\n")
+    # Tokens, not URNs: 595 URNs collapse to 397 scan tokens, and a write is
+    # discovered per token. Saying "URNs" here would overstate by the
+    # multi-node factor.
+    print(f"  {total} unwritten scan tokens on surfaces this detector can assess\n")
     for surface in sorted(assessable):
         toks = sorted(set(assessable[surface]))
         print(f"    {surface:<14} {len(toks):>4}   {_WRITER_RELIABILITY.get(surface, '')}")

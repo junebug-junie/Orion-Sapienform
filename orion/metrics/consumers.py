@@ -76,7 +76,7 @@ KIND_FIELD_KWARG = "field_kwarg"  # Model(metric=0.5) -- sets a value FOR the me
 # Kinds that evidence a metric being WRITTEN rather than read. The layer had no
 # producer concept at all until 2026-08-14, which is how
 # `expected_offline_suppression` -- a channel with a real producer at
-# services/orion-field-digester/app/ingest/state_deltas.py:87, gated on a
+# services/orion-field-digester/app/ingest/state_deltas.py:94, gated on a
 # config flag that is false for every node in the fleet -- could be traced only
 # by hand. `declared but never written` is the exact mirror of the existing
 # orphan (`registered but never read`) detector and neither is derivable from
@@ -113,6 +113,12 @@ class ConsumerHit:
     line: int
     kind: str
     is_test: bool
+    # Callee name for kwarg-shaped hits (`Model(metric=0.5)` -> "Model").
+    # Load-bearing for KIND_FIELD_KWARG: without it, ANY function called with
+    # a kwarg named after a metric counted as writing it. Live measurement:
+    # `confidence=` appears 425 non-test times across 142 distinct callees and
+    # NOT ONE targets a schema that declares `confidence`.
+    callee: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -121,6 +127,7 @@ class ConsumerHit:
             "line": self.line,
             "kind": self.kind,
             "is_test": self.is_test,
+            "callee": self.callee,
         }
 
 
@@ -156,18 +163,29 @@ def iter_source_files(
             yield path
 
 
+def _callee_name(func: ast.AST) -> str | None:
+    """`Model(...)` -> "Model", `mod.Model(...)` -> "Model", else None."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
 class _MetricVisitor(ast.NodeVisitor):
     """Collect string-literal metric accesses, classified by access kind."""
 
     def __init__(self, tokens: frozenset[str]) -> None:
         self.tokens = tokens
-        self.hits: list[tuple[str, int, str]] = []
+        self.hits: list[tuple[str, int, str, str | None]] = []
         # Nodes already claimed by a higher-confidence classification, so a
         # subscript's inner Constant is not also reported as a bare literal.
         self._claimed: set[int] = set()
 
-    def _record(self, node: ast.AST, value: str, kind: str) -> None:
-        self.hits.append((value, getattr(node, "lineno", 0), kind))
+    def _record(
+        self, node: ast.AST, value: str, kind: str, callee: str | None = None
+    ) -> None:
+        self.hits.append((value, getattr(node, "lineno", 0), kind, callee))
         self._claimed.add(id(node))
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
@@ -209,12 +227,14 @@ class _MetricVisitor(ast.NodeVisitor):
                 and isinstance(kw.value.value, str)
                 and kw.value.value in self.tokens
             ):
-                self._record(kw.value, kw.value.value, KIND_CHANNEL_KWARG)
+                self._record(kw.value, kw.value.value, KIND_CHANNEL_KWARG, _callee_name(func))
             # Model(reasoning_load=0.5) -- the kwarg NAME is the metric. This
             # is how every pydantic-backed inner_state scalar is produced, and
             # without it that whole surface reads as never-written.
             elif kw.arg in self.tokens:
-                self.hits.append((kw.arg, getattr(kw.value, "lineno", 0), KIND_FIELD_KWARG))
+                self.hits.append(
+                    (kw.arg, getattr(kw.value, "lineno", 0), KIND_FIELD_KWARG, _callee_name(func))
+                )
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
@@ -266,7 +286,7 @@ class _MetricVisitor(ast.NodeVisitor):
             and node.value in self.tokens
             and id(node) not in self._claimed
         ):
-            self.hits.append((node.value, getattr(node, "lineno", 0), KIND_LITERAL))
+            self.hits.append((node.value, getattr(node, "lineno", 0), KIND_LITERAL, None))
         self.generic_visit(node)
 
 
@@ -282,7 +302,10 @@ def scan_python(path: Path, tokens: frozenset[str], rel: str) -> list[ConsumerHi
     visitor = _MetricVisitor(tokens)
     visitor.visit(tree)
     is_test = _is_test_path(rel)
-    return [ConsumerHit(tok, rel, line, kind, is_test) for tok, line, kind in visitor.hits]
+    return [
+        ConsumerHit(tok, rel, line, kind, is_test, callee)
+        for tok, line, kind, callee in visitor.hits
+    ]
 
 
 def scan_config(path: Path, tokens: frozenset[str], rel: str) -> list[ConsumerHit]:
@@ -377,6 +400,7 @@ class ScanResult:
         token: str,
         include_tests: bool = False,
         exclude_paths: Iterable[str] = (),
+        schema_ids: Iterable[str] = (),
     ) -> list[ConsumerHit]:
         """Sites that WRITE `token`, the mirror of `consumers_for`.
 
@@ -391,13 +415,25 @@ class ScanResult:
         question for a human, and the report says so rather than guessing.
         """
         excluded = set(exclude_paths)
-        out = [
-            h
-            for h in self.hits
-            if h.token == token and h.kind in WRITE_KINDS and h.path not in excluded
-        ]
-        if not include_tests:
-            out = [h for h in out if not h.is_test]
+        schemas = set(schema_ids)
+        out = []
+        for h in self.hits:
+            if h.token != token or h.kind not in WRITE_KINDS or h.path in excluded:
+                continue
+            # A bare `x=0.5` kwarg is NOT evidence that x was written -- it is
+            # evidence that some function takes a parameter with that name.
+            # Counting it unqualified made `confidence` report 434 writers, none
+            # of which wrote `confidence`, and held 19 metrics off the unwritten
+            # list on passthrough like `max_gap_sec=args.max_gap_sec`. So this
+            # kind counts only when the callee IS a schema that declares the
+            # metric. No schema_ids supplied means no field_kwarg evidence,
+            # which is the conservative direction: it can leave a metric ON the
+            # unwritten list, never silently take one off.
+            if h.kind == KIND_FIELD_KWARG and (not schemas or h.callee not in schemas):
+                continue
+            if not include_tests and h.is_test:
+                continue
+            out.append(h)
         return sorted(out, key=lambda h: (h.path, h.line))
 
 

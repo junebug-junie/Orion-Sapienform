@@ -13,8 +13,12 @@ Delivery (all three already existed before this module; none are new rails):
   1. In-process fan-out to every connected Hub websocket's outbound queue
      (``websocket_handler.drain_queue``) as ``{"kind": "orion_outreach"}``,
      which the frontend renders as a normal Orion chat bubble.
-  2. ``chat.history.message.v1`` on the bus with ``role="assistant"`` so the
-     message survives a page reload (``chat_history.publish_chat_history``).
+  2. ``chat.history.message.v1`` on the bus with ``role="assistant"``
+     (``chat_history.publish_chat_history``), persisted by orion-sql-writer.
+     NOTE: this makes the outreach durable *as data* only. Hub's frontend has
+     no conversation-restore fetch at all, so a reload does not bring the
+     bubble back -- rail 3 is what a returning browser actually sees. Giving
+     the UI a real restore path is a separate piece of work.
   3. ``HubNotificationEvent`` on ``NOTIFY_IN_APP_CHANNEL`` so the outreach is
      visible even with no browser open — same pattern as
      ``bus_synaptic_trigger_notifier``.
@@ -25,10 +29,16 @@ move onto the bus like rails 2 and 3 already are.
 
 Safety posture — this must never disturb a real turn:
 
-  * Off by default (``HUB_ENDOGENOUS_OUTREACH_ENABLED``).
-  * Blocked while any connection has a turn in flight.
-  * Quiet hours, per-day cap, and a minimum cooldown between outreaches.
-  * ``no_write`` cortex call: no autonomy/goal state is mutated by generation.
+  * Off by default (``HUB_ENDOGENOUS_OUTREACH_ENABLED``), and ``force`` on the
+    debug endpoint does not override that.
+  * Blocked while any connection is processing an inbound message, re-checked
+    immediately before delivery (generation takes seconds; a turn can start
+    inside that window).
+  * Quiet hours, per-day cap, and a minimum cooldown between outreaches, all on
+    an explicitly configured timezone rather than the container's.
+  * Generation pins ``tool_execution_policy``/``action_execution_policy`` to
+    ``none`` and disables recall, so an unsupervised tick cannot execute tools
+    or actions.
   * Empty generated text is dropped, never shipped as a placeholder
     (AGENTS.md §0A, "no empty-shell cognition").
   * Every failure is swallowed and logged; the loop survives and no chat turn,
@@ -45,6 +55,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
@@ -297,6 +308,7 @@ class EndogenousOutreach:
         timeout_sec: float,
         notify_channel: str,
         fallback_session_id: str,
+        timezone_name: str = "UTC",
         rng: Optional[random.Random] = None,
     ) -> None:
         self.enabled = enabled
@@ -310,11 +322,31 @@ class EndogenousOutreach:
         self.timeout_sec = max(1.0, float(timeout_sec))
         self.notify_channel = notify_channel
         self.fallback_session_id = fallback_session_id
+        # Quiet hours and the daily cap are wall-clock policy about Juniper's
+        # day, so they must not ride on the container's process timezone (Hub
+        # sets no TZ, so that is UTC). Resolved explicitly, with a loud fallback
+        # rather than a silent shift to UTC.
+        self.timezone_name = str(timezone_name or "UTC").strip() or "UTC"
+        try:
+            self._tz = ZoneInfo(self.timezone_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            logger.error(
+                "endogenous_outreach_bad_timezone name=%r falling back to UTC; "
+                "quiet hours and the daily cap will use UTC boundaries",
+                self.timezone_name,
+            )
+            self.timezone_name = "UTC"
+            self._tz = ZoneInfo("UTC")
         self._rng = rng or random.Random()
 
         self._bus: Any = None
         self._cortex_client: Any = None
         self._task: Optional[asyncio.Task] = None
+        # One outreach at a time: the background tick and the debug trigger
+        # endpoint would otherwise both pass the cooldown gate while the other
+        # is still inside _generate, and each only bumps the counters after
+        # delivery.
+        self._send_lock = asyncio.Lock()
 
         # connection_id -> (outbound queue, active_turn dict, session_id|None)
         self._connections: Dict[str, Dict[str, Any]] = {}
@@ -336,10 +368,32 @@ class EndogenousOutreach:
             "queue": queue,
             "active_turn": active_turn,
             "session_id": None,
+            "busy": False,
         }
 
     def unregister_connection(self, connection_id: str) -> None:
         self._connections.pop(connection_id, None)
+
+    def note_busy(self, connection_id: str) -> None:
+        """This socket is processing an inbound message.
+
+        ``active_turn["correlation_id"]`` is NOT sufficient on its own: the ws
+        handler only sets it for the unified-``orion`` and ``agent-claude``
+        lanes, while the UI's Quick, Story, and Agent modes all fall through to
+        the general cortex path and never touch it. This flag is set for every
+        inbound message regardless of mode, and cleared when the handler returns
+        to ``receive_text()`` -- which is the one point every ``continue`` path
+        in that loop passes through.
+        """
+        entry = self._connections.get(connection_id)
+        if entry is not None:
+            entry["busy"] = True
+
+    def note_idle(self, connection_id: str) -> None:
+        """This socket is back to waiting for input."""
+        entry = self._connections.get(connection_id)
+        if entry is not None:
+            entry["busy"] = False
 
     def note_session(self, connection_id: str, session_id: Optional[str]) -> None:
         """Record the session a connection is chatting in.
@@ -403,13 +457,14 @@ class EndogenousOutreach:
 
     def _turn_in_flight(self) -> bool:
         return any(
-            bool((entry.get("active_turn") or {}).get("correlation_id"))
+            bool(entry.get("busy"))
+            or bool((entry.get("active_turn") or {}).get("correlation_id"))
             for entry in self._connections.values()
         )
 
     def _gate_inputs(self, now: Optional[float] = None) -> OutreachGateInputs:
         ts = float(now if now is not None else time.time())
-        local = datetime.fromtimestamp(ts)
+        local = datetime.fromtimestamp(ts, tz=self._tz)
         self._roll_daily_counter(local.date())
         return OutreachGateInputs(
             enabled=self.enabled,
@@ -436,6 +491,7 @@ class EndogenousOutreach:
             "min_cooldown_sec": self.min_cooldown_sec,
             "daily_cap": self.daily_cap,
             "quiet_hours": [self.quiet_start_hour, self.quiet_end_hour],
+            "timezone": self.timezone_name,
             "llm_route": self.llm_route,
             "connections": len(self._connections),
             "sent_today": self._sent_today,
@@ -461,12 +517,19 @@ class EndogenousOutreach:
     async def maybe_outreach(self, *, force: bool = False) -> Dict[str, Any]:
         """One decision cycle. Returns a status dict; never raises.
 
-        ``force`` skips the random roll only — every safety gate still applies,
-        so the debug endpoint cannot be used to bypass cooldown or talk over an
-        in-flight turn.
+        ``force`` skips the random roll and NOTHING else — every safety gate
+        still applies, including ``enabled``. The debug endpoint that calls this
+        is unauthenticated, so a carve-out here would make "off by default" a
+        lie that one POST could undo.
         """
+        if self._send_lock.locked():
+            return self._record({"outreach": False, "reason": "already_sending"})
+        async with self._send_lock:
+            return await self._outreach_once(force=force)
+
+    async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
         blocked = outreach_block_reason(self._gate_inputs())
-        if blocked and not (force and blocked == "disabled"):
+        if blocked:
             return self._record({"outreach": False, "reason": blocked})
         if not force and not self._should_roll():
             return self._record({"outreach": False, "reason": "not_rolled"})
@@ -490,6 +553,26 @@ class EndogenousOutreach:
         if is_pass_response(text):
             return self._record(
                 {"outreach": False, "reason": "orion_passed", "generation": gen_debug}
+            )
+
+        # Re-gate immediately before delivery. Generation is a bus RPC bounded
+        # by timeout_sec (default 60s), and Juniper can easily start typing
+        # inside that window -- a gate checked only at the top of the tick would
+        # let outreach talk straight over a turn that began mid-generation.
+        blocked_now = outreach_block_reason(self._gate_inputs())
+        if blocked_now:
+            logger.info(
+                "endogenous_outreach_dropped_after_generation corr=%s reason=%s chars=%d",
+                correlation_id,
+                blocked_now,
+                len(text),
+            )
+            return self._record(
+                {
+                    "outreach": False,
+                    "reason": f"{blocked_now}_after_generation",
+                    "generation": gen_debug,
+                }
             )
 
         await self._deliver(text=text, session_id=session_id, correlation_id=correlation_id)
@@ -562,10 +645,24 @@ class EndogenousOutreach:
             session_id=session_id,
             options={
                 "llm_route": self.llm_route,
-                "no_write": True,
-                "use_recall": False,
+                # These three are the keys the executor actually reads. A bare
+                # options["no_write"] is inert here: the only thing that
+                # translates it is cortex_request_builder (which reads it as a
+                # TOP-LEVEL payload key, not an option), and this module calls
+                # cortex_client directly rather than going through that builder.
+                # orion-cortex-exec/app/supervisor.py reads no_write_active.
+                "tool_execution_policy": "none",
+                "action_execution_policy": "none",
+                "no_write_active": True,
                 "source": OUTREACH_TAG,
             },
+            # Recall is controlled by the typed `recall` field, not by an
+            # option: orion-cortex-gateway/app/bus_client.py builds a
+            # RecallDirective from it and falls back to RecallDirective()
+            # (enabled=True) when it is None. An unsolicited tick has no user
+            # query to retrieve against, so leaving this unset would fire full
+            # default recall on every outreach.
+            recall={"enabled": False},
             metadata={"source": OUTREACH_TAG, "unsolicited": True},
         )
         started = time.monotonic()

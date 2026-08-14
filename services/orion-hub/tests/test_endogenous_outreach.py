@@ -371,7 +371,9 @@ def test_generation_timeout_returns_empty_not_raise(monkeypatch) -> None:
     assert result["generation"]["error"] == "timeout"
 
 
-def test_generation_sends_configured_lane_and_no_write(monkeypatch) -> None:
+def test_generation_sends_configured_lane(monkeypatch) -> None:
+    # Execution policy / recall assertions live in
+    # test_generation_pins_execution_policies_and_disables_recall.
     outreach = _outreach(llm_route="metacog")
     seen: dict = {}
 
@@ -389,8 +391,6 @@ def test_generation_sends_configured_lane_and_no_write(monkeypatch) -> None:
 
     assert result["outreach"] is True
     assert seen["req"].options["llm_route"] == "metacog"
-    assert seen["req"].options["no_write"] is True
-    assert seen["req"].options["use_recall"] is False
 
 
 class _FakeBus:
@@ -453,6 +453,185 @@ def test_notification_failure_does_not_propagate() -> None:
             text="x", session_id="s", correlation_id="c", message_id=str(__import__("uuid").uuid4())
         )
     )
+
+
+def test_busy_connection_blocks_even_without_active_turn() -> None:
+    """Review finding 1: active_turn is only set by 2 of the UI's 4 modes.
+
+    Quick / Story / Agent fall through the ws handler's general cortex path and
+    never populate active_turn, so a gate reading only that key sees an idle
+    socket for the whole duration of a real turn.
+    """
+    outreach = _outreach()
+    outreach.register_connection("c1", asyncio.Queue(), {"correlation_id": None, "kind": None})
+    assert outreach.status()["block_reason"] is None
+
+    outreach.note_busy("c1")
+    assert outreach.status()["block_reason"] == "turn_in_flight"
+
+    outreach.note_idle("c1")
+    assert outreach.status()["block_reason"] is None
+
+
+def test_turn_starting_during_generation_drops_the_outreach(monkeypatch) -> None:
+    """Review finding 2 (TOCTOU): the gate must be re-checked after the LLM call.
+
+    Generation is a bus RPC bounded by timeout_sec (default 60s); a gate checked
+    only at the top of the tick lets a turn that starts mid-generation get
+    talked over.
+    """
+    outreach = _outreach()
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+    _stub_context(monkeypatch)
+
+    async def generate_then_user_starts_typing(self, prompt, session_id, correlation_id):
+        outreach.note_busy("c1")  # Juniper hits Enter while the LLM is working
+        return "something I was thinking about", {"stub": True}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", generate_then_user_starts_typing)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["reason"] == "turn_in_flight_after_generation"
+    assert queue.empty()
+    assert outreach.status()["sent_today"] == 0
+
+
+def test_force_cannot_override_the_disabled_flag(monkeypatch) -> None:
+    """Review finding 3: the debug trigger endpoint is unauthenticated.
+
+    A force= carve-out for "disabled" would mean one POST makes a feature
+    documented as off-by-default emit real unsolicited chat.
+    """
+    outreach = _outreach(enabled=False)
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "should never be sent")
+
+    result = asyncio.run(outreach.maybe_outreach(force=True))
+
+    assert result["outreach"] is False
+    assert result["reason"] == "disabled"
+    assert queue.empty()
+
+
+def test_generation_pins_execution_policies_and_disables_recall(monkeypatch) -> None:
+    """Review findings 4 and 5: the previous keys were inert.
+
+    options["no_write"] is only translated by cortex_request_builder, which
+    reads it as a top-level payload key and which this module does not use;
+    options["use_recall"] has no reader at all -- recall is controlled by the
+    typed `recall` field, which defaults to enabled=True when left None.
+    """
+    outreach = _outreach()
+    seen: dict = {}
+
+    class _Cortex:
+        async def chat(self, req, correlation_id=None, **kwargs):
+            seen["req"] = req
+            return SimpleNamespace(final_text="an unprompted thought")
+
+    outreach._cortex_client = _Cortex()
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    assert asyncio.run(outreach.maybe_outreach())["outreach"] is True
+
+    req = seen["req"]
+    assert req.options["tool_execution_policy"] == "none"
+    assert req.options["action_execution_policy"] == "none"
+    assert req.options["no_write_active"] is True
+    assert req.recall == {"enabled": False}
+
+
+def test_recall_directive_accepts_the_payload_we_send() -> None:
+    """The gateway filters our dict into RecallDirective; enabled must survive."""
+    from orion.schemas.cortex.contracts import RecallDirective
+
+    directive = RecallDirective(**{"enabled": False})
+    assert directive.enabled is False
+
+
+def test_concurrent_ticks_cannot_both_send(monkeypatch) -> None:
+    """Review finding 7: the loop and the debug endpoint share cooldown state.
+
+    Counters are only bumped after _deliver, so two overlapping passes would
+    each see a clean cooldown.
+    """
+    outreach = _outreach(min_cooldown_sec=2700.0)
+    _stub_context(monkeypatch)
+    released = asyncio.Event()
+
+    async def slow_generate(self, prompt, session_id, correlation_id):
+        await released.wait()
+        return "an unprompted thought", {}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", slow_generate)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    async def scenario():
+        first = asyncio.create_task(outreach.maybe_outreach())
+        await asyncio.sleep(0)  # let `first` reach slow_generate
+        second = await outreach.maybe_outreach(force=True)
+        released.set()
+        return await first, second
+
+    first_result, second_result = asyncio.run(scenario())
+
+    assert first_result["outreach"] is True
+    assert second_result["outreach"] is False
+    assert second_result["reason"] == "already_sending"
+    assert outreach.status()["sent_today"] == 1
+
+
+def test_quiet_hours_use_configured_zone_not_the_container_clock() -> None:
+    """Review finding 6: Hub's container sets no TZ, so naive local == UTC.
+
+    18:00 UTC is 13:00 in Chicago -- inside a UTC-read 17->23 window, outside
+    the same window read in Chicago.
+    """
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+
+    utc_1800 = _dt(2026, 8, 14, 18, 0, tzinfo=_tz.utc).timestamp()
+
+    as_utc = _outreach(quiet_start_hour=17, quiet_end_hour=23, timezone_name="UTC")
+    as_chicago = _outreach(quiet_start_hour=17, quiet_end_hour=23, timezone_name="America/Chicago")
+
+    assert outreach_block_reason(as_utc._gate_inputs(now=utc_1800)) == "quiet_hours"
+    assert outreach_block_reason(as_chicago._gate_inputs(now=utc_1800)) is None
+    assert as_chicago.status()["timezone"] == "America/Chicago"
+    assert _time  # keep the import meaningful if the assertion set changes
+
+
+def test_unknown_timezone_falls_back_to_utc_loudly(caplog) -> None:
+    with caplog.at_level("ERROR"):
+        outreach = _outreach(timezone_name="Mars/Olympus_Mons")
+    assert outreach.status()["timezone"] == "UTC"
+    assert any("endogenous_outreach_bad_timezone" in r.message for r in caplog.records)
+
+
+def test_daily_cap_resets_on_the_configured_zones_date_boundary() -> None:
+    """The cap rolls at midnight in the configured zone, not at 00:00 UTC."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    outreach = _outreach(timezone_name="America/Chicago", daily_cap=1)
+    # 04:00 UTC on the 14th is still 23:00 on the 13th in Chicago.
+    late_on_13th = _dt(2026, 8, 14, 4, 0, tzinfo=_tz.utc).timestamp()
+    # 06:00 UTC is 01:00 on the 14th in Chicago -- a new local day.
+    early_on_14th = _dt(2026, 8, 14, 6, 0, tzinfo=_tz.utc).timestamp()
+
+    outreach._gate_inputs(now=late_on_13th)
+    outreach._sent_today = 1
+    assert outreach_block_reason(outreach._gate_inputs(now=late_on_13th)) == "daily_cap"
+
+    assert outreach_block_reason(outreach._gate_inputs(now=early_on_14th)) is None
+    assert outreach._sent_today == 0
 
 
 def test_probability_zero_never_rolls(monkeypatch) -> None:

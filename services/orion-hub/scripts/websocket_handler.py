@@ -752,6 +752,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
+            # Idle marker for endogenous outreach. Control reaches this line
+            # only when the previous message has been fully handled -- every
+            # `continue` in this loop body passes through here -- so it is the
+            # one reliable "this socket is done" point without restructuring the
+            # loop. Paired with note_busy() just below.
+            if endogenous_outreach is not None:
+                endogenous_outreach.note_idle(connection_id)
             raw = await websocket.receive_text()
             if presence_state:
                 presence_state.heartbeat()
@@ -759,6 +766,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 data: Dict[str, Any] = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            if endogenous_outreach is not None:
+                # Set for EVERY mode. active_turn["correlation_id"] is only
+                # populated by the unified-orion and agent-claude lanes, so the
+                # UI's Quick / Story / Agent modes would otherwise look idle to
+                # outreach for the whole duration of a real turn.
+                endogenous_outreach.note_busy(connection_id)
 
             mode = data.get("mode") or ("auto" if settings.HUB_AUTO_DEFAULT_ENABLED else "brain")
             client_mode = str(mode or "").strip().lower()

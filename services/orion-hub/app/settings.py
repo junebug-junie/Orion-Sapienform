@@ -304,12 +304,19 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_DAILY_CAP: int = Field(
         default=4, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP"
     )
-    # Local-time quiet window [start, end); equal values or -1 disable it.
+    # Quiet window [start, end) in HUB_ENDOGENOUS_OUTREACH_TZ; equal values or
+    # -1 disable it.
     HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR: int = Field(
         default=23, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR"
     )
     HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR: int = Field(
         default=8, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR"
+    )
+    # IANA zone for quiet hours and the daily-cap reset. Hub's container sets no
+    # TZ, so the process timezone is UTC -- leaving this at UTC means the quiet
+    # window is UTC hours, not Juniper's. Set it to the operator's real zone.
+    HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
+        default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
     )
     # LLM gateway compute lane for generation: "quick" or "metacog".
     HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE: str = Field(

@@ -5937,6 +5937,14 @@ document.addEventListener("DOMContentLoaded", () => {
         handleChatMessageReceipt(notification.message_id, notification.session_id, 'seen');
       }
     }
+    if (notification.notification_type === 'endogenous_outreach') {
+      // Live sockets already rendered this as a chat bubble (the orion_outreach
+      // branch in socket.onmessage), and the notification rides the same tts_q,
+      // so toasting it too would show the identical text twice. It still lands
+      // in the notification list, which is how a browser opened after the fact
+      // finds it.
+      return;
+    }
     showToast(notification);
   }
 

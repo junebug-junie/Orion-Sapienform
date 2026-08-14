@@ -437,6 +437,7 @@ async def startup_event():
                 timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,
                 notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
                 fallback_session_id=settings.HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID,
+                timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
             )
             await endogenous_outreach.start(bus, cortex_client)
 

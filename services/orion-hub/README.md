@@ -251,16 +251,26 @@ dropped without consuming the daily budget.
 
 Delivery — three rails, all pre-existing:
 
-| Rail | Mechanism | Survives reload? |
+| Rail | Mechanism | What it's for |
 | --- | --- | --- |
-| Live chat bubble | in-process push to each socket's `tts_q`, `{"kind":"orion_outreach"}` | no |
-| Chat history | `chat.history.message.v1` on the bus, `role=assistant`, tag `endogenous_outreach` | yes |
-| Notification | `HubNotificationEvent` on `NOTIFY_IN_APP_CHANNEL` | yes |
+| Live chat bubble | in-process push to each socket's `tts_q`, `{"kind":"orion_outreach"}` | a browser that is open right now |
+| Chat history | `chat.history.message.v1` on the bus, `role=assistant`, tag `endogenous_outreach` | durability as data (see caveat) |
+| Notification | `HubNotificationEvent` on `NOTIFY_IN_APP_CHANNEL` | a browser opened afterwards |
+
+**Reload caveat:** rail 2 makes the outreach durable *as data* only. Hub's
+frontend has no conversation-restore fetch at all — the only history-shaped
+endpoint, `/api/chat/messages`, has zero callers in `app.js` — so a reload does
+not bring the bubble back. Rail 3 (the notification list) is what a returning
+browser actually sees. Giving the UI a real restore path is separate work.
 
 The frontend handles `orion_outreach` in its own early-return branch
 (`static/js/app.js`) rather than falling through to the generic assistant
 branch — that branch also runs `updateMemoryPanelFromResponse()`, which would
-blank the recall panel still showing the last real turn.
+blank the recall panel still showing the last real turn. It also costs the
+frame's piggybacked biometrics snapshot, which is harmless: `biometrics_heartbeat`
+re-pushes every `BIOMETRICS_PUSH_INTERVAL_SEC` (default 5s). `addNotification`
+suppresses the toast for `notification_type == endogenous_outreach`, since the
+same `tts_q` carries both rails and the bubble already showed the text.
 
 **Single-process assumption:** the live-bubble rail is in-process. Hub runs one
 uvicorn worker (`Dockerfile` CMD has no `--workers`). If that changes, this rail
@@ -268,9 +278,31 @@ must move onto the bus like the other two already are.
 
 Safety gates, checked in this order (first hit wins, reported by the status
 endpoint): `disabled`, `turn_in_flight`, `quiet_hours`, `daily_cap`, `cooldown`.
-Generation uses `no_write=true` and `use_recall=false`, so no autonomy or goal
-state is mutated. Every failure is swallowed and logged; no chat turn,
-websocket, or bus consumer is affected.
+Three details that are easy to get wrong and are enforced by tests:
+
+- **`turn_in_flight` reads a per-connection `busy` flag, not just
+  `active_turn`.** The ws handler only populates `active_turn["correlation_id"]`
+  for the unified-`orion` and `agent-claude` lanes; the UI's **Quick, Story, and
+  Agent** modes all fall through to the general cortex path and never touch it.
+  `note_busy()`/`note_idle()` are called for every inbound message regardless of
+  mode.
+- **The gate is re-checked immediately before delivery.** Generation is a bus
+  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 60s), and a turn
+  can start inside that window. A tick that becomes blocked mid-generation is
+  dropped with reason `<gate>_after_generation`.
+- **Quiet hours and the daily-cap reset use `HUB_ENDOGENOUS_OUTREACH_TZ`,** not
+  the container clock. Hub's compose and Dockerfile set no `TZ`, so the process
+  timezone is UTC; leaving this at `UTC` means the quiet window is UTC hours.
+
+Generation pins `tool_execution_policy` and `action_execution_policy` to `none`
+and sets `no_write_active`, which are the keys `orion-cortex-exec`'s supervisor
+actually reads — a bare `options["no_write"]` is inert on this path, since only
+`cortex_request_builder` translates it and it reads it as a top-level payload
+key. Recall is disabled via the typed `recall` field (`RecallDirective`), not an
+option; leaving it unset would fire full default recall on every outreach.
+
+Every failure is swallowed and logged; no chat turn, websocket, or bus consumer
+is affected.
 
 Operator surfaces:
 
@@ -279,8 +311,10 @@ curl -fsS http://localhost:8080/api/debug/endogenous-outreach/status | jq
 curl -fsS -XPOST http://localhost:8080/api/debug/endogenous-outreach/trigger | jq
 ```
 
-`trigger` skips **only** the random roll; every safety gate still applies, so it
-cannot be used to talk over a live turn.
+`trigger` skips **only** the random roll. Every safety gate still applies —
+including `disabled`, deliberately: this router carries no auth dependency, so a
+`force` carve-out would let one unauthenticated POST undo "off by default". To
+test, flip `HUB_ENDOGENOUS_OUTREACH_ENABLED` and restart.
 
 ### 3. Speech-to-Text (ASR)
 

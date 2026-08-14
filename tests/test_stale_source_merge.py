@@ -29,10 +29,14 @@ def _state(node_vectors, updated_at=None):
     )
 
 
-def test_default_is_byte_identical_to_the_historical_behaviour() -> None:
-    """Opt-in only. With no threshold the stale high value still wins, exactly
-    as it does on main -- so merging this patch changes nothing until a caller
-    passes a threshold.
+def test_passing_none_restores_the_historical_behaviour() -> None:
+    """The staleness rule is ON by default now (2026-08-14). It shipped
+    opt-in and was found merged-but-inert -- verified live 20 minutes after
+    deploy that node:substrate.codebase still won prediction_error on 67.2%
+    of ticks, because only tests passed a threshold. A fix that defaults to
+    doing nothing is the empty-shell failure.
+
+    So callers opt OUT with None, and this pins that escape hatch.
 
     Hand-computed: max(0.90, 0.20) = 0.90, won by node:slow.
     """
@@ -40,9 +44,27 @@ def test_default_is_byte_identical_to_the_historical_behaviour() -> None:
         {"node:slow": {"prediction_error": 0.90}, "node:fast": {"prediction_error": 0.20}},
         {"node:slow": {"prediction_error": STALE}, "node:fast": {"prediction_error": FRESH}},
     )
-    values, provenance = collect_field_channel_pressures(state)
+    values, provenance = collect_field_channel_pressures(
+        state, staleness_threshold_sec=None
+    )
     assert values["prediction_error"] == pytest.approx(0.90)
     assert provenance["prediction_error"] == "node:slow"
+
+
+def test_the_staleness_rule_is_on_by_default() -> None:
+    """No threshold argument at all -> the stale source still loses.
+
+    Hand-computed: node:slow's write is 600s old and node:fast has a fresh
+    write for the same channel, so the merge is max(0.20) = 0.20 WITHOUT the
+    caller asking for it.
+    """
+    state = _state(
+        {"node:slow": {"prediction_error": 0.90}, "node:fast": {"prediction_error": 0.20}},
+        {"node:slow": {"prediction_error": STALE}, "node:fast": {"prediction_error": FRESH}},
+    )
+    values, provenance = collect_field_channel_pressures(state)
+    assert values["prediction_error"] == pytest.approx(0.20)
+    assert provenance["prediction_error"] == "node:fast"
 
 
 def test_a_stale_source_loses_to_a_fresh_one() -> None:

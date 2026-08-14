@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     field_decay_staleness_threshold_sec: float = Field(
         90.0, alias="FIELD_DECAY_STALENESS_THRESHOLD_SEC"
     )
+    # Staleness cut for the CHANNEL MERGE (orion/field/pressure.py::
+    # collect_field_channel_pressures), deliberately separate from the decay
+    # threshold above even though both default to 90.0: they answer different
+    # questions ("should this value fade" vs "should this source win a merge
+    # against a fresher one"), and one knob doing two jobs means tuning decay
+    # silently moves proposal ranking.
+    field_merge_staleness_threshold_sec: float = Field(
+        90.0, alias="FIELD_MERGE_STALENESS_THRESHOLD_SEC"
+    )
     biometrics_field_diffusion_rate: float = Field(1.0, alias="BIOMETRICS_FIELD_DIFFUSION_RATE")
     enable_transport_field_digestion: bool = Field(
         False,

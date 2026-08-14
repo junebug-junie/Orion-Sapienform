@@ -64,6 +64,58 @@ repo mount, no SSH keys, no gh config, no docker socket, no host networking,
 no git, no gh. `tests/test_credential_isolation.py` fails if any of that
 returns.
 
+## Phase 2: the budget watchdog (design, not built)
+
+v1 has no cap by design — meter only, to size the real number. v2 needs one,
+and the enforcement has to live **outside Docker on a cadence** (Juniper,
+2026-08-14). The reasoning matters more than the mechanism:
+
+**The threat model is runaway autonomy, not an adversary.** The risk is a loop,
+a retry storm, or an over-eager plan — not Orion strategically evading
+controls. A host-side watchdog is genuinely effective against that, because a
+runaway loop does not disable its own monitor. Against a deliberate adversary
+holding Hub's docker socket nothing in software helps, and that is fine,
+because that was never the real risk.
+
+Shape: a root `systemd` timer (precedent: `deploy/systemd/`), oneshot, every
+N minutes.
+
+- **Ground truth**: the companion's own transcripts under
+  `/mnt/docker/volumes/${PROJECT}-room-companion-claude/_data/projects/*.jsonl`.
+  Root-only from the host, which a systemd unit already is. Reconcile against
+  the metered `cost_usd` on `orion:room:claude:utterance`; a gap between them
+  is out-of-band usage.
+- **Cap state** lives in a host file the containers cannot write.
+- **On breach**: `docker stop` the companion (immediate, reversible) and
+  notify. Escalation: revoke the credential.
+
+Three things that will bite whoever builds it:
+
+1. **Moving the credential file on the host does NOT cut the container off.**
+   Verified 2026-08-14: a bind mount holds the inode, so the container keeps
+   reading the old file after a host-side `mv`. Only an in-place overwrite
+   propagates. A "move the creds away" kill switch looks like it worked and
+   does nothing. Use `docker stop`, in-place overwrite, or server-side
+   revocation.
+2. **Absence is not zero.** Missing or unreadable transcripts must read as
+   *unknown spend*, never as *no spend* — an event-triggered stat cannot
+   detect its own silence, and a watchdog that reads "quiet" during an outage
+   is worse than none.
+3. **Hysteresis on the threshold**, or it re-alerts forever once tripped.
+
+And state the limit honestly: a cadence cap is **bounded overshoot, not a hard
+ceiling**. Turns are serialized at ~3s and ~$0.03 each, so a 5-minute window
+allows roughly $3 of overshoot before the watchdog can act. Size the interval
+against that, and do not call it a hard cap.
+
+**Worth reopening:** `claude setup-token` was rejected in phase 1 (see the
+design doc) when the question was *how to authenticate*, where a tested mount
+pattern beat a new one. Under a watchdog the question becomes *how to revoke*,
+and a dedicated token's independent revocability — killing the room's access
+without touching Juniper's own login — becomes the load-bearing property. That
+earlier rejection answered a different question and should not be treated as
+settled here.
+
 ## Credential isolation
 
 Identical in shape and rationale to `orion-self-study-enrichment` — read that

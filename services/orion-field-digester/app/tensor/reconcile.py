@@ -10,6 +10,7 @@ from app.tensor.channels import (
     DEFAULT_CAPABILITY_VECTOR,
     DEFAULT_NODE_VECTOR,
     NODE_CHANNELS,
+    RETIRED_NODE_CHANNELS,
     SINGLE_OBSERVER_NODE_CHANNELS,
 )
 
@@ -59,6 +60,44 @@ def _ensure_capability_vector(
     return merged
 
 
+def _prune_every_node_vector(state: FieldStateV1) -> None:
+    """Prune retired names and misplaced single-observer channels from EVERY
+    node vector, including nodes absent from the lattice.
+
+    `_ensure_node_vector()` above only runs for `lattice.nodes`, so its
+    single-observer pruning has never reached a pseudo-node. Confirmed live
+    2026-08-14: `node:rpc_timeout` is not in the lattice (which holds exactly
+    atlas/athena/circe/prometheus) and had been carrying `delivery_confidence`
+    and `stream_backlog_health` at 0.5 with a write 774s old, while
+    `node:athena` -- the declared single observer -- reported 1.0 fresh. Both
+    channels are HIGHER_IS_BETTER, so the merge takes min() and that stale 0.5
+    won, pinning both at "half confident" indefinitely.
+
+    The staleness rule (orion/field/pressure.py, 2026-08-14) stopped it
+    WINNING. This stops it existing, which is the actual contract
+    SINGLE_OBSERVER_NODE_CHANNELS always claimed: "every other node gets the
+    key pruned here, every tick".
+
+    Retired names are pruned from all nodes for the reason in
+    channels.py::RETIRED_NODE_CHANNELS -- deliberately a named set rather than
+    "anything not in NODE_CHANNELS", because _ensure_node_vector's
+    preserve-undeclared-keys loop is load-bearing and must keep working.
+
+    Mutates in place; the caller already deep-copied.
+    """
+    for node_id, vector in state.node_vectors.items():
+        stamps = state.node_vector_updated_at.get(node_id)
+        for channel in RETIRED_NODE_CHANNELS:
+            vector.pop(channel, None)
+            if stamps is not None:
+                stamps.pop(channel, None)
+        for channel, owner_node_id in SINGLE_OBSERVER_NODE_CHANNELS.items():
+            if node_id != owner_node_id:
+                vector.pop(channel, None)
+                if stamps is not None:
+                    stamps.pop(channel, None)
+
+
 def reconcile_field_state_with_lattice(
     state: FieldStateV1,
     *,
@@ -67,6 +106,7 @@ def reconcile_field_state_with_lattice(
     updated = deepcopy(state)
     for node_id in lattice.nodes:
         _ensure_node_vector(updated.node_vectors, node_id)
+    _prune_every_node_vector(updated)
     for capability_id in lattice.capabilities:
         _ensure_capability_vector(updated.capability_vectors, capability_id)
     updated.edges = [

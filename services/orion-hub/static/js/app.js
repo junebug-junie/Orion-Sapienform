@@ -6939,26 +6939,25 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   /**
-   * Refresh vision capability from the LLM gateway route catalog.
+   * Recompute vision capability for the route the user actually has selected.
    *
-   * Reads the live per-route /props answer the gateway publishes, not a config
-   * flag: a profile can claim vision while the worker was started without
-   * --mmproj, and on 2026-08-14 the chat lane did exactly that.
+   * Reads the already-loaded `llmRouteCatalog` rather than issuing its own
+   * fetch -- loadLlmRouteCatalog() polls the same /api/llm-routes endpoint, and
+   * a second fetch would both duplicate the request and race it.
+   *
+   * The value is the live per-route /props answer the gateway publishes, not a
+   * config flag: a profile can claim vision while the worker was started
+   * without --mmproj, and on 2026-08-14 the chat lane did exactly that.
+   *
+   * `null` (probe could not answer) is treated as unknown, not as blind: the
+   * composer stays usable and the gateway remains the authority that refuses at
+   * send time with a visible error.
    */
-  async function refreshVisionCapability() {
-    try {
-      const resp = await fetch(`${API_BASE_URL}/api/llm-routes`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      const routes = Array.isArray(data.routes) ? data.routes : [];
-      const active = String(data.default_route || 'chat');
-      const match = routes.find((r) => String(r.id) === active);
-      visionCapableRoute = match && typeof match.vision === 'boolean' ? match.vision : null;
-    } catch (err) {
-      // Unknown, not "blind": the composer stays usable and the gateway is
-      // still the authority that refuses at send time.
-      visionCapableRoute = null;
-    }
+  function refreshVisionCapability() {
+    const rid = String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
+    const entry = (llmRouteCatalog.routes || [])
+      .find((r) => String(r.id || '').toLowerCase() === rid);
+    visionCapableRoute = entry && typeof entry.vision === 'boolean' ? entry.vision : null;
     updateVisionStatusChip();
     if (chatAttachmentsController) chatAttachmentsController.refreshButton();
   }
@@ -7004,6 +7003,8 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
+    // Reflect whatever the catalog already holds; loadLlmRouteCatalog() will
+    // call through again via syncComputeSelection once it lands.
     refreshVisionCapability();
   }
 
@@ -9396,6 +9397,9 @@ document.addEventListener("DOMContentLoaded", () => {
     selectedLlmRoute = HUB_COMPUTE_ROUTE_IDS.includes(rid) ? rid : HUB_COMPUTE_DEFAULT;
     localStorage.setItem('orion_llm_route', selectedLlmRoute);
     renderComputeDropdown();
+    // Switching lanes can switch between a sighted and a blind model, so the
+    // attach button has to re-evaluate here, not only at boot.
+    if (typeof refreshVisionCapability === 'function') refreshVisionCapability();
   }
 
   function routeStatusIsDown(routeId) {

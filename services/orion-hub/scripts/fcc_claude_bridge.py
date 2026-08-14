@@ -19,6 +19,7 @@ from orion.fcc.claude_spawn import (
     extend_mcp_argv,
     setting_sources_argv,
 )
+from orion.fcc.turn_lock import turn_in_progress
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -359,6 +360,12 @@ async def run_turn(
     ceiling_chars = max_context_chars()
     context_nudge_sent = False
 
+    # Shared sandbox lock for the turn's duration -- the same lock the governor's
+    # fcc_motor takes and the connect-time sandbox sync needs exclusively. The
+    # in-process _ACTIVE dict below stays for hub's own cancel/introspection paths,
+    # but it cannot coordinate across containers. See orion/fcc/turn_lock.py.
+    _turn_lock = turn_in_progress(workspace)
+    _turn_lock.__enter__()
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -443,6 +450,7 @@ async def run_turn(
         return
     finally:
         _unregister_process(correlation_id)
+        _turn_lock.__exit__(None, None, None)
         if mcp_config_path is not None:
             from scripts.fcc_mcp_config import cleanup_mcp_config
 

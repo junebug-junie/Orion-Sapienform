@@ -577,3 +577,82 @@ def test_cli_gate_passes_on_a_clean_tree():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "definition drift gate: PASS" in result.stdout
+
+
+def test_on_the_base_branch_the_derived_block_is_not_recomputed(
+    drift_cli, monkeypatch, capsys
+):
+    """Regression: the gate failed on `main` after every definition change.
+
+    `_last_change` answers "what does this BRANCH change relative to the merge base?".
+    On the base branch itself the merge base IS HEAD, so that diff is empty by
+    construction and the derived block collapses to "no definition changes" -- while
+    the committed block still states what the branch that landed here changed. The two
+    can never agree, so main went red after every re-lock, and every branch cut from
+    that main inherited the failure.
+
+    Confirmed live on 2026-08-14: both post-gate commits on main (4cca1eb5f, the PR
+    that introduced this file, and b4a697a9d) failed for exactly this reason.
+    """
+    mod = drift_cli
+    _stub_graph(mod, monkeypatch, [_node("x", producer_service="p", meaning="current")])
+    # Derived from the stubbed graph, not hand-written: a hand-written definitions
+    # dict does not match build_lock's fingerprint shape, so the gate would fail on
+    # ordinary drift and the test would pass for the wrong reason.
+    locked_defs = mod.build_lock(mod.build_graph())
+    # Base == HEAD, so the base carries the very same definitions as the lock.
+    _stub_base(mod, monkeypatch, locked_defs)
+    monkeypatch.setattr(mod, "_base_is_head", lambda: True)
+
+    mod.LOCK_PATH.write_text(
+        json.dumps(
+            {
+                # What the branch that landed here changed -- historical, and not
+                # rederivable from this vantage point.
+                "_last_change": {
+                    "base": "merge base abc123 (origin/main)",
+                    "change_count": 1,
+                    "high_severity_count": 1,
+                    "changes": ["high   routing_changed metric://bus_channel/*/y"],
+                },
+                "definitions": locked_defs,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert mod.main(["--gate"]) == 0
+    out = capsys.readouterr().out
+    assert "HEAD is the merge base" in out, "the skip must be stated, never silent"
+
+
+def test_off_the_base_branch_a_hand_edited_alert_still_fails(
+    drift_cli, monkeypatch
+):
+    """The skip above must not weaken the constraint where it matters. On a real PR
+    branch (HEAD is not the merge base), erasing the alert by hand still fails."""
+    mod = drift_cli
+    _stub_graph(mod, monkeypatch, [_node("x", producer_service="p", meaning="new")])
+    _stub_base(mod, monkeypatch, {"metric://field_channel/p/x": {"meaning": "old"}})
+    monkeypatch.setattr(mod, "_base_is_head", lambda: False)
+
+    mod.LOCK_PATH.write_text(
+        json.dumps(
+            {
+                "_last_change": {
+                    "base": "merge base abc123 (origin/main)",
+                    "change_count": 0,
+                    "high_severity_count": 0,
+                    "changes": ["nothing to see here"],
+                },
+                "definitions": {"metric://field_channel/p/x": {"meaning": "new"}},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert mod.main(["--gate"]) == 1

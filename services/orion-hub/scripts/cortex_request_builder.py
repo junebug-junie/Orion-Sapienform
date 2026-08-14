@@ -14,7 +14,9 @@ from orion.cognition.workflows import (
     resolve_workflow_schedule_management,
     workflow_registry_payload,
 )
+from orion.core.bus.bus_schemas import AttachmentRefV1
 from orion.schemas.cortex.contracts import CortexChatRequest
+from scripts.settings import settings
 from orion.cognition.answer_contract_normalize import build_answer_contract_draft_for_hub
 from orion.schemas.social_memory import (
     SocialParticipantContinuityV1,
@@ -211,6 +213,36 @@ def _mind_requested_from_payload(payload: Dict[str, Any]) -> Tuple[bool, Dict[st
             diagnostics["mind_requested_source"] = source
             return True, diagnostics
     return False, diagnostics
+
+
+def _attachments_from_payload(payload: Dict[str, Any]) -> List[AttachmentRefV1]:
+    """Validate client-supplied attachment refs from a chat payload.
+
+    The browser sends back whatever POST /api/chat/attachments handed it. That
+    round-trip means the values are client-controlled by the time they land here,
+    so they are re-validated against the contract rather than trusted, and capped
+    at HUB_CHAT_ATTACHMENT_MAX_PER_TURN so a scripted client cannot make the
+    gateway fetch an unbounded number of images for one turn.
+
+    A malformed ref is dropped with a log line rather than failing the turn --
+    Juniper losing one image beats Juniper losing the message they typed. The
+    gateway still refuses loudly if a turn claims images and none survive.
+    """
+    raw = payload.get("attachments")
+    if not isinstance(raw, list) or not raw:
+        return []
+    limit = max(0, int(getattr(settings, "HUB_CHAT_ATTACHMENT_MAX_PER_TURN", 4) or 0))
+    refs: List[AttachmentRefV1] = []
+    for item in raw[:limit] if limit else []:
+        try:
+            refs.append(AttachmentRefV1.model_validate(item))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dropping malformed chat attachment ref: %s", exc)
+    if limit and len(raw) > limit:
+        logger.warning(
+            "chat turn carried %s attachments; capped to %s", len(raw), limit
+        )
+    return refs
 
 
 def build_continuity_messages(
@@ -700,6 +732,7 @@ def build_cortex_chat_request(
         options=options,
         recall=recall_payload,
         metadata=metadata,
+        attachments=_attachments_from_payload(payload),
     )
     diagnostic_value = payload.get("diagnostic")
     if diagnostic_value is None and isinstance(payload.get("options"), dict):

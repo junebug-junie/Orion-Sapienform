@@ -158,7 +158,8 @@ async def chat(req: CortexChatRequest, response: Response):
         session_id=req.session_id or "gateway-session",
         user_id=req.user_id or "gateway-user",
         trace_id=req.trace_id,
-        metadata=req.metadata or {}
+        metadata=req.metadata or {},
+        attachments=list(req.attachments or []),
     )
 
     # Recall

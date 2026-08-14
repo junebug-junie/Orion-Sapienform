@@ -23,7 +23,7 @@ from jinja2 import Environment
 from pydantic import BaseModel
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import DeliberationRequest
@@ -1444,6 +1444,31 @@ def _journal_pageindex_impl_from_ctx(ctx: Dict[str, Any]) -> str | None:
     if bool(payload.get("fallback_invoked")):
         return "native_fallback"
     return "service"
+
+
+def _attachments_from_ctx(ctx: Dict[str, Any]) -> List[AttachmentRefV1]:
+    """Re-validate ctx['attachments'] back into models before the gateway hop.
+
+    ctx crosses the orch->exec boundary as plain JSON, so these arrive as dicts.
+    Validating here rather than trusting the shape means a malformed ref fails at
+    this seam with a clear log line instead of surfacing as a confusing gateway
+    error two hops later. A bad ref is dropped, not fatal: losing one image is
+    better than losing the whole turn, and the gateway still refuses loudly if
+    nothing usable survives.
+    """
+    raw = ctx.get("attachments") or []
+    if not isinstance(raw, list):
+        return []
+    refs: List[AttachmentRefV1] = []
+    for item in raw:
+        if isinstance(item, AttachmentRefV1):
+            refs.append(item)
+            continue
+        try:
+            refs.append(AttachmentRefV1.model_validate(item))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dropping malformed attachment ref: %s", exc)
+    return refs
 
 
 def _last_user_message(ctx: Dict[str, Any]) -> str:
@@ -3993,6 +4018,7 @@ async def call_step_services(
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,
                     options=gateway_options,
+                    attachments=_attachments_from_ctx(ctx),
                 )
 
                 logs.append(f"rpc -> LLMGateway via client (timeout={effective_timeout}s)")

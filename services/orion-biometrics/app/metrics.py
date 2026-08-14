@@ -24,6 +24,18 @@ logger = logging.getLogger("orion-biometrics")
 _WHOLE_DISK_RE = re.compile(r"^(sd[a-z]+|nvme\d+n\d+|vd[a-z]+|mmcblk\d+)")
 _PARTITION_RE = re.compile(r"^(sd[a-z]+\d+|nvme\d+n\d+p\d+|vd[a-z]+\d+|mmcblk\d+p\d+)$")
 
+# Top-level RAPL package domains: `intel-rapl:0`. NOT `intel-rapl:0:1` -- those subdomains
+# (dram, core, uncore) are already counted inside their parent package, so matching them too
+# would double-count, the same error `_PARTITION_RE` exists to prevent for block devices.
+# AMD exposes the same tree under the same `intel-rapl` name on current kernels, so this is
+# not Intel-only despite the string.
+_RAPL_PACKAGE_RE = re.compile(r"^intel-rapl:\d+$")
+# A baseline older than this cannot be wrap-corrected unambiguously: athena's packages wrap
+# every ~41 min at the measured ~105 W each, and one wrap is indistinguishable from three.
+# 10x TELEMETRY_INTERVAL -- long enough to survive a slow tick, short enough that a real gap
+# is discarded rather than under-reported by whole multiples of max_energy_range_uj.
+_RAPL_MAX_GAP_SEC = 300.0
+
 
 @dataclass
 class _DiskStats:
@@ -55,6 +67,7 @@ class BiometricsCollector:
         self._prev_disk: Optional[_DiskStats] = None
         self._prev_net: Optional[_NetStats] = None
         self._prev_net_scope: Optional[str] = None
+        self._prev_rapl: Dict[str, Tuple[int, int]] = {}
         self._prev_ts: Optional[float] = None
 
     def collect(self) -> Dict[str, Any]:
@@ -73,7 +86,7 @@ class BiometricsCollector:
         disk_data = self._collect_disk(errors, dt)
         net_data = self._collect_network(errors, dt)
         temps_data = self._collect_temps(errors)
-        power_data = self._collect_power(gpu_data, temps_data)
+        power_data = self._collect_power(gpu_data, temps_data, dt)
 
         return {
             "timestamp": timestamp,
@@ -403,7 +416,9 @@ class BiometricsCollector:
             "max_c": max(cleaned) if cleaned else None,
         }
 
-    def _collect_power(self, gpu_data: Dict[str, Any], temps_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _collect_power(
+        self, gpu_data: Dict[str, Any], temps_data: Dict[str, Any], dt: Optional[float] = None
+    ) -> Dict[str, Any]:
         gpu_power = []
         gpus = gpu_data.get("gpus") if isinstance(gpu_data, dict) else None
         if isinstance(gpus, list):
@@ -416,10 +431,98 @@ class BiometricsCollector:
                         gpu_power.append(float(power))
                 except (TypeError, ValueError):
                     continue
-        return {
+        out: Dict[str, Any] = {
             "gpu_power_watts": gpu_power,
             "temps_max_c": temps_data.get("max_c"),
         }
+        cpu_watts, packages = self._rapl_package_watts(dt)
+        if cpu_watts is not None:
+            out["cpu_package_watts"] = cpu_watts
+            out["cpu_package_watts_by_domain"] = packages
+        return out
+
+    # ------------------------------------------------------- RAPL (CPU package power)
+
+    def _rapl_package_watts(
+        self, dt: Optional[float]
+    ) -> Tuple[Optional[float], Dict[str, float]]:
+        """CPU package power in watts, from Intel RAPL energy counters.
+
+        This is the single largest unattributed term in athena's power budget. Measured
+        2026-08-14: chassis 407 W at the PSU, GPU 44 W, and CPU packages 210 W (103.62 +
+        106.72 across two sockets) -- so more than half the machine's draw was invisible on a
+        node whose entire job is CPU orchestration.
+
+        `energy_uj` is a CUMULATIVE microjoule counter, not a power reading, so power is
+        delta-energy over delta-time and the first tick after a restart necessarily reports
+        nothing.
+
+        Two things make this harder than it looks:
+
+        - IT WRAPS. `max_energy_range_uj` is 262,143,328,850 uJ on athena, so at the measured
+          ~105 W per package it wraps roughly every 41 minutes -- about once every 83 ticks at
+          TELEMETRY_INTERVAL=30. A negative delta is the normal case, not an error, and must be
+          corrected by adding the range back. Reporting the raw negative would produce a
+          spectacular fake power drop several times a day.
+        - A LONG GAP IS AMBIGUOUS. If the collector was stopped for longer than one wrap
+          period, the counter may have wrapped more than once and the delta cannot be
+          recovered -- the correction above would silently under-report by whole multiples of
+          the range. There is no way to tell one wrap from three, so a stale baseline is
+          discarded rather than guessed at.
+
+        Reads through HOST_SYS_PATH: `energy_uj` is mode 400 root-only (the CVE-2020-8694
+        mitigation, since RAPL is a power side channel). This service already runs as uid 0 and
+        already mounts host /sys read-only for NIC link speed, so the file is readable as-is --
+        no host permission change and no reverting that mitigation.
+        """
+        base = self._host_path("sys", "class/powercap")
+        if not base:
+            return None, {}
+        readings: Dict[str, Tuple[int, int]] = {}
+        try:
+            for entry in sorted(os.listdir(base)):
+                # Top-level package domains only: `intel-rapl:0`, not the `intel-rapl:0:1`
+                # subdomains (dram/core), whose energy is already inside the package total.
+                if not _RAPL_PACKAGE_RE.match(entry):
+                    continue
+                d = os.path.join(base, entry)
+                try:
+                    with open(os.path.join(d, "name"), "r", encoding="utf-8") as fh:
+                        name = fh.read().strip()
+                    with open(os.path.join(d, "energy_uj"), "r", encoding="utf-8") as fh:
+                        energy = int(fh.read().strip())
+                    with open(os.path.join(d, "max_energy_range_uj"), "r", encoding="utf-8") as fh:
+                        max_range = int(fh.read().strip())
+                except (OSError, ValueError):
+                    continue
+                if name:
+                    readings[name] = (energy, max_range)
+        except OSError:
+            return None, {}
+        if not readings:
+            return None, {}
+
+        prev = self._prev_rapl
+        self._prev_rapl = readings
+        if not prev or not dt or dt <= 0 or dt > _RAPL_MAX_GAP_SEC:
+            return None, {}
+
+        packages: Dict[str, float] = {}
+        for name, (energy, max_range) in readings.items():
+            before = prev.get(name)
+            if before is None:
+                # A domain that appeared mid-run has no baseline. Skipping it would make the
+                # total silently exclude a socket, so report nothing this tick instead.
+                return None, {}
+            delta = energy - before[0]
+            if delta < 0:
+                delta += max_range + 1
+                if delta < 0:
+                    return None, {}
+            packages[name] = delta / 1e6 / dt
+        if not packages:
+            return None, {}
+        return sum(packages.values()), packages
 
 
 _COLLECTOR = BiometricsCollector()

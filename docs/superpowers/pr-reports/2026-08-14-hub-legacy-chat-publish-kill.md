@@ -7,10 +7,11 @@
   `services/orion-hub/scripts/api_routes.py` (HTTP chat). Published with no
   `kind`, so `orion/core/bus/codec.py:72` stamped each one `legacy.message`,
   which matches no sql-writer route and fell through to `bus_fallback_log`.
-- Added `services/orion-hub/tests/test_chat_history_no_raw_publish.py` — 6
-  tests: 3 behavioral over the real WS publish path, 3 for a static AST gate
-  that fails if a dict literal is ever published to a chat-history channel from
-  any Hub source. Mutation-verified.
+- Added `services/orion-hub/tests/test_chat_history_no_raw_publish.py` — 19
+  tests: 3 behavioral over the real WS publish path, 16 covering a static AST
+  gate that fails if a raw dict is ever published to a chat-history channel from
+  any Hub source. Mutation-verified, including a plant into the real
+  `chat_history.py`.
 - **Corrected a false claim in two already-merged PR reports.** Both described
   these fallback rows as lost cognition. They were not: every one is a duplicate
   of a turn already persisted by the two enveloped publishes on the same channel.
@@ -99,12 +100,44 @@ Each was checked against live runtime, not just code:
 - **orion-spark-concept-induction** — the one real consumer.
   `bus_worker.py:306-313` explicitly falls back to merging `prompt`/`response`
   when no `content` key is present, so it *did* ingest the raw dict as a
-  `chat_turn`. Two live facts make removing it safe:
-  1. It also receives the enveloped copies on the same channel, carrying the
-     same text. Over 48h: **24 × `chat.history.message.v1`, 11 ×
+  `chat_turn`. Three facts make removing it safe, in descending order of
+  durability:
+  1. **The merged `prompt`/`response` text it was reading is still delivered,
+     verbatim, on a channel it already subscribes to.** `ChatHistoryTurnV1`
+     (`orion/schemas/chat_history.py:121-132`) has `prompt` and `response` and
+     **no** `content`/`text`/`message`/`summary` field, and
+     `orion:chat:history:turn` is in `BUS_INTAKE_CHANNELS`. So `_extract_text`
+     falls through to the exact same `f"{prompt}\n{response}"` merge on the turn
+     envelope that it used to compute from the raw dict. Nothing is lost even
+     with concept induction fully enabled. *This is the argument that matters* —
+     it holds regardless of configuration.
+  2. It also receives the enveloped messages on the log channel, carrying the
+     same text via `content`. Over 48h: **24 × `chat.history.message.v1`, 11 ×
      `legacy.message`** — two enveloped messages per turn against one raw dict.
-  2. Concept induction is **off**. All **2043** of 2043 trigger decisions in
-     that window were `decision=disabled`.
+  3. Concept induction is currently **off**: all **2043** of 2043 trigger
+     decisions in that window were `decision=disabled`. Noted last on purpose —
+     `CONCEPT_AUTONOMOUS_TRIGGER_ENABLED` is `false` in `.env` and `.env_example`
+     but the code default at `concept_induction/settings.py:57` is `True`, so
+     this is a flippable flag and must not be the load-bearing part of a safety
+     case.
+
+  One non-breaking behavioral delta: `concept_induction/identity.py:78-81` used
+  the raw dict's prompt+response to resolve `RELATIONSHIP_SUBJECT` on the log
+  channel. That now resolves via `role` instead, and the turn channel still hits
+  the relationship branch directly.
+
+Two more raw-shape readers were checked and are non-issues:
+
+- **orion-chat-memory** (not in channels.yaml, but this channel is its *only*
+  input): `_normalize_payload` (`app/main.py:64-82`) requires
+  `text`/`content`/`message`. The raw dict had none, so it was already a silent
+  no-op there.
+- **orion-dream** `app/memory_listener.py:23-34` is the one genuine
+  `if "prompt" in raw and "response" in raw` reader in the tree. Its
+  `mirror_to_buffer()` runs only under `if __name__ == "__main__":` (`:78-79`),
+  nothing imports it, and the container runs `uvicorn app.main:app`. Dead path,
+  and it degrades gracefully through the pass-through branch at `:36-40` even if
+  revived.
 
 Live evidence for (1) and (2):
 
@@ -167,27 +200,50 @@ Note: `PUBLISH_CHAT_HISTORY_LOG` is deliberately **unchanged** and must stay
 
 ## Tests run
 
+Run from the **repo root**, the invocation CLAUDE.md §11 documents:
+
 ```text
-$ cd services/orion-hub && pytest tests/test_chat_history_no_raw_publish.py -q
-6 passed, 2 warnings in 3.21s
+$ pytest services/orion-hub/tests/test_chat_history_no_raw_publish.py -q -p no:randomly
+19 passed, 2 warnings in 2.61s
 ```
 
-Full Hub suite, branch vs `main`, same command both sides:
+Full Hub suite, branch vs `main`, identical command both sides:
 
 ```text
-branch: 55 failed, 1193 passed, 2 skipped, 2 deselected in 224.81s
+branch: 55 failed, 1206 passed, 2 skipped, 2 deselected in 223.06s
 main:   55 failed, 1187 passed, 2 skipped, 2 deselected in 224.07s
 ```
 
-+6 passing = exactly the new file. Failure *sets* diffed with `comm`, not just
-counts. One test appeared only on the branch —
++19 passing = exactly the new file. Failure *sets* diffed with `comm`, not just
+counts:
+
+```text
+$ comm -23 fail_branch.txt fail_main.txt   # regressions
+(empty)
+$ comm -13 fail_branch.txt fail_main.txt   # accidentally fixed
+(empty)
+```
+
+Identical sets. `-p no:randomly` on both sides — `pytest-randomly` is installed
+and this suite is order-sensitive, so an unpinned order makes the comparison
+unstable (an earlier unpinned run showed
 `test_substrate_mutation_manual_route_routing.py::test_routing_dry_run_produces_trial_and_decision_without_side_effects`
-— and is order-flaky in-suite, not a regression: it passes 3/3 in isolation on
-**both** branch and main, and this patch touches nothing it exercises. The two
-`test_attention_loops_ui_smoke.py` tests were deselected; they fail on `main`
-too (missing static asset path).
+on one side only; it passes 3/3 in isolation on **both** branch and main and
+this patch touches nothing it exercises). The two
+`test_attention_loops_ui_smoke.py` tests are deselected; they fail on `main` too
+(missing static asset path).
 
 The 55-failure baseline is pre-existing on `main` and untouched by this patch.
+
+### Mutation test
+
+Re-planting the deleted publish into `turn_orchestrator.py` and re-running:
+
+```text
+3 failed, 16 passed    <- both behavioral tests + the static gate fire
+```
+
+Restoring the file returns `19 passed`.
 
 ## Evals run
 
@@ -233,6 +289,70 @@ Restart commands below are what actually applies the change.
   - Fix: deleted.
   - Evidence: it had no other reader inside that `try` block.
 
+### Second round — subagent code review of the committed diff
+
+The review confirmed the deletion itself as correct and well-evidenced, and
+found four issues, **all in the guard rather than the change**. That is the
+right place to have found them: a regression gate whose entire value is firing
+years from now is worth more scrutiny than the deletion it protects.
+
+- Finding (HIGH): **the static gate was structurally inert on
+  `scripts/chat_history.py`** — one of its own four scanned sources, and the
+  file that owns every legitimate chat-history publish in the Hub, so by far the
+  most likely place a raw publish gets re-added. The scanner required the
+  channel argument to be an `ast.Attribute`, but that module binds the channel
+  to a local first (`channel = settings.chat_history_channel` at `:291`), making
+  it an `ast.Name`. Every publish in the file was skipped before its payload was
+  ever examined. Listing it in `_SCANNED_SOURCES` created the *appearance* of
+  coverage.
+  - Fix: rewrote `_dict_literal_publishes_to_chat_history` with per-scope
+    binding resolution, so a local bound to a chat-history channel is tracked.
+  - Evidence: new `test_static_scanner_catches_a_plant_into_the_real_chat_history_module`
+    plants a raw publish into the **real** `chat_history.py` source (not a
+    synthetic file) and asserts the scanner fires. It also asserts the anchor
+    line still exists, so the test cannot rot into a no-op if that file changes.
+- Finding (MEDIUM-HIGH): **nine further scanner false negatives**, including the
+  two most natural reintroduction forms — a hardcoded `"orion:chat:history:log"`
+  channel string (the repo already writes it that way in 20+ places) and keyword
+  arguments (`bus.publish(channel=..., msg={...})`, valid against
+  `OrionBusAsync.publish`'s real signature).
+  - Fix: the scanner now accepts attribute, literal, and locally-bound channels;
+    reads `node.keywords` as well as `node.args`; treats `dict(...)`,
+    `AnnAssign`, walrus, `.copy()`, and transitive name chains as dict payloads;
+    and matches bare `publish(...)` as well as `x.publish(...)`.
+  - Evidence: `_EVASION_FORMS` parametrizes all 11 shapes as individual tests.
+    Every one was a confirmed miss before this fix and passes now.
+- Finding (MEDIUM): **the behavioral tests errored under the invocation
+  CLAUDE.md §11 documents.** From the repo root, `pytest
+  services/orion-hub/tests/test_chat_history_no_raw_publish.py -q` gave
+  `3 passed, 3 errors` — Hub settings read `env_file=".env"`, which pydantic
+  resolves relative to the *process cwd*, so from the repo root it picks up the
+  5.9K root `.env` (no `CHANNEL_VOICE_*`) instead of the 20.6K hub one. The file
+  passed only via my `cd services/orion-hub` habit, or by another test module's
+  import-time side effect happening to run first.
+  - Fix: added the three `os.environ.setdefault("CHANNEL_VOICE_*", ...)` lines
+    already established in `tests/test_social_room_turn_publish.py:6-8`.
+  - Evidence: repo-root run went from `3 passed, 3 errors` to `19 passed`. Full
+    suite re-run after the change: failure set still **identical** to `main`, so
+    the import-time `setdefault` shifted nothing else.
+- Finding (LOW-MEDIUM): **the deletion-site comments misstated which channel
+  survives**, claiming `publish_chat_turn` publishes "on the same channel." It
+  does not — it uses `chat_history_turn_channel` (`orion:chat:history:turn`).
+  Materially misleading, because after this patch the *log* channel no longer
+  carries a prompt/response pairing at all, only two independent message
+  envelopes; someone debugging a log-channel consumer would hunt for turn data
+  that is not there.
+  - Fix: both comments now name the two channels separately and state that
+    consequence explicitly.
+  - Evidence: the patch's own `test_ws_turn_still_persists_the_turn` already
+    asserted the correct `(channel, kind)` triple — the test was right and the
+    prose was wrong.
+
+Two further findings were accepted as **follow-up material, not merge
+blockers**, and are recorded under Risks below: `channels.yaml` under-declaring
+this channel's live consumers, and two argument-quality notes on the safety
+case.
+
 ## Restart required
 
 ```bash
@@ -251,19 +371,52 @@ psql -h localhost -p 55432 -U postgres -d conjourney -c \
    where kind='legacy.message' and created_at_ts > now() - interval '1 hour';"
 ```
 
+### What the fallback log should look like afterwards
+
+Pre-restart baseline, last 24h:
+
+```text
+legacy.message              | 21
+juniper.affective_state.v1  |  5
+```
+
+`legacy.message` is what this patch removes. The other kind was checked and is
+**already resolved**, not a second thing to fix: `juniper.affective_state.v1` is
+in the live route map (`docker exec orion-athena-sql-writer` →
+`JuniperAffectiveStateSQL`, route_map size 75), its newest fallback row is
+`04:16` today, and the sql-writer container has only been up since ~07:00. Rows
+now land correctly — `juniper_affective_state_log` holds 34 rows with the newest
+at `09:21` today. Those 5 fallbacks are stale, from before today's restart, and
+will age out of the watcher's 24h window on their own.
+
+So the expected steady state after this restart is a `bus_fallback_log` that
+stops growing, and a backlog watcher that goes quiet.
+
 ## Risks / concerns
 
-- **Severity: low.** If concept induction is ever re-enabled, it will see the
-  user and assistant messages as two separate `chat_turn` triggers rather than
-  additionally as one merged `prompt\nresponse` blob. The text content is fully
-  present either way; only the packaging differs. Called out because it is the
-  one real behavioral difference, and because `bus_worker.py:306`'s
-  `prompt`/`response` fallback branch now has no live producer feeding it from
-  this channel.
-- **Severity: low.** `channels.yaml` still lists `orion-vector-writer` as a
-  consumer of `orion:chat:history:log`, which its own settings say is false.
-  Pre-existing staleness, surfaced here, not fixed — a contract-registry patch
-  should not ride along on a producer deletion.
+- **Severity: low.** If concept induction is ever re-enabled, the merged
+  `prompt\nresponse` text now reaches it via the *turn* envelope rather than
+  additionally via the raw dict on the log channel. Content is identical (see
+  the consumer safety check); only the arrival path differs.
+- **Severity: low, pre-existing, not fixed here — `channels.yaml` under-declares
+  this channel's consumers.** It lists three; a sweep found **five more** live or
+  wired subscribers of `orion:chat:history:log` that are not declared:
+  `orion-chat-memory` (`CHAT_MEMORY_INPUT_CHANNELS`, and this is its only
+  input), `orion-signal-gateway` (glob `orion:chat:*`), `orion-bus-mirror`
+  (`orion:*`), `orion-bus-tap` (`orion:*`, not running), and `orion-dream`
+  (`CHANNEL_CHAT` default). None of them break — each was checked individually —
+  but the *method* of "channels.yaml lists the consumers, so check those" would
+  not have caught a breakage in any of them. Worth a follow-up given CLAUDE.md
+  §6; deliberately not ridden along on a producer deletion.
+- **Severity: low, pre-existing, not fixed here.** `channels.yaml` also listed
+  `orion-vector-writer` as a consumer, contradicting its own settings. That one
+  was already corrected by the previously-merged PR #1662, not by this patch.
+- **Severity: low, noted not fixed.** The
+  `services/orion-sql-writer/tests/test_route_map_completeness.py:47`
+  `LEGACY_KIND_ALIASES` exemption for `legacy.message` — described as "resolved
+  at runtime" when it is not — is the test that would have caught this and
+  explicitly waived it. It now has no live producer to hide, so tightening it is
+  a clean separate patch rather than a change to sql-writer riding on a Hub fix.
 
 ## PR link
 

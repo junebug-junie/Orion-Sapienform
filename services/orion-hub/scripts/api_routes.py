@@ -3178,10 +3178,11 @@ async def api_chat(
             # `orion/core/bus/codec.py:72` stamped it `legacy.message`, which
             # matches no entry in the sql-writer route map -- every one of them
             # landed in `bus_fallback_log` and was written nowhere else.
-            # Nothing was lost: the `publish_chat_history` / `publish_chat_turn`
-            # calls above carry the same turn as registered envelopes, and all
-            # 80 fallback rows were verified 1:1 against `chat_history_log`
-            # with byte-identical response lengths. See
+            # Nothing was lost: `publish_chat_history` above sends two
+            # `chat.history.message.v1` envelopes on this same log channel and
+            # `publish_chat_turn` sends one `chat.history` on the separate turn
+            # channel, and all 80 fallback rows were verified 1:1 against
+            # `chat_history_log` with byte-identical response lengths. See
             # docs/superpowers/pr-reports/2026-08-14-hub-legacy-chat-publish-kill.md
         except Exception as e:
             logger.warning(

@@ -658,8 +658,13 @@ async def _publish_unified_turn_chat_history(
     # services/orion-hub/scripts/api_routes.py). Published with no `kind`, so
     # `orion/core/bus/codec.py:72` stamped it `legacy.message` -- no sql-writer
     # route matched, so every one landed in `bus_fallback_log` and was written
-    # nowhere else. The `publish_chat_history` / `publish_chat_turn` calls above
-    # already carry this turn as registered envelopes on the same channel.
+    # nowhere else. The calls above already carry this turn as registered
+    # envelopes: `publish_chat_history` sends two `chat.history.message.v1` on
+    # this same log channel, and `publish_chat_turn` sends one `chat.history` on
+    # the separate *turn* channel (`orion:chat:history:turn`). Note the log
+    # channel therefore no longer carries a prompt/response pairing at all --
+    # only the two independent message envelopes. The turn channel is where
+    # paired turn data lives.
     # Note: do NOT "fix" this by flipping PUBLISH_CHAT_HISTORY_LOG -- that flag
     # also gates those two real publishes (services/orion-hub/scripts/
     # chat_history.py:288 and :392), so turning it off kills real persistence.

@@ -457,6 +457,29 @@ async def _with_biometrics(
     return enriched
 
 
+async def _rehydrate_connection_history(
+    history: List[Dict[str, Any]], *, session_id: Any
+) -> int:
+    """Restore this socket's conversation context from persisted turns.
+
+    Best-effort: a failure here leaves the pre-existing behaviour (start cold),
+    so it can never break a connection.
+    """
+    try:
+        from scripts.chat_history_rehydrate import rehydrate_history
+
+        return await rehydrate_history(
+            history,
+            session_id=session_id,
+            max_turns=int(getattr(settings, "HUB_CONTEXT_TURNS", 10)),
+            max_age_hours=float(getattr(settings, "HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS", 48.0)),
+            enabled=bool(getattr(settings, "HUB_HISTORY_REHYDRATE_ENABLED", True)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("history_rehydrate_failed session=%s err=%s", session_id, exc)
+        return 0
+
+
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optional[BiometricsCache]):
     try:
         while websocket.client_state.name == "CONNECTED":
@@ -781,6 +804,16 @@ async def websocket_endpoint(websocket: WebSocket):
             if str(data.get("type") or "").strip() == "session_hello":
                 if endogenous_outreach is not None:
                     endogenous_outreach.note_session(connection_id, data.get("session_id"))
+                # Rebuild conversation context from persisted turns. `history`
+                # is in-memory and scoped to this socket, so before this every
+                # Hub restart silently discarded the running conversation -- and
+                # build_continuity_messages has no fallback, so the next turn
+                # went out with nothing but the current prompt. This handshake
+                # is the first moment we know which thread the tab is in, which
+                # makes it the right place to restore it.
+                await _rehydrate_connection_history(
+                    history, session_id=data.get("session_id")
+                )
                 logger.debug(
                     "ws_session_hello connection=%s session=%s",
                     connection_id,

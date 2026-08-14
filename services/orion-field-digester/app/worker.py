@@ -290,7 +290,12 @@ class FieldDigesterWorker:
             )
         if _FIELD_CHANNEL_SINK.enabled or self._anomaly_scorer is not None:
             try:
-                channel_pressures, _provenance = collect_field_channel_pressures(state)
+                channel_pressures, _provenance = collect_field_channel_pressures(
+                    state,
+                    staleness_threshold_sec=(
+                        self._settings.field_merge_staleness_threshold_sec
+                    ),
+                )
                 row = FieldChannelCorpusRowV1(
                     generated_at=state.generated_at,
                     tick_id=state.tick_id,

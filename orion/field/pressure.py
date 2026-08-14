@@ -157,6 +157,24 @@ RECENT_PERTURBATION_ZSCORE_SATURATION = 3.0
 RECENT_PERTURBATION_EWMA_MIN_SAMPLES = 5
 
 
+# Default staleness cut for the channel merge, ON by default.
+#
+# Shipped opt-in (default None) by PR #1641 and immediately found merged-but-
+# inert: verified live 20 minutes after deploy that node:substrate.codebase
+# still won prediction_error on 67.2% of ticks, because the two production
+# call sites passed no threshold and only tests did. A fix that defaults to
+# doing nothing is the empty-shell failure CLAUDE.md 0A names, so the default
+# is now the real value and callers opt OUT by passing None.
+#
+# 90.0 matches FIELD_DECAY_STALENESS_THRESHOLD_SEC's value but is a SEPARATE
+# key (FIELD_MERGE_STALENESS_THRESHOLD_SEC). Same reasoning that gave decay
+# its own: ~3x orion-biometrics' 30s TELEMETRY_INTERVAL, real margin for
+# jitter before a channel is genuinely stale. Kept separate so tuning decay
+# does not silently move the merge -- one knob doing two jobs is exactly the
+# config drift CLAUDE.md's "bad seams" list warns about.
+MERGE_STALENESS_THRESHOLD_SEC: float = 90.0
+
+
 def _aware_utc(stamp: datetime) -> datetime:
     return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
 
@@ -208,7 +226,7 @@ def _stale_node_channels(
 def collect_field_channel_pressures(
     field: FieldStateV1,
     *,
-    staleness_threshold_sec: float | None = None,
+    staleness_threshold_sec: float | None = MERGE_STALENESS_THRESHOLD_SEC,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Merge node_vectors + capability_vectors into one channel-name-keyed
     pressure dict, plus a parallel provenance dict recording which source_id

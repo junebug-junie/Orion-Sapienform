@@ -29,8 +29,9 @@ move onto the bus like rails 2 and 3 already are.
 
 Safety posture — this must never disturb a real turn:
 
-  * Off by default (``HUB_ENDOGENOUS_OUTREACH_ENABLED``), and ``force`` on the
-    debug endpoint does not override that.
+  * Gated on ``HUB_ENDOGENOUS_OUTREACH_ENABLED`` (on in ``.env_example`` and the
+    live ``.env``; the settings Field default stays ``False`` so an absent key
+    fails closed). ``force`` on the debug endpoint does not override this gate.
   * Blocked while any connection is processing an inbound message, re-checked
     immediately before delivery (generation takes seconds; a turn can start
     inside that window).

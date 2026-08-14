@@ -8,7 +8,7 @@ Branch: `feat/endogenous-outreach`
 - The **trigger is a deliberate stub** (randomized timer) until autonomy supplies a real endogenous signal. Everything downstream of the trigger is real.
 - Reuses three delivery rails that already existed — no new bus channel, no new schema, no new service.
 - Grounds every message in live substrate signals + real chat history; a tick with no grounding is skipped rather than filled with placeholder text.
-- Off by default, with seven safety gates and a debug status/trigger surface.
+- Ships **enabled** in `.env_example` and the live `.env` (Juniper's call), behind seven safety gates plus a debug status/trigger surface. The `settings.py` Field default stays `False` so an absent key fails closed.
 - Review found 8 issues, 2 of them CRITICAL and both falsifying the patch's central safety claim. All fixed, all now covered by tests.
 
 ## Outcome moved
@@ -167,21 +167,24 @@ sudo docker compose --env-file .env --env-file services/orion-hub/.env \
   -f services/orion-hub/docker-compose.yml up -d --build hub-app
 ```
 
-Then, to actually turn it on (it ships off):
+It ships on, so the restart above is enough to arm it. Before the first firing:
 
 ```bash
-# 1. set the real zone first, or quiet hours are UTC hours
+# 1. Set the real zone, or quiet hours are UTC hours. This is not cosmetic:
+#    with the default 23->08 UTC window, an operator in US Central is silenced
+#    18:00-03:00 their time -- the whole evening -- while outreach stays open
+#    across their working day. Exactly backwards.
 #    services/orion-hub/.env: HUB_ENDOGENOUS_OUTREACH_TZ=<IANA zone>
-# 2. HUB_ENDOGENOUS_OUTREACH_ENABLED=true
-# 3. restart, then confirm the gates read as expected:
+# 2. Confirm the gates read as expected (block_reason should be null, or
+#    "cooldown"/"not_rolled" -- NOT "quiet_hours" if you expect it live now):
 curl -fsS http://localhost:8080/api/debug/endogenous-outreach/status | jq
-# 4. force one tick past the random roll (all safety gates still apply):
+# 3. Force one tick past the random roll (all safety gates still apply):
 curl -fsS -XPOST http://localhost:8080/api/debug/endogenous-outreach/trigger | jq
 ```
 
 ## Risks / concerns
 
-- **Severity: medium** — Concern: the live delivery path is `UNVERIFIED`. Compose mounts the checkout root, so a worktree deploy would swap the running Hub onto this branch. Mitigation: ships off by default; the `trigger` endpoint makes the first real firing a deliberate, observable operator action rather than a surprise.
+- **Severity: medium** — Concern: the live delivery path is `UNVERIFIED`. Compose mounts the checkout root, so a worktree deploy would swap the running Hub onto this branch. Mitigation: the `trigger` endpoint makes the first real firing a deliberate, observable operator action rather than waiting on a random roll. Note this feature now ships **enabled**, so the mitigation is the gates plus that endpoint, not the flag.
 - **Severity: medium** — Concern: no eval harness for outreach quality. Nothing currently distinguishes a message worth interrupting for from a plausible-sounding one. The `PASS` affordance and the grounding requirement are structural guards, not quality measurement. Mitigation/follow-up below.
 - **Severity: low** — Concern: rail 1 is in-process, so it assumes Hub runs a single uvicorn worker. True today (`Dockerfile` CMD has no `--workers`) and documented in both the module docstring and README, but it is an implicit coupling that a future scaling change would silently break.
 - **Severity: low** — Concern: `HUB_ENDOGENOUS_OUTREACH_TZ` defaults to `UTC`, which is almost certainly not the intended quiet window. Mitigation: called out in `.env_example`, `settings.py`, README, and the restart steps above.

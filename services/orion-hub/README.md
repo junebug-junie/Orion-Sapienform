@@ -220,7 +220,10 @@ The panel calls:
 ### 4.1 Endogenous outreach — Orion speaks first
 
 `scripts/endogenous_outreach.py`. The only path by which Hub emits chat text
-nobody asked for. **Off by default** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=false`).
+nobody asked for. **Enabled** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=true` in
+`.env_example` and the live `.env`). The `settings.py` Field default is still
+`False`, so a deploy that loses the key fails closed rather than silently
+reaching out.
 
 **The trigger is a deliberate stub.** Orion has no endogenous "I want to speak
 now" signal yet, so a randomized timer stands in: every

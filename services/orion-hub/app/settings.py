@@ -283,8 +283,10 @@ class Settings(BaseSettings):
     NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
 
     # --- Endogenous outreach (Orion speaks first; stub random trigger) ---
-    # See scripts/endogenous_outreach.py. Off by default: this is the only path
-    # by which Orion emits chat text nobody asked for.
+    # See scripts/endogenous_outreach.py. The only path by which Orion emits
+    # chat text nobody asked for. Enabled in .env_example / the live .env; this
+    # Field default stays False so an absent key fails closed rather than
+    # silently enabling outreach.
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )

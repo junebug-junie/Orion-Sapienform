@@ -85,8 +85,8 @@ Optional per-route upstream model alias in the route table:
 ```json
 {
   "agent": {
-    "url": "http://100.121.214.30:8011",
-    "served_by": "atlas-worker-1",
+    "url": "http://100.112.254.99:8014",
+    "served_by": "circe-worker-agent-1",
     "backend": "llamacpp",
     "model": "qwen-coder-local"
   }

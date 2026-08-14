@@ -257,21 +257,102 @@ def test_high_severity_changes_sort_first():
     assert changes[0].severity == "high"
 
 
-def test_thin_definitions_can_mispair_and_that_is_survivable():
-    """Two unrelated metrics with identical definition content DO pair.
+def test_pairing_requires_uniqueness_across_the_whole_lock():
+    """A definition shared with a SURVIVING node never pairs.
 
-    49.7% of the live graph shares a fingerprint with another node (see
-    _pair_renames). This asserts the consequence rather than pretending it
-    away: an unrelated delete + add reads as "renamed", and the alert still
-    names both URNs at `high`, which is the only property that matters.
+    Review found that treating a mispair as cosmetic was wrong: "renamed A ->
+    B" tells the reader the metric still exists under a new name and no
+    consumer needs migrating, which is the opposite of the truth when A was
+    deleted. 49.7% of the live graph shares a fingerprint (organ signals
+    collapse to `organ=X class=Y`), so diff-local uniqueness was not enough.
+
+    Here `survivor` carries the same definition as the removed and added nodes,
+    so the definition identifies nothing and must not be used to claim a
+    rename.
     """
-    before = build_lock_of(_node("deleted_thing"))
-    after = build_lock_of(_node("unrelated_new_thing"))
+    survivor = _node("survivor")
+    before = build_lock_of(_node("deleted_thing"), survivor)
+    after = build_lock_of(_node("unrelated_new_thing"), survivor)
+    kinds = sorted(c.kind for c in diff_locks(before, after).changes)
+    assert kinds == ["added", "removed"]
+
+
+def test_distinctive_definition_still_pairs_with_a_survivor_present():
+    """The tightened guard must not kill real renames: a channel with its own
+    `meaning` is unique lock-wide, so it still pairs."""
+    survivor = _node("survivor", meaning="something else entirely")
+    before = build_lock_of(_node("execution_load", meaning="step load"), survivor)
+    after = build_lock_of(_node("cortex_exec_step_load", meaning="step load"), survivor)
     changes = diff_locks(before, after).changes
     assert [c.kind for c in changes] == ["renamed"]
-    assert changes[0].severity == SEVERITY["removed"] == "high"
-    described = changes[0].describe()
-    assert "deleted_thing" in described and "unrelated_new_thing" in described
+    assert changes[0].previous_urn.endswith("/execution_load")
+
+
+def test_feeds_dimensions_is_positional_not_a_set():
+    """self_state_dimension and evidence_dimension are packed into one
+    positional tuple by lineage.py. Sorting it made swapping which dimension a
+    channel feeds as self-state versus as evidence a ZERO-delta edit -- a real
+    routing change that emitted no alert. Found in review."""
+    before = build_lock_of(_node("x", feeds_dimensions=("continuity", "resource")))
+    after = build_lock_of(_node("x", feeds_dimensions=("resource", "continuity")))
+    changes = diff_locks(before, after).changes
+    assert [c.kind for c in changes] == ["routing_changed"]
+    assert changes[0].severity == "high"
+
+
+def test_set_valued_routing_fields_are_still_order_insensitive():
+    """The counterpart: everything NOT in ORDERED_FIELDS stays a set, which is
+    what keeps a reordered YAML consumer list from being an alert."""
+    before = build_lock_of(_node("x", declared_consumers=("a", "b")))
+    after = build_lock_of(_node("x", declared_consumers=("b", "a")))
+    assert not diff_locks(before, after).changes
+
+
+def test_long_values_differing_at_the_tail_render_differently():
+    """`_short` truncated both sides independently at 60 chars, so amending the
+    tail of a long `meaning` -- 29 of 38 field-channel meanings exceed 60 chars
+    -- rendered as two byte-identical strings. The sentence claimed a change
+    and displayed none."""
+    shared = "Renamed from execution_load 2026-07-24 for scope honesty and " * 3
+    before = build_lock_of(_node("x", meaning=shared + "ORIGINAL TAIL"))
+    after = build_lock_of(_node("x", meaning=shared + "REPLACEMENT TAIL"))
+    described = diff_locks(before, after).changes[0].describe()
+    left, right = described.split(" -> ", 1)
+    assert left != right
+    assert "ORIGINAL TAIL" in left and "REPLACEMENT TAIL" in right
+
+
+def test_midstring_difference_elides_both_ends():
+    """The window must trim the shared TAIL too, not just the shared head.
+
+    Without suffix trimming the renderer still distinguishes the two values,
+    so distinguishability alone cannot pin this down -- the contract being
+    locked here is that the alert stays focused on the differing region
+    instead of dumping 100 characters of identical trailing prose.
+    """
+    head, tail = "A" * 100, "B" * 100
+    before = build_lock_of(_node("x", meaning=head + "FOO" + tail))
+    after = build_lock_of(_node("x", meaning=head + "BAR" + tail))
+    described = diff_locks(before, after).changes[0].describe()
+    left, right = described.split(" -> ", 1)
+    assert "FOO" in left and "BAR" in right
+    # A bounded slice of the shared tail as context is fine; 20+ characters of
+    # it means the window ran to the truncation limit instead of stopping at
+    # the common suffix. Asserting on "…" counts does NOT discriminate here --
+    # the limit-truncation path emits one too, which is how the first version
+    # of this test let the no-suffix-trim mutant survive.
+    assert "B" * 20 not in left, left
+    assert "A" * 20 not in left, left
+
+
+def test_long_values_differing_at_the_head_render_differently():
+    shared = " and then a great deal of identical trailing prose repeated" * 3
+    before = build_lock_of(_node("x", meaning="ALPHA" + shared))
+    after = build_lock_of(_node("x", meaning="OMEGA" + shared))
+    described = diff_locks(before, after).changes[0].describe()
+    left, right = described.split(" -> ", 1)
+    assert left != right
+    assert "ALPHA" in left and "OMEGA" in right
 
 
 def test_field_classes_are_disjoint_and_cover_definition_fields():
@@ -323,6 +404,167 @@ def test_committed_lock_matches_current_registries():
 def test_lock_metric_count_matches_its_own_definitions():
     data = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     assert data["metric_count"] == len(data["definitions"])
+
+
+# ------------------------------------------- the alert block (merge-base derived)
+#
+# Every test below drives the real CLI module with LOCK_PATH redirected into a
+# tmp_path and _base_definitions stubbed. Nothing here touches the committed
+# lock -- asserted by test_committed_lock_matches_current_registries still
+# passing alongside them.
+
+
+@pytest.fixture()
+def drift_cli(tmp_path, monkeypatch):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_definition_drift", REPO_ROOT / "scripts" / "check_definition_drift.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "LOCK_PATH", tmp_path / "lock.json")
+    return mod
+
+
+def _stub_graph(mod, monkeypatch, nodes):
+    graph = MetricGraph()
+    for node in nodes:
+        graph.nodes[node.urn] = node
+    monkeypatch.setattr(mod, "build_graph", lambda: graph)
+
+
+def _stub_base(mod, monkeypatch, definitions, note="merge base abc123 (origin/main)"):
+    monkeypatch.setattr(mod, "_base_definitions", lambda: (definitions, note))
+
+
+def _block(mod) -> dict:
+    return json.loads(mod.LOCK_PATH.read_text(encoding="utf-8"))["_last_change"]
+
+
+def test_repeated_updates_report_the_cumulative_branch_delta(
+    drift_cli, monkeypatch
+):
+    """Two --update calls on one branch must not lose the first one's deltas.
+
+    The original implementation diffed against the lock ON DISK, so the second
+    call overwrote the first call's sentences and a high-severity consumer
+    removal vanished while the gate stayed green. Found in review.
+    """
+    mod = drift_cli
+    base = {
+        "metric://field_channel/p/chan_a": {"declared_consumers": ["svc-x", "svc-y"]},
+        "metric://field_channel/p/chan_b": {"meaning": "b"},
+    }
+    _stub_base(mod, monkeypatch, base)
+
+    # Edit 1: drop a consumer from chan_a.
+    _stub_graph(mod, monkeypatch, [
+        _node("chan_a", declared_consumers=("svc-x",), producer_service="p"),
+        _node("chan_b", meaning="b", producer_service="p"),
+    ])
+    assert mod.main([]) == 0 or True
+    mod.main(["--update"])
+    assert any("chan_a" in s for s in _block(mod)["changes"])
+
+    # Edit 2: delete chan_b entirely, then re-lock again.
+    _stub_graph(mod, monkeypatch, [
+        _node("chan_a", declared_consumers=("svc-x",), producer_service="p"),
+    ])
+    mod.main(["--update"])
+    changes = _block(mod)["changes"]
+
+    # BOTH edits must survive -- this is the whole fix.
+    assert any("chan_a" in s and "routing_changed" in s for s in changes), changes
+    assert any("chan_b" in s and "removed" in s for s in changes), changes
+    assert _block(mod)["high_severity_count"] == 2
+
+
+def test_update_is_idempotent(drift_cli, monkeypatch):
+    mod = drift_cli
+    _stub_base(mod, monkeypatch, {"metric://field_channel/p/x": {"meaning": "old"}})
+    _stub_graph(mod, monkeypatch, [_node("x", meaning="new", producer_service="p")])
+    mod.main(["--update"])
+    first = mod.LOCK_PATH.read_text(encoding="utf-8")
+    mod.main(["--update"])
+    assert mod.LOCK_PATH.read_text(encoding="utf-8") == first
+
+
+def test_clobbered_lock_is_not_treated_as_a_first_run(drift_cli, monkeypatch):
+    """A lock resolved to `{}` by a botched merge is falsy but is NOT a first
+    run. Conflating them made --update announce "initial lock" and discard
+    every real delta, gate green. Found in review."""
+    mod = drift_cli
+    _stub_base(mod, monkeypatch, {"metric://field_channel/p/gone": {"meaning": "g"}})
+    _stub_graph(mod, monkeypatch, [_node("kept", meaning="k", producer_service="p")])
+    mod.LOCK_PATH.write_text("{}", encoding="utf-8")
+
+    mod.main(["--update"])
+    changes = _block(mod)["changes"]
+    assert changes != [mod.NO_PRIOR_STATE]
+    assert any("gone" in s and "removed" in s for s in changes), changes
+
+
+def test_gate_fails_when_the_alert_block_was_hand_edited(drift_cli, monkeypatch):
+    """The claim "an agent cannot re-lock quietly" is only true if the gate
+    verifies the block. Before this check it was a convention."""
+    mod = drift_cli
+    _stub_base(mod, monkeypatch, {"metric://field_channel/p/x": {"meaning": "old"}})
+    _stub_graph(mod, monkeypatch, [_node("x", meaning="new", producer_service="p")])
+    mod.main(["--update"])
+    assert mod.main(["--gate"]) == 0
+
+    data = json.loads(mod.LOCK_PATH.read_text(encoding="utf-8"))
+    data["_last_change"]["changes"] = ["nothing to see here"]
+    mod.LOCK_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    assert mod.main(["--gate"]) == 1
+
+
+def test_gate_skips_block_verification_loudly_when_base_is_unresolvable(
+    drift_cli, monkeypatch, capsys
+):
+    """A skipped integrity check must announce itself. Silent skipping is the
+    failure mode this file exists to stop."""
+    mod = drift_cli
+    _stub_base(mod, monkeypatch, {"metric://field_channel/p/x": {"meaning": "old"}})
+    _stub_graph(mod, monkeypatch, [_node("x", meaning="old", producer_service="p")])
+    mod.main(["--update"])
+
+    monkeypatch.setattr(mod, "_base_definitions", lambda: (None, "no merge base"))
+    capsys.readouterr()
+    assert mod.main(["--gate"]) == 0
+    out = capsys.readouterr().out
+    assert mod.BASE_UNAVAILABLE in out
+    assert "NOT verified" in out
+
+
+def test_missing_lock_fails_the_gate_with_the_actionable_message(
+    drift_cli, monkeypatch, capsys
+):
+    """A missing lock fails on definition drift anyway, so the exit code alone
+    proves nothing. The message is the actionable part -- it has to name the
+    real problem (there is no lock) rather than the symptom (595 additions)."""
+    mod = drift_cli
+    _stub_base(mod, monkeypatch, {})
+    _stub_graph(mod, monkeypatch, [_node("x", meaning="m", producer_service="p")])
+    assert not mod.LOCK_PATH.exists()
+    capsys.readouterr()
+    assert mod.main(["--gate"]) == 1
+    err = capsys.readouterr().err
+    assert "no committed lock" in err
+
+
+def test_update_and_gate_are_mutually_exclusive(drift_cli, monkeypatch):
+    """--update returns before the gate block, so the combination would rewrite
+    the lock and exit 0 with the gate silently skipped."""
+    mod = drift_cli
+    _stub_base(mod, monkeypatch, {})
+    _stub_graph(mod, monkeypatch, [_node("x", producer_service="p")])
+    with pytest.raises(SystemExit) as exc:
+        mod.main(["--update", "--gate"])
+    assert exc.value.code == 2
+    assert not mod.LOCK_PATH.exists()
 
 
 def test_cli_gate_passes_on_a_clean_tree():

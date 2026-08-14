@@ -11,11 +11,19 @@ registries (field channel glossary, inner-state registry, organ registry, bus
 channels.yaml). Diffing at that layer rather than at the file layer is what
 makes the alert readable:
 
-- reordering a YAML list, reflowing a comment, or renaming a variable in
-  `orion/signals/registry.py` produces NO delta, because none of them change
-  a resolved definition;
+- reordering `producer_services` / `consumer_services` / `causal_parent_organs`,
+  re-quoting them, reflowing a comment, or renaming a variable in
+  `orion/signals/registry.py` produces NO delta, because none of them change a
+  resolved definition;
 - adding one line to a 99KB `channels.yaml` produces exactly one delta line
   naming the channel, its schema, its producers and its consumers.
+
+One known exception, stated rather than implied: a field channel's `level`
+list is joined UNSORTED into `notes` by `lineage.py`, so reordering
+`level: [node, mesh]` does emit an `annotation_changed` (medium). Two channels
+currently have a multi-element `level`. Sorting it belongs in lineage.py, not
+here, since `notes` is opaque free text at this layer -- see the `stability`
+gap noted under SEVERITY for the other half of that problem.
 
 The file diff answers "what bytes moved". This answers "what did an agent
 change about what a number MEANS or where it GOES".
@@ -63,6 +71,16 @@ ANNOTATION_FIELDS: tuple[str, ...] = ("notes", "registry_source")
 
 DEFINITION_FIELDS: tuple[str, ...] = SEMANTIC_FIELDS + ROUTING_FIELDS + ANNOTATION_FIELDS
 
+# Tuple fields whose ORDER carries meaning, so they must not be sorted into a
+# set. Only one qualifies today: lineage.py packs a channel's
+# `self_state_dimension` and `evidence_dimension` into one positional
+# `feeds_dimensions` tuple, so sorting it made swapping which dimension a
+# channel feeds as self-state versus as evidence a zero-delta edit -- a real
+# routing change that emitted no alert at all. Every other tuple field
+# (producers, consumers, upstream, upstream_organs) is a genuine set and is
+# sorted, which is what keeps a reordered YAML list from being an alert.
+ORDERED_FIELDS: frozenset[str] = frozenset({"feeds_dimensions"})
+
 _FIELD_CLASS: dict[str, str] = {
     **{f: "semantics" for f in SEMANTIC_FIELDS},
     **{f: "routing" for f in ROUTING_FIELDS},
@@ -81,6 +99,14 @@ _FIELD_CLASS: dict[str, str] = {
 # that reads it -- and it has its own gate (CLAUDE.md 0A, the metric quality
 # gate). It still gets reported, because "an agent added a channel" is half of
 # what Juniper asked to be told.
+#
+# KNOWN GAP, not fixed here: bus-channel `kind` and `stability` are packed into
+# the free-text `notes` string by lineage.py, so flipping a channel to
+# `stability: deprecated` -- about the clearest "someone is retiring this"
+# signal there is, and the exact event class R4 exists for -- surfaces only as
+# a medium `annotation_changed`. No `_FIELD_CLASS` entry can lift it while it
+# lives inside a string; it needs to become a first-class MetricNode field,
+# which is a lineage.py change with its own blast radius.
 SEVERITY: dict[str, str] = {
     "removed": "high",
     "renamed": "high",
@@ -89,11 +115,6 @@ SEVERITY: dict[str, str] = {
     "added": "medium",
     "annotation_changed": "medium",
 }
-
-HIGH_SEVERITY_KINDS: frozenset[str] = frozenset(
-    k for k, v in SEVERITY.items() if v == "high"
-)
-
 
 def fingerprint(node: MetricNode) -> dict[str, Any]:
     """The definition half of a node, with empties omitted.
@@ -107,7 +128,7 @@ def fingerprint(node: MetricNode) -> dict[str, Any]:
         value = getattr(node, name, None)
         if isinstance(value, tuple):
             if value:
-                out[name] = sorted(value)
+                out[name] = list(value) if name in ORDERED_FIELDS else sorted(value)
         elif value not in (None, ""):
             out[name] = value
     return out
@@ -136,12 +157,62 @@ class DefinitionChange:
         if self.kind == "renamed":
             return f"renamed {self.previous_urn} -> {self.urn}"
         if self.fields:
-            bits = ", ".join(
-                f"{name}: {_short(before)} -> {_short(after)}"
-                for name, (before, after) in sorted(self.fields.items())
-            )
-            return f"{self.kind} {self.urn} ({bits})"
+            bits = []
+            for name, (before, after) in sorted(self.fields.items()):
+                left, right = _render_pair(before, after)
+                bits.append(f"{name}: {left} -> {right}")
+            return f"{self.kind} {self.urn} ({', '.join(bits)})"
         return f"{self.kind} {self.urn}"
+
+
+def _render_pair(before: Any, after: Any, limit: int = 60) -> tuple[str, str]:
+    """Render a before/after pair so the DIFFERENCE is what survives truncation.
+
+    Truncating each side independently at 60 chars renders the single most
+    common semantic edit -- appending to or amending the tail of a long
+    `meaning` -- as two byte-identical strings:
+
+        meaning: Renamed from execution_load 2026-07-24 for scope hon… ->
+                 Renamed from execution_load 2026-07-24 for scope hon…
+
+    which reports that something changed while showing nothing that did. 29 of
+    38 field-channel meanings already exceed 60 characters, so this was the
+    common case, not an edge case.
+
+    Fix: strip the shared prefix and suffix and centre the window on the part
+    that actually differs, marking elided text with "…". Two strings that
+    differ ALWAYS render differently.
+    """
+    left = "-" if before is None else str(before)
+    right = "-" if after is None else str(after)
+    if left == right or (len(left) <= limit and len(right) <= limit):
+        return _short(left, limit), _short(right, limit)
+
+    prefix = 0
+    while prefix < min(len(left), len(right)) and left[prefix] == right[prefix]:
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < min(len(left), len(right)) - prefix
+        and left[len(left) - 1 - suffix] == right[len(right) - 1 - suffix]
+    ):
+        suffix += 1
+
+    return (
+        _window(left, prefix, suffix, limit),
+        _window(right, prefix, suffix, limit),
+    )
+
+
+def _window(text: str, prefix: int, suffix: int, limit: int) -> str:
+    """The differing middle of `text`, with a little shared context each side."""
+    context = 12
+    start = max(0, prefix - context)
+    end = min(len(text), len(text) - suffix + context)
+    body = text[start:end]
+    if len(body) > limit:
+        body = body[: limit - 1] + "…"
+    return ("…" if start > 0 else "") + body + ("…" if end < len(text) else "")
 
 
 def _short(value: Any, limit: int = 60) -> str:
@@ -179,37 +250,52 @@ def _surface_of(urn: str) -> str:
 def _pair_renames(
     removed: dict[str, dict[str, Any]],
     added: dict[str, dict[str, Any]],
+    before: dict[str, dict[str, Any]],
+    after: dict[str, dict[str, Any]],
 ) -> list[tuple[str, str]]:
-    """Match removals to additions whose definitions are byte-identical.
+    """Match removals to additions whose definitions are byte-identical AND
+    unique across the whole lock on both sides.
 
-    A rename is a removal plus an addition. This pass exists ONLY to merge
-    those two lines into one clearer line -- it never changes what is flagged,
-    because both halves are already reported at high and medium severity
-    respectively. So a missed pairing (a rename that also edited the prose, the
-    common case for a real rename) degrades to "removed + added", which is
-    louder, not quieter. That is why an aggressive fuzzy matcher would be the
-    wrong trade here: it could only ever make the output *less* alarming, and
-    the failure it guards against is under-alarming.
+    A rename is a removal plus an addition, and this pass merges those two
+    lines into one. The tempting framing -- that a bad pairing is merely
+    cosmetic, since `removed` and `renamed` are both `high` -- is WRONG, and an
+    earlier version of this docstring said it anyway. "renamed A -> B" tells
+    the reader the metric still exists under a new name and no consumer needs
+    migrating. If A was actually deleted, that instruction is inverted, and a
+    deleted metric still being read by consumers is precisely the R4 motivating
+    incident (`execution_load` frozen at 0.2672 in live node vectors with no
+    producer). Severity survives a mispair; the reader's next action does not.
 
-    Ambiguous groups (two removals and two additions sharing one definition)
-    are left unpaired -- same `winner_is_unique` discipline as
-    orion/field/pressure.py's provenance.
+    So the guard is global, not local. Uniqueness is required across the entire
+    lock -- not just among the URNs in this diff -- because definitions collide
+    heavily: on the live 595-node graph there are 342 distinct fingerprints, so
+    **296 nodes (49.7%) share a fingerprint with at least one other node**.
+    Almost all of it is `organ_signal`, where the registry distinguishes
+    entries only by identity (`organ/kind#dimension`) and the content collapses
+    to `organ=graph_cognition class=endogenous` for 48 nodes at once. A
+    diff-local uniqueness check would happily pair two unrelated members of
+    that group.
 
-    HOW OFTEN DEFINITIONS COLLIDE, measured rather than assumed: on the live
-    595-node graph there are 342 distinct fingerprints, so **296 nodes (49.7%)
-    share a fingerprint with at least one other node**. Almost all of it is
-    `organ_signal`, where the registry distinguishes entries only by identity
-    (`organ/kind#dimension`) and the definition content collapses to
-    `organ=graph_cognition class=endogenous` for 48 nodes at once.
+    Pairing therefore requires a definition specific enough to identify exactly
+    one metric before and exactly one after. A real rename of a field channel
+    (distinctive `meaning` prose) still pairs; two interchangeable organ
+    dimensions never do.
 
-    That number sounds fatal and is not, for two reasons. The `len(...) == 1`
-    guard applies to the removals and additions *in this diff*, not to the
-    whole graph, so a 48-node group only goes ambiguous if 2+ of its members
-    are removed and 2+ added in the same change. And when a mispairing does
-    happen, the emitted alert names both URNs at `high` either way -- `removed`
-    and `renamed` carry the same severity by design. The label degrades; the
-    warning does not.
+    A rename that also rewrites the prose -- the common case -- does not pair
+    either, and degrades to `removed` + `added`. That direction is safe: both
+    halves are still reported and `removed` is the loudest kind there is. This
+    pass can only ever make output quieter, which is why it is conservative
+    rather than fuzzy.
     """
+    before_counts: dict[str, int] = {}
+    for urn, fp in before.items():
+        key = _def_key(_surface_of(urn), fp)
+        before_counts[key] = before_counts.get(key, 0) + 1
+    after_counts: dict[str, int] = {}
+    for urn, fp in after.items():
+        key = _def_key(_surface_of(urn), fp)
+        after_counts[key] = after_counts.get(key, 0) + 1
+
     by_def: dict[str, dict[str, list[str]]] = {}
     for urn, fp in removed.items():
         key = _def_key(_surface_of(urn), fp)
@@ -219,9 +305,15 @@ def _pair_renames(
         by_def.setdefault(key, {"removed": [], "added": []})["added"].append(urn)
 
     pairs: list[tuple[str, str]] = []
-    for group in by_def.values():
-        if len(group["removed"]) == 1 and len(group["added"]) == 1:
-            pairs.append((group["removed"][0], group["added"][0]))
+    for key, group in by_def.items():
+        # Uniqueness across the whole lock is the only guard needed: if a
+        # definition identifies exactly one node in `before` and one in
+        # `after`, it cannot possibly match two removals or two additions. An
+        # earlier version also checked len(group[...]) == 1 here; mutation
+        # testing showed that check was unkillable, because it is implied.
+        if before_counts.get(key, 0) != 1 or after_counts.get(key, 0) != 1:
+            continue
+        pairs.append((group["removed"][0], group["added"][0]))
     return pairs
 
 
@@ -246,7 +338,7 @@ def diff_locks(
 
     paired_out: set[str] = set()
     paired_in: set[str] = set()
-    for old_urn, new_urn in _pair_renames(removed, added):
+    for old_urn, new_urn in _pair_renames(removed, added, before, after):
         paired_out.add(old_urn)
         paired_in.add(new_urn)
         changes.append(

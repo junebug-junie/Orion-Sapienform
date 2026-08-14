@@ -2,11 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 595,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 2,
+    "base": "merge base f835c737c (origin/main) has no lock yet",
+    "change_count": 0,
+    "high_severity_count": 0,
     "changes": [
-      "high   renamed metric://field_channel/orion-field-digester/execution_load -> metric://field_channel/orion-field-digester/cortex_exec_step_load",
-      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:verb:result (declared_consumers: ['orion-cortex-orch'] -> ['orion-cortex-orch', 'orion-hub'])"
+      "initial lock -- no prior state to diff against"
     ]
   },
   "definitions": {

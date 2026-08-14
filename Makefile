@@ -93,8 +93,14 @@ check-metric-lineage-gate:
 #
 # GATE/UPDATE use the same explicit-true matching as UPDATE_BASELINE above,
 # for the same reason: UPDATE=0 must not rewrite the lock.
+#
+# GATE=1 UPDATE=1 together is rejected by the script itself (argparse exits 2),
+# because --update returns before the gate block -- so that combination would
+# rewrite the lock and exit 0 with the gate silently skipped. The space between
+# the two $(if ...) expressions is load-bearing for producing that error rather
+# than the uninterpretable `--update--gate`.
 check-definition-drift:
-	@$(METRIC_PYTHON) scripts/check_definition_drift.py $(if $(filter 1 true yes TRUE YES,$(UPDATE)),--update,)$(if $(filter 1 true yes TRUE YES,$(GATE)),--gate,)
+	@$(METRIC_PYTHON) scripts/check_definition_drift.py $(if $(filter 1 true yes TRUE YES,$(UPDATE)),--update,) $(if $(filter 1 true yes TRUE YES,$(GATE)),--gate,)
 
 # Live-bus gate: every channel marked single_consumer: true in
 # orion/bus/channels.yaml must have exactly one live subscriber

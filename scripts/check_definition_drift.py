@@ -34,9 +34,37 @@ Juniper reads contains a plain-English line saying exactly what changed:
 
     "high  removed  metric://field_channel/orion-field-digester/execution_load"
 
-An agent cannot re-lock quietly, because re-locking is what writes the
-sentence. That is the whole mechanism -- there is no separate reporting path
-to forget to call.
+WHY `_last_change` IS COMPUTED AGAINST THE MERGE BASE, NOT THE FILE ON DISK
+---------------------------------------------------------------------------
+The obvious implementation -- diff the current registries against whatever the
+lock currently holds -- is last-write-wins, and it fails three ways that were
+all found in review of this file's own first version:
+
+1. Two `--update` calls on one branch: the first call's deltas are overwritten
+   by the second call's, so a high-severity consumer removal can vanish from
+   the alert while the gate stays green.
+2. A lock clobbered to `{}` by a botched merge resolution reads as "no lock
+   yet", so `--update` writes "initial lock" and discards every real delta.
+3. It shipped a false alert. The first version of this lock was committed
+   carrying two fabricated high-severity sentences -- residue of a mutation
+   test that locked a mutated registry state, then reverted it and re-locked,
+   so `_last_change` recorded the REVERT as though it were the change.
+
+So `_last_change` answers one fixed question -- "what does this branch change
+relative to the merge base?" -- which is idempotent under repeated `--update`,
+immune to the state of the working copy's lock, and the question a PR reader
+is actually asking.
+
+`--gate` then RECOMPUTES that block and fails if the committed one disagrees.
+That is what makes the sentence a constraint rather than a convention: hand-
+editing `_last_change` to erase an alert, or resolving a merge conflict in it
+by taking the other side, both fail the gate. Without that check the whole
+mechanism was advisory, and this docstring previously claimed otherwise.
+
+When the merge base cannot be resolved (no git, shallow clone with no
+`origin/main`), the recomputation is SKIPPED WITH AN EXPLICIT PRINTED NOTE --
+never silently, because a silently-skipped integrity check is the failure this
+file exists to stop.
 
 WHY IT IS A LOCK AND NOT A RATCHET
 ----------------------------------
@@ -89,35 +117,111 @@ LOCK_COMMENT = (
 )
 
 
-def _load_lock() -> tuple[dict, dict]:
-    """Returns (definitions, whole_file). Missing file -> empty definitions."""
+BASE_REFS = ("origin/main", "main")
+
+
+def _rel(path: Path) -> str:
+    """Repo-relative path, falling back to the absolute one.
+
+    `Path.relative_to` RAISES for anything outside REPO_ROOT, which turned a
+    redirected LOCK_PATH into a ValueError traceback rather than a report.
+    """
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+NO_PRIOR_STATE = "initial lock -- no prior state to diff against"
+BASE_UNAVAILABLE = "merge base unavailable -- deltas not computed"
+
+
+def _load_lock() -> tuple[dict, dict, bool]:
+    """Returns (definitions, whole_file, exists).
+
+    `exists` is the FILE's existence, deliberately not `bool(whole_file)`: a
+    lock clobbered to `{}` is falsy but is emphatically not a first run, and
+    conflating the two made `--update` announce "initial lock" while dropping
+    every real delta on the floor.
+    """
     if not LOCK_PATH.exists():
-        return {}, {}
+        return {}, {}, False
     data = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
-    return data.get("definitions", {}), data
+    return data.get("definitions", {}), data, True
 
 
-def _write_lock(definitions: dict, diff, *, first_run: bool) -> None:
-    if first_run:
-        # Every metric is technically "added" against an absent lock. Recording
-        # 595 additions would make the one file a reader is meant to scan for
-        # real events open with 595 non-events.
-        last_change = {
+def _base_definitions() -> tuple[dict | None, str]:
+    """The lock's `definitions` at the merge base with main.
+
+    Returns (definitions, note). `None` means the base could not be resolved
+    at all -- distinct from `{}`, which means the base genuinely predates this
+    lock file (the commit that introduces it).
+    """
+    import subprocess
+
+    rel = _rel(LOCK_PATH)
+    for ref in BASE_REFS:
+        merge_base = subprocess.run(
+            ["git", "merge-base", "HEAD", ref],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if merge_base.returncode != 0:
+            continue
+        base = merge_base.stdout.strip()
+        show = subprocess.run(
+            ["git", "show", f"{base}:{rel}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if show.returncode != 0:
+            # Ref resolved but the lock does not exist there -- this branch
+            # introduces it. A real answer, not a failure.
+            return {}, f"merge base {base[:9]} ({ref}) has no lock yet"
+        try:
+            data = json.loads(show.stdout)
+        except json.JSONDecodeError:
+            return None, f"merge base {base[:9]} ({ref}) has an unparsable lock"
+        return data.get("definitions", {}), f"merge base {base[:9]} ({ref})"
+    return None, f"no merge base against any of {', '.join(BASE_REFS)}"
+
+
+def _last_change_block(base: dict | None, current: dict, note: str) -> dict:
+    """The alert block, derived from the merge base. Pure given its inputs."""
+    if base is None:
+        return {
+            "base": note,
+            "change_count": None,
+            "high_severity_count": None,
+            "changes": [BASE_UNAVAILABLE],
+        }
+    if not base:
+        # Every metric is technically "added" against an absent base lock.
+        # Recording 595 additions would make the one file a reader is meant to
+        # scan for real events open with 595 non-events.
+        return {
+            "base": note,
             "change_count": 0,
             "high_severity_count": 0,
-            "changes": ["initial lock -- no prior state to diff against"],
+            "changes": [NO_PRIOR_STATE],
         }
-    else:
-        last_change = {
-            "change_count": len(diff.changes),
-            "high_severity_count": len(diff.high),
-            # Plain sentences, not structured deltas: this block exists to be
-            # READ in a PR diff, and a nested object of before/after tuples is
-            # not read, it is scrolled past.
-            "changes": [
-                f"{change.severity:<6} {change.describe()}" for change in diff.changes
-            ],
-        }
+    diff = diff_locks(base, current)
+    return {
+        "base": note,
+        "change_count": len(diff.changes),
+        "high_severity_count": len(diff.high),
+        # Plain sentences, not structured deltas: this block exists to be READ
+        # in a PR diff, and a nested object of before/after tuples is not read,
+        # it is scrolled past.
+        "changes": [
+            f"{change.severity:<6} {change.describe()}" for change in diff.changes
+        ]
+        or ["no definition changes relative to the merge base"],
+    }
+
+
+def _write_lock(definitions: dict, last_change: dict) -> None:
     payload = {
         "_comment": LOCK_COMMENT,
         "metric_count": len(definitions),
@@ -125,7 +229,9 @@ def _write_lock(definitions: dict, diff, *, first_run: bool) -> None:
         "definitions": definitions,
     }
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LOCK_PATH.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
+    LOCK_PATH.write_text(
+        json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -141,23 +247,48 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.update and args.gate:
+        # Not merely redundant: --update returns before the gate block, so this
+        # combination would rewrite the lock and exit 0 with the gate silently
+        # skipped -- an invocation that looks like it enforced and did not.
+        parser.error("--update and --gate are mutually exclusive")
+
     graph = build_graph()
     current = build_lock(graph)
-    locked, whole = _load_lock()
+    locked, whole, lock_exists = _load_lock()
+    rel = _rel(LOCK_PATH)
 
-    first_run = not whole
     diff = diff_locks(locked, current)
+    base, base_note = _base_definitions()
 
     if args.update:
-        _write_lock(current, diff, first_run=first_run)
-        rel = LOCK_PATH.relative_to(REPO_ROOT)
-        if first_run:
-            print(f"{rel}: created, {len(current)} metric definitions locked")
-            return 0
-        print(f"{rel}: updated, {len(current)} metric definitions locked")
-        for line in format_report(diff):
-            print(line)
+        block = _last_change_block(base, current, base_note)
+        _write_lock(current, block)
+        verb = "updated" if lock_exists else "created"
+        print(f"{rel}: {verb}, {len(current)} metric definitions locked")
+        print(f"  deltas computed against {base_note}")
+        if base is None:
+            print(f"  WARNING: {BASE_UNAVAILABLE} -- _last_change is not authoritative")
+        # Echo the block's OWN sentences rather than re-deriving a report, so
+        # the console and the committed file can never describe the same
+        # update differently.
+        for line in block["changes"]:
+            print(f"  {line}")
         return 0
+
+    # The committed alert block must match what the merge base says it should
+    # be. Without this the sentence is a convention an agent can hand-edit
+    # away; with it, erasing the alert fails the gate.
+    stale_alert: str | None = None
+    if lock_exists and base is not None:
+        expected = _last_change_block(base, locked, base_note)
+        committed = whole.get("_last_change") or {}
+        if committed.get("changes") != expected["changes"]:
+            stale_alert = (
+                "committed _last_change does not match the merge-base diff\n"
+                f"    committed: {committed.get('changes')}\n"
+                f"    expected : {expected['changes']}"
+            )
 
     if args.json:
         print(
@@ -165,7 +296,10 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "locked_count": len(locked),
                     "current_count": len(current),
-                    "lock_present": not first_run,
+                    "lock_present": lock_exists,
+                    "merge_base": base_note,
+                    "merge_base_resolved": base is not None,
+                    "stale_alert": stale_alert,
                     "change_count": len(diff.changes),
                     "high_severity_count": len(diff.high),
                     "severity_scale": SEVERITY,
@@ -189,11 +323,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     else:
-        if first_run:
-            print(
-                f"no lock at {LOCK_PATH.relative_to(REPO_ROOT)} -- "
-                f"run --update to create it ({len(current)} definitions)"
-            )
+        if not lock_exists:
+            print(f"no lock at {rel} -- run --update to create it ({len(current)} defs)")
         else:
             print(
                 f"{len(current)} metric definitions "
@@ -201,19 +332,28 @@ def main(argv: list[str] | None = None) -> int:
             )
             for line in format_report(diff):
                 print(line)
+        if base is None:
+            print(f"\nNOTE: {BASE_UNAVAILABLE} ({base_note});")
+            print("      committed _last_change was NOT verified this run.")
 
-    if args.gate and (diff or first_run):
+    if args.gate and (diff or not lock_exists or stale_alert):
         print("\ndefinition drift gate: FAIL", file=sys.stderr)
-        if first_run:
+        if not lock_exists:
             print(
                 "  no committed lock to compare against; run --update and commit it",
                 file=sys.stderr,
             )
-        else:
+        if diff:
             print(
                 "  a metric definition changed. This is not automatically wrong --\n"
                 "  re-lock with `python scripts/check_definition_drift.py --update`\n"
                 "  and COMMIT the lock, so the change is stated in the PR diff.",
+                file=sys.stderr,
+            )
+        if stale_alert:
+            print(
+                f"  {stale_alert}\n"
+                "  The alert block is derived, not editable. Re-run --update.",
                 file=sys.stderr,
             )
         return 1

@@ -113,7 +113,57 @@ Run directly, not inferred:
 | Per-turn cost is emitted by the CLI | `total_cost_usd` ≈ $0.008 cold / $0.004 resumed at minimal context |
 | Persona injection | `--append-system-prompt` |
 | The CLI writes into `CLAUDE_CONFIG_DIR` | created `projects/`, `sessions/`, `backups/`, `.claude.json` → dir must be `rw` |
-| `.credentials.json` was read, not rewritten, in these runs | mtime/uid unchanged. Token expiry is ~7.5h out with a refresh token, so a refresh **will** rewrite it — see Risks |
+| `CLAUDE_CODE_OAUTH_TOKEN` is honored in-container and bypasses the credentials file | bogus token → `401 OAuth access token is invalid`; no token and no creds → `Not logged in · Please run /login`. Two distinct code paths, and the config dir is created with **no `.credentials.json`** |
+| The Hub container carries no stray `ANTHROPIC_API_KEY` | `unset` — nothing that would silently divert to API billing |
+
+## Risk resolution: credential handling (settled before implementation)
+
+The first draft of this design mounted the host's `~/.claude/.credentials.json`
+into the container. That carried two risks, and both are now **eliminated rather
+than mitigated**, by not having a credentials file in the container at all.
+
+**Risk 1 — atomic-rename breaks a single-file bind mount.** The OAuth token
+expires roughly every 7.5h and refresh rewrites `.credentials.json`. If the CLI
+refreshes via write-temp-then-rename, a single-file bind mount silently pins the
+container to a stale token and the room dies at expiry.
+
+**Risk 2 — refresh-token rotation could log Juniper out.** Far worse. With the
+container holding its own copy of the credentials and refreshing independently,
+a rotating refresh token would invalidate the host's copy — breaking Juniper's
+own Claude Code login, not just the room.
+
+**Resolution: `claude setup-token`.** The CLI ships a purpose-built command for
+this ("Set up a long-lived authentication token (requires Claude subscription)").
+It issues a long-lived `CLAUDE_CODE_OAUTH_TOKEN` passed as an env var. Verified
+live in `orion-athena-hub`: the token path is active in 2.1.232, and the config
+dir is created **without** a `.credentials.json`.
+
+Consequences:
+
+- No credentials file in the container ⇒ no bind mount ⇒ Risk 1 does not exist.
+- The container never writes credentials ⇒ it cannot rotate or invalidate the
+  host's token ⇒ Risk 2 does not exist. Juniper's own login is untouchable
+  from the room.
+- The room's token is **independently revocable** without disturbing Juniper's
+  session — a real operational win over sharing one credential.
+- Still the subscription, not API billing (`setup-token` requires a Claude
+  subscription; `subscriptionType: "max"`).
+
+`CLAUDE_CONFIG_DIR` is still set to a dedicated `rw` dir, now purely to keep the
+room's Claude sessions (`projects/`, `sessions/`) separate from Juniper's own and
+out of `orion/dev_economics/claude_code_ingest.py`'s ledger. It holds no secret.
+
+Operator action required once, interactively (cannot be automated — it is a
+browser OAuth flow):
+
+```bash
+claude setup-token          # then put the token in services/orion-hub/.env as HUB_ROOM_CLAUDE_OAUTH_TOKEN
+```
+
+Residual, accepted: the long-lived token does eventually expire, and nothing in
+the token is introspectable for an expiry date. Mitigation is honesty, not
+prediction — an auth failure must surface as a visible room error, never as a
+silent skip or a fallback to another model (see failure mode (c)).
 
 ## Decisions taken (Juniper, 2026-08-14)
 
@@ -124,6 +174,7 @@ Run directly, not inferred:
 | Spend cap | **No cap.** Meter `total_cost_usd`, never refuse — collect clean unconstrained data to size the v2 autonomy budget. |
 | What Claude sees | **Room-native: same as any participant.** Transcript + the `social_memory /summary` block (roster, room continuity, stance, open threads) under the existing strict redaction posture. Tools off. |
 | Where it runs | **Inside the Hub container.** No host daemon, no new service. |
+| How it authenticates | **`claude setup-token`** — a dedicated, revocable, long-lived `CLAUDE_CODE_OAUTH_TOKEN`. No credentials file in the container. |
 
 ## Proposed schema / API changes
 
@@ -195,7 +246,14 @@ Utterance carries `{room_id, correlation_id, text, claude_session_id, model, cos
 
 New settings, all `HUB_ROOM_CLAUDE_*` prefixed to stay clear of the
 `HUB_AGENT_CLAUDE_*` (FCC) namespace: `ENABLED`, `MODEL`, `EFFORT`,
-`CONFIG_DIR`, `TIMEOUT_SEC`, `PARTICIPANT_NAME`.
+`CONFIG_DIR`, `TIMEOUT_SEC`, `PARTICIPANT_NAME`, `OAUTH_TOKEN` (secret — empty
+placeholder in `.env_example`, real value only in local `.env`).
+
+The spawned subprocess env must **explicitly clear** `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` before setting
+`CLAUDE_CODE_OAUTH_TOKEN`. The first two are what `fcc_claude_bridge.py:262-263`
+sets, and inheriting any of the three would silently route the room to a
+different provider or to API billing.
 
 ## Non-goals
 
@@ -231,8 +289,10 @@ across turns; a `social_room_turns` row carrying `external_responder`; and
 `active_participants` containing all three names. Empty text or `cost_usd == 0`
 is a failure, never a success (AGENTS.md §0A "No empty-shell cognition").
 
-**Dangerous failure modes.** (a) Credential exposure — mitigated by a dedicated
-config dir, never `~/.claude`. (b) Runaway AI↔AI loop — structurally impossible
+**Dangerous failure modes.** (a) Credential exposure — structurally reduced: the
+container holds a dedicated, independently revocable `setup-token`, never
+Juniper's `~/.claude` credentials, and never writes a credentials file.
+(b) Runaway AI↔AI loop — structurally impossible
 in v1, since only a human click emits a request. (c) Silent fallback to the FCC
 gateway producing a local model's text labelled "Claude" — guarded by asserting
 `ANTHROPIC_BASE_URL` is unset and recording the CLI's reported model on every
@@ -266,8 +326,11 @@ Required before `cost_usd` is wired anywhere downstream.
 
 ## Acceptance checks
 
-1. `claude -p` from inside `orion-athena-hub` returns `is_error:false` with
-   `apiKeySource:"none"` — subscription, not API key.
+1. `claude -p` from inside `orion-athena-hub`, authenticated only by
+   `CLAUDE_CODE_OAUTH_TOKEN`, returns `is_error:false` — and the container's
+   `CLAUDE_CONFIG_DIR` contains no `.credentials.json` afterwards.
+1b. Revoking the room's token stops the room and leaves Juniper's own
+   `claude` session working — proves the credentials are genuinely separate.
 2. Two consecutive invites reuse one `claude_session_id`, and Claude
    demonstrably recalls turn 1 in turn 2.
 3. A `social_room_turns` row exists with `external_responder.participant_name ==

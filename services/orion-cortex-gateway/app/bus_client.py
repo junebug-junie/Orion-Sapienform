@@ -376,7 +376,15 @@ class BusClient:
                 session_id=req.session_id or "gateway-session",
                 user_id=req.user_id or "gateway-user",
                 trace_id=req.trace_id,
-                metadata=req.metadata or {}
+                metadata=req.metadata or {},
+                # THIS is the live Hub->gateway path. app/main.py's HTTP
+                # /v1/cortex/chat handler builds its own context and is not what
+                # the Hub uses (the Hub goes over the bus). Omitting attachments
+                # here dropped every image silently: the turn still succeeded, so
+                # the LLM gateway's "refuse loudly" guard never fired and Orion
+                # answered "I don't see an image attached" -- confirmed live
+                # 2026-08-14 before this line existed.
+                attachments=list(req.attachments or []),
             )
             logger.info(
                 "gateway_context_messages corr=%s mode=%s count=%s roles=%s",

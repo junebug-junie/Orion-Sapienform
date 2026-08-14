@@ -76,6 +76,33 @@ class Settings(BaseSettings):
         alias="HUB_LLM_GATEWAY_TIMEOUT_SEC",
     )
 
+    # --- Chat attachments (images Juniper attaches to a turn) ---
+    # Bytes live here; only a content-addressed ref travels on the wire.
+    HUB_CHAT_ATTACHMENT_DIR: str = Field(
+        default="/mnt/orion-chat-attachments",
+        alias="HUB_CHAT_ATTACHMENT_DIR",
+    )
+    HUB_CHAT_ATTACHMENT_MAX_BYTES: int = Field(
+        default=8_388_608,
+        alias="HUB_CHAT_ATTACHMENT_MAX_BYTES",
+    )
+    HUB_CHAT_ATTACHMENT_ALLOWED_MIMES: str = Field(
+        default="image/png,image/jpeg,image/webp,image/gif",
+        alias="HUB_CHAT_ATTACHMENT_ALLOWED_MIMES",
+    )
+    # Base the LLM gateway can reach, which is not necessarily the base the
+    # browser used to upload. Baked into AttachmentRefV1.source_url.
+    # Node IP, not localhost: the Hub is network_mode host but orion-llm-gateway
+    # is on the bridge network, so the gateway's localhost is not the Hub.
+    HUB_CHAT_ATTACHMENT_PUBLIC_BASE: str = Field(
+        default="http://100.92.216.81:8080",
+        alias="HUB_CHAT_ATTACHMENT_PUBLIC_BASE",
+    )
+    HUB_CHAT_ATTACHMENT_MAX_PER_TURN: int = Field(
+        default=4,
+        alias="HUB_CHAT_ATTACHMENT_MAX_PER_TURN",
+    )
+
     # --- Context-exec agent lane (Hub Agent mode) ---
     HUB_AGENT_CONTEXT_EXEC_ENABLED: bool = Field(
         default=True,

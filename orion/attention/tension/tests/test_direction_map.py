@@ -8,12 +8,35 @@ from orion.attention.tension.direction_map import (
     DirectionMapError,
     load_direction_map,
 )
+from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS
 
 
 def _write(tmp_path, body: str):
     path = tmp_path / "map.yaml"
     path.write_text(body, encoding="utf-8")
     return path
+
+
+def test_higher_is_better_polarity_is_derived_not_hand_listed():
+    """Regression 2026-08-14. The first version hand-listed availability/
+    delivery_confidence/stream_backlog_health in the YAML -- a strict SUBSET of
+    `orion.field.pressure.HIGHER_IS_BETTER_CHANNELS`, silently missing
+    `confidence` and `available_capacity`, which would have had this module
+    disagreeing with `orion/attention/field_attention/selectors.py` about two
+    channels' polarity."""
+    dm = load_direction_map()
+    for channel in HIGHER_IS_BETTER_CHANNELS:
+        assert dm.worse_for(channel) == "down", channel
+    # And the ones the hand-written subset missed, named explicitly so a future
+    # edit that drops the derivation fails here loudly.
+    assert dm.worse_for("confidence") == "down"
+    assert dm.worse_for("available_capacity") == "down"
+
+
+def test_yaml_may_not_contradict_the_polarity_constant(tmp_path):
+    body = "suffix_rules:\n  '*_pressure': up\nchannels:\n  availability: up\n"
+    with pytest.raises(DirectionMapError, match="HIGHER_IS_BETTER_CHANNELS"):
+        load_direction_map(_write(tmp_path, body))
 
 
 def test_ships_a_real_map_that_covers_the_live_channels():
@@ -65,8 +88,12 @@ def test_longest_suffix_wins(tmp_path):
     assert dm.worse_for("cpu_pressure") == "up"
 
 
-def test_empty_map_refuses_to_load(tmp_path):
-    with pytest.raises(DirectionMapError, match="no rules"):
+def test_map_contributing_no_rules_of_its_own_refuses_to_load(tmp_path):
+    """The guard is on the YAML's OWN contribution. `exact` is seeded from
+    HIGHER_IS_BETTER_CHANNELS, so a merged-map emptiness check would be
+    permanently satisfied and therefore inert -- exactly the class of dead gate
+    this repo has been bitten by before."""
+    with pytest.raises(DirectionMapError, match="contributes no rules of its own"):
         load_direction_map(_write(tmp_path, "version: 1\n"))
 
 

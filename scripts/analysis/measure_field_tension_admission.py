@@ -41,14 +41,31 @@ from orion.attention.tension.field_observations import (  # noqa: E402
     iter_observations,
     subnormal_pinned,
 )
+from orion.field.channel_glossary import classify_channel_series  # noqa: E402
+
+# The field digester's designed decay set. A channel in here decaying toward
+# rest is CORRECT behaviour, not a defect -- see `geometric_decay_ratio`'s
+# docstring for the 100%-false-positive first version of this script that did
+# not make that distinction. Imported from the service rather than vendored so
+# it cannot silently drift out of sync with the loop that actually decays.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "orion-field-digester"))
+from app.digestion.decay import NODE_DECAY_CHANNELS  # noqa: E402
 
 logger = logging.getLogger("measure_field_tension_admission")
 
 DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
 
 # How many recent samples of one (node, channel) series to test for the
-# constant-ratio decay artifact.
+# constant-ratio decay artifact. Deliberately short: a decay ratio is a
+# *local* property and a long window would span refresh events that reset it.
 DECAY_PROBE_SAMPLES = 12
+
+# Liveness is a WINDOW property and must not be judged off the decay probe's
+# 12-sample tail -- a channel quiet for the last 12 ticks is not a channel dead
+# for 24h, and this repo has been bitten by short-window distribution claims
+# before. Sample every Nth tick instead, giving ~210 evenly-spread points over a
+# 24h/42k-tick run at bounded memory.
+LIVENESS_SAMPLE_STRIDE = 200
 
 
 def open_readonly_connection(dsn: str):
@@ -183,6 +200,10 @@ def main() -> int:
     first_ts = last_ts = None
     # Tail of each (node, channel) series, for the decay-artifact probe.
     tails: dict[tuple[str, str], list[float]] = defaultdict(list)
+    # Strided, window-wide samples for the liveness classifier (see
+    # LIVENESS_SAMPLE_STRIDE) -- distinct from `tails`, which is a short local
+    # tail for the decay-ratio probe.
+    liveness_samples: dict[tuple[str, str], list[float]] = defaultdict(list)
 
     try:
         for generated_at, field_json in fetch_ticks(conn, args.hours, args.limit):
@@ -203,6 +224,8 @@ def main() -> int:
                 tail.append(obs.raw_value)
                 if len(tail) > DECAY_PROBE_SAMPLES:
                     tail.pop(0)
+                if ticks % LIVENESS_SAMPLE_STRIDE == 1:
+                    liveness_samples[(obs.node_id, obs.channel)].append(obs.raw_value)
 
             result = comp.observe_tick(field_json)
             subnormal_total += result.subnormal_count
@@ -235,14 +258,33 @@ def main() -> int:
     never_admitted = sorted(mapped - set(channel_admissions))
     unmapped_seen = sorted(channels_seen - mapped)
 
-    decay_suspect = []
-    pinned = []
+    # Decay is only a DEFECT when the channel is not in the designed decay set.
+    # Both buckets are reported so the by-design half stays visible rather than
+    # being silently dropped -- but only `undesigned` is a finding.
+    decay_undesigned = []
+    decay_by_design = []
+    pinned_undesigned = []
+    pinned_by_design = []
     for (node_id, channel), tail in sorted(tails.items()):
+        designed = channel in NODE_DECAY_CHANNELS
         ratio = geometric_decay_ratio(tail)
         if ratio is not None:
-            decay_suspect.append({"node": node_id, "channel": channel, "ratio": round(ratio, 6)})
+            entry = {"node": node_id, "channel": channel, "ratio": round(ratio, 6)}
+            (decay_by_design if designed else decay_undesigned).append(entry)
         elif subnormal_pinned(tail):
-            pinned.append({"node": node_id, "channel": channel, "value": tail[-1]})
+            entry = {"node": node_id, "channel": channel, "value": tail[-1]}
+            (pinned_by_design if designed else pinned_undesigned).append(entry)
+
+    # Reuse the repo's already-validated liveness classifier rather than
+    # inferring liveness from "never admitted". Its vocabulary
+    # (never_produced / dead / ratchet_suspect / quiet / live) already separates
+    # "genuinely wired but quiet" from "telling you nothing", which is exactly
+    # the distinction a raw never-admitted list cannot make.
+    liveness: dict[str, str] = {}
+    for (node_id, channel), samples in sorted(liveness_samples.items()):
+        liveness[f"{node_id}/{channel}"] = classify_channel_series(samples)
+    liveness_counts = Counter(liveness.values())
+    liveness_sample_depth = max((len(s) for s in liveness_samples.values()), default=0)
 
     report = {
         "window_hours": args.hours,
@@ -280,8 +322,15 @@ def main() -> int:
         "data_quality": {
             "subnormal_coercion_observations": subnormal_total,
             "subnormal_distinct_series": len(subnormal_series),
-            "decay_suspect_series": decay_suspect,
-            "subnormal_pinned_series": pinned,
+            "liveness_counts": dict(liveness_counts.most_common()),
+            "liveness_sample_depth": liveness_sample_depth,
+            "liveness_by_series": liveness,
+            # Findings: decay on a channel NOT in the designed decay set.
+            "decay_undesigned": decay_undesigned,
+            "pinned_undesigned": pinned_undesigned,
+            # Expected behaviour, reported for visibility only. NOT findings.
+            "decay_by_design_count": len(decay_by_design),
+            "pinned_by_design_count": len(pinned_by_design),
         },
     }
 
@@ -315,18 +364,24 @@ def main() -> int:
     print(f"subnormal observations    {subnormal_total}")
     print(f"subnormal DISTINCT series {len(subnormal_series)}   (the observation count above "
           f"is this x tick count, not independent evidence)")
-    if decay_suspect:
-        print(f"decay-suspect, mid-decay ({len(decay_suspect)}) -- NOT calm, unmaintained:")
-        for entry in decay_suspect[:10]:
+    print(f"liveness (classify_channel_series, {liveness_sample_depth} strided samples "
+          f"across the full window): {dict(liveness_counts.most_common())}")
+    print(f"\nby design, NOT findings   decaying={len(decay_by_design)}  "
+          f"pinned={len(pinned_by_design)}   (channels in NODE_DECAY_CHANNELS "
+          f"decaying toward rest is correct behaviour)")
+    if decay_undesigned:
+        print(f"\nFINDING -- decaying but NOT in NODE_DECAY_CHANNELS ({len(decay_undesigned)}):")
+        for entry in decay_undesigned[:10]:
             print(f"  {entry['node']:<22} {entry['channel']:<30} ratio={entry['ratio']}")
     else:
-        print("decay-suspect, mid-decay  none")
-    if pinned:
-        print(f"decay-suspect, bottomed out ({len(pinned)}) -- pinned subnormal, reads as calm:")
-        for entry in pinned[:10]:
+        print("\nFINDING -- undesigned decay   none")
+    if pinned_undesigned:
+        print(f"FINDING -- pinned subnormal, NOT in NODE_DECAY_CHANNELS "
+              f"({len(pinned_undesigned)}):")
+        for entry in pinned_undesigned[:10]:
             print(f"  {entry['node']:<22} {entry['channel']:<30} value={entry['value']:.3e}")
     else:
-        print("decay-suspect, bottomed out none")
+        print("FINDING -- undesigned pinned  none")
     print()
     return 0
 

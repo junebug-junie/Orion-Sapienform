@@ -31,17 +31,21 @@ suffix_rules:
   "*_warning": up
   "*_incompletion": up
 
+# NOTE: the "a fall is the tension" channels are NOT listed here. They are
+# derived from `orion.field.pressure.HIGHER_IS_BETTER_CHANNELS`, the polarity
+# constant every existing cognition consumer already uses. An earlier version of
+# this file hand-listed them and got a strict subset (missing `confidence` and
+# `available_capacity`), which would have made this module disagree with
+# `orion/attention/field_attention/selectors.py` about two channels. Entries
+# below may ADD channels the constant does not cover; contradicting it raises.
 channels:
-  # Health/availability readings: a FALL is the tension.
-  availability: down
-  delivery_confidence: down
-  stream_backlog_health: down
-
-  # Staleness rises as data ages. Note (live, 2026-08-14): `staleness` is NOT a
-  # trustworthy liveness signal on its own -- `node:circe` reads staleness=0.0 /
-  # availability=1.0 while every one of its channels has decayed to subnormal
-  # floats. Mapped here because a real rise is genuine tension, but the
-  # measurement reports decay-suspect channels separately rather than trusting it.
+  # Staleness rises as data ages.
+  #
+  # `staleness` is in `NODE_DECAY_CHANNELS` -- it is DESIGNED to decay toward
+  # zero when a node is being refreshed normally, so a low/subnormal reading is
+  # correct behaviour for a healthy node, not evidence of a dead channel. An
+  # earlier version of this comment claimed the opposite. Only a genuine RISE is
+  # tension, which is what `up` encodes.
   staleness: up
 
 # Deliberately unmapped in v1 -- these contribute nothing and that is the intent.

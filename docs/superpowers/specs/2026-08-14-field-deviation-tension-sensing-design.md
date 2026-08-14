@@ -30,16 +30,22 @@ Two things follow, and this patch does both:
 
 ## Runtime truth check (done first, and it changed the design)
 
-The 2026-07-07 spec targeted `orion:signals:*` at ~55/s. **That lane is dead as of
-2026-08-14.** Verified live against `ORION_BUS_URL=redis://100.92.216.81:6379/0`:
+The 2026-07-07 spec targeted `orion:signals:*` at ~55/s.
 
-- `redis-cli pubsub channels 'orion:signals*'` → empty (497 other channels active).
-- `orion:bus:velocity:*` census over the live hour lists 40 distinct channels; no
-  `orion:signals:*` among them.
-- No `orion_signals`-shaped Postgres table exists. `substrate_organ_emissions` is
-  `organ.emission.v1` grammar events (one organ, `biometrics_pressure`), not `OrionSignalV1`.
+**Correction (2026-08-14, after Juniper flagged the assumption).** An earlier version of this
+section asserted "that lane is dead." That claim was not supported by the method used for it.
+`redis-cli pubsub channels 'orion:signals*'` lists only channels **with subscribers** — a
+channel being actively published with nobody listening is invisible to it, and this repo
+already has exactly that pattern on record (`orion:spark:signal`, 0 subscribers). Checked
+properly: **`orion-signal-gateway` is running** (`Up About an hour`), so the producer is
+alive. What is true is narrower: no `orion:signals:*` traffic appears in the
+`orion:bus:velocity:*` census, nothing subscribes, and no `OrionSignalV1` history table
+exists — so there is no queryable history to build a baseline from.
 
-Building a tension gate against that bus would have been config truth, not runtime truth.
+That is the real reason this patch reads `substrate_field_state` instead, and it is a
+sufficient one: **a deviation gate needs persisted history to learn baselines from, and only
+the field has it.** "The signal lane has no queryable history" is a claim the evidence
+supports; "the signal lane is dead" was not.
 
 **What is actually rich and live** — `substrate_field_state` (Postgres `conjourney`):
 
@@ -54,12 +60,15 @@ Building a tension gate against that bus would have been config truth, not runti
 This is the same "rich, real interoceptive field sitting right next to Drives, unused" that
 `2026-07-17-field-native-motivational-substrate-design.md` named. This patch reads it.
 
-A related live finding, recorded because it constrains the design: `node:circe`'s channels
-are decayed to **subnormal floats** (`3e-321`-scale) while its `staleness` still reads
-`0.0` and `availability` reads `1.0`. That is the generic-decay-loop pathology CLAUDE.md
-already documents for `node:substrate.route`. `staleness` is therefore not a trustworthy
-liveness signal here, and the measurement reports decay-suspect channels rather than
-silently folding them into baselines.
+**Retracted claim (2026-08-14).** An earlier version of this section reported that
+`node:circe`'s channels being decayed to subnormal floats while `staleness` reads `0.0` and
+`availability` reads `1.0` was "the generic-decay-loop pathology CLAUDE.md documents for
+`node:substrate.route`." **That was wrong.** `staleness` and 27 other channels are in the
+field digester's `NODE_DECAY_CHANNELS` — they are *designed* to decay at 0.92/tick toward
+rest when nothing refreshes them. A node being refreshed normally drives `staleness` to
+exactly this reading. The documented pathology is the **opposite** shape: `prediction_error`,
+which was deliberately *removed* from that set on 2026-07-26 precisely because it must not
+decay, being decayed anyway. See "Corrections" below.
 
 ## Current architecture
 
@@ -113,9 +122,18 @@ A steady channel settles to its own mean and admits nothing — the flood-starvi
 (structural match on typed channel-name suffix, no free text), none of the exchange rates.
 
 Suffix rules cover 28 of 33 channels (`*_pressure`, `*_load`, `*_deficit`, `*_friction`,
-`*_error`, `*_warning`, `*_incompletion`, `*_ratio` excluded). Explicit entries handle
-`availability`, `delivery_confidence`, `stream_backlog_health` (down is worse) and
+`*_error`, `*_warning`, `*_incompletion`, `*_ratio` excluded), plus one explicit entry for
 `staleness` (up is worse).
+
+**The "down is worse" set is NOT in this file — it is derived from
+`orion.field.pressure.HIGHER_IS_BETTER_CHANNELS`**, the polarity constant every existing
+cognition consumer already uses (`orion/attention/field_attention/selectors.py`,
+`orion/field/commensurability.py`). An earlier version hand-listed
+`availability`/`delivery_confidence`/`stream_backlog_health` in the YAML, which was a
+hand-re-derivation of that constant and a **strict subset** of it — silently missing
+`confidence` and `available_capacity`, so this module would have disagreed with its own
+package neighbours about two channels' polarity. The loader now seeds from the constant and
+raises if the YAML contradicts it.
 
 Two channels are **deliberately unmapped in v1** and contribute nothing:
 `context_gathering_ratio` (no theory for which direction is worse) and
@@ -249,57 +267,86 @@ Even at the most conservative setting tried, admission is **6.49% — 101× the 
 rate**. Discrimination *improves* as the threshold rises (top-1 share falls toward and past
 0.5), so there is no admission-vs-monoculture tradeoff to split here.
 
-### Live-data findings worth their own follow-ups (not fixed in this patch)
+### Live-data findings (corrected 2026-08-14 — the originals were false alarms)
 
-- **10 channels never admit across 42k ticks**: `availability`, `catalog_drift_pressure`,
-  `compliance_deficit`, `contract_pressure`, `execution_load`, `observer_failure_pressure`,
-  `staleness`, `stream_backlog_pressure`, `transport_pressure`, `turn_incompletion`. Some are
-  legitimately quiet; `transport_pressure`/`execution_load` are renamed-lane survivors and
-  `staleness` is known-degenerate (below). Each needs its own metric-gate pass before anyone
-  treats its silence as meaning "calm."
-- **19 distinct (node, channel) series** are decayed into subnormal territory — out of ~130
-  live series. These are channels nothing refreshes, being multiplied toward zero by a
-  generic decay loop, and they read as *calm* to any consumer that does not check. This
-  patch collapses them to a clean 0.0 and counts them; it does not fix the producers.
+**Every "decay-suspect" finding this spec originally published was wrong, and the corrected
+instrument reports zero findings in that category.**
 
-  An earlier draft cited **559,291 subnormal coercions** here and concluded the pathology was
-  "widespread." That number is an observation×tick count — 19 permanently dead series times
-  the tick count — and supported no such conclusion. Caught in review; the report now carries
-  a distinct-series field alongside it. The conclusion happens to survive (19 of ~130 is real),
-  but it did not follow from the number originally cited for it.
-- **The decay probe caught the documented artifact live in both of its states.**
+The original reported 4 series "mid-decay at ratio 0.92 — NOT calm, unmaintained" and 7
+"bottomed out, pinned subnormal, reads as calm." Checked against
+`services/orion-field-digester/app/digestion/decay.py`: **9 of 9 named channels are in
+`NODE_DECAY_CHANNELS`** — `staleness`, `reasoning_load`, `conversation_load`,
+`repair_pressure`, `reliability_pressure`, `avg_step_chars_pressure`,
+`field_coherence_warning`, `harness_step_load`, `turn_incompletion`. All of them are
+*supposed* to decay at 0.92/tick toward rest. A decaying `conversation_load` means nobody is
+talking. That is correct behaviour, not a defect.
 
-  *Mid-decay*, 4 series all at **ratio = 0.92 exactly** — the `NODE_DECAY_CHANNELS` generic
-  staleness-decay loop in `services/orion-field-digester/app/digestion/decay.py`, multiplying
-  an unrefreshed channel by 0.92 every tick: `node:athena / conversation_load`,
-  `node:athena / repair_pressure`, `node:circe / reasoning_load`,
-  `node:rpc_timeout / reliability_pressure`.
+The detector had a **100% false-positive rate** on this data and was blind by construction to
+the one shape that actually indicates a bug: decay on a channel *outside* the designed set,
+which is exactly the `prediction_error` case CLAUDE.md documents. It has been inverted to
+report only undesigned decay, and the by-design half is now counted separately as "not
+findings."
 
-  *Bottomed out*, 7 series pinned at ~2.96e-323 and completely invisible to the ratio probe
-  (successive ratios are exactly 1.0, so it rejects them): `staleness` on **three** nodes,
-  plus `node:athena`'s `avg_step_chars_pressure`, `field_coherence_warning`,
-  `harness_step_load`, and `turn_incompletion`. This explains an entry in the
-  `never_admitted` list above — **`staleness` never admits because it is dead, not because
-  it is calm**, which is exactly the confusion this whole detector exists to prevent.
+Corrected output over the same 24h / 42k-tick window:
 
-  Neither state is calm; all 11 are unmaintained, and any consumer reading them without this
-  check would score them as at-rest.
+| | Value |
+|---|---|
+| **Undesigned decay (finding)** | **none** |
+| **Undesigned pinned-subnormal (finding)** | **none** |
+| By-design decaying (expected, not a finding) | 7 |
+| By-design pinned (expected, not a finding) | 7 |
 
-  **A first version of this patch reported "decay-suspect series: none" here, and that was a
-  bug in the instrument, not a clean result.** The probe was being fed the subnormal-coerced
-  value (`0.0`), and `geometric_decay_ratio()` rejects any series containing a non-positive
-  value — so it was structurally incapable of firing on the exact artifact it exists to
-  detect, while reporting a result indistinguishable from healthy data. Caught in self-review
-  before merge; `Observation` now carries `raw_value` alongside the coerced `value`, with a
-  regression test (`test_raw_value_survives_coercion_so_the_decay_probe_can_still_see_it`).
-  Recorded here rather than quietly fixed because it is a textbook instance of this repo's
-  own recurring failure mode: a metric that cannot represent the state it claims to measure.
+**Liveness, from the repo's own validated classifier.** The original also inferred channel
+health from its own `never_admitted` list, which cannot distinguish "quiet by design" from
+"telling you nothing." `orion.field.channel_glossary.classify_channel_series()` already
+exists for exactly this, with a validated heuristic and the right vocabulary. Reused instead
+of re-derived:
 
-  **A second, deeper instance of the same bug was then found by the review**, in the same
-  function: the ratio-constancy check used an *absolute* tolerance (`1e-6`). Subnormal floats
-  carry only ~10 significant bits, so a perfect 0.92 decay at 3e-321 has a successive-ratio
-  spread of ~1.7e-3 — far outside that tolerance. The probe was blind in precisely the
-  magnitude band it exists to police. Worse, the regression test written for the *first* fix
-  asserted on `1e-300` — a normal float — while naming `3e-321` two lines above it, so it
-  passed for the wrong reason and concealed this. Tolerance is now relative; the test fixture
-  now uses genuine subnormals and asserts that it does.
+| Verdict | Series |
+|---|---|
+| `dead` | 94 |
+| `live` | 34 |
+| `quiet` | 21 |
+
+Sampled at a 200-tick stride, **211 evenly-spread points across the full window**. This
+matters: run against the decay probe's 12-sample tail instead, the same classifier reports
+`live: 4, dead: 102, quiet: 40` — a short-window artifact that would have wildly understated
+liveness. The stride sampling was added specifically to avoid publishing that.
+
+**What the `never_admitted` list actually means.** 7 of its 10 entries
+(`catalog_drift_pressure`, `compliance_deficit`, `contract_pressure`,
+`observer_failure_pressure`, `staleness`, `stream_backlog_pressure`, `turn_incompletion`)
+are in `NODE_DECAY_CHANNELS` and at their designed resting state. `availability` is
+higher-is-better and pinned at 1.0 because everything is available. None of these is
+evidence of a problem, and the original framing of them as concerns was unfounded.
+
+### The real open defect in this area, which this instrument does NOT detect
+
+Found while checking the above, already tracked in `orion/field/pressure.py`: when
+`services/orion-biometrics` goes quiet, every input to `resource_pressure` decays toward 0,
+the dimension reads *calm*, and because `config/feedback/feedback_policy.v1.yaml` lists
+`resource_pressure: decrease` under `positive_delta_channels`, **the in-flight action is
+credited with a positive outcome for a producer outage.** That is the genuine
+decay-vs-calm ambiguity. It needs a producer-liveness guard on the dimension, not a ratio
+check on the channel — this patch's detector would not catch it. Tracked in PR #1554's design
+doc; not addressed here.
+
+## Blast radius
+
+- **Runtime: zero.** 14 files, 2,189 insertions, **no modifications to any pre-existing
+  file**. Nothing in the repo imports `orion.attention.tension`. No schema registered, no bus
+  channel, no service, no consumer.
+- **Dependency direction is inbound only.** This package now *reads*
+  `orion.field.pressure.HIGHER_IS_BETTER_CHANNELS`, and the measurement script reads
+  `classify_channel_series` and `NODE_DECAY_CHANNELS`. Changing those affects this code, not
+  the reverse — deliberately, so the polarity and decay semantics cannot drift into a private
+  second opinion.
+- **`config/attention/` already existed** (`field_attention_policy.v1.yaml`); this adds a
+  sibling file, not a new convention.
+- **The real blast radius was epistemic, not mechanical.** `substrate_field_state` is read by
+  `orion-proposal-runtime` (→ `ProposalFrameV1`) and by
+  `orion.field.pressure.collect_field_channel_pressures`, described in the glossary as the
+  merged, correctly-polarized dict *every cognition consumer* reads. A merged spec asserting
+  that designed decay channels were broken could have driven someone to "fix" the decay loop
+  those consumers depend on — including re-adding `prediction_error` to a set it was
+  deliberately removed from. That is the actual risk this correction closes.

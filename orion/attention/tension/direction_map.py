@@ -11,6 +11,8 @@ from typing import Dict, Literal, Optional, Tuple
 
 import yaml
 
+from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS
+
 Worse = Literal["up", "down"]
 
 _VALID = ("up", "down")
@@ -81,11 +83,34 @@ def load_direction_map(path: Path | str | None = None) -> DirectionMap:
                 f"got {type(value).__name__}"
             )
 
-    exact: Dict[str, Worse] = {}
+    # Seed the "a fall is the tension" set from the repo's existing polarity
+    # constant rather than re-listing it here.
+    #
+    # WHY (found 2026-08-14, after Juniper flagged the assumption): the first
+    # version of this loader hand-authored `availability`/`delivery_confidence`/
+    # `stream_backlog_health` in the YAML -- a hand-re-derivation of
+    # `orion.field.pressure.HIGHER_IS_BETTER_CHANNELS`, and a strict SUBSET of
+    # it, silently missing `confidence` and `available_capacity`. That constant
+    # is the polarity every existing cognition consumer already uses
+    # (`orion/attention/field_attention/selectors.py`, `orion/field/
+    # commensurability.py`), so a divergent private copy would have had this
+    # module disagreeing with its own package neighbours about which way is
+    # "worse" for two channels. Deriving it removes the drift surface entirely.
+    exact: Dict[str, Worse] = {channel: "down" for channel in HIGHER_IS_BETTER_CHANNELS}
+
     for channel, worse in (raw.get("channels") or {}).items():
         if worse not in _VALID:
             raise DirectionMapError(f"channel {channel!r}: worse={worse!r} not in {_VALID}")
-        exact[str(channel)] = worse
+        channel = str(channel)
+        # The YAML may add channels the constant does not cover, but may not
+        # contradict it -- that would reintroduce the divergence above quietly.
+        if channel in HIGHER_IS_BETTER_CHANNELS and worse != "down":
+            raise DirectionMapError(
+                f"channel {channel!r}: YAML says worse={worse!r} but it is in "
+                f"HIGHER_IS_BETTER_CHANNELS (a fall is the tension). Fix the constant "
+                f"in orion/field/pressure.py if the polarity really changed."
+            )
+        exact[channel] = worse
 
     suffixes: list[Tuple[str, Worse]] = []
     for pattern, worse in (raw.get("suffix_rules") or {}).items():
@@ -102,7 +127,16 @@ def load_direction_map(path: Path | str | None = None) -> DirectionMap:
     if overlap:
         raise DirectionMapError(f"channels both mapped and unmapped: {sorted(overlap)}")
 
-    resolved_map = DirectionMap(exact=exact, suffixes=tuple(suffixes), unmapped=unmapped)
-    if not resolved_map.votes():
-        raise DirectionMapError(f"direction map {resolved} has no rules; refusing to load")
-    return resolved_map
+    # Guard on the YAML's OWN contribution, not on the merged map. `exact` is now
+    # seeded from HIGHER_IS_BETTER_CHANNELS, so the merged map is never empty and
+    # a `votes()` check here would be permanently true -- an inert gate. The
+    # thing actually worth catching is a YAML that has stopped contributing:
+    # suffix rules cover 28 of the 33 live channels, so losing them would gut the
+    # map while every unit test still passed.
+    if not raw.get("suffix_rules") and not raw.get("channels"):
+        raise DirectionMapError(
+            f"direction map {resolved} contributes no rules of its own "
+            f"(no suffix_rules, no channels); refusing to load"
+        )
+
+    return DirectionMap(exact=exact, suffixes=tuple(suffixes), unmapped=unmapped)

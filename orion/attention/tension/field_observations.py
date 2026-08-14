@@ -90,17 +90,32 @@ def geometric_decay_ratio(series: list[float]) -> float | None:
     """Return the constant successive ratio of `series` if it is a clean
     geometric decay *in progress*, else None.
 
-    Detects the decayed-to-zero artifact CLAUDE.md documents for
-    `node:substrate.route` (a generic staleness-decay loop multiplying an
-    unrefreshed channel by a fixed factor every tick, producing a value that
-    looks *exactly* like genuinely-calm-at-zero). A channel matching this is not
-    calm -- it is unmaintained -- and the measurement names it rather than
-    folding it into an admission-rate denominator as if it were healthy signal.
+    **Detecting decay is NOT the same as detecting a defect, and this function
+    does not decide which it is.** Corrected 2026-08-14 after Juniper flagged
+    that much of the field is flat or decaying *by design*. The field digester's
+    `NODE_DECAY_CHANNELS` (services/orion-field-digester/app/digestion/decay.py)
+    contains 28 channels that are *supposed* to decay at 0.92/tick toward rest
+    when nothing refreshes them -- `staleness`, `reasoning_load`,
+    `conversation_load`, `repair_pressure` and the rest. A decaying
+    `conversation_load` means nobody is talking, which is correct, not broken.
+
+    The documented pathology (CLAUDE.md, `node:substrate.route`) is the
+    *opposite* shape: `prediction_error`, which was deliberately REMOVED from
+    `NODE_DECAY_CHANNELS` on 2026-07-26 because it must behave as an undecayed
+    raw snapshot, was being decayed anyway. **The real signal is a clean decay
+    on a channel that is NOT in the designed decay set.**
+
+    So callers must intersect this function's output against
+    `NODE_DECAY_CHANNELS` themselves -- see
+    `scripts/analysis/measure_field_tension_admission.py`. A first version of
+    that script did not, and reported all 9 of its "decay-suspect, NOT calm,
+    unmaintained" findings on channels that were decaying exactly as designed:
+    a 100% false-positive rate, and blind by construction to the one shape that
+    actually indicates a bug.
 
     Catches only decay *in progress*. A series that has already bottomed out --
     pinned at a constant subnormal, or at exactly 0.0 -- has no informative
-    ratio and is reported by `subnormal_pinned()` instead. Both are needed: the
-    end state is what most dead channels actually look like at any given moment.
+    ratio and is reported by `subnormal_pinned()` instead.
 
     Returns None for series that are too short, contain a non-positive value, or
     whose successive ratios are not near-constant in relative terms.
@@ -126,9 +141,13 @@ def subnormal_pinned(series: list[float]) -> bool:
 
     The shape caught: every value a non-zero magnitude at or below
     `SUBNORMAL_PINNED_CEILING`. Successive ratios are then exactly 1.0, so
-    `geometric_decay_ratio()` rejects it (`mean >= 1.0`) -- yet no real channel
-    naturally rests at 3e-323. Only a decay loop produces that, so it is positive
-    evidence of an unmaintained channel rather than a calm one.
+    `geometric_decay_ratio()` rejects it (`mean >= 1.0`).
+
+    **Same caveat as `geometric_decay_ratio()`: this is evidence of "decayed to
+    the floor", NOT of a defect.** For a channel in `NODE_DECAY_CHANNELS` this is
+    the correct resting state of a system with nothing to report -- a node that
+    is refreshed normally drives `staleness` to exactly this. Callers must
+    intersect against the designed decay set before calling anything a problem.
 
     **Exactly-0.0 series are deliberately NOT reported here**, even though they
     are the other end state of the same artifact. A channel genuinely at rest

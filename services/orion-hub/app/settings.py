@@ -130,6 +130,16 @@ class Settings(BaseSettings):
     HUB_ROOM_CLAUDE_ROOM_ID: str = Field(default="hub-direct")
     HUB_ROOM_CLAUDE_PARTICIPANT_NAME: str = Field(default="Claude")
     HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS: int = Field(default=12)
+    # Auto-invite Claude after each Orion turn instead of only on a click.
+    # This is what makes the room feel like a room rather than a summoning
+    # ritual -- but it also REMOVES the property that made v1 safe without a
+    # spend cap (spend was bounded by human clicks). Every Orion turn now costs
+    # a Claude call even when Claude passes, so the advisory cap / watchdog
+    # stops being optional once this is on.
+    HUB_ROOM_CLAUDE_AUTO_RESPOND: bool = Field(default=False)
+    # Minimum seconds between auto-invites, so a burst of rapid turns does not
+    # become a burst of billed Claude calls.
+    HUB_ROOM_CLAUDE_AUTO_MIN_GAP_SEC: float = Field(default=8.0)
     CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
     CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
 

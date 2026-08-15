@@ -204,3 +204,65 @@ async def test_unregistered_connection_stops_receiving():
     relay.unregister_connection("c")
     await relay._handle_utterance({"payload": _utterance().model_dump(mode="json")})
     assert q.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_a_pass_produces_no_bubble_but_is_still_logged_as_cost():
+    """Claude choosing silence is a real, billed turn. No bubble, no stored
+    turn -- but the spend must not vanish, or the meter understates reality."""
+    relay = _relay()
+    q: asyncio.Queue = asyncio.Queue()
+    relay.register_connection("c", q)
+    relay.note_session("c", "sess-1")
+
+    published: list = []
+
+    async def _fake_publish(bus, envelopes):
+        published.extend(envelopes)
+
+    import scripts.chat_history as chat_history
+
+    original = chat_history.publish_chat_history
+    chat_history.publish_chat_history = _fake_publish
+    try:
+        await relay._handle_utterance(
+            {"payload": _utterance(text="", passed=True, cost_usd=0.0041).model_dump(mode="json")}
+        )
+    finally:
+        chat_history.publish_chat_history = original
+
+    assert q.qsize() == 0, "a pass must not render a bubble"
+    assert published == [], "a pass must not be stored as something Claude said"
+
+
+def test_auto_invite_is_rate_gated_per_session():
+    """The failure worth preventing is a burst of rapid turns each billing a
+    Claude call."""
+    relay = _relay(auto_respond=True, auto_min_gap_sec=10.0)
+    assert relay.should_auto_invite("sess-1", 1000.0) is True
+    assert relay.should_auto_invite("sess-1", 1005.0) is False, "inside the gap"
+    assert relay.should_auto_invite("sess-1", 1011.0) is True, "past the gap"
+    # Sessions are gated independently -- one busy room must not mute another.
+    assert relay.should_auto_invite("sess-2", 1005.0) is True
+
+
+def test_auto_invite_is_off_unless_enabled():
+    relay = _relay(auto_respond=False)
+    assert relay.should_auto_invite("sess-1", 1000.0) is False
+
+
+@pytest.mark.asyncio
+async def test_auto_trigger_is_marked_on_the_request():
+    """The companion needs to know an invite was automatic, because that is
+    what licenses Claude to stay quiet."""
+    relay = _relay(auto_respond=True)
+    auto = await relay.invite(
+        prompt="Orion: something", invited_by="Orion", session_id="s",
+        room_id="hub-direct", trigger="auto",
+    )
+    manual = await relay.invite(
+        prompt="what do you think?", invited_by="Juniper", session_id="s",
+        room_id="hub-direct",
+    )
+    assert auto.trigger == "auto"
+    assert manual.trigger == "manual"

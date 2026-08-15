@@ -451,6 +451,8 @@ async def startup_event():
                 request_channel=settings.CHANNEL_ROOM_CLAUDE_REQUEST,
                 utterance_channel=settings.CHANNEL_ROOM_CLAUDE_UTTERANCE,
                 participant_name=settings.HUB_ROOM_CLAUDE_PARTICIPANT_NAME,
+                auto_respond=settings.HUB_ROOM_CLAUDE_AUTO_RESPOND,
+                auto_min_gap_sec=settings.HUB_ROOM_CLAUDE_AUTO_MIN_GAP_SEC,
                 service_name=settings.SERVICE_NAME,
                 service_version=settings.SERVICE_VERSION,
                 node_name=settings.NODE_NAME,

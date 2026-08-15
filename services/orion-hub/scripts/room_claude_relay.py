@@ -57,6 +57,8 @@ class RoomClaudeRelay:
         request_channel: str,
         utterance_channel: str,
         participant_name: str = "Claude",
+        auto_respond: bool = False,
+        auto_min_gap_sec: float = 8.0,
         service_name: str = "orion-hub",
         service_version: str = "0.1.0",
         node_name: str = "athena",
@@ -66,6 +68,9 @@ class RoomClaudeRelay:
         self.utterance_channel = utterance_channel
         self.participant_name = participant_name
         self.enabled = enabled
+        self.auto_respond = auto_respond
+        self.auto_min_gap_sec = auto_min_gap_sec
+        self._last_auto_invite: Dict[str, float] = {}
         self._service_name = service_name
         self._service_version = service_version
         self._node_name = node_name
@@ -112,6 +117,22 @@ class RoomClaudeRelay:
                 pass
             self._task = None
 
+    def should_auto_invite(self, session_id: Optional[str], now: float) -> bool:
+        """Rate gate for auto-invites.
+
+        Deliberately time-based rather than turn-based: the failure worth
+        preventing is a burst of rapid turns each billing a Claude call, and a
+        turn counter would not stop that.
+        """
+        if not self.auto_respond:
+            return False
+        key = session_id or "-"
+        last = self._last_auto_invite.get(key)
+        if last is not None and (now - last) < self.auto_min_gap_sec:
+            return False
+        self._last_auto_invite[key] = now
+        return True
+
     # -- outbound: invite --------------------------------------------------
 
     async def invite(
@@ -124,6 +145,7 @@ class RoomClaudeRelay:
         correlation_id: Optional[str] = None,
         transcript: Optional[List[Dict[str, Any]]] = None,
         social_memory_summary: Optional[Dict[str, Any]] = None,
+        trigger: str = "manual",
     ) -> RoomClaudeRequestV1:
         """Ask the companion for one Claude turn. Returns the request so the
         caller can correlate; the reply arrives asynchronously on the bus."""
@@ -142,6 +164,7 @@ class RoomClaudeRelay:
             invited_by=invited_by,
             correlation_id=correlation_id or str(uuid4()),
             prompt=prompt,
+            trigger="auto" if trigger == "auto" else "manual",
             transcript=entries,
             social_memory_summary=social_memory_summary or {},
         )
@@ -151,8 +174,8 @@ class RoomClaudeRelay:
         }
         await self._publish(self.request_channel, "room.claude.request.v1", request)
         logger.info(
-            "room_claude_invite room=%s request=%s session=%s by=%s",
-            request.room_id, request.request_id, session_id, invited_by,
+            "room_claude_invite room=%s request=%s session=%s by=%s trigger=%s",
+            request.room_id, request.request_id, session_id, invited_by, request.trigger,
         )
         return request
 
@@ -209,6 +232,16 @@ class RoomClaudeRelay:
                 utterance=utterance,
                 session_id=session_id,
                 ok=False,
+            )
+            return
+
+        if utterance.passed:
+            # Claude chose silence. No bubble, no stored turn -- but the cost is
+            # logged, because a pass is billed exactly like speech and hiding it
+            # would understate real spend.
+            logger.info(
+                "room_claude_relay_pass request=%s cost_usd=%.6f (no bubble)",
+                utterance.request_id, utterance.cost_usd,
             )
             return
 

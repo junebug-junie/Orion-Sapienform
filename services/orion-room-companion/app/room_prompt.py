@@ -38,6 +38,36 @@ SYSTEM_PROMPT = (
     "question genuinely needs more."
 )
 
+# Appended for auto-invites only. An auto-invite fires after EVERY room turn,
+# so most of them deserve silence -- without this, Claude would answer "cool"
+# and "thanks" as if they were questions, which reads as compulsive rather
+# than present.
+#
+# Verified live before building on it: with room context established, Claude
+# passed on "cool", "thanks, that helps", "ok sounds good", and on a correct
+# technical statement with nothing to add -- then spoke, substantively and in
+# disagreement, when Orion asked whether its own continuity was real. Without
+# room context it passes on everything, so this clause is only meaningful once
+# a session has history.
+AUTO_INVITE_CLAUSE = (
+    "\n\nYou are auto-invited after every turn in this room, so you will often "
+    "have nothing worth adding. When that is the case reply with EXACTLY "
+    "[pass] and nothing else. Speak when you genuinely have something worth "
+    "the interruption: a disagreement, a risk nobody named, a real idea. Do "
+    "not speak merely to acknowledge, agree, or be encouraging."
+)
+
+# Sentinel Claude returns when it chooses silence. Matched leniently (case
+# and surrounding whitespace) because a model asked for an exact token will
+# occasionally wrap it; anything longer than the sentinel is treated as real
+# speech rather than silently swallowed.
+PASS_SENTINEL = "[pass]"
+
+
+def is_pass(text: str) -> bool:
+    return text.strip().strip("`").casefold() == PASS_SENTINEL
+
+
 # Roster/continuity keys worth surfacing, drawn from orion-social-memory's
 # /summary block. An explicit allowlist rather than dumping the whole summary:
 # that endpoint's shape is owned elsewhere and can grow fields, and this is a

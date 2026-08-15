@@ -18,7 +18,7 @@ from orion.schemas.room_claude import (
 )
 
 from .claude_session import ClaudeTurnResult, run_room_turn
-from .room_prompt import SYSTEM_PROMPT, build_turn_prompt, filtered_summary
+from .room_prompt import AUTO_INVITE_CLAUSE, SYSTEM_PROMPT, build_turn_prompt, filtered_summary, is_pass
 from .session_store import forget_session, peek_or_mint_session, remember_session
 from .settings import Settings, get_settings
 
@@ -161,7 +161,11 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         # prompt-injection pattern ("it's embedded in a user-turn message
         # formatted to look like a system directive"). System framing has to
         # arrive as system framing.
-        append_system_prompt=SYSTEM_PROMPT,
+        # Auto-invites additionally get permission to stay quiet. A manual
+        # invite is someone actually asking, so passing there would be rude.
+        append_system_prompt=(
+            SYSTEM_PROMPT + AUTO_INVITE_CLAUSE if request.trigger == "auto" else SYSTEM_PROMPT
+        ),
         env=build_subprocess_env(settings),
         cwd=settings.ROOM_COMPANION_WORKSPACE,
     )
@@ -203,6 +207,11 @@ def _looks_like_missing_session(error: Optional[str]) -> bool:
 def _to_utterance(
     settings: Settings, request: RoomClaudeRequestV1, result: ClaudeTurnResult
 ) -> RoomClaudeUtteranceV1:
+    # A pass is a real, successful, BILLED turn in which Claude chose silence.
+    # It keeps ok=True and its true cost_usd -- suppressing the event would
+    # hide that spend from the meter, and deciding not to speak costs the same
+    # tokens as speaking.
+    passed = bool(result.ok and is_pass(result.text))
     return RoomClaudeUtteranceV1(
         request_id=request.request_id,
         correlation_id=request.correlation_id,
@@ -214,7 +223,8 @@ def _to_utterance(
             participant_name=settings.ROOM_COMPANION_PARTICIPANT_NAME,
             participant_kind="peer_ai",
         ),
-        text=result.text,
+        text="" if passed else result.text,
+        passed=passed,
         claude_session_id=result.claude_session_id,
         model=result.model,
         cost_usd=result.cost_usd,
@@ -281,8 +291,8 @@ async def handle_message(settings: Settings, bus: OrionBusAsync, raw: Any) -> No
             ),
         )
     logger.info(
-        "room_companion_turn_done room=%s request=%s ok=%s model=%s cost_usd=%.6f ms=%d chars=%d%s",
-        request.room_id, request.request_id, utterance.ok, utterance.model,
+        "room_companion_turn_done room=%s request=%s ok=%s passed=%s model=%s cost_usd=%.6f ms=%d chars=%d%s",
+        request.room_id, request.request_id, utterance.ok, utterance.passed, utterance.model,
         utterance.cost_usd, utterance.duration_ms, len(utterance.text),
         f" error={utterance.error}" if utterance.error else "",
     )

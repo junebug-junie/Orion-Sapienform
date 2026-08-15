@@ -22,7 +22,7 @@ holding (a Claude session id, a per-turn dollar cost, a subprocess duration).
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -79,6 +79,11 @@ class RoomClaudeRequestV1(BaseModel):
     room_id: str
     session_id: Optional[str] = None
     invited_by: str
+    # "manual" = a human clicked Ask Claude. "auto" = fired after a room turn.
+    # The companion uses this to decide whether Claude is allowed to stay
+    # quiet: an auto-invite arrives after EVERY turn, so most of them deserve
+    # silence, while a manual invite is someone actually asking.
+    trigger: Literal["manual", "auto"] = "manual"
     prompt: str
     transcript: List[RoomTranscriptEntryV1] = Field(default_factory=list)
     # The social_memory /summary block (roster, room continuity, stance, open
@@ -114,5 +119,13 @@ class RoomClaudeUtteranceV1(BaseModel):
     cost_usd: float = 0.0
     duration_ms: int = 0
     ok: bool = True
+    # Claude chose to stay quiet. ok=True and text="" -- NOT a failure.
+    #
+    # A pass is still published and still carries its real cost_usd, because
+    # deciding not to speak costs the same tokens as speaking. Suppressing the
+    # event would hide that spend from the meter, which is the one thing the
+    # v2 budget work cannot afford. Consumers render nothing; accounting still
+    # sees it.
+    passed: bool = False
     error: Optional[str] = None
     created_at: str = Field(default_factory=_utcnow_iso)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import base64
 import json
 import logging
@@ -1709,6 +1710,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 if council_debug:
                     ws_payload["council_debug"] = council_debug
             await websocket.send_json(await _with_biometrics(ws_payload, cache=biometrics_cache))
+
+            # Auto-invite Claude to react to the turn that just landed. Fired
+            # after the payload is sent so Orion's reply always renders first
+            # -- Claude is reacting to the room, not racing it.
+            #
+            # Fire-and-forget: a room companion that is slow, down, or
+            # rate-gated must never delay or fail Orion's own turn.
+            try:
+                _room_relay = getattr(scripts.main, "room_claude_relay", None)
+                if (
+                    _room_relay is not None
+                    and _room_relay.enabled
+                    and _room_relay.should_auto_invite(session_id, time.time())
+                ):
+                    _orion_said = str(ws_payload.get("llm_response") or "").strip()
+                    if _orion_said:
+                        asyncio.create_task(
+                            _room_relay.invite(
+                                prompt=f"Or\u00edon: {_orion_said}",
+                                invited_by="Or\u00edon",
+                                session_id=session_id,
+                                room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
+                                trigger="auto",
+                            )
+                        )
+            except Exception:
+                logger.debug("room_claude_auto_invite_failed", exc_info=True)
 
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write and not workflow_metadata_only:

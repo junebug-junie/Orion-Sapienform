@@ -7074,7 +7074,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (corr) backfillLatestUserTurnIdForGraph(conversationDiv, corr);
     }
     const div = document.createElement('div');
-    const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
+    // Claude is a third participant, not a system notice: its own colour, and
+    // an assistant role so it is not styled like an error banner.
+    const color = sender === 'You'
+      ? 'text-blue-300'
+      : (sender === 'Claude' ? 'text-amber-300' : 'text-green-300');
     const turnIdForGraph = canonicalTurnIdForMemoryGraph(meta);
     if (turnIdForGraph) div.dataset.turnId = turnIdForGraph;
     else if (sender === 'You') {
@@ -7083,7 +7087,7 @@ document.addEventListener("DOMContentLoaded", () => {
         : `u${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
       div.dataset.turnId = `hub-utterance:${uuid}`;
     }
-    div.dataset.role = sender === 'Orion' ? 'assistant' : (sender === 'You' ? 'user' : 'system');
+    div.dataset.role = (sender === 'Orion' || sender === 'Claude') ? 'assistant' : (sender === 'You' ? 'user' : 'system');
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     const workflowOnlyTurn = Boolean(
       sender === 'Orion'
@@ -7106,7 +7110,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const body = document.createElement('p');
     body.dataset.messageBody = '1';
     let renderedMarkdown = null;
-    if (sender === 'Orion' && window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function') {
+    if ((sender === 'Orion' || sender === 'Claude') && window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function') {
       renderedMarkdown = window.ChatMarkdown.renderMarkdown(displayText);
     }
     if (renderedMarkdown) {
@@ -9067,6 +9071,52 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const askClaudeButton = document.getElementById('askClaudeButton');
+  const askClaudeStatusChip = document.getElementById('askClaudeStatusChip');
+
+  function setAskClaudeBusy(busy) {
+    if (askClaudeButton) askClaudeButton.disabled = Boolean(busy);
+    if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !busy);
+  }
+
+  async function askClaude() {
+    const value = (chatInput && chatInput.value ? chatInput.value : '').trim();
+    // Falls back to the last thing said when the composer is empty, so "Ask
+    // Claude" works as "weigh in on this" without retyping the question.
+    const prompt = value || lastUserOrOrionText() || 'What do you make of the conversation so far?';
+    setAskClaudeBusy(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/room/claude/invite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, session_id: orionSessionId || null }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        appendMessage('System', `Could not invite Claude (${res.status}): ${detail}`, 'text-red-300');
+        setAskClaudeBusy(false);
+        return;
+      }
+      if (value && chatInput) chatInput.value = '';
+      // Busy stays on until the room_claude_utterance frame arrives; the reply
+      // is asynchronous over the socket, not in this response.
+    } catch (err) {
+      appendMessage('System', `Could not invite Claude: ${err}`, 'text-red-300');
+      setAskClaudeBusy(false);
+    }
+  }
+
+  function lastUserOrOrionText() {
+    if (!conversationDiv) return '';
+    const nodes = conversationDiv.querySelectorAll('[data-message-body="1"]');
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      const text = (nodes[i].textContent || '').trim();
+      if (text) return text;
+    }
+    return '';
+  }
+
+  if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
   if (chatInput) {
@@ -10565,6 +10615,33 @@ document.addEventListener("DOMContentLoaded", () => {
           const d = JSON.parse(e.data);
           if (d.type === 'connection_ready') {
             activeConnectionId = d.connection_id || null;
+            return;
+          }
+          if (d.kind === 'room_claude_utterance') {
+            // Claude's turn in the room. Handled before the generic assistant
+            // branch and returns early for the same reason orion_outreach does:
+            // that branch runs updateMemoryPanelFromResponse(), which would
+            // blank the recall panel still showing the last real Orion turn.
+            // A room reply is not an Orion turn and must not overwrite its
+            // debug surfaces.
+            const claudeText = String(d.llm_response || '').trim();
+            setAskClaudeBusy(false);
+            if (claudeText) {
+              appendMessage(String(d.speaker || 'Claude'), claudeText, 'text-white', {
+                correlationId: d.correlation_id,
+                messageId: d.message_id || null,
+                turnId: d.correlation_id,
+                mode: 'room_claude',
+                unsolicited: true,
+                roomClaude: {
+                  requestId: d.request_id || null,
+                  model: d.model || null,
+                  costUsd: typeof d.cost_usd === 'number' ? d.cost_usd : null,
+                  durationMs: d.duration_ms || null,
+                  ok: d.ok !== false,
+                },
+              });
+            }
             return;
           }
           if (d.kind === 'orion_outreach') {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import base64
 import json
 import logging
@@ -804,6 +805,11 @@ async def websocket_endpoint(websocket: WebSocket):
     endogenous_outreach = getattr(scripts.main, "endogenous_outreach", None)
     if endogenous_outreach is not None:
         endogenous_outreach.register_connection(connection_id, tts_q, active_turn)
+    # Same queue, so a Claude reply reaches the browser by the identical path
+    # an Orion outreach bubble does.
+    room_relay = getattr(scripts.main, "room_claude_relay", None)
+    if room_relay is not None:
+        room_relay.register_connection(connection_id, tts_q)
 
     try:
         while True:
@@ -836,6 +842,9 @@ async def websocket_endpoint(websocket: WebSocket):
             if str(data.get("type") or "").strip() == "session_hello":
                 if endogenous_outreach is not None:
                     endogenous_outreach.note_session(connection_id, data.get("session_id"))
+                _rr = getattr(scripts.main, "room_claude_relay", None)
+                if _rr is not None:
+                    _rr.note_session(connection_id, data.get("session_id"))
                 # Rebuild conversation context from persisted turns. `history`
                 # is in-memory and scoped to this socket, so before this every
                 # Hub restart silently discarded the running conversation -- and
@@ -867,6 +876,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # here, so this is the one place outreach can learn which thread
                 # to post into.
                 endogenous_outreach.note_session(connection_id, session_id)
+            _rr = getattr(scripts.main, "room_claude_relay", None)
+            if _rr is not None:
+                _rr.note_session(connection_id, session_id)
             if not session_id and diagnostic:
                 logger.warning("Missing session_id; publishing chat history with session_id=unknown")
             no_write = bool(data.get("no_write", settings.HUB_DEFAULT_NO_WRITE))
@@ -1731,6 +1743,55 @@ async def websocket_endpoint(websocket: WebSocket):
                     ws_payload["council_debug"] = council_debug
             await websocket.send_json(await _with_biometrics(ws_payload, cache=biometrics_cache))
 
+            # Auto-invite Claude to react to the turn that just landed. Fired
+            # after the payload is sent so Orion's reply always renders first
+            # -- Claude is reacting to the room, not racing it.
+            #
+            # Fire-and-forget: a room companion that is slow, down, or
+            # rate-gated must never delay or fail Orion's own turn.
+            try:
+                _room_relay = getattr(scripts.main, "room_claude_relay", None)
+                if (
+                    _room_relay is not None
+                    and _room_relay.enabled
+                    and _room_relay.should_auto_invite(session_id, time.time())
+                ):
+                    _orion_said = str(ws_payload.get("llm_response") or "").strip()
+                    if _orion_said:
+                        # Send the EXCHANGE, not just Orion's half. Sending only
+                        # Orion's reply left Claude watching a one-sided
+                        # monologue with no idea what had been asked -- it could
+                        # only react to Orion's tone, which is what "generic
+                        # Claude responses" actually was. Confirmed by reading
+                        # Claude's own session transcript.
+                        #
+                        # `prompt` is the raw reply: build_turn_prompt adds the
+                        # speaker prefix, and prefixing here too produced
+                        # "Oríon: Oríon: ..." in the live transcript.
+                        _juniper_said = str(transcript or "").strip()
+                        _exchange = (
+                            [{
+                                "speaker_id": "juniper",
+                                "speaker_name": "Juniper",
+                                "speaker_kind": "human",
+                                "text": _juniper_said,
+                            }]
+                            if _juniper_said
+                            else []
+                        )
+                        asyncio.create_task(
+                            _room_relay.invite(
+                                prompt=_orion_said,
+                                invited_by="Or\u00edon",
+                                session_id=session_id,
+                                room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
+                                trigger="auto",
+                                transcript=_exchange,
+                            )
+                        )
+            except Exception:
+                logger.debug("room_claude_auto_invite_failed", exc_info=True)
+
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write and not workflow_metadata_only:
                 enriched_client_meta = dict(turn_client_meta)
@@ -2021,6 +2082,9 @@ async def websocket_endpoint(websocket: WebSocket):
         _ACTIVE_TURNS_BY_CONNECTION.pop(connection_id, None)
         if endogenous_outreach is not None:
             endogenous_outreach.unregister_connection(connection_id)
+        _room_relay = getattr(scripts.main, "room_claude_relay", None)
+        if _room_relay is not None:
+            _room_relay.unregister_connection(connection_id)
         drain_task.cancel()
         biometrics_task.cancel()
         if notification_cache is not None:

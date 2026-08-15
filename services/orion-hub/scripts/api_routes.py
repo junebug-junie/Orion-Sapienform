@@ -512,6 +512,16 @@ class ChatTurnCancelRequest(BaseModel):
     connection_id: str
 
 
+class RoomClaudeInviteRequest(BaseModel):
+    """Operator-triggered invite. v1 is explicit-invite only, so this route is
+    the ONLY producer of orion:room:claude:request -- Orion cannot summon
+    Claude, which is what makes v1 spend structurally bounded by human clicks."""
+
+    prompt: str
+    session_id: Optional[str] = None
+    invited_by: str = "Juniper"
+
+
 class PreferencesResolveProxyRequest(BaseModel):
     recipient_group: str
     event_kind: str
@@ -1991,6 +2001,103 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
     except Exception as exc:
         logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
+
+
+@router.post("/api/room/claude/invite")
+async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
+    """Ask Claude for one turn in the room.
+
+    Returns as soon as the request is on the bus. The reply is asynchronous and
+    arrives over the WebSocket as a `room_claude_utterance` frame -- Hub does
+    not block on Claude, and does not hold the credential that talks to it (see
+    services/orion-room-companion/README.md).
+    """
+    from .main import room_claude_relay
+    from scripts.settings import settings
+
+    if room_claude_relay is None or not room_claude_relay.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Room companion is disabled (HUB_ROOM_CLAUDE_ENABLED=false)",
+        )
+
+    prompt = str(payload.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=422, detail="prompt required")
+
+    session_id = (payload.session_id or "").strip() or None
+    transcript = await _recent_room_transcript(session_id, settings.HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS)
+
+    try:
+        request = await room_claude_relay.invite(
+            prompt=prompt,
+            invited_by=payload.invited_by or "Juniper",
+            session_id=session_id,
+            room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
+            transcript=transcript,
+        )
+    except Exception as exc:
+        logger.exception("room_claude_invite_failed")
+        raise HTTPException(status_code=502, detail="Failed to invite Claude") from exc
+
+    return {
+        "ok": True,
+        "request_id": request.request_id,
+        "correlation_id": request.correlation_id,
+        "room_id": request.room_id,
+        "transcript_turns": len(request.transcript),
+    }
+
+
+async def _recent_room_transcript(session_id: Optional[str], limit: int) -> list[dict]:
+    """Recent conversation for Claude's FIRST turn of a session.
+
+    Not the memory mechanism -- the companion holds the conversation on
+    Claude's side via --resume and ignores this on later turns. This is seeding
+    so Claude arrives knowing where it is, plus a recovery path if the CLI
+    session is ever lost.
+
+    Best-effort by design: a room invite is worth more than perfect history, so
+    a rehydrate failure degrades to no transcript rather than failing the
+    invite.
+    """
+    if not session_id or limit <= 0:
+        return []
+    try:
+        from scripts.chat_history_rehydrate import rehydrate_history
+        from scripts.settings import settings as _settings
+
+        history: list[dict] = []
+        await rehydrate_history(
+            history,
+            session_id=session_id,
+            max_turns=limit,
+            max_age_hours=float(getattr(_settings, "HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS", 48.0)),
+            enabled=True,
+        )
+    except Exception:
+        logger.debug("room_claude_transcript_rehydrate_failed", exc_info=True)
+        return []
+
+    out: list[dict] = []
+    for row in history[-(limit * 2):]:
+        role = str(row.get("role") or "")
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            speaker_id, speaker_name, kind = "juniper", "Juniper", "human"
+        elif role == "assistant":
+            speaker_id, speaker_name, kind = "orion", "Or\u00edon", "peer_ai"
+        else:
+            continue
+        out.append({
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "speaker_kind": kind,
+            "text": content,
+        })
+    return out
 
 
 @router.post("/api/chat/turn/cancel")

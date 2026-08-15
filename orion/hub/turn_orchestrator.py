@@ -10,7 +10,7 @@ from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
-from orion.harness.attachment_staging import stage_attachments
+from orion.harness.attachment_staging import prune_staging, stage_attachments
 from orion.schemas.harness_finalize import HarnessAttachmentV1, HarnessRunRequestV1, HarnessRunV1
 from orion.schemas.pre_turn_appraisal import (
     PreTurnAppraisalOptionsV1,
@@ -531,6 +531,12 @@ async def execute_unified_turn(
             harness_step_relay.unregister_queue(correlation_id, harness_step_queue)
         if harness_step_relay is not None:
             harness_step_relay.forget(correlation_id)
+        # Staged images are per-turn scratch. Without this they accumulate in the
+        # sandbox forever. Safe to drop as soon as the run returns: the bytes
+        # still live in the content-addressed store, so a follow-up turn about
+        # the same image simply re-stages it.
+        if staged_attachments:
+            prune_staging(correlation_id)
     if run is None:
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         return [

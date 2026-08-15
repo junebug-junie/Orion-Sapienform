@@ -288,6 +288,16 @@
       else setStatus('');
     }
 
+    function discardPending(reason) {
+      if (!pending.length) return 0;
+      const dropped = pending.length;
+      pending = [];
+      renderChips();
+      refreshButton();
+      setStatus(reason || 'Attachments cleared.', 'error');
+      return dropped;
+    }
+
     function takePending() {
       const refs = pending.slice();
       pending = [];
@@ -344,7 +354,7 @@
     refreshButton();
     renderChips();
 
-    return { addFiles, takePending, peekPending, refreshButton, setStatus };
+    return { addFiles, takePending, peekPending, discardPending, refreshButton, setStatus };
   }
 
   global.ChatAttachments = {

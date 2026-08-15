@@ -468,14 +468,25 @@ async def execute_unified_turn(
     # the harness-governor, which actually runs `claude`, cannot see the store at
     # all. So if this does not happen here, it cannot happen at all.
     staged_attachments: list[HarnessAttachmentV1] = []
+    # Tracked separately from the list above: if model construction throws after
+    # the copies already landed, `staged_attachments` is empty but there ARE
+    # files on disk, and pruning on the empty list would leak them forever.
+    staging_attempted = False
     raw_attachments = payload.get("attachments") or []
     if raw_attachments:
+        staging_attempted = True
         try:
+            # to_thread: shutil.copyfile of up to HUB_CHAT_ATTACHMENT_MAX_PER_TURN
+            # x HUB_CHAT_ATTACHMENT_MAX_BYTES is real blocking I/O, and this Hub
+            # serves every WebSocket client from one event loop.
+            staged = await asyncio.to_thread(
+                stage_attachments, raw_attachments, correlation_id=correlation_id
+            )
             staged_attachments = [
                 HarnessAttachmentV1(
                     path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename
                 )
-                for item in stage_attachments(raw_attachments, correlation_id=correlation_id)
+                for item in staged
             ]
         except Exception:  # noqa: BLE001 -- staging must never take the turn down
             logger.exception("attachment staging failed corr=%s", correlation_id)
@@ -520,23 +531,34 @@ async def execute_unified_turn(
         if harness_step_relay is not None
         else None
     )
+    _harness_run_completed = False
     try:
         run = await HarnessGovernorClient(harness_bus).run(
             harness_req,
             correlation_id=correlation_id,
             liveness_check=liveness_check,
         )
+        # `run is None` means an RPC timeout with no cancel published -- the
+        # motor may still be mid-turn, so this stays False and we leave the
+        # staged files alone rather than yanking them from a live reader.
+        _harness_run_completed = run is not None
     finally:
         if harness_step_relay is not None and harness_step_queue is not None:
             harness_step_relay.unregister_queue(correlation_id, harness_step_queue)
         if harness_step_relay is not None:
             harness_step_relay.forget(correlation_id)
-        # Staged images are per-turn scratch. Without this they accumulate in the
-        # sandbox forever. Safe to drop as soon as the run returns: the bytes
-        # still live in the content-addressed store, so a follow-up turn about
-        # the same image simply re-stages it.
-        if staged_attachments:
-            prune_staging(correlation_id)
+        # Staged images are per-turn scratch; without cleanup they accumulate in
+        # the sandbox forever. The bytes still live in the content-addressed
+        # store, so a follow-up turn about the same image just re-stages it.
+        #
+        # Only prune when the run actually COMPLETED. This finally also fires on
+        # an RPC timeout (HarnessGovernorClient.run returns None without
+        # publishing a cancel) and on CancelledError from
+        # run_awaitable_cancel_on_ws_disconnect -- in both cases the governor's
+        # claude process is still going, and deleting the directory out from
+        # under it turns a not-yet-issued Read into file-not-found.
+        if staging_attempted and _harness_run_completed:
+            await asyncio.to_thread(prune_staging, correlation_id)
     if run is None:
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         return [

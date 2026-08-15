@@ -78,20 +78,54 @@ def staging_dir_for(correlation_id: str, *, root: Path | None = None) -> Path:
     # correlation_id reaches us from a request payload, so it is sanitised before
     # it becomes a directory name -- it is the only caller-influenced path
     # component here.
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(correlation_id or "unknown"))[:64] or "unknown"
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(correlation_id or "unknown"))[:64]
+    # The substitution keeps "." and "-", so a correlation_id of exactly "." or
+    # ".." survives it intact -- and ".." would make this return the sandbox
+    # ROOT, which prune_staging() then rmtree's, taking the git-managed repo
+    # checkout with it. Both call sites pass a uuid4 today; this is the guard
+    # that keeps that an implementation detail rather than a load-bearing
+    # assumption.
+    if not safe or safe.strip(".") == "":
+        safe = "unknown"
     return (root or sandbox_root()) / STAGING_DIRNAME / safe
 
 
-def _suffix_for(mime: str, filename: str | None) -> str:
-    known = _MIME_SUFFIX.get(str(mime or "").strip().lower())
-    if known:
-        return known
-    # Fall back to the client-supplied name's suffix, but only a short, plain
-    # one -- never an arbitrary string from the payload.
-    ext = Path(str(filename or "")).suffix.lower()
-    if re.fullmatch(r"\.[a-z0-9]{1,5}", ext or ""):
-        return ext
-    return ".img"
+def _safe_display_name(raw: Any) -> str | None:
+    """Sanitise a client-declared filename before it can reach a prompt.
+
+    This value is fully client-controlled -- the browser round-trips the ref --
+    and ``describe_for_prompt`` interpolates it into the instruction block of a
+    motor running under ``--permission-mode bypassPermissions``. Unbounded
+    free text there is a prompt-injection surface, so: newlines collapsed,
+    length capped, and anything exotic dropped.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[^A-Za-z0-9 ._\-]", "", text)
+    text = text.strip()[:64]
+    return text or None
+
+
+def _sniffed_mime(src_dir: Path, sha: str) -> str:
+    """Read the store's own sniffed type, written beside the bytes.
+
+    chat_attachments.py deliberately does not trust the declared Content-Type
+    ("The declared MIME is not trusted") and records what the magic bytes
+    actually say. Staging must use that answer, not the client's -- otherwise a
+    payload claiming ``filename: "x.sh"`` lands real image bytes under a ``.sh``
+    name inside the sandbox that Orion's own Bash tool can enumerate.
+    """
+    try:
+        return (src_dir / f"{sha}.mime").read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return ""
+
+
+def _suffix_for(mime: str) -> str:
+    """Extension from the STORE-sniffed mime only. Never from client metadata."""
+    return _MIME_SUFFIX.get(str(mime or "").strip().lower(), ".img")
 
 
 def stage_attachments(
@@ -119,7 +153,12 @@ def stage_attachments(
     # round-trips the refs, so a scripted caller could otherwise make one turn
     # stage an unbounded number of files into the sandbox.
     limit = max_items if max_items is not None else _default_max_items()
-    if limit > 0 and len(attachments) > limit:
+    if limit <= 0:
+        # 0 is the intuitive way to say "no images"; treating it as unlimited
+        # would remove the very bound the comment above claims to enforce.
+        logger.warning("attachment staging disabled (max_items=%s) corr=%s", limit, correlation_id)
+        return []
+    if len(attachments) > limit:
         logger.warning(
             "turn carried %s attachments; staging only %s corr=%s",
             len(attachments), limit, correlation_id,
@@ -136,8 +175,7 @@ def stage_attachments(
         if not _SHA256_RE.match(sha):
             logger.warning("skipping attachment with non-hex sha256 corr=%s", correlation_id)
             continue
-        mime = str(get("mime", "") or "").strip().lower()
-        filename = get("filename", None)
+        filename = _safe_display_name(get("filename", None))
 
         source = src_dir / f"{sha}.bin"
         if not source.exists():
@@ -148,7 +186,8 @@ def stage_attachments(
 
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
-            target = target_dir / f"{sha}{_suffix_for(mime, filename)}"
+            mime = _sniffed_mime(src_dir, sha)
+            target = target_dir / f"{sha}{_suffix_for(mime)}"
             if not target.exists():
                 # Copy to a temp name then rename, so a reader can never observe
                 # a half-written image.

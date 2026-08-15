@@ -6967,6 +6967,9 @@ document.addEventListener("DOMContentLoaded", () => {
    *   agent -> neither; nothing threads attachments through that path yet
    */
   const MODES_CARRYING_ATTACHMENTS = new Set(['orion', 'brain']);
+  // Mirrors the LLM gateway's llm_route_default: the lane the Anthropic
+  // passthrough falls back to when the harness does not name one.
+  const HUB_ORION_HARNESS_ROUTE_ID = 'chat';
 
   function modeCarriesAttachments() {
     // currentMode is already the BACKEND mode ('orion' | 'brain' | 'agent'),
@@ -6976,13 +6979,42 @@ document.addEventListener("DOMContentLoaded", () => {
     return MODES_CARRYING_ATTACHMENTS.has(String(currentMode || '').toLowerCase());
   }
 
+  /**
+   * Which gateway route will actually serve THIS turn?
+   *
+   * Not always the compute dropdown. An Orion-mode turn never uses that lane:
+   * it goes to the harness, whose `claude` reaches the gateway through the
+   * Anthropic passthrough, which resolves the route from the model field and
+   * falls back to the gateway's own default (`chat`). Gating Orion mode on
+   * `selectedLlmRoute` meant a fresh page load -- compute dropdown at its
+   * 'quick' default, a lane with no mmproj -- reported vision=false and
+   * DISABLED attach in the exact mode this feature exists for.
+   */
+  function effectiveVisionRouteId() {
+    if (String(currentMode || '').toLowerCase() === 'orion') return HUB_ORION_HARNESS_ROUTE_ID;
+    return String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
+  }
+
   function refreshVisionCapability() {
-    const rid = String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
+    const rid = effectiveVisionRouteId();
     const entry = (llmRouteCatalog.routes || [])
       .find((r) => String(r.id || '').toLowerCase() === rid);
     visionCapableRoute = entry && typeof entry.vision === 'boolean' ? entry.vision : null;
     updateVisionStatusChip();
-    if (chatAttachmentsController) chatAttachmentsController.refreshButton();
+    if (chatAttachmentsController) {
+      chatAttachmentsController.refreshButton();
+      // Disabling the button is not enough. Images attached while the mode
+      // still carried them stay in `pending`, stay rendered as chips, and
+      // submitExplicitChatText would still put them in the payload -- where the
+      // new path drops them silently. That is the same lying-affordance bug one
+      // step later, so drop them and say so.
+      if (!modeCarriesAttachments()) {
+        const dropped = chatAttachmentsController.discardPending(
+          'This mode cannot send images — attachments cleared.'
+        );
+        if (dropped) console.warn(`[chat] dropped ${dropped} attachment(s): mode cannot carry them`);
+      }
+    }
   }
 
   function initChatAttachments() {

@@ -429,9 +429,12 @@ class BiometricsPipeline:
         }
 
         constraint = self._constraint_from_pressures(pressures)
+        peak_pressure, peak_pressure_channel = self._peak_pressure(pressures)
         telemetry_error_rate = clamp01(len(errors) / 5) if isinstance(errors, list) else 0.0
 
         return BiometricsSummaryV1(
+            peak_pressure=peak_pressure,
+            peak_pressure_channel=peak_pressure_channel,
             timestamp=sample.get("timestamp"),
             node=sample.get("node"),
             service_name=sample.get("service_name"),
@@ -479,6 +482,44 @@ class BiometricsPipeline:
             return 0.0
         self.power_band.update(avg_power)
         return self.power_band.normalize(avg_power)
+
+    def _peak_pressure(self, pressures: Dict[str, float]) -> Tuple[Optional[float], Optional[str]]:
+        """The binding constraint: the single highest pressure, and which channel it is.
+
+        ADDED ALONGSIDE `strain`, which is deliberately left exactly as it is. `strain` is the
+        MEAN of seven pressures, so a saturated channel is averaged away by its calm neighbours
+        -- measured live 2026-08-14, athena's `power` at 1.000 with `strain` reading 0.443. It
+        is also computed over only 7 of the 11 pressures, omitting `gpu_mem`, `swap`,
+        `disk_capacity` and `fan`, which are the highest channel on two of three nodes.
+
+        Both of those are real defects, and neither is fixed here, because `strain` is written
+        straight into the field lattice's `cpu_pressure` channel
+        (`services/orion-field-digester/app/ingest/state_deltas.py:125`, mode="replace") and
+        feeds the substrate prediction-error diff. Changing its formula moves Orion's substrate.
+        A new signal alongside it costs nothing and breaks nothing.
+
+        THEORY ANCHOR, and why max rather than mean: this is Liebig's law of the minimum. A
+        system saturates at whichever resource runs out first, so the binding constraint is the
+        maximum pressure, and an average over non-binding resources is not a physical quantity.
+        The mean answers "how loaded is this machine on average", which nothing actually needs;
+        the max answers "what is about to stop it", which is the entire question this arc exists
+        to ask.
+
+        REUSE, checked before writing this: `_constraint_from_pressures` below already computes
+        this same max. It then discards both halves of the answer -- the magnitude entirely, and
+        the channel name unless it clears 0.7 AND appears in `CONSTRAINTS`. That map omits
+        `swap`, `disk_capacity` and `fan`, so a peak in one of them reports "NONE" no matter how
+        high. Live on athena 2026-08-15: `disk_capacity` at 0.772, over threshold, reported as
+        `constraint=NONE`. That function is left untouched too -- `constraint` has its own
+        consumers -- and this returns the numbers it throws away.
+
+        Returns (None, None) for an empty pressure dict rather than 0.0: nothing measured is not
+        the same as nothing under pressure, the same rule `measurements` follows.
+        """
+        if not pressures:
+            return None, None
+        channel, value = max(pressures.items(), key=lambda item: item[1])
+        return clamp01(float(value)), channel
 
     def _constraint_from_pressures(self, pressures: Dict[str, float]) -> str:
         if not pressures:

@@ -374,10 +374,26 @@ class BiometricsHub:
             node_id for node_id in _NODE_CATALOG.profiles if node_id not in contributed
         )
 
+        # Fleet binding constraint: max over nodes, NOT the role-weighted mean above. One
+        # saturated machine must not be averaged into looking half-busy, and the node has to
+        # travel with the number or it cannot be acted on.
+        peak_value: float | None = None
+        peak_channel: str | None = None
+        peak_node: str | None = None
+        for node, summary in self._latest_summary.items():
+            value = summary.peak_pressure
+            if value is None:
+                continue
+            if peak_value is None or value > peak_value:
+                peak_value, peak_channel, peak_node = value, summary.peak_pressure_channel, node
+
         cluster = BiometricsClusterV1(
             timestamp=datetime.now(timezone.utc),
             sources=sources,
             nodes_absent=nodes_absent or None,
+            peak_pressure=peak_value,
+            peak_pressure_channel=peak_channel,
+            peak_pressure_node=peak_node,
             role_weights=weights,
             pressures=pressures,
             headroom=headroom,

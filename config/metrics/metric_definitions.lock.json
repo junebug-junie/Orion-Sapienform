@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 595,
+  "metric_count": 596,
   "_last_change": {
-    "base": "merge base 7fe1530db (origin/main)",
-    "change_count": 0,
+    "base": "merge base a2974defd (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://inner_state/orion-biometrics/biometrics_cluster.v1#peak_pressure"
     ]
   },
   "definitions": {
@@ -3318,6 +3318,17 @@
         "services.orion-cortex-exec.app.executor:_metacog_biometrics_cue"
       ],
       "notes": "cadence=per_tick composition=unresolved_duplicate",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-biometrics/biometrics_cluster.v1#peak_pressure": {
+      "schema_id": "BiometricsClusterV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.executor:_metacog_biometrics_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-biometrics/biometrics_cluster.v1"
+      ],
+      "notes": "scalar field on BiometricsClusterV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-field-digester/field_channel_corpus.v1": {

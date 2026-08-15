@@ -230,6 +230,39 @@ independent `strain`/`gpu` hints. Both signatures match repeated
 re-saturation from add-mode duplicate deltas, not real, independent CPU/GPU
 utilization, so `strain`/`gpu` were switched to `mode="replace"` too.
 
+### Is this node's power telemetry actually wired?
+
+```bash
+curl -fsS http://<node>:8100/health | python3 -c \
+  "import json,sys; print(json.dumps(json.load(sys.stdin)['power_telemetry'], indent=2))"
+```
+
+```json
+{"ilo": {"configured": true,  "healthy": true,  "reason": null},
+ "pdu": {"configured": false, "healthy": null,  "reason": "not_configured",
+         "outlets": [], "host": null}}
+```
+
+Both pollers are optional and both go quiet by design -- a node with no BMC, or no metered
+outlets, reports nothing rather than a fake zero. That is right for the *data* and it is exactly
+what made the *instrument* undiagnosable: "configured and working", "configured but unreachable"
+and "running an image that predates the feature" were an identical silence from outside the
+container. circe's BMC was unreachable for an unknown length of time for precisely this reason.
+
+**`healthy` is tristate and the distinction matters:**
+
+| | means |
+| :--- | :--- |
+| `true` | configured and reporting a reading |
+| `false` | configured and **broken** — `reason` carries the error |
+| `null` | either not applicable (`not_configured`) or hasn't polled yet (`no_reading_yet`) |
+
+`null` is never a fault. Every restart passes through `no_reading_yet`, and a check that called
+that broken would fire on every deploy and then be ignored.
+
+`pdu.outlets` and `pdu.host` are echoed because the outlet map is physical cabling that nothing
+can verify automatically — a wrong map is otherwise invisible until the watts look odd.
+
 ## Running & Testing
 
 ### Run via Docker

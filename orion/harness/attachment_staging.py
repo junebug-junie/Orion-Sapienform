@@ -1,0 +1,207 @@
+"""Stage chat attachments into the FCC sandbox so Orion's own model can look at them.
+
+Why a copy rather than a path into the attachment store:
+
+The ``claude`` process for a unified turn runs in the **harness-governor**
+container, and that container does not mount ``/mnt/orion-chat-attachments`` --
+verified live 2026-08-15, it is not there at all. Only the Hub mounts both the
+attachment store and the sandbox. So the Hub is the one process that can move
+bytes from one to the other, and handing the governor a store path would produce
+a file-not-found on the side that actually needs to read it.
+
+Why outside the repo checkout:
+
+``orion/fcc/sandbox_sync.py`` manages ``<sandbox>/repo`` with git and will rescue
+a dirty worktree onto a branch. Dropping turn images inside that checkout would
+make every image-bearing turn look like uncommitted work and trip the rescue
+path. Staging lands in ``<sandbox>/attachments/<correlation_id>/`` instead --
+a sibling of ``repo`` that sync never touches.
+
+Reading from there works: claude-code resolves absolute paths outside the
+project directory under the harness's permission mode, and its Read tool sniffs
+image content rather than trusting the extension (both verified live
+2026-08-15 -- a ``.bin`` file outside the workspace was read correctly as an
+image by the chat lane).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Sequence
+
+logger = logging.getLogger("orion.harness.attachment-staging")
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# Mirrors the Hub attachment store's accepted set.
+_MIME_SUFFIX = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+DEFAULT_SANDBOX_ROOT = "/mnt/orion-fcc"
+DEFAULT_STORE_DIR = "/mnt/orion-chat-attachments"
+STAGING_DIRNAME = "attachments"
+
+
+@dataclass(frozen=True)
+class StagedAttachment:
+    path: str
+    mime: str
+    sha256: str
+    filename: str | None = None
+
+
+def _default_max_items() -> int:
+    try:
+        return int(os.environ.get("HUB_CHAT_ATTACHMENT_MAX_PER_TURN", "4") or 4)
+    except (TypeError, ValueError):
+        return 4
+
+
+def sandbox_root() -> Path:
+    return Path(os.environ.get("HARNESS_ATTACHMENT_SANDBOX_ROOT", DEFAULT_SANDBOX_ROOT))
+
+
+def store_dir() -> Path:
+    return Path(os.environ.get("HUB_CHAT_ATTACHMENT_DIR", DEFAULT_STORE_DIR))
+
+
+def staging_dir_for(correlation_id: str, *, root: Path | None = None) -> Path:
+    # correlation_id reaches us from a request payload, so it is sanitised before
+    # it becomes a directory name -- it is the only caller-influenced path
+    # component here.
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(correlation_id or "unknown"))[:64] or "unknown"
+    return (root or sandbox_root()) / STAGING_DIRNAME / safe
+
+
+def _suffix_for(mime: str, filename: str | None) -> str:
+    known = _MIME_SUFFIX.get(str(mime or "").strip().lower())
+    if known:
+        return known
+    # Fall back to the client-supplied name's suffix, but only a short, plain
+    # one -- never an arbitrary string from the payload.
+    ext = Path(str(filename or "")).suffix.lower()
+    if re.fullmatch(r"\.[a-z0-9]{1,5}", ext or ""):
+        return ext
+    return ".img"
+
+
+def stage_attachments(
+    attachments: Sequence[Any],
+    *,
+    correlation_id: str,
+    source_dir: Path | None = None,
+    root: Path | None = None,
+    max_items: int | None = None,
+) -> list[StagedAttachment]:
+    """Copy each attachment out of the store and into the sandbox.
+
+    Accepts anything with ``sha256``/``mime``/``bytes``/``filename`` attributes
+    (``AttachmentRefV1``) or the equivalent mapping keys.
+
+    Best-effort per attachment: one unreadable image is logged and skipped
+    rather than failing the turn. The caller decides what an empty result means
+    -- and it should say something, because a turn that silently loses an image
+    is exactly the failure this whole feature exists to prevent.
+    """
+    if not attachments:
+        return []
+
+    # Bounded because `attachments` arrives from a client payload: the browser
+    # round-trips the refs, so a scripted caller could otherwise make one turn
+    # stage an unbounded number of files into the sandbox.
+    limit = max_items if max_items is not None else _default_max_items()
+    if limit > 0 and len(attachments) > limit:
+        logger.warning(
+            "turn carried %s attachments; staging only %s corr=%s",
+            len(attachments), limit, correlation_id,
+        )
+        attachments = list(attachments)[:limit]
+
+    src_dir = source_dir or store_dir()
+    target_dir = staging_dir_for(correlation_id, root=root)
+    staged: list[StagedAttachment] = []
+
+    for item in attachments:
+        get = item.get if isinstance(item, dict) else (lambda k, d=None: getattr(item, k, d))
+        sha = str(get("sha256", "") or "").strip().lower()
+        if not _SHA256_RE.match(sha):
+            logger.warning("skipping attachment with non-hex sha256 corr=%s", correlation_id)
+            continue
+        mime = str(get("mime", "") or "").strip().lower()
+        filename = get("filename", None)
+
+        source = src_dir / f"{sha}.bin"
+        if not source.exists():
+            logger.warning(
+                "attachment %s missing from store at %s corr=%s", sha[:12], source, correlation_id
+            )
+            continue
+
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / f"{sha}{_suffix_for(mime, filename)}"
+            if not target.exists():
+                # Copy to a temp name then rename, so a reader can never observe
+                # a half-written image.
+                tmp = target.with_suffix(target.suffix + f".{os.getpid()}.part")
+                shutil.copyfile(source, tmp)
+                tmp.replace(target)
+            staged.append(
+                StagedAttachment(
+                    path=str(target),
+                    mime=mime,
+                    sha256=sha,
+                    filename=str(filename) if filename else None,
+                )
+            )
+        except OSError as exc:
+            logger.warning("failed staging attachment %s corr=%s: %s", sha[:12], correlation_id, exc)
+
+    if staged:
+        logger.info(
+            "staged %s attachment(s) for corr=%s into %s", len(staged), correlation_id, target_dir
+        )
+    return staged
+
+
+def prune_staging(correlation_id: str, *, root: Path | None = None) -> None:
+    """Drop a turn's staged images. Never raises -- cleanup must not fail a turn."""
+    try:
+        shutil.rmtree(staging_dir_for(correlation_id, root=root), ignore_errors=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("staging prune failed corr=%s: %s", correlation_id, exc)
+
+
+def describe_for_prompt(attachments: Iterable[Any]) -> str:
+    """Render the prompt block that tells Orion the images exist and where.
+
+    Without this the images sit on disk, perfectly readable, and nothing ever
+    mentions them -- which is precisely how they were being dropped before.
+    """
+    lines: list[str] = []
+    for item in attachments:
+        get = item.get if isinstance(item, dict) else (lambda k, d=None: getattr(item, k, d))
+        path = str(get("path", "") or "").strip()
+        if not path:
+            continue
+        name = get("filename", None)
+        label = f" (sent as {name})" if name else ""
+        lines.append(f"- {path}{label}")
+    if not lines:
+        return ""
+    plural = "images" if len(lines) > 1 else "an image"
+    return (
+        f"\n\nJuniper attached {plural} to this message. Use your Read tool on "
+        f"the path(s) below to look at {'them' if len(lines) > 1 else 'it'} "
+        f"before you answer -- you can see {'them' if len(lines) > 1 else 'it'} "
+        f"directly, so do not guess or ask for a description:\n" + "\n".join(lines)
+    )

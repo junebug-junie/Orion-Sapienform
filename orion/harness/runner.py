@@ -31,6 +31,7 @@ from orion.harness.grammar_emit import (
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
+from orion.harness.attachment_staging import describe_for_prompt
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
@@ -125,6 +126,7 @@ def build_harness_prompt(
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
+    attachments: list[Any] | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -138,9 +140,13 @@ def build_harness_prompt(
         thought=thought,
         answer_contract=answer_contract,
     )
+    # Appended last so it sits closest to the instruction, and only when there
+    # is something to say -- a text-only turn's prompt is unchanged byte for
+    # byte, which is what keeps this safe for every existing turn.
+    attachment_block = describe_for_prompt(attachments or [])
     if user_message.strip():
-        return f"{prefix}\n\n{instruction}"
-    return prefix
+        return f"{prefix}\n\n{instruction}{attachment_block}"
+    return f"{prefix}{attachment_block}"
 
 
 def build_draft_molecule(
@@ -249,6 +255,7 @@ class HarnessRunner:
             answer_contract=request.answer_contract,
             workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
             prior_tool_fetch_names=prior_tool_fetch_names,
+            attachments=list(getattr(request, "attachments", None) or []),
         )
 
         collector = HarnessGrammarCollector(

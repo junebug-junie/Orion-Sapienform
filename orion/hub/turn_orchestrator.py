@@ -10,7 +10,8 @@ from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
-from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
+from orion.harness.attachment_staging import stage_attachments
+from orion.schemas.harness_finalize import HarnessAttachmentV1, HarnessRunRequestV1, HarnessRunV1
 from orion.schemas.pre_turn_appraisal import (
     PreTurnAppraisalOptionsV1,
     PreTurnAppraisalRequestV1,
@@ -462,10 +463,43 @@ async def execute_unified_turn(
         settings=cfg,
     )
 
+    # Stage any attached images into the FCC sandbox BEFORE dispatch. The Hub is
+    # the only container that mounts both the attachment store and the sandbox --
+    # the harness-governor, which actually runs `claude`, cannot see the store at
+    # all. So if this does not happen here, it cannot happen at all.
+    staged_attachments: list[HarnessAttachmentV1] = []
+    raw_attachments = payload.get("attachments") or []
+    if raw_attachments:
+        try:
+            staged_attachments = [
+                HarnessAttachmentV1(
+                    path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename
+                )
+                for item in stage_attachments(raw_attachments, correlation_id=correlation_id)
+            ]
+        except Exception:  # noqa: BLE001 -- staging must never take the turn down
+            logger.exception("attachment staging failed corr=%s", correlation_id)
+            staged_attachments = []
+        if not staged_attachments:
+            # Say it out loud. A turn that quietly loses the image Juniper
+            # attached is the exact failure this feature exists to prevent.
+            logger.error(
+                "attachments present but none staged corr=%s count=%s",
+                correlation_id,
+                len(raw_attachments),
+            )
+        else:
+            logger.info(
+                "unified turn carrying %s attachment(s) corr=%s",
+                len(staged_attachments),
+                correlation_id,
+            )
+
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,
         thought_event=thought,
         user_message=user_message,
+        attachments=staged_attachments,
         permissions=ContextExecPermissionV1(
             read_memory=True,
             read_graph=True,

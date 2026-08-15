@@ -6926,7 +6926,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function updateVisionStatusChip() {
     const chip = document.getElementById('visionStatusChip');
     if (!chip) return;
-    if (visionCapableRoute === true) {
+    if (visionCapableRoute === true && modeCarriesAttachments()) {
       // Only shown when it is TRUE and therefore actionable. A permanent
       // "no vision" badge would just be noise on every text turn.
       chip.textContent = 'vision';
@@ -6953,6 +6953,29 @@ document.addEventListener("DOMContentLoaded", () => {
    * composer stays usable and the gateway remains the authority that refuses at
    * send time with a visible error.
    */
+  /**
+   * Can the CURRENT mode's path actually deliver an image to the model?
+   *
+   * Capability is not enough. Gating the attach button on the route's /props
+   * alone advertised vision on paths that carry nothing -- Juniper attached an
+   * image, the turn completed, and Orion never saw it, with no error anywhere
+   * because the LLM gateway's refusal guard is downstream of the drop. Both
+   * halves have to hold: the model can see AND this path can hand it the image.
+   *
+   *   orion -> unified turn stages into the FCC sandbox (orion/hub/turn_orchestrator.py)
+   *   brain -> cortex saga carries AttachmentRefV1 to the gateway
+   *   agent -> neither; nothing threads attachments through that path yet
+   */
+  const MODES_CARRYING_ATTACHMENTS = new Set(['orion', 'brain']);
+
+  function modeCarriesAttachments() {
+    // currentMode is already the BACKEND mode ('orion' | 'brain' | 'agent'),
+    // set from spec.mode in applyHubModeSelection -- not the UI key. Do not
+    // run it back through hubModeSpec(), which keys on 'quick'/'story'/etc and
+    // would silently fall back to the orion spec for 'brain'.
+    return MODES_CARRYING_ATTACHMENTS.has(String(currentMode || '').toLowerCase());
+  }
+
   function refreshVisionCapability() {
     const rid = String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
     const entry = (llmRouteCatalog.routes || [])
@@ -6973,7 +6996,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pasteTarget: document.getElementById('chatInput'),
       // Unknown capability is treated as usable; the gateway refuses loudly at
       // send time if the route really cannot see, and that error is visible.
-      visionAvailable: () => visionCapableRoute !== false,
+      visionAvailable: () => visionCapableRoute !== false && modeCarriesAttachments(),
       onOpenViewer: openImageLightbox,
       options: { endpoint: ATTACHMENT_ENDPOINT },
     });
@@ -9334,6 +9357,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (spec.mode === 'brain' && spec.verb === 'chat_quick') {
       chatQuickVariant = 'fast';
     }
+    // Switching modes can switch between a path that carries images and one
+    // that does not, so the attach affordance has to re-evaluate here too --
+    // not only when the compute route changes.
+    if (typeof refreshVisionCapability === 'function') refreshVisionCapability();
     if (hubModeSelect && hubModeSelect.value !== key) {
       hubModeSelect.value = key;
     }

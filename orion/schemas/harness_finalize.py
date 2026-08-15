@@ -124,6 +124,29 @@ class HarnessRepairOverlayV1(BaseModel):
     finalize_overlay: str = ""
 
 
+class HarnessAttachmentV1(BaseModel):
+    """An image already staged into the FCC sandbox, addressed by path.
+
+    Deliberately a *path*, not an ``AttachmentRefV1``: the harness-governor
+    container cannot see ``/mnt/orion-chat-attachments`` at all (verified live
+    2026-08-15 -- only the Hub mounts the attachment store), so a store
+    reference would be unresolvable on the side that actually runs ``claude``.
+    The Hub stages a copy into the shared sandbox and passes where it landed.
+
+    The path is what lets Orion's *own* model look at the image with its own
+    Read tool, first-person, rather than being handed a description produced by
+    some other model. That distinction is the whole point -- see the rejected
+    "captioner" option in
+    ``docs/superpowers/specs/2026-08-14-hub-chat-vision-and-rendering-design.md``.
+    """
+
+    schema_version: Literal["harness.attachment.v1"] = "harness.attachment.v1"
+    path: str = Field(..., description="Absolute path inside the FCC sandbox.")
+    mime: str
+    sha256: str
+    filename: str | None = None
+
+
 class HarnessRunRequestV1(BaseModel):
     schema_version: Literal["harness.run.request.v1"] = "harness.run.request.v1"
     correlation_id: str
@@ -133,6 +156,14 @@ class HarnessRunRequestV1(BaseModel):
     answer_contract: AnswerContract
     repair_pressure_contract: dict[str, Any] | None = None
     fcc_model_label: str | None = None
+    attachments: list[HarnessAttachmentV1] = Field(
+        default_factory=list,
+        description=(
+            "Images staged into the sandbox for this turn. Empty for every "
+            "text-only turn, which keeps the harness prompt byte-identical to "
+            "its pre-attachment form."
+        ),
+    )
 
 
 class HarnessRunCancelV1(BaseModel):

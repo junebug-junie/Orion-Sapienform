@@ -213,11 +213,22 @@ def stage_attachments(
 
 
 def prune_staging(correlation_id: str, *, root: Path | None = None) -> None:
-    """Drop a turn's staged images. Never raises -- cleanup must not fail a turn."""
+    """Drop a turn's staged images. Never raises -- cleanup must not fail a turn.
+
+    ``ignore_errors=True`` keeps a cleanup problem from taking down a turn, but
+    it also swallows the answer, so the result is checked afterwards and a
+    survivor is logged. A prune that quietly does nothing would leak the sandbox
+    a directory per turn with no signal that it was happening.
+    """
+    target = staging_dir_for(correlation_id, root=root)
     try:
-        shutil.rmtree(staging_dir_for(correlation_id, root=root), ignore_errors=True)
+        shutil.rmtree(target, ignore_errors=True)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("staging prune failed corr=%s: %s", correlation_id, exc)
+        logger.debug("staging prune raised corr=%s: %s", correlation_id, exc)
+    if target.exists():
+        logger.warning(
+            "staging prune left %s in place corr=%s (permissions?)", target, correlation_id
+        )
 
 
 def describe_for_prompt(attachments: Iterable[Any]) -> str:

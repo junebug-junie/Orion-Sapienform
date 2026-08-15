@@ -148,10 +148,32 @@ Three things the numbers say that the plan did not:
 (circe is run intermittently by design). At 1 slot, `P(all busy)` *is* utilisation and is not
 comparable to the 4-slot lanes. Nothing is gated on them.
 
-**Separately observed:** `http://100.121.214.30:8014` returned 13,285 samples over 3.74 h with
-**0.00 h of coverage** — every sample indeterminate, host down or `/slots` unavailable. Not one
-of the four named lanes, so it does not affect the verdict, but it is an atlas port that is not
-answering.
+**A retired route in the sample file, not an outage.** `http://100.121.214.30:8014` returned
+13,285 samples over 3.74 h with **0.00 h of coverage** — every sample indeterminate. I first
+read this as a live atlas port that had stopped answering. It is not:
+
+The `agent` lane runs on **circe** (`http://100.112.254.99:8014`, `served_by`
+`circe-worker-agent-1`) and the live route table says so. The atlas-IP entry is the *previous*,
+wrong host for that lane, from before the route table was corrected. The samples are all
+indeterminate because nothing was ever listening there, and **they stop** because the recorder
+re-read the route table and followed it — which is #1655's route-refresh fix working as
+designed. A stale endpoint appearing and then ceasing in the record is the instrument being
+correct, not the fleet being broken.
+
+**The related misnomer is cosmetic, and worth knowing where the trap is.** Circe's llama.cpp
+containers are still named `atlas-worker-*` — they were deployed from
+`docker-compose.atlas-workers.yml` and never renamed (see the note at
+`config/llm_profiles.yaml:1092`). That name never reaches attribution: the gateway's route table
+carries an explicit `served_by` of `circe-worker-1` / `circe-worker-agent-1`, and
+`llm_backend.py:137` skips its default whenever `served_by` is already set.
+
+**The latent trap:** that default is `"chat": ... or "atlas-worker-1"`
+(`llm_backend.py:132`), and the live `LLM_ROUTE_CHAT_SERVED_BY` is **empty**. Today
+`LLM_GATEWAY_ROUTE_TABLE_JSON` supplies `served_by` so the fallback never fires. If anyone ever
+switches the gateway to the per-route `LLM_ROUTE_*_URL` keys instead, `chat` would silently be
+labelled `atlas-worker-1` **while running on circe** — attributing circe's inference, and any
+cost built on it, to the wrong machine. `agent` is not in that defaults dict at all, so it would
+go blank rather than wrong. Relevant to this arc specifically, since attribution is the point.
 
 ### A3 — Route Orion's autonomous cognition to the background lane · *~1 commit* — **REVISED BY A2**
 ~~Add `metacog_background` to the route table; point `cortex-exec`'s non-interactive path at the

@@ -75,6 +75,14 @@ class FinalizeReflectionV1(BaseModel):
     quick_lane_skipped_llm: bool = False
     finalize_changed: bool = False
 
+    # Loop-back tool-recall retry (see orion/harness/finalize.py::
+    # maybe_run_finalize_tool_retry). Populated only when alignment_verdict is
+    # "misaligned" for a reason a specific, already-reviewed tool would fix --
+    # the reflect prompt is constrained to a small allowlist, so an
+    # unrecognized value here is dropped by the harness, never dispatched.
+    recommended_tool: str | None = None
+    recommended_tool_reason: str | None = Field(default=None, max_length=300)
+
 
 class HarnessVerdictMoleculeV1(BaseModel):
     schema_version: Literal["harness.verdict.molecule.v1"] = "harness.verdict.molecule.v1"
@@ -101,6 +109,19 @@ class HarnessTurnOutcomeMoleculeV1(BaseModel):
     finalize_failed: bool = False
     failure_reason: str | None = Field(default=None, max_length=500)
     draft_text_excerpt: str | None = Field(default=None, max_length=300)
+
+    # Loop-back tool-recall retry. When true, this turn's grammar_event_ids
+    # legitimately includes one event from a finalize-stage correction, not
+    # only motor-stage tool calls -- HarnessRunV1.step_count/grammar_event_ids
+    # (published earlier, before finalize runs) do NOT reflect it, so a
+    # retried turn's outcome-stage tool count can exceed its run-stage count.
+    # That asymmetry is expected. Consumers reading grammar_event_ids as
+    # evidence of deliberate motor tool-use (e.g. orion/memory/crystallization/
+    # intake_autonomy_episode.py) should check this flag to tell "the motor
+    # reached for this tool" apart from "finalize corrected a gap after the
+    # fact" -- both are real evidence, but of different things.
+    finalize_loop_retried: bool = False
+    finalize_loop_tool: str | None = None
 
 
 class HarnessPostTurnClosureV1(BaseModel):

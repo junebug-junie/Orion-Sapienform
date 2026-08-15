@@ -1,12 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 596,
+  "metric_count": 598,
   "_last_change": {
-    "base": "merge base a2974defd (origin/main)",
-    "change_count": 1,
+    "base": "merge base ce57ff2fc (origin/main)",
+    "change_count": 2,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://inner_state/orion-biometrics/biometrics_cluster.v1#peak_pressure"
+      "medium added metric://bus_channel/orion-hub/orion:room:claude:request",
+      "medium added metric://bus_channel/orion-room-companion/orion:room:claude:utterance"
     ]
   },
   "definitions": {
@@ -1576,6 +1577,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:room:claude:request": {
+      "schema_id": "RoomClaudeRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-room-companion"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:stt:intake": {
       "schema_id": "STTRequestPayload",
       "all_producers": [
@@ -1791,6 +1803,18 @@
         "orion-sql-writer"
       ],
       "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-room-companion/orion:room:claude:utterance": {
+      "schema_id": "RoomClaudeUtteranceV1",
+      "all_producers": [
+        "orion-room-companion"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-security-watcher/orion:vision:guard:alert": {

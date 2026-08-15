@@ -206,11 +206,28 @@ class ChannelRegime:
 
 
 def _refresh_from_timestamps(stamps: list[datetime | None]) -> str:
-    """Authoritative path: did the producer's write timestamp advance?"""
+    """Authoritative path: did the producer's write timestamp ADVANCE?
+
+    "Advance", not "differ". `len(set(real)) > 1` was correct for a
+    single-source series and became wrong the moment the Hub started supplying
+    stamps for a MERGED channel (2026-08-14): the merged value's winner changes
+    between ticks, so two nodes each frozen at their own old write time yield
+    two distinct stamps and read as a write that never happened. That is a
+    false liveness claim, the failure mode this whole surface exists to stop.
+
+    Requiring the newest stamp to move is true for both shapes -- one source
+    writing repeatedly advances it, and alternating between two static sources
+    does not.
+    """
     real = [s for s in stamps if s is not None]
     if not real:
         return "unknown"
-    return "producer_written" if len(set(real)) > 1 else "no_write_in_window"
+    newest = real[0]
+    for stamp in real[1:]:
+        if stamp > newest:
+            return "producer_written"
+        newest = max(newest, stamp)
+    return "no_write_in_window"
 
 
 def _refresh_from_values(values: list[float]) -> str:

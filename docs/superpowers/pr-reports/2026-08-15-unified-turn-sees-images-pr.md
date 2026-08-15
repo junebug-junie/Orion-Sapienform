@@ -91,8 +91,8 @@ No new required keys. Two optional overrides read with defaults:
 ## Tests run
 
 ```text
-tests/test_harness_attachment_staging.py                 -> 23 passed
-tests/test_unified_turn_schemas.py + bus_catalog + above -> 61 passed
+tests/test_harness_attachment_staging.py                 -> 36 passed
+tests/test_unified_turn_schemas.py + bus_catalog + above -> 74 passed
 services/orion-harness-governor: pytest tests -q         -> 17 passed
 services/orion-hub: node --test static/js/               -> 39 passed, 0 failed (22 skipped, no jsdom in a fresh worktree)
 ```
@@ -131,7 +131,49 @@ not from the `.bin` source.
 
 ## Review findings fixed
 
-Self-found while building:
+### Code review (subagent, effort=high) — 9 findings, all fixed
+
+- **The feature was disabled by default in the mode it exists for.** Attach was
+  gated on `selectedLlmRoute`, but `HUB_COMPUTE_DEFAULT = 'quick'` → `:8013`, a
+  worker with no mmproj → `vision: false`. And an Orion turn never uses that lane
+  anyway: it goes to the harness, whose Anthropic passthrough resolves its own
+  route and falls back to `chat` (`:8011`, the lane that *does* have mmproj). So a
+  fresh page load refused images in Mode=Orion. Fixed by resolving the route the
+  turn will actually use. Verified: `HUB_COMPUTE_DEFAULT = 'quick'` at app.js:99.
+- **The lying affordance, one step later.** Switching to a mode that cannot carry
+  images disabled the button but left `pending` populated, chips rendered, and
+  `submitExplicitChatText` still put the refs in the payload for the new path to
+  drop silently. Now cleared with a visible message.
+- **Prune raced a live harness.** The `finally` also fires on RPC timeout
+  (`HarnessGovernorClient.run` returns `None` *without* publishing a cancel) and on
+  `CancelledError` from ws-disconnect — `claude` is still running in both, so
+  deleting the directory turns a not-yet-issued `Read` into file-not-found. Now
+  gated on the run actually completing.
+- **`staging_dir_for('..')` resolved to the sandbox root**, which `prune_staging`
+  `rmtree`s — taking the git-managed `repo` checkout with it. Verified live:
+  `'..' -> /mnt/orion-fcc/attachments/..`. Unreachable today (uuid4 at both call
+  sites) but the function is documented as *the* sanitiser for a payload value.
+  Fixed, with a test that plants a file in `<sandbox>/repo` and asserts it survives.
+- **Client `filename` went verbatim into a `bypassPermissions` motor's prompt** — a
+  prompt-injection surface. Now newline-collapsed, character-filtered, capped at 64.
+- **Extension came from client-declared mime/filename**, so an empty mime plus
+  `"x.sh"` would stage real image bytes as `.sh` inside the sandbox Orion's Bash
+  tool can enumerate. Now read from the store's own sniffed `.mime` sidecar, which
+  `chat_attachments.py` writes precisely because the declared type is untrusted.
+- Partially-staged files leaked when model construction failed (now tracked
+  separately from the model list).
+- `MAX_PER_TURN=0` removed the cap instead of disabling attachments.
+- `copyfile`/`rmtree` ran on the Hub's event loop (now `asyncio.to_thread`).
+
+Found while fixing the above: `prune_staging`'s `ignore_errors=True` swallowed
+failures silently — hit for real pruning root-owned dirs as a non-root user. Now
+checks and warns. Same silent-failure shape as everything else in this feature.
+
+Re-verified live after all fixes, Mode=Orion, correlation `766721d7`: a purple
+PNG → `tool=Read` → **"Purple."**, and the staging directory was pruned on
+completion while the sandbox `repo` checkout stayed intact.
+
+### Self-found while building:
 
 - Finding: `modeCarriesAttachments()` called `hubModeSpec(currentMode)`, but
   `currentMode` is already the **backend** mode (`orion|brain|agent`) while
@@ -180,4 +222,4 @@ unified turn now that the unified turn can both see and use tools.
 
 ## PR link
 
-<to be filled>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1685

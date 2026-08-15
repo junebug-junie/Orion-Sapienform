@@ -230,6 +230,43 @@ independent `strain`/`gpu` hints. Both signatures match repeated
 re-saturation from add-mode duplicate deltas, not real, independent CPU/GPU
 utilization, so `strain`/`gpu` were switched to `mode="replace"` too.
 
+### Where each node's power actually comes from
+
+Three instruments, and which one answers for a node depends on what that node has:
+
+| node | `chassis_watts` from | also reports | why |
+| :--- | :--- | :--- | :--- |
+| athena | **iLO** (RedFish, BMC) | `cpu_watts_total` (RAPL) | has a BMC, not on the metered PDU |
+| atlas | **iLO** | `pdu_watts`, `cpu_watts_total` | has both — the PDU cross-checks the BMC |
+| circe | **PDU** (SNMP, per-outlet) | `pdu_watts` | **no reachable BMC** — the PDU is the only source |
+
+**`chassis_watts` holds exactly one value per node.** iLO wins wherever it exists; the PDU fills
+in only when the BMC produced nothing. That ordering is deliberate and tested — the two disagree
+instantaneously whenever load is moving (iLO polls on a 60 s cadence, the SNMP read is
+instantaneous; measured 737 W vs 484 W on atlas mid-burst), so without fixed precedence whichever
+wrote last would win at random.
+
+**Never sum `chassis_watts` with `pdu_watts`.** On atlas they are two meters on the same watts.
+Likewise `cpu_watts_total` and `gpu_watts_total` are *contained within* `chassis_watts`, not
+additional to it — see the containment block in `orion/telemetry/biometrics_pipeline.py`.
+
+**Multi-PSU machines span outlets.** A node's PDU draw is the SUM of its outlets, and the
+outlet→node map is physical cabling that SNMP cannot report (the device's outlet names are
+generic and not editable on this firmware). It lives in `PDU_OUTLETS`, per node, and **re-cabling
+means editing it — nothing detects a change.** Traced by hand 2026-08-15:
+
+```text
+circe   PDU_OUTLETS=19,25,31   3 PSUs   ~419 W
+atlas   PDU_OUTLETS=34,35      2 PSUs   ~266 W
+athena  PDU_OUTLETS=           not on this PDU; empty disables the poller
+```
+
+A mismatch is detectable: on atlas, `pdu_watts` and `chassis_watts` should agree at steady state.
+They read 291 W and 291 W when this was validated.
+
+**The PDU is read-only, deliberately.** The device is outlet-*switched* — a write community can
+power off circe and atlas. Only SNMP GETs are ever issued.
+
 ## Running & Testing
 
 ### Run via Docker

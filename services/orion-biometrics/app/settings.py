@@ -102,6 +102,28 @@ class Settings(BaseSettings):
     ILO_POLL_INTERVAL_SEC: float = Field(default=60.0)
     ILO_REQUEST_TIMEOUT_SEC: float = Field(default=8.0)
 
+    # Rack PDU per-outlet power (SNMP, read-only GETs). PER-NODE, exactly like ILO_HOST above.
+    #
+    # PDU_OUTLETS is THIS node's own outlets, and a multi-PSU server spans several -- its
+    # chassis draw is their sum. The mapping is physical cabling that SNMP cannot report (the
+    # device's outlet names are generic and not editable on this firmware), so it lives in
+    # config and re-cabling means editing it. Traced by hand 2026-08-15:
+    #     circe   PDU_OUTLETS=19,25,31   (3 PSUs)
+    #     atlas   PDU_OUTLETS=34,35      (2 PSUs)
+    # athena is not on this PDU and leaves it empty, which disables the poller entirely.
+    #
+    # This is the only source of chassis power for a node with no BMC, which is the whole
+    # reason it exists: circe has never reported watts, and every fleet total to date has
+    # carried `measurements_missing: {"chassis_watts": ["circe"]}`.
+    PDU_HOST: str = Field(default="")
+    PDU_OUTLETS: str = Field(default="")
+    PDU_SNMP_COMMUNITY: str = Field(default="public")
+    PDU_SNMP_PORT: int = Field(default=161)
+    # A PDU's controller is weaker than a BMC's AND shared by every node plugged into it, so
+    # several nodes polling fast is several times the load on one small processor.
+    PDU_POLL_INTERVAL_SEC: float = Field(default=60.0)
+    PDU_REQUEST_TIMEOUT_SEC: float = Field(default=5.0)
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:

@@ -149,6 +149,26 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
     if watts is not None and watts >= 0.0:  # a negative draw is a sensor fault, not a reading
         out["chassis_watts"] = watts
 
+    # Per-outlet PDU power, summed over this node's PSUs. Measured AT THE WALL rather than at
+    # the machine's own PSU, so it is a genuinely independent instrument -- which is how iLO
+    # got validated: atlas read 291 W on both at the same instant, 2026-08-15.
+    #
+    # NEVER SUMMED WITH `chassis_watts`. On a node with both (atlas) these are two meters on
+    # THE SAME WATTS. `pdu_watts` is published separately so the pair stays comparable, and
+    # `chassis_watts` keeps exactly one value per node.
+    #
+    # On a node with NO BMC (circe) the PDU is the only chassis measurement that exists, so it
+    # fills `chassis_watts` -- but ONLY when iLO produced nothing. That ordering is deliberate:
+    # it must never overwrite a BMC reading, because the two disagree instantaneously whenever
+    # load is moving (iLO polls on a 60 s cadence, the PDU read is instantaneous -- measured
+    # 737 W vs 484 W on atlas mid-burst) and whichever wrote last would win at random.
+    pdu = sample.get("pdu") if isinstance(sample.get("pdu"), dict) else {}
+    pdu_watts = _as_float(pdu.get("pdu_watts"))
+    if pdu_watts is not None and pdu_watts >= 0.0:
+        out["pdu_watts"] = pdu_watts
+        if "chassis_watts" not in out:
+            out["chassis_watts"] = pdu_watts
+
     # SUM, deliberately. `_power_pressure` takes the *mean* of the same list, which makes a
     # 3-GPU box normalise like a 1-GPU box -- fine for a self-relative band, wrong for a
     # fleet total. The two numbers are different quantities and both are kept.
@@ -219,6 +239,7 @@ FLEET_SUM_KEYS = (
     "chassis_watts",
     "gpu_watts_total",
     "cpu_watts_total",
+    "pdu_watts",
     "gpu_count",
     "cpu_cores",
     "disk_bytes_per_sec",

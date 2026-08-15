@@ -20,6 +20,7 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from app.metrics import collect_biometrics, collect_disk_capacity
 from app.ilo import IloPoller
+from app.pdu import PduPoller, parse_outlets
 from orion.telemetry.biometrics_pipeline import (
     BiometricsPipeline,
     PipelineConfig,
@@ -175,6 +176,20 @@ _ilo_poller = IloPoller(
     timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
 )
 
+# Per-outlet power from the rack PDU. This is what gives circe a chassis figure at all: it
+# has no reachable BMC, so `_ilo_poller` is permanently `not_configured` there and every fleet
+# total has carried `measurements_missing: {"chassis_watts": ["circe"]}`. Configured per node
+# with that node's own outlets, exactly like ILO_HOST -- a node not on a metered PDU (athena)
+# leaves PDU_OUTLETS empty and the poller stays disabled.
+_pdu_poller = PduPoller(
+    settings.PDU_HOST,
+    parse_outlets(settings.PDU_OUTLETS),
+    community=settings.PDU_SNMP_COMMUNITY,
+    port=settings.PDU_SNMP_PORT,
+    interval_sec=settings.PDU_POLL_INTERVAL_SEC,
+    timeout_sec=settings.PDU_REQUEST_TIMEOUT_SEC,
+)
+
 
 def _heartbeat_details() -> Dict[str, Any]:
     """Extra data folded into every SystemHealthV1 heartbeat's `details` dict.
@@ -227,6 +242,7 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
         # doesn't change what's published on BIOMETRICS_SAMPLE_CHANNEL.
         pipeline_input = sample.model_dump(mode="python")
         pipeline_input["ilo"] = _ilo_poller.details()
+        pipeline_input["pdu"] = _pdu_poller.details()
         pipeline_input["disk_capacity"] = collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
         summary, induction = _pipeline.update(pipeline_input)
 
@@ -437,6 +453,7 @@ async def lifespan(app: FastAPI):
     hunter_stop = asyncio.Event()
 
     await _ilo_poller.start_background()
+    await _pdu_poller.start_background()
 
     if settings.BIOMETRICS_MODE in {"agent", "both"}:
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
@@ -467,6 +484,7 @@ async def lifespan(app: FastAPI):
             except Exception:
                 hunter_task.cancel()
         await _ilo_poller.stop()
+        await _pdu_poller.stop()
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)

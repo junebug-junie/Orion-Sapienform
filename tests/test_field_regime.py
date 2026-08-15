@@ -97,7 +97,8 @@ def test_loaded_comparison_is_inclusive_exactly_at_the_threshold() -> None:
     Timestamps supplied so refresh_state does not pre-empt the label.
     """
     stamps = [T0 + timedelta(seconds=i) for i in range(20)]
-    r = channel_regime("c", _flat(0.70), window_seconds=1.0, updated_at=stamps)
+    r = channel_regime("c", _flat(0.70), window_seconds=1.0, updated_at=stamps,
+                       window_start=T0)
     assert r.level == 0.70
     assert r.dispersion == 0.0
     assert r.refresh_state == "producer_written"
@@ -224,14 +225,45 @@ def test_pressure_channel_is_not_inverted() -> None:
 # --------------------------------------------------------------------------
 
 def test_timestamp_path_is_authoritative_and_says_so() -> None:
-    """A repeated timestamp means the producer did not write in this window --
-    a fact, not an inference from value ratios."""
+    """Every sample stamped, newest stamp BEFORE the window opens -- the
+    producer did not write in this window. A fact, not an inference."""
     stamps = [T0] * 20
     r = channel_regime("availability", _flat(1.0), window_seconds=1224.0,
-                       updated_at=stamps)
+                       updated_at=stamps,
+                       window_start=T0 + timedelta(seconds=1))
     assert r.refresh_evidence == "timestamp"
     assert r.refresh_state == "no_write_in_window"
     assert r.regime == "no_new_input"
+
+
+def test_timestamp_path_needs_a_window_start() -> None:
+    """Stamps alone cannot answer "was there a write in THIS window", so a
+    caller that omits window_start gets the fallback, not a guess."""
+    r = channel_regime("availability", _flat(1.0), window_seconds=1224.0,
+                       updated_at=[T0] * 20)
+    assert r.refresh_evidence == "value_ratio"
+
+
+def test_one_in_window_stamp_is_enough_for_producer_written() -> None:
+    """The failure this rule replaced: `execution_friction` carried 2 stamped
+    samples of 437, both at one in-window time, and the previous
+    advance-based rule called that no_write_in_window AND authoritative. One
+    observed write is proof of a write."""
+    stamps = [None] * 19 + [T0 + timedelta(seconds=30)]
+    r = channel_regime("c", _flat(0.4), window_seconds=1224.0,
+                       updated_at=stamps, window_start=T0)
+    assert r.refresh_evidence == "timestamp"
+    assert r.refresh_state == "producer_written"
+
+
+def test_sparse_stamps_cannot_prove_ABSENCE_of_a_write() -> None:
+    """The asymmetry, stated as a test. One old stamp out of twenty says
+    nothing about the nineteen unstamped samples, so the negative verdict is
+    withheld and the caller falls back."""
+    stamps = [None] * 19 + [T0 - timedelta(hours=5)]
+    r = channel_regime("c", _flat(0.4), window_seconds=1224.0,
+                       updated_at=stamps, window_start=T0)
+    assert r.refresh_evidence == "value_ratio"
 
 
 def test_advancing_timestamp_beats_a_decay_looking_value_series() -> None:
@@ -243,7 +275,8 @@ def test_advancing_timestamp_beats_a_decay_looking_value_series() -> None:
         values.append(values[-1] * 0.92)
     stamps = [T0 + timedelta(seconds=2 * i) for i in range(20)]
 
-    r = channel_regime("c", values, window_seconds=1224.0, updated_at=stamps)
+    r = channel_regime("c", values, window_seconds=1224.0, updated_at=stamps,
+                       window_start=T0)
     assert r.refresh_evidence == "timestamp"
     assert r.refresh_state == "producer_written"
 
@@ -252,7 +285,8 @@ def test_all_none_timestamps_fall_back_to_value_inference() -> None:
     """Capability vectors carry no timestamps at all; that must not be read as
     'no writes'."""
     values = [0.1, 0.9] * 10
-    r = channel_regime("c", values, window_seconds=1.0, updated_at=[None] * 20)
+    r = channel_regime("c", values, window_seconds=1.0, updated_at=[None] * 20,
+                       window_start=T0)
     assert r.refresh_evidence == "value_ratio"
     assert r.refresh_state == "producer_written"
 
@@ -481,3 +515,30 @@ def test_window_seconds_is_carried_not_inferred() -> None:
     r = channel_regime("c", [0.1, 0.2] * 10, window_seconds=1224.0)
     assert r.window_seconds == 1224.0
     assert r.sample_count == 20
+
+
+def test_naive_and_aware_stamps_compare_without_raising() -> None:
+    """`node_vector_updated_at` is `dict[str, dict[str, datetime]]`, so pydantic
+    yields a NAIVE datetime for any stored ISO string with no offset. Comparing
+    one against an aware window_start raises TypeError, and `channel_regime` is
+    called straight from the Hub's /health route with no exception handling --
+    a single such row would 500 the whole panel.
+
+    Not reachable on today's data (400 live rows sampled: 400 aware, 0 naive),
+    but this patch is what makes the comparison path reachable at all, so it is
+    hardened rather than left to chance. `orion/field/pressure.py::_aware_utc`
+    already existed for exactly this.
+    """
+    naive = datetime(2026, 8, 14, 6, 30)  # no tzinfo
+    aware_start = datetime(2026, 8, 14, 6, 0, tzinfo=timezone.utc)
+
+    r = channel_regime("c", _flat(0.4), window_seconds=1224.0,
+                       updated_at=[naive] * 20, window_start=aware_start)
+    assert r.refresh_evidence == "timestamp"
+    assert r.refresh_state == "producer_written"
+
+    # ...and the mirror: aware stamps against a naive window_start.
+    r2 = channel_regime("c", _flat(0.4), window_seconds=1224.0,
+                        updated_at=[datetime(2026, 8, 14, 6, 30, tzinfo=timezone.utc)] * 20,
+                        window_start=datetime(2026, 8, 14, 6, 0))
+    assert r2.refresh_state == "producer_written"

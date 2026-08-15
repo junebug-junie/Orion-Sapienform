@@ -60,7 +60,7 @@ def normalize_hours(hours: int | None) -> int:
 
 def build_channel_series(
     rows: list[Any], known_channels: list[str] | None = None
-) -> tuple[dict[str, list[float]], dict[str, list[Any]], int]:
+) -> tuple[dict[str, list[float]], dict[str, list[Any]], dict[str, list[Any]], int]:
     """Merged per-tick channel series from raw substrate_field_state rows.
 
     Pure w.r.t. FieldStateV1 payloads (already-decoded dicts); reuses the
@@ -93,14 +93,19 @@ def build_channel_series(
     2026-08-14) forced ALL 38 channels onto the inference fallback, which is
     blind in the subnormal range where decay stops producing a 0.92 ratio.
 
-    Measured on a live 1749-tick window: 26 of 38 channels move onto the
-    timestamp path, and **7 verdicts change, in both directions** --
-    `execution_friction` was claiming `producer_written` with no write in the
-    window at all, `stream_backlog_pressure` was reported `static` while a
-    producer really was writing it, and five more move from `static` (nothing
-    changed) to `no_write_in_window` (nobody wrote), which is a different and
-    more useful claim. The remaining 12 are capability-sourced or unstamped
-    and correctly keep the fallback.
+    Measured across four consecutive 1-hour windows (~1750 ticks each):
+    **22-25 of 38 channels move onto the timestamp path, and 3-12 verdicts
+    change.** Both figures are window-sensitive and are quoted as a range on
+    purpose -- an earlier version of this docstring stated a single window's
+    "26 of 38 / exactly 7" as though it were a property of the fix, and it did
+    not reproduce on the next window or on a re-run of the same one.
+
+    The changes go in both directions: `stream_backlog_pressure` was reported
+    `static` while a producer really was writing it, and several channels move
+    from `static` (nothing changed) to `no_write_in_window` (nobody wrote),
+    which is a different and more useful claim. The remainder are
+    capability-sourced or too sparsely stamped and correctly keep the
+    fallback.
 
     `unparsable_row_count` lets callers distinguish "this channel is genuinely
     dead" from "every row in this window failed to parse" -- both would
@@ -108,6 +113,7 @@ def build_channel_series(
     """
     series: dict[str, list[float]] = {ch: [] for ch in (known_channels or [])}
     stamps: dict[str, list[Any]] = {ch: [] for ch in (known_channels or [])}
+    tick_times: dict[str, list[Any]] = {ch: [] for ch in (known_channels or [])}
     unparsable = 0
     for payload in rows:
         if isinstance(payload, str):
@@ -130,10 +136,12 @@ def build_channel_series(
                 stamps.setdefault(channel, []).append(
                     _winning_write_time(state, provenance.get(channel), channel)
                 )
+                tick_times.setdefault(channel, []).append(state.generated_at)
             elif channel in raw_keys:
                 series.setdefault(channel, []).append(0.0)
                 stamps.setdefault(channel, []).append(None)
-    return series, stamps, unparsable
+                tick_times.setdefault(channel, []).append(state.generated_at)
+    return series, stamps, tick_times, unparsable
 
 
 def _winning_write_time(state: FieldStateV1, source_id: str | None, channel: str):
@@ -144,14 +152,25 @@ def _winning_write_time(state: FieldStateV1, source_id: str | None, channel: str
     `node_vector_updated_at` entry -- not the newest stamp across all sources,
     which would credit the merged value with a freshness no contributor had.
 
-    Returns None for a capability winner: `collect_field_channel_pressures`
-    resolves capability provenance through `capability_provenance`, so the
-    string is an upstream name rather than a node key, and capability vectors
-    carry no write timestamps at all. None is the correct answer there, and
-    `_refresh_from_timestamps` degrades to "unknown" -> value inference rather
-    than inventing one.
+    Capability winners return None, and the guard is EXPLICIT rather than
+    incidental. `collect_field_channel_pressures` resolves capability
+    provenance through `capability_provenance`, which
+    `FieldStateV1.capability_provenance` documents as "the edge source_id (a
+    node_id like `node:atlas`)" -- so it CAN collide with a real node key by
+    design. A bare dict lookup would then return that node's own node-vector
+    write time and attribute it to a capability-vector value that accumulates
+    across ticks via diffusion: wrong provenance, silently.
+
+    Zero collisions in live data today (775 capability-path provenance
+    occurrences over 400 ticks, none a key in `node_vector_updated_at`) -- but
+    that is an observation, not the guarantee an earlier version of this
+    docstring claimed. Hence the membership check.
+
+    Capability vectors carry no write timestamps at all, so None is the
+    correct answer and `_refresh_from_timestamps` degrades to "unknown" ->
+    value inference rather than inventing one.
     """
-    if not source_id:
+    if not source_id or source_id not in state.node_vectors:
         return None
     return state.node_vector_updated_at.get(source_id, {}).get(channel)
 
@@ -189,7 +208,13 @@ async def channels() -> dict[str, Any]:
 REGIME_WINDOW_FRACTION: float = 0.25
 
 
-def _regime_for(channel: str, values: list[float], window_hours: int, stamps=None):
+def _regime_for(
+    channel: str,
+    values: list[float],
+    window_hours: int,
+    stamps=None,
+    tick_times=None,
+):
     """Regime readout for one channel over a declared sub-window.
 
     R2 (PR #1633) exists because `classify_channel_series()` collapses level
@@ -205,13 +230,21 @@ def _regime_for(channel: str, values: list[float], window_hours: int, stamps=Non
     window_seconds = span * (len(window) / n) if n else span
     # Sliced identically to `values`, or refresh_state would be computed from a
     # different span than level/dispersion.
-    updated_at = (stamps[split:] if stamps and len(stamps) == n else None)
+    updated_at = stamps[split:] if stamps and len(stamps) == n else None
+    # The first in-window TICK time, not the first stamp: the question is
+    # "did a write land inside this window", and a channel can have no
+    # in-window stamp at all yet still need a window boundary to be judged
+    # against.
+    window_start = (
+        tick_times[split] if tick_times and len(tick_times) == n and n > split else None
+    )
     return channel_regime(
         channel,
         window,
         window_seconds=window_seconds,
         baseline=baseline,
         updated_at=updated_at,
+        window_start=window_start,
     )
 
 
@@ -243,13 +276,21 @@ async def health(hours: int = Query(DEFAULT_HOURS)) -> dict[str, Any]:
     row_count = len(payloads)
     glossary = load_glossary()
     known_channels = [e.channel for e in glossary["entries"]]
-    series, stamps, unparsable_count = build_channel_series(payloads, known_channels)
+    series, stamps, tick_times, unparsable_count = build_channel_series(
+        payloads, known_channels
+    )
 
     out = []
     for entry in glossary["entries"]:
         values = series.get(entry.channel, [])
         verdict = classify_channel_series(values)
-        regime = _regime_for(entry.channel, values, window_hours, stamps.get(entry.channel))
+        regime = _regime_for(
+            entry.channel,
+            values,
+            window_hours,
+            stamps.get(entry.channel),
+            tick_times.get(entry.channel),
+        )
         out.append(
             {
                 "channel": entry.channel,

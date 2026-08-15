@@ -51,6 +51,7 @@ from .self_study_policy import (
 from .settings import settings
 from .llm_lane import resolve_llm_lane_for_step
 from .workflow_journal_exec import maybe_publish_workflow_journal_write
+from .executor import _truncate_list
 
 logger = logging.getLogger("orion.cortex.exec.verb_adapters")
 VERBS_DIR = Path(orion.__file__).resolve().parent / "cognition" / "verbs"
@@ -1058,6 +1059,53 @@ def _normalize_biometrics_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_vision_window_current(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Bounded view of orion-vision-window's GET /api/vision-window/current
+    response (see services/orion-vision-window/app/projection.py::envelope_to_http_dict
+    for the real wire shape: {status, source, snapshot_id, stream_id, generated_at,
+    age_ms, envelope: {...VisionWindowPayload...}}).
+
+    Deliberately drops `envelope.artifact_uris`/`upstream_event_ids`/`meta` (raw
+    frame paths and bus correlation plumbing) -- no path back to a raw frame
+    crosses out of this reader. That narrower claim only: this is NOT the same
+    contract as PerceptionContextV1 (orion/schemas/situation.py), which is
+    prose-only and explicitly gates structured per-object detections behind
+    proposal-mode sign-off. This normalizer's `top_labels`/`item_count`/
+    `detection_count` ARE structured per-object data -- acceptable for a
+    skill-runner result read by cortex-exec/an LLM tool call, not equivalent to
+    what's licensed to reach the situation brief.
+
+    Never raises on malformed input -- a schema-drifted `top_labels` entry (not
+    a [label, count] pair) is skipped rather than crashing the caller, since
+    this function runs outside the HTTP-fetch try/except in LookAtCameraVerb.
+
+    "stale" is real data, just aged -- orion-vision-window's own
+    http_current_stale_check only flips the status field, the envelope's
+    captions/labels stay populated. Only "empty" (nothing to report at all) and
+    an unrecognized status count as unavailable.
+    """
+    status = str(payload.get("status") or "empty")
+    envelope = payload.get("envelope") if isinstance(payload.get("envelope"), dict) else {}
+    summary = envelope.get("summary") if isinstance(envelope.get("summary"), dict) else {}
+    raw_top_labels = summary.get("top_labels") if isinstance(summary.get("top_labels"), list) else []
+    top_labels: List[List[Any]] = []
+    for pair in raw_top_labels[:5]:
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            top_labels.append([pair[0], pair[1]])
+    return {
+        "available": status in ("ok", "stale"),
+        "status": status,
+        "window_id": payload.get("snapshot_id"),
+        "stream_id": payload.get("stream_id"),
+        "generated_at_epoch": payload.get("generated_at"),
+        "age_ms": payload.get("age_ms"),
+        "item_count": summary.get("item_count"),
+        "detection_count": summary.get("detection_count"),
+        "top_labels": top_labels,
+        "captions": _truncate_list(summary.get("captions"), 3, 500),
+    }
+
+
 def _threshold_findings(*, biometrics_snapshot: Dict[str, Any] | None = None, gpu_snapshot: Dict[str, Any] | None = None, gpu_mem_threshold: float | None = None, biometrics_stability_threshold: float | None = None) -> List[str]:
     findings: List[str] = []
     if biometrics_snapshot and biometrics_stability_threshold is not None:
@@ -1486,6 +1534,59 @@ class BiometricsRawRecentVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             result = {"available": False, "reason": str(exc), "items": []}
             return _skill_result_output(skill_name="skills.biometrics.raw_recent.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
         return _skill_result_output(skill_name="skills.biometrics.raw_recent.v1", result=raw), []
+
+
+@verb("skills.perception.look_at_camera.v1")
+class LookAtCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    """Read-only look at what orion-vision-window's current window projection
+    shows right now.
+
+    First cut of the `look()` primitive from Movement III / P1 in
+    docs/superpowers/specs/2026-08-12-perception-frontier-design.md. Does NOT
+    trigger a fresh capture -- reads whatever the passive windowed pipeline
+    already produced, on that pipeline's own cadence. Triggering an on-demand
+    capture (bypassing the window/council chain entirely, e.g. via a direct
+    vision-host RPC) is a separate, larger patch, deliberately out of scope
+    here -- named as the actual "break the paraphrase chain" P1 work.
+    """
+
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        stream_id = skill_args.get("stream_id")
+        base_url = str(settings.vision_window_service_url).rstrip("/")
+        path = (
+            f"/api/vision-window/streams/{quote(str(stream_id), safe='')}/current"
+            if isinstance(stream_id, str) and stream_id.strip()
+            else "/api/vision-window/current"
+        )
+        try:
+            raw = await asyncio.to_thread(
+                _http_json_get,
+                f"{base_url}{path}",
+                timeout_sec=float(settings.vision_window_http_timeout_sec),
+            )
+            result = _normalize_vision_window_current(raw if isinstance(raw, dict) else {})
+        except Exception as exc:
+            result = {"available": False, "status": "unavailable", "reason": str(exc)}
+            return _skill_result_output(
+                skill_name="skills.perception.look_at_camera.v1",
+                result=result,
+                ok=False,
+                status="unavailable",
+                error={"message": str(exc)},
+            ), []
+        if not result["available"]:
+            return _skill_result_output(
+                skill_name="skills.perception.look_at_camera.v1",
+                result=result,
+                ok=False,
+                status=result["status"],
+                error={"message": f"no_current_window:{result['status']}"},
+            ), []
+        return _skill_result_output(skill_name="skills.perception.look_at_camera.v1", result=result), []
 
 
 @verb("skills.mesh.tailscale_mesh_status.v1")

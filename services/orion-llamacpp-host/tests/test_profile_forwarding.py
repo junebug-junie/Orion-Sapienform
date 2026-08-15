@@ -364,6 +364,80 @@ def test_gemma4_31b_multimodal_profile_forwards_mmproj_and_image_flags(monkeypat
     assert _find_flag_value(cmd, "--top-p") == "0.95"
 
 
+def test_qwen36_chat_profile_forwards_mmproj_and_image_flags(monkeypatch):
+    """The Hub's live "chat" compute lane (Circe, port 8011) -- the profile the
+    mmproj/ubatch_size/image_min_tokens/image_max_tokens fields were completed
+    on in feat/chat-image-support. Mirrors test_gemma4_31b_multimodal_profile_
+    forwards_mmproj_and_image_flags above: without this, a future refactor of
+    append_flag()/the flag-ordering logic could silently break image support on
+    this lane specifically, with only the two other mmproj profiles protected.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", "qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition")
+    monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", str(config_path))
+
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile_cfg = raw["profiles"]["qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition"]
+    profile = profiles_mod.LLMProfile(name="qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition", **profile_cfg)
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_mmproj_file",
+        lambda _cfg: "/models/gguf/mmproj-F16.gguf",
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--jinja",
+            "--reasoning-budget",
+            "--no-context-shift",
+            "--split-mode",
+            "--tensor-split",
+            "--mmproj",
+            "--ubatch-size",
+            "--image-min-tokens",
+            "--image-max-tokens",
+            "--n-predict",
+            "--temp",
+            "--top-k",
+            "--top-p",
+            "--min-p",
+            "--presence-penalty",
+        },
+    )
+    # server-cuda-b10398-8e7f22b67: the build this worker actually reports live
+    # (config comment, verified 2026-08-14) -- past the b5332 --reasoning cutover
+    # and the same binary the agent lane already serves images on.
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 10398)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert _find_flag_value(cmd, "--mmproj") == "/models/gguf/mmproj-F16.gguf"
+    assert _find_flag_value(cmd, "--ubatch-size") == "1024"
+    assert _find_flag_value(cmd, "--image-min-tokens") == "280"
+    assert _find_flag_value(cmd, "--image-max-tokens") == "560"
+    # ubatch_size >= image_max_tokens (the non-causal-vision-encoder constraint
+    # documented on every mmproj profile in this file) must actually hold for
+    # the values this test just forwarded, not just be true on paper.
+    assert int(_find_flag_value(cmd, "--ubatch-size")) >= int(_find_flag_value(cmd, "--image-max-tokens"))
+    assert _find_flag_value(cmd, "--ctx-size") == "131072"
+    assert _find_flag_value(cmd, "--split-mode") == "layer"
+    assert _find_flag_value(cmd, "--tensor-split") == "3,1"
+
+
 _MUSE_GLIMMER_SUPPORTED_FLAGS_BASE = {
     "--jinja",
     "--no-context-shift",

@@ -70,3 +70,59 @@ def test_cue_stays_valid_json_under_the_char_budget():
     }))
     assert len(cue) <= _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS
     json.loads(cue)
+
+
+# ------------------------------------------------------- binding constraint (ROADMAP B2)
+
+def test_the_peak_reaches_the_cue_with_its_channel_and_node():
+    """strain in this same cue reads 0.44 on a node whose power is pegged at 1.000. Orion
+    reading only that concludes its body is fine while a resource is full."""
+    cue = json.loads(_metacog_biometrics_cue(_ctx({
+        "composites": {"strain": 0.44},
+        "peak_pressure": 1.0,
+        "peak_pressure_channel": "power",
+        "peak_pressure_node": "athena",
+    })))
+    assert cue["peak"] == 1.0
+    assert cue["peak_at"] == "athena.power"
+
+
+def test_the_channel_survives_a_missing_node():
+    cue = json.loads(_metacog_biometrics_cue(_ctx({
+        "peak_pressure": 0.772, "peak_pressure_channel": "disk_capacity",
+    })))
+    assert cue["peak"] == 0.77
+    assert cue["peak_at"] == "disk_capacity"
+
+
+def test_no_peak_means_no_key_rather_than_zero():
+    cue = json.loads(_metacog_biometrics_cue(_ctx({"constraint": "NONE"})))
+    assert "peak" not in cue and "peak_at" not in cue
+
+
+def test_a_non_numeric_peak_is_ignored():
+    cue = json.loads(_metacog_biometrics_cue(_ctx({"peak_pressure": "high"})))
+    assert "peak" not in cue
+
+
+def test_a_calm_fleet_reports_a_real_zero_peak():
+    """0.0 is a reading, not an absence -- it must reach the cue."""
+    cue = json.loads(_metacog_biometrics_cue(_ctx({
+        "peak_pressure": 0.0, "peak_pressure_channel": "cpu", "peak_pressure_node": "atlas",
+    })))
+    assert cue["peak"] == 0.0
+    assert cue["peak_at"] == "atlas.cpu"
+
+
+def test_the_cue_stays_under_budget_with_every_field_present():
+    from app.executor import _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS
+
+    cue = _metacog_biometrics_cue(_ctx({
+        "constraint": "POWER",
+        "composites": {"strain": 0.44, "homeostasis": 0.56, "stability": 0.98},
+        "measurements": {"chassis_watts": 786.0},
+        "measurements_missing": {"chassis_watts": ["circe"]},
+        "peak_pressure": 1.0, "peak_pressure_channel": "power", "peak_pressure_node": "athena",
+    }))
+    assert len(cue) <= _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS
+    json.loads(cue)

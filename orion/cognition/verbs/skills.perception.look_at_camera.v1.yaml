@@ -1,0 +1,44 @@
+name: skills.perception.look_at_camera.v1
+label: Skills — Look At Camera
+description: >
+  Read-only look at what orion-vision-window's current window projection shows
+  right now (captions, top object labels, detection count). Does not trigger a
+  fresh capture -- reads the passive windowed pipeline's own cadence.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 20000
+max_recursion_depth: 0
+services: []
+input_schema:
+  type: object
+  properties:
+    stream_id:
+      type: string
+      description: Optional specific camera stream. Omit for the global current window.
+  additionalProperties: false
+output_schema:
+  type: object
+  properties:
+    available: {type: boolean}
+    status: {type: string, enum: [ok, stale, empty, unavailable]}
+    window_id: {type: [string, "null"]}
+    stream_id: {type: [string, "null"]}
+    generated_at_epoch: {type: [number, "null"]}
+    age_ms: {type: [integer, "null"]}
+    item_count: {type: [integer, "null"]}
+    detection_count: {type: [integer, "null"]}
+    top_labels:
+      type: array
+      items: {type: array}
+    captions:
+      type: array
+      items: {type: string}
+plan:
+  - name: skills.perception.look_at_camera.v1
+    description: Execute the direct Cortex-side look-at-camera skill.
+    order: 0
+    services: []

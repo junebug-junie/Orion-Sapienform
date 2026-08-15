@@ -1761,6 +1761,31 @@ async def _persist_grammar_event_envelope(
             )
 
 
+def _chat_source_platform(client_meta: Any) -> str | None:
+    """external_room.platform from a chat.history payload / chat_history_log row.
+
+    Deliberately a thin local reader rather than an import of orion-recall's
+    chat_source_tagging.chat_source_platform(): sql-writer does not depend on
+    that service's package, and this needs only the platform half (no participant
+    name, no text rendering). Handles the dict form (psycopg2 jsonb) and the
+    JSON-string form (asyncpg / raw bus payloads) the same way that helper does.
+    Returns None for direct hub conversations and for every row predating the
+    field -- callers treat None as "not external", the correct default.
+    """
+    if isinstance(client_meta, str):
+        try:
+            client_meta = json.loads(client_meta)
+        except Exception:
+            return None
+    if not isinstance(client_meta, dict):
+        return None
+    external_room = client_meta.get("external_room")
+    if not isinstance(external_room, dict):
+        return None
+    platform = external_room.get("platform")
+    return str(platform) if platform else None
+
+
 def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
     if not corr_id:
         return None
@@ -1789,6 +1814,7 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             "response": response,
             "spark_meta": spark_meta,
             "session_id": getattr(row, "session_id", None),
+            "source_platform": _chat_source_platform(getattr(row, "client_meta", None)),
         }
     finally:
         sess.close()
@@ -1820,6 +1846,7 @@ async def _emit_memory_turn_persisted(
         response=str(turn["response"]),
         spark_meta=turn.get("spark_meta") if isinstance(turn.get("spark_meta"), dict) else {},
         session_id=turn.get("session_id"),
+        source_platform=turn.get("source_platform"),
     )
     out_env = parent_env.derive_child(
         kind=MEMORY_TURN_PERSISTED_KIND,
@@ -2434,6 +2461,14 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                                 if isinstance(data_to_process.get("spark_meta"), dict)
                                 else {},
                                 "session_id": data_to_process.get("session_id"),
+                                # Read from `payload`, not `data_to_process`: several
+                                # routes above rebind data_to_process to a projected
+                                # row dict, so it is not a reliable source for a raw
+                                # envelope field. `payload` is what
+                                # extra_sql_fields["client_meta"] is populated from in
+                                # this same scope, so this reads the identical value
+                                # that gets written to chat_history_log.client_meta.
+                                "source_platform": _chat_source_platform(payload.get("client_meta")),
                             },
                         )
                     elif corr:

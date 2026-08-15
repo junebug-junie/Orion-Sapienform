@@ -41,12 +41,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_every_registry_resolves_nonempty():
     """A resolver returning [] means the registry rotted or the join broke.
 
-    Lower bounds are the counts verified on 2026-08-12; these registries only
-    grow in practice, and an exact-equality assert would fail on every
-    legitimate addition.
+    Lower bounds are floors against rot, NOT a census. "These registries only
+    grow in practice" was the original premise and it was wrong within a day:
+    `fix(bus): retire the drives:audit channel entry` (2026-08-13) took bus
+    channels 261 -> 260 for good reasons, and this assert went red on main and
+    stayed red until 2026-08-14 because nothing else noticed a channel had been
+    deleted.
+
+    The bound is now well below current counts so a legitimate retirement does
+    not fail it. Counting exactly is the definition lock's job
+    (config/metrics/metric_definitions.lock.json, scripts/
+    check_definition_drift.py), which reports a removal by NAME instead of as
+    an off-by-one -- that split is deliberate: this test guards against a
+    resolver silently returning [], the lock guards against a definition
+    changing unannounced.
     """
     assert len(resolve_field_channels()) >= 38
-    assert len(resolve_bus_channels()) >= 261
+    assert len(resolve_bus_channels()) >= 250
     assert len(resolve_organ_signals()) >= 252
     # 13 signals + their enumerable scalar fields
     assert len(resolve_inner_state()) >= 13

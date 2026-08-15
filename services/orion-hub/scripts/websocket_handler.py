@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import os
+import sys
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -48,7 +49,7 @@ from scripts.fcc_claude_bridge import (
 )
 from scripts.turn_cancel import cancel_in_flight_turn, run_awaitable_cancel_on_ws_disconnect
 from scripts.settings import settings
-from orion.fcc.sandbox_sync import sync_fcc_sandbox
+from orion.fcc.sandbox_sync import record_sync_skip, sync_fcc_sandbox
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.voice_stt_errors import (
@@ -666,9 +667,36 @@ async def _sync_fcc_sandbox_background(connection_id: str) -> None:
     entirely while any FCC turn is in flight (``active_turns()``) so a reset/clean
     never runs against a workspace a claude subprocess is still reading/writing.
     """
+    # A test process must never mutate the live sandbox. Not hypothetical: the
+    # hub suite drives the real websocket_endpoint() (see
+    # test_workflow_schedule_runtime_paths.py), which reaches this hook with the
+    # real HUB_AGENT_CLAUDE_WORKSPACE from .env. That was harmless while the sync
+    # only *read* git status and bailed on dirt; the moment it gained a rescue +
+    # reset path it started stashing and moving Orion's actual checkout -- caught
+    # live on 2026-08-14, stash@{1} authored by the test runner. Mocking it in
+    # each test would work until the next test forgets; this cannot be forgotten.
+    # PYTEST_CURRENT_TEST alone is not enough: it is set per test *item*, so a task
+    # or thread that outlives the item -- which is exactly what this fire-and-forget
+    # task is -- can observe it as unset. `sys.modules` is stable for the whole
+    # process, and hub never imports pytest in production.
+    if os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules:
+        logger.info("fcc_sandbox_sync_skipped_test_process connection_id=%s", connection_id)
+        record_sync_skip(
+            getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None),
+            "skipped_test_process",
+        )
+        return
+
     if active_turns():
         logger.info(
             "fcc_sandbox_sync_skipped_turn_in_flight connection_id=%s", connection_id
+        )
+        # Recorded, not just logged: an unrecorded skip would leave the status
+        # surface reporting whatever the previous connect saw, which is exactly
+        # the "looks fine, is stale" failure this whole patch exists to kill.
+        record_sync_skip(
+            getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None),
+            "skipped_turn_in_flight",
         )
         return
     async with _fcc_sandbox_sync_lock:
@@ -676,6 +704,10 @@ async def _sync_fcc_sandbox_background(connection_id: str) -> None:
         if active_turns():
             logger.info(
                 "fcc_sandbox_sync_skipped_turn_in_flight connection_id=%s", connection_id
+            )
+            record_sync_skip(
+                getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None),
+                "skipped_turn_in_flight",
             )
             return
         sync_result = await asyncio.to_thread(

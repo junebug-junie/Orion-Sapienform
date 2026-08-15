@@ -99,7 +99,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from orion.field.channel_glossary import SUBNORMAL_CUTOFF
-from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS
+from orion.field.pressure import HIGHER_IS_BETTER_CHANNELS, _aware_utc
 
 # services/orion-field-digester/app/digestion/decay.py applies this to
 # NODE_DECAY_CHANNELS/CAPABILITY_DECAY_CHANNELS.
@@ -205,12 +205,59 @@ class ChannelRegime:
     regime: str
 
 
-def _refresh_from_timestamps(stamps: list[datetime | None]) -> str:
-    """Authoritative path: did the producer's write timestamp advance?"""
-    real = [s for s in stamps if s is not None]
-    if not real:
+# A NEGATIVE verdict ("nobody wrote this") needs the stamps to be
+# representative of the window; a POSITIVE one does not. See
+# _refresh_from_timestamps for why the two directions get different bars.
+MIN_STAMP_COVERAGE: float = 0.5
+
+
+def _refresh_from_timestamps(
+    stamps: list[datetime | None], window_start: datetime | None = None
+) -> str:
+    """Authoritative path: is the newest producer write INSIDE the window?
+
+    Three rules were tried here and the first two were both wrong:
+
+    1. `len(set(real)) > 1` -- "are the stamps different". Correct for a
+       single-source series; wrong the moment the Hub supplied stamps for a
+       MERGED channel, because the winner changes between ticks and two nodes
+       each frozen at their own old write time yield two distinct stamps.
+    2. "does the newest stamp advance" -- fixed that, and introduced worse:
+       a producer that wrote EXACTLY ONCE in the window is structurally
+       undetectable, since one distinct stamp can never show an advance.
+       Confirmed live: `execution_friction` carried 2 stamped samples out of
+       437, both at 23:58:29 -- a real write, inside the window -- and this
+       rule reported `no_write_in_window` and flagged it AUTHORITATIVE. A
+       confidently wrong verdict is worse than the value-ratio blindness the
+       timestamp path exists to replace. Same shape as CLAUDE.md 0A's
+       metric-gate item 4, inverted: structurally incapable of reading one
+       write.
+
+    3. What it does now: compare the newest stamp against the window's start.
+       That is the question being asked, needs no second stamp, and cannot be
+       fooled by winner churn.
+
+    The two directions carry DIFFERENT evidential bars, deliberately:
+
+    - `producer_written` needs ONE stamp inside the window. A single real
+      observation of a write is proof a write happened.
+    - `no_write_in_window` needs stamps on at least MIN_STAMP_COVERAGE of the
+      samples. Absence cannot be concluded from 0.5% of the series -- the
+      other 99.5% are unstamped, not silent. Below the floor this returns
+      "unknown" and the caller falls back to inference, which is the honest
+      answer rather than a confident one.
+
+    Without `window_start` only the negative direction is computable, so a
+    caller that cannot supply it gets "unknown" rather than a guess.
+    """
+    real = [_aware_utc(s) for s in stamps if s is not None]
+    if not real or window_start is None:
         return "unknown"
-    return "producer_written" if len(set(real)) > 1 else "no_write_in_window"
+    if max(real) >= _aware_utc(window_start):
+        return "producer_written"
+    if len(real) / len(stamps) < MIN_STAMP_COVERAGE:
+        return "unknown"
+    return "no_write_in_window"
 
 
 def _refresh_from_values(values: list[float]) -> str:
@@ -285,6 +332,7 @@ def channel_regime(
     window_seconds: float,
     baseline: list[float] | None = None,
     updated_at: list[datetime | None] | None = None,
+    window_start: datetime | None = None,
 ) -> ChannelRegime:
     """Read one channel's regime over a window the caller declares.
 
@@ -292,7 +340,11 @@ def channel_regime(
     `baseline` is an optional longer series for the relative readings.
     `updated_at` is the per-sample producer write timestamp from
     `FieldStateV1.node_vector_updated_at`; supply it whenever available -- it
-    makes `refresh_state` authoritative instead of inferred.
+    makes `refresh_state` authoritative instead of inferred. `window_start` is
+    the time the window opens, and BOTH are needed: without it the timestamp
+    path can only ever say "unknown", because "was there a write in this
+    window" is not answerable from the stamps alone. See
+    _refresh_from_timestamps for why an earlier version that tried was wrong.
     """
     n = len(values)
     inverted = channel in HIGHER_IS_BETTER_CHANNELS
@@ -335,7 +387,7 @@ def channel_regime(
     refresh_evidence = "value_ratio"
     refresh_state = _refresh_from_values(values)
     if updated_at:
-        from_stamps = _refresh_from_timestamps(updated_at)
+        from_stamps = _refresh_from_timestamps(updated_at, window_start)
         if from_stamps != "unknown":
             refresh_state = from_stamps
             refresh_evidence = "timestamp"

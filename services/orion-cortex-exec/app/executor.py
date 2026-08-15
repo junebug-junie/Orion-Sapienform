@@ -766,6 +766,19 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
         absent = missing.get("chassis_watts") if isinstance(missing, dict) else None
         if absent:
             draft_payload["fleet_watts_partial"] = list(absent)
+    # The binding constraint, and where. `strain` in this same cue is the MEAN of seven
+    # pressures, so it reports 0.44 on a node whose `power` is pegged at 1.000 -- Orion reading
+    # only that would conclude its body is fine while a resource is full. This is the max over
+    # all eleven, with the channel and node named so the number can be acted on rather than
+    # just felt. `strain` is left in place and unchanged; the two are different reductions of
+    # the same pressures and both are shown.
+    peak = cluster.get("peak_pressure")
+    if isinstance(peak, (int, float)) and not isinstance(peak, bool):
+        draft_payload["peak"] = round(float(peak), 2)
+        channel = cluster.get("peak_pressure_channel")
+        node = cluster.get("peak_pressure_node")
+        if isinstance(channel, str) and channel:
+            draft_payload["peak_at"] = f"{node}.{channel}" if isinstance(node, str) and node else channel
     freshness_s = _metacog_cue_freshness_s(biometrics)
     if freshness_s is not None:
         draft_payload["freshness_s"] = freshness_s

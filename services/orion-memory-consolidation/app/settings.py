@@ -77,6 +77,18 @@ class Settings(BaseSettings):
     MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO: float = Field(
         default=0.4, alias="MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO"
     )
+    # Comma-separated external platforms (chat_history_log client_meta.external_room
+    # .platform) whose windows skip the governor queue and auto-activate directly.
+    # Orion still forms and projects the memory; Juniper is just never asked to
+    # approve it turn-by-turn. Empty string disables the gate entirely.
+    MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS: str = Field(
+        default="aitown", alias="MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS"
+    )
+
+    @property
+    def auto_activate_platforms(self) -> frozenset[str]:
+        raw = self.MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS or ""
+        return frozenset(p.strip() for p in raw.split(",") if p.strip())
 
     # Cross-window concept-relation resolution (candidate retrieval + typed link dispatch).
     # Off by default pending review -- see orion/memory/crystallization/concept_relation.py.

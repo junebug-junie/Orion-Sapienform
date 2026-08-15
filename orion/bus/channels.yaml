@@ -719,7 +719,16 @@ channels:
     schema_id: "SparkSignalV1"
     message_kind: "spark.signal.v1"
     producer_services: ["*"]
-    consumer_services: ["orion-state-service"]
+    # Was ["orion-state-service"] -- wrong, and wrong since at least the spark
+    # teardown. Corrected 2026-08-14 from a live `PUBSUB NUMSUB` on the running
+    # bus: this channel had ZERO subscribers while orion:biometrics:cluster had
+    # two. orion-state-service consumes orion:spark:state:snapshot (settings.py
+    # channel_spark_state_snapshot) and has no reference to :signal at all --
+    # the two channel names were conflated. orion-cortex-exec imports
+    # SparkSignalV1 once and never uses it (dead import). Producers are real
+    # (orion-equilibrium-service/app/service.py:417 publishes here), so this is
+    # a live emitter into an empty room, not a dead channel.
+    consumer_services: []
     stability: "experimental"
     since: "2026-01-08"
 

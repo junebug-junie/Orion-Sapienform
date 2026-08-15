@@ -17,7 +17,10 @@ Service: `orion-sql-writer`
   looks authoritative and is not on this path.
 - Alerts carry kinds and counts only, never payloads.
 - Found and documented (not fixed here) that `legacy.message` — 80 of the 87
-  fallback rows — is real cognition being silently dropped, and that the one
+  fallback rows — is an off-contract raw-dict publish (**corrected same day:
+  originally written as "real cognition being silently dropped"; it is a
+  redundant copy of an already-persisted turn, see the correction below**), and
+  that the one
   test which should have caught it explicitly exempts it.
 - Found and documented that the notify service's `dedupe_key` /
   `dedupe_window_seconds` are accepted and stored but never enforced.
@@ -160,13 +163,24 @@ loudly.
 
 ## Two findings surfaced, not fixed
 
-### `legacy.message` — 80 of 87 rows are real cognition being dropped
+### `legacy.message` — 80 of 87 rows are a duplicate publish, not lost data
+
+> **CORRECTION (2026-08-14, same day).** As originally written this section
+> claimed these rows were "real cognition being dropped" and "never persisted
+> anywhere else." **Both claims were wrong**, and the same false claim appears
+> in `2026-08-14-fallback-watch-review-fixes.md`. Measured afterwards against
+> live Postgres: all 80 rows have a matching `chat_history_log` row with a
+> byte-identical response length — `total=80, no_history_row=0,
+> response_matches_exactly=80, differs=0`. Nothing was lost. They were a third,
+> redundant publish of a turn already persisted by two properly-enveloped
+> publishes on the same channel. Root-caused and deleted in
+> `2026-08-14-hub-legacy-chat-publish-kill.md`. The rest of this section stands.
 
 `orion/core/bus/codec.py:72` names an envelope `legacy.message` when a producer
 publishes a **raw dict with no `kind` field**. Those rows carry `prompt`,
 `response`, `reasoning_trace`, `spark_meta`, `session_id`, `mode`, `source` —
-chat/cortex turns. They have been landing in the fallback log since at least
-2026-07-24 and are never persisted anywhere else.
+chat turns. They have been landing in the fallback log since at least
+2026-07-24.
 
 `services/orion-sql-writer/tests/test_route_map_completeness.py:47` lists
 `legacy.message` under `LEGACY_KIND_ALIASES`, described as "legacy / multi-kind
@@ -439,5 +453,8 @@ a **new table**, not a new column, so no hand-applied `ALTER TABLE` is needed �
   `_write_fallback` always sets it and there are zero such rows live, but a row
   inserted by another path would be missed rather than counted as recent.
   Documented in `count_backlog`'s docstring and pinned by a test.
-- **Severity: medium, pre-existing, not introduced here.** `legacy.message`
-  events are being dropped and have been for at least 3 weeks. See above.
+- **Severity: low (corrected down from medium), pre-existing, not introduced
+  here, now fixed.** `legacy.message` events reach the fallback log and have for
+  at least 3 weeks. Originally written as data loss; measured afterwards to be a
+  redundant publish of an already-persisted turn — see the correction above and
+  `2026-08-14-hub-legacy-chat-publish-kill.md`.

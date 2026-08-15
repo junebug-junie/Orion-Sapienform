@@ -283,11 +283,23 @@ scripts/safe_docker_build.sh orion-sql-writer up -d --build
   itself recommends applying `idx_grammar_events_source_created` via
   `services/orion-sql-db/manual_migration_grammar_atlas.sql`. Unrelated to this
   patch.
-- **Severity: medium, pre-existing, not fixed here — `legacy.message`.**
+- **Severity: low (was written as medium), pre-existing, fixed in a follow-up —
+  `legacy.message`.**
+
+  > **CORRECTION (2026-08-14, same day).** This bullet originally said these
+  > rows were "persisted nowhere else." **That was wrong**, and the same false
+  > claim appears in `2026-08-14-fallback-backlog-alerts.md`. Measured against
+  > live Postgres afterwards: all 80 rows have a matching `chat_history_log`
+  > row with a byte-identical response length — `total=80, no_history_row=0,
+  > response_matches_exactly=80, differs=0`. No data was lost. Severity is
+  > downgraded accordingly: the real cost was one WARNING per chat turn plus
+  > alert noise, not lost cognition. Root-caused and deleted in
+  > `2026-08-14-hub-legacy-chat-publish-kill.md`.
+
   `orion/core/bus/codec.py:72` names an envelope `legacy.message` when a
   producer publishes a raw dict with no `kind`. Those rows carry `prompt`,
-  `response`, `reasoning_trace`, `spark_meta` — chat/cortex turns, landing in
-  the fallback log since at least 2026-07-24 and persisted nowhere else. 12 of
+  `response`, `reasoning_trace`, `spark_meta` — chat turns, landing in
+  the fallback log since at least 2026-07-24. 12 of
   the 17 events in the alert that just fired were these.
   `tests/test_route_map_completeness.py:47` lists it under
   `LEGACY_KIND_ALIASES` as "resolved at runtime"; it is not — it reaches the

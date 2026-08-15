@@ -10,7 +10,8 @@ from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
-from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
+from orion.harness.attachment_staging import prune_staging, stage_attachments
+from orion.schemas.harness_finalize import HarnessAttachmentV1, HarnessRunRequestV1, HarnessRunV1
 from orion.schemas.pre_turn_appraisal import (
     PreTurnAppraisalOptionsV1,
     PreTurnAppraisalRequestV1,
@@ -462,10 +463,54 @@ async def execute_unified_turn(
         settings=cfg,
     )
 
+    # Stage any attached images into the FCC sandbox BEFORE dispatch. The Hub is
+    # the only container that mounts both the attachment store and the sandbox --
+    # the harness-governor, which actually runs `claude`, cannot see the store at
+    # all. So if this does not happen here, it cannot happen at all.
+    staged_attachments: list[HarnessAttachmentV1] = []
+    # Tracked separately from the list above: if model construction throws after
+    # the copies already landed, `staged_attachments` is empty but there ARE
+    # files on disk, and pruning on the empty list would leak them forever.
+    staging_attempted = False
+    raw_attachments = payload.get("attachments") or []
+    if raw_attachments:
+        staging_attempted = True
+        try:
+            # to_thread: shutil.copyfile of up to HUB_CHAT_ATTACHMENT_MAX_PER_TURN
+            # x HUB_CHAT_ATTACHMENT_MAX_BYTES is real blocking I/O, and this Hub
+            # serves every WebSocket client from one event loop.
+            staged = await asyncio.to_thread(
+                stage_attachments, raw_attachments, correlation_id=correlation_id
+            )
+            staged_attachments = [
+                HarnessAttachmentV1(
+                    path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename
+                )
+                for item in staged
+            ]
+        except Exception:  # noqa: BLE001 -- staging must never take the turn down
+            logger.exception("attachment staging failed corr=%s", correlation_id)
+            staged_attachments = []
+        if not staged_attachments:
+            # Say it out loud. A turn that quietly loses the image Juniper
+            # attached is the exact failure this feature exists to prevent.
+            logger.error(
+                "attachments present but none staged corr=%s count=%s",
+                correlation_id,
+                len(raw_attachments),
+            )
+        else:
+            logger.info(
+                "unified turn carrying %s attachment(s) corr=%s",
+                len(staged_attachments),
+                correlation_id,
+            )
+
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,
         thought_event=thought,
         user_message=user_message,
+        attachments=staged_attachments,
         permissions=ContextExecPermissionV1(
             read_memory=True,
             read_graph=True,
@@ -486,17 +531,34 @@ async def execute_unified_turn(
         if harness_step_relay is not None
         else None
     )
+    _harness_run_completed = False
     try:
         run = await HarnessGovernorClient(harness_bus).run(
             harness_req,
             correlation_id=correlation_id,
             liveness_check=liveness_check,
         )
+        # `run is None` means an RPC timeout with no cancel published -- the
+        # motor may still be mid-turn, so this stays False and we leave the
+        # staged files alone rather than yanking them from a live reader.
+        _harness_run_completed = run is not None
     finally:
         if harness_step_relay is not None and harness_step_queue is not None:
             harness_step_relay.unregister_queue(correlation_id, harness_step_queue)
         if harness_step_relay is not None:
             harness_step_relay.forget(correlation_id)
+        # Staged images are per-turn scratch; without cleanup they accumulate in
+        # the sandbox forever. The bytes still live in the content-addressed
+        # store, so a follow-up turn about the same image just re-stages it.
+        #
+        # Only prune when the run actually COMPLETED. This finally also fires on
+        # an RPC timeout (HarnessGovernorClient.run returns None without
+        # publishing a cancel) and on CancelledError from
+        # run_awaitable_cancel_on_ws_disconnect -- in both cases the governor's
+        # claude process is still going, and deleting the directory out from
+        # under it turns a not-yet-issued Read into file-not-found.
+        if staging_attempted and _harness_run_completed:
+            await asyncio.to_thread(prune_staging, correlation_id)
     if run is None:
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         return [
@@ -653,27 +715,21 @@ async def _publish_unified_turn_chat_history(
     )
     await publish_chat_turn(bus, env_turn)
 
-    if hub_settings.PUBLISH_CHAT_HISTORY_LOG:
-        try:
-            await bus.publish(
-                hub_settings.chat_history_channel,
-                {
-                    "correlation_id": correlation_id,
-                    "source": source_label,
-                    "prompt": user_message,
-                    "response": response_text,
-                    "session_id": session,
-                    "mode": mode_tag,
-                    "spark_meta": spark_meta,
-                    "reasoning_trace": reasoning_trace,
-                },
-            )
-        except Exception:
-            logger.warning(
-                "unified_turn legacy chat_history publish failed corr=%s",
-                correlation_id,
-                exc_info=True,
-            )
+    # 2026-08-14: the third, raw-dict legacy publish to `chat_history_channel`
+    # was deleted here (the WS twin of the one in
+    # services/orion-hub/scripts/api_routes.py). Published with no `kind`, so
+    # `orion/core/bus/codec.py:72` stamped it `legacy.message` -- no sql-writer
+    # route matched, so every one landed in `bus_fallback_log` and was written
+    # nowhere else. The calls above already carry this turn as registered
+    # envelopes: `publish_chat_history` sends two `chat.history.message.v1` on
+    # this same log channel, and `publish_chat_turn` sends one `chat.history` on
+    # the separate *turn* channel (`orion:chat:history:turn`). Note the log
+    # channel therefore no longer carries a prompt/response pairing at all --
+    # only the two independent message envelopes. The turn channel is where
+    # paired turn data lives.
+    # Note: do NOT "fix" this by flipping PUBLISH_CHAT_HISTORY_LOG -- that flag
+    # also gates those two real publishes (services/orion-hub/scripts/
+    # chat_history.py:288 and :392), so turning it off kills real persistence.
 
     logger.info(
         "unified_turn chat_history published corr=%s session=%s source=%s",

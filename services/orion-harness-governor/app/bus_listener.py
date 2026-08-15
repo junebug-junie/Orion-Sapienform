@@ -314,6 +314,7 @@ async def handle_harness_run_request(
             # (request.thought_event / answer_contract) before enabling in a multi-human town.
             embodiment_relational=True,
             embodiment_interlocutor_ref=DEFAULT_FINALIZE_INTERLOCUTOR,
+            grammar_channel=settings.channel_grammar_event,
             closure_channel=settings.channel_post_turn_closure,
             system_error_channel=settings.channel_system_error,
         )

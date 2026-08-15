@@ -41,6 +41,21 @@ DEFAULT_QUICK_GATE_EPSILON = 0.08
 OPEN_LOOP_PRESSURE_MAX = 0.2
 REPAIR_PRESSURE_MAX = 0.3
 
+# Loop-back tool-recall retry (5b-prime): one bounded retry when reflection
+# names a specific, fixable grounding gap. Fixed constant today -- a real
+# candidate for Orion's own autonomy/drive-economy system to throttle or
+# accelerate later (spend more retries when curiosity/resource pressure
+# favors it, fewer when the turn is already expensive). Named here, not
+# built, so the idea isn't lost when that system exists.
+MAX_FINALIZE_LOOP_RETRIES = 1
+
+# Semantic verb names the reflect prompt is allowed to recommend. Kept in
+# lockstep with the TOOL RECOMMENDATION section of harness_finalize_reflect.j2
+# -- an unrecognized name is logged and dropped, never dispatched.
+FINALIZE_LOOP_TOOL_ALLOWLIST = frozenset({"look_at_camera"})
+
+DEFAULT_GRAMMAR_EVENT_CHANNEL = "orion:grammar:event"
+
 VERDICT_CHANNEL = "orion:harness:verdict:artifact"
 OUTCOME_CHANNEL = "orion:substrate:turn_outcome"
 POST_TURN_CLOSURE_CHANNEL = "orion:substrate:post_turn_closure"
@@ -62,6 +77,11 @@ def _quick_gate_epsilon() -> float:
 
 def _embodiment_d_finalize_enabled() -> bool:
     raw = os.environ.get("EMBODIMENT_D_FINALIZE_ENABLED", "false")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _finalize_tool_loop_enabled() -> bool:
+    raw = os.environ.get("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "false")
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -440,6 +460,162 @@ async def run_finalize_reflection(
     return reflection, False, None
 
 
+async def maybe_run_finalize_tool_retry(
+    *,
+    correlation_id: str,
+    draft_text: str,
+    thought: ThoughtEventV1,
+    substrate_appraisal: SubstrateFinalizeAppraisalV1,
+    reflection: FinalizeReflectionV1,
+    repair_overlay: HarnessRepairOverlayV1,
+    user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None,
+    cortex_client: CortexClientFn,
+    bus: Any = None,
+    grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
+    grammar_publish_fn: Any = None,
+) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
+    """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
+
+    When 5b's reflection is misaligned specifically because a known,
+    already-reviewed tool would fix it, call that tool once, fold its result
+    into grammar_receipts, and re-run 5b so 5c's voice-finalize step (which
+    already reads grammar_receipts/tool_execution) can incorporate it. The
+    caller (run_harness_finalize_chain) loops this up to
+    MAX_FINALIZE_LOOP_RETRIES times; within a single call, a tool already
+    called this turn (motor stage or an earlier retry) is never called again,
+    so a given tool cannot fire twice regardless of what a later reflection
+    verdict says.
+
+    Returns (reflection, grammar_receipts, retried, tool_name, cortex_trace_id).
+    `retried` is True only when a tool call was actually attempted (whether or
+    not it succeeded) -- the caller uses it, not a truthiness check on
+    tool_name, to decide whether to record finalize_loop_retried and whether
+    to keep looping. `cortex_trace_id` is the RETRY's own re-reflection trace
+    id when one completed, else None -- the caller must not keep reusing the
+    pre-retry trace id once a new reflection has actually replaced it, or the
+    verdict molecule (durably persisted) points at the wrong LLM call.
+
+    Fail-open by design, matching every other beat in this module. Before any
+    tool call (flag off, no recommendation, unrecognized tool, already
+    called) or if dispatching the tool itself fails, returns the ORIGINAL
+    reflection/receipts unchanged -- EXCEPT that an unrecognized
+    recommended_tool is scrubbed from the returned reflection (see below), not
+    just skipped at the dispatch site. Once the tool has genuinely run,
+    receipts always reflect that (real evidence, kept even if what follows
+    fails) -- but run_finalize_reflection has its own internal fail-open (it
+    never raises; an LLM/parse failure degrades to reflection_source=
+    "degraded_llm_failure_fallback" internally), so the try/except around it
+    below is defense-in-depth for a path that one already covers, not the
+    normal way a re-reflection failure surfaces. Either way, a broken retry
+    must never block or degrade a turn beyond what it would have been without
+    this loop.
+    """
+    receipts = list(grammar_receipts or [])
+    if not _finalize_tool_loop_enabled():
+        return reflection, receipts, False, None, None
+    if reflection.alignment_verdict != "misaligned":
+        return reflection, receipts, False, None, None
+
+    tool = str(reflection.recommended_tool or "").strip()
+    if not tool:
+        return reflection, receipts, False, None, None
+    if tool not in FINALIZE_LOOP_TOOL_ALLOWLIST:
+        logger.warning(
+            "harness_finalize_tool_loop_unrecognized_tool corr=%s tool=%s",
+            correlation_id,
+            tool,
+        )
+        # Scrub, don't just skip: an unvetted name must not keep flowing into
+        # the verdict molecule (published + persisted to harness_turn_trace)
+        # or 5c's voice-finalize prompt context looking like a legitimate,
+        # actionable recommendation -- the allowlist is enforced on the data,
+        # not only at this one dispatch site.
+        scrubbed = reflection.model_copy(
+            update={"recommended_tool": None, "recommended_tool_reason": None}
+        )
+        return scrubbed, receipts, False, None, None
+    if any(r.tool_name == tool for r in receipts):
+        # Already called this turn -- do not call it again. Re-reflecting on
+        # the same evidence a second time would not change the verdict, and
+        # is exactly the runaway-retry shape the bound exists to prevent.
+        logger.info(
+            "harness_finalize_tool_loop_already_called corr=%s tool=%s",
+            correlation_id,
+            tool,
+        )
+        return reflection, receipts, False, None, None
+
+    try:
+        plan = build_plan_for_verb(tool, mode="brain")
+        plan_request = PlanExecutionRequest(
+            plan=plan,
+            args=PlanExecutionArgs(request_id=correlation_id, trigger_source="orion-harness-governor"),
+            context={"text": user_message, "metadata": {"correlation_id": correlation_id}},
+        )
+        exec_result = await cortex_client(plan_request)
+        summary = extract_cortex_payload_text(exec_result) or "tool executed"
+    except Exception as exc:
+        logger.warning(
+            "harness_finalize_tool_loop_dispatch_failed corr=%s tool=%s err=%s",
+            correlation_id,
+            tool,
+            exc,
+        )
+        return reflection, receipts, False, None, None
+
+    summary_excerpt = _excerpt(summary, max_len=500)
+    try:
+        from orion.harness.grammar_publish import publish_harness_step_grammar
+
+        receipt = await publish_harness_step_grammar(
+            bus,
+            correlation_id=correlation_id,
+            channel=grammar_channel,
+            step_index=len(receipts),
+            tool_name=tool,
+            summary=summary_excerpt,
+            publish_fn=grammar_publish_fn,
+        )
+    except Exception as exc:
+        # Still usable for re-reflection even without a durable grammar event
+        # -- an unpublished receipt (grammar_event_id=None) keeps the retry's
+        # evidence visible to 5c's tool_execution digest without silently
+        # dropping the retry. emit_turn_outcome_molecule already filters None
+        # grammar_event_ids out of grammar_event_ids, so this degrades to
+        # "evidence used, not durably recorded" rather than failing the retry.
+        logger.warning(
+            "harness_finalize_tool_loop_grammar_publish_failed corr=%s tool=%s err=%s",
+            correlation_id,
+            tool,
+            exc,
+        )
+        receipt = GrammarReceiptV1(step_index=len(receipts), tool_name=tool, summary=summary_excerpt)
+    receipts = receipts + [receipt]
+
+    try:
+        new_reflection, _quick_skipped, trace_id = await run_finalize_reflection(
+            correlation_id=correlation_id,
+            draft_text=draft_text,
+            thought=thought,
+            substrate_appraisal=substrate_appraisal,
+            repair_overlay=repair_overlay,
+            user_message=user_message,
+            grammar_receipts=receipts,
+            cortex_client=cortex_client,
+        )
+    except Exception as exc:
+        logger.warning(
+            "harness_finalize_tool_loop_re_reflect_failed corr=%s tool=%s err=%s",
+            correlation_id,
+            tool,
+            exc,
+        )
+        return reflection, receipts, True, tool, None
+
+    return new_reflection, receipts, True, tool, trace_id
+
+
 async def emit_verdict_molecule(
     *,
     correlation_id: str,
@@ -670,6 +846,8 @@ async def emit_turn_outcome_molecule(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     finalize_failed: bool = False,
     failure_reason: str | None = None,
+    finalize_loop_retried: bool = False,
+    finalize_loop_tool: str | None = None,
     channel: str = OUTCOME_CHANNEL,
     publish_fn: PublishFn | None = None,
     bus: Any = None,
@@ -701,6 +879,8 @@ async def emit_turn_outcome_molecule(
         finalize_failed=finalize_failed,
         failure_reason=failure_reason,
         draft_text_excerpt=_excerpt(draft_text) if finalize_failed else None,
+        finalize_loop_retried=finalize_loop_retried,
+        finalize_loop_tool=finalize_loop_tool,
     )
     if publish_fn is not None:
         await publish_fn(molecule, channel=channel)
@@ -857,6 +1037,8 @@ async def emit_finalize_failure_artifacts(
     closure_publish_fn: PublishFn | None = None,
     system_error_channel: str = SYSTEM_ERROR_CHANNEL,
     system_error_publish_fn: PublishFn | None = None,
+    finalize_loop_retried: bool = False,
+    finalize_loop_tool: str | None = None,
 ) -> HarnessFinalizePartialState:
     """Emit degraded 6b outcome + 7 closure + homeostatic system error on 5c failure."""
     outcome_molecule = await emit_turn_outcome_molecule(
@@ -873,6 +1055,8 @@ async def emit_finalize_failure_artifacts(
         failure_reason=_excerpt(error, max_len=500),
         publish_fn=outcome_publish_fn,
         bus=bus,
+        finalize_loop_retried=finalize_loop_retried,
+        finalize_loop_tool=finalize_loop_tool,
     )
     closure = await emit_post_turn_closure(
         correlation_id=correlation_id,
@@ -932,17 +1116,23 @@ async def run_harness_finalize_chain(
     closure_publish_fn: PublishFn | None = None,
     system_error_channel: str = SYSTEM_ERROR_CHANNEL,
     system_error_publish_fn: PublishFn | None = None,
+    grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
+    grammar_publish_fn: Any = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn draft-to-voice finalization.
 
-    Orchestrates finalize beats 5a → 5b → 5c → 6b: substrate appraisal (5a),
-    integrative reflection or its deterministic quick lane (5b), verdict
-    emission, Orion voice finalization (5c), turn-outcome emission (6b), and
-    the optional embodiment intent. The motor draft is not the final Hub
-    response; this chain is what may change it.
+    Orchestrates finalize beats 5a → 5b → 5b-prime → 5c → 6b: substrate
+    appraisal (5a), integrative reflection or its deterministic quick lane
+    (5b), an optional bounded tool-recall retry when 5b is misaligned for a
+    fixable reason (5b-prime, see maybe_run_finalize_tool_retry -- default-off
+    via HARNESS_FINALIZE_TOOL_LOOP_ENABLED), verdict emission, Orion voice
+    finalization (5c), turn-outcome emission (6b), and the optional embodiment
+    intent. The motor draft is not the final Hub response; this chain is what
+    may change it.
 
-    Runtime evidence: substrate appraisal, verdict and outcome molecules,
-    finalize_changed in voice metadata, post-turn closure, and failure
+    Runtime evidence: substrate appraisal, verdict and outcome molecules
+    (outcome carries finalize_loop_retried/finalize_loop_tool when 5b-prime
+    fired), finalize_changed in voice metadata, post-turn closure, and failure
     artifacts when a beat raises. Start here when the motor completed but Hub
     received no final text or a finalize-phase error.
     """
@@ -961,6 +1151,45 @@ async def run_harness_finalize_chain(
         grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
     )
+
+    # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds
+    # how many times this can fire per turn -- currently 1, so today this is
+    # "one bounded retry" in practice, but the bound is real (a for-loop, not
+    # just documentation) so a later change to that constant (e.g. Orion's own
+    # autonomy/drive-economy system throttling it up) actually takes effect
+    # without touching this function. Each iteration can only call a tool not
+    # already in grammar_receipts (enforced inside maybe_run_finalize_tool_retry),
+    # so the same tool is never dispatched twice regardless of the loop bound.
+    finalize_loop_retried = False
+    finalize_loop_tool: str | None = None
+    for _attempt in range(MAX_FINALIZE_LOOP_RETRIES):
+        reflection, grammar_receipts, attempt_retried, attempt_tool, attempt_trace_id = (
+            await maybe_run_finalize_tool_retry(
+                correlation_id=correlation_id,
+                draft_text=draft_text,
+                thought=thought,
+                substrate_appraisal=substrate_appraisal,
+                reflection=reflection,
+                repair_overlay=repair_overlay,
+                user_message=user_message,
+                grammar_receipts=grammar_receipts,
+                cortex_client=cortex_client,
+                bus=bus,
+                grammar_channel=grammar_channel,
+                grammar_publish_fn=grammar_publish_fn,
+            )
+        )
+        if not attempt_retried:
+            break
+        finalize_loop_retried = True
+        finalize_loop_tool = attempt_tool
+        if attempt_trace_id:
+            # Only overwrite once a NEW reflection genuinely replaced the old
+            # one -- a failed re-reflection (attempt_trace_id=None) must not
+            # make the verdict molecule point at the wrong (pre-retry) trace.
+            cortex_trace_id = attempt_trace_id
+        if reflection.alignment_verdict != "misaligned":
+            break
 
     verdict_molecule = await emit_verdict_molecule(
         correlation_id=correlation_id,
@@ -1003,6 +1232,8 @@ async def run_harness_finalize_chain(
             closure_publish_fn=closure_publish_fn,
             system_error_channel=system_error_channel,
             system_error_publish_fn=system_error_publish_fn,
+            finalize_loop_retried=finalize_loop_retried,
+            finalize_loop_tool=finalize_loop_tool,
         )
         raise HarnessFinalizeFailedError(str(exc), partial=partial) from exc
     finalize_changed = bool(voice_meta.get("finalize_changed"))
@@ -1019,6 +1250,8 @@ async def run_harness_finalize_chain(
         grammar_receipts=grammar_receipts,
         publish_fn=outcome_publish_fn,
         bus=bus,
+        finalize_loop_retried=finalize_loop_retried,
+        finalize_loop_tool=finalize_loop_tool,
     )
 
     # (D) deliberate embodiment intent on the turn correlation_id — gated + fail-open.

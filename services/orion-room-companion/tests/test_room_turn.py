@@ -92,22 +92,30 @@ def test_system_prompt_is_passed_on_every_turn_including_resumes(settings):
     )
 
 
-def test_transcript_only_sent_on_first_turn(settings):
-    """After the session exists, Claude has the conversation on its own side.
-    Re-sending it would cost tokens and hand Claude two copies to reconcile."""
+def test_first_turn_seeds_room_context_and_later_turns_do_not_repeat_it(settings):
+    """What must NOT be re-sent on a resumed turn is the ROOM CONTEXT (roster,
+    continuity) -- the CLI holds that. New conversation still must be sent.
+
+    This test previously asserted that the whole transcript is dropped on later
+    turns, which is what produced the real bug: the auto-invite sent Orion's
+    reply alone and Claude never saw a word Juniper said. The caller is
+    responsible for passing only NEW turns; build_turn_prompt renders what it
+    is given.
+    """
     prompts = []
     transcript = [
         RoomTranscriptEntryV1(speaker_id="orion", speaker_name="Oríon", text="I'd like a peer."),
     ]
+    summary = {"room": {"active_participants": ["Juniper", "Oríon"]}}
 
     with patch("app.main.run_room_turn", side_effect=lambda p, **kw: prompts.append(p) or _ok()):
-        run_turn(settings, _request(transcript=transcript))
-        run_turn(settings, _request(transcript=transcript))
+        run_turn(settings, _request(transcript=transcript, social_memory_summary=summary))
+        run_turn(settings, _request(transcript=[], social_memory_summary=summary))
 
     assert "I'd like a peer." in prompts[0]
-    assert "I'd like a peer." not in prompts[1]
-    assert prompts[1] == "Juniper: hey Claude", "later turns carry the speaker and nothing else"
-
+    assert "People in this room" in prompts[0], "first turn seeds the roster"
+    assert "People in this room" not in prompts[1], "roster must not be re-sent"
+    assert prompts[1] == "Juniper: hey Claude"
 
 def test_lost_session_is_forgotten_so_the_room_can_recover(settings):
     """A --resume against a session the CLI no longer has fails identically
@@ -283,3 +291,35 @@ def test_corrupt_state_file_is_quarantined_not_silently_overwritten(settings, tm
 
     remember_session(path, "hub:r", "fresh")
     assert get_session(path, "hub:r") == "fresh"
+
+
+def test_resumed_turn_carries_new_transcript_not_just_the_prompt():
+    """Regression: the auto-invite used to send Orion's reply alone, so Claude
+    watched a one-sided monologue and never saw anything Juniper said. Found by
+    reading Claude's own session transcript, where every user turn was absent
+    and the responses were correspondingly generic."""
+    from orion.schemas.room_claude import RoomTranscriptEntryV1
+
+    prompt = build_turn_prompt(
+        prompt="It might.",
+        invited_by_name="Oríon",
+        transcript=[
+            RoomTranscriptEntryV1(
+                speaker_id="juniper", speaker_name="Juniper", speaker_kind="human",
+                text="does having Claude here change how you think?",
+            )
+        ],
+        social_memory_summary={},
+        first_turn=False,
+    )
+    assert "Juniper: does having Claude here change how you think?" in prompt
+    assert "Oríon: It might." in prompt
+    assert prompt.count("Oríon:") == 1, "speaker prefix must not be doubled"
+
+
+def test_resumed_turn_with_no_new_transcript_is_just_the_speaker_line():
+    prompt = build_turn_prompt(
+        prompt="hey", invited_by_name="Juniper", transcript=[],
+        social_memory_summary={}, first_turn=False,
+    )
+    assert prompt == "Juniper: hey"

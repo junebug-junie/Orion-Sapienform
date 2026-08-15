@@ -108,9 +108,18 @@ def build_turn_prompt(
 ) -> str:
     """The user-role text for one Claude turn."""
     if not first_turn:
-        # The CLI already holds the conversation. Naming the speaker is the
-        # only thing a bare message would otherwise lose in a 3-way room.
-        return f"{invited_by_name}: {prompt}"
+        # The CLI already holds everything Claude has previously been sent, so
+        # this carries only what is NEW since the last invite -- but it must
+        # carry ALL of it.
+        #
+        # Bug this fixes, found by reading Claude's own session transcript: the
+        # auto-invite used to send Orion's reply alone, so Claude watched a
+        # one-sided stream of Orion monologue and never saw a single thing
+        # Juniper said. It could only react to Orion's tone, because tone was
+        # the only signal present -- which read as "generic Claude responses".
+        lines = [f"{e.speaker_name}: {e.text}" for e in transcript if e.text.strip()]
+        lines.append(f"{invited_by_name}: {prompt}")
+        return "\n".join(lines)
 
     sections: list[str] = []
     context = render_room_context(social_memory_summary)

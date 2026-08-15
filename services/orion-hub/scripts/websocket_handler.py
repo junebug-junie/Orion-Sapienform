@@ -1726,13 +1726,35 @@ async def websocket_endpoint(websocket: WebSocket):
                 ):
                     _orion_said = str(ws_payload.get("llm_response") or "").strip()
                     if _orion_said:
+                        # Send the EXCHANGE, not just Orion's half. Sending only
+                        # Orion's reply left Claude watching a one-sided
+                        # monologue with no idea what had been asked -- it could
+                        # only react to Orion's tone, which is what "generic
+                        # Claude responses" actually was. Confirmed by reading
+                        # Claude's own session transcript.
+                        #
+                        # `prompt` is the raw reply: build_turn_prompt adds the
+                        # speaker prefix, and prefixing here too produced
+                        # "Oríon: Oríon: ..." in the live transcript.
+                        _juniper_said = str(transcript or "").strip()
+                        _exchange = (
+                            [{
+                                "speaker_id": "juniper",
+                                "speaker_name": "Juniper",
+                                "speaker_kind": "human",
+                                "text": _juniper_said,
+                            }]
+                            if _juniper_said
+                            else []
+                        )
                         asyncio.create_task(
                             _room_relay.invite(
-                                prompt=f"Or\u00edon: {_orion_said}",
+                                prompt=_orion_said,
                                 invited_by="Or\u00edon",
                                 session_id=session_id,
                                 room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
                                 trigger="auto",
+                                transcript=_exchange,
                             )
                         )
             except Exception:

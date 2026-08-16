@@ -153,6 +153,28 @@ Important routing note:
   and `specialist`.
 - The current Atlas `agent` lane therefore requires `LLM_GATEWAY_ROUTE_TABLE_JSON`.
 
+### Background admission, and who it now protects (ROADMAP A3)
+
+`priority_admission.py` holds `reserved_free_slots` free for foreground callers on a route
+marked `priority: background`, so a background request is refused admission rather than making
+foreground traffic queue behind it.
+
+It was originally wired for AI Town NPC speech. **As of A3 it also gates Orion's own
+cognition**: `orion-cortex-exec` redirects low-priority steps that would route to `quick` onto
+`quick_background` instead — same upstream, same model, different admission. See that service's
+README for which steps count as low priority.
+
+Measured on `atlas-worker-fast-1` over 27.74 h (roadmap A2):
+
+```text
+P(all busy)      4.01%   <- the lane is completely full this often
+P(bg blocked)    4.84%   <- background admission already refused this often
+burstiness       174x MORE blocking than Poisson at the same offered load
+```
+
+That last figure is the important one: the lane is **hit in batches**, not merely busy, so the
+reservation does real work. ~70 minutes a day of background requests wait at current load.
+
 ## Running & Testing
 
 ### Run via Docker

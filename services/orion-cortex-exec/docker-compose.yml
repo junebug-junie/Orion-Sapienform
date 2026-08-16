@@ -117,6 +117,7 @@ services:
 
       CHANNEL_EXEC_REQUEST: ${CHANNEL_EXEC_REQUEST}
       EXEC_LANE: ${EXEC_LANE:-legacy}
+      EXEC_AUTONOMOUS_BACKGROUND_ROUTING: ${EXEC_AUTONOMOUS_BACKGROUND_ROUTING:-true}
       EXEC_CONCURRENT_HANDLERS: ${EXEC_CONCURRENT_HANDLERS:-true}
       ENABLE_PRE_TURN_APPRAISAL_HANDLER: ${ENABLE_PRE_TURN_APPRAISAL_HANDLER:-true}
       CHANNEL_COGNITION_TRACE_PUB: ${CHANNEL_COGNITION_TRACE_PUB:-orion:cognition:trace}
@@ -284,6 +285,7 @@ services:
     ports: !override []
     environment:
       EXEC_LANE: chat
+      EXEC_AUTONOMOUS_BACKGROUND_ROUTING: ${EXEC_AUTONOMOUS_BACKGROUND_ROUTING:-true}
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:chat
       ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 
@@ -294,6 +296,7 @@ services:
     ports: !override []
     environment:
       EXEC_LANE: spark
+      EXEC_AUTONOMOUS_BACKGROUND_ROUTING: ${EXEC_AUTONOMOUS_BACKGROUND_ROUTING:-true}
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:spark
       ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 
@@ -304,6 +307,7 @@ services:
     ports: !override []
     environment:
       EXEC_LANE: background
+      EXEC_AUTONOMOUS_BACKGROUND_ROUTING: ${EXEC_AUTONOMOUS_BACKGROUND_ROUTING:-true}
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:background
       ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 

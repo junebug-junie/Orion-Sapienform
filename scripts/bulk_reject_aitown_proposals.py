@@ -39,7 +39,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from orion.memory.consolidation_gate import ConsolidationGateResult  # noqa: E402
 from orion.memory.crystallization.formation_policy import (  # noqa: E402
-    DEFAULT_AUTO_ACTIVATE_PLATFORMS,
+    DEFAULT_DISCARD_PLATFORMS,
     FormationPolicy,
     resolve_formation_policy,
 )
@@ -73,21 +73,22 @@ def _log(handle, message: str) -> None:
 def _platform_allowlist() -> frozenset[str]:
     """The SAME allowlist the running service uses, not the module default.
 
-    resolve_formation_policy() falls back to DEFAULT_AUTO_ACTIVATE_PLATFORMS when
+    resolve_formation_policy() falls back to DEFAULT_DISCARD_PLATFORMS when
     given nothing, so calling it bare silently ignores
-    MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS. An operator who had set that key to
+    MEMORY_FORMATION_DISCARD_PLATFORMS (renamed 2026-08-16 from
+    MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS). An operator who had set that key to
     the empty string -- documented in .env_example as disabling the gate -- would
     still have had 599 rows mass-rejected by a script whose docstring promised it
     mirrored the runtime predicate.
     """
-    raw = os.environ.get("MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS")
+    raw = os.environ.get("MEMORY_FORMATION_DISCARD_PLATFORMS")
     if raw is None:
-        return DEFAULT_AUTO_ACTIVATE_PLATFORMS
+        return DEFAULT_DISCARD_PLATFORMS
     return frozenset(p.strip() for p in raw.split(",") if p.strip())
 
 
 def _classify(rows, *, platforms: frozenset[str]) -> tuple[list[dict], list[dict]]:
-    """(external, keep) -- external is what the runtime gate would auto-activate."""
+    """(external, keep) -- external is what the runtime gate would discard."""
     grouped: dict[str, dict] = {}
     for cid, window_id, subject, created_at, kind, corr, prompt, response, platform in rows:
         entry = grouped.setdefault(
@@ -123,16 +124,14 @@ def _classify(rows, *, platforms: frozenset[str]) -> tuple[list[dict], list[dict
             ),
         )
         # The row's REAL kind, not whatever dominant_shift="STANCE" reconstructs.
-        # EXTERNAL_PLATFORM_BYPASSABLE_KINDS deliberately excludes decision /
-        # contradiction / attractor / failure_mode, so rebuilding every proposal
-        # as a stance made this purge strictly broader than the gate it claims to
-        # mirror: an ai-town-sourced `contradiction` would have been rejected here
-        # even though the runtime gate would have left it for review.
+        # DISCARD now applies to every kind (2026-08-16), so this no longer
+        # matters for the discard decision itself, but the replay should still
+        # reflect what was actually stored, not the STANCE reconstruction.
         if entry.get("kind"):
             crys.kind = entry["kind"]
         entry["resolved_platform"] = crys.provenance.get("source_platform")
-        policy, _ = resolve_formation_policy(crys, auto_activate_platforms=platforms)
-        (external if policy == FormationPolicy.AUTO_ACTIVATE else keep).append(entry)
+        policy, _ = resolve_formation_policy(crys, discard_platforms=platforms)
+        (external if policy == FormationPolicy.DISCARD else keep).append(entry)
     return external, keep
 
 

@@ -139,6 +139,73 @@ async def test_chat_history_drops_numeric_and_temporal_ner_labels(main_module) -
 
 
 @pytest.mark.asyncio
+async def test_aitown_chat_history_skips_falkor_write_entirely(main_module) -> None:
+    """2026-08-16, Juniper direct: 'I just don't want it on the graphs.' An
+    ai-town chat.history turn (client_meta.external_room.platform == 'aitown',
+    same field orion-memory-consolidation's formation gate reads) must not
+    write any :ChatTurn/:Tag/:Entity/:MENTIONS_ENTITY node or edge -- and must
+    not even reach spaCy NER (checked before EventIn/nlp() run at all)."""
+    envelope = _envelope(
+        main_module,
+        kind="chat.history",
+        payload={
+            "session_id": "sess-aitown",
+            "prompt": "hi Circe",
+            "response": "hello",
+            "client_meta": {"external_room": {"platform": "aitown"}},
+        },
+    )
+    await main_module.handle_triage_event(envelope)
+
+    main_module.meta_tagger.bus.publish.assert_not_awaited()
+    assert main_module._falkor_client.calls == []
+    main_module.nlp.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_aitown_chat_history_json_string_client_meta_also_skips(main_module) -> None:
+    """chat_history_log rows can carry client_meta as a JSON string (asyncpg /
+    raw bus payload form), same as orion-sql-writer's own reader handles."""
+    import json
+
+    envelope = _envelope(
+        main_module,
+        kind="chat.history",
+        payload={
+            "session_id": "sess-aitown-2",
+            "prompt": "hi",
+            "response": "hello",
+            "client_meta": json.dumps({"external_room": {"platform": "aitown"}}),
+        },
+    )
+    await main_module.handle_triage_event(envelope)
+
+    assert main_module._falkor_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_direct_chat_history_with_client_meta_still_writes_to_falkor(main_module) -> None:
+    """A non-external client_meta (or one naming a non-allowlisted platform)
+    must not be caught by the discard gate -- only 'aitown' is excluded by
+    default."""
+    envelope = _envelope(
+        main_module,
+        kind="chat.history",
+        payload={
+            "session_id": "sess-direct",
+            "prompt": "hi Circe",
+            "response": "hello",
+            "client_meta": {"external_room": {"platform": "discord"}},
+        },
+    )
+    await main_module.handle_triage_event(envelope)
+
+    calls = main_module._falkor_client.calls
+    turn_calls = [params for cypher, params in calls if "MERGE (t:ChatTurn" in cypher]
+    assert turn_calls
+
+
+@pytest.mark.asyncio
 async def test_social_turn_stored_also_writes_to_falkor(main_module) -> None:
     """social.turn.stored.v1 (real live traffic from orion-social-memory)
     shares this branch and was never wired to Falkor before this fix --

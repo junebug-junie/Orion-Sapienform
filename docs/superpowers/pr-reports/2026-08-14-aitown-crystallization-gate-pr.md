@@ -431,6 +431,145 @@ curl -fsS localhost:8080/api/memory/crystallizations/proposals | jq '.count'
   Mitigation: documented in the analysis doc; left in place rather than changing
   a scoring function in the same patch as a gate.
 
+## Addendum, 2026-08-16: scope correction — DISCARD, not AUTO_ACTIVATE
+
+Juniper, direct, after the original gate above was live for two days: "ai town
+is on atlas now. I traveeld for 11 days so it was down. then i turned it off
+because it was polluting the chat crystalizations. I do want it stored in
+wehver sql table,, i just dont want it on the graphs and crystalizations and
+such."
+
+Two things resolved by that message:
+
+1. **Embodiment being down is intentional**, not the outage this report's
+   earlier open question worried about — Juniper turned it off herself. Left
+   `AITOWN_CONVEX_URL` untouched; did not attempt to "fix" connectivity.
+2. **The original gate's AUTO_ACTIVATE outcome undershot the ask.** It still
+   formed a full crystallization, still activated it, still projected it —
+   just skipped the human queue. Juniper wants ai-town in `chat_history_log`
+   (SQL) and nowhere else: not the crystallization table, not the FalkorDB
+   `orion_recall` graph.
+
+### What changed
+
+- `FormationPolicy.AUTO_ACTIVATE` (for external platforms) renamed to
+  `FormationPolicy.DISCARD` and widened from stance-only
+  (`EXTERNAL_PLATFORM_BYPASSABLE_KINDS`, retired) to every kind. This closes a
+  real live leak the rename surfaced: semantic/episode/open_loop/procedure
+  crystallizations were auto-activating for ai-town unconditionally
+  (platform-agnostic) the whole time — the old gate only ever touched the
+  GATED_KINDS side.
+- Checked first in `resolve_formation_policy`, ahead of duplicate/intimate/
+  identity — DISCARD is strictly more restrictive than every other outcome
+  (nothing persisted at all), so this can only prevent a write, never leak
+  one the old ordering would have blocked. Closes a real hazard: the old
+  ordering let an ai-town window that Jaccard-matched a real crystallization
+  reinforce it with NPC-dialogue evidence.
+- `intake_pipeline.process_consolidation_crystallization()` short-circuits
+  before any DB read for a discard-platform window — no `insert_crystallization`,
+  no `list_crystallizations`/duplicate-detection query, no projection.
+- **New: `orion-meta-tags` now excludes ai-town from the FalkorDB `orion_recall`
+  graph too.** `RECALL_FALKOR_DISCARD_PLATFORMS` (default `aitown`) checked
+  against `client_meta.external_room.platform` before spaCy NLP even runs, for
+  `chat.history` only (`social.turn.stored.v1` — the Hub's own social room —
+  untouched). No `:ChatTurn`/`:Tag`/`:Entity`/`:MENTIONS_ENTITY` node or edge.
+- `MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS` renamed to
+  `MEMORY_FORMATION_DISCARD_PLATFORMS` end-to-end (settings, `.env_example`,
+  `docker-compose.yml`, both scripts) — the old name would now describe the
+  opposite of what it does.
+- `chat_history_log` (via `orion-sql-writer`) is untouched by any of this —
+  raw ai-town turns keep landing there exactly as before.
+
+### Review findings fixed
+
+- Finding: both services' `docker-compose.yml` still wired the pre-rename/
+  missing env var name (`MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS` for
+  memory-consolidation; `RECALL_FALKOR_DISCARD_PLATFORMS` never added at all
+  for meta-tags) — masked only because the Python-level default happened to
+  match, so the documented "empty string disables the gate" escape hatch was
+  silently broken.
+  - Fix: updated both `environment:` blocks.
+  - Evidence: `scripts/safe_docker_build.sh orion-memory-consolidation config`
+    and `... orion-meta-tags config` both resolve the new keys correctly
+    (`MEMORY_FORMATION_DISCARD_PLATFORMS: aitown`,
+    `RECALL_FALKOR_DISCARD_PLATFORMS: aitown`); confirmed again with
+    `docker exec ... env` after redeploy.
+
+### Tests run
+
+```text
+services/orion-memory-consolidation/tests -q   106 passed
+services/orion-meta-tags/tests -q               29 passed
+tests/test_formation_policy_auto_vs_gated.py
+tests/test_encode_reinforce_not_duplicate.py
+tests/test_aitown_gate_smoke_predicate.py -q    14 passed
+```
+
+New/changed coverage: `test_all_gated_kinds_are_discarded_for_an_allowlisted_platform`,
+`test_all_auto_active_kinds_are_discarded_for_an_allowlisted_platform` (the live
+leak this closes), `test_platform_gate_wins_over_duplicate`,
+`test_intimate_aitown_window_is_still_discarded`,
+`test_identity_scoped_aitown_window_is_still_discarded`,
+`test_executor_rejects_aitown_stance_now_discarded`,
+`test_executor_rejects_aitown_semantic_now_discarded`,
+`test_consolidate_window_discarded_external_platform_skips_not_proposes`,
+`test_aitown_chat_history_skips_falkor_write_entirely`,
+`test_aitown_chat_history_json_string_client_meta_also_skips`,
+`test_direct_chat_history_with_client_meta_still_writes_to_falkor`.
+
+### Docker/build/smoke checks
+
+```text
+scripts/safe_docker_build.sh orion-memory-consolidation build   OK
+scripts/safe_docker_build.sh orion-meta-tags build              OK
+scripts/safe_docker_build.sh orion-memory-consolidation up -d   started
+scripts/safe_docker_build.sh orion-meta-tags up -d              started, /health OK
+scripts/smoke_aitown_crystallization_gate.py                    exit 0
+  live proposed crystallizations: 28, would DISCARD: 0, would STAY QUEUED: 28
+  (queue is 100% real conversations right now -- nothing to discard)
+scripts/bulk_reject_aitown_proposals.py (dry run)                external=0, nothing to do
+```
+
+### Still UNVERIFIED, and will stay that way until ai-town is back on
+
+Embodiment is off by Juniper's own choice, so there is currently zero live
+ai-town traffic. Every new/changed check above proves the code path is
+correct in isolation (unit + docker config + a live replay against the real,
+currently-all-direct queue). None of it is evidence the DISCARD path has
+actually fired against a real ai-town window post-deploy — that can only be
+shown once ai-town produces a turn again. Re-run
+`scripts/smoke_aitown_crystallization_gate.py` after that happens and check
+`service_written_platforms` for a non-null `aitown` entry that never made it
+into `proposed`.
+
+### Known, not fixed: historical graph pollution
+
+FalkorDB's `orion_recall` graph already holds `:ChatTurn`/`:Entity`/
+`:MENTIONS_ENTITY` nodes and edges from the ~1058 ai-town-consolidated windows
+written before this gate existed. This patch stops new pollution; it does not
+retroactively clean the old kind. Not attempted here — `:Entity` nodes are
+shared (an NPC name colliding with a real one is plausible, unverified) and a
+Cypher `DETACH DELETE` across ~1058 windows' worth of nodes needs its own
+scoped investigation (which nodes are ai-town-exclusive vs. shared) and
+Juniper's explicit go-ahead per the backfill protocol, not a decision made
+silently inside this patch.
+
+## Concerns
+
+- Severity: **low**
+  Concern: FalkorDB graph pollution predating this fix is not cleaned up (see
+  above).
+  Mitigation: documented; needs a scoped follow-up with Juniper's sign-off.
+- Severity: **low**
+  Concern: `resolve_formation_policy`'s `duplicate_id` REINFORCE_EXISTING path
+  is now unreachable for any discard-platform crystallization (discard wins
+  first). This is the intended fix, not a regression, but it means dedup
+  against a genuinely-real crystallization that happens to also be tagged
+  discard-platform (shouldn't be possible today, since only the pure-aitown
+  producer sets `source_platform`) would silently discard instead of
+  reinforcing. Recorded as a known edge case, not exercised by any live
+  producer today.
+
 ## PR link
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/1678

@@ -169,17 +169,27 @@ class ConsolidationSuggestRunner:
                     settings=settings,
                     project_config=_projection_config_from_settings(settings),
                 )
-                await self._window_store.mark_crystallization_proposed(
-                    window_id,
-                    crystallization_id=cid,
-                )
+                if outcome == "discarded_external_platform":
+                    # No crystallization was inserted -- cid is None. Close the
+                    # window the same way a gate.action=="skip" window closes
+                    # above: mark_consolidated_skipped, not
+                    # mark_crystallization_proposed (which requires a real id).
+                    await self._window_store.mark_consolidated_skipped(
+                        window_id,
+                        reasons=[f"formation_outcome:{outcome}"],
+                    )
+                else:
+                    await self._window_store.mark_crystallization_proposed(
+                        window_id,
+                        crystallization_id=cid,
+                    )
                 for corr in corr_ids:
                     await publish_spark_meta_patch(
                         bus,
                         corr,
                         {
                             "consolidation_gate": {
-                                "action": "propose",
+                                "action": "discard" if outcome == "discarded_external_platform" else "propose",
                                 "crystallization_id": cid,
                                 "formation_outcome": outcome,
                             }

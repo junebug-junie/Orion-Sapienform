@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     # for this data, so the safe default has to be True. See
     # services/orion-meta-tags/README.md.
     RECALL_FALKOR_TAG_ENTITY_ENABLED: bool = Field(default=True, env="RECALL_FALKOR_TAG_ENTITY_ENABLED")
+    # Comma-separated external platforms (chat_history_log client_meta.external_room
+    # .platform, same field orion-memory-consolidation's formation gate reads) whose
+    # chat.history turns skip this Falkor write entirely -- no :ChatTurn, :Tag,
+    # :Entity, or :MENTIONS_ENTITY node/edge. 2026-08-16, Juniper direct: "I just
+    # don't want it on the graphs." Only chat.history is checked -- this does not
+    # apply to social.turn.stored.v1 (the Hub's own social room, an unrelated
+    # platform). Empty string disables the exclusion.
+    RECALL_FALKOR_DISCARD_PLATFORMS: str = Field(default="aitown", env="RECALL_FALKOR_DISCARD_PLATFORMS")
+
+    @property
+    def recall_falkor_discard_platforms(self) -> frozenset:
+        raw = self.RECALL_FALKOR_DISCARD_PLATFORMS or ""
+        return frozenset(p.strip() for p in raw.split(",") if p.strip())
     # Dark by default: collapse-triage has no Falkor equivalent yet (unlike
     # chat/social turns) and Fuseki remains its only persistence until this
     # is verified live -- see falkor_recall_writer.py's module docstring.

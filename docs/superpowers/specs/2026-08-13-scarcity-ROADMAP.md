@@ -233,6 +233,52 @@ to a request?"** Note the kill gate can still fire on that narrower question: a 
 defers only harness or arena work, and never Orion's, is a ceiling Orion does not personally
 meet — which would be a genuine finding about A5, not a measurement failure.
 
+#### A4 RESULT, 2026-08-15/16: zero deferrals, for two reasons, neither of them "the lane is fine"
+
+**1. A deferral left no trace at all.** `wait_for_slack` returned True the instant slack
+appeared -- however long it had blocked -- and logged only on TIMEOUT. The one event this track
+exists to observe was computed and discarded, so the gate (">=1 admission-wait event ... **with
+its duration**") could never pass regardless of traffic. 24 h of gateway logs contained **zero**
+`[LLM-GW background]` lines. Fixed: every admission decision now logs `waited`, `polls`,
+`reserved` and `outcome` (admitted / unchecked / timeout_forwarded), on both the async and sync
+paths.
+
+**2. Orion's autonomous cognition is not in the lane this track instrumented.** Measured over
+12 h on the live executors:
+
+```text
+50 / 50  of Orion's own decisions:  route=chat  lane_priority=low   (circe)
+ 0       to quick or quick_background                               (atlas)
+73       route decisions total, autonomous_backgrounded = 0
+ 0       requests reached quick_background at the gateway
+```
+
+`lane_priority=low` confirms these ARE Orion-initiated. They carry an explicit `override=chat`,
+so A3's redirect correctly declines to touch them -- **A3 is correct code on a road nothing
+drives down.** The dominant producer is `journal.compose` (130 in 12 h) from
+`orion/journaler/worker.py`, a path distinct from the `ACTIONS_JOURNAL_LLM_ROUTE` setting
+changed during A3.
+
+**The reframing.** Compare where the contention is against where Orion actually is:
+
+| lane | slots | P(all busy) | Orion's share |
+| --- | --- | --- | --- |
+| `chat` @ circe-worker-1 | **1** | **8.10%** | **100% of autonomous work** |
+| `quick` @ atlas-worker-fast-1 | 4 | 4.01% | none |
+
+Track A has been instrumenting atlas's 4-slot lane. Orion contends entirely on circe's
+**single-slot** lane, which is full **twice as often**. The ceiling is real and Orion meets it
+daily -- just not where A1-A3 were pointed.
+
+**This does not invalidate A1-A3.** The instrument, the statistic and the yielding mechanism are
+all correct and all reusable; they are aimed at the wrong lane. Retargeting is config and
+measurement, not a rebuild.
+
+**Open, and not decided here:** whether `journal.compose` overriding to `chat` is deliberate
+(circe's context window suits fat prompts) or inherited. That answer decides whether A5 follows
+Orion to circe, or whether Orion's work should move to atlas and A3 then starts working as
+designed. Do not pick one without checking why that override exists.
+
 ### A5 — Make the deferral perceptible · *3 commits*
 A deferral is currently invisible to Orion. Turn it into a signal Orion can hold: *I wanted to
 think and had to wait, this long, while this ran instead.*

@@ -77,6 +77,18 @@ async def _free_slot_count(base_url: str, *, timeout_sec: float = 5.0) -> Option
     return sum(1 for s in slots if isinstance(s, dict) and not s.get("is_processing"))
 
 
+# ROADMAP A4. A deferral is the arc's whole destination -- "I wanted to think and had to wait,
+# this long, while that ran instead" -- and until now it left NO TRACE. `wait_for_slack`
+# returned True the instant slack appeared, however long it had blocked, and logged only on
+# TIMEOUT. So the one event Track A exists to observe was computed and discarded, and A4's gate
+# (">=1 admission-wait event ... with its duration") could never pass regardless of traffic.
+#
+# Every wait is now recorded with its duration and how many polls it took. `waited=0.0s` on the
+# fast path is deliberate: it distinguishes "admitted immediately" from "never checked", which
+# are different facts and were previously the same silence.
+_DEFERRAL_LOG = "[LLM-GW background] admission waited=%.3fs polls=%d reserved=%d url=%s outcome=%s"
+
+
 async def wait_for_slack(
     target: RouteTarget,
     *,
@@ -92,18 +104,23 @@ async def wait_for_slack(
     """
     reserved = target.reserved_free_slots or _DEFAULT_RESERVED_FREE_SLOTS
     interval = max(poll_interval_sec, _MIN_POLL_INTERVAL_SEC)
-    deadline = time.monotonic() + max(0.0, max_wait_sec)
+    started = time.monotonic()
+    deadline = started + max(0.0, max_wait_sec)
+    polls = 0
     while True:
         free = await _free_slot_count(target.url)
+        polls += 1
         if free is None:
+            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
+                        target.url, "unchecked")
             return False
         if free >= reserved:
+            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
+                        target.url, "admitted")
             return True
         if time.monotonic() >= deadline:
-            logger.warning(
-                "[LLM-GW background] timed out after %.1fs waiting for %d free slot(s) on %s -- forwarding anyway",
-                max_wait_sec, reserved, target.url,
-            )
+            logger.warning(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
+                           target.url, "timeout_forwarded")
             return False
         await asyncio.sleep(interval)
 
@@ -136,18 +153,23 @@ def wait_for_slack_sync(
     """
     reserved = target.reserved_free_slots or _DEFAULT_RESERVED_FREE_SLOTS
     interval = max(poll_interval_sec, _MIN_POLL_INTERVAL_SEC)
-    deadline = time.monotonic() + max(0.0, max_wait_sec)
+    started = time.monotonic()
+    deadline = started + max(0.0, max_wait_sec)
+    polls = 0
     while True:
         free = _free_slot_count_sync(target.url)
+        polls += 1
         if free is None:
+            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
+                        target.url, "unchecked")
             return False
         if free >= reserved:
+            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
+                        target.url, "admitted")
             return True
         if time.monotonic() >= deadline:
-            logger.warning(
-                "[LLM-GW background] timed out after %.1fs waiting for %d free slot(s) on %s -- forwarding anyway",
-                max_wait_sec, reserved, target.url,
-            )
+            logger.warning(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
+                           target.url, "timeout_forwarded")
             return False
         time.sleep(interval)
 

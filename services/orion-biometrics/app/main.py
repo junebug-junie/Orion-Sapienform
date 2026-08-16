@@ -565,6 +565,56 @@ def raw_recent(limit: int = Query(10, ge=1, le=100), node: Optional[str] = Query
     return {"items": items, "count": len(items)}
 
 
+def _power_telemetry_health() -> Dict[str, Any]:
+    """Is this node's power telemetry wired, and if not, why not.
+
+    Both pollers are OPTIONAL and both go quiet by design -- a node with no BMC, or no PDU
+    outlets, reports nothing rather than a fake zero. That is the right behaviour for the DATA
+    and it is exactly what makes the INSTRUMENT undiagnosable: "configured and working",
+    "configured but unreachable", and "running an image that predates the feature" all look
+    identical from outside the container.
+
+    That cost was paid twice for real. circe's BMC has been unreachable long enough that nobody
+    knows when it broke. And the day the PDU poller shipped, answering "does atlas have it
+    configured, or is it failing, or is it on an older image?" took a round trip of
+    `docker exec` on a remote host, because nothing exposed the answer.
+
+    `absent` remains the honest reading of a measurement. It is not an acceptable answer to
+    "is the instrument installed and healthy" -- that is a different question and it needs its
+    own surface. One `curl /health` from anywhere now answers it.
+    """
+    ilo_detail = _ilo_poller.details()
+    pdu_detail = _pdu_poller.details()
+
+    def _state(enabled: bool, detail: Dict[str, Any], value_key: str) -> Dict[str, Any]:
+        if not enabled:
+            # Not a fault. Most nodes legitimately have no BMC or no metered outlets.
+            return {"configured": False, "healthy": None, "reason": "not_configured"}
+        error = detail.get(f"{value_key}_error") or detail.get("error")
+        if error:
+            return {"configured": True, "healthy": False, "reason": str(error)}
+        has_value = any(k.endswith("_watts") and detail.get(k) is not None for k in detail)
+        return {
+            "configured": True,
+            # None, not False, before the first poll completes: "has not reported yet" is not
+            # the same as "is broken", and a health check that conflates them cries wolf on
+            # every restart.
+            "healthy": True if has_value else None,
+            "reason": None if has_value else "no_reading_yet",
+        }
+
+    return {
+        "ilo": _state(_ilo_poller.enabled, ilo_detail, "ilo"),
+        "pdu": {
+            **_state(_pdu_poller.enabled, pdu_detail, "pdu"),
+            # Echoed so a misconfigured outlet map is visible without shelling into the host --
+            # the map is physical cabling that nothing can verify automatically.
+            "outlets": parse_outlets(settings.PDU_OUTLETS),
+            "host": settings.PDU_HOST or None,
+        },
+    }
+
+
 @app.get("/health")
 def health():
     return {
@@ -582,4 +632,5 @@ def health():
         "bus_url": settings.ORION_BUS_URL,
         "node": settings.NODE_NAME,
         "mode": settings.BIOMETRICS_MODE,
+        "power_telemetry": _power_telemetry_health(),
     }

@@ -345,3 +345,64 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   listeners. The real situation is the opposite of what that entry implied: hub mode feeds two
   starved consumers and the spark emission is inert. The diluted-strain concern only becomes
   live if something ever subscribes to spark:signal.
+
+---
+
+## TASK: notify when a node's telemetry goes silent (Juniper, 2026-08-15)
+
+**Ask:** "get a notification when those go down so it doesn't fail silently."
+
+Prompted by the PDU work — circe and atlas now carry power telemetry that nothing watches, so a
+node dropping out costs a measurement with no signal that it happened.
+
+### What already exists, and what is actually missing
+
+Half of this is built. `BiometricsClusterV1.nodes_absent` (PR #1674) already names every node in
+`config/biometrics/node_catalog.yaml` that did not contribute to the current cluster, published
+every `CLUSTER_PUBLISH_INTERVAL` (15 s) on `orion:biometrics:cluster`. **The detection exists;
+the notification does not.** Nothing subscribes and decides anything.
+
+There is also an `orion-notify` service already handling outbound notification, with a known
+observability gap of its own (app logs invisible, `notify_attempts` empty) — worth checking
+before assuming it is a reliable delivery path.
+
+### The design problem, which is the whole reason this is a task and not a one-liner
+
+**`nodes_absent` deliberately carries no verdict.** It states who is absent and nothing more,
+because whether an absence is a fault is per-node policy:
+
+- **circe is run intermittently to save cost.** Its silence is normal and expected. Alerting on
+  it would produce noise on every deliberate shutdown, and a noisy alert is one that gets
+  ignored, which is worse than no alert.
+- **athena going silent is an outage** — it is the hub, the bus, postgres, the perception path.
+- **`prometheus` has been in `nodes_absent` continuously** and nobody knows what it is (see
+  entry above). A naive alert would fire on it forever from the first minute.
+
+`expected_online` in the node catalog **cannot** settle this — it is already committed to a
+different question (whether `pressure_organ.py` suppresses a node's strain as expected
+staleness), and it was deliberately flipped to `true` for circe on 2026-07-18 for that reason.
+Overloading it would re-break that fix. This needs its own per-node policy, not a reused flag.
+
+### Traps to design around, all with live precedent in this repo
+
+1. **Hysteresis, or it re-alerts forever.** See
+   `feedback_trailing_window_thresholds_need_hysteresis`. A node flapping in and out of
+   `nodes_absent` at 15 s cadence must not produce an alert per tick.
+2. **Absence must read as unknown, not as zero or as fine.** The `ups_nis_client.py:76` bug is
+   the cautionary case: `on_battery = "ONBATT" in status_str` means `COMMLOST` reads as
+   "not on battery" — a lost connection looks identical to healthy.
+3. **Deliberate shutdown vs failure must be distinguishable**, or circe makes the alert
+   worthless. Options: a per-node policy field, a maintenance/quiet flag Juniper sets before
+   powering circe down, or alerting only on nodes marked always-on.
+4. **The watcher must not share circe's fate.** If it runs where the failure is, it cannot
+   report the failure. athena is the natural host, which then leaves athena's own silence
+   unwatched — an honest limit to state rather than paper over.
+
+### Smallest useful slice
+
+A consumer of `orion:biometrics:cluster` that tracks per-node absence duration, and notifies
+once when a node marked always-on has been absent beyond a threshold, with a single recovery
+notice when it returns. No new detection, no new schema — `nodes_absent` already carries
+everything needed.
+
+**Not started. Requires the per-node policy decision above before implementation.**

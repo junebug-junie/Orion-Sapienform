@@ -230,43 +230,42 @@ independent `strain`/`gpu` hints. Both signatures match repeated
 re-saturation from add-mode duplicate deltas, not real, independent CPU/GPU
 utilization, so `strain`/`gpu` were switched to `mode="replace"` too.
 
-### When a node cannot reach the PDU: hub-side proxy polling
+### Where each node's power actually comes from
 
-circe's **network card is dead**. It reaches the bus over Tailscale and has no LAN path to the
-PDU, so its own poller fails every 65 s:
+Three instruments, and which one answers for a node depends on what that node has:
+
+| node | `chassis_watts` from | also reports | why |
+| :--- | :--- | :--- | :--- |
+| athena | **iLO** (RedFish, BMC) | `cpu_watts_total` (RAPL) | has a BMC, not on the metered PDU |
+| atlas | **iLO** | `pdu_watts`, `cpu_watts_total` | has both — the PDU cross-checks the BMC |
+| circe | **PDU** (SNMP, per-outlet) | `pdu_watts` | **no reachable BMC** — the PDU is the only source |
+
+**`chassis_watts` holds exactly one value per node.** iLO wins wherever it exists; the PDU fills
+in only when the BMC produced nothing. That ordering is deliberate and tested — the two disagree
+instantaneously whenever load is moving (iLO polls on a 60 s cadence, the SNMP read is
+instantaneous; measured 737 W vs 484 W on atlas mid-burst), so without fixed precedence whichever
+wrote last would win at random.
+
+**Never sum `chassis_watts` with `pdu_watts`.** On atlas they are two meters on the same watts.
+Likewise `cpu_watts_total` and `gpu_watts_total` are *contained within* `chassis_watts`, not
+additional to it — see the containment block in `orion/telemetry/biometrics_pipeline.py`.
+
+**Multi-PSU machines span outlets.** A node's PDU draw is the SUM of its outlets, and the
+outlet→node map is physical cabling that SNMP cannot report (the device's outlet names are
+generic and not editable on this firmware). It lives in `PDU_OUTLETS`, per node, and **re-cabling
+means editing it — nothing detects a change.** Traced by hand 2026-08-15:
 
 ```text
-orion.biometrics.pdu - WARNING - pdu_poll_failed error=5 second timeout exceeded on UDP transport.
+circe   PDU_OUTLETS=19,25,31   3 PSUs   ~419 W
+atlas   PDU_OUTLETS=34,35      2 PSUs   ~266 W
+athena  PDU_OUTLETS=           not on this PDU; empty disables the poller
 ```
 
-athena can reach the PDU, so it reads circe's outlets **on circe's behalf**:
+A mismatch is detectable: on atlas, `pdu_watts` and `chassis_watts` should agree at steady state.
+They read 291 W and 291 W when this was validated.
 
-```bash
-# athena only
-PDU_HOST=192.168.1.39
-PDU_OUTLETS=                                        # empty -> athena does NOT self-poll
-PDU_PROXY_OUTLETS={"circe": [19,25,31], "atlas": [34,35]}
-```
-
-`PDU_HOST` means *"the PDU this node can reach"* — set it on any node that can talk to the PDU,
-including a hub that only proxies. **Empty `PDU_OUTLETS` is what disables self-polling**, not an
-empty `PDU_HOST`.
-
-**Two rules keep this honest:**
-
-1. **A proxy only fills a gap.** A node's own measurement always wins. Live: atlas keeps its iLO
-   `chassis_watts` and gains only `pdu_watts` from the proxy, while circe (no BMC, no LAN) gets
-   both.
-2. **Provenance travels with the value.** The cluster carries `measurements_proxied`, e.g.
-   `{"circe": ["chassis_watts","pdu_watts"], "atlas": ["pdu_watts"]}`. Without it, a future
-   reader finding circe with a chassis figure would reasonably conclude its BMC came back.
-
-Proxying is also **strictly better than self-polling for circe**: the outlets report its draw
-whether circe is powered or not, so a shut-down circe reads a true ~0 W instead of vanishing
-into `measurements_missing`.
-
-A proxy that is itself failing contributes nothing — the node stays in `measurements_missing`,
-so the fix for silent failure does not become a new way to fail silently.
+**The PDU is read-only, deliberately.** The device is outlet-*switched* — a write community can
+power off circe and atlas. Only SNMP GETs are ever issued.
 
 ## Running & Testing
 

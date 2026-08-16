@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from orion.attention.tension.liveness import classify_producer_liveness  # noqa: E402
 from orion.field.credit_integrity import (  # noqa: E402
     SILENT,
+    _samples_for,
     analyse_credit_integrity,
     load_credited_dimensions,
 )
@@ -61,6 +62,55 @@ def test_policy_dimensions_map_to_real_channels():
     # watch is blind to it.
     unmapped = [d for d, chans in dims.items() if not chans]
     assert not unmapped, unmapped
+
+
+def _social_state(i: int, *, repair_present: bool, conv_backed: bool) -> FieldStateV1:
+    """`social_pressure` is fed by TWO channels (repair_pressure,
+    conversation_load) -- not credited today, but real in
+    CHANNEL_DIMENSION_MAP, and the only multi-channel case in it.
+    `repair_present=False` makes repair_pressure absent from the merge
+    entirely (nobody wrote it this tick at all), not merely unbacked."""
+    node_vec: dict[str, float] = {"availability": 1.0}
+    if conv_backed:
+        node_vec["conversation_load"] = 0.4
+    cap_vec: dict[str, float] = {}
+    if repair_present:
+        # Capability-sourced with no capability_provenance entry -> falls
+        # back to naming the capability itself, i.e. unbacked.
+        cap_vec["repair_pressure"] = 0.3
+    return FieldStateV1.model_validate(
+        {
+            "schema_version": "field.state.v1",
+            "generated_at": (T0 + timedelta(seconds=i * TICK)).isoformat(),
+            "tick_id": f"t{i}",
+            "node_vectors": {"node:athena": node_vec},
+            "capability_vectors": ({"capability:x": cap_vec} if cap_vec else {}),
+            "capability_provenance": {},
+            "edges": [],
+            "recent_perturbations": [],
+        }
+    )
+
+
+def test_totally_absent_contributor_is_not_read_as_backed():
+    """The vacuous-truth trap: filtering `channels` down to only those
+    present in `merged` before calling `all()` means a channel missing from
+    the merge ENTIRELY -- worse than unbacked, nobody wrote it this tick --
+    silently drops out of the check instead of failing it. Not reachable via
+    today's policy (every credited dimension is single-channel, so
+    `dim in dims` already implies that channel is in `merged`), but
+    `social_pressure`'s two channels are the shape that would trip it the
+    moment a multi-channel dimension is credited."""
+    dims = {"social_pressure": ["repair_pressure", "conversation_load"]}
+    states = [_social_state(0, repair_present=False, conv_backed=True)]
+    samples = _samples_for(states, dims)
+    assert samples["social_pressure"][0].provenance_backed is False
+
+    # Contrast: repair_pressure present but genuinely unbacked must ALSO fail
+    # -- confirms the fix didn't just flip everything to False.
+    states2 = [_social_state(0, repair_present=True, conv_backed=True)]
+    samples2 = _samples_for(states2, dims)
+    assert samples2["social_pressure"][0].provenance_backed is False
 
 
 def test_unmappable_dimension_is_a_finding_not_silence():

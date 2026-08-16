@@ -3983,9 +3983,20 @@ async def call_step_services(
                 else:
                     # Default lane mapping:
                     # - harness_finalize_reflect / orion_voice_finalize: DEEP lane
-                    #   ("chat" / Circe) — fat prompts exceed quick/fast ctx (400);
-                    #   runs after FCC motor on the same turn (sequential; one Hub
-                    #   chat at a time, so chat-lane contention is not a risk).
+                    #   ("chat" / Circe) — fat prompts exceed quick/fast ctx (400).
+                    #   NOTE: this llm_route value is vestigial for both verbs today.
+                    #   Both set an explicit top-level llm_lane in their own context
+                    #   builder (orion/harness/finalize.py's build_finalize_reflect_context
+                    #   -> "agent", build_voice_finalize_context -> "background"), and
+                    #   the gateway's resolve_llm_lane_route ignores body_route entirely
+                    #   for both the "background" and "agent" llm_lane branches -- so
+                    #   this "chat" value never actually reaches the wire for either
+                    #   verb. Do not read "chat-lane contention is not a risk" as true
+                    #   of harness_finalize_reflect anymore: it was, until a live
+                    #   incident 2026-08-16 (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd)
+                    #   showed the two verbs actually contend with EACH OTHER on
+                    #   `background`/atlas-worker-2 when the governor abandons a timed-
+                    #   out RPC without cancelling it -- see finalize.py for the fix.
                     # - chat_general stance brief: FAST lane ("quick")
                     # - chat_general final response: DEEP lane ("chat")
                     # - chat_quick single-pass: FAST lane ("quick")

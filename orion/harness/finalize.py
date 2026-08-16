@@ -333,11 +333,21 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
-        # Route the 5b integrative reflection off the saturated `chat` worker onto the
-        # background/metacog lane (unsaturated, long read timeout). This is an internal
-        # reflection pass (not user-visible speech), so the lighter lane is acceptable.
-        # allow_chat_fallback keeps resilience if the metacog route is ever absent.
-        "llm_lane": "background",
+        # Was `background` until confirmed wrong live 2026-08-16
+        # (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_voice_finalize
+        # call also runs on `background`/atlas-worker-2 and can occupy it for 90s+,
+        # starving this call's LLMGatewayService RPC entirely (no reply within
+        # cortex-exec's own 300s internal timeout). `chat` was considered and
+        # rejected: it maps to circe-worker-1, the same worker chat_general's own
+        # live draft generation uses, with no admission/concurrency throttling on
+        # that route -- would trade the 5b-vs-5c collision for 5b-vs-live-user-chat
+        # contention. `agent` (circe-worker-agent-1, verified live) is currently
+        # unused by any other verb, isolating this call from both. See
+        # test_finalize_reflect_lane.py and
+        # test_llm_lane_propagation.py::test_finalize_reflect_ctx_llm_lane_resolves_agent
+        # for the fuller incident writeup. 5c itself is UNCHANGED (still
+        # background) -- out of scope for this fix.
+        "llm_lane": "agent",
         "allow_chat_fallback": True,
         "metadata": {
             "correlation_id": correlation_id,

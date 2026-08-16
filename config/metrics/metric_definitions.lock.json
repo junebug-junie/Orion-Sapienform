@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 595,
+  "metric_count": 596,
   "_last_change": {
-    "base": "merge base 7fe1530db (origin/main)",
-    "change_count": 0,
+    "base": "merge base a2974defd (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://inner_state/orion-field-digester/field_state.v1#tension_deviation_pressure"
     ]
   },
   "definitions": {
@@ -3347,6 +3347,14 @@
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_zscore": {
+      "schema_id": "FieldStateV1",
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#tension_deviation_pressure": {
       "schema_id": "FieldStateV1",
       "upstream": [
         "metric://inner_state/orion-field-digester/field_state.v1"

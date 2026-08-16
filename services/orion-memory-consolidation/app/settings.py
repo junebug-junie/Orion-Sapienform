@@ -78,16 +78,21 @@ class Settings(BaseSettings):
         default=0.4, alias="MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO"
     )
     # Comma-separated external platforms (chat_history_log client_meta.external_room
-    # .platform) whose windows skip the governor queue and auto-activate directly.
-    # Orion still forms and projects the memory; Juniper is just never asked to
-    # approve it turn-by-turn. Empty string disables the gate entirely.
-    MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS: str = Field(
-        default="aitown", alias="MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS"
+    # .platform) whose windows never become a crystallization at all -- no governor
+    # queue, no auto-activation, no graph/vector projection. The raw chat turns are
+    # unaffected (orion-sql-writer already wrote them to chat_history_log
+    # independently of this pipeline). Empty string disables the gate entirely.
+    # Renamed 2026-08-16 from MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS: that name
+    # described the first cut of this gate, which still formed and projected the
+    # memory, just skipped review. Juniper's direct correction ("I just don't want
+    # it on the graphs and crystalizations") made that name inaccurate.
+    MEMORY_FORMATION_DISCARD_PLATFORMS: str = Field(
+        default="aitown", alias="MEMORY_FORMATION_DISCARD_PLATFORMS"
     )
 
     @property
-    def auto_activate_platforms(self) -> frozenset[str]:
-        raw = self.MEMORY_FORMATION_AUTO_ACTIVATE_PLATFORMS or ""
+    def discard_platforms(self) -> frozenset[str]:
+        raw = self.MEMORY_FORMATION_DISCARD_PLATFORMS or ""
         return frozenset(p.strip() for p in raw.split(",") if p.strip())
 
     # Cross-window concept-relation resolution (candidate retrieval + typed link dispatch).

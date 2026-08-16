@@ -1,5 +1,6 @@
 # services/orion-meta-tags/app/main.py
 import asyncio
+import json
 import logging
 import traceback
 import uuid
@@ -33,6 +34,30 @@ except OSError:
     logger.info("Downloading spaCy model %s...", settings.SPA_MODEL)
     download(settings.SPA_MODEL)
     nlp = spacy.load(settings.SPA_MODEL)
+
+
+def _chat_source_platform(client_meta: Any) -> str | None:
+    """external_room.platform from a chat.history payload's client_meta.
+
+    Deliberately a thin local reader, same shape as orion-sql-writer's own
+    _chat_source_platform (services/orion-sql-writer/app/worker.py) rather than
+    a cross-service import -- this service does not depend on that one's
+    package. Handles the dict form (already-parsed envelope payload) and the
+    JSON-string form the same way. Returns None for direct hub conversations
+    and for every row predating the field.
+    """
+    if isinstance(client_meta, str):
+        try:
+            client_meta = json.loads(client_meta)
+        except Exception:
+            return None
+    if not isinstance(client_meta, dict):
+        return None
+    external_room = client_meta.get("external_room")
+    if not isinstance(external_room, dict):
+        return None
+    platform = external_room.get("platform")
+    return str(platform) if platform else None
 
 # Global chassis references
 meta_tagger: Hunter | None = None
@@ -269,6 +294,20 @@ async def handle_triage_event(envelope: BaseEnvelope) -> None:
             if not raw_payload.get("id"):
                 raw_payload = dict(raw_payload)
                 raw_payload["id"] = turn_id
+
+            # 2026-08-16, Juniper direct: "I just don't want it on the graphs."
+            # Scoped to chat.history only -- social.turn.stored.v1 is the Hub's
+            # own social room, an unrelated platform with no external_room field.
+            if envelope.kind == "chat.history":
+                platform = _chat_source_platform(raw_payload.get("client_meta"))
+                if platform and platform in settings.recall_falkor_discard_platforms:
+                    logger.info(
+                        "skip meta-tags falkor write: source_platform=%s turn_id=%s "
+                        "(excluded from graphs)",
+                        platform,
+                        turn_id,
+                    )
+                    return
 
             in_payload = EventIn(**raw_payload)
             logger.info("📨 Processing chat turn %s (Text len: %d)", in_payload.id, len(in_payload.text or ""))

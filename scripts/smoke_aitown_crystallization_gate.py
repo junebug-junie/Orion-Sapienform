@@ -29,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from orion.memory.consolidation_gate import ConsolidationGateResult  # noqa: E402
 from orion.memory.crystallization.formation_policy import (  # noqa: E402
-    DEFAULT_AUTO_ACTIVATE_PLATFORMS,
+    DEFAULT_DISCARD_PLATFORMS,
     FormationPolicy,
     resolve_formation_policy,
 )
@@ -80,7 +80,7 @@ ORDER BY p.created_at DESC, w.correlation_id
 def find_leaked(
     service_written: list[tuple[str, str | None]],
     *,
-    platforms: frozenset[str] = DEFAULT_AUTO_ACTIVATE_PLATFORMS,
+    platforms: frozenset[str] = DEFAULT_DISCARD_PLATFORMS,
 ) -> list[tuple[str, str | None]]:
     """Queued crystallizations the DEPLOYED service stamped with an allowlisted
     platform. Any such row means the live gate did not fire on it.
@@ -164,16 +164,16 @@ def main() -> int:
             ),
         )
         # Real stored kind, not the one dominant_shift="STANCE" reconstructs --
-        # EXTERNAL_PLATFORM_BYPASSABLE_KINDS only covers stance, so replaying a
-        # decision/contradiction as a stance would report a bypass that the
-        # runtime gate would never grant.
+        # DISCARD now applies to every kind (the old EXTERNAL_PLATFORM_BYPASSABLE_KINDS
+        # stance-only restriction was retired 2026-08-16), but the replay should
+        # still reflect what was actually stored, not the STANCE reconstruction.
         if entry.get("kind"):
             crys.kind = entry["kind"]
         entry["resolved_platform"] = crys.provenance.get("source_platform")
         platforms[str(entry["resolved_platform"])] += 1
         policy, why = resolve_formation_policy(crys)
         subject = " ".join((entry["subject"] or "").split())[:90]
-        if policy == FormationPolicy.AUTO_ACTIVATE:
+        if policy == FormationPolicy.DISCARD:
             auto.append((cid, subject))
         else:
             queued.append((cid, subject))
@@ -185,9 +185,9 @@ def main() -> int:
             json.dumps(
                 {
                     "total_proposed": total,
-                    "would_auto_activate": len(auto),
+                    "would_discard": len(auto),
                     "would_stay_queued": len(queued),
-                    "auto_activate_ids": [c for c, _ in auto],
+                    "discard_ids": [c for c, _ in auto],
                     "queued_ids": [c for c, _ in queued],
                     "window_platforms": dict(platforms),
                     "queue_reasons": dict(reasons),
@@ -199,8 +199,8 @@ def main() -> int:
         return 0
 
     print(f"live proposed crystallizations: {total}")
-    print(f"  would AUTO-ACTIVATE (leave the queue): {len(auto)}")
-    print(f"  would STAY QUEUED (real review work):  {len(queued)}")
+    print(f"  would DISCARD (never become a memory):  {len(auto)}")
+    print(f"  would STAY QUEUED (real review work):   {len(queued)}")
     print()
     print("resolved window platform (unanimous across all turns, else None):")
     for name, n in platforms.most_common():

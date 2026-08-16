@@ -1,12 +1,13 @@
 # Phase 5 — signal semantics: provenance, window, commensurability
 
-**Mode:** Was design/scoping. **R1–R4 are shipped and merged; R5 is the one
-open rung.** Kept as the arc's record rather than closed, because most of what
-it now says was learned by building it.
+**Mode:** Was design/scoping. **R1–R4 are shipped and merged. R5 SPLITS INTO
+TWO: the precondition watch is now shipped; the actual feedback-loop guard is
+still open, proposal mode.** Kept as the arc's record rather than closed,
+because most of what it now says was learned by building it.
 
-**Date:** 2026-08-13, revised same day, and again 2026-08-15 with shipped
-status and measured outcomes — see "What this revision retracts" and
-"What building it changed".
+**Date:** 2026-08-13, revised same day, 2026-08-15 with shipped status and
+measured outcomes, and again 2026-08-16 once R5's watch (below) actually
+shipped — see "What this revision retracts" and "What building it changed".
 
 ## Status
 
@@ -16,11 +17,14 @@ status and measured outcomes — see "What this revision retracts" and
 | R2 regime readout | **merged** | #1633, #1657 (Hub), #1682 (timestamps) | review caught **three false claims** in the first version |
 | R3 commensurability | **merged** | #1638, #1654 + hourly cron | detector had drifted from production; decay-aware fix shipped uncommitted once |
 | R4 definition-change alert | **merged** | #1666, #1680 (tooling), #1677 | shipped a **fabricated alert** in its own lock file |
-| R5 feedback-loop guard | **open** | — | proposal mode, unstarted |
+| R5a feedback-credit watch | **merged** | #1686, #1694, #1700 | **first version measured the wrong thing entirely** -- 0 of 454 flagged windows over 6,000 ticks were real decay; rebuilt on write-evidence, not shape |
+| R5b feedback-loop guard | **open** | — | proposal mode, unstarted -- correctly waiting on R5a's now-real measurements instead of a hypothesis |
 
-Four of five rungs shipped. Every one of them was materially wrong on first
-submission and was corrected by review or by live measurement — recorded below
-rather than smoothed over, because the pattern is the finding.
+Four of five original rungs shipped, and the fifth split cleanly into a
+shipped measurement and a still-open change to the loop itself. Every shipped
+rung was materially wrong on first submission and was corrected by review or
+by live measurement — recorded below rather than smoothed over, because the
+pattern is the finding.
 
 ## What this revision retracts
 
@@ -261,12 +265,40 @@ no channel — were invisible, so `field_coherence_warning` read as
 zero-consumer while attention read it every tick. Acting on that under "kill
 means kill" would have deleted a live producer.
 
-### R5 — the guard (proposal mode, not this roadmap)
+### R5a — the precondition watch (this roadmap) **MET** (#1686, #1694, #1700)
+
+Report-only: can a credited dimension currently be fooled by a producer
+outage right now? Not the guard -- the measurement a real guard needs first.
+
+*Acceptance:* name, per credited dimension, whether there is write evidence
+behind its current value inside the feedback loop's own window. **MET**, but
+not on the first attempt -- the first version (#1686) reused
+`classify_producer_liveness()`, a shape/monotonicity classifier, and a
+post-merge review found it measured the wrong thing entirely: **0 of 454
+flagged windows over 6,000 live ticks contained a single actual decay step.**
+A genuine 0.9 -> 0.0 real fix read as "only the decay loop touched this" --
+the exact opposite of the module's purpose. Rebuilt (#1700) on two
+write-evidence signals instead: real node-write timestamps (reusing R2's own
+tested mechanism) for node-vector-sourced channels, and per-tick
+diffusion-contribution freshness (verified live against
+`apply_diffusion`'s actual source, not assumed) for capability-routed ones. A
+second review of the rebuild found one more real bug -- the per-channel
+mechanism choice was a majority vote over the whole batch, so a real outage
+in a channel's numerically-minority sourcing type was invisible to both
+signals -- fixed before merge. Live result: 0 findings on the most recent
+6,000 ticks, down from 3 fake findings on ~29 consecutive hourly runs.
+
+Full account: `orion/field/credit_integrity.py`'s module docstring and
+`docs/superpowers/pr-reports/2026-08-16-credit-integrity-rebuild-pr.md`.
+
+### R5b — the guard itself (proposal mode, still not this roadmap)
 
 A staleness guard on the dimension so a decayed-to-calm reading cannot be
 credited as a positive outcome. This changes a learning loop and needs its own
-proposal with rollback, per CLAUDE.md §0A. **Detection first (R1-R3), so the
-guard is designed against measured behavior rather than a hypothesis.**
+proposal with rollback, per CLAUDE.md §0A. **R5a now gives it real measured
+behavior to design against, not a hypothesis** -- one genuine 31s outage was
+caught and hand-verified during R5a's development, and the hourly watch is
+live in `scripts/check_merge_domination.py`'s cron entry. Still unstarted.
 
 ## Non-goals
 
@@ -320,16 +352,25 @@ now not hypothetical: an outage was observed 2026-08-14, and the fleet's
 `expected_offline_suppression` mechanism, which exists for exactly that case,
 is unreachable because every node in `config/biometrics/node_catalog.yaml` is
 `expected_online: true`. **0 of 126,983 stored ticks** carry a nonzero value.
-R5 should be designed against that, not against a hypothesis.
+
+**Decision #1 below, resolved 2026-08-16 -- not by fixing that config surface
+first.** Direct call: "offline suppression is binary when shit is variable...
+not sure why we are so blocked on this dumb concept. circe is up sometimes,
+not always and its variable. live with it." A binary expected-online flag
+cannot describe a variably-up node, and R5a's guard never actually needed to
+know whether a node was *expected* offline -- only whether a reading was
+*observed* this window. R5a (above) was built directly against real write
+evidence instead, with no `expected_offline_suppression` dependency at all.
+That config gap is still real and still unfixed, but it is no longer on R5's
+critical path.
 
 ## Open decisions for Juniper
 
-1. **R5 scope.** Design the feedback-loop guard against the observed
-   `expected_offline_suppression` gap, or fix that config surface first and
-   design the guard against the corrected behavior?
+1. ~~**R5 scope.**~~ **RESOLVED 2026-08-16, see above.** R5a shipped without
+   waiting on `expected_offline_suppression`.
 2. **The fourth axis.** Is "can this metric reach rest" worth its own rung
-   (R6), or does it fold into R5's guard? It has three measured instances and
-   no detector.
+   (R6), or does it fold into R5b's guard? It has three measured instances and
+   no detector. **Still open** -- not decided as of this revision.
 
 ## Risk note — tooling, not code
 
@@ -342,10 +383,20 @@ unaffected, so it is intermittent. Suspected source is RTK's ripgrep filter.
 This matters to this roadmap specifically: every rung depends on reading
 identifiers out of the repo accurately, and this corruption fabricates
 plausible ones. Verify symbol and path spellings with a direct file read before
-relying on grep output. A gate already exists for FCC sessions at
-`~/.claude/hooks/rtk-fcc-gate.sh`; the same exclusion likely needs to cover
-`rg` for this repo.
+relying on grep output.
 
-**Still ungated as of 2026-08-15.** Recorded twice, acted on zero times, across
-the entire arc above. Noted here as the standing example of this doc's own
-thesis: a known defect with no mechanism behind it does not stay known.
+**Checked 2026-08-16 whether `~/.claude/hooks/rtk-fcc-gate.sh` already covers
+this: it does not.** Read the script directly -- it only decides whether to
+run RTK's rewrite hook at all, gated on FCC-vs-interactive session (checks
+`ANTHROPIC_BASE_URL`/`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`), unrelated to
+identifier corruption. The earlier version of this note assumed it was the
+same mechanism; it is not. A **third** occurrence, same session that wrote
+this revision: a plain `grep -h "^POSTGRES_URI="` call was silently
+intercepted and returned RTK's own help/usage text instead of running.
+Different symptom (a swallowed command instead of a substituted identifier),
+same root cause -- RTK's wrapper doing something other than what was asked,
+unpredictably, on ordinary shell commands.
+
+**Still ungated as of 2026-08-16.** Recorded three times now, acted on zero,
+across the entire arc above. Noted here as the standing example of this doc's
+own thesis: a known defect with no mechanism behind it does not stay known.

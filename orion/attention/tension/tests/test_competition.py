@@ -173,3 +173,56 @@ def test_non_numeric_and_missing_node_vectors_are_survivable():
     assert comp.observe_tick({}).observed_count == 0
     assert comp.observe_tick({"node_vectors": None}).observed_count == 0
     assert comp.observe_tick(_tick({"node:a": {"cpu_pressure": "nope"}})).observed_count == 0
+
+
+# --- deviation_pressure (2026-08-16, tension-driven-mutating-dispatch) -----
+
+
+def test_deviation_pressure_is_zero_on_a_quiet_tick():
+    """0.0 is a real 'nothing admitted' reading, not a fabricated absence --
+    see the function's own docstring."""
+    from orion.attention.tension.competition import deviation_pressure
+
+    comp = FieldTensionCompetition(gate=DeviationGate(warmup=2), directions=_DIRECTIONS)
+    for _ in range(5):
+        result = comp.observe_tick(_tick({"node:a": {"cpu_pressure": 0.20}}))
+    assert not result.any_admitted
+    assert deviation_pressure(result) == 0.0
+
+
+def test_deviation_pressure_rises_on_a_real_step_change_and_saturates():
+    from orion.attention.tension.competition import DEVIATION_PRESSURE_SATURATION, deviation_pressure
+
+    comp = FieldTensionCompetition(gate=DeviationGate(warmup=5), directions=_DIRECTIONS)
+    for _ in range(6):
+        comp.observe_tick(_tick({"node:a": {"cpu_pressure": 0.10}}))
+    spike = comp.observe_tick(_tick({"node:a": {"cpu_pressure": 0.10 + DEVIATION_PRESSURE_SATURATION * 5}}))
+    assert spike.any_admitted
+    pressure = deviation_pressure(spike)
+    assert 0.0 < pressure <= 1.0
+    assert pressure == 1.0  # a huge excess saturates rather than exceeding 1.0
+
+
+def test_deviation_pressure_never_exceeds_one_regardless_of_saturation_param():
+    from orion.attention.tension.competition import deviation_pressure
+
+    comp = FieldTensionCompetition(gate=DeviationGate(warmup=2), directions=_DIRECTIONS)
+    for _ in range(3):
+        comp.observe_tick(_tick({"node:a": {"cpu_pressure": 0.10}}))
+    result = comp.observe_tick(_tick({"node:a": {"cpu_pressure": 50.0}}))
+    assert deviation_pressure(result, saturation=1e-6) == 1.0
+
+
+# --- persistence delegation (2026-08-16) ------------------------------------
+
+
+def test_competition_export_import_round_trips_through_the_gate():
+    comp = FieldTensionCompetition(gate=DeviationGate(warmup=2), directions=_DIRECTIONS)
+    for _ in range(4):
+        comp.observe_tick(_tick({"node:a": {"cpu_pressure": 0.15}}))
+    exported = comp.export_baselines()
+    assert ("node:a", "cpu_pressure") in exported
+
+    rehydrated = FieldTensionCompetition(gate=DeviationGate(warmup=2), directions=_DIRECTIONS)
+    rehydrated.import_baselines(exported)
+    assert rehydrated.gate.export_baselines() == exported

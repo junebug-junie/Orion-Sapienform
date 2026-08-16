@@ -153,6 +153,27 @@ class FieldStateV1(BaseModel):
     dimension_precision_ewma_var: dict[str, float] = Field(default_factory=dict)
     dimension_precision_ewma_n: dict[str, int] = Field(default_factory=dict)
     dimension_precision_zscore: dict[str, float] = Field(default_factory=dict)
+    # Field deviation tension (2026-08-16, docs/superpowers/specs/2026-08-16-
+    # tension-driven-mutating-dispatch-design.md): per-(node_id, channel) EWMA
+    # baseline for orion.attention.tension.DeviationGate, carried tick-to-tick
+    # exactly like dimension_precision_ewma* above (same backward-compat
+    # contract -- a key absent here is cold start, not a fabricated 0.0).
+    # Flat-keyed as f"{node_id}\x1f{channel}" (0x1f, ASCII unit separator:
+    # real node_ids already contain colons and dots, e.g.
+    # "node:substrate.route", ruling those out). Bounded cardinality (4 nodes
+    # x 33 channels = 132 keys, live 2026-08-14) -- NOT unbounded per-event
+    # growth like the evidence_event_ids TOAST incident CLAUDE.md records;
+    # a new node or channel adds a bounded number of keys, ticks do not.
+    # Written by services/orion-field-digester/app/digestion/tension.py.
+    tension_baseline_mu: dict[str, float] = Field(default_factory=dict)
+    tension_baseline_var: dict[str, float] = Field(default_factory=dict)
+    tension_baseline_n: dict[str, int] = Field(default_factory=dict)
+    # This tick's admitted-deviation scalar (orion.attention.tension.
+    # competition.deviation_pressure), in [0, 1]. 0.0 is a real "nothing
+    # admitted this tick" reading, never a fabricated absence -- see that
+    # function's own docstring. Consumed by orion.field.pressure.
+    # field_pressures() as the "deviation_pressure" PRESSURE_DIMENSIONS entry.
+    tension_deviation_pressure: float = 0.0
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

@@ -181,3 +181,51 @@ def test_zero_mean_baseline_does_not_divide_by_zero():
     gate = _gate()
     _steady(gate, 10, 0.0)
     assert gate.observe("node:a", "cpu_pressure", 0.5) > 0.0
+
+
+# --- persistence (2026-08-16, tension-driven-mutating-dispatch) -------------
+#
+# A live producer must carry baselines across restarts -- the offline
+# measurement scripts rebuild a gate from scratch each run, which only works
+# for a one-shot analysis. export_baselines/import_baselines are the whole
+# persistence contract; these tests are the round-trip proof.
+
+
+def test_export_baselines_reflects_real_observations():
+    gate = _gate()
+    _steady(gate, 6, 0.20)
+    exported = gate.export_baselines()
+    mu, var, count = exported[("node:a", "cpu_pressure")]
+    assert count == 6
+    assert mu == pytest.approx(0.20)
+    assert var == pytest.approx(0.0)  # constant input never accrues variance
+
+
+def test_import_baselines_round_trips_admission_behavior():
+    """A gate rehydrated from an export must behave identically to the
+    original, not just carry the same numbers -- the real test is whether it
+    admits the same things."""
+    source = _gate()
+    _steady(source, 10, 0.10)
+    exported = source.export_baselines()
+
+    rehydrated = _gate()
+    rehydrated.import_baselines(exported)
+
+    x = 0.50
+    assert rehydrated.observe("node:a", "cpu_pressure", x) == pytest.approx(
+        source.observe("node:a", "cpu_pressure", x)
+    )
+
+
+def test_import_baselines_replaces_not_merges():
+    gate = _gate()
+    _steady(gate, 6, 0.10)
+    assert gate.baseline_count() == 1
+    gate.import_baselines({("node:b", "memory_pressure"): (0.30, 0.0, 6)})
+    assert gate.baseline_count() == 1
+    assert ("node:a", "cpu_pressure") not in gate.export_baselines()
+
+
+def test_export_on_a_fresh_gate_is_empty():
+    assert _gate().export_baselines() == {}

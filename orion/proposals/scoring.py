@@ -25,7 +25,68 @@ from orion.schemas.field_state import FieldStateV1
 # Extending PRESSURE_DIMENSIONS (and DIMENSION_PRECISION_MIN_VARIANCE,
 # enforced in sync by the assertion below) to cover a newly-scored dimension
 # is required in the same patch that adds it to a template.
+# 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+# dispatch-design.md): 5th entry, "deviation_pressure". CLAUDE.md 0A metric
+# gate, run and recorded here rather than passed verbally:
+#   1. Provenance: orion.attention.tension.competition.deviation_pressure(),
+#      written once per digestion tick by services/orion-field-digester/app/
+#      digestion/tension.py::update_tension_pressure(), traced to that
+#      function's own docstring, not assumed.
+#   2. Independence: per-(node, channel) EWMA z-score admission -- a
+#      different population and granularity than the other 4 dimensions'
+#      single aggregate-value EWMA (dimension_precision_ewma*), not a
+#      monotonic transform of anything already in this set.
+#   3. Theory anchor: deviation-from-adapted-baseline admission (standard
+#      change detection) + Borda rank aggregation (de Borda 1770) -- both
+#      named in the sensing-layer spec, not "seems related".
+#   4. Live-data sanity, 41,973 real substrate_field_state ticks (24h,
+#      2026-08-16): 49.9% nonzero, 18,699 distinct values, population
+#      variance 6.164936e-02, mean 0.1134, 4,357 rest->active rises
+#      (recurring refresh, not a decayed-unopposed climb -- checked by hand,
+#      not by eyeballing the variance), median exactly 0.0 (a genuine rest
+#      state is reachable -- the bar the ~0.27-floor incident failed).
+#      Producer liveness: refreshed. No decay artifact.
+#   5. Existing mechanism: searched -- the 4 existing PRESSURE_DIMENSIONS
+#      track a single aggregate value's own EWMA; nothing already tracks a
+#      per-(node, channel) deviation baseline (see the sensing-layer spec's
+#      own "Current architecture" section: "There is no per-(node, channel)
+#      deviation baseline anywhere. This patch does not duplicate the
+#      existing one.").
+#   6. Reversibility: removing this entry (and its floor below, kept in sync
+#      by the assertion below) reverts every downstream reader to today's
+#      graceful-degradation behavior (dimension_score()'s `.get(..., 0.0)`) --
+#      no schema migration, no data loss elsewhere.
 PRESSURE_DIMENSIONS = frozenset({
+    "execution_pressure",
+    "resource_pressure",
+    "reasoning_pressure",
+    "reliability_pressure",
+    "deviation_pressure",
+})
+
+# 2026-08-16, code review finding on the deviation_pressure addition above:
+# `_pressure_dimension_ids()`'s empty-`dimensions` fallback used to return
+# `list(PRESSURE_DIMENSIONS)` directly, so growing that frozenset silently
+# widened every already-shipped, already-tuned `dimensions: {}` template's
+# urgency/confidence scoring to include the new dimension too -- confirmed
+# live: 5 templates (inspect_bus_channel_catalog, summarize_transport_
+# contract_drift, watch_transport_backpressure, inspect_field_topology_
+# catalog, inspect_attended_target) would have started scoring off
+# deviation_pressure despite never being audited for that blast radius, and
+# despite deviation_pressure being always-present (unlike the other 4, which
+# are only present when a channel maps that tick) -- a real spike could pull
+# an unrelated template's priority up on ticks where its own real signal was
+# calm. This is exactly the independence-check CLAUDE.md 0A's metric gate
+# requires tracing to EVERY metric already in the model, not just the new
+# metric's own producer, and it was missed in the first pass.
+#
+# Decoupled: this constant freezes the empty-dimensions fallback to what it
+# has always meant for those 5 templates ("the original 4 core channel-merge
+# dimensions"), independent of PRESSURE_DIMENSIONS' own membership. A future
+# dimension addition must explicitly decide whether legacy empty-dimensions
+# templates should also fall back to it -- that is a real, separate
+# decision, not something a frozenset addition should make silently.
+_LEGACY_EMPTY_DIMENSIONS_FALLBACK = frozenset({
     "execution_pressure",
     "resource_pressure",
     "reasoning_pressure",
@@ -156,6 +217,13 @@ DIMENSION_PRECISION_MIN_VARIANCE: dict[str, float] = {
     "resource_pressure": 2e-3,
     "reasoning_pressure": 2e-7,
     "reliability_pressure": 1e-3,
+    # Derived, not borrowed -- 1% of deviation_pressure's own measured
+    # population variance (6.164936e-02 over 41,973 real ticks, 2026-08-16),
+    # same convention as the other 4 floors here. Reusing another dimension's
+    # floor was already flagged in this repo's history as a mistake that
+    # silently re-broke a metric across domains; this one is this
+    # dimension's own number.
+    "deviation_pressure": 6.165e-4,
 }
 
 # Code review (2026-07-29) flagged this as unguarded: services/orion-field-
@@ -247,8 +315,9 @@ def template_match_score(
 def _pressure_dimension_ids(template: ProposalTemplateV1) -> list[str]:
     """The dimension set proposal_urgency() and proposal_confidence() both
     read: template.dimensions filtered to real pressure dimensions, falling
-    back to all of PRESSURE_DIMENSIONS if the template scores on none (e.g.
-    an honestly-empty `dimensions: {}` post-2026-07-30 dead-dimension fix).
+    back to `_LEGACY_EMPTY_DIMENSIONS_FALLBACK` if the template scores on
+    none (e.g. an honestly-empty `dimensions: {}` post-2026-07-30
+    dead-dimension fix).
 
     Shared by both functions so they can never again drift out of sync the
     way they did before that fix: proposal_urgency()'s own filter used to
@@ -256,13 +325,18 @@ def _pressure_dimension_ids(template: ProposalTemplateV1) -> list[str]:
     through and suppress this exact fallback, while proposal_confidence()
     had no fallback at all and returned a bare 0.0 for the same template.
     One shared dimension-set means one fallback behavior for both signals.
+
+    2026-08-16: the fallback is `_LEGACY_EMPTY_DIMENSIONS_FALLBACK`, NOT
+    `list(PRESSURE_DIMENSIONS)` -- see that constant's own comment for why a
+    template that never scores on a dimension explicitly must not be
+    silently re-scored on every future PRESSURE_DIMENSIONS addition.
     """
     dims = [
         dim_id
         for dim_id in template.dimensions
         if dim_id in PRESSURE_DIMENSIONS or dim_id.endswith("_pressure")
     ]
-    return dims if dims else list(PRESSURE_DIMENSIONS)
+    return dims if dims else list(_LEGACY_EMPTY_DIMENSIONS_FALLBACK)
 
 
 def proposal_urgency(

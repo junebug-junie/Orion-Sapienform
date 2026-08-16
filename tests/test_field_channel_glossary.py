@@ -12,19 +12,23 @@ from orion.field.channel_glossary import (
 )
 
 
-def test_load_glossary_has_38_channels_matching_field_digester_channels_py():
+def test_load_glossary_has_39_channels_matching_field_digester_channels_py():
     """23 + the 5 FCC-motor channels added 2026-07-23 (harness_step_load,
     tool_failure_streak_pressure, avg_step_chars_pressure, compliance_deficit,
     turn_incompletion -- see docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md)
     + context_gathering_ratio added 2026-07-24
     + power_pressure/disk_capacity_pressure/fan_pressure added 2026-07-25 (real
-    iLO/BMC hardware telemetry piggybacked onto biometrics' heartbeat)."""
+    iLO/BMC hardware telemetry piggybacked onto biometrics' heartbeat)
+    + tension_deviation_pressure added 2026-08-16 -- NOT a raw channel (the
+    other 38 are), a derived scalar included in the glossary anyway for
+    liveness observability. See that entry's own comment for why."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 38
+    assert len(entries) == 39
     names = {e.channel for e in entries}
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
+    assert "tension_deviation_pressure" in names
     # stream_backlog_pressure/contract_pressure are the two node+capability overlaps.
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
     assert {e.channel for e in overlap} == {"stream_backlog_pressure", "contract_pressure"}

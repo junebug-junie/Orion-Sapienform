@@ -265,13 +265,12 @@ def test_findings_report_one_row_per_channel_not_per_overlapping_window():
     assert len([f for f in report.findings if f.kind == SILENT]) == 1
 
 
-def test_mixed_sourcing_picks_the_plurality_mechanism_and_reports_the_split():
+def test_mixed_sourcing_reports_the_split_and_runs_both_signals():
     """A dimension whose winner type genuinely changes mid-series (a node
     starts also carrying `reliability_pressure` after living entirely under
-    a capability) must not crash, and must report BOTH counts rather than
-    hide the split -- even though it commits to whichever mechanism has
-    more ticks. 25 capability-sourced ticks (with a genuine 30s+ gap) vs 15
-    node-sourced -> capability signal wins and the gap must still surface."""
+    a capability) must not crash, must report BOTH counts, and -- the
+    load-bearing part -- must NOT drop the minority-type stretch from
+    analysis just because it has fewer ticks."""
     states = []
     for i in range(25):
         contributing = not (5 <= i < 21)  # 16 ticks = 30s uncontributed stretch
@@ -283,16 +282,69 @@ def test_mixed_sourcing_picks_the_plurality_mechanism_and_reports_the_split():
     report = analyse_credit_integrity(states, DIMS_RELIABILITY, 30.0)
     assert report.source_kind["reliability_pressure"] == {"node": 15, "capability": 25}
     silent = [f for f in report.findings if f.kind == SILENT]
-    assert silent and silent[0].evidence == "contribution"
+    assert any(f.evidence == "contribution" for f in silent)
+
+
+def test_minority_type_outage_is_not_dropped_by_majority_vote():
+    """The exact defect post-merge review found in an earlier draft of this
+    function: it picked whichever mechanism had more ticks ACROSS THE WHOLE
+    BATCH and only ever scanned that one -- so a real outage confined to a
+    channel's numerically-minority sourcing type was invisible to BOTH
+    signals, not merely misrouted. Reproduced here with the review's own
+    scenario: 25 healthy capability ticks (majority) + 15 node ticks (
+    minority) containing a genuine, real 30s node write-outage. Under the
+    majority-vote version this read 0 findings; it must not here."""
+    states = []
+    for i in range(25):
+        states.append(
+            _capability_state(i, value=0.5, contributing=True, channel="reliability_pressure")
+        )
+    write_at = T0 + timedelta(seconds=25 * TICK)  # one real write at the start of the stretch
+    for i in range(25, 46):  # 21 node ticks -- still a minority vs. 25 capability
+        states.append(_node_state(i, value=0.5, write_at=write_at))
+    report = analyse_credit_integrity(states, DIMS_RELIABILITY, 30.0)
+    assert report.source_kind["reliability_pressure"] == {"node": 21, "capability": 25}
+    silent = [f for f in report.findings if f.kind == SILENT]
+    assert any(f.evidence == "timestamp" for f in silent), (
+        "a real node-sourced outage buried in a capability-majority channel "
+        "must still be found, not silently excluded from both signals"
+    )
+
+
+def test_low_stamp_coverage_reads_unknown_not_silent():
+    """Signal 1 delegates to regime.py's `_refresh_from_timestamps`, which
+    withholds a negative verdict ("no_write_in_window") below
+    MIN_STAMP_COVERAGE -- a series that is mostly unstamped is "unknown", not
+    silence. A weaker check (`verdict != "producer_written"` instead of
+    `verdict == SILENT`) would conflate the two and false-positive here."""
+    states = []
+    for i in range(40):
+        at = T0 + timedelta(seconds=i * TICK)
+        # Only ticks 0 and 1 ever carry a real stamp -- well below the 0.5
+        # coverage floor -- while the value itself keeps moving.
+        write_at = T0 if i < 2 else None
+        states.append(_node_state(i, value=0.5 + i * 0.001, write_at=write_at))
+    report = analyse_credit_integrity(states, DIMS_RELIABILITY, 30.0)
+    assert [f for f in report.findings if f.kind == SILENT] == []
+
+
+def test_outage_exactly_at_the_window_boundary_still_fires():
+    """`_rolling_windows` yields a window once its span reaches
+    window_seconds -- AT the boundary, not only strictly past it. The window
+    starting at the write itself reads `producer_written` (the write is
+    inside it); the NEXT window (starting one tick later, span exactly 30s)
+    must read silent."""
+    states = [_node_state(i, value=0.5, write_at=T0) for i in range(20)]
+    report = analyse_credit_integrity(states, DIMS_RELIABILITY, 30.0)
+    silent = [f for f in report.findings if f.kind == SILENT]
+    assert silent and silent[0].span_seconds == pytest.approx(30.0)
 
 
 @pytest.mark.parametrize("n", [0, 1, 5])
 def test_short_histories_do_not_raise(n):
     states = [_node_state(i, value=0.5, write_at=T0) for i in range(n)]
     report = analyse_credit_integrity(states, DIMS_RELIABILITY, 30.0)
-    assert report.findings == [] or all(
-        f.kind in ("unmappable_dimension", "mixed_or_absent_sourcing") for f in report.findings
-    )
+    assert report.findings == [] or all(f.kind == "unmappable_dimension" for f in report.findings)
 
 
 def test_absent_channel_tick_is_not_read_as_fresh():

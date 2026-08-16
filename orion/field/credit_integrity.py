@@ -131,7 +131,6 @@ _EPOCH = datetime(1970, 1, 1)
 @dataclass(frozen=True)
 class ChannelSample:
     at: datetime
-    value: float
     # "node" | "capability" | "absent" -- which of the two write-evidence
     # mechanisms this tick's winning channel actually used, or "absent" if
     # the channel did not appear in the merge at all this tick.
@@ -267,7 +266,6 @@ def _samples_for(
             out[dim].append(
                 ChannelSample(
                     at=state.generated_at,
-                    value=dims[dim],
                     source_kind=kind,
                     node_stamp=node_stamp,
                     capability_fresh=cap_fresh,
@@ -396,20 +394,40 @@ def analyse_credit_integrity(
         # channel `_classify_tick` receives is by construction always a key
         # of `merged` (`map_channels_to_dimensions_with_provenance` only
         # ever picks a winner from `channel_pressures.items()`). So
-        # node_samples + cap_samples == samples always, and one of the two
-        # fractions is mathematically guaranteed to be >= 0.5 -- there is no
-        # real "neither has a majority" state to report, and an earlier
-        # draft of this function had a dead branch pretending there was.
+        # node_samples + cap_samples == samples always.
         report.source_kind[channel] = {
             "node": len(node_samples),
             "capability": len(cap_samples),
         }
 
-        if len(node_samples) >= len(cap_samples):
+        # BOTH signals run, independently, whenever they have any evidence to
+        # check -- never a majority vote picking ONE for the whole channel.
+        # An earlier draft of this function picked whichever mechanism had
+        # more ticks across the WHOLE analysed batch and only ever scanned
+        # that one, which review found reintroduces the exact defect class
+        # this rebuild exists to fix, one level up: a channel whose winner
+        # type is mostly capability with a real 30s NODE-sourced outage
+        # buried in it had that entire stretch excluded from analysis by
+        # BOTH signals, not merely misrouted to the wrong one. Confirmed via
+        # a live-style repro (25 healthy capability ticks + 15 node ticks
+        # containing a genuine, real 30s node write-outage -> 0 findings
+        # under the majority-vote version). Running both independently means
+        # a channel's minority-type stretch is still fully checked by its own
+        # mechanism regardless of how few ticks it has, at the cost of
+        # potentially two findings for one channel if both stretches are
+        # separately bad -- strictly more informative than picking one.
+        #
+        # Residual, honestly stated: an outage that straddles the exact tick
+        # where the winner type switches, with neither half alone reaching
+        # window_seconds, is still invisible to both signals. Same shape as
+        # `_rolling_windows`'s own documented resolution floor (an outage
+        # confined to the final `< window_seconds` of a series) -- a real
+        # limit, not silently hidden.
+        if node_samples:
             finding = _find_silent_window_timestamp(channel, node_samples, window_seconds)
             if finding is not None:
                 report.findings.append(finding)
-        else:
+        if cap_samples:
             finding, longest = _find_silent_run_contribution(channel, cap_samples, window_seconds)
             report.longest_unbacked_run[channel] = longest
             if finding is not None:

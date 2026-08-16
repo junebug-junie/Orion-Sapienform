@@ -124,6 +124,20 @@ class Settings(BaseSettings):
     PDU_POLL_INTERVAL_SEC: float = Field(default=60.0)
     PDU_REQUEST_TIMEOUT_SEC: float = Field(default=5.0)
 
+    # Outlets this node polls ON BEHALF OF another node, as JSON: {"circe": [19,25,31]}
+    #
+    # HUB ONLY, and only for nodes that cannot reach the PDU themselves. circe's NIC is dead --
+    # it reaches the bus over Tailscale but has no LAN path to 192.168.1.39, so its own poller
+    # fails every 65 s. athena can reach it.
+    #
+    # Also strictly better than self-polling for circe: the outlets report its draw whether
+    # circe is powered or not, so a shut-down circe reads a true ~0 W instead of disappearing
+    # into measurements_missing.
+    #
+    # A proxied reading is published with provenance (`measurements_proxied`) and never
+    # overwrites a node's own reading.
+    PDU_PROXY_OUTLETS: str = Field(default="")
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:

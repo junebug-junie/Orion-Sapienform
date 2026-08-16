@@ -230,6 +230,44 @@ independent `strain`/`gpu` hints. Both signatures match repeated
 re-saturation from add-mode duplicate deltas, not real, independent CPU/GPU
 utilization, so `strain`/`gpu` were switched to `mode="replace"` too.
 
+### When a node cannot reach the PDU: hub-side proxy polling
+
+circe's **network card is dead**. It reaches the bus over Tailscale and has no LAN path to the
+PDU, so its own poller fails every 65 s:
+
+```text
+orion.biometrics.pdu - WARNING - pdu_poll_failed error=5 second timeout exceeded on UDP transport.
+```
+
+athena can reach the PDU, so it reads circe's outlets **on circe's behalf**:
+
+```bash
+# athena only
+PDU_HOST=192.168.1.39
+PDU_OUTLETS=                                        # empty -> athena does NOT self-poll
+PDU_PROXY_OUTLETS={"circe": [19,25,31], "atlas": [34,35]}
+```
+
+`PDU_HOST` means *"the PDU this node can reach"* — set it on any node that can talk to the PDU,
+including a hub that only proxies. **Empty `PDU_OUTLETS` is what disables self-polling**, not an
+empty `PDU_HOST`.
+
+**Two rules keep this honest:**
+
+1. **A proxy only fills a gap.** A node's own measurement always wins. Live: atlas keeps its iLO
+   `chassis_watts` and gains only `pdu_watts` from the proxy, while circe (no BMC, no LAN) gets
+   both.
+2. **Provenance travels with the value.** The cluster carries `measurements_proxied`, e.g.
+   `{"circe": ["chassis_watts","pdu_watts"], "atlas": ["pdu_watts"]}`. Without it, a future
+   reader finding circe with a chassis figure would reasonably conclude its BMC came back.
+
+Proxying is also **strictly better than self-polling for circe**: the outlets report its draw
+whether circe is powered or not, so a shut-down circe reads a true ~0 W instead of vanishing
+into `measurements_missing`.
+
+A proxy that is itself failing contributes nothing — the node stays in `measurements_missing`,
+so the fix for silent failure does not become a new way to fail silently.
+
 ## Running & Testing
 
 ### Run via Docker

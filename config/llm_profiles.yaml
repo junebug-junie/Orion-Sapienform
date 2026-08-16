@@ -1194,17 +1194,24 @@ profiles:
 
     notes: |
       Agent-lane Muse Glimmer 30B (dense, text+image, tool-calling, DFlash speculative
-      decoding) for 1x V100 32GB — Circe node, Agent compute GPU lane (wire via
-      ATLAS_AGENT_PROFILE_NAME).
+      decoding) for 1x V100-class 32GB GPU on Circe, Agent compute GPU lane (wire via
+      ATLAS_AGENT_PROFILE_NAME -- that env var name is a fixed naming convention for
+      this worker pattern, not a statement of physical host; see the profile header
+      above for a prior mix-up on exactly this point, corrected 2026-08-14).
       - REQUIRES LLAMACPP_IMAGE_TAG=server-cuda-b10398 (or later) — do not rely on the
         repo-wide default fallback (server-cuda-b8740, ~April 2026). llama.cpp did not
         recognize this model's architecture at all before ggml-org/llama.cpp PR #26841
-        merged 2026-08-10; this gates text+vision, not just DFlash. Circe already runs
-        orion-atlas-llamacpp-chat continuously (config/biometrics/node_catalog.yaml) — if
-        that worker shares a compose invocation/.env with this one, the tag bump lands on
-        both; confirm Circe's actual layout before deploying, see the profile header above.
-        UNVERIFIED beyond schema/CLI-builder tests: no live boot has run against b10398
-        from this dev environment (no Docker/GPU here) — smoke-test before trusting.
+        merged 2026-08-10; this gates text+vision, not just DFlash. LLAMACPP_IMAGE_TAG is
+        one shared build arg per compose invocation across co-located workers on the same
+        .env — Circe already runs orion-atlas-llamacpp-chat continuously
+        (config/biometrics/node_catalog.yaml), so confirm whether that worker shares this
+        one's env before bumping the tag.
+        LIVE-VERIFIED 2026-08-14 on Circe at this tag: clean boot, target arch recognized,
+        mmproj vision loaded, DFlash drafter loaded and self-described correctly
+        (n_extract=5 matches the model card's "Draft layers: 5"). No "DFlash model
+        requires 'target_layers'" error — upstream issue #25116 does not appear to affect
+        this GGUF. NOT yet verified: actual completion output quality / tokens-per-sec
+        with the drafter active — boot success alone doesn't confirm that.
       - VRAM budget: UD-Q4_K_XL weights ~15.9GB + Q8_0 mmproj ~1.9GB ≈ 17.8GB, leaving
         ~14GB of the 90%-of-32GB budget for 32k KV + batch/ubatch overhead. GQA 16:1
         (32 query / 2 KV heads) keeps KV cache lean at this context, same order as
@@ -1219,14 +1226,22 @@ profiles:
         from the caller/orchestrator side (system prompt), not from this profile.
       - Single parallel slot (agent lane): matches qwen3-coder-next-*-agent-* precedent —
         keeps smolagents/tool-loop steps stable rather than splitting context across slots.
-      - Speculative decoding (DFlash) is wired: see the llamacpp.spec_type/hf_draft_*
-        comments above for the exact mechanism, the required build tag, and a known
-        upstream open bug (ggml-org/llama.cpp#25116) that may or may not apply here.
-        If the draft model fails to load, the whole container fails to boot — check logs
-        for "DFlash model requires" errors first; that matches #25116's signature.
+      - Speculative decoding (DFlash) is wired and live-verified booting (see header).
+        Boot log detail worth knowing, not a bug: llama-server logs
+        "dflash requires ctx_other to be set (this warning is normal during memory
+        fitting)" as an E-level line during its first (intentionally-failing) memory
+        probe pass, then loads for real on the second pass — expected two-pass behavior,
+        not a real error. Also logs "requested draft size (n_max=16, n_min=0) exceeds
+        the trained block size 16 -- clamping to 15" (upstream's own >= vs > boundary
+        check on an exact-equal value) — harmless, drops to n_max=15 automatically.
+        If the draft model fails to load for a different reason, check logs for
+        "DFlash model requires 'target_layers'" specifically — that matches upstream
+        issue #25116's signature, not confirmed to apply to this GGUF but not yet ruled
+        out for every quant/config combination either.
       - If OOM: lower ctx_size to 24576 then 16384, then image_max_tokens to 560,
         before falling back to a lower quant (e.g. UD-Q3_K_XL) from the same repo. If VRAM
         is still tight with the draft model loaded, dropping spec_type/hf_draft_* entirely
         falls back to plain (non-speculative) decoding without changing anything else.
       - Wire: ATLAS_AGENT_PROFILE_NAME=muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision,
-        LLAMACPP_IMAGE_TAG=server-cuda-b10398 (Circe worker .env only)
+        LLAMACPP_IMAGE_TAG=server-cuda-b10398 (Circe's agent worker .env — confirm it
+        doesn't silently affect Circe's already-running chat worker if they share one env)

@@ -197,6 +197,63 @@ async def test_window_auto_activate_when_flag_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_consolidate_window_discarded_external_platform_skips_not_proposes(monkeypatch):
+    """When process_consolidation_crystallization returns
+    ("discarded_external_platform"), cid is None -- the worker must route to
+    mark_consolidated_skipped (which needs no id), NOT
+    mark_crystallization_proposed (which would be handed a None id)."""
+    monkeypatch.setattr(worker.settings, "MEMORY_CONSOLIDATION_OUTPUT", "crystallization_propose")
+    gate = ConsolidationGateResult(action="propose", reasons=["substantive_shift"], dominant_shift="STANCE")
+    crystallization = MagicMock(crystallization_id=None)
+
+    pool = AsyncMock()
+    window_store = AsyncMock()
+    runner = ConsolidationSuggestRunner(pool, window_store)
+    bus = AsyncMock()
+    bus.publish = AsyncMock()
+
+    pipeline_mock = AsyncMock(return_value=(None, crystallization, "discarded_external_platform"))
+
+    with patch(
+        "orion.memory.consolidation_grammar.fetch_grammar_evidence_for_window",
+        new=AsyncMock(return_value=(False, [])),
+    ), patch(
+        "orion.memory.consolidation_gate.consolidation_memory_gate",
+        return_value=gate,
+    ), patch(
+        "orion.memory.crystallization.intake_consolidation_window.build_crystallization_from_window",
+        return_value=crystallization,
+    ), patch(
+        "orion.memory.crystallization.intake_pipeline.process_consolidation_crystallization",
+        new=pipeline_mock,
+    ), patch.object(worker, "publish_spark_meta_patch", new=AsyncMock()) as patch_mock:
+        window = {
+            "memory_window_id": "win-aitown",
+            "turn_correlation_ids": ["corr-aitown"],
+            "turns": [
+                {
+                    "correlation_id": "corr-aitown",
+                    "prompt": "topic",
+                    "response": "reply",
+                    "spark_meta": {},
+                    "source_platform": "aitown",
+                }
+            ],
+        }
+        await runner.consolidate_window(window, bus=bus)
+
+    pipeline_mock.assert_awaited_once()
+    window_store.mark_consolidated_skipped.assert_awaited_once()
+    assert window_store.mark_consolidated_skipped.await_args.args[0] == "win-aitown"
+    window_store.mark_crystallization_proposed.assert_not_awaited()
+    patch_mock.assert_awaited()
+    patch_fields = patch_mock.await_args.args[2]
+    assert patch_fields["consolidation_gate"]["action"] == "discard"
+    assert patch_fields["consolidation_gate"]["formation_outcome"] == "discarded_external_platform"
+    assert patch_fields["consolidation_gate"]["crystallization_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_graph_draft_legacy_mode_still_inserts_draft(monkeypatch):
     monkeypatch.setattr(worker.settings, "MEMORY_CONSOLIDATION_OUTPUT", "graph_draft")
     draft_data = json.loads(FIXTURE.read_text(encoding="utf-8"))

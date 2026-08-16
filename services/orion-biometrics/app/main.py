@@ -20,6 +20,7 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from app.metrics import collect_biometrics, collect_disk_capacity
 from app.ilo import IloPoller
+from app.pdu import PduPoller, parse_outlets, parse_proxy_outlets
 from orion.telemetry.biometrics_pipeline import (
     BiometricsPipeline,
     PipelineConfig,
@@ -175,6 +176,52 @@ _ilo_poller = IloPoller(
     timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
 )
 
+# Per-outlet power from the rack PDU. This is what gives circe a chassis figure at all: it
+# has no reachable BMC, so `_ilo_poller` is permanently `not_configured` there and every fleet
+# total has carried `measurements_missing: {"chassis_watts": ["circe"]}`. Configured per node
+# with that node's own outlets, exactly like ILO_HOST -- a node not on a metered PDU (athena)
+# leaves PDU_OUTLETS empty and the poller stays disabled.
+_pdu_poller = PduPoller(
+    settings.PDU_HOST,
+    parse_outlets(settings.PDU_OUTLETS),
+    community=settings.PDU_SNMP_COMMUNITY,
+    port=settings.PDU_SNMP_PORT,
+    interval_sec=settings.PDU_POLL_INTERVAL_SEC,
+    timeout_sec=settings.PDU_REQUEST_TIMEOUT_SEC,
+)
+
+
+# Outlets the HUB polls on behalf of nodes that cannot reach the PDU themselves.
+# circe's NIC is dead: it reaches the bus over Tailscale but has no LAN path to the PDU, so its
+# own poller fails every 65 s. athena can reach it. See parse_proxy_outlets for the full story.
+_pdu_proxy_pollers: Dict[str, PduPoller] = {
+    node: PduPoller(
+        settings.PDU_HOST,
+        outlets,
+        community=settings.PDU_SNMP_COMMUNITY,
+        port=settings.PDU_SNMP_PORT,
+        interval_sec=settings.PDU_POLL_INTERVAL_SEC,
+        timeout_sec=settings.PDU_REQUEST_TIMEOUT_SEC,
+    )
+    for node, outlets in parse_proxy_outlets(settings.PDU_PROXY_OUTLETS).items()
+}
+
+
+def _proxy_measurements() -> Dict[str, Dict[str, float]]:
+    """Per-node measurements this hub read on another node's behalf.
+
+    Returns only nodes with a live reading. A failed or not-yet-polled proxy contributes
+    nothing, so the node stays in `measurements_missing` exactly as before -- a proxy that is
+    itself broken must not look like a measurement.
+    """
+    out: Dict[str, Dict[str, float]] = {}
+    for node, poller in _pdu_proxy_pollers.items():
+        detail = poller.details()
+        watts = detail.get("pdu_watts")
+        if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
+            out[node] = {"chassis_watts": float(watts), "pdu_watts": float(watts)}
+    return out
+
 
 def _heartbeat_details() -> Dict[str, Any]:
     """Extra data folded into every SystemHealthV1 heartbeat's `details` dict.
@@ -227,6 +274,7 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
         # doesn't change what's published on BIOMETRICS_SAMPLE_CHANNEL.
         pipeline_input = sample.model_dump(mode="python")
         pipeline_input["ilo"] = _ilo_poller.details()
+        pipeline_input["pdu"] = _pdu_poller.details()
         pipeline_input["disk_capacity"] = collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
         summary, induction = _pipeline.update(pipeline_input)
 
@@ -360,9 +408,25 @@ class BiometricsHub:
         # Raw physical units aggregate separately from the pressures above: watts are summed
         # in watts, not weighted-averaged and clamped to 1.0. `measurements_missing` travels
         # with the totals so a partial fleet sum cannot be read as a complete one.
-        fleet_measurements, fleet_missing = aggregate_fleet_measurements(
-            {node: summary.measurements for node, summary in self._latest_summary.items()}
-        )
+        # Merge in anything this hub measured on another node's behalf, BEFORE aggregating, so
+        # a proxied node stops being counted as missing.
+        #
+        # PROVENANCE IS NOT OPTIONAL HERE. `chassis_watts` has been a self-report -- the node
+        # that owns the number measures it. A proxy reading breaks that, and a future reader
+        # finding circe with chassis_watts would otherwise conclude its BMC came back. So the
+        # cluster says who measured what, and a proxied value NEVER silently overwrites a
+        # node's own reading: self-report wins, proxy only fills a gap.
+        per_node = {node: summary.measurements for node, summary in self._latest_summary.items()}
+        proxied: Dict[str, list] = {}
+        for node, values in _proxy_measurements().items():
+            own = per_node.get(node) or {}
+            filled = {k: v for k, v in values.items() if own.get(k) is None}
+            if not filled:
+                continue
+            per_node[node] = {**own, **filled}
+            proxied[node] = sorted(filled)
+
+        fleet_measurements, fleet_missing = aggregate_fleet_measurements(per_node)
 
         # Which known nodes are absent entirely. `measurements_missing` only names nodes that
         # DID report and lacked a key -- a node that stops publishing never reaches `sources`
@@ -374,10 +438,26 @@ class BiometricsHub:
             node_id for node_id in _NODE_CATALOG.profiles if node_id not in contributed
         )
 
+        # Fleet binding constraint: max over nodes, NOT the role-weighted mean above. One
+        # saturated machine must not be averaged into looking half-busy, and the node has to
+        # travel with the number or it cannot be acted on.
+        peak_value: float | None = None
+        peak_channel: str | None = None
+        peak_node: str | None = None
+        for node, summary in self._latest_summary.items():
+            value = summary.peak_pressure
+            if value is None:
+                continue
+            if peak_value is None or value > peak_value:
+                peak_value, peak_channel, peak_node = value, summary.peak_pressure_channel, node
+
         cluster = BiometricsClusterV1(
             timestamp=datetime.now(timezone.utc),
             sources=sources,
             nodes_absent=nodes_absent or None,
+            peak_pressure=peak_value,
+            peak_pressure_channel=peak_channel,
+            peak_pressure_node=peak_node,
             role_weights=weights,
             pressures=pressures,
             headroom=headroom,
@@ -385,6 +465,7 @@ class BiometricsHub:
             constraint=constraint,
             measurements=fleet_measurements or None,
             measurements_missing=fleet_missing or None,
+            measurements_proxied=proxied or None,
         )
         global _CLUSTER
         _CLUSTER = {"payload": cluster.model_dump(mode="json"), "timestamp": cluster.timestamp}
@@ -421,6 +502,9 @@ async def lifespan(app: FastAPI):
     hunter_stop = asyncio.Event()
 
     await _ilo_poller.start_background()
+    await _pdu_poller.start_background()
+    for _proxy in _pdu_proxy_pollers.values():
+        await _proxy.start_background()
 
     if settings.BIOMETRICS_MODE in {"agent", "both"}:
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
@@ -451,6 +535,9 @@ async def lifespan(app: FastAPI):
             except Exception:
                 hunter_task.cancel()
         await _ilo_poller.stop()
+        await _pdu_poller.stop()
+        for _proxy in _pdu_proxy_pollers.values():
+            await _proxy.stop()
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)
@@ -478,6 +565,56 @@ def raw_recent(limit: int = Query(10, ge=1, le=100), node: Optional[str] = Query
     return {"items": items, "count": len(items)}
 
 
+def _power_telemetry_health() -> Dict[str, Any]:
+    """Is this node's power telemetry wired, and if not, why not.
+
+    Both pollers are OPTIONAL and both go quiet by design -- a node with no BMC, or no PDU
+    outlets, reports nothing rather than a fake zero. That is the right behaviour for the DATA
+    and it is exactly what makes the INSTRUMENT undiagnosable: "configured and working",
+    "configured but unreachable", and "running an image that predates the feature" all look
+    identical from outside the container.
+
+    That cost was paid twice for real. circe's BMC has been unreachable long enough that nobody
+    knows when it broke. And the day the PDU poller shipped, answering "does atlas have it
+    configured, or is it failing, or is it on an older image?" took a round trip of
+    `docker exec` on a remote host, because nothing exposed the answer.
+
+    `absent` remains the honest reading of a measurement. It is not an acceptable answer to
+    "is the instrument installed and healthy" -- that is a different question and it needs its
+    own surface. One `curl /health` from anywhere now answers it.
+    """
+    ilo_detail = _ilo_poller.details()
+    pdu_detail = _pdu_poller.details()
+
+    def _state(enabled: bool, detail: Dict[str, Any], value_key: str) -> Dict[str, Any]:
+        if not enabled:
+            # Not a fault. Most nodes legitimately have no BMC or no metered outlets.
+            return {"configured": False, "healthy": None, "reason": "not_configured"}
+        error = detail.get(f"{value_key}_error") or detail.get("error")
+        if error:
+            return {"configured": True, "healthy": False, "reason": str(error)}
+        has_value = any(k.endswith("_watts") and detail.get(k) is not None for k in detail)
+        return {
+            "configured": True,
+            # None, not False, before the first poll completes: "has not reported yet" is not
+            # the same as "is broken", and a health check that conflates them cries wolf on
+            # every restart.
+            "healthy": True if has_value else None,
+            "reason": None if has_value else "no_reading_yet",
+        }
+
+    return {
+        "ilo": _state(_ilo_poller.enabled, ilo_detail, "ilo"),
+        "pdu": {
+            **_state(_pdu_poller.enabled, pdu_detail, "pdu"),
+            # Echoed so a misconfigured outlet map is visible without shelling into the host --
+            # the map is physical cabling that nothing can verify automatically.
+            "outlets": parse_outlets(settings.PDU_OUTLETS),
+            "host": settings.PDU_HOST or None,
+        },
+    }
+
+
 @app.get("/health")
 def health():
     return {
@@ -495,4 +632,5 @@ def health():
         "bus_url": settings.ORION_BUS_URL,
         "node": settings.NODE_NAME,
         "mode": settings.BIOMETRICS_MODE,
+        "power_telemetry": _power_telemetry_health(),
     }

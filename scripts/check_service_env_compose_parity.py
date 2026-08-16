@@ -119,12 +119,56 @@ def _read_compose_env_keys(path: Path, service_dirname: str) -> tuple[set[str], 
             if isinstance(item, str) and "=" in item:
                 keys.add(item.split("=", 1)[0].strip())
 
+    # Keys consumed by compose INTERPOLATION rather than passed into the
+    # container. The canonical case is a `*_HOST_PATH` used in `volumes:` --
+    # e.g. orion-room-companion's ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH
+    # and orion-self-study-enrichment's SELF_STUDY_ENRICHMENT_*_HOST_PATH.
+    # Those name a path on the OPERATOR'S disk; adding them to `environment:`
+    # would push a host path into the container that means nothing there, and
+    # for a credential mount it would advertise where the secret lives on the
+    # host. They are legitimately declared in .env_example (compose reads them)
+    # while legitimately absent from the container env.
+    #
+    # Without this, the gate was permanently red for every service using that
+    # pattern, which is the failure mode where a real gate gets ignored.
+    # Scanned across the whole service block, not just `volumes:`, so the same
+    # allowance covers interpolation in ports:, devices:, etc.
+    interpolated = _interpolated_keys(block, skip_key="environment")
+
     # env_file: accepts a bare string, a list of strings, or a list of mappings
     # ({"path": ..., "required": ...}) -- any non-empty form means every key in
     # that file reaches the container regardless of the environment: list above.
     has_env_file = bool(block.get("env_file"))
 
-    return keys, has_env_file
+    return keys | interpolated, has_env_file
+
+
+_INTERPOLATION_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _interpolated_keys(block: Any, *, skip_key: str | None = None) -> set[str]:
+    """Every ${VAR} referenced anywhere in a compose service block.
+
+    Walks nested lists/dicts because compose values are arbitrarily shaped.
+    `skip_key` omits one top-level key (`environment:`, whose keys are already
+    counted directly) so this only ever ADDS interpolation-only names.
+    """
+    found: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, str):
+            found.update(_INTERPOLATION_RE.findall(node))
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                if skip_key is not None and key == skip_key:
+                    continue
+                _walk(value)
+
+    _walk(block)
+    return found
 
 
 def main(argv: list[str] | None = None) -> int:

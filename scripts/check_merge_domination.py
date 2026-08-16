@@ -142,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     from orion.field.commensurability import analyse_field_history
+    from orion.field.credit_integrity import (
+        analyse_credit_integrity,
+        load_credited_dimensions,
+    )
 
     states, unparsed = _load_states(args.postgres_uri, args.ticks)
     if len(states) < 100:
@@ -151,6 +155,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Second, unrelated question on the same expensive state load: could a
+    # feedback-credited dimension currently be fooled by a producer outage?
+    # See orion/field/credit_integrity.py. Reported alongside rather than in a
+    # separate cron entry, because loading the states is the costly part and
+    # both questions are "is a number about to mislead a consumer".
+    credited, feedback_window = load_credited_dimensions()
+    credit = analyse_credit_integrity(states, credited, feedback_window)
 
     results = analyse_field_history(states)
     findings = {_key(r): r for r in results if r.is_finding}
@@ -197,6 +209,14 @@ def main(argv: list[str] | None = None) -> int:
             "ticks_analysed": len(states),
             "unparsed_ticks": unparsed,
             "merge_points": len(results),
+            "feedback_credit": {
+                "policy_window_sec": credit.window_seconds,
+                "shape_resolution_sec": credit.shape_span_seconds,
+                "samples": credit.channels,
+                "whole_series_verdict": credit.whole_series_verdict,
+                "longest_unbacked_run": credit.longest_unbacked_run,
+                "findings": [f.describe() for f in credit.findings],
+            },
             "findings": {k: _finding_payload(v) for k, v in sorted(findings.items())},
             "new": sorted(new),
             "resolved": sorted(resolved),
@@ -217,6 +237,33 @@ def main(argv: list[str] | None = None) -> int:
         for key in sorted(resolved):
             print(f"  RESOLVED {key} -- no longer dominated. "
                   f"Run --update-baseline to bank it.")
+
+    if not args.json:
+        print(
+            f"\nfeedback-credit watch: {len(credit.findings)} finding(s) "
+            f"(policy window {credit.window_seconds:.0f}s; "
+            f"shape resolution {credit.shape_span_seconds:.0f}s)"
+        )
+        for dim in sorted(credit.channels):
+            print(
+                f"    {dim:22} samples={credit.channels[dim]:>6} "
+                f"whole-series={credit.whole_series_verdict.get(dim, '-'):16} "
+                f"longest_unbacked={credit.longest_unbacked_run.get(dim, 0)}"
+            )
+        for finding in credit.findings:
+            print(f"    FINDING {finding.describe()}")
+        if credit.findings:
+            print(
+                "    REPORT-ONLY, and deliberately so: this condition is\n"
+                "    routine, not exceptional -- measured 2026-08-15 over 6,000\n"
+                "    live ticks (3.4h), credited dimensions were decay-only for\n"
+                "    20.1% (execution_pressure), 9.1% (resource_pressure) and\n"
+                "    3.7% (reliability_pressure) of ticks, in 60-115s stretches.\n"
+                "    Failing the gate on presence would make this hourly run\n"
+                "    permanently red, and a permanently red gate is ignored.\n"
+                "    Gating needs a ratchet baseline like the merge one above;\n"
+                "    the numbers to build it against now exist."
+            )
 
     if args.gate and (new or changed):
         print("\nmerge domination gate: FAIL", file=sys.stderr)

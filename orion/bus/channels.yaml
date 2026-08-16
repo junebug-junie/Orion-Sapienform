@@ -1097,6 +1097,37 @@ channels:
     stability: "experimental"
     since: "2026-03-22"
 
+  # Claude as a third social-room participant. Two producers as of the
+  # auto-respond feature: a human clicking "Ask Claude" in Hub, and Hub's own
+  # auto-invite after every Orion reply (websocket_handler.py) -- so this is
+  # no longer solely human-driven and spend is not bounded by clicks alone.
+  # No budget enforcement exists yet on either path (design only, see
+  # orion-room-companion/README.md's phase-2 watchdog section). The
+  # credential and the `claude` subprocess live in orion-room-companion,
+  # deliberately NOT in orion-hub --
+  # Hub runs as root with SSH keys, a gh token and the docker socket readable
+  # by Orion's own FCC turns, so a credential there is one Orion could use to
+  # spawn Claude outside the meter. See
+  # docs/architecture/hub-social-room-claude-companion.md.
+  - name: "orion:room:claude:request"
+    kind: "event"
+    schema_id: "RoomClaudeRequestV1"
+    message_kind: "room.claude.request.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-room-companion"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-14"
+
+  - name: "orion:room:claude:utterance"
+    kind: "event"
+    schema_id: "RoomClaudeUtteranceV1"
+    message_kind: "room.claude.utterance.v1"
+    producer_services: ["orion-room-companion"]
+    consumer_services: ["orion-hub", "*"]
+    stability: "experimental"
+    since: "2026-08-14"
+
   - name: "orion:social:participant:continuity"
     kind: "event"
     schema_id: "SocialParticipantContinuityV1"

@@ -111,6 +111,103 @@ async def test_reply_only_reaches_the_session_that_invited():
 
 
 @pytest.mark.asyncio
+async def test_falsy_session_id_does_not_broadcast_to_every_open_tab():
+    """A brand-new tab's first action can be clicking "Ask Claude" before it
+    has a session_id yet. The old scoping guard --
+    ``if session_id and entry.get("session_id") and entry[...] != session_id``
+    -- short-circuited to False whenever EITHER side was falsy, so a null
+    session_id reached every connection, identified or not. Nobody should
+    receive Claude's reply when there is nothing to scope it by."""
+    relay = _relay()
+    a: asyncio.Queue = asyncio.Queue()
+    b: asyncio.Queue = asyncio.Queue()
+    relay.register_connection("conn-a", a)
+    relay.note_session("conn-a", "sess-a")
+    relay.register_connection("conn-b", b)
+    # conn-b never calls note_session -- an unidentified socket, same as a
+    # fresh tab that hasn't sent session_hello yet.
+
+    await relay.invite(prompt="hi", invited_by="Juniper", session_id=None, room_id="hub-direct")
+    request_id = next(iter(relay._pending))
+    await relay._handle_utterance({"payload": _utterance(request_id=request_id, session_id=None).model_dump(mode="json")})
+
+    assert a.qsize() == 0
+    assert b.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_connection_id_pins_the_reply_regardless_of_session_id():
+    """When the caller has a connection_id (both the manual invite route and
+    the auto-invite path now always pass one), it is authoritative -- a stale
+    or mismatched noted session_id on the target socket must not matter."""
+    relay = _relay()
+    target: asyncio.Queue = asyncio.Queue()
+    other: asyncio.Queue = asyncio.Queue()
+    relay.register_connection("conn-target", target)
+    relay.note_session("conn-target", "sess-stale")
+    relay.register_connection("conn-other", other)
+    relay.note_session("conn-other", "sess-current")
+
+    await relay.invite(
+        prompt="hi", invited_by="Juniper", session_id="sess-current", room_id="hub-direct",
+        connection_id="conn-target",
+    )
+    request_id = next(iter(relay._pending))
+    await relay._handle_utterance(
+        {"payload": _utterance(request_id=request_id, session_id="sess-current").model_dump(mode="json")}
+    )
+
+    assert target.qsize() == 1
+    assert other.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_connection_id_falls_back_to_session_id_when_pinned_socket_is_gone():
+    """A Claude turn takes real wall-clock time. If Juniper refreshes the tab
+    while a reply is in flight, the pinned connection_id from invite() is now
+    dead -- but the new socket typically kept the same session_id (persisted
+    client-side, resent on reconnect). Falling back to session_id here is what
+    keeps the reply from being silently dropped on an ordinary page refresh."""
+    relay = _relay()
+    reconnected: asyncio.Queue = asyncio.Queue()
+    relay.register_connection("conn-new", reconnected)
+    relay.note_session("conn-new", "sess-1")
+
+    await relay.invite(
+        prompt="hi", invited_by="Oríon", session_id="sess-1", room_id="hub-direct",
+        trigger="auto", connection_id="conn-old-now-disconnected",
+    )
+    request_id = next(iter(relay._pending))
+    await relay._handle_utterance(
+        {"payload": _utterance(request_id=request_id, session_id="sess-1").model_dump(mode="json")}
+    )
+
+    assert reconnected.qsize() == 1, "must fall back to session_id, not drop the reply"
+
+
+@pytest.mark.asyncio
+async def test_stale_connection_id_with_no_session_match_drops_silently():
+    """The fallback chain has an end: if the pinned connection is gone AND no
+    live socket carries the session either, there is nothing left to deliver
+    to. Must drop, not guess by broadcasting."""
+    relay = _relay()
+    unrelated: asyncio.Queue = asyncio.Queue()
+    relay.register_connection("conn-unrelated", unrelated)
+    relay.note_session("conn-unrelated", "sess-other")
+
+    await relay.invite(
+        prompt="hi", invited_by="Oríon", session_id="sess-1", room_id="hub-direct",
+        trigger="auto", connection_id="conn-old-now-disconnected",
+    )
+    request_id = next(iter(relay._pending))
+    await relay._handle_utterance(
+        {"payload": _utterance(request_id=request_id, session_id="sess-1").model_dump(mode="json")}
+    )
+
+    assert unrelated.qsize() == 0
+
+
+@pytest.mark.asyncio
 async def test_failed_turn_is_surfaced_not_swallowed():
     """Silence is indistinguishable from Claude choosing not to speak, which is
     exactly what makes an outage invisible."""
@@ -119,7 +216,10 @@ async def test_failed_turn_is_surfaced_not_swallowed():
     relay.register_connection("c", q)
     relay.note_session("c", "sess-1")
 
-    bad = _utterance(ok=False, text="", error="401 OAuth access token is invalid")
+    # session_id echoed back on the utterance, as the companion actually does
+    # (it round-trips the request's session_id) -- without a session_id to
+    # scope by, _push has nothing to route the failure to.
+    bad = _utterance(session_id="sess-1", ok=False, text="", error="401 OAuth access token is invalid")
     await relay._handle_utterance({"payload": bad.model_dump(mode="json")})
 
     frame = q.get_nowait()
@@ -244,6 +344,20 @@ def test_auto_invite_is_rate_gated_per_session():
     assert relay.should_auto_invite("sess-1", 1011.0) is True, "past the gap"
     # Sessions are gated independently -- one busy room must not mute another.
     assert relay.should_auto_invite("sess-2", 1005.0) is True
+
+
+def test_empty_reply_does_not_consume_the_auto_invite_gate():
+    """should_auto_invite() stamps the rate gate as soon as it returns True.
+    Calling it for a workflow-only turn (no llm_response) before checking the
+    text would burn the next window for a turn that never actually invited
+    Claude. should_fire_auto_invite checks the text first."""
+    relay = _relay(auto_respond=True, auto_min_gap_sec=10.0)
+    assert relay.should_fire_auto_invite("", "sess-1", 1000.0) is False, "empty text: no invite, no gate consumed"
+    # A real turn one second later is still eligible -- the empty turn above
+    # must not have stamped _last_auto_invite.
+    assert relay.should_fire_auto_invite("Orion actually said something", "sess-1", 1001.0) is True
+    # Now the gate IS consumed by the real invite.
+    assert relay.should_fire_auto_invite("another reply", "sess-1", 1002.0) is False, "inside the gap"
 
 
 def test_auto_invite_is_off_unless_enabled():

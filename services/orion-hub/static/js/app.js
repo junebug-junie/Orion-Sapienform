@@ -9089,7 +9089,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch(`${API_BASE_URL}/api/room/claude/invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, session_id: orionSessionId || null }),
+        body: JSON.stringify({
+          prompt,
+          session_id: orionSessionId || null,
+          connection_id: activeConnectionId || null,
+        }),
       });
       if (!res.ok) {
         const detail = await res.text();
@@ -10625,9 +10629,13 @@ document.addEventListener("DOMContentLoaded", () => {
             // A room reply is not an Orion turn and must not overwrite its
             // debug surfaces.
             const claudeText = String(d.llm_response || '').trim();
+            const claudeOk = d.ok !== false;
             setAskClaudeBusy(false);
             if (claudeText) {
-              appendMessage(String(d.speaker || 'Claude'), claudeText, 'text-white', {
+              // A failed turn (outage, revoked credential) must not look like
+              // Claude casually speaking -- same red styling askClaude()'s own
+              // fetch-failure branch uses, not the normal white bubble.
+              appendMessage(String(d.speaker || 'Claude'), claudeText, claudeOk ? 'text-white' : 'text-red-300', {
                 correlationId: d.correlation_id,
                 messageId: d.message_id || null,
                 turnId: d.correlation_id,
@@ -10638,7 +10646,7 @@ document.addEventListener("DOMContentLoaded", () => {
                   model: d.model || null,
                   costUsd: typeof d.cost_usd === 'number' ? d.cost_usd : null,
                   durationMs: d.duration_ms || null,
-                  ok: d.ok !== false,
+                  ok: claudeOk,
                 },
               });
             }

@@ -1097,10 +1097,14 @@ channels:
     stability: "experimental"
     since: "2026-03-22"
 
-  # Claude as a third social-room participant. v1 is explicit-invite only:
-  # a request is emitted solely from a human clicking "Ask Claude" in Hub, so
-  # no autonomous loop can drive spend. The credential and the `claude`
-  # subprocess live in orion-room-companion, deliberately NOT in orion-hub --
+  # Claude as a third social-room participant. Two producers as of the
+  # auto-respond feature: a human clicking "Ask Claude" in Hub, and Hub's own
+  # auto-invite after every Orion reply (websocket_handler.py) -- so this is
+  # no longer solely human-driven and spend is not bounded by clicks alone.
+  # No budget enforcement exists yet on either path (design only, see
+  # orion-room-companion/README.md's phase-2 watchdog section). The
+  # credential and the `claude` subprocess live in orion-room-companion,
+  # deliberately NOT in orion-hub --
   # Hub runs as root with SSH keys, a gh token and the docker socket readable
   # by Orion's own FCC turns, so a credential there is one Orion could use to
   # spawn Claude outside the meter. See

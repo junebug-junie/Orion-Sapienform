@@ -513,13 +513,18 @@ class ChatTurnCancelRequest(BaseModel):
 
 
 class RoomClaudeInviteRequest(BaseModel):
-    """Operator-triggered invite. v1 is explicit-invite only, so this route is
-    the ONLY producer of orion:room:claude:request -- Orion cannot summon
-    Claude, which is what makes v1 spend structurally bounded by human clicks."""
+    """Operator-triggered invite. Originally the ONLY producer of
+    orion:room:claude:request; auto-respond (websocket_handler.py) added a
+    second, non-human-click producer -- see that module's comment for why
+    spend is no longer bounded by clicks alone."""
 
     prompt: str
     session_id: Optional[str] = None
     invited_by: str = "Juniper"
+    # From the WS "connection_ready" frame (app.js's activeConnectionId).
+    # Pins the reply to this exact socket -- see room_claude_relay.py's
+    # _push() for why session_id alone can broadcast to every open tab.
+    connection_id: Optional[str] = None
 
 
 class PreferencesResolveProxyRequest(BaseModel):
@@ -2035,6 +2040,7 @@ async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
             session_id=session_id,
             room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
             transcript=transcript,
+            connection_id=(payload.connection_id or "").strip() or None,
         )
     except Exception as exc:
         logger.exception("room_claude_invite_failed")

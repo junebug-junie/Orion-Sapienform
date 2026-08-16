@@ -175,7 +175,7 @@ labelled `atlas-worker-1` **while running on circe** — attributing circe's inf
 cost built on it, to the wrong machine. `agent` is not in that defaults dict at all, so it would
 go blank rather than wrong. Relevant to this arc specifically, since attribution is the point.
 
-### A3 — Route Orion's autonomous cognition to the background lane · *~1 commit* — **REVISED BY A2**
+### A3 — Route Orion's autonomous cognition to the background lane · ✅ **SHIPPED 2026-08-15**
 ~~Add `metacog_background` to the route table; point `cortex-exec`'s non-interactive path at the
 background routes.~~
 
@@ -193,6 +193,31 @@ it is now a smaller and better-evidenced change than when it was written.
 
 **Proceed gate:** Orion's autonomous requests resolve to `quick_background` in gateway logs.
 **Kill gate:** interactive latency regresses measurably → revert (one env key, fail-open).
+
+#### Shipped, and the thing that nearly made it inert
+
+Juniper answered §8 Q1: **background**. `_apply_autonomous_background_route` in
+`orion-cortex-exec/app/executor.py` redirects a step to `quick_background` when it would route
+to `quick`, has no caller override, and the lane resolver already scored it `priority: low`.
+
+**The classification was not invented.** `resolve_llm_lane_for_step` already sorts every step
+into chat(high)/agent(normal)/spark(low)/background(low), and `low` is exactly Orion-initiated
+work. A parallel `is_autonomous` flag would have been a second answer to an answered question.
+
+**What the live check caught:** in the first 12 minutes the only route decision was
+`journal.compose` — Orion's own journalling, on the background worker — carrying
+`override=quick`, so A3 correctly declined to touch it. Orion's autonomous callers *supply
+explicit routes*, and A3 respects overrides by design. **Left there, A3 would have redirected
+almost nothing.** `ACTIONS_JOURNAL_LLM_ROUTE` was `chat_quick` (a legacy alias for `quick`) and
+is now `quick_background`.
+
+**Still on the contended lane, unresolved:** `orion/memory_graph/suggest_runner.py:22` defaults
+`llm_route="quick"`. It writes to a *drafts* table, which suggests it is off the critical path,
+but its invocation site was not found and it was left alone rather than guessed at. If it is
+asynchronous, that default should become `quick_background` too.
+
+**Verified on the deployed artefact**, all four exec workers: flag `True`, low-priority `quick`
+→ `quick_background`, high-priority `quick` unchanged, `metacog` untouched.
 
 ### A4 — Observe a real deferral · *0 commits, analysis only*
 **Proceed gate:** ≥1 admission-wait event attributable to Orion's own cognition over 24 h, with

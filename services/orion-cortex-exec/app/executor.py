@@ -1849,6 +1849,44 @@ def _journal_pageindex_query(user_text: str) -> bool:
 _ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
 
 
+def _apply_autonomous_background_route(
+    *,
+    route: Optional[str],
+    override: Optional[str],
+    lane_priority: Optional[str],
+    enabled: bool,
+) -> Tuple[Optional[str], bool]:
+    """ROADMAP A3: send Orion's own low-priority `quick` work to `quick_background`.
+
+    Returns (route, was_backgrounded).
+
+    Extracted rather than inlined so the decision is directly testable. The inline version of
+    this was three `and` clauses in the middle of a 60-line block, which is exactly the shape
+    that gets tested by a copy of itself and then drifts.
+
+    Every clause is load-bearing:
+
+    - `enabled`  -- the roadmap's kill gate. EXEC_AUTONOMOUS_BACKGROUND_ROUTING=false restores
+      the previous behaviour exactly, with no migration and nothing else to redeploy.
+    - `override is None` -- a caller that named a lane is never second-guessed.
+    - `route == "quick"` -- ONLY the contended lane. `chat` is Juniper's conversation and is
+      never demoted; `metacog` measured 0.00% all-busy over 27.74 h (A2) so moving it would be
+      ceremony; `None` falls through to the gateway's own choice.
+    - `lane_priority == "low"` -- reuses the classification `resolve_llm_lane_for_step` already
+      makes. `low` is precisely Orion-initiated work (introspect_spark plus _BACKGROUND_VERBS).
+      A parallel "is_autonomous" flag would be a second answer to an answered question, and the
+      two would drift.
+    """
+    if (
+        enabled
+        and override is None
+        and route == "quick"
+        and lane_priority == "low"
+    ):
+        return "quick_background", True
+    return route, False
+
+
 def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """Normalize a caller-supplied llm_route override.
 
@@ -3968,8 +4006,50 @@ async def call_step_services(
                         if ctx.get("mode") == "metacog"
                         else None
                     )
+                lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
+
+                # ROADMAP A3: Orion's own thinking yields the lane to Juniper's.
+                #
+                # Until this, a metacog tick, a reverie or a dream competed for atlas's 4 `quick`
+                # slots on exactly equal terms with an interactive chat turn. Measured over
+                # 27.74 h (A2): that lane is completely full 4.01% of the time and blocks 174x
+                # more than Poisson arrivals would, because work arrives in batches. So the
+                # contention is real and Orion is a large part of it.
+                #
+                # `quick_background` is the SAME upstream and model as `quick`. The only
+                # difference is the gateway's admission gate (orion-llm-gateway/app/
+                # priority_admission.py), which holds `reserved_free_slots` free for foreground
+                # callers -- so a background request waits instead of making Juniper wait.
+                #
+                # WHY THIS REUSES `lane_opts["priority"]` RATHER THAN ASKING "IS THIS
+                # AUTONOMOUS": the classification already exists. `resolve_llm_lane_for_step`
+                # sorts every step into chat (priority high), spark (low), background (low) or
+                # agent (normal). `low` is precisely Orion-initiated work -- introspect_spark
+                # plus _BACKGROUND_VERBS (dream_cycle, dream_synthesis,
+                # log_orion_metacognition, reverie_narrate). Inventing a parallel
+                # "is_autonomous" flag would be a second answer to a question already answered,
+                # and the two would drift.
+                #
+                # DELIBERATELY NARROW. Only `quick` is redirected:
+                #   - an explicit caller override always wins, so nothing that asked for a lane
+                #     is second-guessed;
+                #   - `chat` is Juniper's conversation and is never demoted;
+                #   - `metacog` is untouched because A2 measured that lane at 0.00% all-busy
+                #     over 27.74 h -- it never fills, so moving it would be ceremony.
+                #
+                # KILL GATE (roadmap): if interactive latency regresses, set
+                # EXEC_AUTONOMOUS_BACKGROUND_ROUTING=false. One env key, no redeploy of
+                # anything else, and the fallback is exactly the previous behaviour.
+                llm_route, autonomous_backgrounded = _apply_autonomous_background_route(
+                    route=llm_route,
+                    override=llm_route_override,
+                    lane_priority=lane_opts.get("priority"),
+                    enabled=getattr(settings, "exec_autonomous_background_routing", True),
+                )
+
                 logger.info(
-                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s override_attempted=%s",
+                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s "
+                    "override_attempted=%s autonomous_backgrounded=%s lane_priority=%s",
                     correlation_id,
                     ctx.get("mode"),
                     step.verb_name,
@@ -3977,8 +4057,9 @@ async def call_step_services(
                     llm_route,
                     llm_route_override,
                     llm_route_override_attempted,
+                    autonomous_backgrounded,
+                    lane_opts.get("priority"),
                 )
-                lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
                 logger.info(
                     "exec_llm_lane_decision corr=%s trace_id=%s execution_lane=%s llm_lane=%s verb=%s step=%s priority=%s allow_chat_fallback=%s",
                     correlation_id,

@@ -240,6 +240,46 @@ If `self_state` is absent, stale, or fails to parse, metacog-lane scoring falls 
 
 **Tests:** `tests/test_situation_provider.py` (mocks `urlopen`; covers live-model-reported, gateway-unreachable degrade, route-missing-from-response degrade, disabled-by-default, and TTL caching).
 
+### LLM lane selection, and who yields (ROADMAP A3)
+
+Two orthogonal things decide where a step's LLM call goes, and they are easy to confuse:
+
+| | set by | answers |
+| :--- | :--- | :--- |
+| **route** (`quick`, `chat`, `metacog`, `quick_background`) | `executor.py` default mapping, or a caller override | *which upstream worker* |
+| **lane / priority** (`chat`=high, `agent`=normal, `spark`/`background`=low) | `app/llm_lane.py::resolve_llm_lane_for_step` | *how important is this* |
+
+**A3 connects them.** A step whose priority is `low` — Orion's own initiative — and which would
+otherwise route to `quick` is redirected to **`quick_background`** instead. Same upstream, same
+model; the difference is the gateway's admission gate
+(`orion-llm-gateway/app/priority_admission.py`), which holds `reserved_free_slots` free for
+foreground callers. **So Orion waits rather than Juniper.**
+
+Low priority is exactly: `introspect_spark`, `dream_cycle`, `dream_synthesis`,
+`log_orion_metacognition`, `reverie_narrate`, or anything with `execution_lane == "background"`.
+
+Why this exists: A2 measured the `quick` lane over **27.74 h** at **4.01% completely full**,
+blocking **174x** more than Poisson arrivals would at the same offered load — it is hit in
+batches, not merely busy. Orion was a large part of that contention with no way to yield.
+
+**Deliberately narrow.** An explicit caller override always wins; `chat` is never demoted;
+`metacog` is untouched because A2 measured that lane at **0.00%** all-busy over the same window
+— it never fills, so moving it would be ceremony.
+
+**Kill gate:** `EXEC_AUTONOMOUS_BACKGROUND_ROUTING=false` restores the previous behaviour
+exactly. One env key, no migration, nothing else to redeploy. Use it if interactive latency
+regresses.
+
+**What to look for in the logs:**
+
+```text
+llm_route_selected corr_id=... verb=reverie_narrate route=quick_background
+                   autonomous_backgrounded=True lane_priority=low
+```
+
+`autonomous_backgrounded` and `lane_priority` are on every route decision, so a step that was
+or was not redirected is visible without re-deriving the rule.
+
 ## Running & Testing
 
 ### Run via Docker

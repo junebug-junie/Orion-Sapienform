@@ -29,7 +29,7 @@ from orion.field.channel_glossary import (
     classify_channel_series,
     load_glossary,
 )
-from orion.field.pressure import collect_field_channel_pressures
+from orion.field.pressure import clamp01, collect_field_channel_pressures
 from orion.field.regime import channel_regime
 from orion.schemas.field_state import FieldStateV1
 
@@ -86,12 +86,13 @@ def build_channel_series(
     Only a channel absent from EVERY row's raw vectors for the whole window
     is genuinely never_produced.
 
-    Returns (series, stamps, unparsable_row_count). `stamps` is the producer
-    write time behind each merged sample, aligned 1:1 with `series`, so
-    `channel_regime` can use its AUTHORITATIVE timestamp path instead of
-    inferring liveness from value ratios. Discarding them (as this did until
-    2026-08-14) forced ALL 38 channels onto the inference fallback, which is
-    blind in the subnormal range where decay stops producing a 0.92 ratio.
+    Returns (series, stamps, tick_times, unparsable_row_count). `stamps` is
+    the producer write time behind each merged sample, aligned 1:1 with
+    `series`, so `channel_regime` can use its AUTHORITATIVE timestamp path
+    instead of inferring liveness from value ratios. Discarding them (as this
+    did until 2026-08-14) forced ALL 38 channels onto the inference fallback,
+    which is blind in the subnormal range where decay stops producing a 0.92
+    ratio.
 
     Measured across four consecutive 1-hour windows (~1750 ticks each):
     **22-25 of 38 channels move onto the timestamp path, and 3-12 verdicts
@@ -106,6 +107,18 @@ def build_channel_series(
     which is a different and more useful claim. The remainder are
     capability-sourced or too sparsely stamped and correctly keep the
     fallback.
+
+    Also always collects `tension_deviation_pressure` (2026-08-16, docs/
+    superpowers/specs/2026-08-16-tension-driven-mutating-dispatch-design.md)
+    -- the one series here that is NOT a raw pre-merge channel (it lives
+    directly on FieldStateV1, written by orion.attention.tension via
+    services/orion-field-digester/app/digestion/tension.py). See
+    config/field/field_channel_glossary.v1.yaml's own entry for that scalar
+    for the full account. It has no channel-merge provenance winner to time
+    (unlike the `merged`-branch entries below), so its `stamps` entry is
+    always None -- an honest "no producer write time to report" rather than
+    a fabricated one, same convention `_winning_write_time()` already uses
+    for capability winners.
 
     `unparsable_row_count` lets callers distinguish "this channel is genuinely
     dead" from "every row in this window failed to parse" -- both would
@@ -123,6 +136,20 @@ def build_channel_series(
         except Exception:  # noqa: BLE001 - count and skip unparsable historical rows
             unparsable += 1
             continue
+        # See this function's own docstring's "Also always collects" section.
+        # clamp01(), not a bare float() -- code review, 2026-08-16: every
+        # other collected value in this function goes through
+        # collect_field_channel_pressures()'s clamp01(float(value)), and
+        # this scalar has no schema-level range constraint of its own
+        # (orion/schemas/field_state.py's `tension_deviation_pressure: float
+        # = 0.0`). Today's producer (orion.attention.tension.competition
+        # .deviation_pressure()) happens to clamp to [0, 1] at write time,
+        # but this function must not depend on every future writer doing so.
+        series.setdefault("tension_deviation_pressure", []).append(
+            clamp01(state.tension_deviation_pressure)
+        )
+        stamps.setdefault("tension_deviation_pressure", []).append(None)
+        tick_times.setdefault("tension_deviation_pressure", []).append(state.generated_at)
         merged, provenance = collect_field_channel_pressures(state)
         raw_keys: set[str] = set()
         for vector in state.node_vectors.values():
@@ -131,6 +158,8 @@ def build_channel_series(
             raw_keys.update(vector.keys())
         seen_channels = set(series.keys()) | set(merged.keys())
         for channel in seen_channels:
+            if channel == "tension_deviation_pressure":
+                continue  # already appended above, not part of the merge
             if channel in merged:
                 series.setdefault(channel, []).append(float(merged[channel]))
                 stamps.setdefault(channel, []).append(

@@ -486,9 +486,22 @@ def field_pressures_with_provenance(
     goes through proposal mode, not through this patch.
     """
     channel_pressures, channel_provenance = collect_field_channel_pressures(field)
-    return map_channels_to_dimensions_with_provenance(
+    dims, detail = map_channels_to_dimensions_with_provenance(
         channel_pressures, channel_provenance
     )
+    # deviation_pressure (2026-08-16, docs/superpowers/specs/2026-08-16-
+    # tension-driven-mutating-dispatch-design.md) is NOT a raw channel routed
+    # through CHANNEL_DIMENSION_MAP -- it is a derived, stateful scalar
+    # (orion.attention.tension.competition.deviation_pressure), already
+    # computed once per digestion tick and carried on `field` itself. Same
+    # "add a derived key directly, outside the generic per-channel merge"
+    # precedent as `recent_perturbation_count` above. No `detail` entry: it
+    # has no channel-merge provenance to report, and
+    # orion/field/commensurability.py's consumer already tolerates a
+    # dimension absent from `detail` (iterates `detail.items()`, does not
+    # assume every PRESSURE_DIMENSIONS key is present).
+    dims["deviation_pressure"] = clamp01(field.tension_deviation_pressure)
+    return dims, detail
 
 
 def field_pressures(field: FieldStateV1) -> dict[str, float]:

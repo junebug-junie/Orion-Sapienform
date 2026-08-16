@@ -1,7 +1,10 @@
-# Structured index of FieldStateV1's 35 raw digester channels (29 NODE_CHANNELS
-# + 8 CAPABILITY_CHANNELS in services/orion-field-digester/app/tensor/channels.py,
-# overlapping on stream_backlog_pressure/contract_pressure). 29 = 23 original + 5
-# FCC-motor channels added 2026-07-23 (harness_step_load,
+# Structured index of FieldStateV1's 38 raw digester channels (originally 35 --
+# 29 NODE_CHANNELS + 8 CAPABILITY_CHANNELS in services/orion-field-digester/
+# app/tensor/channels.py, overlapping on stream_backlog_pressure/
+# contract_pressure -- plus power_pressure/disk_capacity_pressure/
+# fan_pressure added 2026-07-25, this header not updated at the time; fixed
+# 2026-08-16 while touching this file for an unrelated addition below). 29 =
+# 23 original + 5 FCC-motor channels added 2026-07-23 (harness_step_load,
 # tool_failure_streak_pressure, avg_step_chars_pressure, compliance_deficit,
 # turn_incompletion) + 1 FCC-motor channel added 2026-07-24
 # (context_gathering_ratio; reasoning_load also gained a real motor-side
@@ -9,6 +12,10 @@
 # renamed to stream_backlog_pressure/stream_backlog_health 2026-07-24 for scope
 # honesty (see each channel's own entry below) -- total channel count unchanged,
 # same two channels under new names.
+#
+# 2026-08-16: one additional entry, tension_deviation_pressure, is NOT one of
+# the 38 raw channels above -- it is a derived scalar. See its own entry's
+# comment for why it is listed here anyway. 39 entries total in this file.
 #
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
@@ -280,3 +287,51 @@ channels:
     category: synthesized_rollup
     meaning: "Capability-level pressure representing risk to reliability (from execution friction, failures, or observer failures)."
     self_state_dimension: reliability_pressure
+
+  # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+  # dispatch-design.md): NOT one of the 38 raw pre-merge channels above --
+  # it is a derived, stateful scalar computed by orion.attention.tension's
+  # DeviationGate/FieldTensionCompetition from admitted per-(node, channel)
+  # deviations across ALL of them, written once per digestion tick by
+  # services/orion-field-digester/app/digestion/tension.py onto
+  # FieldStateV1.tension_deviation_pressure directly (not inside
+  # node_vectors/capability_vectors). Included here anyway because Hub's
+  # Field Channel Glossary panel is the only live-liveness observability
+  # surface FieldStateV1 has, and this deserves the same "is it actually
+  # producing real, varying signal" check the 38 raw channels get -- not a
+  # claim that it IS one of them. `level: [field]` is a new value (the other
+  # 38 entries are only ever `node`/`capability`/`node, capability`),
+  # introduced here rather than reusing `capability` because this scalar is
+  # not scoped to any single capability; it is one number for the whole tick.
+  #
+  # Deliberately NO self_state_dimension here, unlike execution_pressure/
+  # resource_pressure/reliability_pressure above. That field means "this raw
+  # channel routes through orion.field.pressure.CHANNEL_DIMENSION_MAP's
+  # max()-merge into this dimension" -- tests/test_field_channel_glossary.py
+  # ::test_self_state_dimension_matches_channel_dimension_map_exactly is a
+  # fail-closed exact-equality gate on that claim. tension_deviation_pressure
+  # does NOT go through that merge (it is written directly onto
+  # `orion.proposals.scoring`'s "deviation_pressure" PRESSURE_DIMENSIONS
+  # entry by orion/field/pressure.py::field_pressures_with_provenance(), a
+  # different code path -- see that function's own comment), so claiming a
+  # CHANNEL_DIMENSION_MAP route here would be false and would break that
+  # gate. It already IS the dimension value, not a channel feeding one --
+  # the `meaning` text says so instead.
+  #
+  # Caveat added in review: "0.0 is a real reading, not an absence" is only
+  # true for ticks the producer actually ran on. `tension_deviation_pressure`
+  # is a plain `float = 0.0` schema default (orion/schemas/field_state.py),
+  # so any substrate_field_state row persisted BEFORE
+  # services/orion-field-digester/app/digestion/tension.py started running
+  # also reads 0.0 -- indistinguishable in storage from a genuine "nothing
+  # admitted" tick. A window straddling that deploy boundary will read
+  # artificially flat/dead, exactly the decayed-to-zero-vs-genuinely-calm
+  # ambiguity CLAUDE.md 0A's metric gate warns about, and this glossary's
+  # live classify_channel_series() cannot tell the two apart from the stored
+  # value alone. Not fixed here (would need a producer-added marker field);
+  # disclosed so a reader checking this panel soon after deploy does not
+  # over-read an early "dead"/"quiet" verdict.
+  - channel: tension_deviation_pressure
+    level: [field]
+    category: synthesized_rollup
+    meaning: "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is the expected reading once the producer has been running a while ('nothing admitted' is a real, common state) -- but a row from before the producer existed also reads 0.0 (schema default), indistinguishable in storage. Read verdicts from a window entirely after deploy."

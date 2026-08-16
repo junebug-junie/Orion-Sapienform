@@ -71,12 +71,23 @@ def _fake_engine_with_rows(field_jsons: list[dict]):
     return fake_engine
 
 
-def test_channels_endpoint_returns_35_entries(client):
+def test_channels_endpoint_returns_38_raw_channels_plus_1_derived(client):
     r = client.get("/api/field-channel-glossary/channels")
     assert r.status_code == 200
     body = r.json()
-    assert len(body["channels"]) == 35
+    # 38 raw pre-merge channels + 1 derived scalar (tension_deviation_pressure,
+    # 2026-08-16) -- see that entry's own comment in config/field/
+    # field_channel_glossary.v1.yaml for why it's listed here despite not
+    # being one of the 38.
+    assert len(body["channels"]) == 39
     assert len(body["categories"]) == 7
+    channels_by_name = {c["channel"]: c for c in body["channels"]}
+    assert "tension_deviation_pressure" in channels_by_name
+    assert channels_by_name["tension_deviation_pressure"]["level"] == ["field"]
+    # No self_state_dimension: that field means "routes through
+    # CHANNEL_DIMENSION_MAP's merge", which this scalar deliberately does
+    # not do -- see the yaml entry's own comment.
+    assert channels_by_name["tension_deviation_pressure"]["self_state_dimension"] is None
 
 
 def test_health_endpoint_classifies_dead_channel(client):
@@ -152,6 +163,56 @@ def test_build_channel_series_counts_unparsable_rows_separately_from_dead():
     )
     assert unparsable == 1
     assert len(series["cpu_pressure"]) == 2
+
+
+# --- tension_deviation_pressure (2026-08-16) --------------------------------
+
+
+def _field_state_row_with_tension(deviation_pressure: float) -> dict:
+    row = _field_state_row({})
+    row["tension_deviation_pressure"] = deviation_pressure
+    return row
+
+
+def test_build_channel_series_always_collects_tension_deviation_pressure():
+    """Unlike every other series here, this one is not gated on
+    known_channels/raw_keys presence -- it lives directly on FieldStateV1
+    and is always a real float, never missing."""
+    rows = [_field_state_row_with_tension(v) for v in (0.0, 0.3, 0.9)]
+    series, stamps, tick_times, unparsable = field_channel_glossary_routes.build_channel_series(
+        rows, known_channels=["cpu_pressure"]  # deliberately NOT listing it
+    )
+    assert unparsable == 0
+    assert series["tension_deviation_pressure"] == [0.0, 0.3, 0.9]
+    # No channel-merge provenance winner to time -- see build_channel_series()'s
+    # own docstring.
+    assert stamps["tension_deviation_pressure"] == [None, None, None]
+    assert len(tick_times["tension_deviation_pressure"]) == 3
+
+
+def test_health_endpoint_classifies_tension_deviation_pressure(client):
+    # Non-monotonic on purpose (unlike a plain ramp up to the max) -- a
+    # monotonically non-decreasing climb of this size would classify as
+    # ratchet_suspect instead of live (classify_channel_series()'s own
+    # rule), and this test wants the ordinary "real variance" path.
+    chronological_values = [0.0, 0.3, 0.0, 0.85, 0.1]  # oldest -> newest
+    # _fake_engine_with_rows simulates the route's real `ORDER BY
+    # generated_at DESC` query, so rows must be handed in newest-first --
+    # see test_health_endpoint_reverses_desc_rows_back_to_chronological_order.
+    rows = [_field_state_row_with_tension(v) for v in reversed(chronological_values)]
+    fake_engine = _fake_engine_with_rows(rows)
+
+    with patch.object(field_channel_glossary_routes, "_engine", return_value=fake_engine):
+        r = client.get("/api/field-channel-glossary/health?hours=1")
+
+    body = r.json()
+    by_channel = {c["channel"]: c for c in body["channels"]}
+    row = by_channel["tension_deviation_pressure"]
+    assert row["verdict"] == "live"
+    assert row["sample_count"] == 5
+    assert row["min"] == 0.0
+    assert row["max"] == 0.85
+    assert row["last"] == 0.1
 
 
 def test_health_endpoint_reverses_desc_rows_back_to_chronological_order(client):

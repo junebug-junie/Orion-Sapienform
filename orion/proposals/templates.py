@@ -10,6 +10,12 @@ ProposalKind = Literal[
     "defer",
     "request_policy_review",
     "prepare_action",
+    # 2026-08-12 (config/proposals/proposal_policy.v1.yaml's prune_build_cache):
+    # the first mutating kind, already live -- added here 2026-08-16 while
+    # touching this Literal for the tension-driven-dispatch templates below.
+    # cast_proposal_kind()'s cast() is a static-only no-op, so the omission
+    # was never a runtime bug, only a stale type hint.
+    "maintain",
 ]
 
 TargetKind = Literal[
@@ -91,6 +97,23 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
         "Watch transport backpressure",
         "Periodic observation of transport signals without bus mutation.",
         ["transport_backpressure_watch", "read_only"],
+    ),
+    # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+    # dispatch-design.md): tension-driven templates.
+    "observe_tension_via_camera": (
+        "Look at the camera on real interoceptive tension",
+        "Field deviation tension is elevated; look at the current camera window as a consumer of that signal, not a new capture source.",
+        ["deviation_pressure_elevated", "perception_consumer", "read_only"],
+    ),
+    "prune_dangling_images": (
+        "Prune dangling Docker images under tension",
+        "Deviation and/or resource pressure is elevated; reclaim dangling (untagged, unreferenced) image layers if the skill's own disk/count gate agrees.",
+        ["deviation_pressure_elevated", "bounded_mutation", "regenerable"],
+    ),
+    "prune_stopped_containers": (
+        "Prune stopped containers under tension",
+        "Deviation and/or resource pressure is elevated; prune stopped containers if the skill's own gate agrees.",
+        ["deviation_pressure_elevated", "bounded_mutation", "regenerable"],
     ),
 }
 

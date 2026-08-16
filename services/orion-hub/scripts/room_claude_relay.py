@@ -16,9 +16,14 @@ The socket-injection half is modelled on `endogenous_outreach.py`, which
 already solves the same problem (get an unsolicited message into an open
 chat) including the busy/idle guards that stop a bubble landing mid-turn.
 
-v1 is explicit-invite only: the only caller of `invite()` is an operator
-route. Orion inviting Claude itself is v2 and is precisely the change that
-makes budget enforcement matter -- see the README's phase-2 watchdog section.
+`invite()` now has two callers: the operator route (api_routes.py, a human
+clicking "Ask Claude") and the auto-respond path in websocket_handler.py
+(fired after every Orion reply, no click). That auto path is the "Orion
+inviting Claude itself" scenario this module originally called v2 and treated
+as the trigger for real budget enforcement -- it shipped without that
+enforcement landing first. See the README's phase-2 watchdog section: it is
+still a design, not code. `trigger` on the request distinguishes the two
+(licenses `[pass]` on auto only); it does not cap spend on either.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -133,6 +138,18 @@ class RoomClaudeRelay:
         self._last_auto_invite[key] = now
         return True
 
+    def should_fire_auto_invite(self, orion_said: str, session_id: Optional[str], now: float) -> bool:
+        """Combines the "is there anything to react to" check with the rate
+        gate, in the order that matters.
+
+        `should_auto_invite` stamps the rate gate as a side effect of
+        returning True. Calling it before checking `orion_said` would let a
+        workflow-only turn (real, empty-`llm_response` case -- see app.js's
+        `workflowOnlyTurn`) consume the next `auto_min_gap_sec` window for
+        nothing, muting Claude for a turn that never actually invited it.
+        """
+        return bool(orion_said.strip()) and self.should_auto_invite(session_id, now)
+
     # -- outbound: invite --------------------------------------------------
 
     async def invite(
@@ -146,9 +163,15 @@ class RoomClaudeRelay:
         transcript: Optional[List[Dict[str, Any]]] = None,
         social_memory_summary: Optional[Dict[str, Any]] = None,
         trigger: str = "manual",
+        connection_id: Optional[str] = None,
     ) -> RoomClaudeRequestV1:
         """Ask the companion for one Claude turn. Returns the request so the
-        caller can correlate; the reply arrives asynchronously on the bus."""
+        caller can correlate; the reply arrives asynchronously on the bus.
+
+        ``connection_id``, when the caller has one, pins the reply to that
+        exact socket -- see `_push` for why session_id alone is not reliable
+        scoping.
+        """
         entries: List[RoomTranscriptEntryV1] = []
         for raw in transcript or []:
             try:
@@ -170,6 +193,7 @@ class RoomClaudeRelay:
         )
         self._pending[request.request_id] = {
             "session_id": session_id,
+            "connection_id": connection_id,
             "invited_at": _utcnow_iso(),
         }
         await self._publish(self.request_channel, "room.claude.request.v1", request)
@@ -218,6 +242,7 @@ class RoomClaudeRelay:
 
         pending = self._pending.pop(utterance.request_id, None)
         session_id = utterance.session_id or (pending or {}).get("session_id")
+        target_connection_id = (pending or {}).get("connection_id")
 
         if not utterance.ok:
             # A failed turn is surfaced, not swallowed. Silence here is
@@ -231,6 +256,7 @@ class RoomClaudeRelay:
                 text=f"[Claude could not reply: {utterance.error or 'unknown error'}]",
                 utterance=utterance,
                 session_id=session_id,
+                connection_id=target_connection_id,
                 ok=False,
             )
             return
@@ -249,17 +275,43 @@ class RoomClaudeRelay:
             "room_claude_relay_utterance request=%s model=%s cost_usd=%.6f chars=%d",
             utterance.request_id, utterance.model, utterance.cost_usd, len(utterance.text),
         )
-        self._push(text=utterance.text, utterance=utterance, session_id=session_id, ok=True)
+        self._push(
+            text=utterance.text, utterance=utterance, session_id=session_id,
+            connection_id=target_connection_id, ok=True,
+        )
         await self._publish_history(utterance, session_id=session_id)
 
     def _push(
-        self, *, text: str, utterance: RoomClaudeUtteranceV1, session_id: Optional[str], ok: bool
+        self,
+        *,
+        text: str,
+        utterance: RoomClaudeUtteranceV1,
+        session_id: Optional[str],
+        connection_id: Optional[str],
+        ok: bool,
     ) -> None:
         """Fan out to live sockets.
 
         Deliberately omits `state` and the recall/routing debug keys, same as
         endogenous_outreach: a Claude bubble must not stomp the panels showing
         the last real Orion turn.
+
+        Scoping is a real fallback chain, most to least precise -- a Claude
+        turn takes real wall-clock time (that's why duration_ms is tracked),
+        so the socket a connection_id pins to can legitimately be gone by the
+        time the reply lands (e.g. a page refresh mid-turn):
+          1. `connection_id` from the invite, when the caller had one AND a
+             live connection still has it -- pins to that exact socket.
+          2. falls back to an exact, both-sides-set `session_id` match if (1)
+             matched nothing -- covers a reconnect that kept the same
+             session_id, which is the common case (session_id is persisted
+             client-side and resent on reconnect).
+          3. neither matches anything: drop rather than guess. The old code's
+             ``if session_id and entry.get("session_id") and ...`` short-
+             circuited to False (no skip) whenever either side was falsy --
+             a session_id-less invite (a brand-new tab with no session yet)
+             broadcast to every open connection, sockets that hadn't reported
+             a session included. A room is a conversation, not a broadcast.
         """
         frame = {
             "kind": ROOM_CLAUDE_KIND,
@@ -275,21 +327,36 @@ class RoomClaudeRelay:
             "cost_usd": utterance.cost_usd,
             "duration_ms": utterance.duration_ms,
         }
-        for connection_id, entry in list(self._connections.items()):
-            # Only the session that invited Claude sees the reply. A room is a
-            # conversation, not a broadcast; without this every open tab would
-            # get someone else's answer.
-            if session_id and entry.get("session_id") and entry["session_id"] != session_id:
-                continue
+        targets: List[Tuple[str, Dict[str, Any]]] = []
+        if connection_id:
+            targets = [
+                (cid, entry) for cid, entry in self._connections.items() if cid == connection_id
+            ]
+        if not targets and session_id:
+            targets = [
+                (cid, entry)
+                for cid, entry in self._connections.items()
+                if entry.get("session_id") == session_id
+            ]
+        if not targets:
+            logger.warning(
+                "room_claude_relay_push_unscoped request=%s connection=%s session=%s"
+                " -- dropping, not broadcasting",
+                utterance.request_id, connection_id, session_id,
+            )
+            return
+        for entry_connection_id, entry in targets:
             queue = entry.get("queue")
             if queue is None:
                 continue
             try:
                 queue.put_nowait(dict(frame))
             except asyncio.QueueFull:
-                logger.warning("room_claude_relay_queue_full connection=%s", connection_id)
+                logger.warning("room_claude_relay_queue_full connection=%s", entry_connection_id)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("room_claude_relay_push_failed connection=%s err=%s", connection_id, exc)
+                logger.warning(
+                    "room_claude_relay_push_failed connection=%s err=%s", entry_connection_id, exc
+                )
 
     async def _publish_history(
         self, utterance: RoomClaudeUtteranceV1, *, session_id: Optional[str]

@@ -184,10 +184,24 @@ def _samples_for(
             # field_channel_glossary_routes._winning_write_time uses it.
             # ALL contributing channels must be backed: one unbacked
             # contributor is enough to make the dimension a partial remnant.
+            #
+            # `ch in merged` is checked INSIDE the predicate, not as a filter
+            # on which channels get checked. Filtering first (`if ch in
+            # merged`) is a vacuous-truth trap: `all()` over an empty
+            # generator is True, so a channel that is totally absent from the
+            # merge -- worse than unbacked, nobody wrote it AT ALL this tick
+            # -- would silently count as backed whenever it happened to be
+            # the only contributor missing. Not reachable via today's policy
+            # (every credited dimension maps to exactly one channel, so
+            # `dim in dims` already implies that one channel is in `merged`),
+            # but `social_pressure` maps to two (repair_pressure +
+            # conversation_load) and would trip this the moment a
+            # multi-channel dimension is credited. Confirmed live with a
+            # repro: repair_pressure absent + conversation_load backed read
+            # `backed=True` under the filtered form.
             backed = bool(channels) and all(
-                (provenance.get(ch) or "") in state.node_vectors
+                ch in merged and (provenance.get(ch) or "") in state.node_vectors
                 for ch in channels
-                if ch in merged
             )
             out[dim].append(
                 ChannelSample(at=state.generated_at, value=dims[dim], provenance_backed=backed)

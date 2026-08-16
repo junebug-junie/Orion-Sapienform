@@ -10,15 +10,16 @@ import uuid
 from collections import deque
 from copy import deepcopy
 from datetime import date, datetime, timezone
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, Optional, Tuple, Type
 
-from sqlalchemy import inspect, update
-from sqlalchemy.types import DateTime, String
+from sqlalchemy import func, inspect, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.types import DateTime, String, Text
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 
 from app.settings import settings
-from app.db import get_session, remove_session
+from app.db import get_session, remove_session, session_factory
 from app.models import (
     BiometricsTelemetry,
     BiometricsSummarySQL,
@@ -80,6 +81,7 @@ from app.models import (
     DominanceStreakTickSQL,
     DevEconomicsLedgerSQL,
     DocSemanticDriftSQL,
+    JuniperAffectiveStateSQL,
     PhiRewardSQL,
     GrammarEventSQL,
     EquilibriumServiceTransitionSQL,
@@ -104,6 +106,9 @@ from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
+from orion.schemas.affective_state import JuniperAffectiveStateV1
+
+from app.route_coverage import log_route_coverage
 
 # Shared schemas
 from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorStoredV1
@@ -462,6 +467,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
     "DocSemanticDriftSQL": (DocSemanticDriftSQL, DocSemanticDriftV1),
+    "JuniperAffectiveStateSQL": (JuniperAffectiveStateSQL, JuniperAffectiveStateV1),
     "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
     "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),
 }
@@ -741,17 +747,90 @@ def _merge_spark_meta(
     return _json_sanitize(base)
 
 
-def _coalesce_chat_history_turn_fields(filtered_data: dict, existing: Any) -> None:
-    """Do not let a partial chat.history turn overwrite prompt/response already filled."""
-    if existing is None:
-        return
-    for field in ("prompt", "response"):
-        if field not in filtered_data:
+def _chat_history_conflict_updates(
+    cols: Iterable[str], stmt: Any, *, incoming_wins: bool
+) -> dict[str, Any]:
+    """Per-column ON CONFLICT rule for chat_history_log.
+
+    ``chat_history_log`` is not append-only -- one row is assembled from three
+    separate bus events (user message, assistant message, turn), each carrying a
+    different subset of the columns. So a conflict is never "we already have
+    this, skip"; it is "merge what this event knows into what is already there".
+
+    The two producers deliberately keep DIFFERENT policies, matching what each
+    did before the upsert replaced their read-modify-write:
+
+    ``incoming_wins=True`` (turn path) -- ``coalesce(nullif(excluded.c,''), c)``.
+        The turn event is authoritative: it carries ``source`` and the enriched
+        metadata, and its caller has already folded prior state into
+        ``spark_meta``/``thought_process`` before calling, so those merged values
+        must land. Equivalent to the old ``sess.merge()`` plus
+        ``_coalesce_chat_history_turn_fields``' protection of prompt/response.
+
+    ``incoming_wins=False`` (message path) -- ``coalesce(c, nullif(excluded.c,''))``.
+        Fill-only. Reproduces exactly what ``_ensure_chat_history_from_message``
+        used to do field by field (``if not existing.prompt: ...``,
+        ``if session_id and not existing.session_id: ...``). Without this the
+        assistant message -- published AFTER the turn on the WS path
+        (``websocket_handler.py`` ~1802 then ~1911) -- would clobber the turn's
+        canonical ``client_meta``/``memory_status``/``memory_tier``.
+
+    ``nullif(..., '')`` is required either way because ``ChatHistoryTurnV1``
+    declares ``prompt``/``response`` as required ``str``: the turn event always
+    carries both keys and either can legitimately be the empty string, which must
+    not overwrite real text.
+    """
+    table = ChatHistoryLogSQL.__table__
+    updates: dict[str, Any] = {}
+    for name in cols:
+        if name == "id":
+            continue  # the conflict target itself
+        column = table.c.get(name)
+        if column is None:
             continue
-        incoming = filtered_data.get(field)
-        prior = getattr(existing, field, None)
-        if _is_missing_scalar(incoming) and not _is_missing_scalar(prior):
-            filtered_data[field] = prior
+        incoming = getattr(stmt.excluded, name)
+        if isinstance(column.type, (String, Text)):
+            incoming = func.nullif(incoming, "")
+        ordered = (incoming, column) if incoming_wins else (column, incoming)
+        updates[name] = func.coalesce(*ordered)
+    return updates
+
+
+def upsert_chat_history_row(
+    sess: Any, values: dict[str, Any], *, incoming_wins: bool = True
+) -> None:
+    """Atomically merge one event's contribution into a chat_history_log row.
+
+    Replaces a SELECT-then-INSERT/merge. That pattern was not safe here: the
+    three events for a single turn are dispatched as independent chassis tasks
+    (``orion/core/bus/bus_service_chassis.py``) and executed in parallel threads
+    via ``asyncio.to_thread`` with thread-local sessions, so all three could
+    SELECT-miss together, all three would INSERT, and two would take a 23505 that
+    the caller discarded as an idempotent duplicate. Roughly one Hub turn in five
+    lost its prompt or its response that way.
+
+    A single INSERT ... ON CONFLICT DO UPDATE has no window between the read and
+    the write, so concurrent contributors merge instead of racing.
+
+    Conflicts on the primary key only. Every current producer sets ``id`` equal
+    to ``correlation_id`` (``scripts/chat_history.py`` passes ``turn_id`` == the
+    correlation id at all call sites, and ``_write_row`` back-fills ``id`` from
+    ``correlation_id`` when absent), so this is the same row the old
+    ``id OR correlation_id`` lookup found. A producer that ever sends an explicit
+    ``id`` different from its ``correlation_id`` would insert a second row rather
+    than merge -- narrower than the old lookup, and worth keeping in mind if a
+    new producer appears.
+    """
+    if not values.get("id"):
+        raise ValueError("chat_history_log upsert requires an id")
+    stmt = pg_insert(ChatHistoryLogSQL).values(**values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[ChatHistoryLogSQL.id],
+        set_=_chat_history_conflict_updates(
+            values.keys(), stmt, incoming_wins=incoming_wins
+        ),
+    )
+    sess.execute(stmt)
 
 
 def _apply_spark_meta_patch(payload: dict) -> bool:
@@ -1056,7 +1135,6 @@ def _safe_set(obj: Any, field: str, value: Any) -> None:
 
 
 def _ensure_chat_history_from_message(
-    sess,
     correlation_id: str,
     session_id: str | None,
     role: str,
@@ -1065,42 +1143,52 @@ def _ensure_chat_history_from_message(
     memory_tier: str | None,
     client_meta: Any,
 ) -> None:
+    """Merge a single chat message into its turn's chat_history_log row.
+
+    Runs in its OWN session, deliberately. This used to share the caller's
+    session with the ``chat_message`` write, which meant a conflict raised here
+    rolled the whole transaction back and silently destroyed the chat_message
+    row too -- while the log line blamed ``chat_message``, a table that never had
+    a duplicate. Chat history is a best-effort projection of the message; it must
+    never be able to take the message itself down with it.
+    """
     if not correlation_id:
         return
     rid = str(correlation_id)
 
-    existing = (
-        sess.query(ChatHistoryLogSQL)
-        .filter(ChatHistoryLogSQL.id == rid)
-        .first()
-    )
-
-    if existing is None:
-        existing = ChatHistoryLogSQL(
-            id=rid,
-            correlation_id=rid,
-        )
-        _safe_set(existing, "session_id", session_id)
-        _safe_set(existing, "prompt", "")
-        _safe_set(existing, "response", "")
-        _safe_set(existing, "spark_meta", None)
-        sess.add(existing)
-
+    values: dict[str, Any] = {"id": rid, "correlation_id": rid}
+    # Only the half this message actually carries. The other half stays absent
+    # rather than being seeded as '', so it is never a candidate for overwrite.
     if role == "user":
-        if hasattr(existing, "prompt") and not (existing.prompt or "").strip():
-            existing.prompt = content
+        values["prompt"] = content
     elif role == "assistant":
-        if hasattr(existing, "response") and not (existing.response or "").strip():
-            existing.response = content
+        values["response"] = content
+    else:
+        return
+    if session_id:
+        values["session_id"] = str(session_id)
+    if memory_status:
+        values["memory_status"] = memory_status
+    if memory_tier:
+        values["memory_tier"] = memory_tier
+    if client_meta:
+        values["client_meta"] = _json_sanitize(client_meta)
 
-    if session_id and hasattr(existing, "session_id") and not getattr(existing, "session_id", None):
-        existing.session_id = session_id
-    if memory_status and hasattr(existing, "memory_status") and not getattr(existing, "memory_status", None):
-        existing.memory_status = memory_status
-    if memory_tier and hasattr(existing, "memory_tier") and not getattr(existing, "memory_tier", None):
-        existing.memory_tier = memory_tier
-    if client_meta and hasattr(existing, "client_meta") and not getattr(existing, "client_meta", None):
-        existing.client_meta = _json_sanitize(client_meta)
+    # session_factory(), not get_session(): the latter is a thread-local
+    # scoped_session and would hand back the caller's own session, so the
+    # transactions would still be shared and remove_session() would tear the
+    # caller's session out from under it.
+    own_sess = session_factory()
+    try:
+        # Fill-only: a message must never overwrite what the turn event already
+        # wrote. Reproduces the old per-field `if not existing.<col>` guards.
+        upsert_chat_history_row(own_sess, values, incoming_wins=False)
+        own_sess.commit()
+    except Exception:
+        own_sess.rollback()
+        raise
+    finally:
+        own_sess.close()
 
 
 def _write_row(sql_model_cls, data: dict) -> bool:
@@ -1257,7 +1345,6 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 memory_tier = data.get("memory_tier")
                 if corr_id and role in ("user", "assistant") and isinstance(content, str) and content.strip():
                     _ensure_chat_history_from_message(
-                        sess=sess,
                         correlation_id=str(corr_id),
                         session_id=str(session_id) if session_id else None,
                         role=role,
@@ -1267,6 +1354,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                         client_meta=client_meta,
                     )
             except Exception as ex:
+                # Its own session now, so this really is contained: the
+                # chat_message write below still commits.
                 logger.warning(f"Failed to upsert chat_history_log from chat_message: {ex}")
 
         if sql_model_cls is ChatGptMessageSQL:
@@ -1310,31 +1399,44 @@ def _write_row(sql_model_cls, data: dict) -> bool:
 
         try:
             if sql_model_cls is ChatHistoryLogSQL:
-                lookup_id = filtered_data.get("id") or filtered_data.get("correlation_id")
-                existing_turn = None
-                if lookup_id:
-                    existing_turn = (
-                        sess.query(ChatHistoryLogSQL)
-                        .filter(
-                            (ChatHistoryLogSQL.id == str(lookup_id))
-                            | (ChatHistoryLogSQL.correlation_id == str(lookup_id))
-                        )
-                        .first()
-                    )
-                if existing_turn is not None:
-                    _coalesce_chat_history_turn_fields(filtered_data, existing_turn)
+                # Atomic merge, no SELECT first. The previous SELECT-then-merge
+                # raced with the two chat.history.message writes for the same
+                # turn: all three could miss, all three would INSERT, and two
+                # took a 23505 that the handler below discarded as a duplicate.
+                # The turn event is the only one carrying `source`, so it was the
+                # reliable casualty -- hence every corrupted row having
+                # source IS NULL and exactly one of prompt/response.
+                upsert_chat_history_row(sess, filtered_data)
+                sess.commit()
+                return True
             sess.merge(sql_model_cls(**filtered_data))
             sess.commit()
             return True
         except IntegrityError as e:
             sess.rollback()
+            duplicate = (
+                (hasattr(e.orig, "pgcode") and e.orig.pgcode == "23505")
+                or "unique constraint" in str(e).lower()
+                or "duplicate key" in str(e).lower()
+            )
+            # chat_history_log is NOT idempotent-by-duplicate. One row is
+            # assembled from three events that each carry a different subset of
+            # columns, so "we already have this id" never means "we already have
+            # this content" -- treating it that way is what silently dropped the
+            # prompt or the response on ~1 Hub turn in 5. The upsert above should
+            # make this unreachable; if it fires anyway, that is a real defect
+            # and must be loud, not swallowed.
+            if duplicate and sql_model_cls is ChatHistoryLogSQL:
+                logger.error(
+                    "chat_history_log_duplicate_not_idempotent id=%s corr=%s -- "
+                    "upsert path should have merged this; data may be lost",
+                    filtered_data.get("id"),
+                    filtered_data.get("correlation_id"),
+                )
+                raise
             # Handle unique constraint violations gracefully (idempotency)
             # Postgres unique violation code is 23505
-            if hasattr(e.orig, 'pgcode') and e.orig.pgcode == '23505':
-                logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
-                return False
-            # Also catch generic duplicates if pgcode not available or different driver
-            if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
+            if duplicate:
                 logger.info(f"Duplicate entry for {sql_model_cls.__tablename__}, skipping (idempotent write).")
                 return False
             logger.error(f"IntegrityError writing to {sql_model_cls.__tablename__}: {e}")
@@ -1659,6 +1761,31 @@ async def _persist_grammar_event_envelope(
             )
 
 
+def _chat_source_platform(client_meta: Any) -> str | None:
+    """external_room.platform from a chat.history payload / chat_history_log row.
+
+    Deliberately a thin local reader rather than an import of orion-recall's
+    chat_source_tagging.chat_source_platform(): sql-writer does not depend on
+    that service's package, and this needs only the platform half (no participant
+    name, no text rendering). Handles the dict form (psycopg2 jsonb) and the
+    JSON-string form (asyncpg / raw bus payloads) the same way that helper does.
+    Returns None for direct hub conversations and for every row predating the
+    field -- callers treat None as "not external", the correct default.
+    """
+    if isinstance(client_meta, str):
+        try:
+            client_meta = json.loads(client_meta)
+        except Exception:
+            return None
+    if not isinstance(client_meta, dict):
+        return None
+    external_room = client_meta.get("external_room")
+    if not isinstance(external_room, dict):
+        return None
+    platform = external_room.get("platform")
+    return str(platform) if platform else None
+
+
 def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
     if not corr_id:
         return None
@@ -1687,6 +1814,7 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             "response": response,
             "spark_meta": spark_meta,
             "session_id": getattr(row, "session_id", None),
+            "source_platform": _chat_source_platform(getattr(row, "client_meta", None)),
         }
     finally:
         sess.close()
@@ -1718,6 +1846,7 @@ async def _emit_memory_turn_persisted(
         response=str(turn["response"]),
         spark_meta=turn.get("spark_meta") if isinstance(turn.get("spark_meta"), dict) else {},
         session_id=turn.get("session_id"),
+        source_platform=turn.get("source_platform"),
     )
     out_env = parent_env.derive_child(
         kind=MEMORY_TURN_PERSISTED_KIND,
@@ -2332,6 +2461,14 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                                 if isinstance(data_to_process.get("spark_meta"), dict)
                                 else {},
                                 "session_id": data_to_process.get("session_id"),
+                                # Read from `payload`, not `data_to_process`: several
+                                # routes above rebind data_to_process to a projected
+                                # row dict, so it is not a reliable source for a raw
+                                # envelope field. `payload` is what
+                                # extra_sql_fields["client_meta"] is populated from in
+                                # this same scope, so this reads the identical value
+                                # that gets written to chat_history_log.client_meta.
+                                "source_platform": _chat_source_platform(payload.get("client_meta")),
                             },
                         )
                     elif corr:
@@ -2367,6 +2504,11 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
 def build_hunter() -> Hunter:
     patterns = settings.effective_subscribe_channels
+    # Startup gate: a subscribed channel with no route silently sends every
+    # event to bus_fallback_log while the service looks perfectly healthy.
+    # Happened twice on 2026-08-13/14 -- see app/route_coverage.py for why
+    # this is a log line and not a hard failure.
+    log_route_coverage(patterns, settings.route_map)
     holder: dict[str, Any] = {}
 
     async def _handler(env: BaseEnvelope) -> None:

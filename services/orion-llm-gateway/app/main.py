@@ -224,6 +224,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         messages=[m.model_dump() for m in typed_req.payload.messages],
         raw_user_text=typed_req.payload.raw_user_text,
         options=req_options,
+        attachments=list(typed_req.payload.attachments or []),
         profile_name=typed_req.payload.profile,
         route=typed_req.payload.route,
         trace_id=str(typed_req.correlation_id),

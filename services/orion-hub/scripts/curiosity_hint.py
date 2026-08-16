@@ -21,8 +21,12 @@ _MAX_SUMMARY_CHARS = 120
 _MAX_AGE_SEC = 120.0
 
 
-def _fetch_fresh_candidates() -> list[dict[str, Any]]:
-    """Latest curiosity candidate set newer than _MAX_AGE_SEC, else []."""
+def _fetch_fresh_candidates(*, max_age_sec: float = _MAX_AGE_SEC) -> list[dict[str, Any]]:
+    """Latest curiosity candidate set newer than ``max_age_sec``, else [].
+
+    The default is the agent-lane freshness window; callers on a slower cadence
+    (e.g. endogenous_outreach) widen it rather than duplicating this query.
+    """
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri:
         return []
@@ -40,7 +44,7 @@ def _fetch_fresh_candidates() -> list[dict[str, Any]]:
                         ORDER BY generated_at DESC LIMIT 1
                         """
                     ),
-                    {"max_age": _MAX_AGE_SEC},
+                    {"max_age": float(max_age_sec)},
                 )
                 .mappings()
                 .first()

@@ -76,6 +76,33 @@ class Settings(BaseSettings):
         alias="HUB_LLM_GATEWAY_TIMEOUT_SEC",
     )
 
+    # --- Chat attachments (images Juniper attaches to a turn) ---
+    # Bytes live here; only a content-addressed ref travels on the wire.
+    HUB_CHAT_ATTACHMENT_DIR: str = Field(
+        default="/mnt/orion-chat-attachments",
+        alias="HUB_CHAT_ATTACHMENT_DIR",
+    )
+    HUB_CHAT_ATTACHMENT_MAX_BYTES: int = Field(
+        default=8_388_608,
+        alias="HUB_CHAT_ATTACHMENT_MAX_BYTES",
+    )
+    HUB_CHAT_ATTACHMENT_ALLOWED_MIMES: str = Field(
+        default="image/png,image/jpeg,image/webp,image/gif",
+        alias="HUB_CHAT_ATTACHMENT_ALLOWED_MIMES",
+    )
+    # Base the LLM gateway can reach, which is not necessarily the base the
+    # browser used to upload. Baked into AttachmentRefV1.source_url.
+    # Node IP, not localhost: the Hub is network_mode host but orion-llm-gateway
+    # is on the bridge network, so the gateway's localhost is not the Hub.
+    HUB_CHAT_ATTACHMENT_PUBLIC_BASE: str = Field(
+        default="http://100.92.216.81:8080",
+        alias="HUB_CHAT_ATTACHMENT_PUBLIC_BASE",
+    )
+    HUB_CHAT_ATTACHMENT_MAX_PER_TURN: int = Field(
+        default=4,
+        alias="HUB_CHAT_ATTACHMENT_MAX_PER_TURN",
+    )
+
     # --- Context-exec agent lane (Hub Agent mode) ---
     HUB_AGENT_CONTEXT_EXEC_ENABLED: bool = Field(
         default=True,
@@ -94,6 +121,28 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_REPL_ENABLED",
     )
     # --- Hub Agent Claude (FCC harness in chat) ---
+    # ── Room companion (Claude as a third social-room participant) ────
+    # Hub publishes an invite and relays the reply; it never spawns `claude`
+    # and never holds the Claude credential -- that lives in
+    # orion-room-companion. See services/orion-room-companion/README.md for
+    # why the credential is deliberately NOT in this container.
+    HUB_ROOM_CLAUDE_ENABLED: bool = Field(default=False)
+    HUB_ROOM_CLAUDE_ROOM_ID: str = Field(default="hub-direct")
+    HUB_ROOM_CLAUDE_PARTICIPANT_NAME: str = Field(default="Claude")
+    HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS: int = Field(default=12)
+    # Auto-invite Claude after each Orion turn instead of only on a click.
+    # This is what makes the room feel like a room rather than a summoning
+    # ritual -- but it also REMOVES the property that made v1 safe without a
+    # spend cap (spend was bounded by human clicks). Every Orion turn now costs
+    # a Claude call even when Claude passes, so the advisory cap / watchdog
+    # stops being optional once this is on.
+    HUB_ROOM_CLAUDE_AUTO_RESPOND: bool = Field(default=False)
+    # Minimum seconds between auto-invites, so a burst of rapid turns does not
+    # become a burst of billed Claude calls.
+    HUB_ROOM_CLAUDE_AUTO_MIN_GAP_SEC: float = Field(default=8.0)
+    CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
+    CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
+
     HUB_AGENT_CLAUDE_ENABLED: bool = Field(
         default=False,
         alias="HUB_AGENT_CLAUDE_ENABLED",
@@ -282,6 +331,59 @@ class Settings(BaseSettings):
     NOTIFY_BASE_URL: str = Field(default="http://orion-notify:7140", alias="NOTIFY_BASE_URL")
     NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
 
+    # --- Endogenous outreach (Orion speaks first; stub random trigger) ---
+    # See scripts/endogenous_outreach.py. The only path by which Orion emits
+    # chat text nobody asked for. Enabled in .env_example / the live .env; this
+    # Field default stays False so an absent key fails closed rather than
+    # silently enabling outreach.
+    HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
+        default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
+    )
+    # How often the loop wakes to consider reaching out.
+    HUB_ENDOGENOUS_OUTREACH_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
+    )
+    # STUB trigger: chance per tick that Orion considers speaking. Replaced by a
+    # real endogenous signal when autonomy provides one.
+    HUB_ENDOGENOUS_OUTREACH_PROBABILITY: float = Field(
+        default=0.15, alias="HUB_ENDOGENOUS_OUTREACH_PROBABILITY"
+    )
+    HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC: float = Field(
+        default=2700.0, alias="HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC"
+    )
+    # Max outreaches per local calendar day; -1 disables the cap.
+    HUB_ENDOGENOUS_OUTREACH_DAILY_CAP: int = Field(
+        default=4, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP"
+    )
+    # Quiet window [start, end) in HUB_ENDOGENOUS_OUTREACH_TZ; equal values or
+    # -1 disable it.
+    HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR: int = Field(
+        default=23, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR"
+    )
+    HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR: int = Field(
+        default=8, alias="HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR"
+    )
+    # IANA zone for quiet hours and the daily-cap reset. Hub's container sets no
+    # TZ, so the process timezone is UTC -- this must name the operator's real
+    # zone or the quiet window silences the wrong nine hours. The Field default
+    # stays UTC (a safe, always-resolvable zone) rather than duplicating the
+    # deployment's answer; .env_example carries the real one.
+    HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
+        default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
+    )
+    # LLM gateway compute lane for generation: "quick" or "metacog".
+    HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE: str = Field(
+        default="quick", alias="HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE"
+    )
+    HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC: float = Field(
+        default=60.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
+    )
+    # Session used for chat-history persistence when no live socket has
+    # reported one (session_id lives in browser localStorage).
+    HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID: str = Field(
+        default="orion_outreach", alias="HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID"
+    )
+
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(
         default="orion:cortex:gateway:request",
@@ -436,6 +538,16 @@ class Settings(BaseSettings):
     # --- Hub Prompt Context (UI-side rolling history) ---
     # Number of *turns* (user+assistant pairs) to include as inline context
     HUB_CONTEXT_TURNS: int = Field(default=12, alias="HUB_CONTEXT_TURNS")
+    # Rebuild a reconnecting socket's conversation context from chat_history_log.
+    # Without this, `history` is in-memory only and every Hub restart silently
+    # discards the running conversation -- see scripts/chat_history_rehydrate.py.
+    HUB_HISTORY_REHYDRATE_ENABLED: bool = Field(
+        default=True, alias="HUB_HISTORY_REHYDRATE_ENABLED"
+    )
+    # Age bound so a reused session id does not resurrect a stale conversation.
+    HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS: float = Field(
+        default=48.0, alias="HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS"
+    )
     # Hard cap to avoid runaway prompts when users paste long text
     HUB_CONTEXT_MAX_CHARS: int = Field(default=12000, alias="HUB_CONTEXT_MAX_CHARS")
 

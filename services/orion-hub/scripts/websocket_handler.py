@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import base64
 import json
 import logging
 import os
+import sys
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -47,7 +49,7 @@ from scripts.fcc_claude_bridge import (
 )
 from scripts.turn_cancel import cancel_in_flight_turn, run_awaitable_cancel_on_ws_disconnect
 from scripts.settings import settings
-from orion.fcc.sandbox_sync import sync_fcc_sandbox
+from orion.fcc.sandbox_sync import record_sync_skip, sync_fcc_sandbox
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.voice_stt_errors import (
@@ -457,6 +459,29 @@ async def _with_biometrics(
     return enriched
 
 
+async def _rehydrate_connection_history(
+    history: List[Dict[str, Any]], *, session_id: Any
+) -> int:
+    """Restore this socket's conversation context from persisted turns.
+
+    Best-effort: a failure here leaves the pre-existing behaviour (start cold),
+    so it can never break a connection.
+    """
+    try:
+        from scripts.chat_history_rehydrate import rehydrate_history
+
+        return await rehydrate_history(
+            history,
+            session_id=session_id,
+            max_turns=int(getattr(settings, "HUB_CONTEXT_TURNS", 10)),
+            max_age_hours=float(getattr(settings, "HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS", 48.0)),
+            enabled=bool(getattr(settings, "HUB_HISTORY_REHYDRATE_ENABLED", True)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("history_rehydrate_failed session=%s err=%s", session_id, exc)
+        return 0
+
+
 async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optional[BiometricsCache]):
     try:
         while websocket.client_state.name == "CONNECTED":
@@ -642,9 +667,36 @@ async def _sync_fcc_sandbox_background(connection_id: str) -> None:
     entirely while any FCC turn is in flight (``active_turns()``) so a reset/clean
     never runs against a workspace a claude subprocess is still reading/writing.
     """
+    # A test process must never mutate the live sandbox. Not hypothetical: the
+    # hub suite drives the real websocket_endpoint() (see
+    # test_workflow_schedule_runtime_paths.py), which reaches this hook with the
+    # real HUB_AGENT_CLAUDE_WORKSPACE from .env. That was harmless while the sync
+    # only *read* git status and bailed on dirt; the moment it gained a rescue +
+    # reset path it started stashing and moving Orion's actual checkout -- caught
+    # live on 2026-08-14, stash@{1} authored by the test runner. Mocking it in
+    # each test would work until the next test forgets; this cannot be forgotten.
+    # PYTEST_CURRENT_TEST alone is not enough: it is set per test *item*, so a task
+    # or thread that outlives the item -- which is exactly what this fire-and-forget
+    # task is -- can observe it as unset. `sys.modules` is stable for the whole
+    # process, and hub never imports pytest in production.
+    if os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules:
+        logger.info("fcc_sandbox_sync_skipped_test_process connection_id=%s", connection_id)
+        record_sync_skip(
+            getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None),
+            "skipped_test_process",
+        )
+        return
+
     if active_turns():
         logger.info(
             "fcc_sandbox_sync_skipped_turn_in_flight connection_id=%s", connection_id
+        )
+        # Recorded, not just logged: an unrecorded skip would leave the status
+        # surface reporting whatever the previous connect saw, which is exactly
+        # the "looks fine, is stale" failure this whole patch exists to kill.
+        record_sync_skip(
+            getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None),
+            "skipped_turn_in_flight",
         )
         return
     async with _fcc_sandbox_sync_lock:
@@ -652,6 +704,10 @@ async def _sync_fcc_sandbox_background(connection_id: str) -> None:
         if active_turns():
             logger.info(
                 "fcc_sandbox_sync_skipped_turn_in_flight connection_id=%s", connection_id
+            )
+            record_sync_skip(
+                getattr(settings, "HUB_AGENT_CLAUDE_WORKSPACE", None),
+                "skipped_turn_in_flight",
             )
             return
         sync_result = await asyncio.to_thread(
@@ -743,14 +799,67 @@ async def websocket_endpoint(websocket: WebSocket):
     # to the /api/chat/turn/cancel endpoint's lookup, no separate sync needed.
     _ACTIVE_TURNS_BY_CONNECTION[connection_id] = active_turn
 
+    # Endogenous outreach needs the same two things by reference: this socket's
+    # outbound queue (to push an unsolicited Orion bubble) and active_turn (so it
+    # never speaks over a turn in flight). Best-effort: outreach is optional.
+    endogenous_outreach = getattr(scripts.main, "endogenous_outreach", None)
+    if endogenous_outreach is not None:
+        endogenous_outreach.register_connection(connection_id, tts_q, active_turn)
+    # Same queue, so a Claude reply reaches the browser by the identical path
+    # an Orion outreach bubble does.
+    room_relay = getattr(scripts.main, "room_claude_relay", None)
+    if room_relay is not None:
+        room_relay.register_connection(connection_id, tts_q)
+
     try:
         while True:
+            # Idle marker for endogenous outreach. Control reaches this line
+            # only when the previous message has been fully handled -- every
+            # `continue` in this loop body passes through here -- so it is the
+            # one reliable "this socket is done" point without restructuring the
+            # loop. Paired with note_busy() just below.
+            if endogenous_outreach is not None:
+                endogenous_outreach.note_idle(connection_id)
             raw = await websocket.receive_text()
             if presence_state:
                 presence_state.heartbeat()
             try:
                 data: Dict[str, Any] = json.loads(raw)
             except json.JSONDecodeError:
+                continue
+            if endogenous_outreach is not None:
+                # Set for EVERY mode. active_turn["correlation_id"] is only
+                # populated by the unified-orion and agent-claude lanes, so the
+                # UI's Quick / Story / Agent modes would otherwise look idle to
+                # outreach for the whole duration of a real turn.
+                endogenous_outreach.note_busy(connection_id)
+
+            # Connect-time handshake carrying this tab's session_id. Handled
+            # before any turn logic and never treated as a chat message: without
+            # it, an open-but-idle tab is session-less to outreach (session_id
+            # otherwise only arrives on an outbound message), so outreach posts
+            # to its fallback session rather than the thread on screen.
+            if str(data.get("type") or "").strip() == "session_hello":
+                if endogenous_outreach is not None:
+                    endogenous_outreach.note_session(connection_id, data.get("session_id"))
+                _rr = getattr(scripts.main, "room_claude_relay", None)
+                if _rr is not None:
+                    _rr.note_session(connection_id, data.get("session_id"))
+                # Rebuild conversation context from persisted turns. `history`
+                # is in-memory and scoped to this socket, so before this every
+                # Hub restart silently discarded the running conversation -- and
+                # build_continuity_messages has no fallback, so the next turn
+                # went out with nothing but the current prompt. This handshake
+                # is the first moment we know which thread the tab is in, which
+                # makes it the right place to restore it.
+                await _rehydrate_connection_history(
+                    history, session_id=data.get("session_id")
+                )
+                logger.debug(
+                    "ws_session_hello connection=%s session=%s",
+                    connection_id,
+                    data.get("session_id"),
+                )
                 continue
 
             mode = data.get("mode") or ("auto" if settings.HUB_AUTO_DEFAULT_ENABLED else "brain")
@@ -762,6 +871,14 @@ async def websocket_endpoint(websocket: WebSocket):
             )
             session_id = data.get("session_id")
             publish_session_id = session_id or "unknown"
+            if endogenous_outreach is not None:
+                # session_id is client-side (localStorage) and only reaches Hub
+                # here, so this is the one place outreach can learn which thread
+                # to post into.
+                endogenous_outreach.note_session(connection_id, session_id)
+            _rr = getattr(scripts.main, "room_claude_relay", None)
+            if _rr is not None:
+                _rr.note_session(connection_id, session_id)
             if not session_id and diagnostic:
                 logger.warning("Missing session_id; publishing chat history with session_id=unknown")
             no_write = bool(data.get("no_write", settings.HUB_DEFAULT_NO_WRITE))
@@ -1626,6 +1743,55 @@ async def websocket_endpoint(websocket: WebSocket):
                     ws_payload["council_debug"] = council_debug
             await websocket.send_json(await _with_biometrics(ws_payload, cache=biometrics_cache))
 
+            # Auto-invite Claude to react to the turn that just landed. Fired
+            # after the payload is sent so Orion's reply always renders first
+            # -- Claude is reacting to the room, not racing it.
+            #
+            # Fire-and-forget: a room companion that is slow, down, or
+            # rate-gated must never delay or fail Orion's own turn.
+            try:
+                _room_relay = getattr(scripts.main, "room_claude_relay", None)
+                if (
+                    _room_relay is not None
+                    and _room_relay.enabled
+                    and _room_relay.should_auto_invite(session_id, time.time())
+                ):
+                    _orion_said = str(ws_payload.get("llm_response") or "").strip()
+                    if _orion_said:
+                        # Send the EXCHANGE, not just Orion's half. Sending only
+                        # Orion's reply left Claude watching a one-sided
+                        # monologue with no idea what had been asked -- it could
+                        # only react to Orion's tone, which is what "generic
+                        # Claude responses" actually was. Confirmed by reading
+                        # Claude's own session transcript.
+                        #
+                        # `prompt` is the raw reply: build_turn_prompt adds the
+                        # speaker prefix, and prefixing here too produced
+                        # "Oríon: Oríon: ..." in the live transcript.
+                        _juniper_said = str(transcript or "").strip()
+                        _exchange = (
+                            [{
+                                "speaker_id": "juniper",
+                                "speaker_name": "Juniper",
+                                "speaker_kind": "human",
+                                "text": _juniper_said,
+                            }]
+                            if _juniper_said
+                            else []
+                        )
+                        asyncio.create_task(
+                            _room_relay.invite(
+                                prompt=_orion_said,
+                                invited_by="Or\u00edon",
+                                session_id=session_id,
+                                room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
+                                trigger="auto",
+                                transcript=_exchange,
+                            )
+                        )
+            except Exception:
+                logger.debug("room_claude_auto_invite_failed", exc_info=True)
+
             # Log to SQL (Best Effort) & Trigger Introspection
             if bus and not no_write and not workflow_metadata_only:
                 enriched_client_meta = dict(turn_client_meta)
@@ -1914,6 +2080,11 @@ async def websocket_endpoint(websocket: WebSocket):
             )
     finally:
         _ACTIVE_TURNS_BY_CONNECTION.pop(connection_id, None)
+        if endogenous_outreach is not None:
+            endogenous_outreach.unregister_connection(connection_id)
+        _room_relay = getattr(scripts.main, "room_claude_relay", None)
+        if _room_relay is not None:
+            _room_relay.unregister_connection(connection_id)
         drain_task.cancel()
         biometrics_task.cancel()
         if notification_cache is not None:

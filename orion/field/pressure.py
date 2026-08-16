@@ -22,6 +22,9 @@ value, so those routing entries produced values nothing ever read).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
 from orion.schemas.field_state import FieldStateV1
 
 PRESSURE_CHANNELS = frozenset({
@@ -154,8 +157,76 @@ RECENT_PERTURBATION_ZSCORE_SATURATION = 3.0
 RECENT_PERTURBATION_EWMA_MIN_SAMPLES = 5
 
 
+# Default staleness cut for the channel merge, ON by default.
+#
+# Shipped opt-in (default None) by PR #1641 and immediately found merged-but-
+# inert: verified live 20 minutes after deploy that node:substrate.codebase
+# still won prediction_error on 67.2% of ticks, because the two production
+# call sites passed no threshold and only tests did. A fix that defaults to
+# doing nothing is the empty-shell failure CLAUDE.md 0A names, so the default
+# is now the real value and callers opt OUT by passing None.
+#
+# 90.0 matches FIELD_DECAY_STALENESS_THRESHOLD_SEC's value but is a SEPARATE
+# key (FIELD_MERGE_STALENESS_THRESHOLD_SEC). Same reasoning that gave decay
+# its own: ~3x orion-biometrics' 30s TELEMETRY_INTERVAL, real margin for
+# jitter before a channel is genuinely stale. Kept separate so tuning decay
+# does not silently move the merge -- one knob doing two jobs is exactly the
+# config drift CLAUDE.md's "bad seams" list warns about.
+MERGE_STALENESS_THRESHOLD_SEC: float = 90.0
+
+
+def _aware_utc(stamp: datetime) -> datetime:
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def _stale_node_channels(
+    field: FieldStateV1,
+    staleness_threshold_sec: float,
+) -> set[tuple[str, str]]:
+    """(node_id, channel) pairs whose last real producer write is older than
+    the threshold, but ONLY where some other node has a fresh write for the
+    same channel.
+
+    The guard matters: if every source for a channel is stale, excluding them
+    all would fabricate an absence. A channel that is quiet everywhere is
+    quiet, not missing -- the same "absent beats a fake 0.0" rule the rest of
+    this module follows.
+
+    Staleness is measured against the TICK's own `generated_at`, never against
+    wall-clock. Three reasons, and the first was found by a failing test:
+    wall-clock makes the threshold boundary depend on how long the process has
+    been running, so an exact-boundary test is flaky by construction; it makes
+    this function impure and unreplayable, giving different answers for the
+    same stored tick depending on when you ask; and it is simply the wrong
+    question -- "was this value stale when the tick was taken" is what a
+    consumer of that tick needs to know.
+    """
+    now = _aware_utc(field.generated_at)
+
+    def _age(stamp: datetime) -> float:
+        return (now - _aware_utc(stamp)).total_seconds()
+
+    fresh_channels: set[str] = set()
+    stale_pairs: set[tuple[str, str]] = set()
+    for node_id, vector in field.node_vectors.items():
+        stamps = field.node_vector_updated_at.get(node_id, {})
+        for channel in vector:
+            stamp = stamps.get(channel)
+            if stamp is None:
+                # No timestamp is not evidence of staleness. Untimestamped
+                # sources always participate, exactly as before this patch.
+                continue
+            if _age(stamp) > staleness_threshold_sec:
+                stale_pairs.add((node_id, channel))
+            else:
+                fresh_channels.add(channel)
+    return {(n, c) for (n, c) in stale_pairs if c in fresh_channels}
+
+
 def collect_field_channel_pressures(
     field: FieldStateV1,
+    *,
+    staleness_threshold_sec: float | None = MERGE_STALENESS_THRESHOLD_SEC,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """Merge node_vectors + capability_vectors into one channel-name-keyed
     pressure dict, plus a parallel provenance dict recording which source_id
@@ -164,11 +235,41 @@ def collect_field_channel_pressures(
     Moved verbatim (imports aside) from orion/self_state/scoring.py's function
     of the same name -- this logic was never part of the hand-tuned-coefficient
     problem, it's a real merge mechanism with live-verified correctness.
+
+    `staleness_threshold_sec` (opt-in; None reproduces the historical
+    behaviour exactly) drops a node's contribution to a channel when its last
+    real producer write is older than the threshold AND some other node has a
+    fresh write for that same channel.
+
+    WHY. `prediction_error` is not in NODE_DECAY_CHANNELS (verified
+    2026-08-14: 28 entries, absent), so a value written by a slow producer
+    never fades -- it persists byte-identical until that producer fires again.
+    `codebase_prediction_error()`'s three inputs (git churn, PR lifecycle,
+    graphify structural change) each run on their own coarse interval, so
+    `node:substrate.codebase` changed value 6 times in 6,000 live ticks while
+    winning the max() merge on 69.6% of them. Measured live: its stale 0.5837
+    outranked `node:substrate.biometrics` (588 informative distinct values),
+    `node:substrate.execution` (290) and `node:substrate.bus_synaptic` (175),
+    two of which never won a single merge.
+
+    That is not a scale problem and normalising would not fix it --
+    `codebase_prediction_error()` is already a correctly z-scored, saturated
+    composite. It is a staleness problem: max() has no notion of when a
+    contender last heard from the world, and `node_vector_updated_at` (which
+    `apply_decay()` already reads for exactly this question) was sitting
+    unused right here.
     """
+    stale_pairs: set[tuple[str, str]] = (
+        set()
+        if staleness_threshold_sec is None
+        else _stale_node_channels(field, staleness_threshold_sec)
+    )
     out: dict[str, float] = {}
     provenance: dict[str, str] = {}
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
+            if (source_id, channel) in stale_pairs:
+                continue
             v = clamp01(float(value))
             if channel in HIGHER_IS_BETTER_CHANNELS:
                 if v <= out.get(channel, 1.0):
@@ -227,15 +328,167 @@ def collect_field_channel_pressures(
     return out, provenance
 
 
-def map_channels_to_dimensions(channel_pressures: dict[str, float]) -> dict[str, float]:
-    """max()-merge raw channel pressures into the 7 real named categories."""
+@dataclass(frozen=True)
+class DimensionContributor:
+    """One channel that fed a dimension's max()-merge this tick."""
+
+    channel: str
+    value: float
+    # The source_id that won this CHANNEL's own merge inside
+    # collect_field_channel_pressures() -- a node_id, capability_id, or the
+    # resolved capability_provenance entry.
+    #
+    # None means "not threaded through", NOT "produced by nobody". Two ways to
+    # get it: the caller passed no channel-provenance dict at all (the
+    # map_channels_to_dimensions back-compat path), or it passed one lacking
+    # this key. The second is unreachable via field_pressures_with_provenance()
+    # today -- the only channel collect_field_channel_pressures() writes
+    # without a provenance entry is recent_perturbation_count, which has no
+    # CHANNEL_DIMENSION_MAP entry and so never reaches a dimension -- but the
+    # type does not enforce that, so do not read None as a claim about a
+    # producer.
+    source_id: str | None
+
+
+@dataclass(frozen=True)
+class DimensionProvenance:
+    """Why a dimension reads what it reads this tick.
+
+    R1 of the phase-5 roadmap, PR #1622 (branch docs/phase5-liveness-scope).
+    Cited by PR number, not path: that doc is NOT on main as of this commit,
+    and this file already learned at CHANNEL_DIMENSION_MAP above that a code
+    comment pointing at a file which does not resolve is how a "tracked
+    follow-up" becomes tracked nowhere. Every number below is restated inline
+    so this docstring stands alone if the doc never lands.
+
+    The merge that produces a dimension is a max() across channels, and the
+    channel merge feeding it is itself a max() across sources -- so a
+    dimension's value is one source's number, and until now which source that
+    was got discarded before any consumer saw it.
+
+    That discard is not hypothetical harm. Measured 2026-08-13 over the most
+    recent 20,000 `substrate_field_state` ticks (11.4h at a 2.04s cadence):
+    `node:substrate.codebase` won the merged `prediction_error` channel on
+    54.2% of ticks while contributing 5 distinct values in 20,000 (an
+    effective constant of 0.3357, so the channel has a hard floor it can never
+    read calm below), while `node:substrate.biometrics` (1,188 distinct) and
+    `node:substrate.bus_synaptic` (341 distinct) won 0% and contributed
+    nothing at all.
+
+    Same defect class as the `thermal_pressure` domination fixed on
+    2026-08-11, one layer down. NOTE the two measurements of that older case
+    in this file are from different windows and are not interchangeable: the
+    CHANNEL_DIMENSION_MAP comment above reports 39 vs 1,895 distinct over
+    28,735 ticks / 24h (the window the fix was made on), while the same
+    comparison over this docstring's 20,000-tick / 11.4h window reads 18 vs
+    1,325. Same conclusion, different sample -- neither is the "true" count,
+    and a shorter window necessarily sees fewer distinct values.
+
+    Neither case was findable without knowing who won.
+
+    `contributors` is every channel that mapped into this dimension, not just
+    the winner -- R3's commensurability detector needs the losers to tell a
+    real max() from a walkover.
+    """
+
+    dimension_id: str
+    value: float
+    winning_channel: str
+    winning_source_id: str | None
+    contributors: tuple[DimensionContributor, ...]
+    # False when at least one other contributor tied the winning value, in
+    # which case `winning_channel` is whichever tied contender the dict
+    # happened to iterate last -- an arbitrary pick, not a fact about the
+    # world. R3 MUST exclude these before tallying a win rate, or it will
+    # systematically credit whichever channel sorts later and report a
+    # domination that never happened.
+    #
+    # Not a rare edge case. `repair_pressure` and `conversation_load` are both
+    # in PRESSURE_CHANNELS, so a 0.0 reading is stored rather than filtered
+    # (see the `channel in PRESSURE_CHANNELS or v > 0` branch in
+    # collect_field_channel_pressures) -- every calm tick where both read 0.0
+    # is a tie with a confidently-named winner. Surfaced by code review of
+    # this patch, which demonstrated the winner flipping purely by reordering
+    # the input dict.
+    winner_is_unique: bool
+
+
+def map_channels_to_dimensions_with_provenance(
+    channel_pressures: dict[str, float],
+    channel_provenance: dict[str, str] | None = None,
+) -> tuple[dict[str, float], dict[str, DimensionProvenance]]:
+    """max()-merge raw channel pressures into the 7 real named categories,
+    keeping a record of which channel (and which source behind that channel)
+    won each dimension.
+
+    The single implementation. `map_channels_to_dimensions()` is a thin
+    wrapper that drops the second element, so the two can never drift into
+    disagreeing about a value -- the failure mode that a parallel
+    "provenance-aware copy" of this function would have invited.
+
+    Ties: `>=` on the running max, matching
+    `collect_field_channel_pressures()`'s own `>=` convention, so the
+    last-iterated channel at an equal value wins. Deterministic given
+    Python's insertion-ordered dicts, and consistent between the two layers.
+    """
+    provenance = {} if channel_provenance is None else channel_provenance
     dims: dict[str, float] = {}
+    winners: dict[str, tuple[str, float]] = {}
+    contributors: dict[str, list[DimensionContributor]] = {}
+
     for channel, pressure in channel_pressures.items():
         dim_id = CHANNEL_DIMENSION_MAP.get(channel)
         if not dim_id:
             continue
-        dims[dim_id] = max(dims.get(dim_id, 0.0), clamp01(pressure))
+        value = clamp01(pressure)
+        contributors.setdefault(dim_id, []).append(
+            DimensionContributor(
+                channel=channel,
+                value=value,
+                source_id=provenance.get(channel),
+            )
+        )
+        if dim_id not in dims or value >= dims[dim_id]:
+            winners[dim_id] = (channel, value)
+        dims[dim_id] = max(dims.get(dim_id, 0.0), value)
+
+    detail: dict[str, DimensionProvenance] = {}
+    for dim_id, value in dims.items():
+        winning_channel, _winning_value = winners[dim_id]
+        dim_contributors = tuple(contributors[dim_id])
+        tied = sum(1 for c in dim_contributors if c.value == value)
+        detail[dim_id] = DimensionProvenance(
+            dimension_id=dim_id,
+            value=value,
+            winning_channel=winning_channel,
+            winning_source_id=provenance.get(winning_channel),
+            contributors=dim_contributors,
+            winner_is_unique=tied == 1,
+        )
+    return dims, detail
+
+
+def map_channels_to_dimensions(channel_pressures: dict[str, float]) -> dict[str, float]:
+    """max()-merge raw channel pressures into the 7 real named categories."""
+    dims, _detail = map_channels_to_dimensions_with_provenance(channel_pressures)
     return dims
+
+
+def field_pressures_with_provenance(
+    field: FieldStateV1,
+) -> tuple[dict[str, float], dict[str, DimensionProvenance]]:
+    """`field_pressures()`, plus the record of who produced each dimension.
+
+    Same values as `field_pressures()` by construction -- that function calls
+    this one. Additive: no existing caller changes behavior, and nothing here
+    touches the merge itself. Changing how the merge picks a winner is a
+    cognition-loop change (it moves proposal ranking and feedback credit) and
+    goes through proposal mode, not through this patch.
+    """
+    channel_pressures, channel_provenance = collect_field_channel_pressures(field)
+    return map_channels_to_dimensions_with_provenance(
+        channel_pressures, channel_provenance
+    )
 
 
 def field_pressures(field: FieldStateV1) -> dict[str, float]:
@@ -247,5 +500,5 @@ def field_pressures(field: FieldStateV1) -> dict[str, float]:
     degradation behavior orion/proposals/scoring.py already had for dimension
     IDs with no scorer (e.g. "contract_pressure", which was already always
     0.0 before this burn)."""
-    channel_pressures, _provenance = collect_field_channel_pressures(field)
-    return map_channels_to_dimensions(channel_pressures)
+    dims, _detail = field_pressures_with_provenance(field)
+    return dims

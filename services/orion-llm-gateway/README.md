@@ -15,7 +15,13 @@ The gateway no longer runs tissue ingest on chat turns. Result `spark_meta` is t
 
 Turn novelty and shift classification live in `spark_meta.turn_change_appraisal`, patched asynchronously by `orion-memory-consolidation` on `orion:chat:history:spark_meta:patch`. See `services/orion-memory-consolidation/README.md`.
 
-## Contracts
+### Model identity (`model_used`, 2026-08-14)
+
+`ChatResultPayload.model_used` is meant to be the model that actually served the request. Before this date it was silently wrong for every route: `run_llm_chat()` stamped it from the **requested route-table label** (e.g. `"Active-GGUF-Model"`), not the served weights -- confirmed live, that placeholder even leaked into a log line claiming the metacog route ran `llama-3-8b-instruct-q4_k_m` when it was actually running Qwen3-8B.
+
+Fix: `llm_backend.py`'s `_served_model()` now prefers the backend's own echoed model id (present in `result["raw"]["model"]` for both the OpenAI-compat and Ollama-native response shapes) and only falls back to the requested label when the backend didn't echo one (llama.cpp's native `/completion` endpoint, or any error path). This is a live-serving-time fix, not a schema change -- `model_used` was already a first-class field, it just held the wrong value.
+
+`route_catalog.py`'s `GET /routes` got the equivalent point-in-time fix: `_probe_model()` does a live `/v1/models` read against each route's backend (only when its `/health` probe is up) and surfaces the real id as the `model` field, cached with the same 15s TTL as route health. `services/orion-cortex-exec`'s situation brief reads this endpoint to tell Orion what it's currently running on -- see that service's README, "Situation brief" section.
 
 ### Consumed Channels
 | Channel | Env Var | Kind | Description |
@@ -61,7 +67,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | Path | Description |
 | :--- | :--- |
 | `GET /health` | Service liveness and configured route keys. |
-| `GET /routes` | Route catalog from `LLM_GATEWAY_ROUTE_TABLE_JSON` with `default_route=chat` and per-route `id`, `served_by`, `backend`, `status`, `latency_ms`, `last_checked_at`. |
+| `GET /routes` | Route catalog from `LLM_GATEWAY_ROUTE_TABLE_JSON` with `default_route=chat` and per-route `id`, `served_by`, `backend`, `status`, `latency_ms`, `last_checked_at`, `model` (live-probed `/v1/models` id of what's actually loaded, `null` if the route is down or the probe fails -- see "Model identity" below). |
 | `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `POST /v1/messages` | Anthropic Messages passthrough to upstream llama.cpp `/v1/messages` via route table. |
@@ -85,8 +91,8 @@ Optional per-route upstream model alias in the route table:
 ```json
 {
   "agent": {
-    "url": "http://100.121.214.30:8011",
-    "served_by": "atlas-worker-1",
+    "url": "http://100.112.254.99:8014",
+    "served_by": "circe-worker-agent-1",
     "backend": "llamacpp",
     "model": "qwen-coder-local"
   }
@@ -156,13 +162,24 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 
 > Note: Only run a single `orion-llm-gateway` subscriber on the shared request topic.
 > Route isolation should be expressed through `LLM_GATEWAY_ROUTE_TABLE_JSON`, not by running multiple gateways.
-> Atlas default merged mode keeps logical `chat` and `agent` routes separate while mapping both to the same chat worker URL.
+> **Updated 2026-08-14**: `agent` split off from `chat` as the default. It used to alias
+> `chat`'s worker (merged mode, below) because no distinct agent-lane model existed yet.
+> Now that Muse Glimmer is live on Circe's dedicated agent-lane worker (port 8014),
+> `agent` points there instead by default.
+>
+> **Do not infer physical host from the `atlas-*` naming** anywhere in this file --
+> `ATLAS_AGENT_*` env vars and the `atlas-agent` compose service/container name are a
+> fixed naming convention for this worker *pattern*, reused across whichever physical
+> host runs it (the same reason `orion-atlas-llamacpp-chat`, below, runs on Circe
+> hardware despite its name). An earlier version of this doc pointed `agent` at
+> Atlas's IP based on that naming alone -- wrong; nothing was listening there, and the
+> gateway correctly reported `agent` as down until this was corrected the same day.
 
-### Route table example (default merged mode)
+### Route table example (default: split agent mode)
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
-  "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
+  "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.112.254.99:8014","served_by":"circe-worker-agent-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
   "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
 }'
@@ -197,11 +214,14 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 > update `AITOWN_LLM_CHAT_ROUTE` deliberately -- don't just add a route
 > entry that happens to point at circe.
 
-### Route table example (optional split agent mode)
+### Route table example (legacy: merged mode, `agent` aliases `chat`)
+
+Use this only if no distinct agent-lane model is deployed yet on your box — it
+re-merges `agent` back into `chat`'s worker, the pre-2026-08-14 default:
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
-  "chat":{"url":"http://100.121.214.30:8011","served_by":"atlas-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.121.214.30:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"},
+  "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
   "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
   "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
 }'

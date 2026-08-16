@@ -18,6 +18,16 @@ class MemoryTurnPersistedV1(BaseModel):
     spark_meta: Dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
     created_at: Optional[datetime] = None
+    # External-world provenance for this turn, read from the chat_history_log row's
+    # client_meta.external_room.platform (e.g. "aitown"). None means a direct
+    # hub/API conversation with Juniper -- the correct default, and what every row
+    # predating this field carries. Downstream (formation_policy) uses this to keep
+    # NPC dialogue out of the human review queue without discarding it as memory.
+    #
+    # DEPLOY ORDER MATTERS: this model is extra="forbid", so a consumer running
+    # pre-#1672 code hard-fails validation on an envelope carrying this field.
+    # orion-memory-consolidation must be deployed BEFORE orion-sql-writer.
+    source_platform: Optional[str] = None
 
 
 class ChatHistorySparkMetaPatchV1(BaseModel):

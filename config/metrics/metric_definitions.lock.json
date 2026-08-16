@@ -1,0 +1,5321 @@
+{
+  "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
+  "metric_count": 598,
+  "_last_change": {
+    "base": "merge base 1402cdd9a (origin/main)",
+    "change_count": 0,
+    "high_severity_count": 0,
+    "changes": [
+      "no definition changes relative to the merge base"
+    ]
+  },
+  "definitions": {
+    "metric://bus_channel/*/orion:actions:trigger:journal.v1": {
+      "schema_id": "JournalTriggerV1",
+      "all_producers": [
+        "*",
+        "orion-actions",
+        "orion-embodiment"
+      ],
+      "declared_consumers": [
+        "orion-actions"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:chat:response:feedback": {
+      "schema_id": "ChatResponseFeedbackV1",
+      "all_producers": [
+        "*",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:core:events": {
+      "schema_id": "CoreEventV1",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:embedding:generate": {
+      "schema_id": "EmbeddingGenerateV1",
+      "all_producers": [
+        "*",
+        "orion-cortex-exec",
+        "orion-hub",
+        "orion-vector-writer"
+      ],
+      "declared_consumers": [
+        "orion-vector-host"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:evidence:index:upsert": {
+      "schema_id": "EvidenceUnitV1",
+      "all_producers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:evidence:markdown:ingest": {
+      "schema_id": "MarkdownSpecIngestV1",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:evidence:parsed:ingest": {
+      "schema_id": "ParsedDocumentIngestV1",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:exec:result:*": {
+      "schema_id": "CortexExecResultPayload",
+      "all_producers": [
+        "*",
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-cortex-orch",
+        "orion-harness-governor",
+        "orion-hub",
+        "orion-thought"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:memory:vector:upsert": {
+      "schema_id": "VectorDocumentUpsertV1",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:spark:signal": {
+      "schema_id": "SparkSignalV1",
+      "all_producers": [
+        "*"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:state:request": {
+      "schema_id": "StateGetLatestRequest",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "orion-state-service"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:system:error": {
+      "schema_id": "SystemErrorV1",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:system:health": {
+      "schema_id": "SystemHealthV1",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch",
+        "orion-equilibrium-service",
+        "orion-hub"
+      ],
+      "notes": "kind=telemetry stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/*/orion:vector:write": {
+      "schema_id": "VectorWriteRequest",
+      "all_producers": [
+        "*"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/chatgpt-import/orion:chat:gpt:conversation": {
+      "schema_id": "ChatGptConversationV1",
+      "all_producers": [
+        "chatgpt-import"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/chatgpt-import/orion:chat:gpt:example": {
+      "schema_id": "ChatGptDerivedExampleV1",
+      "all_producers": [
+        "chatgpt-import"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/chatgpt-import/orion:chat:gpt:import:run": {
+      "schema_id": "ChatGptImportRunV1",
+      "all_producers": [
+        "chatgpt-import"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:actions:audit": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-actions"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:actions:manage:result:*": {
+      "schema_id": "WorkflowScheduleManageResponseV1",
+      "all_producers": [
+        "orion-actions"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:actions:trigger:daily_metacog.v1": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-actions"
+      ],
+      "declared_consumers": [
+        "orion-actions"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:actions:trigger:daily_pulse.v1": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-actions",
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-actions"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:actions:trigger:workflow.v1": {
+      "schema_id": "WorkflowDispatchRequestV1",
+      "all_producers": [
+        "orion-actions",
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-actions"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:cortex:exec:request:background": {
+      "schema_id": "CortexExecRequestPayload",
+      "all_producers": [
+        "orion-actions",
+        "orion-cortex-orch",
+        "orion-execution-dispatch-runtime",
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:cortex:request": {
+      "schema_id": "CortexClientRequest",
+      "all_producers": [
+        "orion-actions",
+        "orion-cortex-gateway",
+        "orion-hub",
+        "orion-memory-consolidation"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:journal:write": {
+      "schema_id": "JournalEntryWriteV1",
+      "all_producers": [
+        "orion-actions",
+        "orion-cortex-exec",
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-actions/orion:world_pulse:run:request": {
+      "schema_id": "WorldPulseRunV1",
+      "all_producers": [
+        "orion-actions",
+        "orion-hub",
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "orion-world-pulse"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-agent-council/orion:agent-council:reply*": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-agent-council"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService": {
+      "schema_id": "ChatRequestPayload",
+      "all_producers": [
+        "orion-agent-council",
+        "orion-cortex-exec",
+        "orion-hub",
+        "orion-memory-consolidation",
+        "orion-mind",
+        "orion-vision-council"
+      ],
+      "declared_consumers": [
+        "orion-llm-gateway"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-attention-runtime/orion:debug:attention:streak_tick": {
+      "schema_id": "DominanceStreakTickV1",
+      "all_producers": [
+        "orion-attention-runtime"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-attention-runtime/orion:memory:goals:proposed": {
+      "schema_id": "FieldGoalProvenanceV1",
+      "all_producers": [
+        "orion-attention-runtime"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-spark-concept-induction",
+        "orion-substrate-runtime",
+        "orion-world-pulse"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics-hub/orion:biometrics:cluster": {
+      "schema_id": "BiometricsClusterV1",
+      "all_producers": [
+        "orion-biometrics-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-state-service"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics/orion:biometrics:induction": {
+      "schema_id": "BiometricsInductionV1",
+      "all_producers": [
+        "orion-biometrics",
+        "orion-biometrics-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-state-service"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics/orion:biometrics:sample": {
+      "schema_id": "BiometricsSampleV1",
+      "all_producers": [
+        "orion-biometrics"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics/orion:biometrics:summary": {
+      "schema_id": "BiometricsSummaryV1",
+      "all_producers": [
+        "orion-biometrics",
+        "orion-biometrics-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-state-service"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics/orion:exec:result:SubstrateReadService:*": {
+      "schema_id": "SubstrateReadReplyV1",
+      "all_producers": [
+        "orion-biometrics"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics/orion:grammar:event": {
+      "schema_id": "GrammarEventV1",
+      "all_producers": [
+        "orion-biometrics",
+        "orion-bus",
+        "orion-cortex-exec",
+        "orion-cortex-orch",
+        "orion-harness-governor",
+        "orion-hub",
+        "orion-vision-edge",
+        "orion-vision-retina",
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-equilibrium-service",
+        "orion-heartbeat",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-biometrics/orion:telemetry:biometrics": {
+      "schema_id": "BiometricsPayload",
+      "all_producers": [
+        "orion-biometrics"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cocreation-signals/orion:substrate:codebase_delta": {
+      "schema_id": "CodebaseDeltaV1",
+      "all_producers": [
+        "orion-cocreation-signals"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cocreation-signals/orion:substrate:dev_economics_ledger": {
+      "schema_id": "DevEconomicsLedgerV1",
+      "all_producers": [
+        "orion-cocreation-signals"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cocreation-signals/orion:substrate:doc_semantic_drift": {
+      "schema_id": "DocSemanticDriftV1",
+      "all_producers": [
+        "orion-cocreation-signals"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cocreation-signals/orion:substrate:juniper_affective_state": {
+      "schema_id": "JuniperAffectiveStateV1",
+      "all_producers": [
+        "orion-cocreation-signals"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-collapse-mirror/orion:collapse:events": {
+      "schema_id": "CollapseMirrorEntryV2",
+      "all_producers": [
+        "orion-collapse-mirror",
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-collapse-mirror/orion:collapse:intake": {
+      "schema_id": "CollapseMirrorEntryV2",
+      "all_producers": [
+        "orion-collapse-mirror",
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-collapse-mirror"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-collapse-mirror/orion:collapse:sql-write": {
+      "schema_id": "CollapseMirrorEntryV2",
+      "all_producers": [
+        "orion-collapse-mirror"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-collapse-mirror/orion:collapse:triage": {
+      "schema_id": "CollapseMirrorEntryV2",
+      "all_producers": [
+        "orion-collapse-mirror"
+      ],
+      "declared_consumers": [
+        "orion-actions",
+        "orion-meta-tags",
+        "orion-sql-writer",
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-context-exec/orion:context_exec:event": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-context-exec"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-context-exec/orion:exec:request:RecallService": {
+      "schema_id": "RecallQueryV1",
+      "all_producers": [
+        "orion-context-exec",
+        "orion-cortex-exec",
+        "orion-cortex-orch",
+        "orion-hub",
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "orion-recall"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService": {
+      "schema_id": "ContextExecRunV1",
+      "all_producers": [
+        "orion-context-exec"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-context-exec/orion:exec:result:ContextExecService:*": {
+      "schema_id": "ContextExecRunV1",
+      "all_producers": [
+        "orion-context-exec"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:agent-council:intake": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-agent-council"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:autonomy:goal:planned": {
+      "schema_id": "AutonomyGoalPlannedV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:calibration:profile:audit": {
+      "schema_id": "CalibrationProfileAuditV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:cognition:reasoning_call": {
+      "schema_id": "ReasoningCallV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-thought"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:cognition:trace": {
+      "schema_id": "CognitionTracePayload",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-bus-tap",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:collapse:enrich": {
+      "schema_id": "CollapseMirrorEntryV2",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-collapse-mirror"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:collapse:scored": {
+      "schema_id": "CollapseMirrorEntryV2",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-collapse-mirror"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:cortex:pre_turn_appraisal:result:*": {
+      "schema_id": "TurnAppraisalBundleV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:dream:log": {
+      "schema_id": "DreamResultV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-dream",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:effect:*": {
+      "schema_id": "VerbEffectV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:embodiment:intent": {
+      "schema_id": "EmbodimentIntentV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-harness-governor",
+        "orion-substrate-runtime"
+      ],
+      "declared_consumers": [
+        "orion-embodiment"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:endogenous:runtime:audit": {
+      "schema_id": "EndogenousRuntimeAuditV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:endogenous:runtime:record": {
+      "schema_id": "EndogenousRuntimeExecutionRecordV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:exec:request:CollapseMirrorService": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-collapse-mirror"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:exec:request:ContextExecService": {
+      "schema_id": "ContextExecRequestV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-self-experiments"
+      ],
+      "declared_consumers": [
+        "orion-context-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:exec:request:MetaTagsService": {
+      "schema_id": "MetaTagsRequestV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-meta-tags"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:exec:request:SubstrateReadService": {
+      "schema_id": "SubstrateReadQueryV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-biometrics"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:exec:request:VisionHostService": {
+      "schema_id": "VisionTaskRequestPayload",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-hub",
+        "orion-vision-frame-router",
+        "orion-vision-host"
+      ],
+      "declared_consumers": [
+        "orion-vision-host"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:metacog:sql-write": {
+      "schema_id": "MetacogEntryV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:metacog:trace": {
+      "schema_id": "MetacognitiveTraceV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:rpc_health:snapshot": {
+      "schema_id": "RpcHealthSnapshotV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-equilibrium-service",
+        "orion-signal-gateway"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:spark:introspect:candidate": {
+      "schema_id": "SparkCandidateV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:substrate:tier_outcomes": {
+      "schema_id": "SubstrateTierOutcomesPayloadV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-substrate-telemetry"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:verb:result": {
+      "schema_id": "VerbResultV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:verb:result:*": {
+      "schema_id": "VerbResultV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-gateway/orion:cortex:gateway:result:*": {
+      "schema_id": "CortexChatResult",
+      "all_producers": [
+        "orion-cortex-gateway"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:actions:manage:workflow.v1": {
+      "schema_id": "WorkflowScheduleManageRequestV1",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-actions"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:conversation:result": {
+      "schema_id": "ChatResultPayload",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:cortex:exec:request": {
+      "schema_id": "CortexExecRequestPayload",
+      "all_producers": [
+        "orion-cortex-orch",
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:cortex:exec:request:chat": {
+      "schema_id": "CortexExecRequestPayload",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:cortex:exec:request:spark": {
+      "schema_id": "CortexExecRequestPayload",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:cortex:result": {
+      "schema_id": "CortexClientResult",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-cortex-gateway",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:cortex:result*": {
+      "schema_id": "CortexClientResult",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-cortex-gateway",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:mind:artifact": {
+      "schema_id": "MindRunArtifactV1",
+      "all_producers": [
+        "orion-cortex-orch",
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-orch/orion:verb:request": {
+      "schema_id": "VerbRequestV1",
+      "all_producers": [
+        "orion-cortex-orch"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-dream/orion:dream:compaction-delta": {
+      "schema_id": "MemoryCompactionDeltaV1",
+      "all_producers": [
+        "orion-dream"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-dream/orion:dream:trigger": {
+      "schema_id": "DreamTriggerPayload",
+      "all_producers": [
+        "orion-dream"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch"
+      ],
+      "notes": "kind=event stability=stable",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-embodiment/orion:chat:history:turn": {
+      "schema_id": "ChatHistoryTurnV1",
+      "all_producers": [
+        "orion-embodiment",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-spark-concept-induction",
+        "orion-sql-writer",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-embodiment/orion:chat:social:turn": {
+      "schema_id": "SocialRoomTurnV1",
+      "all_producers": [
+        "orion-embodiment",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-embodiment/orion:embodiment:outcome": {
+      "schema_id": "EmbodimentOutcomeV1",
+      "all_producers": [
+        "orion-embodiment"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-embodiment/orion:embodiment:perception": {
+      "schema_id": "WorldPerceptionV1",
+      "all_producers": [
+        "orion-embodiment"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec",
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:equilibrium:metacog:trigger": {
+      "schema_id": "MetacogTriggerV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
+        "orion-actions",
+        "orion-cortex-orch",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:equilibrium:snapshot": {
+      "schema_id": "EquilibriumSnapshotV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:equilibrium:transition": {
+      "schema_id": "EquilibriumServiceTransitionV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:metacognition:tick": {
+      "schema_id": "MetacognitionTickV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-equilibrium-service/orion:spark:state:snapshot": {
+      "schema_id": "SparkStateSnapshotV1",
+      "all_producers": [
+        "orion-equilibrium-service"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-state-service"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-execution-dispatch-runtime/orion:autonomy:action:outcome": {
+      "schema_id": "ActionOutcomeEmitV1",
+      "all_producers": [
+        "orion-execution-dispatch-runtime",
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-feedback-runtime/orion:feedback:frame": {
+      "schema_id": "FeedbackFrameV1",
+      "all_producers": [
+        "orion-feedback-runtime"
+      ],
+      "declared_consumers": [
+        "orion-spark-concept-induction"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-field-digester/orion:causal_geometry:snapshot": {
+      "schema_id": "CausalGeometrySnapshotV1",
+      "all_producers": [
+        "orion-field-digester"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-field-digester/orion:field_channel:anomaly_score": {
+      "schema_id": "FieldChannelAnomalyScoreV1",
+      "all_producers": [
+        "orion-field-digester"
+      ],
+      "declared_consumers": [
+        "orion-equilibrium-service",
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-git-hooks/orion:self_study:enrichment:requested": {
+      "schema_id": "SelfStudyEnrichmentRequestV1",
+      "all_producers": [
+        "orion-git-hooks"
+      ],
+      "declared_consumers": [
+        "orion-self-study-enrichment"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-graph-compression/orion:graph:compression:events": {
+      "schema_id": "GraphCompressionRegionMaterializedV1",
+      "all_producers": [
+        "orion-graph-compression"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-graph-compression/orion:graph:compression:stale": {
+      "schema_id": "CompressionStalenessMarkV1",
+      "all_producers": [
+        "orion-graph-compression"
+      ],
+      "declared_consumers": [
+        "orion-graph-compression"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-graph-compression/orion:substrate:mutation:pressure": {
+      "schema_id": "MutationPressureEvidenceV1",
+      "all_producers": [
+        "orion-graph-compression"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:harness:run:artifact": {
+      "schema_id": "HarnessRunV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:harness:run:result:*": {
+      "schema_id": "HarnessRunV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:harness:run:step": {
+      "schema_id": "HarnessRunStepV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:harness:verdict:artifact": {
+      "schema_id": "HarnessVerdictMoleculeV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:substrate:finalize_appraisal:request": {
+      "schema_id": "HarnessDraftMoleculeV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:substrate:post_turn_closure": {
+      "schema_id": "HarnessPostTurnClosureV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-harness-governor/orion:substrate:turn_outcome": {
+      "schema_id": "HarnessTurnOutcomeMoleculeV1",
+      "all_producers": [
+        "orion-harness-governor"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:attention:loop_outcome": {
+      "schema_id": "AttentionLoopOutcomeV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:chat:gpt:log": {
+      "schema_id": "ChatGptMessageV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:chat:gpt:message:log": {
+      "schema_id": "ChatGptMessageV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:chat:gpt:turn": {
+      "schema_id": "ChatGptLogTurnV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:chat:history:log": {
+      "schema_id": "ChatHistoryMessageV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-spark-concept-induction",
+        "orion-sql-writer",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:conversation:request": {
+      "schema_id": "ChatRequestPayload",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-cortex-orch"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:cortex:gateway:request": {
+      "schema_id": "CortexChatRequest",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-cortex-gateway"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:cortex:pre_turn_appraisal:request": {
+      "schema_id": "PreTurnAppraisalRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:exec:request:CouncilService": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-agent-council"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:harness:run:cancel": {
+      "schema_id": "HarnessRunCancelV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:harness:run:request": {
+      "schema_id": "HarnessRunRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:cards:active": {
+      "schema_id": "MemoryCardV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-memory-crystallizer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:approved": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-memory-crystallizer",
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:auto_activated": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-consolidation",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-memory-crystallizer",
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:project": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:proposed": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:quarantined": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:reinforced": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-consolidation",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:rejected": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:retrieved": {
+      "schema_id": "ActiveMemoryPacketV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:memory:crystallization:validated": {
+      "schema_id": "MemoryCrystallizationV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "declared_consumers": [
+        "orion-hub",
+        "orion-memory-crystallizer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:notify:in_app": {
+      "schema_id": "HubNotificationEvent",
+      "all_producers": [
+        "orion-hub",
+        "orion-notify"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:repair_pressure:appraisal": {
+      "schema_id": "RepairPressureAppraisalV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-equilibrium-service",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:room:claude:request": {
+      "schema_id": "RoomClaudeRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-room-companion"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:stt:intake": {
+      "schema_id": "STTRequestPayload",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-whisper-tts"
+      ],
+      "notes": "kind=request stability=None",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:thought:request": {
+      "schema_id": "StanceReactRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-thought"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:tts:intake": {
+      "schema_id": "TTSRequestPayload",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-whisper-tts"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llm-gateway/orion:council:reply*": {
+      "schema_id": "ChatResultPayload",
+      "all_producers": [
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-vision-council"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llm-gateway/orion:exec:result:LLMGatewayService": {
+      "schema_id": "ChatResultPayload",
+      "all_producers": [
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llm-gateway/orion:exec:result:LLMGatewayService:*": {
+      "schema_id": "ChatResultPayload",
+      "all_producers": [
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec",
+        "orion-hub",
+        "orion-memory-consolidation"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llm-gateway/orion:llm:reply*": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-agent-council",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llm-gateway/orion:mind:llm:reply:*": {
+      "schema_id": "ChatResultPayload",
+      "all_producers": [
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-mind"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llm-gateway/orion:vector:latent:upsert": {
+      "schema_id": "VectorUpsertV1",
+      "all_producers": [
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-memory-consolidation/orion:chat:history:spark_meta:patch": {
+      "schema_id": "ChatHistorySparkMetaPatchV1",
+      "all_producers": [
+        "orion-memory-consolidation"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-memory-consolidation/orion:signals:memory_consolidation": {
+      "schema_id": "OrionSignalV1",
+      "all_producers": [
+        "orion-memory-consolidation"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-signal-gateway"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-meta-tags/orion:exec:result:MetaTagsService": {
+      "schema_id": "MetaTagsResultV1",
+      "all_producers": [
+        "orion-meta-tags"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-meta-tags/orion:tags:enriched": {
+      "schema_id": "MetaTagsPayload",
+      "all_producers": [
+        "orion-meta-tags"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-notify/orion:notify:config:preference": {
+      "schema_id": "NotificationPreferencesUpdate",
+      "all_producers": [
+        "orion-notify"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-notify/orion:notify:config:recipient": {
+      "schema_id": "RecipientProfileUpdate",
+      "all_producers": [
+        "orion-notify"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-notify/orion:notify:persistence:receipt": {
+      "schema_id": "NotificationReceiptEvent",
+      "all_producers": [
+        "orion-notify"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-notify/orion:notify:persistence:request": {
+      "schema_id": "NotificationRecord",
+      "all_producers": [
+        "orion-notify"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-recall/orion:exec:result:RecallService:*": {
+      "schema_id": "RecallReplyV1",
+      "all_producers": [
+        "orion-recall"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec",
+        "orion-cortex-orch",
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-recall/orion:recall:telemetry": {
+      "schema_id": "RecallDecisionV1",
+      "all_producers": [
+        "orion-recall"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-room-companion/orion:room:claude:utterance": {
+      "schema_id": "RoomClaudeUtteranceV1",
+      "all_producers": [
+        "orion-room-companion"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-security-watcher/orion:vision:guard:alert": {
+      "schema_id": "VisionGuardAlert",
+      "all_producers": [
+        "orion-security-watcher"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-security-watcher/orion:vision:guard:signal": {
+      "schema_id": "VisionGuardSignal",
+      "all_producers": [
+        "orion-security-watcher"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-signal-gateway/orion:signals": {
+      "schema_id": "OrionSignalV1",
+      "all_producers": [
+        "orion-signal-gateway"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-cortex-exec",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-signal-gateway/orion:signals:*": {
+      "schema_id": "OrionSignalV1",
+      "all_producers": [
+        "orion-signal-gateway"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-cortex-exec",
+        "orion-hub",
+        "orion-spark-concept-induction"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:bridge-summary": {
+      "schema_id": "SocialBridgeSummaryV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:claim": {
+      "schema_id": "SocialClaimV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:claim:attribution": {
+      "schema_id": "SocialClaimAttributionV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:claim:consensus": {
+      "schema_id": "SocialConsensusStateV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:claim:divergence": {
+      "schema_id": "SocialDivergenceSignalV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:claim:revision": {
+      "schema_id": "SocialClaimRevisionV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:claim:stance": {
+      "schema_id": "SocialClaimStanceV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:clarifying-question": {
+      "schema_id": "SocialClarifyingQuestionV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:closure-signal": {
+      "schema_id": "SocialClosureSignalV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:commitment": {
+      "schema_id": "SocialCommitmentV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:commitment:resolution": {
+      "schema_id": "SocialCommitmentResolutionV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:deliberation:decision": {
+      "schema_id": "SocialDeliberationDecisionV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:floor:decision": {
+      "schema_id": "SocialFloorDecisionV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:open-thread": {
+      "schema_id": "SocialOpenThreadV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:participant:continuity": {
+      "schema_id": "SocialParticipantContinuityV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:peer-style": {
+      "schema_id": "SocialPeerStyleHintV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:relational:update": {
+      "schema_id": "SocialRelationalMemoryUpdateV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:room-ritual": {
+      "schema_id": "SocialRoomRitualSummaryV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:room:continuity": {
+      "schema_id": "SocialRoomContinuityV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:stance:snapshot": {
+      "schema_id": "SocialStanceSnapshotV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-memory/orion:social:turn-handoff": {
+      "schema_id": "SocialTurnHandoffV1",
+      "all_producers": [
+        "orion-social-memory"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-social-room-bridge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:bridge:social:participant": {
+      "schema_id": "ExternalRoomParticipantV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:bridge:social:room:delivery": {
+      "schema_id": "ExternalRoomPostResultV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:bridge:social:room:intake": {
+      "schema_id": "ExternalRoomMessageV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:bridge:social:room:skipped": {
+      "schema_id": "ExternalRoomTurnSkippedV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:social:epistemic:decision": {
+      "schema_id": "SocialEpistemicDecisionV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:social:epistemic:signal": {
+      "schema_id": "SocialEpistemicSignalV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:social:repair:decision": {
+      "schema_id": "SocialRepairDecisionV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:social:repair:signal": {
+      "schema_id": "SocialRepairSignalV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-social-room-bridge/orion:social:turn-policy": {
+      "schema_id": "SocialTurnPolicyDecisionV1",
+      "all_producers": [
+        "orion-social-room-bridge"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-spark-concept-induction/orion:debug:turn:dossier": {
+      "schema_id": "TurnDossierV1",
+      "all_producers": [
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-spark-concept-induction/orion:memory:identity:snapshot": {
+      "schema_id": "IdentitySnapshotV1",
+      "all_producers": [
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-spark-concept-induction/orion:spark:concepts:delta": {
+      "schema_id": "ConceptProfileDelta",
+      "all_producers": [
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer",
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-spark-concept-induction/orion:spark:concepts:profile": {
+      "schema_id": "ConceptProfile",
+      "all_producers": [
+        "orion-spark-concept-induction"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer",
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-spark-concept-induction/orion:stream:world_pulse:run:result:dlq": {
+      "schema_id": "WorldPulseRunResultV1",
+      "all_producers": [
+        "orion-spark-concept-induction"
+      ],
+      "notes": "kind=stream stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-sql-writer/orion:chat:social:stored": {
+      "schema_id": "SocialRoomTurnStoredV1",
+      "all_producers": [
+        "orion-sql-writer"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-meta-tags",
+        "orion-spark-concept-induction",
+        "orion-vector-host"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-sql-writer/orion:collapse:stored": {
+      "schema_id": "CollapseMirrorStoredV1",
+      "all_producers": [
+        "orion-sql-writer"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-actions"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-sql-writer/orion:journal:created": {
+      "schema_id": "JournalEntryWriteV1",
+      "all_producers": [
+        "orion-sql-writer"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-sql-writer/orion:journal:index": {
+      "schema_id": "JournalEntryIndexV1",
+      "all_producers": [
+        "orion-sql-writer"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-recall"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-sql-writer/orion:memory:turn:persisted": {
+      "schema_id": "MemoryTurnPersistedV1",
+      "all_producers": [
+        "orion-sql-writer"
+      ],
+      "declared_consumers": [
+        "orion-memory-consolidation"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-state-service/orion:exec:result:StateService:*": {
+      "schema_id": "StateLatestReply",
+      "all_producers": [
+        "orion-state-service"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-state-service/orion:state:reply:*": {
+      "schema_id": "StateLatestReply",
+      "all_producers": [
+        "orion-state-service"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-substrate-runtime/orion:grammar:accepted-pressure": {
+      "schema_id": "GrammarEventV1",
+      "all_producers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-substrate-runtime/orion:substrate:brain_frame": {
+      "schema_id": "SubstrateBrainFrameV1",
+      "all_producers": [
+        "orion-substrate-runtime"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-substrate-runtime/orion:substrate:finalize_appraisal:result:*": {
+      "schema_id": "SubstrateFinalizeAppraisalV1",
+      "all_producers": [
+        "orion-substrate-runtime"
+      ],
+      "declared_consumers": [
+        "orion-harness-governor"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:attention:salience:trace": {
+      "schema_id": "AttentionSalienceTraceV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:dream:compaction-request": {
+      "schema_id": "CompactionRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:reverie:chain": {
+      "schema_id": "ReverieChainV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:reverie:resonance-alert": {
+      "schema_id": "ResonanceAlertV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:reverie:thought": {
+      "schema_id": "SpontaneousThoughtV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:thought:artifact": {
+      "schema_id": "ThoughtEventV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:thought:result:*": {
+      "schema_id": "ThoughtEventV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-topic-foundry/orion:topic:foundry:drift:alert.v1": {
+      "schema_id": "TopicFoundryDriftAlertV1",
+      "all_producers": [
+        "orion-topic-foundry"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-topic-foundry/orion:topic:foundry:enrich:complete.v1": {
+      "schema_id": "TopicFoundryEnrichCompleteV1",
+      "all_producers": [
+        "orion-topic-foundry"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-topic-foundry/orion:topic:foundry:run:complete.v1": {
+      "schema_id": "TopicFoundryRunCompleteV1",
+      "all_producers": [
+        "orion-topic-foundry"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vector-host/orion:embedding:result:*": {
+      "schema_id": "EmbeddingResultV1",
+      "all_producers": [
+        "orion-vector-host"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vector-host/orion:vector:semantic:upsert": {
+      "schema_id": "VectorUpsertV1",
+      "all_producers": [
+        "orion-vector-host"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-council/orion:exec:request:VisionScribeService": {
+      "schema_id": "VisionScribeRequestPayload",
+      "all_producers": [
+        "orion-vision-council"
+      ],
+      "declared_consumers": [
+        "orion-vision-scribe"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-council/orion:exec:result:VisionCouncilService": {
+      "schema_id": "VisionCouncilResultPayload",
+      "all_producers": [
+        "orion-vision-council"
+      ],
+      "declared_consumers": [
+        "orion-vision-window"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-council/orion:vision:events": {
+      "schema_id": "VisionEventPayload",
+      "all_producers": [
+        "orion-vision-council"
+      ],
+      "declared_consumers": [
+        "orion-vision-scribe"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:artifacts": {
+      "schema_id": "VisionArtifactPayload",
+      "all_producers": [
+        "orion-vision-edge",
+        "orion-vision-host"
+      ],
+      "declared_consumers": [
+        "orion-security-watcher",
+        "orion-vision-council",
+        "orion-vision-window"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:detect:upload": {
+      "schema_id": "VisionFramePointerPayload",
+      "all_producers": [
+        "orion-vision-edge"
+      ],
+      "declared_consumers": [
+        "orion-vision-edge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:edge:activity": {
+      "schema_id": "VisionEdgeActivityPayload",
+      "all_producers": [
+        "orion-vision-edge"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:edge:error": {
+      "schema_id": "VisionEdgeError",
+      "all_producers": [
+        "orion-vision-edge"
+      ],
+      "declared_consumers": [
+        "orion-vision-edge"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:edge:event:notable": {
+      "schema_id": "VisionEventPayload",
+      "all_producers": [
+        "orion-vision-edge"
+      ],
+      "declared_consumers": [
+        "orion-vision-council"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:edge:health": {
+      "schema_id": "VisionEdgeHealth",
+      "all_producers": [
+        "orion-vision-edge"
+      ],
+      "declared_consumers": [
+        "orion-vision-edge"
+      ],
+      "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:edge:raw": {
+      "schema_id": "VisionEdgeArtifact",
+      "all_producers": [
+        "orion-vision-edge"
+      ],
+      "declared_consumers": [
+        "orion-security-watcher"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-edge/orion:vision:frames": {
+      "schema_id": "VisionFramePointerPayload",
+      "all_producers": [
+        "orion-vision-edge",
+        "orion-vision-retina"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-vision-edge",
+        "orion-vision-frame-router",
+        "orion-vision-host",
+        "orion-vision-window"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-host/orion:vision:reply:*": {
+      "schema_id": "VisionTaskResultPayload",
+      "all_producers": [
+        "orion-vision-host"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-vision-frame-router"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-scribe/orion:exec:result:VisionScribeService": {
+      "schema_id": "VisionScribeResultPayload",
+      "all_producers": [
+        "orion-vision-scribe"
+      ],
+      "declared_consumers": [
+        "orion-vision-council"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-scribe/orion:vision:events:sql-write": {
+      "schema_id": "VisionEventBundleItem",
+      "all_producers": [
+        "orion-vision-scribe"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-scribe/orion:vision:scribe:pub": {
+      "schema_id": "VisionScribeAckPayload",
+      "all_producers": [
+        "orion-vision-scribe"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-window/orion:exec:request:VisionCouncilService": {
+      "schema_id": "VisionCouncilRequestPayload",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-vision-council"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-window/orion:exec:request:VisionWindowService": {
+      "schema_id": "VisionWindowRequestPayload",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-vision-council"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-window/orion:exec:result:VisionWindowService": {
+      "schema_id": "VisionWindowResultPayload",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-vision-council"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-window/orion:vision:windows": {
+      "schema_id": "VisionWindowPayload",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-vision-council"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-whisper-tts/orion:stt:result:*": {
+      "schema_id": "STTResultPayload",
+      "all_producers": [
+        "orion-whisper-tts"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=None",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-whisper-tts/orion:tts:result:*": {
+      "schema_id": "TTSResultPayload",
+      "all_producers": [
+        "orion-whisper-tts"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:hub:messages:create": {
+      "schema_id": "HubWorldPulseMessageV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:stream:world_pulse:run:result": {
+      "schema_id": "WorldPulseRunResultV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "orion-spark-concept-induction"
+      ],
+      "notes": "kind=stream stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_context:daily_capsule": {
+      "schema_id": "WorldContextCapsuleV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-cortex-exec",
+        "orion-hub",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:article:emit": {
+      "schema_id": "ArticleRecordV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:claim:emit": {
+      "schema_id": "ClaimRecordV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:cluster:emit": {
+      "schema_id": "ArticleClusterV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:digest:created": {
+      "schema_id": "DailyWorldPulseV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:digest:item": {
+      "schema_id": "DailyWorldPulseItemV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:digest:published": {
+      "schema_id": "HubWorldPulseMessageV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:entity:emit": {
+      "schema_id": "EntityRecordV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:event:emit": {
+      "schema_id": "EventRecordV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:graph:upsert": {
+      "schema_id": "GraphDeltaPlanV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:learning:emit": {
+      "schema_id": "WorldLearningDeltaV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:publish:status": {
+      "schema_id": "GenericPayloadV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:run:result": {
+      "schema_id": "WorldPulseRunResultV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-actions",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:situation:brief:upsert": {
+      "schema_id": "TopicSituationBriefV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:situation:change:emit": {
+      "schema_id": "SituationChangeV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:worth:reading": {
+      "schema_id": "WorthReadingItemV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-pulse/orion:world_pulse:worth:watching": {
+      "schema_id": "WorthWatchingItemV1",
+      "all_producers": [
+        "orion-world-pulse"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:memory:drives:state": {
+      "schema_id": "DriveStateV1",
+      "all_producers": [
+        "unknown"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:memory:tension:event": {
+      "schema_id": "TensionEventV1",
+      "all_producers": [
+        "unknown"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:rdf:confirm": {
+      "schema_id": "RdfWriteResult",
+      "all_producers": [
+        "unknown"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:rdf:enqueue": {
+      "schema_id": "RdfWriteRequest",
+      "all_producers": [
+        "unknown"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:rdf:error": {
+      "schema_id": "SystemErrorV1",
+      "all_producers": [
+        "unknown"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:rdf:worker": {
+      "schema_id": "RdfBuildRequest",
+      "all_producers": [
+        "unknown"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:tags:chat:enriched": {
+      "schema_id": "MetaTagsPayload",
+      "all_producers": [
+        "unknown"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://field_channel/orion-field-digester/availability": {
+      "meaning": "How available/reachable a compute node currently is.",
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/available_capacity": {
+      "meaning": "How much spare operating capacity a capability has right now.",
+      "notes": "category=synthesized_rollup level=capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/avg_step_chars_pressure": {
+      "meaning": "Per-step verbosity of the FCC motor's tool output for one turn.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/catalog_drift_pressure": {
+      "meaning": "Drift/staleness in the bus event \"catalog\" (schema registry) relative to what's actually flowing.",
+      "notes": "category=infra_transport level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/compliance_deficit": {
+      "meaning": "Did the FCC motor actually produce a compliant, delivered turn -- HarnessRunV1.compliance_verdict rank (completed/partial/failed/refused), distinct from failure_pressure since a turn can resolve partial with zero individual tool-step failures.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/confidence": {
+      "meaning": "How confident the system is that a given capability is currently reliable/available.",
+      "notes": "category=synthesized_rollup level=capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/context_gathering_ratio": {
+      "meaning": "What fraction of one FCC-motor turn's classified tool calls were read-only research/context tools (Read, Grep, WebSearch, mcp__gitnexus__*, mcp__firecrawl__*, ...) vs action/mutation tools (Bash, Edit, Write, other MCP tools) -- composition, not volume (harness_step_load already covers volume). A fixed, deterministic tool-name allowlist, not a taxonomy: an unmatched tool name increments neither bucket, so 0.0 can mean either all-execution or zero-classified-calls.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/contract_pressure": {
+      "meaning": "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code).",
+      "notes": "category=infra_transport level=node,capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/conversation_load": {
+      "meaning": "How much active conversational load (turn volume/complexity) is occurring.",
+      "feeds_dimensions": [
+        "social_pressure"
+      ],
+      "notes": "category=social_conversational level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cortex_exec_step_load": {
+      "meaning": "Renamed from execution_load 2026-07-24 for scope honesty (the sibling of harness_step_load, cortex-exec-scoped instead of harness-governor-scoped) and lane-gated to exclude the harness_motor lane (whose cortex_exec_started_step_count is structurally always 0, since that counter only increments for orion-cortex-exec-sourced exec_step_started events) -- previously that always-0 harness_motor-lane reading stomped the real cortex-exec-lane value via mode=\"replace\" on the shared node key. cortex-exec-only proxy for how much active execution work (agent runs, tool calls) is in flight on a node.",
+      "feeds_dimensions": [
+        "execution_pressure"
+      ],
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cpu_pressure": {
+      "meaning": "How loaded a node's CPU currently is.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/delivery_confidence": {
+      "meaning": "Confidence that bus messages are actually being delivered end-to-end. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value.",
+      "feeds_dimensions": [
+        "coherence"
+      ],
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/disk_capacity_pressure": {
+      "meaning": "How full a node's monitored filesystems are (percent used, max across configured mounts). Distinct from disk_pressure, which measures I/O throughput, not capacity.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/disk_pressure": {
+      "meaning": "Node disk I/O pressure.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/egress_confidence_deficit": {
+      "meaning": "1 - confidence that an execution's output actually reached its destination.",
+      "feeds_dimensions": [
+        "introspection_pressure"
+      ],
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/execution_friction": {
+      "meaning": "How much resistance (retries/backoff) execution is encountering on a node.",
+      "feeds_dimensions": [
+        "reliability_pressure"
+      ],
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/execution_pressure": {
+      "meaning": "Capability-level execution-load pressure.",
+      "feeds_dimensions": [
+        "execution_pressure"
+      ],
+      "notes": "category=task_execution level=capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/expected_offline_suppression": {
+      "meaning": "Signals a node is expected to be offline, so its absence shouldn't be read as a failure.",
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/failure_pressure": {
+      "meaning": "Recent execution failure rate/severity on a node.",
+      "feeds_dimensions": [
+        "reliability_pressure"
+      ],
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/fan_pressure": {
+      "meaning": "Node BMC fan speed (percent of max, max across fans). A response to thermal load, not an independent hazard on its own -- 0.0 on a node without iLO/BMC credentials configured.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/field_coherence_warning": {
+      "meaning": "Per-node incoherence score -- fires when two reducers that should agree about a node's state disagree.",
+      "notes": "category=self_monitoring level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/gpu_pressure": {
+      "meaning": "How loaded a node's GPU currently is.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/harness_step_load": {
+      "meaning": "FCC-motor-only step-load proxy for one unified Hub turn, split out of cortex_exec_step_load (renamed from execution_load 2026-07-24; blended cortex-exec + harness-governor step counts and hard-capped at 8 before the 2026-07-23 fix) -- a compute/thermal/power cost proxy for how much processing one turn actually cost on the expensive GPU node running the motor.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/memory_pressure": {
+      "meaning": "Node RAM pressure.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/observer_failure_pressure": {
+      "meaning": "Pressure from failures of the bus \"observer\" role (monitoring/subscriber-side failures).",
+      "notes": "category=infra_transport level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/power_pressure": {
+      "meaning": "Node power-draw pressure. Real chassis-wide wattage (iLO/BMC RedFish) when that node has BMC credentials configured; falls back to a GPU-power-only estimate otherwise. 0.0 on a node with neither.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/prediction_error": {
+      "meaning": "How much a recent prediction (from the prediction/surprise subsystem) missed reality.",
+      "notes": "category=self_monitoring level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/pressure": {
+      "meaning": "Overall load/pressure for a given capability (llm_inference, orchestration, storage, graph, memory, transport, vision).",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=synthesized_rollup level=capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/reasoning_load": {
+      "meaning": "How much active LLM-reasoning work a node is doing. Real magnitude since 2026-07-24: cortex-exec-sourced runs use reasoning_char_count (chars); harness-motor-sourced runs use reasoning_output_tokens (real provider-computed tokens from the FCC CLI's own result-event usage object, confirmed live). Falls back to a 0.35/0.05 presence-only flag only when neither magnitude is set.",
+      "feeds_dimensions": [
+        "reasoning_pressure"
+      ],
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/reasoning_pressure": {
+      "meaning": "Capability-level reasoning-load pressure.",
+      "feeds_dimensions": [
+        "reasoning_pressure"
+      ],
+      "notes": "category=task_execution level=capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/reliability_pressure": {
+      "meaning": "Capability-level pressure representing risk to reliability (from execution friction, failures, or observer failures).",
+      "feeds_dimensions": [
+        "reliability_pressure"
+      ],
+      "notes": "category=synthesized_rollup level=capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/repair_pressure": {
+      "meaning": "How much conversational \"repair\" (corrections, re-explaining) is happening in chat.",
+      "feeds_dimensions": [
+        "social_pressure"
+      ],
+      "notes": "category=social_conversational level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/staleness": {
+      "meaning": "Whether a node's most recent biometrics sample is too old to trust.",
+      "feeds_dimensions": [
+        "continuity_pressure"
+      ],
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/stream_backlog_health": {
+      "meaning": "Renamed from bus_health 2026-07-24, same scope-honesty reasoning as stream_backlog_pressure above -- reflects world_pulse's one Redis Stream, not overall bus/transport subsystem health. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value.",
+      "feeds_dimensions": [
+        "coherence"
+      ],
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/stream_backlog_pressure": {
+      "meaning": "Renamed from transport_pressure 2026-07-24 for scope honesty: this only ever measures world_pulse's one real Redis Stream (orion:stream:world_pulse:run:result) and its dead-letter queue -- the only thing in the architecture with a real backlog/XLEN concept. Everything else on the bus is Pub/Sub, which has no backlog to measure. Not a general bus/transport-layer pressure signal, and not intended to become one without a genuinely different mechanism -- see docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md and docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md for the real cross-service RPC-health signal being built separately.",
+      "feeds_dimensions": [
+        "resource_pressure"
+      ],
+      "notes": "category=infra_transport level=node,capability",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/thermal_pressure": {
+      "meaning": "Node thermal/temperature pressure.",
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/tool_failure_streak_pressure": {
+      "meaning": "Is the FCC motor stuck repeating the same tool failure (e.g. a denied permission) instead of adapting, for one turn.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/turn_incompletion": {
+      "meaning": "Did Hub fail to get a usable result back from the harness-governor RPC for this turn at all -- the one unified-turn failure mode where no governor-side grammar event exists. A distinct, worse severity than compliance_deficit's worst rank.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://inner_state/orion-attention-runtime/field_attention_frame.v1": {
+      "schema_id": "FieldAttentionFrameV1",
+      "notes": "cadence=per_tick composition=composed_into_self_state",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-attention-runtime/field_attention_frame.v1#overall_salience": {
+      "schema_id": "FieldAttentionFrameV1",
+      "upstream": [
+        "metric://inner_state/orion-attention-runtime/field_attention_frame.v1"
+      ],
+      "notes": "scalar field on FieldAttentionFrameV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-biometrics/biometrics_cluster.v1": {
+      "schema_id": "BiometricsClusterV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.executor:_metacog_biometrics_cue"
+      ],
+      "notes": "cadence=per_tick composition=unresolved_duplicate",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-biometrics/biometrics_cluster.v1#peak_pressure": {
+      "schema_id": "BiometricsClusterV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.executor:_metacog_biometrics_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-biometrics/biometrics_cluster.v1"
+      ],
+      "notes": "scalar field on BiometricsClusterV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_channel_corpus.v1": {
+      "schema_id": "FieldChannelCorpusRowV1",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1": {
+      "schema_id": "FieldStateV1",
+      "notes": "cadence=per_tick composition=composed_into_self_state",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_ewma": {
+      "schema_id": "FieldStateV1",
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_ewma_var": {
+      "schema_id": "FieldStateV1",
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_zscore": {
+      "schema_id": "FieldStateV1",
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-hub/chat_stance_disposition": {
+      "notes": "cadence=chat_turn_gated composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-proposal-runtime, orion-policy-runtime, orion-execution-dispatch-runtime, orion-feedback-runtime, orion-consolidation-runtime/l7_l11_ladder": {
+      "notes": "cadence=multi_service composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1": {
+      "schema_id": "SelfStateV1",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_confidence": {
+      "schema_id": "SelfStateV1",
+      "upstream": [
+        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
+      ],
+      "notes": "scalar field on SelfStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_intensity": {
+      "schema_id": "SelfStateV1",
+      "upstream": [
+        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
+      ],
+      "notes": "scalar field on SelfStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1#overall_surprise": {
+      "schema_id": "SelfStateV1",
+      "upstream": [
+        "metric://inner_state/orion-self-state-runtime (DELETED 2026-07-22, PR #1266)/self_state.v1"
+      ],
+      "notes": "scalar field on SelfStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1": {
+      "schema_id": "MoodArcCorpusRowV1",
+      "notes": "cadence=per_tick composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1#coherence": {
+      "schema_id": "MoodArcCorpusRowV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1"
+      ],
+      "notes": "scalar field on MoodArcCorpusRowV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1#energy": {
+      "schema_id": "MoodArcCorpusRowV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1"
+      ],
+      "notes": "scalar field on MoodArcCorpusRowV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1#novelty": {
+      "schema_id": "MoodArcCorpusRowV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1"
+      ],
+      "notes": "scalar field on MoodArcCorpusRowV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1#valence": {
+      "schema_id": "MoodArcCorpusRowV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_corpus.v1"
+      ],
+      "notes": "scalar field on MoodArcCorpusRowV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "notes": "cadence=offline_trained composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#ar1_surrogate_loss": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#ceiling_ratio": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio_ci_high": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#floor_ratio_ci_low": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#max_gap_sec": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1#shuffle_baseline_loss": {
+      "schema_id": "MoodArcEncoderManifestV1",
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/mood_arc_encoder.v1"
+      ],
+      "notes": "scalar field on MoodArcEncoderManifestV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/phi_heuristic.valence": {
+      "notes": "cadence=per_tick composition=composed_into_self_state",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1": {
+      "schema_id": "PhiIntrinsicRewardV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
+      ],
+      "notes": "cadence=offline_trained composition=composed_into_self_state",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#delta_phi": {
+      "schema_id": "PhiIntrinsicRewardV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
+      ],
+      "notes": "scalar field on PhiIntrinsicRewardV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#delta_recon_error": {
+      "schema_id": "PhiIntrinsicRewardV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
+      ],
+      "notes": "scalar field on PhiIntrinsicRewardV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#phi": {
+      "schema_id": "PhiIntrinsicRewardV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
+      ],
+      "notes": "scalar field on PhiIntrinsicRewardV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#recon_error": {
+      "schema_id": "PhiIntrinsicRewardV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
+      ],
+      "notes": "scalar field on PhiIntrinsicRewardV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1": {
+      "schema_id": "AttentionBroadcastProjectionV1",
+      "declared_consumers": [
+        "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
+        "services.orion-thought.app.chain:run_reverie_chain"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score": {
+      "schema_id": "AttentionBroadcastProjectionV1",
+      "declared_consumers": [
+        "services.orion-thought.app.broadcast_reader:read_latest_broadcast",
+        "services.orion-thought.app.chain:run_reverie_chain"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1"
+      ],
+      "notes": "scalar field on AttentionBroadcastProjectionV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "notes": "cadence=per_tick composition=shadow_declared_not_composed",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#broadcast_lane_age_sec": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
+      ],
+      "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#confidence": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
+      ],
+      "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#field_overall_salience": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
+      ],
+      "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#heartbeat_mean_ratio": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
+      ],
+      "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-substrate-runtime/attention_self_model.v1#prediction_error_confidence": {
+      "schema_id": "AttentionSelfModelV1",
+      "declared_consumers": [
+        "services.orion-equilibrium-service.app.flow_metacog_gate:build_flow_metacog_trigger",
+        "services.orion-equilibrium-service.app.insight_metacog_gate:build_insight_metacog_trigger"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-substrate-runtime/attention_self_model.v1"
+      ],
+      "notes": "scalar field on AttentionSelfModelV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion.autonomy.reducer/autonomy_state_v2": {
+      "schema_id": "AutonomyStateV2",
+      "notes": "cadence=chat_turn_gated composition=no_cognition_consumer",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion.autonomy.reducer/autonomy_state_v2#confidence": {
+      "schema_id": "AutonomyStateV2",
+      "upstream": [
+        "metric://inner_state/orion.autonomy.reducer/autonomy_state_v2"
+      ],
+      "notes": "scalar field on AutonomyStateV2",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion.spark.concept_induction.drives (DELETED 2026-07-30)/drive_state.v1": {
+      "schema_id": "DriveStateV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.autonomy_slice:build_autonomy_slice",
+        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs (ctx['chat_drive_state'] via drive_state_postgres)"
+      ],
+      "notes": "cadence=event_gated composition=unresolved_duplicate",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion.spark.concept_induction.drives (DELETED 2026-07-30)/drive_state.v1#confidence": {
+      "schema_id": "DriveStateV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.autonomy_slice:build_autonomy_slice",
+        "services.orion-cortex-exec.app.chat_stance:build_chat_stance_inputs (ctx['chat_drive_state'] via drive_state_postgres)"
+      ],
+      "upstream": [
+        "metric://inner_state/orion.spark.concept_induction.drives (DELETED 2026-07-30)/drive_state.v1"
+      ],
+      "notes": "scalar field on DriveStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://organ_signal/autonomy/autonomy_state#confidence": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/autonomy_state#pressure_autonomy": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/autonomy_state#pressure_capability": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/autonomy_state#pressure_coherence": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/autonomy_state#pressure_continuity": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/autonomy_state#pressure_predictive": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/autonomy_state#pressure_relational": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/drive_pressure#confidence": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/drive_pressure#pressure_autonomy": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/drive_pressure#pressure_capability": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/drive_pressure#pressure_coherence": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/drive_pressure#pressure_continuity": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/drive_pressure#pressure_predictive": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/drive_pressure#pressure_relational": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/tension_state#confidence": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/tension_state#pressure_autonomy": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/tension_state#pressure_capability": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/tension_state#pressure_coherence": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/tension_state#pressure_continuity": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/tension_state#pressure_predictive": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/autonomy/tension_state#pressure_relational": {
+      "upstream_organs": [
+        "graph_cognition"
+      ],
+      "notes": "organ=autonomy class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/cpu_load#confidence": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/cpu_load#level": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/cpu_load#trend": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/cpu_load#volatility": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/disk_io#confidence": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/disk_io#level": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/disk_io#trend": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/disk_io#volatility": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/gpu_load#confidence": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/gpu_load#level": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/gpu_load#trend": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/gpu_load#volatility": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/memory_pressure#confidence": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/memory_pressure#level": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/memory_pressure#trend": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/memory_pressure#volatility": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/network_load#confidence": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/network_load#level": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/network_load#trend": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/network_load#volatility": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/power_state#confidence": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/power_state#level": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/power_state#trend": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/power_state#volatility": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/thermal_state#confidence": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/thermal_state#level": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/thermal_state#trend": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/biometrics/thermal_state#volatility": {
+      "notes": "organ=biometrics class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/collapse_mirror/cognitive_collapse#confidence": {
+      "upstream_organs": [
+        "biometrics",
+        "equilibrium"
+      ],
+      "notes": "organ=collapse_mirror class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/collapse_mirror/cognitive_collapse#level": {
+      "upstream_organs": [
+        "biometrics",
+        "equilibrium"
+      ],
+      "notes": "organ=collapse_mirror class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/collapse_mirror/cognitive_collapse#valence": {
+      "upstream_organs": [
+        "biometrics",
+        "equilibrium"
+      ],
+      "notes": "organ=collapse_mirror class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/collapse_mirror/metacog_event#confidence": {
+      "upstream_organs": [
+        "biometrics",
+        "equilibrium"
+      ],
+      "notes": "organ=collapse_mirror class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/collapse_mirror/metacog_event#level": {
+      "upstream_organs": [
+        "biometrics",
+        "equilibrium"
+      ],
+      "notes": "organ=collapse_mirror class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/collapse_mirror/metacog_event#valence": {
+      "upstream_organs": [
+        "biometrics",
+        "equilibrium"
+      ],
+      "notes": "organ=collapse_mirror class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/concept_drift#confidence": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/concept_drift#novelty": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/concept_drift#salience": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/concept_salience#confidence": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/concept_salience#novelty": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/concept_salience#salience": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/topic_formation#confidence": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/topic_formation#novelty": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/concept_induction/topic_formation#salience": {
+      "upstream_organs": [
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=concept_induction class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/cortex_gateway/route_decision#confidence": {
+      "notes": "organ=cortex_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/cortex_gateway/route_decision#level": {
+      "notes": "organ=cortex_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/cortex_orch/plan_resolution#confidence": {
+      "upstream_organs": [
+        "cortex_gateway"
+      ],
+      "notes": "organ=cortex_orch class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/cortex_orch/plan_resolution#level": {
+      "upstream_organs": [
+        "cortex_gateway"
+      ],
+      "notes": "organ=cortex_orch class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/dream/dream_cycle_output#coherence": {
+      "upstream_organs": [
+        "recall",
+        "social_memory",
+        "state_journaler"
+      ],
+      "notes": "organ=dream class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/dream/dream_cycle_output#level": {
+      "upstream_organs": [
+        "recall",
+        "social_memory",
+        "state_journaler"
+      ],
+      "notes": "organ=dream class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/dream/dream_cycle_output#novelty": {
+      "upstream_organs": [
+        "recall",
+        "social_memory",
+        "state_journaler"
+      ],
+      "notes": "organ=dream class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/dream/memory_consolidation#coherence": {
+      "upstream_organs": [
+        "recall",
+        "social_memory",
+        "state_journaler"
+      ],
+      "notes": "organ=dream class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/dream/memory_consolidation#level": {
+      "upstream_organs": [
+        "recall",
+        "social_memory",
+        "state_journaler"
+      ],
+      "notes": "organ=dream class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/dream/memory_consolidation#novelty": {
+      "upstream_organs": [
+        "recall",
+        "social_memory",
+        "state_journaler"
+      ],
+      "notes": "organ=dream class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/mesh_health#confidence": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/mesh_health#level": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/mesh_health#trend": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/service_distress#confidence": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/service_distress#level": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/service_distress#trend": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/zen_state#confidence": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/zen_state#level": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/equilibrium/zen_state#trend": {
+      "upstream_organs": [
+        "biometrics"
+      ],
+      "notes": "organ=equilibrium class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#assistant_accountability_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#coherence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#coherence_gap": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#confidence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#explicit_repair_command": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#goal_pressure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#level": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#operational_block": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#repetition_failure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#specificity_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#tension": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/coherence_state#trust_rupture": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#assistant_accountability_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#coherence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#coherence_gap": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#confidence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#explicit_repair_command": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#goal_pressure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#level": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#operational_block": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#repetition_failure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#specificity_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#tension": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/goal_pressure#trust_rupture": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#assistant_accountability_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#coherence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#coherence_gap": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#confidence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#explicit_repair_command": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#goal_pressure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#level": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#operational_block": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#repetition_failure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#specificity_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#tension": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/metacog_perception#trust_rupture": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#assistant_accountability_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#coherence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#coherence_gap": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#confidence": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#explicit_repair_command": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#goal_pressure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#level": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#operational_block": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#repetition_failure": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#specificity_demand": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#tension": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/graph_cognition/repair_pressure#trust_rupture": {
+      "upstream_organs": [
+        "social_memory"
+      ],
+      "notes": "organ=graph_cognition class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/hub/chat_turn#confidence": {
+      "notes": "organ=hub class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/hub/chat_turn#level": {
+      "notes": "organ=hub class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/journaler/journal_entry#level": {
+      "upstream_organs": [
+        "collapse_mirror"
+      ],
+      "notes": "organ=journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/journaler/journal_entry#novelty": {
+      "upstream_organs": [
+        "collapse_mirror"
+      ],
+      "notes": "organ=journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/journaler/journal_entry#valence": {
+      "upstream_organs": [
+        "collapse_mirror"
+      ],
+      "notes": "organ=journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/journaler/recall_event#level": {
+      "upstream_organs": [
+        "collapse_mirror"
+      ],
+      "notes": "organ=journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/journaler/recall_event#novelty": {
+      "upstream_organs": [
+        "collapse_mirror"
+      ],
+      "notes": "organ=journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/journaler/recall_event#valence": {
+      "upstream_organs": [
+        "collapse_mirror"
+      ],
+      "notes": "organ=journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/llm_gateway/cognition_step#confidence": {
+      "upstream_organs": [
+        "cortex_exec"
+      ],
+      "notes": "organ=llm_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/llm_gateway/cognition_step#latency_level": {
+      "upstream_organs": [
+        "cortex_exec"
+      ],
+      "notes": "organ=llm_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/llm_gateway/cognition_step#success": {
+      "upstream_organs": [
+        "cortex_exec"
+      ],
+      "notes": "organ=llm_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/llm_gateway/completion#confidence": {
+      "upstream_organs": [
+        "cortex_exec"
+      ],
+      "notes": "organ=llm_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/llm_gateway/completion#latency_level": {
+      "upstream_organs": [
+        "cortex_exec"
+      ],
+      "notes": "organ=llm_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/llm_gateway/completion#success": {
+      "upstream_organs": [
+        "cortex_exec"
+      ],
+      "notes": "organ=llm_gateway class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/memory_consolidation/turn_change#confidence": {
+      "upstream_organs": [
+        "hub"
+      ],
+      "notes": "organ=memory_consolidation class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/memory_consolidation/turn_change#contradiction": {
+      "upstream_organs": [
+        "hub"
+      ],
+      "notes": "organ=memory_consolidation class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/memory_consolidation/turn_change#novelty": {
+      "upstream_organs": [
+        "hub"
+      ],
+      "notes": "organ=memory_consolidation class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/memory_consolidation/turn_change#salience": {
+      "upstream_organs": [
+        "hub"
+      ],
+      "notes": "organ=memory_consolidation class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/mind/cognition_step#confidence": {
+      "upstream_organs": [
+        "recall"
+      ],
+      "notes": "organ=mind class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/mind/cognition_step#success": {
+      "upstream_organs": [
+        "recall"
+      ],
+      "notes": "organ=mind class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/mind/mind_handoff#confidence": {
+      "upstream_organs": [
+        "recall"
+      ],
+      "notes": "organ=mind class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/mind/mind_handoff#success": {
+      "upstream_organs": [
+        "recall"
+      ],
+      "notes": "organ=mind class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/power_guard/power_state#confidence": {
+      "notes": "organ=power_guard class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/power_guard/power_state#level": {
+      "notes": "organ=power_guard class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/power_guard/power_state#trend": {
+      "notes": "organ=power_guard class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/power_guard/ups_event#confidence": {
+      "notes": "organ=power_guard class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/power_guard/ups_event#level": {
+      "notes": "organ=power_guard class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/power_guard/ups_event#trend": {
+      "notes": "organ=power_guard class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rdf_writer/persist#confidence": {
+      "notes": "organ=rdf_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rdf_writer/persist#latency_level": {
+      "notes": "organ=rdf_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rdf_writer/persist#level": {
+      "notes": "organ=rdf_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_gap#confidence": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_gap#level": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_gap#trend": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_quality#confidence": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_quality#level": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_quality#trend": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_result#confidence": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_result#level": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/recall/recall_result#trend": {
+      "upstream_organs": [
+        "autonomy",
+        "social_memory"
+      ],
+      "notes": "organ=recall class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#confidence": {
+      "notes": "organ=rpc_health_cortex_exec class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#latency_level": {
+      "notes": "organ=rpc_health_cortex_exec class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rpc_health_cortex_exec/rpc_transport_health#level": {
+      "notes": "organ=rpc_health_cortex_exec class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rpc_health_cortex_orch/rpc_transport_health#confidence": {
+      "notes": "organ=rpc_health_cortex_orch class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rpc_health_cortex_orch/rpc_transport_health#latency_level": {
+      "notes": "organ=rpc_health_cortex_orch class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/rpc_health_cortex_orch/rpc_transport_health#level": {
+      "notes": "organ=rpc_health_cortex_orch class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/security_watcher/security_event#confidence": {
+      "notes": "organ=security_watcher class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/security_watcher/security_event#level": {
+      "notes": "organ=security_watcher class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/relationship_continuity#level": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/relationship_continuity#trend": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/relationship_continuity#valence": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/social_bond_state#level": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/social_bond_state#trend": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/social_bond_state#valence": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/social_repair_event#level": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/social_repair_event#trend": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_memory/social_repair_event#valence": {
+      "upstream_organs": [
+        "social_room_bridge"
+      ],
+      "notes": "organ=social_memory class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_room_bridge/room_event#confidence": {
+      "notes": "organ=social_room_bridge class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_room_bridge/room_event#level": {
+      "notes": "organ=social_room_bridge class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_room_bridge/room_event#valence": {
+      "notes": "organ=social_room_bridge class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_room_bridge/social_turn#confidence": {
+      "notes": "organ=social_room_bridge class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_room_bridge/social_turn#level": {
+      "notes": "organ=social_room_bridge class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/social_room_bridge/social_turn#valence": {
+      "notes": "organ=social_room_bridge class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/phi_field#arousal": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/phi_field#coherence": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/phi_field#level": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/phi_field#novelty": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/phi_field#valence": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/spark_signal#arousal": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/spark_signal#coherence": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/spark_signal#level": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/spark_signal#novelty": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/spark_signal#valence": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/tissue_state#arousal": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/tissue_state#coherence": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/tissue_state#level": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/tissue_state#novelty": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/spark_introspector/tissue_state#valence": {
+      "upstream_organs": [
+        "biometrics",
+        "collapse_mirror",
+        "equilibrium",
+        "recall",
+        "vision"
+      ],
+      "notes": "organ=spark_introspector class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/sql_writer/persist#confidence": {
+      "notes": "organ=sql_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/sql_writer/persist#latency_level": {
+      "notes": "organ=sql_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/sql_writer/persist#level": {
+      "notes": "organ=sql_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/state_journaler/state_frame#coherence": {
+      "upstream_organs": [
+        "autonomy",
+        "equilibrium",
+        "recall"
+      ],
+      "notes": "organ=state_journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/state_journaler/state_frame#confidence": {
+      "upstream_organs": [
+        "autonomy",
+        "equilibrium",
+        "recall"
+      ],
+      "notes": "organ=state_journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/state_journaler/state_frame#level": {
+      "upstream_organs": [
+        "autonomy",
+        "equilibrium",
+        "recall"
+      ],
+      "notes": "organ=state_journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/state_journaler/state_transition#coherence": {
+      "upstream_organs": [
+        "autonomy",
+        "equilibrium",
+        "recall"
+      ],
+      "notes": "organ=state_journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/state_journaler/state_transition#confidence": {
+      "upstream_organs": [
+        "autonomy",
+        "equilibrium",
+        "recall"
+      ],
+      "notes": "organ=state_journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/state_journaler/state_transition#level": {
+      "upstream_organs": [
+        "autonomy",
+        "equilibrium",
+        "recall"
+      ],
+      "notes": "organ=state_journaler class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/topic_foundry/topic_drift#coherence": {
+      "upstream_organs": [
+        "concept_induction"
+      ],
+      "notes": "organ=topic_foundry class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/topic_foundry/topic_drift#novelty": {
+      "upstream_organs": [
+        "concept_induction"
+      ],
+      "notes": "organ=topic_foundry class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/topic_foundry/topic_drift#salience": {
+      "upstream_organs": [
+        "concept_induction"
+      ],
+      "notes": "organ=topic_foundry class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/topic_foundry/topic_state#coherence": {
+      "upstream_organs": [
+        "concept_induction"
+      ],
+      "notes": "organ=topic_foundry class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/topic_foundry/topic_state#novelty": {
+      "upstream_organs": [
+        "concept_induction"
+      ],
+      "notes": "organ=topic_foundry class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/topic_foundry/topic_state#salience": {
+      "upstream_organs": [
+        "concept_induction"
+      ],
+      "notes": "organ=topic_foundry class=endogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vector_writer/persist#confidence": {
+      "notes": "organ=vector_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vector_writer/persist#latency_level": {
+      "notes": "organ=vector_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vector_writer/persist#level": {
+      "notes": "organ=vector_writer class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/object_event#confidence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/object_event#level": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/object_event#novelty": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/object_event#valence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/person_detected#confidence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/person_detected#level": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/person_detected#novelty": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/person_detected#valence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/scene_state#confidence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/scene_state#level": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/scene_state#novelty": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/scene_state#valence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/visual_context#confidence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/visual_context#level": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/visual_context#novelty": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/vision/visual_context#valence": {
+      "notes": "organ=vision class=exogenous",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/environmental_context#confidence": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/environmental_context#level": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/environmental_context#valence": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/situation_state#confidence": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/situation_state#level": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/situation_state#valence": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/time_context#confidence": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/time_context#level": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    },
+    "metric://organ_signal/world_pulse/time_context#valence": {
+      "notes": "organ=world_pulse class=hybrid",
+      "registry_source": "orion/signals/registry.py"
+    }
+  }
+}

@@ -16,11 +16,6 @@ from orion.schemas.vector.schemas import (
     VectorWriteRequest,
 )
 
-from app.chat_history import (
-    CHAT_HISTORY_COLLECTION,
-    CHAT_HISTORY_MESSAGE_KIND,
-    chat_history_envelope_to_request,
-)
 from app.settings import settings
 
 # Setup Logger
@@ -95,15 +90,16 @@ def _setup_resources():
 def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
     """
     Adapts various incoming kinds to a unified VectorWriteRequest.
-    """
-    chat_req = chat_history_envelope_to_request(
-        env,
-        channel=settings.VECTOR_WRITER_CHAT_HISTORY_CHANNEL,
-        collection_name=settings.VECTOR_WRITER_CHAT_COLLECTION or CHAT_HISTORY_COLLECTION,
-    )
-    if chat_req:
-        return chat_req
 
+    The dedicated `chat.history.message.v1` -> `orion_chat` normalization
+    path (`app/chat_history.py`'s `chat_history_envelope_to_request`) was
+    removed 2026-08-14: it was already dead code, since
+    `orion:chat:history:log` has never been in
+    `VECTOR_WRITER_SUBSCRIBE_CHANNELS`'s default (or documented .env_example)
+    value, so `handle_envelope` was never invoked for that channel. See
+    orion-vector-host's README for the live half of this kill (the actual
+    embed+vector-upsert producer, `_handle_chat_history`/`_handle_chat_turn`).
+    """
     kind = env.kind
     payload = env.payload
 
@@ -145,13 +141,16 @@ def normalize_to_request(env: BaseEnvelope) -> Optional[VectorWriteRequest]:
             "observer": payload.get("observer", "unknown"),
             "type": payload.get("type", "unknown")
         })
-    elif kind in ("chat.message", "chat.history"):
-        collection = "orion_chat"
-        content = payload.get("content") or payload.get("message", "")
-        meta.update({
-            "role": payload.get("role", "unknown"),
-            "session_id": payload.get("session_id", "")
-        })
+    # kind in ("chat.message", "chat.history") deliberately removed
+    # 2026-08-14 (code review on the chat-history vector-write kill, same
+    # patch as app/chat_history.py's deletion above): this branch
+    # hard-coded collection="orion_chat", the exact Chroma collection that
+    # kill removed. `orion.schemas.chat_history.CHAT_HISTORY_TURN_KIND ==
+    # "chat.history"` -- a literal match -- so re-subscribing to
+    # orion:chat:history:turn (or any future producer emitting
+    # kind="chat.message"/"chat.history" on an already-subscribed channel)
+    # would have silently resurrected the killed write with zero code
+    # changes. Do not re-add without a real reason and a subscription.
     elif kind == "rag.document":
         collection = "orion_knowledge"
         content = payload.get("text") or payload.get("content", "")
@@ -309,14 +308,6 @@ async def handle_envelope(env: BaseEnvelope) -> None:
         if req.latent_summary:
             meta["latent_summary"] = req.latent_summary
         meta = sanitize_chroma_metadata(meta)
-        if env.kind == CHAT_HISTORY_MESSAGE_KIND:
-            logger.info(
-                "Chat history ingest id=%s role=%s session=%s correlation_id=%s",
-                req.doc_id,
-                req.metadata.get("role"),
-                req.metadata.get("session_id"),
-                getattr(env, "correlation_id", None),
-            )
 
         vector_list = req.embedding
         if not vector_list:

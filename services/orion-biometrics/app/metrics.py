@@ -4,18 +4,37 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.settings import settings
 from app.utils import collect_gpu_stats
 from orion.telemetry.biometrics_pipeline import filter_temps
 
 logger = logging.getLogger("orion-biometrics")
+
+# Block-device name grammar for /proc/diskstats. Whole devices vs their partitions:
+#   sda / sda1        nvme0n1 / nvme0n1p1        vda / vda1        mmcblk0 / mmcblk0p1
+# NVMe and mmc separate the partition with a literal 'p'; SCSI/SATA/virtio just append digits.
+_WHOLE_DISK_RE = re.compile(r"^(sd[a-z]+|nvme\d+n\d+|vd[a-z]+|mmcblk\d+)")
+_PARTITION_RE = re.compile(r"^(sd[a-z]+\d+|nvme\d+n\d+p\d+|vd[a-z]+\d+|mmcblk\d+p\d+)$")
+
+# Top-level RAPL package domains: `intel-rapl:0`. NOT `intel-rapl:0:1` -- those subdomains
+# (dram, core, uncore) are already counted inside their parent package, so matching them too
+# would double-count, the same error `_PARTITION_RE` exists to prevent for block devices.
+# AMD exposes the same tree under the same `intel-rapl` name on current kernels, so this is
+# not Intel-only despite the string.
+_RAPL_PACKAGE_RE = re.compile(r"^intel-rapl:\d+$")
+# A baseline older than this cannot be wrap-corrected unambiguously: athena's packages wrap
+# every ~41 min at the measured ~105 W each, and one wrap is indistinguishable from three.
+# 10x TELEMETRY_INTERVAL -- long enough to survive a slow tick, short enough that a real gap
+# is discarded rather than under-reported by whole multiples of max_energy_range_uj.
+_RAPL_MAX_GAP_SEC = 300.0
 
 
 @dataclass
@@ -47,6 +66,8 @@ class BiometricsCollector:
         self._prev_cpu: Optional[_CpuTimes] = None
         self._prev_disk: Optional[_DiskStats] = None
         self._prev_net: Optional[_NetStats] = None
+        self._prev_net_scope: Optional[str] = None
+        self._prev_rapl: Dict[str, Tuple[int, int]] = {}
         self._prev_ts: Optional[float] = None
 
     def collect(self) -> Dict[str, Any]:
@@ -65,7 +86,7 @@ class BiometricsCollector:
         disk_data = self._collect_disk(errors, dt)
         net_data = self._collect_network(errors, dt)
         temps_data = self._collect_temps(errors)
-        power_data = self._collect_power(gpu_data, temps_data)
+        power_data = self._collect_power(gpu_data, temps_data, dt)
 
         return {
             "timestamp": timestamp,
@@ -179,19 +200,178 @@ class BiometricsCollector:
         return _DiskStats(read_bytes=read_sectors * 512, write_bytes=write_sectors * 512)
 
     def _is_disk_device(self, name: str) -> bool:
+        """Whole block devices only -- never their partitions.
+
+        `/proc/diskstats` has a row for `sda` AND a row for `sda1`, and the partition's
+        counters are also included in the whole disk's. Accepting both double-counts every
+        byte on any partitioned device. Measured on athena 2026-08-14 over the same 10 s
+        window: 19,378,995 B/s counting partitions vs 9,905,766 B/s without -- a factor of
+        1.956, matching the 1.97 measured independently on 2026-08-13.
+
+        athena has ten devices of which six are partitioned (nvme0n1p1, sdd1-3, sde1, sdf1,
+        sdg1-2), so this is not an edge case here, it is the normal reading.
+        """
         if name.startswith("loop") or name.startswith("ram"):
             return False
-        if name.startswith("sd") or name.startswith("nvme") or name.startswith("vd") or name.startswith("mmc"):
-            return True
-        return False
+        if not _WHOLE_DISK_RE.match(name):
+            return False
+        return not _PARTITION_RE.match(name)
+
+    # ---------------------------------------------------------------- host namespace
+
+    def _host_path(self, kind: str, rel: str) -> Optional[str]:
+        """Resolve a path under the read-only host /proc or /sys bind mount, if mounted.
+
+        Returns None when the mount is absent, which is the correct answer for a collector
+        running outside a container or in a deployment that predates these mounts -- the
+        callers fall back to the container's own view and SAY SO in the payload rather than
+        silently reporting a container-scoped number as a node-scoped one.
+        """
+        root = settings.HOST_PROC_PATH if kind == "proc" else settings.HOST_SYS_PATH
+        if not root:
+            return None
+        candidate = os.path.join(root, rel)
+        return candidate if os.path.exists(candidate) else None
+
+    def _physical_interfaces(self) -> Optional[List[str]]:
+        """Up physical NICs, from the host sysfs mount. None when it is unavailable.
+
+        Two filters, both load-bearing:
+
+        - `device` symlink present -> a real NIC behind a real driver. docker0, br-*, veth*,
+          tailscale0 and lo have no `device` and are excluded. This matters for the DENOMINATOR
+          because the docker bridges report a fabricated `speed` of 10000 Mb/s on athena, which
+          would inflate a link-capacity sum by 40 Gb/s of hardware that does not exist.
+        - `operstate == up` -> athena has eno1..eno6 and only eno1 is plugged in. Counting the
+          five dark ports would claim 6 Gb/s of capacity against one 1 Gb link.
+
+        It matters for the NUMERATOR too: a packet leaving a container traverses veth -> bridge
+        -> eno1 and is counted once on each, so summing every interface multiply-counts
+        container traffic. Physical-only is the definition that answers "how close is this
+        node's uplink to saturation", which is the only question `net_pressure` ever claimed to
+        answer.
+        """
+        base = self._host_path("sys", "class/net")
+        if not base:
+            return None
+        found: List[str] = []
+        try:
+            for name in sorted(os.listdir(base)):
+                iface = os.path.join(base, name)
+                if not os.path.exists(os.path.join(iface, "device")):
+                    continue
+                try:
+                    with open(os.path.join(iface, "operstate"), "r", encoding="utf-8") as fh:
+                        if fh.read().strip() != "up":
+                            continue
+                except OSError:
+                    continue
+                found.append(name)
+        except OSError:
+            return None
+        return found
+
+    def _routed_interfaces(self) -> Optional[Set[str]]:
+        """Interface names present in the host IPv4 routing table. None if unreadable.
+
+        `/proc/net/route` is the kernel's own answer to "can traffic leave by this NIC" -- an
+        interface with no address has no route entry and therefore carries nothing.
+        """
+        path = self._host_path("proc", "1/net/route")
+        if not path:
+            return None
+        names: Set[str] = set()
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                next(fh, None)  # header
+                for line in fh:
+                    parts = line.split()
+                    if parts:
+                        names.add(parts[0])
+        except OSError:
+            return None
+        return names or None
+
+    def _carrying_interfaces(self) -> Optional[List[str]]:
+        """Up physical NICs that can ACTUALLY carry traffic.
+
+        `_physical_interfaces` answers "is there a link"; this answers "can bytes leave by it",
+        and the two came apart the moment a second NIC was brought up on athena 2026-08-14:
+
+            eno1  up  1000 Mb/s   192.168.1.193/24, default route   <- carries everything
+            eno6  up 10000 Mb/s   SLAAC IPv6 only, NO IPv4 route    <- carries nothing
+
+        Summing both gave a denominator of 11,000 Mb/s against a numerator that could only ever
+        travel over 1,000 -- understating `net_pressure` 11-fold, and doing it silently, at the
+        exact moment someone thought they had improved the network. A dark 10 Gb port is not
+        headroom. Capacity you cannot route to is not capacity.
+
+        Falls back to every up physical NIC when the route table is unreadable, since "I could
+        not check" must not become "this node has no network".
+        """
+        physical = self._physical_interfaces()
+        if physical is None:
+            return None
+        routed = self._routed_interfaces()
+        if routed is None:
+            return physical
+        carrying = [n for n in physical if n in routed]
+        # Every physical NIC unrouted would mean the host has no IPv4 connectivity at all --
+        # far more likely that this kernel routes v6-only or the file moved. Report the links
+        # rather than claim zero capacity.
+        return carrying or physical
+
+    def _link_speed_mbps(self, interfaces: List[str]) -> Optional[float]:
+        """Summed link speed of the given NICs, in Mb/s, read from the kernel.
+
+        This replaces the `NET_BW_MBPS` guess with a measurement. The constant was 125 MB/s
+        (1 Gb/s) fleet-wide across three heterogeneous hosts -- correct for athena by
+        coincidence, unverified for atlas and circe. A number the kernel already knows should
+        not be a hand-maintained env key on three machines.
+
+        Returns None (not 0.0) when nothing could be read, so the caller falls back to the
+        configured constant instead of dividing by zero or treating "unknown" as "no capacity".
+        """
+        base = self._host_path("sys", "class/net")
+        if not base:
+            return None
+        total = 0.0
+        for name in interfaces:
+            try:
+                with open(os.path.join(base, name, "speed"), "r", encoding="utf-8") as fh:
+                    value = float(fh.read().strip())
+            except (OSError, ValueError):
+                continue
+            # -1 means "unknown to the driver" (tailscale0 reports this); not a capacity.
+            if value > 0:
+                total += value
+        return total if total > 0 else None
 
     def _collect_network(self, errors: List[str], dt: Optional[float]) -> Dict[str, Any]:
         try:
-            stats = self._read_netdev()
+            interfaces = self._carrying_interfaces()
+            host_netdev = self._host_path("proc", "1/net/dev")
+            # PID 1 on the host is the host init, so its /proc/<pid>/net/dev is the HOST network
+            # namespace -- the one where the real NICs live. The container's own /proc/net/dev is
+            # namespaced to its veth pair and sees only this service's own traffic. Measured on
+            # athena 2026-08-14: host 159,304 B/s vs container 1,357 B/s. On 2026-08-13 the same
+            # comparison gave ~1000x. The ratio is unstable BECAUSE it is not a scale error --
+            # the two numbers are different quantities, and no calibration constant could have
+            # rescued the container-scoped one.
+            if host_netdev and interfaces:
+                stats = self._read_netdev(path=host_netdev, only=interfaces)
+                scope = "host"
+            else:
+                stats = self._read_netdev()
+                scope = "container"
             rx_rate = 0.0
             tx_rate = 0.0
             err_rate = 0.0
-            if self._prev_net and dt:
+            # Counters from different namespaces are not comparable. If the scope flips between
+            # ticks (the host mount appears on redeploy, or disappears), the previous sample
+            # belongs to a different set of interfaces and the delta would be meaningless --
+            # usually a huge positive spike. Drop the baseline and report 0 for one tick.
+            if self._prev_net and dt and self._prev_net_scope == scope:
                 rx_rate = max(0.0, (stats.rx_bytes - self._prev_net.rx_bytes) / dt)
                 tx_rate = max(0.0, (stats.tx_bytes - self._prev_net.tx_bytes) / dt)
                 err_delta = (stats.rx_errors - self._prev_net.rx_errors) + (stats.tx_errors - self._prev_net.tx_errors)
@@ -200,25 +380,40 @@ class BiometricsCollector:
                 if pkt_delta > 0:
                     err_rate = max(0.0, (err_delta + drop_delta) / pkt_delta)
             self._prev_net = stats
-            return {
+            self._prev_net_scope = scope
+            out: Dict[str, Any] = {
                 "rx_bytes_per_sec": rx_rate,
                 "tx_bytes_per_sec": tx_rate,
                 "error_rate": err_rate,
+                # Which namespace produced the bytes above. A consumer that sums these across
+                # nodes needs to know a "container" reading is this service's own veth traffic
+                # and NOT the node's, so it can exclude the node rather than understate the sum.
+                "scope": scope,
             }
+            if interfaces:
+                out["interfaces"] = list(interfaces)
+                link_mbps = self._link_speed_mbps(interfaces)
+                if link_mbps is not None:
+                    # The measured denominator for net_pressure, replacing NET_BW_MBPS.
+                    out["link_mbps"] = link_mbps
+            return out
         except Exception as exc:
             errors.append(f"network:{exc}")
             return {"error": str(exc)}
 
-    def _read_netdev(self) -> _NetStats:
+    def _read_netdev(self, path: str = "/proc/net/dev", only: Optional[List[str]] = None) -> _NetStats:
+        allowed = set(only) if only is not None else None
         rx_bytes = tx_bytes = rx_packets = tx_packets = 0
         rx_errors = tx_errors = rx_drops = tx_drops = 0
-        with open("/proc/net/dev", "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8") as handle:
             for line in handle:
                 if ":" not in line:
                     continue
                 iface, rest = line.split(":", 1)
                 iface = iface.strip()
                 if iface == "lo":
+                    continue
+                if allowed is not None and iface not in allowed:
                     continue
                 parts = rest.split()
                 rx_bytes += int(parts[0])
@@ -271,7 +466,9 @@ class BiometricsCollector:
             "max_c": max(cleaned) if cleaned else None,
         }
 
-    def _collect_power(self, gpu_data: Dict[str, Any], temps_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _collect_power(
+        self, gpu_data: Dict[str, Any], temps_data: Dict[str, Any], dt: Optional[float] = None
+    ) -> Dict[str, Any]:
         gpu_power = []
         gpus = gpu_data.get("gpus") if isinstance(gpu_data, dict) else None
         if isinstance(gpus, list):
@@ -284,10 +481,98 @@ class BiometricsCollector:
                         gpu_power.append(float(power))
                 except (TypeError, ValueError):
                     continue
-        return {
+        out: Dict[str, Any] = {
             "gpu_power_watts": gpu_power,
             "temps_max_c": temps_data.get("max_c"),
         }
+        cpu_watts, packages = self._rapl_package_watts(dt)
+        if cpu_watts is not None:
+            out["cpu_package_watts"] = cpu_watts
+            out["cpu_package_watts_by_domain"] = packages
+        return out
+
+    # ------------------------------------------------------- RAPL (CPU package power)
+
+    def _rapl_package_watts(
+        self, dt: Optional[float]
+    ) -> Tuple[Optional[float], Dict[str, float]]:
+        """CPU package power in watts, from Intel RAPL energy counters.
+
+        This is the single largest unattributed term in athena's power budget. Measured
+        2026-08-14: chassis 407 W at the PSU, GPU 44 W, and CPU packages 210 W (103.62 +
+        106.72 across two sockets) -- so more than half the machine's draw was invisible on a
+        node whose entire job is CPU orchestration.
+
+        `energy_uj` is a CUMULATIVE microjoule counter, not a power reading, so power is
+        delta-energy over delta-time and the first tick after a restart necessarily reports
+        nothing.
+
+        Two things make this harder than it looks:
+
+        - IT WRAPS. `max_energy_range_uj` is 262,143,328,850 uJ on athena, so at the measured
+          ~105 W per package it wraps roughly every 41 minutes -- about once every 83 ticks at
+          TELEMETRY_INTERVAL=30. A negative delta is the normal case, not an error, and must be
+          corrected by adding the range back. Reporting the raw negative would produce a
+          spectacular fake power drop several times a day.
+        - A LONG GAP IS AMBIGUOUS. If the collector was stopped for longer than one wrap
+          period, the counter may have wrapped more than once and the delta cannot be
+          recovered -- the correction above would silently under-report by whole multiples of
+          the range. There is no way to tell one wrap from three, so a stale baseline is
+          discarded rather than guessed at.
+
+        Reads through HOST_SYS_PATH: `energy_uj` is mode 400 root-only (the CVE-2020-8694
+        mitigation, since RAPL is a power side channel). This service already runs as uid 0 and
+        already mounts host /sys read-only for NIC link speed, so the file is readable as-is --
+        no host permission change and no reverting that mitigation.
+        """
+        base = self._host_path("sys", "class/powercap")
+        if not base:
+            return None, {}
+        readings: Dict[str, Tuple[int, int]] = {}
+        try:
+            for entry in sorted(os.listdir(base)):
+                # Top-level package domains only: `intel-rapl:0`, not the `intel-rapl:0:1`
+                # subdomains (dram/core), whose energy is already inside the package total.
+                if not _RAPL_PACKAGE_RE.match(entry):
+                    continue
+                d = os.path.join(base, entry)
+                try:
+                    with open(os.path.join(d, "name"), "r", encoding="utf-8") as fh:
+                        name = fh.read().strip()
+                    with open(os.path.join(d, "energy_uj"), "r", encoding="utf-8") as fh:
+                        energy = int(fh.read().strip())
+                    with open(os.path.join(d, "max_energy_range_uj"), "r", encoding="utf-8") as fh:
+                        max_range = int(fh.read().strip())
+                except (OSError, ValueError):
+                    continue
+                if name:
+                    readings[name] = (energy, max_range)
+        except OSError:
+            return None, {}
+        if not readings:
+            return None, {}
+
+        prev = self._prev_rapl
+        self._prev_rapl = readings
+        if not prev or not dt or dt <= 0 or dt > _RAPL_MAX_GAP_SEC:
+            return None, {}
+
+        packages: Dict[str, float] = {}
+        for name, (energy, max_range) in readings.items():
+            before = prev.get(name)
+            if before is None:
+                # A domain that appeared mid-run has no baseline. Skipping it would make the
+                # total silently exclude a socket, so report nothing this tick instead.
+                return None, {}
+            delta = energy - before[0]
+            if delta < 0:
+                delta += max_range + 1
+                if delta < 0:
+                    return None, {}
+            packages[name] = delta / 1e6 / dt
+        if not packages:
+            return None, {}
+        return sum(packages.values()), packages
 
 
 _COLLECTOR = BiometricsCollector()

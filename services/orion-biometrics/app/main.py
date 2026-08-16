@@ -20,7 +20,12 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from app.metrics import collect_biometrics, collect_disk_capacity
 from app.ilo import IloPoller
-from orion.telemetry.biometrics_pipeline import BiometricsPipeline, PipelineConfig
+from app.pdu import PduPoller, parse_outlets
+from orion.telemetry.biometrics_pipeline import (
+    BiometricsPipeline,
+    PipelineConfig,
+    aggregate_fleet_measurements,
+)
 from app.settings import settings
 
 logging.basicConfig(
@@ -171,6 +176,20 @@ _ilo_poller = IloPoller(
     timeout_sec=settings.ILO_REQUEST_TIMEOUT_SEC,
 )
 
+# Per-outlet power from the rack PDU. This is what gives circe a chassis figure at all: it
+# has no reachable BMC, so `_ilo_poller` is permanently `not_configured` there and every fleet
+# total has carried `measurements_missing: {"chassis_watts": ["circe"]}`. Configured per node
+# with that node's own outlets, exactly like ILO_HOST -- a node not on a metered PDU (athena)
+# leaves PDU_OUTLETS empty and the poller stays disabled.
+_pdu_poller = PduPoller(
+    settings.PDU_HOST,
+    parse_outlets(settings.PDU_OUTLETS),
+    community=settings.PDU_SNMP_COMMUNITY,
+    port=settings.PDU_SNMP_PORT,
+    interval_sec=settings.PDU_POLL_INTERVAL_SEC,
+    timeout_sec=settings.PDU_REQUEST_TIMEOUT_SEC,
+)
+
 
 def _heartbeat_details() -> Dict[str, Any]:
     """Extra data folded into every SystemHealthV1 heartbeat's `details` dict.
@@ -223,6 +242,7 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
         # doesn't change what's published on BIOMETRICS_SAMPLE_CHANNEL.
         pipeline_input = sample.model_dump(mode="python")
         pipeline_input["ilo"] = _ilo_poller.details()
+        pipeline_input["pdu"] = _pdu_poller.details()
         pipeline_input["disk_capacity"] = collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
         summary, induction = _pipeline.update(pipeline_input)
 
@@ -353,14 +373,50 @@ class BiometricsHub:
             if value >= 0.7:
                 constraint = key.upper()
 
+        # Raw physical units aggregate separately from the pressures above: watts are summed
+        # in watts, not weighted-averaged and clamped to 1.0. `measurements_missing` travels
+        # with the totals so a partial fleet sum cannot be read as a complete one.
+        fleet_measurements, fleet_missing = aggregate_fleet_measurements(
+            {node: summary.measurements for node, summary in self._latest_summary.items()}
+        )
+
+        # Which known nodes are absent entirely. `measurements_missing` only names nodes that
+        # DID report and lacked a key -- a node that stops publishing never reaches `sources`
+        # and would otherwise vanish without trace, leaving a partial fleet total looking whole.
+        contributed = {
+            _NODE_CATALOG.resolve(node).node_id for node in self._latest_summary
+        }
+        nodes_absent = sorted(
+            node_id for node_id in _NODE_CATALOG.profiles if node_id not in contributed
+        )
+
+        # Fleet binding constraint: max over nodes, NOT the role-weighted mean above. One
+        # saturated machine must not be averaged into looking half-busy, and the node has to
+        # travel with the number or it cannot be acted on.
+        peak_value: float | None = None
+        peak_channel: str | None = None
+        peak_node: str | None = None
+        for node, summary in self._latest_summary.items():
+            value = summary.peak_pressure
+            if value is None:
+                continue
+            if peak_value is None or value > peak_value:
+                peak_value, peak_channel, peak_node = value, summary.peak_pressure_channel, node
+
         cluster = BiometricsClusterV1(
             timestamp=datetime.now(timezone.utc),
             sources=sources,
+            nodes_absent=nodes_absent or None,
+            peak_pressure=peak_value,
+            peak_pressure_channel=peak_channel,
+            peak_pressure_node=peak_node,
             role_weights=weights,
             pressures=pressures,
             headroom=headroom,
             composites=composites,
             constraint=constraint,
+            measurements=fleet_measurements or None,
+            measurements_missing=fleet_missing or None,
         )
         global _CLUSTER
         _CLUSTER = {"payload": cluster.model_dump(mode="json"), "timestamp": cluster.timestamp}
@@ -397,6 +453,7 @@ async def lifespan(app: FastAPI):
     hunter_stop = asyncio.Event()
 
     await _ilo_poller.start_background()
+    await _pdu_poller.start_background()
 
     if settings.BIOMETRICS_MODE in {"agent", "both"}:
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
@@ -427,6 +484,7 @@ async def lifespan(app: FastAPI):
             except Exception:
                 hunter_task.cancel()
         await _ilo_poller.stop()
+        await _pdu_poller.stop()
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)

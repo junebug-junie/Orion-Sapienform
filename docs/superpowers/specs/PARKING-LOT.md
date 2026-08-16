@@ -162,6 +162,22 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   FalkorDB and the hub. atlas (96c) and circe (72c) sit at 0.52% and 0.21% -- pure GPU boxes
   with idle CPUs. The interference ceiling is a CPU story that the GPU tables completely miss.
 
+- **Athena's load is I/O, not compute — and its disk pressure reads near zero.** 81 containers
+  sum to **836% CPU = 8.4 of 80 threads**, against a load average of **42** (7-day peak 120.2).
+  Load counts uninterruptible-sleep, so ~33 tasks are blocked on I/O at any moment. Meanwhile
+  `disk_pressure` reads **0.110** against a hardcoded `disk_bw_mbps=200.0`. **The one machine
+  whose real ceiling is disk has its disk pressure reading near zero.** Top consumers:
+  `orion-athena-sql-db` 113% CPU at **13.78 GiB / 16 GiB** (86% of its memory limit -- worth an
+  eye given 2026-07-23), `orion-athena-vision-edge` 52% (Orion's own perception, #2 consumer),
+  bus-mirror + bus-observer 55% combined. Top 10 = 97% of all container CPU.
+  → `ROADMAP` Track D.
+
+- **Two instruments disagree about athena's CPU.** `orion_biometrics` reports `cpu.util` 44.1%
+  mean; `docker stats` sums to 10.5%. If biometrics counts iowait as busy that explains it --
+  and it also means `load15/threads - cpu_util` as an I/O-blocked estimator (`the-plant` §6.6
+  relation A, "~3.4 threads in D-state") is wrong by ~10x, since container attribution implies
+  ~33. **Relation A is unconfirmed until this is resolved.** Do not build on it.
+
 - **`strain` dilutes the binding constraint by 7x, in production.**
   `orion/telemetry/biometrics_pipeline.py:180` averages 7 pressure channels flat, so one fully
   saturated channel can never push strain above 0.143. Live right now: atlas reads power 0.798
@@ -237,3 +253,95 @@ Nothing here is scheduled. Nothing here is abandoned. Adding a line costs one li
   from saturation. Same session also dropped 60% of gateway requests by matching
   `route=([a-z_]+)` against lines carrying `route=None`. Both caught before the spec was
   written; both are the same family as the four sampling errors already logged today.
+
+## 2026-08-14 (A1 / B1 build)
+
+- **CORRECTED (2026-08-14): the `agent` route is fine, and the earlier entry here was an
+  instrument artifact.** This originally read "the agent route points at a dead host". The live
+  route table routes `agent` to `http://100.112.254.99:8014` (circe-worker-agent-1), which
+  answers with 1 slot, and Juniper confirmed agent turns had run. The "9,326 consecutive
+  unreachable samples" came from `record_lane_occupancy.py` snapshotting the route table once
+  at startup and never re-reading it, so it kept polling the pre-fix atlas address for the whole
+  window and reported a live lane as `0 measured`. Fixed by re-reading the route table every
+  `--route-refresh-sec` (default 300s). **The lesson is the one this arc keeps relearning: a
+  measurement that disagrees with the operator is a hypothesis about the instrument first.**
+
+- **`_power_pressure` averages GPU watts where it should sum them.**
+  `orion/telemetry/biometrics_pipeline.py` takes `mean(power.gpu_power_watts)`, so a 3-GPU box
+  normalises identically to a 1-GPU box. Defensible for a self-relative EwmaBand, wrong for
+  anything cost-shaped. B1 adds `measurements.gpu_watts_total` as the sum and leaves the
+  pressure alone -- they are different quantities and both are now kept. Changing the pressure
+  itself is a live behaviour change to a shipped signal.
+
+- **A biometrics sample with no `timestamp` crashes the pipeline.** `_summarize` passes
+  `sample.get("timestamp")` straight into `BiometricsSummaryV1`, and an explicit `None`
+  overrides the field's `default_factory` rather than falling back to it, raising
+  `ValidationError`. Real collectors always send one, so this is latent -- found because a
+  test fixture omitted it. One-line fix (`or utc_now()`), not taken inside B1.
+
+- **B1 is only half-deployed and the missing half is the important one.** `orion-biometrics`
+  runs per-node (one compose parameterised by `NODE_NAME`), so rebuilding it on athena gives
+  athena real `chassis_watts` while **atlas and circe keep writing empty `measurements`**
+  (verified: 27 rows each in 15 min, 0 with measurements). atlas is the node with the highest
+  chassis draw and all the inference traffic, so the fleet-total gate stays unmet until the
+  merged image is deployed there. circe has no reachable BMC either way, so it will report
+  GPU and CPU units but never `chassis_watts` -- which is exactly what absent-is-not-zero is
+  for.
+
+- **First measured confirmation of "price the machine, not the chip":** athena live at
+  `chassis_watts 428-430` against `gpu_watts_total 48-53`. **The GPU is ~11% of the node's
+  draw.** Every cost estimate in this arc that priced GPU watts was pricing a ninth of the
+  bill, and this is now a stored number rather than an inference.
+
+- **A `docker compose up -d --build` served a stale layer and silently reverted a
+  live-verified change.** During B1, the second build of `orion-sql-writer` produced an image
+  whose `/app/app/models/biometrics_summary.py` lacked the `measurements` column even though
+  the file on disk in the build context had it -- so every summary row went back to NULL and
+  the deploy looked successful. `--no-cache` produced a correct image immediately. Root cause
+  not established: either Docker layer caching or a concurrent deploy from the shared checkout
+  (the collision already documented in `scripts/safe_docker_build.sh`'s header). **Operational
+  lesson: verify the artefact, not the build output.** `docker run --rm --entrypoint sh <image>
+  -c 'grep ...'` before starting the container catches it in one command; "Container Started"
+  does not. This is the same class as the graphify destructive-update incident -- tooling
+  reporting success while silently shipping older content.
+
+- **`BiometricsClusterV1` has no live producer anywhere -- the whole cluster path is dead.**
+  `publish_cluster()` only runs when `BIOMETRICS_MODE in {"hub","both"}`, and the mode is
+  **`agent`** in `.env`, `.env_example` and the settings default -- so no node runs it.
+  Verified by subscribing to `orion:biometrics:cluster` for 20 s against a 15 s publish
+  interval: zero messages. (An earlier `xrevrange` check was invalid -- the bus is redis
+  pub/sub, not streams.) Meanwhile `orion/inner_state_registry.py:386` registers
+  `services.orion-cortex-exec.app.executor:_metacog_biometrics_cue` as a cognition consumer of
+  this signal, and `channels.yaml` lists producers/consumers for it -- a fully specified
+  contract with nothing on either end. **Anything that reads `biometrics.cluster` in cognition
+  is reading an empty dict today**, which includes the fleet-power consumer just built.
+
+- **Enabling hub mode is not a free flip.** `publish_cluster()` also emits a `SparkSignalV1`
+  (`signal_type="resource"`, `intensity=strain`) to `orion:spark:signal`, consumed by
+  orion-state-service. So `BIOMETRICS_MODE=both` turns on a new cognition-adjacent signal
+  producer as well as the cluster channel -- and it would carry the *diluted* strain figure
+  (see the 7x dilution entry above) as its intensity. Juniper's call, not a unilateral env
+  change.
+
+- **`orion:spark:signal` has ZERO live subscribers -- publishing to it is a no-op.** Traced
+  because it was the stated risk of enabling biometrics hub mode. Live `PUBSUB NUMSUB` on the
+  real bus: `orion:spark:signal` = **0**. In code: `orion-state-service` (which `channels.yaml`
+  names as its consumer) has **zero references** to it; `orion-cortex-exec/app/executor.py`
+  imports `SparkSignalV1` once and never uses it (dead import); `orion-equilibrium-service`
+  *produces* it. The two `orion/signals/registry.py` hits are organ metadata, not
+  subscriptions. Consistent with the spark-introspector kill and the deleted SparkEngine
+  facade. **`channels.yaml`'s consumer_services for this channel is wrong.**
+
+- **`orion:biometrics:cluster` has 2 live subscribers receiving nothing.** Same live check:
+  cluster = **2**, summary = 3, metacognition:tick = 2. The two are `orion-hub`'s biometrics
+  cache (`services/orion-hub/scripts/biometrics_cache.py:110`) and `orion-state-service`
+  (`app/settings.py:37`) -- and state-service is what populates `BiometricsContext.cluster`,
+  which is exactly what `_metacog_biometrics_cue` reads out of ctx. So the full path
+  publish_cluster -> cluster channel -> state-service -> BiometricsContext -> metacog cue is
+  real and wired end to end, with the producer switched off at the very top.
+
+- **Correction to the earlier "enabling hub mode is not a free flip" entry.** The stated risk
+  was that `publish_cluster()` also emits a SparkSignalV1. It does -- into a channel with no
+  listeners. The real situation is the opposite of what that entry implied: hub mode feeds two
+  starved consumers and the spark emission is inert. The diluted-strain concern only becomes
+  live if something ever subscribes to spark:signal.

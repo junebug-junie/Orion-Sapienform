@@ -5937,6 +5937,14 @@ document.addEventListener("DOMContentLoaded", () => {
         handleChatMessageReceipt(notification.message_id, notification.session_id, 'seen');
       }
     }
+    if (notification.notification_type === 'endogenous_outreach') {
+      // Live sockets already rendered this as a chat bubble (the orion_outreach
+      // branch in socket.onmessage), and the notification rides the same tts_q,
+      // so toasting it too would show the identical text twice. It still lands
+      // in the notification list, which is how a browser opened after the fact
+      // finds it.
+      return;
+    }
     showToast(notification);
   }
 
@@ -6865,6 +6873,196 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // ── Chat attachments: viewer + per-message thumbnails ──────────────────
+  const ATTACHMENT_ENDPOINT = '/api/chat/attachments';
+  let chatAttachmentsController = null;
+  let visionCapableRoute = null;   // null = unknown, true/false = live /props answer
+
+  function openImageLightbox(ref) {
+    const box = document.getElementById('imageLightbox');
+    const img = document.getElementById('imageLightboxImg');
+    const caption = document.getElementById('imageLightboxCaption');
+    if (!box || !img || !ref) return;
+    img.src = `${ATTACHMENT_ENDPOINT}/${ref.sha256}`;
+    img.alt = ref.filename || 'attachment';
+    if (caption) {
+      const dims = ref.width && ref.height ? `${ref.width}x${ref.height}` : '';
+      const size = window.ChatAttachments ? window.ChatAttachments.formatBytes(ref.bytes) : `${ref.bytes} B`;
+      caption.textContent = [ref.filename, dims, size].filter(Boolean).join(' · ');
+    }
+    box.classList.remove('hidden');
+    box.classList.add('flex');
+    box.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeImageLightbox() {
+    const box = document.getElementById('imageLightbox');
+    if (!box) return;
+    box.classList.add('hidden');
+    box.classList.remove('flex');
+    box.setAttribute('aria-hidden', 'true');
+    const img = document.getElementById('imageLightboxImg');
+    if (img) img.src = '';
+  }
+
+  function buildMessageAttachmentStrip(meta) {
+    const refs = (meta && (meta.attachments || meta.attachment_refs)) || [];
+    if (!Array.isArray(refs) || !refs.length) return null;
+    const strip = document.createElement('div');
+    strip.className = 'om-msg-attachments';
+    refs.forEach((ref) => {
+      if (!ref || !ref.sha256) return;
+      const thumb = document.createElement('img');
+      thumb.className = 'om-msg-thumb';
+      thumb.src = `${ATTACHMENT_ENDPOINT}/${ref.sha256}`;
+      thumb.alt = ref.filename || 'attachment';
+      thumb.title = 'Click to view full size';
+      thumb.addEventListener('click', () => openImageLightbox(ref));
+      strip.appendChild(thumb);
+    });
+    return strip.childElementCount ? strip : null;
+  }
+
+  function updateVisionStatusChip() {
+    const chip = document.getElementById('visionStatusChip');
+    if (!chip) return;
+    if (visionCapableRoute === true && modeCarriesAttachments()) {
+      // Only shown when it is TRUE and therefore actionable. A permanent
+      // "no vision" badge would just be noise on every text turn.
+      chip.textContent = 'vision';
+      chip.className = 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-200';
+      chip.title = 'The model serving this route reports image input (live /props)';
+      chip.classList.remove('hidden');
+    } else {
+      chip.classList.add('hidden');
+    }
+  }
+
+  /**
+   * Recompute vision capability for the route the user actually has selected.
+   *
+   * Reads the already-loaded `llmRouteCatalog` rather than issuing its own
+   * fetch -- loadLlmRouteCatalog() polls the same /api/llm-routes endpoint, and
+   * a second fetch would both duplicate the request and race it.
+   *
+   * The value is the live per-route /props answer the gateway publishes, not a
+   * config flag: a profile can claim vision while the worker was started
+   * without --mmproj, and on 2026-08-14 the chat lane did exactly that.
+   *
+   * `null` (probe could not answer) is treated as unknown, not as blind: the
+   * composer stays usable and the gateway remains the authority that refuses at
+   * send time with a visible error.
+   */
+  /**
+   * Can the CURRENT mode's path actually deliver an image to the model?
+   *
+   * Capability is not enough. Gating the attach button on the route's /props
+   * alone advertised vision on paths that carry nothing -- Juniper attached an
+   * image, the turn completed, and Orion never saw it, with no error anywhere
+   * because the LLM gateway's refusal guard is downstream of the drop. Both
+   * halves have to hold: the model can see AND this path can hand it the image.
+   *
+   *   orion -> unified turn stages into the FCC sandbox (orion/hub/turn_orchestrator.py)
+   *   brain -> cortex saga carries AttachmentRefV1 to the gateway
+   *   agent -> neither; nothing threads attachments through that path yet
+   */
+  const MODES_CARRYING_ATTACHMENTS = new Set(['orion', 'brain']);
+  // Mirrors the LLM gateway's llm_route_default: the lane the Anthropic
+  // passthrough falls back to when the harness does not name one.
+  const HUB_ORION_HARNESS_ROUTE_ID = 'chat';
+
+  function modeCarriesAttachments() {
+    // currentMode is already the BACKEND mode ('orion' | 'brain' | 'agent'),
+    // set from spec.mode in applyHubModeSelection -- not the UI key. Do not
+    // run it back through hubModeSpec(), which keys on 'quick'/'story'/etc and
+    // would silently fall back to the orion spec for 'brain'.
+    return MODES_CARRYING_ATTACHMENTS.has(String(currentMode || '').toLowerCase());
+  }
+
+  /**
+   * Which gateway route will actually serve THIS turn?
+   *
+   * Not always the compute dropdown. An Orion-mode turn never uses that lane:
+   * it goes to the harness, whose `claude` reaches the gateway through the
+   * Anthropic passthrough, which resolves the route from the model field and
+   * falls back to the gateway's own default (`chat`). Gating Orion mode on
+   * `selectedLlmRoute` meant a fresh page load -- compute dropdown at its
+   * 'quick' default, a lane with no mmproj -- reported vision=false and
+   * DISABLED attach in the exact mode this feature exists for.
+   */
+  function effectiveVisionRouteId() {
+    if (String(currentMode || '').toLowerCase() === 'orion') return HUB_ORION_HARNESS_ROUTE_ID;
+    return String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
+  }
+
+  function refreshVisionCapability() {
+    const rid = effectiveVisionRouteId();
+    const entry = (llmRouteCatalog.routes || [])
+      .find((r) => String(r.id || '').toLowerCase() === rid);
+    visionCapableRoute = entry && typeof entry.vision === 'boolean' ? entry.vision : null;
+    updateVisionStatusChip();
+    if (chatAttachmentsController) {
+      chatAttachmentsController.refreshButton();
+      // Disabling the button is not enough. Images attached while the mode
+      // still carried them stay in `pending`, stay rendered as chips, and
+      // submitExplicitChatText would still put them in the payload -- where the
+      // new path drops them silently. That is the same lying-affordance bug one
+      // step later, so drop them and say so.
+      if (!modeCarriesAttachments()) {
+        const dropped = chatAttachmentsController.discardPending(
+          'This mode cannot send images — attachments cleared.'
+        );
+        if (dropped) console.warn(`[chat] dropped ${dropped} attachment(s): mode cannot carry them`);
+      }
+    }
+  }
+
+  function initChatAttachments() {
+    if (!window.ChatAttachments || typeof window.ChatAttachments.createController !== 'function') return;
+    chatAttachmentsController = window.ChatAttachments.createController({
+      chipRow: document.getElementById('attachmentChipRow'),
+      statusEl: document.getElementById('attachmentStatus'),
+      attachButton: document.getElementById('attachButton'),
+      fileInput: document.getElementById('attachmentFileInput'),
+      dropZone: document.getElementById('composerRow'),
+      pasteTarget: document.getElementById('chatInput'),
+      // Unknown capability is treated as usable; the gateway refuses loudly at
+      // send time if the route really cannot see, and that error is visible.
+      visionAvailable: () => visionCapableRoute !== false && modeCarriesAttachments(),
+      onOpenViewer: openImageLightbox,
+      options: { endpoint: ATTACHMENT_ENDPOINT },
+    });
+
+    const box = document.getElementById('imageLightbox');
+    const closeBtn = document.getElementById('imageLightboxClose');
+    if (closeBtn) closeBtn.addEventListener('click', closeImageLightbox);
+    if (box) {
+      box.addEventListener('click', (e) => { if (e.target === box) closeImageLightbox(); });
+    }
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeImageLightbox();
+    });
+
+    const copyAll = document.getElementById('copyTranscriptButton');
+    if (copyAll && window.ChatMarkdown) {
+      copyAll.addEventListener('click', async () => {
+        const md = window.ChatMarkdown.transcriptToMarkdown(document.getElementById('conversation'));
+        if (!md) {
+          copyAll.textContent = 'Empty';
+          setTimeout(() => { copyAll.textContent = 'Copy chat'; }, 1400);
+          return;
+        }
+        const ok = await window.ChatMarkdown.writeClipboard(md);
+        copyAll.textContent = ok ? 'Copied' : 'Failed';
+        setTimeout(() => { copyAll.textContent = 'Copy chat'; }, 1400);
+      });
+    }
+
+    // Reflect whatever the catalog already holds; loadLlmRouteCatalog() will
+    // call through again via syncComputeSelection once it lands.
+    refreshVisionCapability();
+  }
+
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
@@ -6876,7 +7074,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (corr) backfillLatestUserTurnIdForGraph(conversationDiv, corr);
     }
     const div = document.createElement('div');
-    const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
+    // Claude is a third participant, not a system notice: its own colour, and
+    // an assistant role so it is not styled like an error banner.
+    const color = sender === 'You'
+      ? 'text-blue-300'
+      : (sender === 'Claude' ? 'text-amber-300' : 'text-green-300');
     const turnIdForGraph = canonicalTurnIdForMemoryGraph(meta);
     if (turnIdForGraph) div.dataset.turnId = turnIdForGraph;
     else if (sender === 'You') {
@@ -6885,7 +7087,7 @@ document.addEventListener("DOMContentLoaded", () => {
         : `u${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
       div.dataset.turnId = `hub-utterance:${uuid}`;
     }
-    div.dataset.role = sender === 'Orion' ? 'assistant' : (sender === 'You' ? 'user' : 'system');
+    div.dataset.role = (sender === 'Orion' || sender === 'Claude') ? 'assistant' : (sender === 'You' ? 'user' : 'system');
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     const workflowOnlyTurn = Boolean(
       sender === 'Orion'
@@ -6900,16 +7102,41 @@ document.addEventListener("DOMContentLoaded", () => {
     header.className = `font-bold ${color}`;
     header.textContent = sender;
     headerRow.appendChild(header);
+    // Markdown is rendered for Orion's turns only. Juniper's own input stays
+    // textContent -- rendering it would mangle pasted code and gains nothing --
+    // and so does anything from System. If ChatMarkdown is unavailable or the
+    // sanitizer failed to load, renderMarkdown returns null and we fall back to
+    // exactly the previous textContent behavior.
     const body = document.createElement('p');
-    body.className = `${colorClass} whitespace-pre-wrap`;
-    body.textContent = displayText;
+    body.dataset.messageBody = '1';
+    let renderedMarkdown = null;
+    if ((sender === 'Orion' || sender === 'Claude') && window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function') {
+      renderedMarkdown = window.ChatMarkdown.renderMarkdown(displayText);
+    }
+    if (renderedMarkdown) {
+      body.className = `${colorClass} om-md`;
+      body.appendChild(renderedMarkdown);
+    } else {
+      body.className = `${colorClass} whitespace-pre-wrap`;
+      body.textContent = displayText;
+    }
+    // Stash the source so "copy" yields markdown, not space-mangled innerText.
+    if (displayText) div.dataset.mdSource = displayText;
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
     div.appendChild(headerRow);
     const workflowPanel = sender === 'Orion' ? createWorkflowPanel(meta.workflow, {
       onRunAgain: async (workflow) => submitExplicitChatText(workflow.rerun_prompt),
     }) : null;
     if (workflowPanel) div.appendChild(workflowPanel);
+    const attachmentStrip = buildMessageAttachmentStrip(meta);
+    if (attachmentStrip) div.appendChild(attachmentStrip);
     if (!workflowOnlyTurn) div.appendChild(body);
+    if (displayText && window.ChatMarkdown && typeof window.ChatMarkdown.buildCopyButton === 'function') {
+      const copyRow = document.createElement('div');
+      copyRow.className = 'om-msg-copy';
+      copyRow.appendChild(window.ChatMarkdown.buildCopyButton(displayText, 'Copy'));
+      headerRow.appendChild(copyRow);
+    }
     conversationDiv.appendChild(div);
     if (sender === 'Orion') {
       pinLiveClaudeTraceToMessage(meta, div);
@@ -8844,6 +9071,52 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const askClaudeButton = document.getElementById('askClaudeButton');
+  const askClaudeStatusChip = document.getElementById('askClaudeStatusChip');
+
+  function setAskClaudeBusy(busy) {
+    if (askClaudeButton) askClaudeButton.disabled = Boolean(busy);
+    if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !busy);
+  }
+
+  async function askClaude() {
+    const value = (chatInput && chatInput.value ? chatInput.value : '').trim();
+    // Falls back to the last thing said when the composer is empty, so "Ask
+    // Claude" works as "weigh in on this" without retyping the question.
+    const prompt = value || lastUserOrOrionText() || 'What do you make of the conversation so far?';
+    setAskClaudeBusy(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/room/claude/invite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, session_id: orionSessionId || null }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        appendMessage('System', `Could not invite Claude (${res.status}): ${detail}`, 'text-red-300');
+        setAskClaudeBusy(false);
+        return;
+      }
+      if (value && chatInput) chatInput.value = '';
+      // Busy stays on until the room_claude_utterance frame arrives; the reply
+      // is asynchronous over the socket, not in this response.
+    } catch (err) {
+      appendMessage('System', `Could not invite Claude: ${err}`, 'text-red-300');
+      setAskClaudeBusy(false);
+    }
+  }
+
+  function lastUserOrOrionText() {
+    if (!conversationDiv) return '';
+    const nodes = conversationDiv.querySelectorAll('[data-message-body="1"]');
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      const text = (nodes[i].textContent || '').trim();
+      if (text) return text;
+    }
+    return '';
+  }
+
+  if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
   if (chatInput) {
@@ -9166,6 +9439,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (spec.mode === 'brain' && spec.verb === 'chat_quick') {
       chatQuickVariant = 'fast';
     }
+    // Switching modes can switch between a path that carries images and one
+    // that does not, so the attach affordance has to re-evaluate here too --
+    // not only when the compute route changes.
+    if (typeof refreshVisionCapability === 'function') refreshVisionCapability();
     if (hubModeSelect && hubModeSelect.value !== key) {
       hubModeSelect.value = key;
     }
@@ -9229,6 +9506,9 @@ document.addEventListener("DOMContentLoaded", () => {
     selectedLlmRoute = HUB_COMPUTE_ROUTE_IDS.includes(rid) ? rid : HUB_COMPUTE_DEFAULT;
     localStorage.setItem('orion_llm_route', selectedLlmRoute);
     renderComputeDropdown();
+    // Switching lanes can switch between a sighted and a blind model, so the
+    // attach button has to re-evaluate here, not only at boot.
+    if (typeof refreshVisionCapability === 'function') refreshVisionCapability();
   }
 
   function routeStatusIsDown(routeId) {
@@ -10309,6 +10589,18 @@ document.addEventListener("DOMContentLoaded", () => {
           wsReadyResolve = null;
         }
         updateStatus('Connected.');
+        // Tell the server which thread this socket is in, before any turn.
+        // session_id otherwise only reaches Hub on an outbound chat message, so
+        // a tab that is open but idle looks session-less to endogenous
+        // outreach -- and outreach then posts to its fallback session instead
+        // of the thread Juniper is actually looking at, breaking reply-in-place.
+        if (orionSessionId) {
+          try {
+            socket.send(JSON.stringify({ type: 'session_hello', session_id: orionSessionId }));
+          } catch (err) {
+            console.warn('[WS] session_hello failed', err);
+          }
+        }
         // A reconnect means any turn from the previous socket is unreachable now
         // (its closing "state": "idle" frame, if any, will never arrive) — clear
         // stale client-side turn-in-flight state rather than leave the Stop button
@@ -10323,6 +10615,50 @@ document.addEventListener("DOMContentLoaded", () => {
           const d = JSON.parse(e.data);
           if (d.type === 'connection_ready') {
             activeConnectionId = d.connection_id || null;
+            return;
+          }
+          if (d.kind === 'room_claude_utterance') {
+            // Claude's turn in the room. Handled before the generic assistant
+            // branch and returns early for the same reason orion_outreach does:
+            // that branch runs updateMemoryPanelFromResponse(), which would
+            // blank the recall panel still showing the last real Orion turn.
+            // A room reply is not an Orion turn and must not overwrite its
+            // debug surfaces.
+            const claudeText = String(d.llm_response || '').trim();
+            setAskClaudeBusy(false);
+            if (claudeText) {
+              appendMessage(String(d.speaker || 'Claude'), claudeText, 'text-white', {
+                correlationId: d.correlation_id,
+                messageId: d.message_id || null,
+                turnId: d.correlation_id,
+                mode: 'room_claude',
+                unsolicited: true,
+                roomClaude: {
+                  requestId: d.request_id || null,
+                  model: d.model || null,
+                  costUsd: typeof d.cost_usd === 'number' ? d.cost_usd : null,
+                  durationMs: d.duration_ms || null,
+                  ok: d.ok !== false,
+                },
+              });
+            }
+            return;
+          }
+          if (d.kind === 'orion_outreach') {
+            // Orion spoke first (no turn of ours). Handled before the generic
+            // assistant branch and returns early on purpose: that branch also
+            // runs updateMemoryPanelFromResponse(), which would blank the recall
+            // panel still showing the last real turn.
+            const outreachText = String(d.llm_response || '').trim();
+            if (outreachText) {
+              appendMessage('Orion', outreachText, 'text-white', {
+                correlationId: d.correlation_id,
+                messageId: d.message_id || null,
+                turnId: d.correlation_id,
+                mode: d.mode || 'orion',
+                unsolicited: true,
+              });
+            }
             return;
           }
           if (d.type === 'turn_deferred') {
@@ -10638,7 +10974,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
-    if (!value) return;
+    // Claim the composer's attachments up front so they cannot be double-sent
+    // by a second submit while this one is in flight. Taken before the
+    // empty-text guard below, because an image with no caption is a valid turn.
+    const outboundAttachments = (opts && Array.isArray(opts.attachments))
+      ? opts.attachments
+      : (chatAttachmentsController ? chatAttachmentsController.takePending() : []);
+    if (!value && !outboundAttachments.length) return;
 
     let effectiveRoute = String(
       (opts && opts.llm_route) || selectedLlmRoute || HUB_COMPUTE_DEFAULT
@@ -10660,7 +11002,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    appendMessage('You', value);
+    appendMessage('You', value, 'text-white', { attachments: outboundAttachments });
     if (chatInput) chatInput.value = '';
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
@@ -10707,6 +11049,11 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     if (!omitChatUiMode) {
       payload.mode = requestMode;
+    }
+    // Only set the key when there is something to send, so a text-only turn's
+    // payload is byte-identical to what it was before attachments existed.
+    if (outboundAttachments.length) {
+      payload.attachments = outboundAttachments;
     }
     applyAgentClaudePayloadFields(payload);
     applyOrionUnifiedPayloadFields(payload);
@@ -11309,6 +11656,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Connect WebSocket immediately so chat is not blocked on slow initSession/library loads.
   setupWebSocket();
+
+  // Composer attachments bind before the async boot chain for the same reason:
+  // paste-an-image must work the moment the page is interactive, not after
+  // recall/notifications finish loading.
+  initChatAttachments();
 
   (async () => {
       // 1. Session

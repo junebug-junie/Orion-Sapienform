@@ -14,18 +14,32 @@ class WindowStore:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
-    async def _get_open_window(self) -> asyncpg.Record | None:
+    async def _get_open_window(self, source_platform: str | None = None) -> asyncpg.Record | None:
+        """The open window for one platform. NULL platform = direct conversation.
+
+        This used to select the single global open window with no partitioning
+        at all, so ai-town NPC turns and Juniper's own turns appended to the same
+        window -- 26 windows were confirmed mixed on live data (2026-08-14). An
+        episode is meant to be one coherent stretch of conversation, so that was
+        a correctness bug independent of the review queue.
+
+        `IS NOT DISTINCT FROM` rather than `=` because the direct-conversation
+        partition is keyed by NULL, and `NULL = NULL` is NULL, which would make
+        every direct turn open a brand-new window and never find its own.
+        """
         return await self._pool.fetchrow(
             """
             SELECT * FROM memory_consolidation_windows
             WHERE status = 'open'
+              AND source_platform IS NOT DISTINCT FROM $1
             ORDER BY created_at ASC
             LIMIT 1
-            """
+            """,
+            source_platform,
         )
 
     async def append_turn(self, turn: MemoryTurnPersistedV1, *, scores: dict[str, Any]) -> None:
-        row = await self._get_open_window()
+        row = await self._get_open_window(turn.source_platform)
         phase_change = (turn.spark_meta.get("conversation_phase") or {}).get("phase_change")
         appraisal = scores.get("turn_change_appraisal")
         spark_meta: dict[str, Any] = {}
@@ -43,18 +57,27 @@ class WindowStore:
             "phase_change": phase_change,
             "memory_classify_ts": scores.get("memory_classify_ts"),
             "spark_meta": spark_meta,
+            # Still carried per-turn even though the cursor is now partitioned by
+            # platform, for two reasons: windows created before that partitioning
+            # can genuinely hold turns from more than one platform, and
+            # _window_source_platform()'s unanimity rule is what keeps those
+            # legacy mixed windows out of the auto-activate path. Belt and braces
+            # -- the partitioning prevents new mixing, the unanimity check refuses
+            # to trust any window that mixed anyway.
+            "source_platform": turn.source_platform,
         }
         if row is None:
             window_id = str(uuid4())
             await self._pool.execute(
                 """
                 INSERT INTO memory_consolidation_windows
-                  (memory_window_id, status, turn_correlation_ids, created_at)
-                VALUES ($1, 'open', $2::jsonb, $3)
+                  (memory_window_id, status, turn_correlation_ids, created_at, source_platform)
+                VALUES ($1, 'open', $2::jsonb, $3, $4)
                 """,
                 window_id,
                 json.dumps([turn_entry]),
                 datetime.now(timezone.utc),
+                turn.source_platform,
             )
             return
 
@@ -74,8 +97,19 @@ class WindowStore:
             json.dumps(turns),
         )
 
-    async def close_current_window(self, closing_correlation_id: str) -> dict[str, Any]:
-        row = await self._get_open_window()
+    async def close_current_window(
+        self, closing_correlation_id: str, *, source_platform: str | None
+    ) -> dict[str, Any]:
+        """`source_platform` is REQUIRED (keyword, no default) even though None is
+        a legal value.
+
+        None is a real partition -- Juniper's direct conversation -- not a
+        sentinel meaning "any". A default would make a forgotten kwarg silently
+        close and reseed HER window instead of the intended one, with nothing in
+        the signature, the types, or the runtime to make the omission visible.
+        Passing None must be a decision, not an oversight.
+        """
+        row = await self._get_open_window(source_platform)
         if row is None:
             return {"memory_window_id": str(uuid4()), "turn_correlation_ids": [], "turns": []}
 
@@ -104,16 +138,30 @@ class WindowStore:
             (t for t in turns if isinstance(t, dict) and t.get("correlation_id") == closing_correlation_id),
             None,
         )
+        # The closing turn is carried into the next window as its first turn (it
+        # is the boundary, and it belongs to both sides of it). Before the cursor
+        # was partitioned this was a real leak: a direct turn from Juniper seeded
+        # the next window, making it permanently "mixed" no matter how many
+        # ai-town turns followed, so a burst of NPC dialogue right after she
+        # spoke still landed in the review queue. Now the closing turn is by
+        # construction from this partition, so it can only seed its own.
         next_turns = [closing_turn] if closing_turn else []
+        # dict(row).get, not row["source_platform"]: asyncpg Records raise
+        # KeyError for an absent column, and the closing turn's own platform is
+        # the more specific answer anyway -- the row is only the fallback.
+        carried_platform = (
+            closing_turn.get("source_platform") if isinstance(closing_turn, dict) else None
+        ) or dict(row).get("source_platform")
         await self._pool.execute(
             """
             INSERT INTO memory_consolidation_windows
-              (memory_window_id, status, turn_correlation_ids, created_at)
-            VALUES ($1, 'open', $2::jsonb, $3)
+              (memory_window_id, status, turn_correlation_ids, created_at, source_platform)
+            VALUES ($1, 'open', $2::jsonb, $3, $4)
             """,
             new_window_id,
             json.dumps(next_turns),
             now,
+            carried_platform,
         )
         return {
             "memory_window_id": row["memory_window_id"],

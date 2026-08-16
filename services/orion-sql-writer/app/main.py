@@ -30,6 +30,19 @@ async def lifespan(app: FastAPI):
 
     try:
         with engine.begin() as conn:
+            # ROADMAP B1. This MUST be applied before the writer serves traffic: _write_row
+            # filters payload keys against the mapper's columns, so the moment
+            # BiometricsSummarySQL declares `measurements` the key enters the INSERT. Against
+            # a database without the column that is psycopg2 UndefinedColumn -> ProgrammingError,
+            # and the only handlers here catch IntegrityError -- so ALL biometrics-summary
+            # persistence would stop, not just the new field, while the bus publish and the Hub
+            # panel keep looking healthy. Boot-time DDL is the existing convention for exactly
+            # this hazard (the chat_* statements below), so it lives here rather than in a
+            # hand-applied file an operator has to remember.
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS orion_biometrics_summary "
+                "ADD COLUMN IF NOT EXISTS measurements JSONB;"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )
@@ -787,13 +800,34 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Bus disabled; writer will be idle.")
 
+    # Backlog watcher for bus_fallback_log. Independent of orion_bus_enabled on
+    # purpose: the rows it reads are already in Postgres, and a writer with the
+    # bus disabled still has a backlog worth reporting.
+    watch_task: asyncio.Task | None = None
+    if settings.sql_writer_fallback_watch_enabled:
+        from app.fallback_watch import fallback_watch_loop
+
+        watch_task = asyncio.create_task(fallback_watch_loop(settings))
+    else:
+        logger.warning(
+            "bus_fallback_log backlog watcher DISABLED "
+            "(SQL_WRITER_FALLBACK_WATCH_ENABLED=false); unrouted events will accumulate silently"
+        )
+
     try:
         yield
     finally:
-        if task:
-            task.cancel()
-            with contextlib.suppress(Exception):
-                await task
+        pending = [t for t in (task, watch_task) if t is not None]
+        for background in pending:
+            background.cancel()
+        if pending:
+            # gather(return_exceptions=True) rather than a loop of
+            # `suppress(Exception)`: CancelledError derives from BaseException,
+            # not Exception, so suppress(Exception) does NOT catch it. The bus
+            # chassis's start() has no CancelledError handler, so awaiting it
+            # re-raised out of the loop and the SECOND task was never cancelled
+            # at all -- left pending at loop close, possibly mid-DB-query.
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 app = FastAPI(

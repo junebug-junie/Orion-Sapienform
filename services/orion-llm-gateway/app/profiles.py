@@ -38,7 +38,16 @@ class LLMProfile(BaseModel):
     # Capabilities
     supports_tools: bool = False
     supports_embeddings: bool = False
-    supports_vision: bool = False
+    # `supports_vision` deliberately removed 2026-08-14. It was declared here and
+    # read nowhere in the repo -- a label with no runtime behavior. Worse, it was
+    # wrong: the chat lane's profile said false while its weights and chat
+    # template were VL-capable and only the `--mmproj` launch flag was missing.
+    # Vision capability is now resolved from the worker's own `/props`
+    # (`app/vision.py`, published per-route on GET /routes). Extra YAML keys are
+    # ignored by pydantic, so leftover `supports_vision:` lines in
+    # config/llm_profiles.yaml parse harmlessly; they carry no meaning.
+    # NOTE: orion-llamacpp-host / -neural-host / llama-cola-host still declare
+    # their own equally-unread copies. Out of scope here; follow-up filed in the PR.
 
     # Performance & GPU layout (mostly documentation for now)
     gpu: GPUConfig

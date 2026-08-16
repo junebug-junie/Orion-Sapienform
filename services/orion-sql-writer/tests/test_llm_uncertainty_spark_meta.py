@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -32,14 +33,22 @@ class _FakeQuery:
 
 
 class _FakeSession:
+    """chat_history_log now goes through INSERT ... ON CONFLICT DO UPDATE, so the
+    written values arrive via execute(stmt), not merge(orm_object)."""
+
     def __init__(self) -> None:
         self.row = None
+        self.values: dict = {}
 
     def query(self, _model):  # noqa: ANN001
         return _FakeQuery()
 
     def merge(self, obj):
         self.row = obj
+
+    def execute(self, stmt):
+        # compile().params exposes the bound INSERT values without a live DB.
+        self.values = dict(stmt.compile().params)
 
     def commit(self):
         return None
@@ -57,10 +66,19 @@ def _write_chat_history(monkeypatch, payload: dict) -> dict:
     monkeypatch.setattr(worker, "remove_session", lambda: None)
 
     assert worker._write_row(worker.ChatHistoryLogSQL, payload) is True
-    assert sess.row is not None
-    spark_meta = sess.row.spark_meta
-    assert isinstance(spark_meta, dict)
+    spark_meta = sess.values.get("spark_meta")
+    assert isinstance(spark_meta, dict), f"no spark_meta in written values: {sess.values}"
     return spark_meta
+
+
+def _write_chat_history_values(monkeypatch, payload: dict) -> dict:
+    """Full set of columns the upsert would write, for scalar assertions."""
+    sess = _FakeSession()
+    monkeypatch.setattr(worker, "get_session", lambda: sess)
+    monkeypatch.setattr(worker, "remove_session", lambda: None)
+
+    assert worker._write_row(worker.ChatHistoryLogSQL, payload) is True
+    return sess.values
 
 
 def test_chat_history_spark_meta_merges_llm_uncertainty_from_meta(monkeypatch) -> None:
@@ -104,11 +122,9 @@ _UNC_FULL = {
 
 
 def _write_chat_history_row(monkeypatch, payload: dict):
-    sess = _FakeSession()
-    monkeypatch.setattr(worker, "get_session", lambda: sess)
-    monkeypatch.setattr(worker, "remove_session", lambda: None)
-    assert worker._write_row(worker.ChatHistoryLogSQL, payload) is True
-    return sess.row
+    """Column values the upsert writes, addressable by attribute so the
+    assertions below read the same as when this was an ORM object."""
+    return SimpleNamespace(**_write_chat_history_values(monkeypatch, payload))
 
 
 def test_chat_history_log_scalar_columns_from_meta_llm_uncertainty(monkeypatch) -> None:

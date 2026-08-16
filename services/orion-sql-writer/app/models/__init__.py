@@ -24,6 +24,7 @@ from .notify_models import (
     NotificationPreferenceDB,
 )
 from .fallback_log import BusFallbackLog
+from .fallback_alert_state import BusFallbackAlertState
 from .cognition_trace import CognitionTraceSQL
 from .thought_decision import ThoughtDecisionSQL
 from .metacognition_tick import MetacognitionTickSQL
@@ -64,6 +65,7 @@ from .action_outcome import ActionOutcomeSQL
 from .dominance_streak_tick import DominanceStreakTickSQL
 from .dev_economics_ledger import DevEconomicsLedgerSQL
 from .doc_semantic_drift import DocSemanticDriftSQL
+from .juniper_affective_state import JuniperAffectiveStateSQL
 from .phi_reward import PhiRewardSQL
 from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
 from .grammar_trace import (
@@ -136,6 +138,7 @@ __all__ = [
     "DominanceStreakTickSQL",
     "DevEconomicsLedgerSQL",
     "DocSemanticDriftSQL",
+    "JuniperAffectiveStateSQL",
     "PhiRewardSQL",
     "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",
@@ -146,4 +149,5 @@ __all__ = [
     "GrammarTemporalHopSQL",
     "GrammarCompactionSQL",
     "GrammarProjectionSQL",
+    "BusFallbackAlertState",
 ]

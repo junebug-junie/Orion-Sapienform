@@ -25,6 +25,7 @@ from scripts.memory_consolidation_draft_routes import router as memory_consolida
 from scripts.proposal_review_routes import router as proposal_review_router
 from scripts.concept_atlas_routes import router as concept_atlas_router
 from scripts.self_brain_routes import router as self_brain_router
+from scripts.chat_attachments import router as chat_attachments_router
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
@@ -32,6 +33,8 @@ from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
+from scripts.endogenous_outreach import EndogenousOutreach
+from scripts.room_claude_relay import RoomClaudeRelay
 from scripts.agent_step_relay import AgentStepRelay
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
@@ -75,13 +78,27 @@ def _discover_git_sha() -> str:
 
 
 def _ui_asset_mtime_token() -> str:
-    """Best-effort mtime token so uncommitted UI edits bust browser caches."""
+    """Best-effort mtime token so uncommitted UI edits bust browser caches.
+
+    Globs rather than naming files. The previous hardcoded four-file list
+    silently excluded every other module the template loads -- confirmed
+    2026-08-14 when an edit to memory-crystallization-ui.js produced no new ?v=,
+    so a browser with the old file cached would keep running it. A list like
+    that goes stale on the exact patch that needed it, and the failure is
+    invisible: the server is serving new code, the browser just never asks for
+    it.
+
+    rglob, not glob("js/*.js"): a first pass at this fix still missed
+    static/js/vendor/ and every template except index.html, which is the same
+    bug one directory down. Templates are globbed too because the standalone
+    pages (causal_geometry, concept_atlas, substrate, substrate_atlas) are
+    served with the same token. sorted() keeps the token stable for a given set
+    of mtimes.
+    """
     candidates = [
-        STATIC_DIR / "js" / "app.js",
-        STATIC_DIR / "js" / "memory-graph-draft-ui.js",
-        STATIC_DIR / "js" / "organ-signals-graph-ui.js",
-        STATIC_DIR / "js" / "workflow-ui.js",
-        TEMPLATES_DIR / "index.html",
+        *sorted(STATIC_DIR.rglob("*.js")),
+        *sorted(STATIC_DIR.rglob("*.css")),
+        *sorted(TEMPLATES_DIR.glob("*.html")),
     ]
     mtimes: list[int] = []
     for path in candidates:
@@ -255,6 +272,8 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
+endogenous_outreach: Optional[EndogenousOutreach] = None
+room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -356,7 +375,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -420,6 +439,40 @@ async def startup_event():
                 notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
             )
             await bus_synaptic_trigger_notifier.start(bus)
+
+            # Orion speaks first (stub random trigger). Off unless explicitly
+            # enabled -- see scripts/endogenous_outreach.py for the safety gates.
+            endogenous_outreach = EndogenousOutreach(
+                enabled=settings.HUB_ENDOGENOUS_OUTREACH_ENABLED,
+                tick_interval_sec=settings.HUB_ENDOGENOUS_OUTREACH_TICK_SEC,
+                probability=settings.HUB_ENDOGENOUS_OUTREACH_PROBABILITY,
+                min_cooldown_sec=settings.HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC,
+                daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
+                quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
+                quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
+                llm_route=settings.HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE,
+                timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,
+                notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
+                fallback_session_id=settings.HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID,
+                timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+            )
+            await endogenous_outreach.start(bus, cortex_client)
+
+            # Claude as a third room participant. Hub only publishes the
+            # invite and relays the reply -- orion-room-companion owns the
+            # credential and the subprocess.
+            room_claude_relay = RoomClaudeRelay(
+                request_channel=settings.CHANNEL_ROOM_CLAUDE_REQUEST,
+                utterance_channel=settings.CHANNEL_ROOM_CLAUDE_UTTERANCE,
+                participant_name=settings.HUB_ROOM_CLAUDE_PARTICIPANT_NAME,
+                auto_respond=settings.HUB_ROOM_CLAUDE_AUTO_RESPOND,
+                auto_min_gap_sec=settings.HUB_ROOM_CLAUDE_AUTO_MIN_GAP_SEC,
+                service_name=settings.SERVICE_NAME,
+                service_version=settings.SERVICE_VERSION,
+                node_name=settings.NODE_NAME,
+                enabled=settings.HUB_ROOM_CLAUDE_ENABLED,
+            )
+            await room_claude_relay.start(bus)
 
             agent_step_relay = AgentStepRelay(channel=settings.HUB_CONTEXT_EXEC_EVENT_CHANNEL)
             await agent_step_relay.start(bus)
@@ -725,7 +778,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -770,6 +823,18 @@ async def shutdown_event() -> None:
             await bus_synaptic_trigger_notifier.stop()
         except Exception:
             pass
+    if endogenous_outreach is not None:
+        try:
+            await endogenous_outreach.stop()
+        except Exception:
+            pass
+        endogenous_outreach = None
+    if room_claude_relay is not None:
+        try:
+            await room_claude_relay.stop()
+        except Exception:
+            pass
+        room_claude_relay = None
     if agent_step_relay is not None:
         try:
             await agent_step_relay.stop()
@@ -817,6 +882,7 @@ app.include_router(memory_consolidation_draft_router)
 app.include_router(proposal_review_router)
 app.include_router(concept_atlas_router)
 app.include_router(self_brain_router)
+app.include_router(chat_attachments_router)
 
 # Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)

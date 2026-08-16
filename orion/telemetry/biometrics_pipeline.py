@@ -46,6 +46,261 @@ def normalize_rate(rate: Optional[float], *, scale: float) -> float:
     return clamp01(rate / scale)
 
 
+def _as_float(value: object) -> Optional[float]:
+    """Strict: None for anything that is not a real, finite number.
+
+    Booleans are rejected too -- `float(True)` is 1.0, which would enter a watt field as a
+    perfectly plausible reading. nvidia-smi values arrive as space-padded strings
+    (`" 58.08"`), so strings are parsed rather than refused.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if out != out or out in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    return out
+
+
+def _sum_of(values: object) -> Optional[Tuple[float, int]]:
+    """(sum, count) only if EVERY element parses. None if any element does not.
+
+    All-or-nothing, deliberately. A partial sum is the absent-is-not-zero failure moved
+    inside a key instead of between keys: on a 3-GPU box where one card reports `[N/A]`
+    (nvidia-smi really does emit that), summing the survivors yields a number that is
+    byte-identical to a genuine 2-GPU total and understates while looking complete. The
+    caller pairs the sum with its count so a consumer can check it against the hardware.
+    """
+    if not isinstance(values, list) or not values:
+        return None
+    parsed = [_as_float(v) for v in values]
+    if any(f is None for f in parsed):
+        return None
+    return sum(parsed), len(parsed)  # type: ignore[arg-type]
+
+
+def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
+    """Raw physical quantities from a biometrics sample, in their own units.
+
+    ROADMAP B1. Everything else on BiometricsSummaryV1 is normalised to 0-1, which cannot be
+    summed across hosts or compared over time. These are the numbers Juniper actually pays.
+
+    THE INVARIANT: a key is absent when the quantity is not measured. Never 0.0, never a
+    placeholder. circe has no reachable BMC, so writing `chassis_watts: 0.0` for it would
+    make a fleet total silently understate by a whole machine while looking complete. Callers
+    must use `.get(key)` and handle None, not `.get(key, 0.0)`.
+
+    CONTAINMENT, and a consumer must not sum across it: `chassis_watts` is the whole-node
+    draw measured at the PSU and ALREADY INCLUDES BOTH `gpu_watts_total` AND `cpu_watts_total`.
+    Live on athena 2026-08-14: 407 W at the PSU, of which 210 W is the two CPU packages and
+    44 W the GPU. So `chassis + cpu + gpu` reports 661 W for a 407 W machine -- a 62%
+    over-count, and the error grows as the decomposition gets more complete.
+
+    Use `chassis_watts` for what a node COSTS. Use the other two for what that cost is MADE OF:
+
+        athena, 407 W at the wall
+          210 W  cpu_watts_total   two packages, RAPL          52%
+           44 W  gpu_watts_total   one P100, nvidia-smi        11%
+          153 W  everything else   10 disks, RAM, fans, PSU    37%
+                                   loss, NICs -- not measured
+
+    That residual is a real unmeasured remainder, not a rounding error, and nothing in this
+    dict claims to cover it. `gpu_watts_total` doubles as the only power figure available on a
+    node with no reachable BMC (circe), where there is no `chassis_watts` to be contained by.
+
+    DISK AND NETWORK BYTE RATES were withheld here until 2026-08-14 because both were wrong as
+    *node-scale physical quantities*, which is what this dict claims to hold. Both collector
+    bugs are now fixed and both quantities are published:
+
+      - network read a network-namespaced /proc/net/dev from inside a bridged container, so it
+        saw its own veth. Measured on athena: host 159,304 B/s vs container 1,357 B/s (117x);
+        the day before, ~1000x. The ratio is unstable because these are different quantities,
+        not a miscalibration. Fixed by reading the host namespace via /host_proc/1/net/dev and
+        restricting to up physical NICs.
+      - disk summed /proc/diskstats rows for whole disks AND their partitions, double-counting.
+        Measured 19,378,995 vs 9,905,766 B/s over one window, a factor of 1.956 (1.97 the day
+        before). Fixed by matching whole devices only.
+
+    `net_bytes_per_sec` appears ONLY when the host namespace was actually readable
+    (`network.scope == "host"`). A container-scoped reading is withheld entirely rather than
+    published with a caveat, because absent-is-not-zero also means absent-is-not-approximately.
+    """
+    out: Dict[str, float] = {}
+
+    def put(key: str, value: Optional[float]) -> None:
+        if value is not None:
+            out[key] = value
+
+    ilo = sample.get("ilo") if isinstance(sample.get("ilo"), dict) else {}
+    power = sample.get("power") if isinstance(sample.get("power"), dict) else {}
+    gpu = sample.get("gpu") if isinstance(sample.get("gpu"), dict) else {}
+    cpu = sample.get("cpu") if isinstance(sample.get("cpu"), dict) else {}
+    temps = sample.get("temps") if isinstance(sample.get("temps"), dict) else {}
+
+    # Chassis draw from the BMC. The dominant cost term, and the only one that composes
+    # across hosts. Present on nodes with iLO configured; absent elsewhere.
+    watts = _as_float(ilo.get("ilo_power_watts"))
+    if watts is not None and watts >= 0.0:  # a negative draw is a sensor fault, not a reading
+        out["chassis_watts"] = watts
+
+    # Per-outlet PDU power, summed over this node's PSUs. Measured AT THE WALL rather than at
+    # the machine's own PSU, so it is a genuinely independent instrument -- which is how iLO
+    # got validated: atlas read 291 W on both at the same instant, 2026-08-15.
+    #
+    # NEVER SUMMED WITH `chassis_watts`. On a node with both (atlas) these are two meters on
+    # THE SAME WATTS. `pdu_watts` is published separately so the pair stays comparable, and
+    # `chassis_watts` keeps exactly one value per node.
+    #
+    # On a node with NO BMC (circe) the PDU is the only chassis measurement that exists, so it
+    # fills `chassis_watts` -- but ONLY when iLO produced nothing. That ordering is deliberate:
+    # it must never overwrite a BMC reading, because the two disagree instantaneously whenever
+    # load is moving (iLO polls on a 60 s cadence, the PDU read is instantaneous -- measured
+    # 737 W vs 484 W on atlas mid-burst) and whichever wrote last would win at random.
+    pdu = sample.get("pdu") if isinstance(sample.get("pdu"), dict) else {}
+    pdu_watts = _as_float(pdu.get("pdu_watts"))
+    if pdu_watts is not None and pdu_watts >= 0.0:
+        out["pdu_watts"] = pdu_watts
+        if "chassis_watts" not in out:
+            out["chassis_watts"] = pdu_watts
+
+    # SUM, deliberately. `_power_pressure` takes the *mean* of the same list, which makes a
+    # 3-GPU box normalise like a 1-GPU box -- fine for a self-relative band, wrong for a
+    # fleet total. The two numbers are different quantities and both are kept.
+    totals = _sum_of(power.get("gpu_power_watts"))
+    if totals is None:
+        # Fall back to the per-GPU entries when the flat list is absent or partial.
+        gpus = gpu.get("gpus")
+        if isinstance(gpus, list):
+            totals = _sum_of([e.get("power_draw_watts") for e in gpus if isinstance(e, dict)])
+    if totals is not None and totals[0] >= 0.0:
+        out["gpu_watts_total"] = totals[0]
+        out["gpu_count"] = float(totals[1])  # so a consumer can check the total against the box
+
+    # CPU package power from RAPL, summed over sockets. The largest previously-unattributed
+    # term on athena: chassis 407 W, GPU 44 W, CPU 210 W across two packages -- more than half
+    # the machine, invisible until now, on the node whose whole job is CPU orchestration.
+    #
+    # SAME CONTAINMENT RULE AS gpu_watts_total: this is already inside `chassis_watts`, which
+    # is measured at the PSU. chassis + cpu + gpu is not a total, it is triple-counting. Use
+    # `chassis_watts` for what a node costs and these two for what the cost is made of.
+    cpu_watts = _as_float(power.get("cpu_package_watts"))
+    if cpu_watts is not None and cpu_watts >= 0.0:
+        out["cpu_watts_total"] = cpu_watts
+
+    fan_map = ilo.get("ilo_fan_pct")
+    if isinstance(fan_map, dict):
+        fan_values = [f for f in (_as_float(v) for v in fan_map.values()) if f is not None]
+        if fan_values:
+            out["fan_pct_max"] = max(fan_values)
+
+    put("temp_c_max", _as_float(temps.get("max_c")))
+    put("cpu_cores", _as_float(cpu.get("cores")))
+    loadavg = cpu.get("loadavg") if isinstance(cpu.get("loadavg"), dict) else {}
+    put("load_1m", _as_float(loadavg.get("1m")))
+    put("load_15m", _as_float(loadavg.get("15m")))
+
+    # Disk throughput. Previously withheld because the collector summed whole disks AND their
+    # partitions (measured 1.956x over-count on athena). Fixed in
+    # BiometricsCollector._is_disk_device, so the number is now a real node-scale quantity and
+    # is published rather than only surviving as a 0-1 band.
+    disk = sample.get("disk") if isinstance(sample.get("disk"), dict) else {}
+    disk_rate = _sum_of([disk.get("read_bytes_per_sec"), disk.get("write_bytes_per_sec")])
+    if disk_rate is not None and disk_rate[0] >= 0.0:
+        out["disk_bytes_per_sec"] = disk_rate[0]
+
+    # Network throughput, and ONLY when it was read from the host namespace. A container-scoped
+    # reading is this service's own veth traffic -- a different quantity, not a scaled one, so
+    # it is withheld entirely rather than published with a caveat. That leaves the node absent
+    # from the fleet total, which `measurements_missing` reports honestly; publishing 1,357 B/s
+    # as a node's network load would not.
+    network = sample.get("network") if isinstance(sample.get("network"), dict) else {}
+    if network.get("scope") == "host":
+        net_rate = _sum_of([network.get("rx_bytes_per_sec"), network.get("tx_bytes_per_sec")])
+        if net_rate is not None and net_rate[0] >= 0.0:
+            out["net_bytes_per_sec"] = net_rate[0]
+        # Link capacity in Mb/s (bits), summed over up physical NICs. Kept alongside the rate
+        # so a consumer can compute utilisation without re-deriving the denominator, and so
+        # fleet uplink capacity is a fact rather than a config value repeated three times.
+        put("net_link_mbps", _as_float(network.get("link_mbps")))
+    return out
+
+
+# How each raw measurement composes across the fleet. An explicit table, not a heuristic:
+# guessing an aggregation from a key name is how you end up summing temperatures.
+#
+# EXTENSIVE -- adding a machine adds to the total.
+FLEET_SUM_KEYS = (
+    "chassis_watts",
+    "gpu_watts_total",
+    "cpu_watts_total",
+    "pdu_watts",
+    "gpu_count",
+    "cpu_cores",
+    "disk_bytes_per_sec",
+    "net_bytes_per_sec",
+    "net_link_mbps",
+)
+# INTENSIVE -- adding a machine cannot raise the fleet figure above its own hottest member.
+FLEET_MAX_KEYS = ("temp_c_max", "fan_pct_max")
+# DELIBERATELY NEITHER: load_1m / load_15m. A load average is relative to its own machine's
+# core count (80 vs 96 vs 72 here), so summing is meaningless and taking a max compares
+# incomparable scales. A fleet load figure would need per-core normalisation first, which is a
+# different metric with its own justification -- so this omits it rather than inventing one.
+# Any key not listed above is skipped for the same reason: unknown composition is not a licence
+# to guess.
+
+
+def aggregate_fleet_measurements(
+    per_node: Dict[str, Optional[Dict[str, float]]],
+) -> Tuple[Dict[str, float], Dict[str, List[str]]]:
+    """Combine per-node raw measurements into fleet figures, carrying their coverage.
+
+    ROADMAP B1's consumer. Returns (totals, missing) where `missing[k]` names the source nodes
+    that did NOT report `k`.
+
+    THE INVARIANT HAS TO SURVIVE AGGREGATION, which is the whole difficulty. Per-node,
+    absent-is-not-zero is enforced by omitting the key. A naive `sum(...)` over nodes silently
+    re-introduces exactly the error it was protecting against: circe has no reachable BMC, so a
+    fleet `chassis_watts` computed from athena+atlas is a real number that is missing an entire
+    machine, and nothing in the number itself says so.
+
+    So a total is never returned alone. `missing` travels with it, and a consumer that reads
+    `totals["chassis_watts"]` without checking `missing.get("chassis_watts")` is reading a
+    partial sum as a complete one -- which is the same mistake, one level up.
+
+    A node whose `measurements` is None (a producer predating the field) counts as missing for
+    every key, not as a node with nothing to report.
+    """
+    totals: Dict[str, float] = {}
+    missing: Dict[str, List[str]] = {}
+    if not per_node:
+        return totals, missing
+
+    all_nodes = sorted(per_node)
+    for key in (*FLEET_SUM_KEYS, *FLEET_MAX_KEYS):
+        values: List[float] = []
+        absent: List[str] = []
+        for node in all_nodes:
+            m = per_node.get(node)
+            value = _as_float(m.get(key)) if isinstance(m, dict) else None
+            if value is None:
+                absent.append(node)
+            else:
+                values.append(value)
+        if not values:
+            continue  # nobody measured it: absent at the fleet level too, not zero
+        totals[key] = sum(values) if key in FLEET_SUM_KEYS else max(values)
+        if absent:
+            missing[key] = absent
+    return totals, missing
+
+
 CONSTRAINTS = {
     "thermal": "THERMAL",
     "power": "POWER",
@@ -110,7 +365,16 @@ class BiometricsPipeline:
         disk_pressure = normalize_rate(disk_rate, scale=self.cfg.disk_bw_mbps * 1_000_000)
 
         net_rate = (network.get("rx_bytes_per_sec") or 0.0) + (network.get("tx_bytes_per_sec") or 0.0)
-        net_pressure = normalize_rate(net_rate, scale=self.cfg.net_bw_mbps * 1_000_000)
+        # Prefer the link speed the kernel reports for this node's physical NICs over the
+        # configured NET_BW_MBPS. `link_mbps` is Mb/s (bits); the scale here is bytes/sec, so
+        # divide by 8. A wrong factor of 8 here would be invisible in a 0-1 band, which is
+        # exactly the class of error that made this metric worthless in the first place.
+        link_mbps = network.get("link_mbps")
+        if isinstance(link_mbps, (int, float)) and not isinstance(link_mbps, bool) and link_mbps > 0:
+            net_scale = float(link_mbps) * 1_000_000 / 8.0
+        else:
+            net_scale = self.cfg.net_bw_mbps * 1_000_000
+        net_pressure = normalize_rate(net_rate, scale=net_scale)
         net_error_rate = float(network.get("error_rate") or 0.0)
         net_pressure = clamp01(max(net_pressure, net_error_rate))
 
@@ -186,9 +450,12 @@ class BiometricsPipeline:
         }
 
         constraint = self._constraint_from_pressures(pressures)
+        peak_pressure, peak_pressure_channel = self._peak_pressure(pressures)
         telemetry_error_rate = clamp01(len(errors) / 5) if isinstance(errors, list) else 0.0
 
         return BiometricsSummaryV1(
+            peak_pressure=peak_pressure,
+            peak_pressure_channel=peak_pressure_channel,
             timestamp=sample.get("timestamp"),
             node=sample.get("node"),
             service_name=sample.get("service_name"),
@@ -198,6 +465,7 @@ class BiometricsPipeline:
             composites=composites,
             constraint=constraint,
             telemetry_error_rate=telemetry_error_rate,
+            measurements=extract_measurements(sample),
         )
 
     def _gpu_pressures(self, gpu: Dict[str, object]) -> Tuple[float, float]:
@@ -235,6 +503,44 @@ class BiometricsPipeline:
             return 0.0
         self.power_band.update(avg_power)
         return self.power_band.normalize(avg_power)
+
+    def _peak_pressure(self, pressures: Dict[str, float]) -> Tuple[Optional[float], Optional[str]]:
+        """The binding constraint: the single highest pressure, and which channel it is.
+
+        ADDED ALONGSIDE `strain`, which is deliberately left exactly as it is. `strain` is the
+        MEAN of seven pressures, so a saturated channel is averaged away by its calm neighbours
+        -- measured live 2026-08-14, athena's `power` at 1.000 with `strain` reading 0.443. It
+        is also computed over only 7 of the 11 pressures, omitting `gpu_mem`, `swap`,
+        `disk_capacity` and `fan`, which are the highest channel on two of three nodes.
+
+        Both of those are real defects, and neither is fixed here, because `strain` is written
+        straight into the field lattice's `cpu_pressure` channel
+        (`services/orion-field-digester/app/ingest/state_deltas.py:125`, mode="replace") and
+        feeds the substrate prediction-error diff. Changing its formula moves Orion's substrate.
+        A new signal alongside it costs nothing and breaks nothing.
+
+        THEORY ANCHOR, and why max rather than mean: this is Liebig's law of the minimum. A
+        system saturates at whichever resource runs out first, so the binding constraint is the
+        maximum pressure, and an average over non-binding resources is not a physical quantity.
+        The mean answers "how loaded is this machine on average", which nothing actually needs;
+        the max answers "what is about to stop it", which is the entire question this arc exists
+        to ask.
+
+        REUSE, checked before writing this: `_constraint_from_pressures` below already computes
+        this same max. It then discards both halves of the answer -- the magnitude entirely, and
+        the channel name unless it clears 0.7 AND appears in `CONSTRAINTS`. That map omits
+        `swap`, `disk_capacity` and `fan`, so a peak in one of them reports "NONE" no matter how
+        high. Live on athena 2026-08-15: `disk_capacity` at 0.772, over threshold, reported as
+        `constraint=NONE`. That function is left untouched too -- `constraint` has its own
+        consumers -- and this returns the numbers it throws away.
+
+        Returns (None, None) for an empty pressure dict rather than 0.0: nothing measured is not
+        the same as nothing under pressure, the same rule `measurements` follows.
+        """
+        if not pressures:
+            return None, None
+        channel, value = max(pressures.items(), key=lambda item: item[1])
+        return clamp01(float(value)), channel
 
     def _constraint_from_pressures(self, pressures: Dict[str, float]) -> str:
         if not pressures:

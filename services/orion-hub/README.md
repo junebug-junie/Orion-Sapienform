@@ -217,6 +217,112 @@ The panel calls:
 - `GET /api/notify/recipients/{recipient_group}/preferences`
 - `PUT /api/notify/recipients/{recipient_group}/preferences`
 
+### 4.1 Endogenous outreach — Orion speaks first
+
+`scripts/endogenous_outreach.py`. The only path by which Hub emits chat text
+nobody asked for. **Enabled** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=true` in
+`.env_example` and the live `.env`). The `settings.py` Field default is still
+`False`, so a deploy that loses the key fails closed rather than silently
+reaching out.
+
+**The trigger is a deliberate stub.** Orion has no endogenous "I want to speak
+now" signal yet, so a randomized timer stands in: every
+`HUB_ENDOGENOUS_OUTREACH_TICK_SEC` the loop rolls
+`HUB_ENDOGENOUS_OUTREACH_PROBABILITY`. When a real signal exists, replace
+`EndogenousOutreach._should_roll()` — nothing else in the module assumes a
+timer. Only the trigger is stubbed: the message itself is generated from live
+substrate signals and real chat history, and lands on the same rails a normal
+turn uses.
+
+Pipeline:
+
+```text
+tick -> gates -> grounding read -> quick/metacog cortex call -> 3 delivery rails
+```
+
+Grounding (a tick with none of this is skipped, never filled with placeholder
+text — AGENTS.md §0A):
+
+- fresh endogenous-curiosity candidates from
+  `substrate_endogenous_curiosity_candidates` (via `curiosity_hint._fetch_fresh_candidates`,
+  widened to a 1h window for this slower cadence)
+- `hub_presence.presence_snapshot()` — how long since the last real turn
+- the last few turns from `chat_history_log`, scoped to the live session
+
+Orion may also decline: the prompt permits a literal `PASS` reply, which is
+dropped without consuming the daily budget.
+
+Delivery — three rails, all pre-existing:
+
+| Rail | Mechanism | What it's for |
+| --- | --- | --- |
+| Live chat bubble | in-process push to each socket's `tts_q`, `{"kind":"orion_outreach"}` | a browser that is open right now |
+| Chat history | `chat.history.message.v1` on the bus, `role=assistant`, tag `endogenous_outreach` | durability as data (see caveat) |
+| Notification | `HubNotificationEvent` on `NOTIFY_IN_APP_CHANNEL` | a browser opened afterwards |
+
+**Reload caveat:** rail 2 makes the outreach durable *as data* only. Hub's
+frontend has no conversation-restore fetch at all — the only history-shaped
+endpoint, `/api/chat/messages`, has zero callers in `app.js` — so a reload does
+not bring the bubble back. Rail 3 (the notification list) is what a returning
+browser actually sees. Giving the UI a real restore path is separate work.
+
+The frontend handles `orion_outreach` in its own early-return branch
+(`static/js/app.js`) rather than falling through to the generic assistant
+branch — that branch also runs `updateMemoryPanelFromResponse()`, which would
+blank the recall panel still showing the last real turn. It also costs the
+frame's piggybacked biometrics snapshot, which is harmless: `biometrics_heartbeat`
+re-pushes every `BIOMETRICS_PUSH_INTERVAL_SEC` (default 5s). `addNotification`
+suppresses the toast for `notification_type == endogenous_outreach`, since the
+same `tts_q` carries both rails and the bubble already showed the text.
+
+**Single-process assumption:** the live-bubble rail is in-process. Hub runs one
+uvicorn worker (`Dockerfile` CMD has no `--workers`). If that changes, this rail
+must move onto the bus like the other two already are.
+
+Safety gates, checked in this order (first hit wins, reported by the status
+endpoint): `disabled`, `turn_in_flight`, `quiet_hours`, `daily_cap`, `cooldown`.
+Three details that are easy to get wrong and are enforced by tests:
+
+- **`turn_in_flight` reads a per-connection `busy` flag, not just
+  `active_turn`.** The ws handler only populates `active_turn["correlation_id"]`
+  for the unified-`orion` and `agent-claude` lanes; the UI's **Quick, Story, and
+  Agent** modes all fall through to the general cortex path and never touch it.
+  `note_busy()`/`note_idle()` are called for every inbound message regardless of
+  mode.
+- **The gate is re-checked immediately before delivery.** Generation is a bus
+  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 60s), and a turn
+  can start inside that window. A tick that becomes blocked mid-generation is
+  dropped with reason `<gate>_after_generation`.
+- **Quiet hours and the daily-cap reset use `HUB_ENDOGENOUS_OUTREACH_TZ`,** not
+  the container clock. Hub's compose and Dockerfile set no `TZ`, so the process
+  timezone is UTC; this key must name the operator's real zone or the window
+  silences the wrong nine hours. Set to `America/Denver` in `.env_example`, so
+  the 23→08 window is 23:00–08:00 Mountain. Getting this wrong is not cosmetic:
+  under the old `UTC` value the same window silenced 17:00–02:00 Mountain — the
+  whole evening — while leaving outreach open across the working day.
+
+Generation pins `tool_execution_policy` and `action_execution_policy` to `none`
+and sets `no_write_active`, which are the keys `orion-cortex-exec`'s supervisor
+actually reads — a bare `options["no_write"]` is inert on this path, since only
+`cortex_request_builder` translates it and it reads it as a top-level payload
+key. Recall is disabled via the typed `recall` field (`RecallDirective`), not an
+option; leaving it unset would fire full default recall on every outreach.
+
+Every failure is swallowed and logged; no chat turn, websocket, or bus consumer
+is affected.
+
+Operator surfaces:
+
+```bash
+curl -fsS http://localhost:8080/api/debug/endogenous-outreach/status | jq
+curl -fsS -XPOST http://localhost:8080/api/debug/endogenous-outreach/trigger | jq
+```
+
+`trigger` skips **only** the random roll. Every safety gate still applies —
+including `disabled`, deliberately: this router carries no auth dependency, so a
+`force` carve-out would let one unauthenticated POST undo "off by default". To
+test, flip `HUB_ENDOGENOUS_OUTREACH_ENABLED` and restart.
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.

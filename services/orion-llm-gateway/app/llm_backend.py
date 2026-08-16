@@ -11,6 +11,11 @@ import re
 import httpx
 
 from orion.llm.openai_message_content import join_openai_message_content
+from app.vision import (
+    AttachmentFetchError,
+    build_multimodal_messages,
+    resolve_vision_capability,
+)
 from orion.core.bus.async_service import OrionBusAsync
 
 from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
@@ -703,6 +708,35 @@ def _build_ollama_payload(body: ChatBody, model: str) -> Dict[str, Any]:
     }
 
 
+def _refuse_attachments_on_unsupported_path(
+    body: ChatBody, path_label: str
+) -> Optional[Dict[str, Any]]:
+    """Refuse a turn carrying images on a backend path that cannot send them.
+
+    Only the OpenAI-compatible path builds multimodal content parts. Ollama uses
+    its own `images: [b64]` field, and llama.cpp's native /completion path takes
+    a flat prompt string -- neither is wired here.
+
+    Without this guard those paths would drop the attachments and answer from the
+    text alone, which is precisely the failure the whole feature exists to
+    prevent: Orion would appear to have looked at something it never received.
+    Returning None means "no attachments, carry on".
+    """
+    attachments = list(getattr(body, "attachments", None) or [])
+    if not attachments:
+        return None
+    err = f"{path_label} cannot accept image attachments"
+    logger.error("[LLM-GW] refusing attachments: %s (count=%s)", err, len(attachments))
+    diag = {
+        "attachment_count": len(attachments),
+        "status": "refused",
+        "vision": False,
+        "source": "unsupported-backend-path",
+        "detail": err,
+    }
+    return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {"vision": diag}, "vision": diag}
+
+
 def _execute_ollama_chat(
     body: ChatBody,
     model: str,
@@ -714,6 +748,10 @@ def _execute_ollama_chat(
         err = "ollama URL not configured"
         logger.error(f"[LLM-GW] {err}")
         return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {}}
+
+    refusal = _refuse_attachments_on_unsupported_path(body, "ollama")
+    if refusal is not None:
+        return refusal
 
     spark_meta = _spark_ingest_for_body(body)
     url = f"{base_url.rstrip('/')}/api/chat"
@@ -792,6 +830,10 @@ def _execute_llamacpp_native_completion(
         err = f"{backend_name} URL not configured"
         logger.error(f"[LLM-GW] {err}")
         return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {}}
+
+    refusal = _refuse_attachments_on_unsupported_path(body, f"{backend_name} native completion")
+    if refusal is not None:
+        return refusal
 
     spark_meta = _spark_ingest_for_body(body)
     opts = body.options or {}
@@ -940,9 +982,56 @@ def _execute_openai_chat(
         structured_diag["route"] = route
         structured_diag["served_by"] = served_by
 
+    # Text serialization is unchanged and still produced by the same function as
+    # every text-only turn. Attachments are layered on top afterwards, so a turn
+    # with none is byte-identical to the pre-attachment behavior.
+    serialized_messages = _serialize_messages(body.messages or [])
+    vision_diag: Dict[str, Any] = {}
+    attachments = list(getattr(body, "attachments", None) or [])
+    if attachments:
+        capability = resolve_vision_capability(base_url)
+        vision_diag = {
+            "attachment_count": len(attachments),
+            "route": route,
+            "served_by": served_by,
+            **capability.as_debug(),
+        }
+        if not capability.vision:
+            # Refuse loudly. Silently answering a text-only turn after Juniper
+            # attached an image is exactly the "empty-shell cognition" failure
+            # this feature exists to prevent: Orion would appear to have looked.
+            err = (
+                f"route '{route or backend_name}' cannot accept images "
+                f"({capability.detail or 'no vision modality'})"
+            )
+            logger.error("[LLM-GW] refusing attachments: %s", err)
+            refused = {**vision_diag, "status": "refused"}
+            # Also inside `raw`: handle_chat forwards result["raw"] plus an
+            # explicit key list, and "vision" is not on that list -- so a
+            # top-level-only diagnostic is dropped before it reaches the Hub,
+            # on precisely the path where it matters most.
+            return {
+                "text": f"[Error: {err}]",
+                "spark_meta": spark_meta,
+                "raw": {"vision": refused},
+                "vision": refused,
+            }
+        try:
+            serialized_messages = build_multimodal_messages(serialized_messages, attachments)
+            vision_diag["status"] = "attached"
+        except AttachmentFetchError as exc:
+            logger.error("[LLM-GW] attachment resolution failed: %s", exc)
+            failed = {**vision_diag, "status": "fetch_failed", "detail": str(exc)}
+            return {
+                "text": f"[Error: attachments could not be read: {exc}]",
+                "spark_meta": spark_meta,
+                "raw": {"vision": failed},
+                "vision": failed,
+            }
+
     payload = {
         "model": model,
-        "messages": _serialize_messages(body.messages or []),
+        "messages": serialized_messages,
         "stream": False,
         "temperature": opts.get("temperature"),
         "top_p": opts.get("top_p"),
@@ -1159,6 +1248,8 @@ def _execute_openai_chat(
                 raw_out = {**raw_out, "choices": stripped_choices}
             if structured_diag:
                 raw_out = {**raw_out, "structured_output_diagnostics": structured_diag}
+            if vision_diag:
+                raw_out = {**raw_out, "vision": vision_diag}
             return {
                 "text": text,
                 "spark_meta": spark_meta,
@@ -1169,6 +1260,9 @@ def _execute_openai_chat(
                 "inline_think_content": think_reasoning or None,
                 "structured_output_diagnostics": structured_diag or None,
                 "llm_uncertainty": llm_uncertainty,
+                # Present only when the turn carried attachments, so a text turn's
+                # result shape is unchanged.
+                "vision": vision_diag or None,
             }
 
     except httpx.TimeoutException:
@@ -1198,6 +1292,28 @@ def _execute_openai_chat(
 # ─────────────────────────────────────────────
 # 5. Public Entrypoints
 # ─────────────────────────────────────────────
+
+def _served_model(result: Dict[str, Any], requested_model: str) -> str:
+    """Prefer the backend's own echoed model id over the requested label.
+
+    `requested_model` is whatever the route table / profile / caller asked
+    for -- often a stable alias like "Active-GGUF-Model" that names a route,
+    not a specific weights file. The OpenAI-compat chat/completions response
+    and Ollama's /api/chat response both echo the real served model in their
+    JSON body's top-level "model" key (confirmed live 2026-08-14 against the
+    chat/agent route: requested "Active-GGUF-Model", backend actually served
+    "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"). That value survives into `result["raw"]`
+    already (see _execute_openai_chat/_execute_ollama_chat above) -- this
+    just promotes it to the top-level "model" field callers actually read,
+    instead of the placeholder they requested. Falls back to the requested
+    label when raw has no model key (llama.cpp's native /completion endpoint
+    doesn't echo one, nor do the error-path returns above), so callers never
+    see model=None.
+    """
+    raw = result.get("raw")
+    served = raw.get("model") if isinstance(raw, dict) else None
+    return served if isinstance(served, str) and served.strip() else requested_model
+
 
 def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     route_table = get_route_targets()
@@ -1333,7 +1449,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 )
                 if isinstance(result, dict):
                     result["backend"] = backend
-                    result["model"] = model
+                    result["model"] = _served_model(result, model)
                     result["route"] = route
                     result["served_by"] = served_by
                 return result
@@ -1357,7 +1473,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             )
             if isinstance(result, dict):
                 result["backend"] = backend
-                result["model"] = model
+                result["model"] = _served_model(result, model)
                 result["route"] = route
                 result["served_by"] = served_by
             return result
@@ -1393,7 +1509,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 )
                 if isinstance(result, dict):
                     result["backend"] = backend
-                    result["model"] = model
+                    result["model"] = _served_model(result, model)
                     result["route"] = route
                     result["served_by"] = served_by
                 return result
@@ -1417,7 +1533,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             )
             if isinstance(result, dict):
                 result["backend"] = backend
-                result["model"] = model
+                result["model"] = _served_model(result, model)
                 result["route"] = route
                 result["served_by"] = served_by
             return result
@@ -1461,7 +1577,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
         )
     if isinstance(result, dict):
         result["backend"] = backend
-        result["model"] = model
+        result["model"] = _served_model(result, model)
         result["route"] = route
         result["served_by"] = served_by
     return result

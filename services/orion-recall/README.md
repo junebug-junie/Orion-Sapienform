@@ -164,11 +164,20 @@ Re-verified live: "Orion, what do you think..." now correctly falls back to plai
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `RECALL_ENABLE_VECTOR` | `true` | enables vector backend |
+| `RECALL_ENABLE_VECTOR` | `false` | vector backend removed May 2026; this knob is a no-op left for config compatibility |
 | `VECTOR_DB_HOST/PORT` | `orion-athena-vector-db:8000` | base host |
 | `RECALL_VECTOR_BASE_URL` | derived | defaults to `http://{VECTOR_DB_HOST}:{VECTOR_DB_PORT}` |
-| `RECALL_VECTOR_COLLECTIONS` | (unset) | if set, overrides which collections recall queries |
 | `VECTOR_DB_COLLECTION` | `orion_main_store` | default collection name (global knob) |
+
+`RECALL_VECTOR_COLLECTIONS` was removed 2026-08-14 (vestigial dead config
+from before the May 2026 vector amputation; never consumed by a live query
+path). This whole "Vector / Chroma" section documents a backend that was
+already deleted in May 2026 -- see `app/source_policy.py`
+(`recall_vector_allowed()` always returns `False`, `reason=
+"removed_from_orion_recall"`) and
+`docs/superpowers/pr-reports/2026-05-29-orion-recall-vector-amputation-pr.md`.
+Kept here only because the remaining knobs (`RECALL_VECTOR_BASE_URL`, etc.)
+are still recognized settings, not because vector retrieval is live.
 
 ### SQL / Postgres
 
@@ -417,9 +426,9 @@ If you see `rdf_chat` counts high but your desired quote didn’t appear in the 
 
 ### C) Vector is 0 even though Chroma has docs
 
-- ensure `RECALL_VECTOR_COLLECTIONS` points at non-empty collections (e.g., `orion_main_store`)
-- ensure recall can reach `orion-athena-vector-db:8000` from its runtime namespace
-- ensure stored vectors represent *chat turn docs*, not only embedding request artifacts
+Vector is *always* 0 -- vector retrieval was removed from orion-recall in
+May 2026 (`RECALL_ENABLE_VECTOR` defaults `false`, `app/source_policy.py`
+always returns `allowed=False`). This is expected, not a bug to chase.
 
 ### D) Verify what real chat turns actually recalled (crystallizations)
 
@@ -719,9 +728,8 @@ curl -s http://localhost:8260/recall \
   }' | jq '{item_count:(.bundle.items|length), debug_counts:.debug.backend_counts, first:(.bundle.items[0].snippet // null)}'
 ```
 
-If `vector: 0` but you know Chroma has data, check:
-- `RECALL_VECTOR_COLLECTIONS` points at the correct collection (often `orion_chat_turns,orion_chat`)
-- recall uses global metadata/node filters only
+`vector: 0` is expected -- vector retrieval was removed from orion-recall in
+May 2026, regardless of what Chroma has. See section C above.
 
 ---
 

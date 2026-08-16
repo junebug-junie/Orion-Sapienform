@@ -23,7 +23,7 @@ from jinja2 import Environment
 from pydantic import BaseModel
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
+from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import DeliberationRequest
@@ -750,6 +750,35 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
         "constraint": constraint,
         **composites,
     }
+    # Fleet power, in watts. Every other number in this cue is a normalised 0-1 pressure --
+    # useful for "is something strained", useless for "what does thinking cost". This is the
+    # one quantity here that Juniper actually pays, and the only reason it can be surfaced is
+    # that the cluster now carries raw units alongside the bands (ROADMAP B1).
+    #
+    # `_partial` names the nodes excluded from the sum. It ships whenever coverage is
+    # incomplete, because a fleet wattage missing a whole machine (circe has no reachable BMC)
+    # would otherwise read as the total.
+    fleet = cluster.get("measurements") if isinstance(cluster.get("measurements"), dict) else {}
+    chassis_watts = fleet.get("chassis_watts")
+    if isinstance(chassis_watts, (int, float)):
+        draft_payload["fleet_watts"] = round(float(chassis_watts))
+        missing = cluster.get("measurements_missing")
+        absent = missing.get("chassis_watts") if isinstance(missing, dict) else None
+        if absent:
+            draft_payload["fleet_watts_partial"] = list(absent)
+    # The binding constraint, and where. `strain` in this same cue is the MEAN of seven
+    # pressures, so it reports 0.44 on a node whose `power` is pegged at 1.000 -- Orion reading
+    # only that would conclude its body is fine while a resource is full. This is the max over
+    # all eleven, with the channel and node named so the number can be acted on rather than
+    # just felt. `strain` is left in place and unchanged; the two are different reductions of
+    # the same pressures and both are shown.
+    peak = cluster.get("peak_pressure")
+    if isinstance(peak, (int, float)) and not isinstance(peak, bool):
+        draft_payload["peak"] = round(float(peak), 2)
+        channel = cluster.get("peak_pressure_channel")
+        node = cluster.get("peak_pressure_node")
+        if isinstance(channel, str) and channel:
+            draft_payload["peak_at"] = f"{node}.{channel}" if isinstance(node, str) and node else channel
     freshness_s = _metacog_cue_freshness_s(biometrics)
     if freshness_s is not None:
         draft_payload["freshness_s"] = freshness_s
@@ -1446,6 +1475,31 @@ def _journal_pageindex_impl_from_ctx(ctx: Dict[str, Any]) -> str | None:
     return "service"
 
 
+def _attachments_from_ctx(ctx: Dict[str, Any]) -> List[AttachmentRefV1]:
+    """Re-validate ctx['attachments'] back into models before the gateway hop.
+
+    ctx crosses the orch->exec boundary as plain JSON, so these arrive as dicts.
+    Validating here rather than trusting the shape means a malformed ref fails at
+    this seam with a clear log line instead of surfacing as a confusing gateway
+    error two hops later. A bad ref is dropped, not fatal: losing one image is
+    better than losing the whole turn, and the gateway still refuses loudly if
+    nothing usable survives.
+    """
+    raw = ctx.get("attachments") or []
+    if not isinstance(raw, list):
+        return []
+    refs: List[AttachmentRefV1] = []
+    for item in raw:
+        if isinstance(item, AttachmentRefV1):
+            refs.append(item)
+            continue
+        try:
+            refs.append(AttachmentRefV1.model_validate(item))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dropping malformed attachment ref: %s", exc)
+    return refs
+
+
 def _last_user_message(ctx: Dict[str, Any]) -> str:
     msgs = ctx.get("messages") or []
     if isinstance(msgs, list):
@@ -1781,6 +1835,50 @@ def _journal_pageindex_query(user_text: str) -> bool:
         "stance",
     )
     return any(marker in lowered for marker in markers)
+
+
+# Accepted caller-supplied llm_route overrides. Historically missing "agent":
+# Hub's "Compute" selector (services/orion-hub/scripts/cortex_request_builder.py)
+# sends options.llm_route="agent" for ANY Hub Mode (not just Mode: Agent, which
+# is a separate context_exec_agent_bridge.py code path entirely) whenever an
+# operator picks Compute: Agent -- but this allowlist silently rejected it,
+# falling through to the verb-based default mapping below (which never resolves
+# to "agent" for a normal chat_general turn), so the selection had no effect.
+# Confirmed live 2026-08-14: Hub Mode: Quick + Compute: Agent produced a response
+# but nothing reached Circe's dedicated agent worker -- traced to this allowlist.
+_ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
+
+
+def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Normalize a caller-supplied llm_route override.
+
+    Accepts ctx["llm_route"] or ctx["options"]["llm_route"] (Hub's Compute
+    selector sends the latter). "chat_quick"/"quick_chat"/"chat_kids_story" are
+    legacy aliases for "quick".
+
+    Returns (accepted, attempted):
+    - accepted: the value to actually route with, or None if no override was
+      supplied or it was outside _ACCEPTED_LLM_ROUTE_OVERRIDES -- callers fall
+      through to their own verb-based default mapping in that case, rather
+      than forwarding an unrecognized route key.
+    - attempted: the normalized value the caller asked for, or None only when
+      genuinely no override was supplied at all. Kept distinct from `accepted`
+      specifically so a rejected-but-attempted override (e.g. a typo, or the
+      "agent" gap this function itself was extracted to fix) stays visible in
+      the llm_route_selected log line instead of looking identical to "no
+      override was ever attempted" -- that exact log line is what traced the
+      original "agent" bug live.
+    """
+    raw = ctx.get("llm_route") or (
+        (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
+    )
+    override = str(raw or "").strip().lower()
+    if override in {"chat_quick", "quick_chat", "chat_kids_story"}:
+        override = "quick"
+    attempted = override or None
+    if override in _ACCEPTED_LLM_ROUTE_OVERRIDES:
+        return override, attempted
+    return None, attempted
 
 
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
@@ -3836,23 +3934,13 @@ async def call_step_services(
                 )
 
                 # Keep lane selection explicit by internal flow, with optional caller override.
-                # Accepted override values: chat, quick, metacog, quick_background.
+                # Accepted override values: see _ACCEPTED_LLM_ROUTE_OVERRIDES.
                 # quick_background: same upstream/model as quick, gated by the gateway's
                 # background-priority admission (services/orion-llm-gateway/app/
                 # priority_admission.py) so a caller opting into it never makes other
                 # quick consumers wait behind it -- see that service's README.
-                llm_route_override_raw = (
-                    ctx.get("llm_route")
-                    or (
-                        (ctx.get("options") or {}).get("llm_route")
-                        if isinstance(ctx.get("options"), dict)
-                        else None
-                    )
-                )
-                llm_route_override = str(llm_route_override_raw or "").strip().lower()
-                if llm_route_override in {"chat_quick", "quick_chat", "chat_kids_story"}:
-                    llm_route_override = "quick"
-                if llm_route_override in {"chat", "quick", "metacog", "quick_background"}:
+                llm_route_override, llm_route_override_attempted = _resolve_llm_route_override(ctx)
+                if llm_route_override is not None:
                     llm_route = llm_route_override
                 else:
                     # Default lane mapping:
@@ -3881,13 +3969,14 @@ async def call_step_services(
                         else None
                     )
                 logger.info(
-                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s",
+                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s override_attempted=%s",
                     correlation_id,
                     ctx.get("mode"),
                     step.verb_name,
                     step.step_name,
                     llm_route,
-                    llm_route_override or None,
+                    llm_route_override,
+                    llm_route_override_attempted,
                 )
                 lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
                 logger.info(
@@ -3958,6 +4047,7 @@ async def call_step_services(
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,
                     options=gateway_options,
+                    attachments=_attachments_from_ctx(ctx),
                 )
 
                 logs.append(f"rpc -> LLMGateway via client (timeout={effective_timeout}s)")

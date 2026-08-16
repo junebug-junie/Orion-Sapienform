@@ -107,6 +107,32 @@ SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
     "delivery_confidence": "node:athena",
 }
 
+# Channel names that were RENAMED and no longer have a producer. reconcile
+# prunes these from every node vector, every tick.
+#
+# Why this needs its own set rather than "prune anything not in
+# NODE_CHANNELS": _ensure_node_vector() deliberately preserves undeclared keys
+# (the "for key, val in existing.items(): if key not in NODE_CHANNELS" loop in
+# reconcile.py), and that is load-bearing -- it is how a channel survives
+# between being written and being declared. Blanket pruning would break that.
+# A retired NAME is different: nothing will ever write it again, so keeping it
+# only preserves a frozen value that looks live.
+#
+# Found 2026-08-14: all three were renamed on 2026-07-24 and were still
+# sitting in the live vectors three weeks later. `execution_load` was frozen
+# at 0.2672 on all four lattice nodes -- not zero, a plausible-looking reading
+# with no producer behind it, which any generic consumer iterating the vector
+# reads as real. Same shape as the transport_prediction_error case CLAUDE.md
+# 0A records: retired in name, still winning slots.
+#
+# Add to this set when retiring a channel name; that is the whole contract.
+RETIRED_NODE_CHANNELS: dict[str, str] = {
+    # old name -> what replaced it
+    "bus_health": "stream_backlog_health",
+    "transport_pressure": "stream_backlog_pressure",
+    "execution_load": "cortex_exec_step_load",
+}
+
 DEFAULT_CAPABILITY_VECTOR = {ch: 0.0 for ch in CAPABILITY_CHANNELS}
 DEFAULT_CAPABILITY_VECTOR["confidence"] = 1.0
 DEFAULT_CAPABILITY_VECTOR["available_capacity"] = 1.0

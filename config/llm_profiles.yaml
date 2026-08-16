@@ -319,7 +319,9 @@ profiles:
 
     supports_tools: true
     supports_embeddings: false
-    supports_vision: false
+    # NOTE: supports_vision was removed from the LLM gateway's profile model on
+    # 2026-08-14 -- nothing read it, and this lane is exactly why it was
+    # misleading. Vision is resolved at runtime from the worker's /props.
 
     gpu:
       num_gpus: 2
@@ -336,6 +338,38 @@ profiles:
       model_root: "/models/gguf"
       hf_repo_id: "unsloth/Qwen3.6-35B-A3B-GGUF"
       hf_filename: "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"
+      # Multimodal projector for the chat lane, added 2026-08-14 so Juniper can
+      # show Orion an image in Orion's own primary conversational voice rather
+      # than being routed to a different model to be seen.
+      #
+      # This lane's weights were already VL-capable and nobody had noticed: the
+      # GGUF's chat template opens with `image_count`/`video_count` namespaces
+      # (the Qwen3-VL family template), and unsloth/Qwen3.6-35B-A3B-GGUF ships
+      # mmproj-BF16/F16/F32. The worker was simply launched without --mmproj, so
+      # `/props` reported `modalities.vision: false` (measured live on :8011).
+      #
+      # F16 rather than BF16/F32: V100 (sm_70) has no native bf16 path, and F32
+      # doubles projector VRAM for no quality gain at this quant level.
+      #
+      # No env change is needed for this: mmproj_filename is profile-only (read by
+      # _ensure_mmproj_file() in orion-llamacpp-host/app/main.py), and the mtmd
+      # build requirement is already met -- this worker reports build_info
+      # b10398-8e7f22b67, the same binary the agent lane serves images on
+      # (verified live 2026-08-14). ctx_size is deliberately UNCHANGED at 131072.
+      #
+      # VRAM is the real risk and it is NOT yet measured: ~24GB of Q5_K_M weights
+      # plus a 131k KV cache already sit close to the 2x V100 32GB budget, and the
+      # projector adds ~1-2GB on top. If bring-up OOMs, drop ctx_size to 98304
+      # before touching n_gpu_layers -- KV at this context is the larger term.
+      # Note 131072 is documented above as needing to stay in lockstep with
+      # HARNESS_FCC_MAX_CONTEXT_TOKENS and the Hub agent-claude budget, so lowering
+      # it is not a free knob -- it is an operator decision, not a silent fallback.
+      #
+      # Still genuinely unverified: whether b10398 recognises the Qwen3-VL vision
+      # tower for THIS gguf. The same binary handles Muse Glimmer's ViT-G/14, but
+      # that is a different architecture. Watch the boot log for an mmproj/arch
+      # error, not just for OOM.
+      mmproj_filename: "mmproj-F16.gguf"
       host: "0.0.0.0"
       port: 8080
 
@@ -351,7 +385,42 @@ profiles:
       # and 400s long prompts as exceed_context).
       n_parallel: 1
       batch_size: 1024
-      #ubatch_size: 551
+      # mmproj_filename alone is not sufficient for images to actually work --
+      # ubatch_size/image_min_tokens/image_max_tokens were unset here (the prior
+      # #ubatch_size: 551 above was dead/commented, and this lane is the only one
+      # of the four mmproj profiles in this file missing all three). Every other
+      # working mmproj profile in this file sets all three together; without
+      # image_max_tokens the mtmd vision encoder's token budget is whatever
+      # llama-server defaults to (unverified for this build), and without
+      # ubatch_size >= image_max_tokens (vision encoder is non-causal, same
+      # constraint documented on the gemma4/muse-glimmer profiles below) an image
+      # request can fail or silently truncate instead of just being slow.
+      #
+      # 280/560 chosen over muse-glimmer-agent-vision's 256/1024: this lane ties
+      # gemma4-e4b at the largest ctx (131072) of the four mmproj profiles in
+      # this file, but on 2 GPUs instead of gemma4-e4b's 1 -- and carries the
+      # tightest documented VRAM margin per GPU (see the "VRAM is the real
+      # risk" note above) -- matching gemma4-31b's 2x-V100 numbers (the closest
+      # hardware analog) is the more conservative starting point.
+      # ubatch_size kept at the already-proven-stable batch_size (1024, unchanged)
+      # rather than raised to 2048 like gemma4-31b, since headroom here is
+      # smaller and 1024 already clears >= image_max_tokens with margin.
+      #
+      # IMPORTANT: 280/560 is a GPU-hardware-similarity analogy to gemma4-31b,
+      # not a Qwen3-VL-specific number -- image_min/max_tokens governs the mtmd
+      # vision encoder's own patch/resolution token budget, a property of the
+      # vision tower, not of GPU capacity. Gemma's figure comes from Google's
+      # SigLIP tower sizing; whether Qwen3-VL's tower maps images to a similar
+      # token count per image is genuinely unverified for this build/gguf (same
+      # "unverified" status as the mmproj-recognition risk noted above). A wrong
+      # number here degrades silently (over/under-budgeted visual detail, no
+      # crash) -- confirm with a real image-description smoke test, not just a
+      # clean boot, before trusting image quality on this lane.
+      # If OOM: lower image_max_tokens to 280 (matches image_min_tokens, same
+      # fallback gemma4-31b's notes use) before touching ctx_size or n_gpu_layers.
+      ubatch_size: 1024
+      image_min_tokens: 280
+      image_max_tokens: 560
 
       reasoning: "off"
       reasoning_budget: 0
@@ -1014,34 +1083,28 @@ profiles:
   # REQUIRED llama-server build: ggml-org/llama.cpp PR #26841 "model: Muse Glimmer
   # Support" (new LLM_ARCH + vision-encoder graph code + DFlash drafter support),
   # merged 2026-08-10 -- llama-server cannot recognize this architecture AT ALL
-  # (text, vision, or draft) on any older build, including this stack's default
-  # LLAMACPP_IMAGE_TAG=server-cuda-b8740 fallback (~April 2026). This profile needs
-  # LLAMACPP_IMAGE_TAG=server-cuda-b10398 (or later) set explicitly per-worker.
-  # DO NOT just bump the repo-wide default fallback for this: LLAMACPP_IMAGE_TAG is
-  # one shared build arg per docker-compose.atlas-workers.yml invocation, shared by
-  # every worker (chat/metacog/fast/agent) reading the same .env -- bumping the
-  # default would rebuild any already-stable co-located worker onto a very recent
-  # master build with no bench pass on it specifically.
-  #
-  # LIVE-VERIFIED 2026-08-14: booted clean on Circe (CUDA_VISIBLE_DEVICES=2,
-  # LLAMACPP_IMAGE_TAG=server-cuda-b10398), matching this profile's original design.
-  # CORRECTION (same day): an earlier version of this note said "Atlas" -- wrong. The
-  # ATLAS_AGENT_* env var names / atlas-agent compose service name are a fixed naming
-  # convention for this worker *pattern*, reused across whichever physical host runs
-  # it (same as orion-atlas-llamacpp-chat already running on Circe hardware) -- do not
-  # infer physical host from that naming. It was Circe the whole time. See
-  # services/orion-llm-gateway/.env_example's own agent-route comment for the same
-  # correction applied there (an earlier gateway-routing fix pointed "agent" at
-  # Atlas's IP based on this same wrong inference; nothing was listening there).
-  # Confirms all three of: target architecture recognized, mmproj vision loaded
-  # ("loaded multimodal model"), DFlash drafter loaded and self-described correctly
-  # (n_extract=5 matches the model card's "Draft layers: 5", block_size=16 matches
-  # spec_draft_n_max's clamp target). No "DFlash model requires 'target_layers'"
-  # error -- upstream issue #25116 does not appear to affect this GGUF. Full argv +
-  # log excerpt in the PR report. NOT yet verified: actual completion quality/
-  # tokens-per-sec with the drafter active (boot success only proves the process
-  # didn't crash, not that generation is correct or faster) -- run a real
-  # /completion request before trusting output quality.
+  # (text, vision, or draft) on any older build, including this stack's current
+  # LLAMACPP_IMAGE_TAG=server-cuda-b8740 default (~April 2026). This profile needs
+  # LLAMACPP_IMAGE_TAG=server-cuda-b10398 (or later).
+  # DO NOT just bump the repo-wide default fallback for this: config/biometrics/
+  # node_catalog.yaml confirms Circe already runs orion-atlas-llamacpp-chat (the
+  # "chat" lane, port 8011) continuously, and LLAMACPP_IMAGE_TAG is one shared build
+  # arg per docker-compose.atlas-workers.yml invocation -- if Circe's chat and agent
+  # workers share one .env/compose invocation on that host (has not been confirmed
+  # from here; verify before deploying), bumping the tag for this profile also
+  # rebuilds the already-stable chat worker onto a 3-day-old master build with no
+  # bench pass. If they do share an env file, either split Circe onto two compose
+  # invocations with separate LLAMACPP_IMAGE_TAG values, or accept and bench the
+  # chat-lane rebuild too -- don't bump silently either way.
+  # RESOLVED 2026-08-14 by live probe of both Circe workers' /props:
+  #   chat  :8011 -> build_info b10398-8e7f22b67, modalities.vision False
+  #   agent :8014 -> build_info b10398-8e7f22b67, modalities.vision True
+  # They DO share one build (same build_info), the tag is ALREADY b10398, and the
+  # chat lane has been running stably on it -- so the "bumping the tag silently
+  # rebuilds the stable chat worker" risk above is moot: that rebuild already
+  # happened and held. No LLAMACPP_IMAGE_TAG change is needed for either lane.
+  # The agent lane serving images on this exact binary is also the live proof that
+  # mtmd/--mmproj works on b10398 here, not just in theory.
   muse-glimmer-30b-udq4kxl-v100-32gb-agent-vision:
     display_name: "Muse Glimmer 30B – UD-Q4_K_XL + mmproj (llama.cpp, 1x V100 32GB, Circe Agent lane, text+image)"
     task_type: multimodal

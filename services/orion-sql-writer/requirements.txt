@@ -6,5 +6,12 @@ SQLAlchemy==2.0.43
 redis[hiredis]==5.0.7
 psycopg2-binary==2.9.9
 loguru>=0.7
+# orion/notify/client.py imports `requests` at module level, and
+# app/fallback_watch.py sends the backlog alert through NotifyClient. Nothing
+# else in this file pulls requests in transitively -- verified against the live
+# image, where `from orion.notify.client import NotifyClient` raised
+# ModuleNotFoundError. Same pin as every other NotifyClient consumer
+# (orion-actions, orion-security-watcher, orion-notify-digest, orion-world-pulse).
+requests==2.32.3
 #numpy>=2.4
 #scipy>=1.6

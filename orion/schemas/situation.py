@@ -216,6 +216,36 @@ class LabContextV1(BaseModel):
     diagnostics: dict[str, str] = Field(default_factory=dict)
 
 
+class RuntimeContextV1(BaseModel):
+    """Which LLM is actually generating this reply, for the situation brief.
+
+    Juniper asked (2026-08-13) whether Orion has any sense of what model it's
+    running on -- it did not. Investigated end to end: orion-llm-gateway's
+    `model_used` field on chat responses was echoing the requested route
+    label (e.g. "Active-GGUF-Model"), not the real served weights, and the
+    value never reached any prompt Orion sees. This model is that fix's
+    prompt-facing half -- see `orion-cortex-exec/app/situation.py`'s
+    `_build_runtime_context()` for the producer, and `llm_backend.py`'s
+    `_served_model()` / `route_catalog.py`'s `_probe_model()` in
+    orion-llm-gateway for where the honest value comes from (a live
+    `/v1/models` probe against the route's backend, not the route-table
+    label).
+
+    `available=False` is the honest default: probe failure, a disabled flag,
+    or an unreachable gateway all degrade to "unavailable", not a guess.
+    Mirrors `LabContextV1`/`PerceptionContextV1`'s pattern in this file.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool = False
+    route: str = "chat"
+    model_id: Optional[str] = None
+    served_by: Optional[str] = None
+    backend: Optional[str] = None
+    source: str = "none"
+
+
 class SurfaceContextV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -322,6 +352,10 @@ class SituationBriefV1(BaseModel):
     # disabled flag yields "haven't seen anything recently" rather than a
     # missing field.
     perception: PerceptionContextV1 = Field(default_factory=PerceptionContextV1)
+    # Additive (2026-08-14): defaults to available=False, so an unpatched
+    # producer/disabled flag/probe failure yields "do not infer" rather than
+    # a missing field or a stale guess.
+    runtime: RuntimeContextV1 = Field(default_factory=RuntimeContextV1)
     surface: SurfaceContextV1 = Field(default_factory=SurfaceContextV1)
     affordances: list[SituationAffordanceV1] = Field(default_factory=list)
     policy: SituationPolicyV1 = Field(default_factory=SituationPolicyV1)

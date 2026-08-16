@@ -512,6 +512,16 @@ class ChatTurnCancelRequest(BaseModel):
     connection_id: str
 
 
+class RoomClaudeInviteRequest(BaseModel):
+    """Operator-triggered invite. v1 is explicit-invite only, so this route is
+    the ONLY producer of orion:room:claude:request -- Orion cannot summon
+    Claude, which is what makes v1 spend structurally bounded by human clicks."""
+
+    prompt: str
+    session_id: Optional[str] = None
+    invited_by: str = "Juniper"
+
+
 class PreferencesResolveProxyRequest(BaseModel):
     recipient_group: str
     event_kind: str
@@ -1249,6 +1259,31 @@ async def api_debug_self_experiments_trigger_daily(req: SelfExperimentsTriggerRe
 
 
 
+@router.get("/api/debug/endogenous-outreach/status")
+def api_debug_endogenous_outreach_status() -> Dict[str, Any]:
+    """Live outreach gate state: why the last tick did or did not speak."""
+    from .main import endogenous_outreach
+
+    if endogenous_outreach is None:
+        return {"ok": False, "reason": "not_initialized"}
+    return {"ok": True, "status": endogenous_outreach.status()}
+
+
+@router.post("/api/debug/endogenous-outreach/trigger")
+async def api_debug_endogenous_outreach_trigger() -> Dict[str, Any]:
+    """Force one outreach decision cycle, skipping only the random roll.
+
+    Every safety gate still applies (turn-in-flight, quiet hours, cooldown,
+    daily cap), so this cannot be used to talk over a live turn.
+    """
+    from .main import endogenous_outreach
+
+    if endogenous_outreach is None:
+        return {"ok": False, "reason": "not_initialized"}
+    result = await endogenous_outreach.maybe_outreach(force=True)
+    return {"ok": True, "result": result}
+
+
 @router.get("/api/service-logs/services")
 def api_service_logs_services() -> Dict[str, Any]:
     return collect_service_inventory()
@@ -1350,6 +1385,32 @@ async def api_fcc_model_labels():
         fcc_server_ok = False
     payload["fcc_server_ok"] = fcc_server_ok
     return payload
+
+
+@router.get("/api/fcc-sandbox-sync")
+def api_fcc_sandbox_sync():
+    """Orion capability: report whether Orion's FCC sandbox is current with main.
+
+    The sandbox (``HUB_AGENT_CLAUDE_WORKSPACE``, /mnt/orion-fcc/repo) is refreshed
+    to origin/main on every Hub WebSocket connect. When that refresh declines --
+    an FCC turn in flight, or dirty work the rescue stash could not capture --
+    Orion keeps reasoning from a stale checkout with no outward sign. This exposes
+    the last attempt's verdict so "the sync isn't happening" is answerable without
+    tailing container logs, which is how it went unnoticed for two days.
+
+    Runtime evidence: ``result`` is written by orion/fcc/sandbox_sync.py on every
+    attempt; ``behind_main`` is read from the sandbox's own git refs.
+    """
+    from orion.fcc.sandbox_sync import last_sync_state
+
+    # `configured_workspace`, and spread last, deliberately: spreading the state over
+    # a leading "workspace" key let its own None override the configured value, so a
+    # freshly booted hub reported workspace=null -- precisely when an operator checks
+    # this route, and precisely when the sandbox is most likely stale.
+    return {
+        **last_sync_state(),
+        "configured_workspace": settings.HUB_AGENT_CLAUDE_WORKSPACE,
+    }
 
 
 @router.get("/api/presence")
@@ -1940,6 +2001,103 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
     except Exception as exc:
         logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
+
+
+@router.post("/api/room/claude/invite")
+async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
+    """Ask Claude for one turn in the room.
+
+    Returns as soon as the request is on the bus. The reply is asynchronous and
+    arrives over the WebSocket as a `room_claude_utterance` frame -- Hub does
+    not block on Claude, and does not hold the credential that talks to it (see
+    services/orion-room-companion/README.md).
+    """
+    from .main import room_claude_relay
+    from scripts.settings import settings
+
+    if room_claude_relay is None or not room_claude_relay.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Room companion is disabled (HUB_ROOM_CLAUDE_ENABLED=false)",
+        )
+
+    prompt = str(payload.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=422, detail="prompt required")
+
+    session_id = (payload.session_id or "").strip() or None
+    transcript = await _recent_room_transcript(session_id, settings.HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS)
+
+    try:
+        request = await room_claude_relay.invite(
+            prompt=prompt,
+            invited_by=payload.invited_by or "Juniper",
+            session_id=session_id,
+            room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
+            transcript=transcript,
+        )
+    except Exception as exc:
+        logger.exception("room_claude_invite_failed")
+        raise HTTPException(status_code=502, detail="Failed to invite Claude") from exc
+
+    return {
+        "ok": True,
+        "request_id": request.request_id,
+        "correlation_id": request.correlation_id,
+        "room_id": request.room_id,
+        "transcript_turns": len(request.transcript),
+    }
+
+
+async def _recent_room_transcript(session_id: Optional[str], limit: int) -> list[dict]:
+    """Recent conversation for Claude's FIRST turn of a session.
+
+    Not the memory mechanism -- the companion holds the conversation on
+    Claude's side via --resume and ignores this on later turns. This is seeding
+    so Claude arrives knowing where it is, plus a recovery path if the CLI
+    session is ever lost.
+
+    Best-effort by design: a room invite is worth more than perfect history, so
+    a rehydrate failure degrades to no transcript rather than failing the
+    invite.
+    """
+    if not session_id or limit <= 0:
+        return []
+    try:
+        from scripts.chat_history_rehydrate import rehydrate_history
+        from scripts.settings import settings as _settings
+
+        history: list[dict] = []
+        await rehydrate_history(
+            history,
+            session_id=session_id,
+            max_turns=limit,
+            max_age_hours=float(getattr(_settings, "HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS", 48.0)),
+            enabled=True,
+        )
+    except Exception:
+        logger.debug("room_claude_transcript_rehydrate_failed", exc_info=True)
+        return []
+
+    out: list[dict] = []
+    for row in history[-(limit * 2):]:
+        role = str(row.get("role") or "")
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            speaker_id, speaker_name, kind = "juniper", "Juniper", "human"
+        elif role == "assistant":
+            speaker_id, speaker_name, kind = "orion", "Or\u00edon", "peer_ai"
+        else:
+            continue
+        out.append({
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "speaker_kind": kind,
+            "text": content,
+        })
+    return out
 
 
 @router.post("/api/chat/turn/cancel")
@@ -3013,8 +3171,6 @@ async def api_chat(
             if isinstance(user_messages, list) and user_messages:
                 latest_user_prompt = user_messages[-1].get("content", "") or ""
 
-            use_recall = bool(result.get("use_recall", True))
-
             # If we didn't get a correlation_id from gateway, fallback to new UUID
             # (but ideally we got it).
             final_corr_id = correlation_id or str(uuid4())
@@ -3149,40 +3305,18 @@ async def api_chat(
             # orion-vector-host's real OrionTissue physics feed
             # (app/tissue_feed.py) in-process on every semantic upsert.
 
-            # Legacy log for downstream SQL-writer compatibility
-            chat_log_payload = {
-                "correlation_id": final_corr_id,
-                "source": settings.SERVICE_NAME,
-                "prompt": latest_user_prompt,
-                "response": text,
-                "session_id": session_id,
-                "mode": result.get("mode", "brain"),
-                "recall": use_recall,
-                "user_id": None,
-                "spark_meta": spark_meta,
-                "reasoning_trace": selected_reasoning_trace,
-            }
-            if _thought_debug_enabled():
-                reasoning_trace = chat_log_payload.get("reasoning_trace")
-                reasoning_content = chat_log_payload.get("reasoning_content")
-                thought_candidate = (
-                    (reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None)
-                    or reasoning_content
-                )
-                logger.info(
-                    "THOUGHT_DEBUG_HUB stage=legacy_chat_history_publish corr=%s channel=%s target=chat.history.turn_payload reasoning_trace_exists=%s reasoning_content_exists=%s thought_candidate_len=%s thought_candidate_snippet=%r",
-                    final_corr_id,
-                    settings.chat_history_channel,
-                    isinstance(reasoning_trace, dict),
-                    bool(str(reasoning_content or "").strip()),
-                    _debug_len(thought_candidate),
-                    _debug_snippet(thought_candidate),
-                )
-
-            await bus.publish(
-                settings.chat_history_channel,
-                chat_log_payload,
-            )
+            # 2026-08-14: the third, raw-dict "legacy log for downstream
+            # SQL-writer compatibility" publish to `chat_history_channel` was
+            # deleted here. It was published with no `kind`, so
+            # `orion/core/bus/codec.py:72` stamped it `legacy.message`, which
+            # matches no entry in the sql-writer route map -- every one of them
+            # landed in `bus_fallback_log` and was written nowhere else.
+            # Nothing was lost: `publish_chat_history` above sends two
+            # `chat.history.message.v1` envelopes on this same log channel and
+            # `publish_chat_turn` sends one `chat.history` on the separate turn
+            # channel, and all 80 fallback rows were verified 1:1 against
+            # `chat_history_log` with byte-identical response lengths. See
+            # docs/superpowers/pr-reports/2026-08-14-hub-legacy-chat-publish-kill.md
         except Exception as e:
             logger.warning(
                 "Failed to publish HTTP chat to chat history log: %s",

@@ -13,7 +13,11 @@ from orion.memory.crystallization.concept_relation import (
 from orion.memory.crystallization.detection import detect_duplicates
 from orion.memory.crystallization.dynamics import reinforce
 from orion.memory.crystallization.formation_executor import GovernorPathRequired, auto_activate
-from orion.memory.crystallization.formation_policy import FormationPolicy, resolve_formation_policy
+from orion.memory.crystallization.formation_policy import (
+    DEFAULT_AUTO_ACTIVATE_PLATFORMS,
+    FormationPolicy,
+    resolve_formation_policy,
+)
 from orion.memory.crystallization.projector import ProjectionConfig, project_crystallization
 from orion.memory.crystallization.repository import (
     insert_crystallization,
@@ -22,6 +26,19 @@ from orion.memory.crystallization.repository import (
 )
 from orion.memory.crystallization.salience import apply_salience
 from orion.memory.crystallization.schemas import MemoryCrystallizationV1, _utc_now
+
+
+def _auto_activate_platforms(settings: Any) -> frozenset[str]:
+    """Platform allowlist from the caller's settings, falling back to the module
+    default. Tolerates settings objects (tests, other services) that predate the
+    `auto_activate_platforms` property rather than requiring every caller to grow
+    it -- getattr, not hasattr-then-access, so a property that raises is also
+    handled the same way the rest of this module treats optional settings.
+    """
+    value = getattr(settings, "auto_activate_platforms", None)
+    if value is None:
+        return DEFAULT_AUTO_ACTIVATE_PLATFORMS
+    return frozenset(value)
 
 
 def _emit_settings(settings: Any) -> dict[str, str]:
@@ -61,7 +78,10 @@ async def process_consolidation_crystallization(
         if relation_result is not None:
             return relation_result
 
-    policy, _ = resolve_formation_policy(crystallization, duplicate_id=duplicate_id)
+    platforms = _auto_activate_platforms(settings)
+    policy, _ = resolve_formation_policy(
+        crystallization, duplicate_id=duplicate_id, auto_activate_platforms=platforms
+    )
 
     if policy == FormationPolicy.REINFORCE_EXISTING and duplicate_id:
         match = next(c for c in existing if c.crystallization_id == duplicate_id)
@@ -91,6 +111,7 @@ async def process_consolidation_crystallization(
         activated, _ = auto_activate(
             apply_salience(crystallization),
             encode_ratio=settings.MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO,
+            auto_activate_platforms=platforms,
         )
         cid = await insert_crystallization(pool, activated)
         activated, _proj = await project_crystallization(

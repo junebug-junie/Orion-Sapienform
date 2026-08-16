@@ -45,8 +45,28 @@ class Settings(BaseSettings):
 
     THERMAL_MIN_C: float = Field(default=50.0)
     THERMAL_MAX_C: float = Field(default=85.0)
+    # Denominator for disk_pressure. Still a per-node constant because the kernel does not
+    # report block-device throughput the way it reports link speed -- there is nothing to
+    # measure it from without benchmarking. Treat it as an order-of-magnitude anchor, not a
+    # precise ceiling: athena spans ten devices from a 10k SAS spinner to a Samsung 990 PRO,
+    # so no single scalar is right for all of them. The raw byte rate is now published in
+    # `measurements.disk_bytes_per_sec`; prefer that when you need the real number.
     DISK_BW_MBPS: float = Field(default=200.0)
+    # FALLBACK ONLY. The live denominator for net_pressure is the summed link speed of the
+    # node's up physical NICs, read from the kernel via HOST_SYS_PATH (see
+    # BiometricsCollector._link_speed_mbps). This constant applies only when that read fails,
+    # e.g. the host sysfs mount is absent. It was previously the sole source: one value,
+    # 125 MB/s, for three heterogeneous hosts -- right for athena's 1 GbE by coincidence and
+    # never verified on atlas or circe.
     NET_BW_MBPS: float = Field(default=125.0)
+
+    # Read-only bind mounts of the HOST /proc and /sys, so the collector can measure the node
+    # rather than its own container. Network counters and sysfs are namespaced; /proc/diskstats
+    # is not, which is why disk needed a different fix. Empty disables the host read and makes
+    # the collector fall back to its own namespace, reporting `network.scope="container"` so a
+    # consumer can tell the difference instead of reading veth traffic as node traffic.
+    HOST_PROC_PATH: str = Field(default="/host_proc")
+    HOST_SYS_PATH: str = Field(default="/host_sys")
     POWER_BAND_ALPHA: float = Field(default=0.1)
 
     TABLE_NAME: str = Field(default="biometrics_raw")
@@ -81,6 +101,28 @@ class Settings(BaseSettings):
     ILO_PASSWORD: str = Field(default="")
     ILO_POLL_INTERVAL_SEC: float = Field(default=60.0)
     ILO_REQUEST_TIMEOUT_SEC: float = Field(default=8.0)
+
+    # Rack PDU per-outlet power (SNMP, read-only GETs). PER-NODE, exactly like ILO_HOST above.
+    #
+    # PDU_OUTLETS is THIS node's own outlets, and a multi-PSU server spans several -- its
+    # chassis draw is their sum. The mapping is physical cabling that SNMP cannot report (the
+    # device's outlet names are generic and not editable on this firmware), so it lives in
+    # config and re-cabling means editing it. Traced by hand 2026-08-15:
+    #     circe   PDU_OUTLETS=19,25,31   (3 PSUs)
+    #     atlas   PDU_OUTLETS=34,35      (2 PSUs)
+    # athena is not on this PDU and leaves it empty, which disables the poller entirely.
+    #
+    # This is the only source of chassis power for a node with no BMC, which is the whole
+    # reason it exists: circe has never reported watts, and every fleet total to date has
+    # carried `measurements_missing: {"chassis_watts": ["circe"]}`.
+    PDU_HOST: str = Field(default="")
+    PDU_OUTLETS: str = Field(default="")
+    PDU_SNMP_COMMUNITY: str = Field(default="public")
+    PDU_SNMP_PORT: int = Field(default=161)
+    # A PDU's controller is weaker than a BMC's AND shared by every node plugged into it, so
+    # several nodes polling fast is several times the load on one small processor.
+    PDU_POLL_INTERVAL_SEC: float = Field(default=60.0)
+    PDU_REQUEST_TIMEOUT_SEC: float = Field(default=5.0)
 
     @field_validator("role_weights", mode="before")
     @classmethod

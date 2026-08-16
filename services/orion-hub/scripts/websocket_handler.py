@@ -1751,44 +1751,47 @@ async def websocket_endpoint(websocket: WebSocket):
             # rate-gated must never delay or fail Orion's own turn.
             try:
                 _room_relay = getattr(scripts.main, "room_claude_relay", None)
+                _orion_said = str(ws_payload.get("llm_response") or "").strip()
                 if (
                     _room_relay is not None
                     and _room_relay.enabled
-                    and _room_relay.should_auto_invite(session_id, time.time())
+                    # should_fire_auto_invite checks _orion_said before touching
+                    # the rate gate -- see its docstring for why the ordering
+                    # matters (a workflow-only turn must not burn the window).
+                    and _room_relay.should_fire_auto_invite(_orion_said, session_id, time.time())
                 ):
-                    _orion_said = str(ws_payload.get("llm_response") or "").strip()
-                    if _orion_said:
-                        # Send the EXCHANGE, not just Orion's half. Sending only
-                        # Orion's reply left Claude watching a one-sided
-                        # monologue with no idea what had been asked -- it could
-                        # only react to Orion's tone, which is what "generic
-                        # Claude responses" actually was. Confirmed by reading
-                        # Claude's own session transcript.
-                        #
-                        # `prompt` is the raw reply: build_turn_prompt adds the
-                        # speaker prefix, and prefixing here too produced
-                        # "Oríon: Oríon: ..." in the live transcript.
-                        _juniper_said = str(transcript or "").strip()
-                        _exchange = (
-                            [{
-                                "speaker_id": "juniper",
-                                "speaker_name": "Juniper",
-                                "speaker_kind": "human",
-                                "text": _juniper_said,
-                            }]
-                            if _juniper_said
-                            else []
+                    # Send the EXCHANGE, not just Orion's half. Sending only
+                    # Orion's reply left Claude watching a one-sided
+                    # monologue with no idea what had been asked -- it could
+                    # only react to Orion's tone, which is what "generic
+                    # Claude responses" actually was. Confirmed by reading
+                    # Claude's own session transcript.
+                    #
+                    # `prompt` is the raw reply: build_turn_prompt adds the
+                    # speaker prefix, and prefixing here too produced
+                    # "Or\u00edon: Or\u00edon: ..." in the live transcript.
+                    _juniper_said = str(transcript or "").strip()
+                    _exchange = (
+                        [{
+                            "speaker_id": "juniper",
+                            "speaker_name": "Juniper",
+                            "speaker_kind": "human",
+                            "text": _juniper_said,
+                        }]
+                        if _juniper_said
+                        else []
+                    )
+                    asyncio.create_task(
+                        _room_relay.invite(
+                            prompt=_orion_said,
+                            invited_by="Or\u00edon",
+                            session_id=session_id,
+                            room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
+                            trigger="auto",
+                            transcript=_exchange,
+                            connection_id=connection_id,
                         )
-                        asyncio.create_task(
-                            _room_relay.invite(
-                                prompt=_orion_said,
-                                invited_by="Or\u00edon",
-                                session_id=session_id,
-                                room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
-                                trigger="auto",
-                                transcript=_exchange,
-                            )
-                        )
+                    )
             except Exception:
                 logger.debug("room_claude_auto_invite_failed", exc_info=True)
 

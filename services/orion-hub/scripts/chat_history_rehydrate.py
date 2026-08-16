@@ -87,8 +87,12 @@ def fetch_recent_rows(
 
     Excludes endogenous-outreach rows: those are Orion speaking unprompted, not
     conversation Juniper had, and replaying them as dialogue would misrepresent
-    the thread. Bounded by age so a session id reused after a long gap does not
-    resurrect a stale conversation.
+    the thread. Also excludes room_claude rows: those are Claude speaking in
+    the three-way room (see room_claude_relay.py's _publish_history), tagged
+    via client_meta.room_claude -- without this exclusion Claude's own past
+    replies come back labeled plain "assistant" and get fed into Orion's own
+    continuity context as if Orion had said them. Bounded by age so a session
+    id reused after a long gap does not resurrect a stale conversation.
     """
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri or not str(session_id or "").strip():
@@ -113,6 +117,7 @@ def fetch_recent_rows(
                           -- secs is double precision and takes it directly.
                           AND created_at >= now() - make_interval(secs => :max_age_secs)
                           AND coalesce(client_meta->>'unsolicited', '') <> 'true'
+                          AND coalesce(client_meta->>'room_claude', '') = ''
                         ORDER BY created_at DESC
                         LIMIT :lim
                         """

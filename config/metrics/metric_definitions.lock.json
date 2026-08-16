@@ -1,12 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 598,
+  "metric_count": 600,
   "_last_change": {
-    "base": "merge base 1402cdd9a (origin/main)",
-    "change_count": 0,
+    "base": "merge base 81f09c58b (origin/main)",
+    "change_count": 2,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://field_channel/orion-field-digester/tension_deviation_pressure",
+      "medium added metric://inner_state/orion-field-digester/field_state.v1#tension_deviation_pressure"
     ]
   },
   "definitions": {
@@ -3307,6 +3308,11 @@
       "notes": "category=infra_transport level=node,capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
+    "metric://field_channel/orion-field-digester/tension_deviation_pressure": {
+      "meaning": "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is the expected reading once the producer has been running a while ('nothing admitted' is a real, common state) -- but a row from before the producer existed also reads 0.0 (schema default), indistinguishable in storage. Read verdicts from a window entirely after deploy.",
+      "notes": "category=synthesized_rollup level=field",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
     "metric://field_channel/orion-field-digester/thermal_pressure": {
       "meaning": "Node thermal/temperature pressure.",
       "notes": "category=physical_substrate level=node",
@@ -3381,6 +3387,14 @@
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_zscore": {
+      "schema_id": "FieldStateV1",
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#tension_deviation_pressure": {
       "schema_id": "FieldStateV1",
       "upstream": [
         "metric://inner_state/orion-field-digester/field_state.v1"

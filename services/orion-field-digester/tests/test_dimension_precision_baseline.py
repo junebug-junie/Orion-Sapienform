@@ -75,14 +75,24 @@ def test_second_tick_produces_a_real_zscore_matching_compute_ewma_update() -> No
 
 
 def test_only_dimensions_present_this_tick_are_updated() -> None:
-    """A tick that only produces a reading for one of the four
-    PRESSURE_DIMENSIONS must not fabricate baselines for the other three."""
+    """A tick that only produces a reading for one of the four channel-merge
+    PRESSURE_DIMENSIONS must not fabricate baselines for the other three.
+
+    2026-08-16: `deviation_pressure` is a 5th PRESSURE_DIMENSIONS entry, but
+    it is NOT a channel-merge dimension -- it is a derived scalar
+    (orion.field.pressure.field_pressures_with_provenance()) that is always
+    present, at 0.0 on a quiet/untouched field, never absent. So it (and its
+    baseline) is real and expected here even though this tick's
+    node_vectors never mention it -- that is the honest "nothing admitted"
+    reading, not the same "no channel mapped this tick" absence the other 3
+    dimensions can have.
+    """
     state = _empty_state("tick_0")
     state.node_vectors["node:athena"] = {"execution_pressure": 0.3}
     update_dimension_precision_baseline(state)
     pressures = field_pressures(state)
-    assert set(pressures) == {"execution_pressure"}
-    assert state.dimension_precision_ewma_n == {"execution_pressure": 1}
+    assert set(pressures) == {"execution_pressure", "deviation_pressure"}
+    assert state.dimension_precision_ewma_n == {"execution_pressure": 1, "deviation_pressure": 1}
     assert "resource_pressure" not in state.dimension_precision_ewma_n
     assert "reasoning_pressure" not in state.dimension_precision_ewma_n
     assert "reliability_pressure" not in state.dimension_precision_ewma_n

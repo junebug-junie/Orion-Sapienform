@@ -168,3 +168,26 @@ class DeviationGate:
         """True once this dimension has enough observations to admit anything."""
         b = self._baselines.get((kind, dimension))
         return b is not None and b.count >= self.warmup
+
+    # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+    # dispatch-design.md): the offline measurement scripts rebuild a gate from
+    # scratch each run by replaying history -- fine for a one-shot analysis,
+    # impossible for a live per-tick producer, which must carry baselines
+    # forward across restarts the same way `FieldStateV1.dimension_precision_
+    # ewma*` already does. These two methods are the whole persistence
+    # contract: a plain (kind, dimension) -> (mu, var, count) dict, no I/O,
+    # still pure. The live producer owns serializing that dict onto
+    # `FieldStateV1` fields; this module still knows nothing about Postgres,
+    # the bus, or a schema.
+    def export_baselines(self) -> Dict[Tuple[str, str], Tuple[float, float, int]]:
+        return {key: (b.mu, b.var, b.count) for key, b in self._baselines.items()}
+
+    def import_baselines(
+        self, data: Dict[Tuple[str, str], Tuple[float, float, int]]
+    ) -> None:
+        """Replace the current baseline set. Not a merge -- a caller that wants
+        to keep existing in-memory baselines should not call this."""
+        self._baselines = {
+            key: _Baseline(mu=mu, var=var, count=count)
+            for key, (mu, var, count) in data.items()
+        }

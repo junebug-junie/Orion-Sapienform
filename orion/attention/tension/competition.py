@@ -28,12 +28,34 @@ does pass empty ballots explicitly.)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping, Tuple
 
 from orion.attention.rank_aggregation import BordaResult, aggregate_borda
 from orion.attention.tension.deviation_gate import DeviationGate
 from orion.attention.tension.direction_map import DirectionMap, load_direction_map
 from orion.attention.tension.field_observations import iter_observations
+
+# 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+# dispatch-design.md): turns one tick's admitted deviations into the single
+# [0, 1] scalar `orion.proposals.scoring.PRESSURE_DIMENSIONS` needs -- Borda
+# rank discards magnitude by design (see this module's own docstring), so a
+# scalar "how much" has to come from the admission gate, not the ranking.
+#
+# `top_admitted_deviation` is the largest single admitted (channel, node)
+# excess this tick, in z-units past `DeviationGate.z_threshold` (0 at the
+# threshold, unbounded above). 10.0 is a disclosed, uncalibrated saturation
+# point -- not derived from a distribution fit, chosen the same way
+# `RECENT_PERTURBATION_ZSCORE_SATURATION`'s "z>=3.0 is anomalous" convention
+# was, but scaled to *excess past threshold* rather than raw z (an excess of
+# 10 is z~=11.5 at the default z_threshold=1.5, a genuinely extreme
+# admission). Live-checked over 41,973 real substrate_field_state ticks (24h,
+# 2026-08-16): 49.9% nonzero, 18,699 distinct values, population variance
+# 6.164936e-02, mean 0.1134, 4,357 rest->active rises (recurring refresh, not
+# a decayed-unopposed climb) -- clears the CLAUDE.md 0A metric gate's
+# non-degenerate-variance and can-read-genuine-calm bars (median exactly
+# 0.0). Revisit against live post-deploy admission data, same discipline as
+# every other disclosed constant in this arc.
+DEVIATION_PRESSURE_SATURATION = 10.0
 
 
 @dataclass(frozen=True)
@@ -101,3 +123,26 @@ class FieldTensionCompetition:
             admitted_count=admitted_count,
             subnormal_count=subnormal,
         )
+
+    # Delegate to the gate -- see DeviationGate.export_baselines/import_baselines
+    # for the persistence contract. Kept here too so a live producer only needs
+    # to know about FieldTensionCompetition, not reach into `.gate` itself.
+    def export_baselines(self) -> Dict[Tuple[str, str], Tuple[float, float, int]]:
+        return self.gate.export_baselines()
+
+    def import_baselines(self, data: Dict[Tuple[str, str], Tuple[float, float, int]]) -> None:
+        self.gate.import_baselines(data)
+
+
+def deviation_pressure(
+    tick: TickResult, *, saturation: float = DEVIATION_PRESSURE_SATURATION
+) -> float:
+    """This tick's admitted deviation, collapsed to a single [0, 1] scalar.
+
+    0.0 on a quiet tick is a real "nothing is happening" reading (see this
+    module's docstring's "honest limit" note), never a fabricated absence.
+    """
+    if not tick.any_admitted:
+        return 0.0
+    top = max(v for channel in tick.admitted.values() for v in channel.values())
+    return max(0.0, min(1.0, top / saturation))

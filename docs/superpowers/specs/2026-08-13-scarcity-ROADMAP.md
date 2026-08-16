@@ -97,57 +97,92 @@ Report and wait. Do not proceed to A3 to "make it bind."
 #### The numbers (§7.1: pasted before the next step begins)
 
 `scripts/analysis/record_lane_occupancy.py report --in /tmp/lane-occupancy/samples.jsonl`,
-recorder PID 2413928, started 2026-08-14 05:24 with the route-refresh fix (#1655).
+recorder PID 2413928, started 2026-08-14 05:24 with the route-refresh fix (#1655) and run to
+completion 2026-08-15 05:24. **305,192 samples, 27.74 h of coverage.**
 
 ```text
-quick+quick_background @ atlas-worker-fast-1     coverage 22.99 h, 1 gap
-    P(all busy)     4.02%          <- PROCEED GATE PASSED (≥1%)
-    P(bg blocked)   4.82%          <- background admission already refused
-    mean busy       7.3% of capacity
-    burstiness      176x MORE blocking than Poisson
-    time by busy    {0:70870s, 1:6835s, 2:1051s, 3:662s, 4:3330s}
+quick+quick_background @ atlas-worker-fast-1     coverage 27.74 h, 1 gap
+    P(all busy)     4.01%          <- PROCEED GATE PASSED (≥1%)
+    P(bg blocked)   4.84%          <- background admission already refused
+    burstiness      174x MORE blocking than Poisson
+    time by busy    {0:85518s, 1:8267s, 2:1264s, 3:827s, 4:4004s}
 
-metacog @ atlas-worker-2                          coverage 22.99 h, 0 gaps
+metacog @ atlas-worker-2                          coverage 27.74 h, 1 gap
     P(all busy)     0.00%          <- KILL GATE FIRED
-    P(any busy)     11.21%
-    time by busy    {0:73476s, 1:8801s, 2:472s}    never exceeded 2 of 4 slots
+    time by busy    {0:88991s, 1:10358s, 2:532s}    never exceeded 2 of 4 slots
 
-chat @ circe-worker-1        coverage 16.39 h, 8 gaps, 1 slot, P(all busy) 8.39%
-agent @ circe-worker-agent-1 coverage 12.72 h, 3 gaps, 1 slot, P(all busy) 0.78%
+chat @ circe-worker-1        coverage 20.22 h, 8 gaps, 1 slot, P(all busy) 8.10%
+agent @ circe-worker-agent-1 coverage 16.55 h, 3 gaps, 1 slot, P(all busy) 0.60%
 ```
+
+**The verdict was first computed mid-run at 22.99 h and is unchanged by the full dataset.** The
+two gate statistics moved by 0.01 and 0.02 points across a 20% larger window:
+
+| | mid-run, 22.99 h | final, 27.74 h |
+| --- | --- | --- |
+| `quick` P(all busy) | 4.02% | 4.01% |
+| `quick` P(bg blocked) | 4.82% | 4.84% |
+| burstiness | 176× | 174× |
+| `metacog` P(all busy) | 0.00% | 0.00% |
+
+That stability is itself evidence: 4% is the lane's steady behaviour, not an artifact of one
+busy stretch inside the sample. circe's figures drifted further (8.39→8.10 and 0.78→0.60) as
+more run gaps accumulated — which is exactly why nothing is gated on them.
 
 **`quick` proceeds. `metacog` is killed.** Both gates fired, on different lanes, which is why
 this step was worth running rather than assuming.
 
 Three things the numbers say that the plan did not:
 
-1. **The lane is bimodal, not loaded.** It spent **3,330 s completely full** — more than at 2/4
-   and 3/4 combined — and 70,870 s at zero. The mean (7.3% of capacity) describes neither state
+1. **The lane is bimodal, not loaded.** It spent **4,004 s completely full** — more than at 2/4
+   and 3/4 combined — and 85,518 s at zero. The mean (7.3% of capacity) describes neither state
    and would have killed the arc on day one. This is the §6.2 rule earning itself.
-2. **176× Poisson confirms batch arrival at 23-hour scale**, matching the 303–306× measured by
+2. **174× Poisson confirms batch arrival at 27.74-hour scale**, matching the 303–306× measured by
    hand on a 2-minute window. The lane blocks because ~5 proposals arrive per arena tick into 4
    slots, **not** because of volume. That is Track C's thesis, now evidenced: smoothing dispatch
    is cheaper and more effective than widening the lane.
-3. **`metacog` never filled in 23 hours** and never exceeded 2 of 4 slots. Any work premised on
+3. **`metacog` never filled in 27.74 hours** and never exceeded 2 of 4 slots. Any work premised on
    metacog contention is ceremony.
 
-**circe's lanes are not gate-grade** — 16.39 h and 12.72 h of coverage with 8 and 3 run gaps
+**circe's lanes are not gate-grade** — 20.22 h and 16.55 h of coverage with 8 and 3 run gaps
 (circe is run intermittently by design). At 1 slot, `P(all busy)` *is* utilisation and is not
 comparable to the 4-slot lanes. Nothing is gated on them.
 
-**Separately observed:** `http://100.121.214.30:8014` returned 13,285 samples over 3.74 h with
-**0.00 h of coverage** — every sample indeterminate, host down or `/slots` unavailable. Not one
-of the four named lanes, so it does not affect the verdict, but it is an atlas port that is not
-answering.
+**A retired route in the sample file, not an outage.** `http://100.121.214.30:8014` returned
+13,285 samples over 3.74 h with **0.00 h of coverage** — every sample indeterminate. I first
+read this as a live atlas port that had stopped answering. It is not:
 
-### A3 — Route Orion's autonomous cognition to the background lane · *~1 commit* — **REVISED BY A2**
+The `agent` lane runs on **circe** (`http://100.112.254.99:8014`, `served_by`
+`circe-worker-agent-1`) and the live route table says so. The atlas-IP entry is the *previous*,
+wrong host for that lane, from before the route table was corrected. The samples are all
+indeterminate because nothing was ever listening there, and **they stop** because the recorder
+re-read the route table and followed it — which is #1655's route-refresh fix working as
+designed. A stale endpoint appearing and then ceasing in the record is the instrument being
+correct, not the fleet being broken.
+
+**The related misnomer is cosmetic, and worth knowing where the trap is.** Circe's llama.cpp
+containers are still named `atlas-worker-*` — they were deployed from
+`docker-compose.atlas-workers.yml` and never renamed (see the note at
+`config/llm_profiles.yaml:1092`). That name never reaches attribution: the gateway's route table
+carries an explicit `served_by` of `circe-worker-1` / `circe-worker-agent-1`, and
+`llm_backend.py:137` skips its default whenever `served_by` is already set.
+
+**The latent trap:** that default is `"chat": ... or "atlas-worker-1"`
+(`llm_backend.py:132`), and the live `LLM_ROUTE_CHAT_SERVED_BY` is **empty**. Today
+`LLM_GATEWAY_ROUTE_TABLE_JSON` supplies `served_by` so the fallback never fires. If anyone ever
+switches the gateway to the per-route `LLM_ROUTE_*_URL` keys instead, `chat` would silently be
+labelled `atlas-worker-1` **while running on circe** — attributing circe's inference, and any
+cost built on it, to the wrong machine. `agent` is not in that defaults dict at all, so it would
+go blank rather than wrong. Relevant to this arc specifically, since attribution is the point.
+
+### A3 — Route Orion's autonomous cognition to the background lane · ✅ **SHIPPED 2026-08-15**
 ~~Add `metacog_background` to the route table; point `cortex-exec`'s non-interactive path at the
 background routes.~~
 
 **A2 killed the metacog half of this.** That lane never fills, so adding `metacog_background`
 would route around a ceiling that does not exist. All measured contention is on `quick`, which
 **already has** `quick_background` with `reserved_free_slots=2` — and that reservation is
-already being enforced 4.82% of the time.
+already being enforced 4.84% of the time.
 
 So the step shrinks to: **point `cortex-exec`'s non-interactive path at the existing
 `quick_background` route.** No new route, no route-table change, no `metacog_background`.
@@ -159,14 +194,39 @@ it is now a smaller and better-evidenced change than when it was written.
 **Proceed gate:** Orion's autonomous requests resolve to `quick_background` in gateway logs.
 **Kill gate:** interactive latency regresses measurably → revert (one env key, fail-open).
 
+#### Shipped, and the thing that nearly made it inert
+
+Juniper answered §8 Q1: **background**. `_apply_autonomous_background_route` in
+`orion-cortex-exec/app/executor.py` redirects a step to `quick_background` when it would route
+to `quick`, has no caller override, and the lane resolver already scored it `priority: low`.
+
+**The classification was not invented.** `resolve_llm_lane_for_step` already sorts every step
+into chat(high)/agent(normal)/spark(low)/background(low), and `low` is exactly Orion-initiated
+work. A parallel `is_autonomous` flag would have been a second answer to an answered question.
+
+**What the live check caught:** in the first 12 minutes the only route decision was
+`journal.compose` — Orion's own journalling, on the background worker — carrying
+`override=quick`, so A3 correctly declined to touch it. Orion's autonomous callers *supply
+explicit routes*, and A3 respects overrides by design. **Left there, A3 would have redirected
+almost nothing.** `ACTIONS_JOURNAL_LLM_ROUTE` was `chat_quick` (a legacy alias for `quick`) and
+is now `quick_background`.
+
+**Still on the contended lane, unresolved:** `orion/memory_graph/suggest_runner.py:22` defaults
+`llm_route="quick"`. It writes to a *drafts* table, which suggests it is off the critical path,
+but its invocation site was not found and it was left alone rather than guessed at. If it is
+asynchronous, that default should become `quick_background` too.
+
+**Verified on the deployed artefact**, all four exec workers: flag `True`, low-priority `quick`
+→ `quick_background`, high-priority `quick` unchanged, `metacog` untouched.
+
 ### A4 — Observe a real deferral · *0 commits, analysis only*
 **Proceed gate:** ≥1 admission-wait event attributable to Orion's own cognition over 24 h, with
 its duration.
 **Kill gate:** zero deferrals over 24 h despite A2 passing → the gate is inert, not the lane.
 Diagnose before building anything on it.
 
-**A2 makes this cheaper than assumed.** `P(bg blocked) = 4.82%` over 22.99 h means
-`priority_admission.py` is *already* refusing background admission — on the order of 66 minutes
+**A2 makes this cheaper than assumed.** `P(bg blocked) = 4.84%` over 27.74 h means
+`priority_admission.py` is *already* refusing background admission — on the order of 70 minutes
 across the day. The deferrals exist. A4's real question is therefore not "does anything ever
 wait" but the narrower **"is any of that waiting Orion's own cognition, and is it attributable
 to a request?"** Note the kill gate can still fire on that narrower question: a lane that
@@ -314,9 +374,9 @@ Would give circe the chassis power and fan telemetry the other two already have.
 
 ## 5. Track C — smoothing *(conditional on A2 passing — ✅ **A2 PASSED, and pointed here**)*
 
-A2 did not merely unblock this track, it argued for it. Over 22.99 h the `quick` lane blocked
-**176× more than Poisson arrivals would predict** at the same offered load (0.293 erlangs). At
-that load a Poisson process blocks 0.023% of the time; the lane blocked 4.02%. The lane is not
+A2 did not merely unblock this track, it argued for it. Over 27.74 h the `quick` lane blocked
+**174× more than Poisson arrivals would predict** at the same offered load (~0.29 erlangs). At
+that load a Poisson process blocks ~0.02% of the time; the lane blocked 4.01%. The lane is not
 busy — it is *hit in batches*. Widening it would buy far less than spacing the arrivals.
 
 This is now the highest-value remaining item in Track A/C combined, and unlike A3 it needs no
@@ -325,7 +385,7 @@ decision from Juniper.
 ### C1 — Instrument batch size against blocking · *1 commit*
 Record dispatch batch size per arena tick alongside lane width. Tests plant §6.7 directly.
 
-The prediction to falsify, stated before measuring: the 3,330 s the lane spent completely full
+The prediction to falsify, stated before measuring: the 4,004 s the lane spent completely full
 should cluster around arena ticks, and the fill events should arrive in steps of ~5 rather than
 one at a time. If instead saturation is spread uniformly in time and uncorrelated with dispatch
 batches, the burstiness has some other source and smoothing is the wrong fix.
@@ -446,8 +506,8 @@ Nothing in Track A past A2 starts without Q1.
    **Sharpened by A2 (2026-08-15), still open.** The change is smaller than when this was
    written: no new route, just pointing the non-interactive path at the existing
    `quick_background`. And the cost is now measurable rather than hypothetical — the background
-   reservation is already enforced **4.82%** of the time, so "Orion yields" means yielding
-   roughly 66 minutes a day at current load, not an unknown amount.
+   reservation is already enforced **4.84%** of the time, so "Orion yields" means yielding
+   roughly 70 minutes a day at current load, not an unknown amount.
 
 2. ~~**Does B2 (`strain`) get proposal mode, or is the consumer enumeration enough?**~~
    **RESOLVED 2026-08-15 — the question was wrong.** The enumeration found `strain` is written

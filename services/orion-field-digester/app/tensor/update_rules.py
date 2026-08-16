@@ -7,6 +7,7 @@ from app.digestion.diffusion import apply_diffusion
 from app.digestion.perturbation import apply_perturbations
 from app.digestion.precision import update_dimension_precision_baseline
 from app.digestion.suppression import apply_suppression
+from app.digestion.tension import update_tension_pressure
 from app.ingest.state_deltas import Perturbation
 
 
@@ -32,8 +33,14 @@ def run_digestion_tick(
     )
     apply_diffusion(state, diffusion_rate=diffusion_rate)
     apply_suppression(state)
+    # Must run before update_dimension_precision_baseline(): that call scores
+    # this tick's FINAL field_pressures() reading, which includes
+    # deviation_pressure only once update_tension_pressure() has written it
+    # (see orion/field/pressure.py::field_pressures_with_provenance()).
+    update_tension_pressure(state)
     # Must run LAST: scores this tick's FINAL field_pressures() reading (see
     # update_dimension_precision_baseline()'s own docstring for why it can't
-    # run before decay/diffusion/suppression have already settled the tick).
+    # run before decay/diffusion/suppression -- and now tension -- have
+    # already settled the tick).
     update_dimension_precision_baseline(state)
     return state

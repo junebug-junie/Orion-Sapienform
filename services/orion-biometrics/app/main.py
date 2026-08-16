@@ -20,7 +20,7 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from app.metrics import collect_biometrics, collect_disk_capacity
 from app.ilo import IloPoller
-from app.pdu import PduPoller, parse_outlets
+from app.pdu import PduPoller, parse_outlets, parse_proxy_outlets
 from orion.telemetry.biometrics_pipeline import (
     BiometricsPipeline,
     PipelineConfig,
@@ -189,6 +189,38 @@ _pdu_poller = PduPoller(
     interval_sec=settings.PDU_POLL_INTERVAL_SEC,
     timeout_sec=settings.PDU_REQUEST_TIMEOUT_SEC,
 )
+
+
+# Outlets the HUB polls on behalf of nodes that cannot reach the PDU themselves.
+# circe's NIC is dead: it reaches the bus over Tailscale but has no LAN path to the PDU, so its
+# own poller fails every 65 s. athena can reach it. See parse_proxy_outlets for the full story.
+_pdu_proxy_pollers: Dict[str, PduPoller] = {
+    node: PduPoller(
+        settings.PDU_HOST,
+        outlets,
+        community=settings.PDU_SNMP_COMMUNITY,
+        port=settings.PDU_SNMP_PORT,
+        interval_sec=settings.PDU_POLL_INTERVAL_SEC,
+        timeout_sec=settings.PDU_REQUEST_TIMEOUT_SEC,
+    )
+    for node, outlets in parse_proxy_outlets(settings.PDU_PROXY_OUTLETS).items()
+}
+
+
+def _proxy_measurements() -> Dict[str, Dict[str, float]]:
+    """Per-node measurements this hub read on another node's behalf.
+
+    Returns only nodes with a live reading. A failed or not-yet-polled proxy contributes
+    nothing, so the node stays in `measurements_missing` exactly as before -- a proxy that is
+    itself broken must not look like a measurement.
+    """
+    out: Dict[str, Dict[str, float]] = {}
+    for node, poller in _pdu_proxy_pollers.items():
+        detail = poller.details()
+        watts = detail.get("pdu_watts")
+        if isinstance(watts, (int, float)) and not isinstance(watts, bool) and watts >= 0.0:
+            out[node] = {"chassis_watts": float(watts), "pdu_watts": float(watts)}
+    return out
 
 
 def _heartbeat_details() -> Dict[str, Any]:
@@ -376,9 +408,25 @@ class BiometricsHub:
         # Raw physical units aggregate separately from the pressures above: watts are summed
         # in watts, not weighted-averaged and clamped to 1.0. `measurements_missing` travels
         # with the totals so a partial fleet sum cannot be read as a complete one.
-        fleet_measurements, fleet_missing = aggregate_fleet_measurements(
-            {node: summary.measurements for node, summary in self._latest_summary.items()}
-        )
+        # Merge in anything this hub measured on another node's behalf, BEFORE aggregating, so
+        # a proxied node stops being counted as missing.
+        #
+        # PROVENANCE IS NOT OPTIONAL HERE. `chassis_watts` has been a self-report -- the node
+        # that owns the number measures it. A proxy reading breaks that, and a future reader
+        # finding circe with chassis_watts would otherwise conclude its BMC came back. So the
+        # cluster says who measured what, and a proxied value NEVER silently overwrites a
+        # node's own reading: self-report wins, proxy only fills a gap.
+        per_node = {node: summary.measurements for node, summary in self._latest_summary.items()}
+        proxied: Dict[str, list] = {}
+        for node, values in _proxy_measurements().items():
+            own = per_node.get(node) or {}
+            filled = {k: v for k, v in values.items() if own.get(k) is None}
+            if not filled:
+                continue
+            per_node[node] = {**own, **filled}
+            proxied[node] = sorted(filled)
+
+        fleet_measurements, fleet_missing = aggregate_fleet_measurements(per_node)
 
         # Which known nodes are absent entirely. `measurements_missing` only names nodes that
         # DID report and lacked a key -- a node that stops publishing never reaches `sources`
@@ -417,6 +465,7 @@ class BiometricsHub:
             constraint=constraint,
             measurements=fleet_measurements or None,
             measurements_missing=fleet_missing or None,
+            measurements_proxied=proxied or None,
         )
         global _CLUSTER
         _CLUSTER = {"payload": cluster.model_dump(mode="json"), "timestamp": cluster.timestamp}
@@ -454,6 +503,8 @@ async def lifespan(app: FastAPI):
 
     await _ilo_poller.start_background()
     await _pdu_poller.start_background()
+    for _proxy in _pdu_proxy_pollers.values():
+        await _proxy.start_background()
 
     if settings.BIOMETRICS_MODE in {"agent", "both"}:
         metrics_worker = BiometricsWorker(chassis_cfg(), interval_sec=settings.TELEMETRY_INTERVAL)
@@ -485,6 +536,8 @@ async def lifespan(app: FastAPI):
                 hunter_task.cancel()
         await _ilo_poller.stop()
         await _pdu_poller.stop()
+        for _proxy in _pdu_proxy_pollers.values():
+            await _proxy.stop()
 
 
 app = FastAPI(title=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan)

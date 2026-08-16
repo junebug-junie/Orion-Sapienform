@@ -234,3 +234,14 @@ class BiometricsClusterV1(BaseModel):
     peak_pressure: Optional[float] = None
     peak_pressure_channel: Optional[str] = None
     peak_pressure_node: Optional[str] = None
+
+    # Which measurement keys this hub read ON BEHALF OF a node, per node.
+    #
+    # `chassis_watts` is otherwise a SELF-REPORT: the node that owns the number measures it.
+    # circe's network card is dead, so it cannot reach the PDU that meters its outlets, while
+    # the hub can. Proxying closes that gap -- and without provenance a future reader finding
+    # circe with a chassis figure would reasonably conclude its BMC came back.
+    #
+    # A proxied value NEVER overwrites a node's own reading; it only fills a gap. So a key
+    # listed here for a node means "nobody else measured this", not "we preferred ours".
+    measurements_proxied: Optional[Dict[str, List[str]]] = None

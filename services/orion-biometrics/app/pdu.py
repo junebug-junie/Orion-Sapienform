@@ -48,6 +48,7 @@ outlet, and the sum over all powered outlets (678 W) matching the unit-level tot
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -69,6 +70,56 @@ class PduSnapshot:
     per_outlet_watts: Dict[int, float] = field(default_factory=dict)
     fetched_at: Optional[str] = None
     error: Optional[str] = None
+
+
+def parse_proxy_outlets(raw: str) -> Dict[str, List[int]]:
+    """`'{"circe": [19,25,31]}'` -> `{"circe": [19, 25, 31]}`. Empty/garbage -> {}.
+
+    Outlets the HUB polls ON BEHALF OF a node that cannot reach the PDU itself.
+
+    WHY THIS EXISTS. Per-node polling was the right default -- it keeps `chassis_watts` a
+    self-report and needs no new trust. It does not work for the one node the whole feature was
+    built for: **circe's network card is dead**, so it reaches the bus over Tailscale but has no
+    LAN path to the PDU. Confirmed live 2026-08-16, failing every 65 s:
+
+        orion.biometrics.pdu - WARNING - pdu_poll_failed error=5 second timeout exceeded on UDP
+
+    This should have been the design from the start. circe's BMC at 192.168.1.150 was already
+    known unreachable, which was direct evidence that circe's LAN path was suspect -- and circe
+    was the entire justification for the feature.
+
+    Proxy polling is also strictly MORE informative than self-polling for circe: the outlets
+    report its draw whether circe is up or not, so a powered-down circe reads a true ~0 W
+    instead of vanishing into `measurements_missing`.
+
+    Raises nothing -- a malformed value disables proxying rather than taking the collector down.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("pdu_proxy_outlets_unparseable value=%r", raw[:120])
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("pdu_proxy_outlets_not_an_object type=%s", type(parsed).__name__)
+        return {}
+    out: Dict[str, List[int]] = {}
+    for node, outlets in parsed.items():
+        node = str(node).strip().lower()
+        if not node:
+            continue
+        if isinstance(outlets, str):
+            values = parse_outlets(outlets)
+        elif isinstance(outlets, list):
+            values = parse_outlets(",".join(str(v) for v in outlets))
+        else:
+            logger.warning("pdu_proxy_bad_value node=%s type=%s", node, type(outlets).__name__)
+            continue
+        if values:
+            out[node] = values
+    return out
 
 
 def parse_outlets(raw: str) -> List[int]:

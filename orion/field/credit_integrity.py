@@ -4,56 +4,101 @@ THE TRAP THIS WATCHES FOR
 -------------------------
 `config/feedback/feedback_policy.v1.yaml` lists `resource_pressure: decrease`
 under `positive_delta_channels`, so a DROP is credited to the in-flight action.
-If the drop happens because a producer went quiet rather than because the action
-helped, the loop learns from an outage. `orion/attention/tension/liveness.py`
-documents this defect; this module is the scheduled watch for its precondition.
+If the drop happens because a producer went quiet rather than because the
+action helped, the loop learns from an outage. This module is the scheduled
+watch for that precondition -- report-only, no gating of the feedback loop
+itself (see WHAT IT DELIBERATELY DOES NOT DO below).
 
-TWO SIGNALS, AT DIFFERENT RESOLUTIONS
--------------------------------------
-`classify_producer_liveness()` is reused verbatim rather than reimplemented. It
-already answers "did anything write this series", and over the whole history it
-is not enough: one real write anywhere makes the entire series `refreshed`.
-Measured 2026-08-14, 10,497 live ticks over 6 hours -- every credited dimension
-classifies `refreshed` end to end. True about six hours, silent about any 30
-seconds inside it, and 30 seconds (`windows.field_after_window_sec`) is what
-the feedback loop actually samples.
+REBUILT 2026-08-16 -- THE FIRST VERSION MEASURED THE WRONG THING
+------------------------------------------------------------------
+The first version of this module (merged as #1686, `421b69936`) reused
+`orion.attention.tension.liveness.classify_producer_liveness()` verbatim,
+on the premise that a decay-only stretch is a monotone geometric run and any
+real write breaks monotonicity. Post-merge review falsified that on live
+data: over 6,000 ticks / 3 credited dimensions, 0 of 454 flagged windows
+contained a single actual 0.92 decay step. What actually tripped the
+classifier was a flat plateau followed by one discontinuous step-down --
+`execution_pressure` and `resource_pressure` are 3-5 distinct values in
+6,000 ticks, `reliability_pressure` is 2 (0.0 / 0.9), so an ordinary
+quantized state transition (including a REAL fix: 0.9 -> 0.0 is exactly the
+true-positive this module exists to credit) satisfied the classifier's own
+"decreased and never increased" premise without decaying at all. Separately,
+75% of `resource_pressure`'s findings had the merge WINNER changing source
+mid-window -- a max() envelope over ~5 producers can fall monotonically
+while every producer writes every tick, which is a second, independent way
+to fool a shape-based classifier that has nothing to do with the digester's
+decay loop. The premise was false for these three channels specifically,
+because `services/orion-field-digester/app/digestion/decay.py::apply_decay`
+was rewritten (2026-07-17) to hold-then-decay-on-staleness rather than decay
+unconditionally every tick, and all three are `CAPABILITY_DECAY_CHANNELS`
+whose stored value is recomputed memorylessly by `apply_diffusion` every
+tick regardless of decay.py's own loop. Full findings:
+docs/superpowers/pr-reports/2026-08-16-credit-integrity-rebuild-pr.md.
 
-**But the shape signal cannot be run at 30 seconds, and this was measured
-rather than assumed.** `MIN_WINDOW_SAMPLES = 20` and `MIN_DECAY_FACTOR = 0.5`
-("0.92/tick reaches this in ~28 ticks"), while 30s at the live 2.04s cadence is
-~15 ticks. So a 30s window fails the classifier twice over: too few samples,
-and not enough elapsed decay to shrink by half. Those constants are principled
--- a short window makes an ordinary quiet stretch look like an outage, which is
-the classifier's own documented reason for them -- so lowering them to fit
-would manufacture false positives, not resolution.
+THE REPLACEMENT: TWO WRITE-EVIDENCE SIGNALS, ROUTED BY HOW A WINNER WON
+-------------------------------------------------------------------------
+No shape, no monotonicity, no resolution floor. For each tick, this module
+asks which of two structurally different things actually happened to
+produce the credited dimension's WINNING channel this tick, and checks the
+kind of evidence that mechanism can honestly produce:
 
-The honest consequence: **shape has a floor on how short an outage it can see,
-and that floor is longer than the window being protected.** It is run at the
-span it can actually support (derived from the data's own cadence, reported as
-`shape_span_seconds`) and its limit is stated rather than hidden.
+1. **Node-vector-sourced** (the channel is a raw entry in the winning
+   node's OWN `node_vectors[node_id]`, e.g. `reliability_pressure` on
+   `node:athena`/`node:rpc_timeout`, confirmed 100% node-sourced and 100%
+   `node_vector_updated_at`-stamped over 3,000 live ticks, 2026-08-16):
+   reuse `orion.field.regime._refresh_from_timestamps` verbatim -- the same
+   tested mechanism R2 shipped for the Hub glossary panel, comparing the
+   winner's real write timestamp against the window. No new heuristic; a
+   second consumer of an already-proven one.
 
-Provenance carries the short end, because it needs ONE tick, not twenty.
-`apply_diffusion()` recomputes `capability_provenance` every tick and CLEARS it
-when nobody contributes (services/orion-field-digester/app/digestion/
-diffusion.py), so `collect_field_channel_pressures()` falls back to naming the
-capability itself instead of a source node. A merged value whose winner is not
-a node id is a decayed remnant -- true at any window length, and true at the
-floor where shape has nothing to read (the classifier's declared `at_floor`
-blind spot, which it calls "exactly the state that makes the
-`resource_pressure` defect invisible").
+2. **Capability-routed** (the channel lives in `capability_vectors`,
+   resolved through `capability_provenance` -- `execution_pressure` and
+   `resource_pressure`'s `pressure` channel are BOTH 100% capability-routed
+   live, and confirmed to have ZERO resolvable `node_vector_updated_at`
+   entries -- 0 of 3,000 -- so the timestamp mechanism above has nothing to
+   read for them). `services/orion-field-digester/app/digestion/
+   diffusion.py::apply_diffusion` is a fully memoryless per-tick recompute
+   (verified by reading it, not assumed): `capability_provenance[cap][ch]`
+   is set ONLY when a real (>0) or measured-zero contribution lands THIS
+   tick, and is explicitly POPPED -- not left stale -- the instant nobody
+   contributes ("clear stale provenance too... so the two never disagree
+   about what's currently true", diffusion.py). So whether the winning
+   channel's provenance resolves to a real node THIS tick (as opposed to
+   the capability's own id, diffusion's documented "nobody contributed"
+   default, or another capability one hop from a real sensor) IS the
+   freshness signal -- not a stamp, but a genuine per-tick fact, checked
+   fresh every 2s tick with no resolution floor to wait out.
 
-So: provenance is the detector at feedback-window resolution; shape is the
-longer-horizon cross-check. Reported separately, never blended, so a reader can
-see which one fired and at what resolution.
+Each dimension picks whichever mechanism its winning channel actually used
+on a majority of sampled ticks (`report.source_kind[dim]` records the
+split), and each finding records which one fired (`WindowFinding.evidence`)
+so a reader never mistakes one signal for the other.
+
+**Signal 1's tautology, found by the same review, fixed by being signal 1
+instead of a member-of-`node_vectors` check.** The PREVIOUS version's
+"backed" boolean was `provenance.get(ch) in state.node_vectors` applied
+uniformly to every winner -- for a node-vector winner that is trivially
+always true (a node's own vector entry is definitionally a member of its
+own vector), proven live with a synthetic 40-tick pure-decay series with
+zero producer writes reading `backed=True` on all 40 ticks. Signal 1 does
+not ask "is the winner a node" -- it asks "what does that node's own
+`node_vector_updated_at` say", which can and does say "stale".
+
+Signal 2's version of that same check (does the winner resolve to a real
+node) is NOT the same tautology, because -- unlike a node-vector winner --
+a capability-routed winner's provenance is recomputed and cleared every
+tick by `apply_diffusion`, not held from whenever it first appeared. The
+prior version's provenance check was directionally correct for THIS case;
+its bug was applying it uniformly to signal 1's case too (F3 in the
+review), plus a separate vacuous-truth bug already fixed and released as
+PR #1694 before this rebuild (`all()` over an empty generator when a
+multi-channel dimension's contributor was entirely absent from the merge).
 
 WHAT IT DELIBERATELY DOES NOT DO
 --------------------------------
 No guard, no gating of the feedback loop itself. Changing a learning loop is
-proposal-mode work (CLAUDE.md 0A) and the measured case for it does not exist
-yet: over those same 10,497 ticks the provenance-unbacked events were 55, all
-ISOLATED SINGLE TICKS (longest run 1 tick = ~2s) against a 30s window. This
-watches for the precondition so the guard can be designed against a real
-instance instead of a hypothesis.
+proposal-mode work (CLAUDE.md 0A) and needs a measured real instance to
+design against, not a hypothesis -- this module is that measurement.
 """
 from __future__ import annotations
 
@@ -61,36 +106,44 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from orion.attention.tension.liveness import classify_producer_liveness
 from orion.field.pressure import (
     CHANNEL_DIMENSION_MAP,
     collect_field_channel_pressures,
-    field_pressures,
+    map_channels_to_dimensions_with_provenance,
+    winning_write_time,
 )
+from orion.field.regime import _refresh_from_timestamps
 from orion.schemas.field_state import FieldStateV1
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = REPO_ROOT / "config" / "feedback" / "feedback_policy.v1.yaml"
 
-# The verdict that means "only the decay loop touched this".
-SILENT = "silent_producer"
-AT_FLOOR = "at_floor"
+# The verdict that means "no write evidence for the credited dimension's
+# winning channel across this whole window" -- named to match
+# orion.field.regime's own vocabulary for the same underlying question
+# (`refresh_state == "no_write_in_window"`), not the old module's
+# decay-flavoured `silent_producer`.
+SILENT = "no_write_in_window"
 
 _EPOCH = datetime(1970, 1, 1)
-
-# Ticks the shape classifier needs before its verdict means anything:
-# MIN_WINDOW_SAMPLES samples AND enough elapsed decay to clear
-# MIN_DECAY_FACTOR (~28 ticks at 0.92). Taking the larger of the two, since
-# either one short makes the verdict `insufficient_data` or `refreshed` by
-# default.
-SHAPE_MIN_TICKS = 28
 
 
 @dataclass(frozen=True)
 class ChannelSample:
     at: datetime
     value: float
-    provenance_backed: bool
+    # "node" | "capability" | "absent" -- which of the two write-evidence
+    # mechanisms this tick's winning channel actually used, or "absent" if
+    # the channel did not appear in the merge at all this tick.
+    source_kind: str
+    # Meaningful only when source_kind == "node": that node's own
+    # node_vector_updated_at entry for this channel (may be None -- no stamp
+    # recorded yet -- distinct from "stale", which is a real, old stamp).
+    node_stamp: datetime | None
+    # Meaningful only when source_kind == "capability": did this tick's
+    # diffusion recompute resolve to a real originating node (True), or to
+    # the capability's own id / another capability / nothing (False).
+    capability_fresh: bool | None
 
 
 @dataclass(frozen=True)
@@ -98,32 +151,38 @@ class WindowFinding:
     """A span in which a credited channel could have misled the loop."""
 
     channel: str
-    kind: str  # SILENT | "unbacked_run"
+    kind: str  # SILENT | "unmappable_dimension"
+    # "timestamp" (signal 1) | "contribution" (signal 2) | "" for findings
+    # that are not a write-evidence verdict at all (the other two kinds).
+    evidence: str
     started_at: datetime
     span_seconds: float
     tick_count: int
 
     def describe(self) -> str:
+        suffix = f" [{self.evidence}]" if self.evidence else ""
         return (
             f"{self.channel}: {self.kind} for {self.span_seconds:.0f}s "
-            f"({self.tick_count} ticks) from {self.started_at.isoformat()}"
+            f"({self.tick_count} ticks) from {self.started_at.isoformat()}{suffix}"
         )
 
 
 @dataclass
 class CreditIntegrityReport:
     window_seconds: float
-    # The span the SHAPE signal was actually run at. Larger than
-    # window_seconds whenever the classifier cannot support the policy window
-    # -- which is the normal case, and is reported so nobody reads a clean
-    # shape result as coverage it does not have.
-    shape_span_seconds: float = 0.0
     channels: dict[str, int] = field(default_factory=dict)  # channel -> samples
+    # Per dimension: {"node": n, "capability": n} -- which mechanism actually
+    # had evidence to check, reported even when clean, so a reader can see
+    # resolution rather than assume it. The two always sum to `channels[dim]`
+    # -- see the "absent ticks never reach samples" note in
+    # analyse_credit_integrity for why there is no third bucket here.
+    source_kind: dict[str, dict[str, int]] = field(default_factory=dict)
     findings: list[WindowFinding] = field(default_factory=list)
-    # Longest observed run per channel, reported even when below threshold, so
-    # a trend toward the window is visible before it crosses.
+    # Longest observed run of capability_fresh=False, in ticks -- ONLY
+    # populated for capability-routed dimensions (signal 2 has no timestamp
+    # to report a seconds-based trend from; signal 1's trend is the finding
+    # itself, since one stale window is already the whole verdict).
     longest_unbacked_run: dict[str, int] = field(default_factory=dict)
-    whole_series_verdict: dict[str, str] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
         return bool(self.findings)
@@ -135,21 +194,11 @@ def load_credited_dimensions(
     """DIMENSION -> contributing channels, and the window the loop samples over.
 
     The policy names DIMENSIONS (`resource_pressure`), and
-    `collect_field_channel_pressures()` returns CHANNELS. They are not the same
-    namespace: `resource_pressure` is fed by the channel `pressure`.
-    `execution_pressure` and `reliability_pressure` happen to spell the same in
-    both, which is a coincidence and was enough to hide the bug -- the first
-    version of this module looked up policy names directly in the channel dict
-    and silently reported **0 samples** for `resource_pressure`, the one
-    channel this whole module exists for, while printing a healthy report.
-
-    A dimension that maps to no channel is returned with an empty list rather
+    `collect_field_channel_pressures()` returns CHANNELS -- not the same
+    namespace: `resource_pressure` is fed by the channel `pressure`. A
+    dimension that maps to no channel is returned with an empty list rather
     than dropped, so `analyse_credit_integrity` can raise it as a finding
-    instead of reporting zero samples as zero problems.
-
-    Read from the policy, never hardcoded: `positive_delta_channels` is the set
-    whose DELTA becomes evidence, narrower than `pressure_channels` (sampled
-    but not credited).
+    instead of silently reporting zero samples as zero problems.
     """
     from orion.feedback.policy import load_feedback_policy
 
@@ -161,82 +210,83 @@ def load_credited_dimensions(
     return mapping, float(policy.windows.field_after_window_sec)
 
 
+def _classify_tick(
+    state: FieldStateV1,
+    merged: dict[str, float],
+    provenance: dict[str, str],
+    channel: str | None,
+) -> tuple[str, datetime | None, bool | None]:
+    """Which write-evidence mechanism this tick's winning channel used.
+
+    Node-sourced: the channel is a literal entry in the winner's OWN
+    `node_vectors[source_id]` -- signal 1, checked via `node_stamp`.
+
+    Capability-routed: everything else that still won the merge. This
+    covers both a genuine capability_vectors winner and an edge-resolved
+    node acting as a diffusion SOURCE for a channel it does not itself
+    carry raw (`winning_write_time`'s own documented case) -- both read
+    signal 2 correctly, since `capability_fresh` asks "did provenance
+    resolve to a real node this tick", not "does the channel exist under
+    that node's raw vector".
+    """
+    if not channel or channel not in merged:
+        return "absent", None, None
+    source_id = provenance.get(channel)
+    node_vector = state.node_vectors.get(source_id) if source_id else None
+    if node_vector is not None and channel in node_vector:
+        return "node", winning_write_time(state, source_id, channel), None
+    fresh = bool(source_id) and source_id in state.node_vectors
+    return "capability", None, fresh
+
+
 def _samples_for(
     states: list[FieldStateV1], dimensions: dict[str, list[str]]
 ) -> dict[str, list[ChannelSample]]:
-    """Value = the DIMENSION the loop actually credits; backing = whether every
-    contributing channel had a real source this tick.
+    """Value = the DIMENSION the loop actually credits; evidence = whichever
+    write-evidence mechanism this tick's WINNING channel used.
 
     Sampling the dimension rather than a channel matters: `extractors.py`
     calls `field_pressures()` and diffs dimensions, so a per-channel series
-    would be measuring something the loop never sees.
+    would be measuring something the loop never sees. The WINNER specifically
+    (not "all contributing channels", the prior version's rule) matters
+    because only the winning channel determines the dimension's value this
+    tick -- a losing channel's staleness cannot make the credited value wrong
+    if it never drove it.
     """
     out: dict[str, list[ChannelSample]] = {dim: [] for dim in dimensions}
     for state in states:
         merged, provenance = collect_field_channel_pressures(state)
-        dims = field_pressures(state)
-        for dim, channels in dimensions.items():
+        dims, detail = map_channels_to_dimensions_with_provenance(merged, provenance)
+        for dim in dimensions:
             if dim not in dims:
                 continue
-            # A node id means a real source produced this tick's value. The
-            # capability id means diffusion cleared provenance -- see module
-            # docstring. Membership, not a string prefix, for the same reason
-            # field_channel_glossary_routes._winning_write_time uses it.
-            # ALL contributing channels must be backed: one unbacked
-            # contributor is enough to make the dimension a partial remnant.
-            #
-            # `ch in merged` is checked INSIDE the predicate, not as a filter
-            # on which channels get checked. Filtering first (`if ch in
-            # merged`) is a vacuous-truth trap: `all()` over an empty
-            # generator is True, so a channel that is totally absent from the
-            # merge -- worse than unbacked, nobody wrote it AT ALL this tick
-            # -- would silently count as backed whenever it happened to be
-            # the only contributor missing. Not reachable via today's policy
-            # (every credited dimension maps to exactly one channel, so
-            # `dim in dims` already implies that one channel is in `merged`),
-            # but `social_pressure` maps to two (repair_pressure +
-            # conversation_load) and would trip this the moment a
-            # multi-channel dimension is credited. Confirmed live with a
-            # repro: repair_pressure absent + conversation_load backed read
-            # `backed=True` under the filtered form.
-            backed = bool(channels) and all(
-                ch in merged and (provenance.get(ch) or "") in state.node_vectors
-                for ch in channels
+            winning_channel = detail[dim].winning_channel if dim in detail else None
+            kind, node_stamp, cap_fresh = _classify_tick(
+                state, merged, provenance, winning_channel
             )
             out[dim].append(
-                ChannelSample(at=state.generated_at, value=dims[dim], provenance_backed=backed)
+                ChannelSample(
+                    at=state.generated_at,
+                    value=dims[dim],
+                    source_kind=kind,
+                    node_stamp=node_stamp,
+                    capability_fresh=cap_fresh,
+                )
             )
     return out
-
-
-def _median_tick_seconds(samples: list[ChannelSample]) -> float:
-    """Measured from the data, never assumed. The live median is 2.04s, but a
-    detector that hardcodes it silently changes meaning if the digester's
-    cadence ever moves."""
-    if len(samples) < 2:
-        return 0.0
-    gaps = sorted(
-        (samples[i + 1].at - samples[i].at).total_seconds() for i in range(len(samples) - 1)
-    )
-    return gaps[len(gaps) // 2]
-
-
-def _shape_span(samples: list[ChannelSample], window_seconds: float) -> float:
-    """The shortest span at which the shape classifier can return a real
-    verdict, or the policy window if that is already long enough."""
-    tick = _median_tick_seconds(samples)
-    if tick <= 0:
-        return window_seconds
-    return max(window_seconds, SHAPE_MIN_TICKS * tick)
 
 
 def _rolling_windows(samples: list[ChannelSample], window_seconds: float):
     """Yield (start_index, end_index_exclusive) spans of >= window_seconds.
 
-    Advances the left edge one sample at a time; overlapping windows are
-    intentional, since an outage that straddles a fixed boundary would be
-    split in half by non-overlapping tiling and could fall under the
-    classifier's minimum sample count.
+    Verified against brute-force minimal-window enumeration on both regular
+    and irregular cadence during the review of the prior version -- the
+    pointer is correctly monotone (the minimal right edge for `left+1` is
+    never less than for `left`, since the window only shrinks as the left
+    edge advances) and the final window DOES reach the last sample; a
+    still-ongoing outage at the very end of a series is covered. The only
+    thing this cannot see is an outage confined to the final
+    `< window_seconds` of the series -- a real resolution floor, not a bug.
     """
     n = len(samples)
     right = 0
@@ -250,26 +300,85 @@ def _rolling_windows(samples: list[ChannelSample], window_seconds: float):
         yield left, right + 1
 
 
+def _find_silent_window_timestamp(
+    channel: str, samples: list[ChannelSample], window_seconds: float
+) -> WindowFinding | None:
+    """Signal 1: reuse regime.py's `_refresh_from_timestamps` verbatim, at
+    the REAL policy window -- no resolution floor, since a real write
+    timestamp answers "was there a write in this window" directly rather
+    than inferring it from shape."""
+    for left, right in _rolling_windows(samples, window_seconds):
+        window = samples[left:right]
+        verdict = _refresh_from_timestamps(
+            [s.node_stamp for s in window], window_start=window[0].at
+        )
+        if verdict == SILENT:
+            return WindowFinding(
+                channel=channel,
+                kind=SILENT,
+                evidence="timestamp",
+                started_at=window[0].at,
+                span_seconds=(window[-1].at - window[0].at).total_seconds(),
+                tick_count=len(window),
+            )
+    return None
+
+
+def _find_silent_run_contribution(
+    channel: str, samples: list[ChannelSample], window_seconds: float
+) -> tuple[WindowFinding | None, int]:
+    """Signal 2: the longest contiguous run of `capability_fresh is False`.
+    Returns the finding (if the run reaches window_seconds) and the longest
+    run length in ticks regardless, so a trend toward the window is visible
+    before it crosses."""
+    run = 0
+    run_start = 0
+    longest = 0
+    longest_start = 0
+    for i, sample in enumerate(samples):
+        if sample.capability_fresh:
+            run = 0
+            continue
+        if run == 0:
+            run_start = i
+        run += 1
+        if run > longest:
+            longest, longest_start = run, run_start
+    if not longest:
+        return None, 0
+    end = longest_start + longest - 1
+    span = (samples[end].at - samples[longest_start].at).total_seconds()
+    if span < window_seconds:
+        return None, longest
+    return (
+        WindowFinding(
+            channel=channel,
+            kind=SILENT,
+            evidence="contribution",
+            started_at=samples[longest_start].at,
+            span_seconds=span,
+            tick_count=longest,
+        ),
+        longest,
+    )
+
+
 def analyse_credit_integrity(
     states: list[FieldStateV1],
     dimensions: dict[str, list[str]],
     window_seconds: float,
 ) -> CreditIntegrityReport:
-    """Findings are spans, not tick counts. A tick rate is an implementation
-    detail of the digester; the feedback window is in seconds and so is this."""
     report = CreditIntegrityReport(window_seconds=window_seconds)
     by_channel = _samples_for(states, dimensions)
 
     for channel, samples in by_channel.items():
         report.channels[channel] = len(samples)
         if not dimensions.get(channel):
-            # A credited dimension fed by no channel cannot be watched at all,
-            # and reporting it as "0 samples, 0 findings" is how the first
-            # version of this module hid its own bug.
             report.findings.append(
                 WindowFinding(
                     channel=channel,
                     kind="unmappable_dimension",
+                    evidence="",
                     started_at=states[0].generated_at if states else _EPOCH,
                     span_seconds=0.0,
                     tick_count=0,
@@ -279,60 +388,30 @@ def analyse_credit_integrity(
         if not samples:
             continue
 
-        values = [s.value for s in samples]
-        report.whole_series_verdict[channel] = classify_producer_liveness(values)
+        node_samples = [s for s in samples if s.source_kind == "node"]
+        cap_samples = [s for s in samples if s.source_kind == "capability"]
+        # "absent" ticks (the channel missing from the merge entirely) never
+        # reach `samples` at all -- `_samples_for` only records a tick when
+        # the credited DIMENSION won a value from `dims`, and the winning
+        # channel `_classify_tick` receives is by construction always a key
+        # of `merged` (`map_channels_to_dimensions_with_provenance` only
+        # ever picks a winner from `channel_pressures.items()`). So
+        # node_samples + cap_samples == samples always, and one of the two
+        # fractions is mathematically guaranteed to be >= 0.5 -- there is no
+        # real "neither has a majority" state to report, and an earlier
+        # draft of this function had a dead branch pretending there was.
+        report.source_kind[channel] = {
+            "node": len(node_samples),
+            "capability": len(cap_samples),
+        }
 
-        # 1. Shape, run at the span the classifier can actually support --
-        # NOT at window_seconds, which it cannot (see module docstring).
-        shape_span = _shape_span(samples, window_seconds)
-        report.shape_span_seconds = max(report.shape_span_seconds, shape_span)
-        worst: tuple[int, int] | None = None
-        for left, right in _rolling_windows(samples, shape_span):
-            if classify_producer_liveness([s.value for s in samples[left:right]]) == SILENT:
-                # Report the FIRST such window rather than every overlapping
-                # one -- a 10-minute outage would otherwise emit hundreds of
-                # near-identical rows and bury everything else.
-                worst = (left, right)
-                break
-        if worst is not None:
-            left, right = worst
-            report.findings.append(
-                WindowFinding(
-                    channel=channel,
-                    kind=SILENT,
-                    started_at=samples[left].at,
-                    span_seconds=(samples[right - 1].at - samples[left].at).total_seconds(),
-                    tick_count=right - left,
-                )
-            )
-
-        # 2. Provenance: the longest run with nothing contributing.
-        run = 0
-        run_start = 0
-        longest = 0
-        longest_start = 0
-        for i, sample in enumerate(samples):
-            if sample.provenance_backed:
-                run = 0
-                continue
-            if run == 0:
-                run_start = i
-            run += 1
-            if run > longest:
-                longest, longest_start = run, run_start
-        report.longest_unbacked_run[channel] = longest
-
-        if longest:
-            end = longest_start + longest - 1
-            span = (samples[end].at - samples[longest_start].at).total_seconds()
-            if span >= window_seconds:
-                report.findings.append(
-                    WindowFinding(
-                        channel=channel,
-                        kind="unbacked_run",
-                        started_at=samples[longest_start].at,
-                        span_seconds=span,
-                        tick_count=longest,
-                    )
-                )
+        if len(node_samples) >= len(cap_samples):
+            finding = _find_silent_window_timestamp(channel, node_samples, window_seconds)
+            if finding is not None:
+                report.findings.append(finding)
+        else:
+            finding, longest = _find_silent_run_contribution(channel, cap_samples, window_seconds)
+            report.longest_unbacked_run[channel] = longest
+            if finding is not None:
+                report.findings.append(finding)
     return report

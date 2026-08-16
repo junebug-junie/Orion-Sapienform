@@ -502,3 +502,45 @@ def field_pressures(field: FieldStateV1) -> dict[str, float]:
     0.0 before this burn)."""
     dims, _detail = field_pressures_with_provenance(field)
     return dims
+
+
+def winning_write_time(
+    state: FieldStateV1, source_id: str | None, channel: str
+) -> datetime | None:
+    """The producer write time behind one channel's MERGED value, or None.
+
+    Moved from services/orion-hub/scripts/field_channel_glossary_routes.py
+    (R2 of the phase-5 roadmap) into this shared module so a second consumer
+    -- orion/field/credit_integrity.py's R5 rebuild -- does not need its own
+    copy: two implementations of "which write proves this value" is exactly
+    the kind of definition drift the rest of this arc exists to catch.
+
+    The merged value is one source's reading (R1's provenance dict names
+    which), so the only honest timestamp for it is that winner's own
+    `node_vector_updated_at` entry -- not the newest stamp across all
+    sources, which would credit the merged value with a freshness no
+    contributor had.
+
+    Capability winners return None, and the guard is EXPLICIT rather than
+    incidental. `collect_field_channel_pressures` resolves capability
+    provenance through `capability_provenance`, which
+    `FieldStateV1.capability_provenance` documents as "the edge source_id (a
+    node_id like `node:atlas`)" -- so it CAN collide with a real node key by
+    design. A bare dict lookup would then return that node's own node-vector
+    write time and attribute it to a capability-vector value that
+    accumulates across ticks via diffusion: wrong provenance, silently.
+
+    Zero collisions in live data (775 capability-path provenance occurrences
+    over 400 ticks, none a key in `node_vector_updated_at`) -- an
+    observation, not a guarantee, hence the membership check rather than
+    trusting it by construction.
+
+    Capability vectors carry no write timestamps at all (confirmed again
+    2026-08-16 against 3000 live ticks: 0 of 3000 resolve for
+    execution_pressure/pressure, both entirely capability-routed today), so
+    None is the correct answer and the caller's fallback -- never a
+    fabricated timestamp.
+    """
+    if not source_id or source_id not in state.node_vectors:
+        return None
+    return state.node_vector_updated_at.get(source_id, {}).get(channel)

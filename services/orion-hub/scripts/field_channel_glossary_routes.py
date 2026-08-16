@@ -29,7 +29,7 @@ from orion.field.channel_glossary import (
     classify_channel_series,
     load_glossary,
 )
-from orion.field.pressure import clamp01, collect_field_channel_pressures
+from orion.field.pressure import clamp01, collect_field_channel_pressures, winning_write_time
 from orion.field.regime import channel_regime
 from orion.schemas.field_state import FieldStateV1
 
@@ -117,8 +117,10 @@ def build_channel_series(
     for the full account. It has no channel-merge provenance winner to time
     (unlike the `merged`-branch entries below), so its `stamps` entry is
     always None -- an honest "no producer write time to report" rather than
-    a fabricated one, same convention `_winning_write_time()` already uses
-    for capability winners.
+    a fabricated one, same convention `winning_write_time()`
+    (orion.field.pressure -- moved here from this module 2026-08-16 so
+    orion/field/credit_integrity.py could reuse it) already uses for
+    capability winners.
 
     `unparsable_row_count` lets callers distinguish "this channel is genuinely
     dead" from "every row in this window failed to parse" -- both would
@@ -163,7 +165,7 @@ def build_channel_series(
             if channel in merged:
                 series.setdefault(channel, []).append(float(merged[channel]))
                 stamps.setdefault(channel, []).append(
-                    _winning_write_time(state, provenance.get(channel), channel)
+                    winning_write_time(state, provenance.get(channel), channel)
                 )
                 tick_times.setdefault(channel, []).append(state.generated_at)
             elif channel in raw_keys:
@@ -171,37 +173,6 @@ def build_channel_series(
                 stamps.setdefault(channel, []).append(None)
                 tick_times.setdefault(channel, []).append(state.generated_at)
     return series, stamps, tick_times, unparsable
-
-
-def _winning_write_time(state: FieldStateV1, source_id: str | None, channel: str):
-    """The producer write time behind the MERGED value, or None.
-
-    The merged value is one source's reading (R1's provenance dict names
-    which), so the only honest timestamp for it is that winner's own
-    `node_vector_updated_at` entry -- not the newest stamp across all sources,
-    which would credit the merged value with a freshness no contributor had.
-
-    Capability winners return None, and the guard is EXPLICIT rather than
-    incidental. `collect_field_channel_pressures` resolves capability
-    provenance through `capability_provenance`, which
-    `FieldStateV1.capability_provenance` documents as "the edge source_id (a
-    node_id like `node:atlas`)" -- so it CAN collide with a real node key by
-    design. A bare dict lookup would then return that node's own node-vector
-    write time and attribute it to a capability-vector value that accumulates
-    across ticks via diffusion: wrong provenance, silently.
-
-    Zero collisions in live data today (775 capability-path provenance
-    occurrences over 400 ticks, none a key in `node_vector_updated_at`) -- but
-    that is an observation, not the guarantee an earlier version of this
-    docstring claimed. Hence the membership check.
-
-    Capability vectors carry no write timestamps at all, so None is the
-    correct answer and `_refresh_from_timestamps` degrades to "unknown" ->
-    value inference rather than inventing one.
-    """
-    if not source_id or source_id not in state.node_vectors:
-        return None
-    return state.node_vector_updated_at.get(source_id, {}).get(channel)
 
 
 @router.get("/channels")

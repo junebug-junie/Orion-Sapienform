@@ -211,9 +211,8 @@ def main(argv: list[str] | None = None) -> int:
             "merge_points": len(results),
             "feedback_credit": {
                 "policy_window_sec": credit.window_seconds,
-                "shape_resolution_sec": credit.shape_span_seconds,
                 "samples": credit.channels,
-                "whole_series_verdict": credit.whole_series_verdict,
+                "source_kind": credit.source_kind,
                 "longest_unbacked_run": credit.longest_unbacked_run,
                 "findings": [f.describe() for f in credit.findings],
             },
@@ -241,28 +240,24 @@ def main(argv: list[str] | None = None) -> int:
     if not args.json:
         print(
             f"\nfeedback-credit watch: {len(credit.findings)} finding(s) "
-            f"(policy window {credit.window_seconds:.0f}s; "
-            f"shape resolution {credit.shape_span_seconds:.0f}s)"
+            f"(policy window {credit.window_seconds:.0f}s)"
         )
         for dim in sorted(credit.channels):
+            kinds = credit.source_kind.get(dim, {})
             print(
                 f"    {dim:22} samples={credit.channels[dim]:>6} "
-                f"whole-series={credit.whole_series_verdict.get(dim, '-'):16} "
+                f"node={kinds.get('node', 0):>6} capability={kinds.get('capability', 0):>6} "
                 f"longest_unbacked={credit.longest_unbacked_run.get(dim, 0)}"
             )
         for finding in credit.findings:
             print(f"    FINDING {finding.describe()}")
         if credit.findings:
             print(
-                "    REPORT-ONLY, and deliberately so: this condition is\n"
-                "    routine, not exceptional -- measured 2026-08-15 over 6,000\n"
-                "    live ticks (3.4h), credited dimensions were decay-only for\n"
-                "    20.1% (execution_pressure), 9.1% (resource_pressure) and\n"
-                "    3.7% (reliability_pressure) of ticks, in 60-115s stretches.\n"
-                "    Failing the gate on presence would make this hourly run\n"
-                "    permanently red, and a permanently red gate is ignored.\n"
-                "    Gating needs a ratchet baseline like the merge one above;\n"
-                "    the numbers to build it against now exist."
+                "    REPORT-ONLY, same as the merge-domination gate above: this is\n"
+                "    the precondition for a real feedback-loop guard (CLAUDE.md 0A\n"
+                "    proposal mode), not the guard itself. Each finding names its\n"
+                "    evidence ([timestamp] = a real node write, [contribution] = a\n"
+                "    real diffusion contribution) so it can be checked by hand."
             )
 
     if args.gate and (new or changed):

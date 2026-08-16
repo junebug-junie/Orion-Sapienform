@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -53,6 +54,47 @@ MAX_FINALIZE_LOOP_RETRIES = 1
 # lockstep with the TOOL RECOMMENDATION section of harness_finalize_reflect.j2
 # -- an unrecognized name is logged and dropped, never dispatched.
 FINALIZE_LOOP_TOOL_ALLOWLIST = frozenset({"look_at_camera"})
+
+# Narrow, deterministic sensor for "this turn is explicitly asking Orion to
+# perceive something right now" -- e.g. "what do you see", "look around",
+# "who's in the room". Exists because quick_lane_block_reason() was originally
+# built purely as an economic throttle (skip the expensive LLM reflection on
+# routine turns) and reused wholesale as the tool-recall loop's entry gate.
+# Those are different questions: "is this turn substrate-surprising" says
+# nothing about "does this turn need vision", so an ordinary, calm perception
+# question quick-laned straight to aligned and never reached the LLM
+# reflector that could recommend look_at_camera at all. Deliberately narrow
+# (word-boundary phrases, not a bare "see"/"look" match) so idiomatic uses
+# ("I see what you mean") don't defeat the throttle this sits inside of.
+# Mirrors the vision-seeking vocabulary named in harness_finalize_reflect.j2's
+# TOOL RECOMMENDATION section -- keep the two in lockstep.
+#
+# Known residual false-positive: "who's/what's ... in the room" also matches
+# ordinary business phrasing ("who's in the room for the standup"). Left as
+# is -- disambiguating that from a literal-camera question needs real NLU,
+# not a regex, and the cost of a false positive here is one extra background
+# LLM reflection call (see quick_lane_block_reason's economic-throttle
+# framing above), not corrupted output or a user-visible effect.
+_PERCEPTION_INTENT_RE = re.compile(
+    r"\b("
+    r"what (?:do|can|could) you see"
+    r"|what does the camera (?:show|see)"
+    r"|look (?:around|at the camera)"
+    r"|look (?:out|outside) the window"
+    r"|check the camera"
+    r"|can you see (?:me|us)"
+    r"|who['’]?s (?:in|around) the room"
+    r"|who is (?:in|around) the room"
+    r"|what['’]?s (?:in|going on in|happening in) the room"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _perception_intent_detected(user_message: str) -> bool:
+    if not user_message:
+        return False
+    return bool(_PERCEPTION_INTENT_RE.search(user_message))
 
 DEFAULT_GRAMMAR_EVENT_CHANNEL = "orion:grammar:event"
 
@@ -200,6 +242,7 @@ def quick_lane_block_reason(
     thought: ThoughtEventV1,
     repair_overlay: HarnessRepairOverlayV1,
     epsilon: float | None = None,
+    user_message: str = "",
 ) -> str | None:
     """Return a block reason when quick lane is disallowed; None when eligible."""
     eps = epsilon if epsilon is not None else _quick_gate_epsilon()
@@ -227,6 +270,12 @@ def quick_lane_block_reason(
     if repair_overlay.mode != "default":
         return "repair_overlay_mode"
 
+    # See _PERCEPTION_INTENT_RE docstring: a substrate-calm turn can still
+    # explicitly ask Orion to look at something, and the tool-recall loop
+    # can't fire if the LLM reflector never runs.
+    if _perception_intent_detected(user_message):
+        return "perception_intent"
+
     return None
 
 
@@ -237,12 +286,14 @@ def maybe_quick_lane_verdict(
     substrate_appraisal: SubstrateFinalizeAppraisalV1,
     repair_overlay: HarnessRepairOverlayV1,
     epsilon: float | None = None,
+    user_message: str = "",
 ) -> FinalizeReflectionV1 | None:
     if quick_lane_block_reason(
         substrate_appraisal=substrate_appraisal,
         thought=thought,
         repair_overlay=repair_overlay,
         epsilon=epsilon,
+        user_message=user_message,
     ):
         return None
 
@@ -362,6 +413,7 @@ async def run_finalize_reflection(
         thought=thought,
         substrate_appraisal=substrate_appraisal,
         repair_overlay=overlay,
+        user_message=user_message,
     )
     if quick is not None:
         return quick, True, None
@@ -411,6 +463,7 @@ async def run_finalize_reflection(
             thought=thought,
             substrate_appraisal=substrate_appraisal,
             repair_overlay=overlay,
+            user_message=user_message,
         )
         if degraded is not None:
             logger.warning(

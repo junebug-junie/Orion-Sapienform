@@ -319,7 +319,7 @@ class ConceptSettings(BaseSettings):
     @classmethod
     def _parse_repository_backend(cls, v):
         raw = str(v or "local").strip().lower()
-        if raw not in {"local", "graph", "shadow"}:
+        if raw not in {"local", "graph", "shadow", "substrate"}:
             return "local"
         return raw
 
@@ -329,7 +329,7 @@ class ConceptSettings(BaseSettings):
         raw = str(v or "").strip().lower()
         if not raw:
             return ""
-        if raw not in {"local", "graph", "shadow"}:
+        if raw not in {"local", "graph", "shadow", "substrate"}:
             return ""
         return raw
 

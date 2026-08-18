@@ -76,6 +76,128 @@ async def test_aligned_verdict_no_retry(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_aligned_verdict_with_world_contact_opportunity_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-08-18 fix: an HONEST draft (alignment_verdict='aligned') must
+    still be able to trigger the retry when 5b independently flagged
+    world_contact_opportunity=true. Honesty and having-a-live-tool-opportunity
+    are unrelated questions -- this is the case 3 live turns confirmed was
+    structurally unreachable before this field existed."""
+    monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
+    reflection = make_reflection(
+        alignment_verdict="aligned",
+        recommended_tool="look_at_camera",
+        world_contact_opportunity=True,
+    )
+    re_reflected = make_reflection(alignment_verdict="aligned")
+
+    async def cortex_client(req):
+        verb = req.plan.verb_name
+        if verb == "look_at_camera":
+            return {"final_text": "chair, table, door visible"}
+        if verb == "harness_finalize_reflect":
+            return {"final_text": json.dumps(re_reflected.model_dump(mode="json"))}
+        raise AssertionError(f"unexpected verb {verb}")
+
+    result, receipts, retried, tool, _trace_id = await maybe_run_finalize_tool_retry(
+        **_retry_kwargs(reflection=reflection, cortex_client=cortex_client)
+    )
+
+    assert retried is True
+    assert tool == "look_at_camera"
+    assert len(receipts) == 1
+    assert receipts[0].tool_name == "look_at_camera"
+    assert result.alignment_verdict == "aligned"
+
+
+@pytest.mark.asyncio
+async def test_world_contact_opportunity_declined_by_user_no_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code-level backstop, not just prompt trust: even if 5b's LLM call sets
+    world_contact_opportunity=true, an explicit "don't use tools" in
+    user_message must block the retry regardless. Live case that motivated
+    this: corr=d350c572-0b21-453c-868e-6677cfd4c954."""
+    monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
+    reflection = make_reflection(
+        alignment_verdict="aligned",
+        recommended_tool="look_at_camera",
+        world_contact_opportunity=True,
+    )
+
+    async def cortex_client(_req):  # pragma: no cover
+        raise AssertionError("must not fire when the user declined tool use")
+
+    result, receipts, retried, tool, _trace_id = await maybe_run_finalize_tool_retry(
+        **_retry_kwargs(
+            reflection=reflection,
+            cortex_client=cortex_client,
+            user_message="Don't use any tools, just tell me what you think.",
+        )
+    )
+
+    assert retried is False
+    assert tool is None
+    assert result.world_contact_opportunity is False
+
+
+@pytest.mark.asyncio
+async def test_world_contact_opportunity_without_tool_logs_and_no_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """world_contact_opportunity=true with recommended_tool left null must not
+    silently no-op indistinguishably from world_contact_opportunity being
+    false -- see harness_finalize_tool_loop_opportunity_without_tool log."""
+    monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
+    reflection = make_reflection(
+        alignment_verdict="aligned",
+        recommended_tool=None,
+        world_contact_opportunity=True,
+    )
+
+    async def cortex_client(_req):  # pragma: no cover
+        raise AssertionError("must not fire with no recommendation")
+
+    result, receipts, retried, tool, _trace_id = await maybe_run_finalize_tool_retry(
+        **_retry_kwargs(reflection=reflection, cortex_client=cortex_client)
+    )
+
+    assert retried is False
+    assert tool is None
+
+
+@pytest.mark.asyncio
+async def test_world_contact_opportunity_unrecognized_tool_scrubs_both_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unrecognized recommended_tool must scrub world_contact_opportunity
+    too, not just recommended_tool/recommended_tool_reason -- leaving it true
+    would assert a live opportunity backed by nothing, since the only tool
+    that could have satisfied it was just discarded."""
+    monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
+    reflection = make_reflection(
+        alignment_verdict="aligned",
+        recommended_tool="delete_all_the_things",
+        recommended_tool_reason="a hallucinated justification",
+        world_contact_opportunity=True,
+    )
+
+    async def cortex_client(_req):  # pragma: no cover
+        raise AssertionError("an unrecognized tool must never be dispatched")
+
+    result, receipts, retried, tool, _trace_id = await maybe_run_finalize_tool_retry(
+        **_retry_kwargs(reflection=reflection, cortex_client=cortex_client)
+    )
+
+    assert retried is False
+    assert tool is None
+    assert result.recommended_tool is None
+    assert result.recommended_tool_reason is None
+    assert result.world_contact_opportunity is False
+
+
+@pytest.mark.asyncio
 async def test_no_recommendation_no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HARNESS_FINALIZE_TOOL_LOOP_ENABLED", "true")
     reflection = make_reflection(alignment_verdict="misaligned", recommended_tool=None)

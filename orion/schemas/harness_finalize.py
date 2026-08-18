@@ -76,12 +76,26 @@ class FinalizeReflectionV1(BaseModel):
     finalize_changed: bool = False
 
     # Loop-back tool-recall retry (see orion/harness/finalize.py::
-    # maybe_run_finalize_tool_retry). Populated only when alignment_verdict is
-    # "misaligned" for a reason a specific, already-reviewed tool would fix --
-    # the reflect prompt is constrained to a small allowlist, so an
-    # unrecognized value here is dropped by the harness, never dispatched.
+    # maybe_run_finalize_tool_retry). Populated when alignment_verdict is
+    # "misaligned" for a reason a specific, already-reviewed tool would fix,
+    # OR when world_contact_opportunity is true (see below) -- the reflect
+    # prompt is constrained to a small allowlist, so an unrecognized value
+    # here is dropped by the harness, never dispatched.
     recommended_tool: str | None = None
     recommended_tool_reason: str | None = Field(default=None, max_length=300)
+
+    # Independent of alignment_verdict: true when the user asked what is
+    # currently visible/in the room right now, no matching tool was called
+    # this turn, and the user did not instruct Orion not to use tools this
+    # turn. An honest "I can't see, I'd need to check" draft can still set
+    # this true -- honesty and having-a-live-tool-opportunity are unrelated
+    # questions, and conflating them (the pre-2026-08-18 design) meant the
+    # tool-recall retry could never fire for its own intended purpose: 3 live
+    # turns confirmed a genuinely honest non-hallucinating draft is always
+    # "aligned," so gating the retry on misalignment alone left it
+    # structurally unreachable for a benign "what do you see" ask. See
+    # orion/harness/finalize.py::maybe_run_finalize_tool_retry.
+    world_contact_opportunity: bool = False
 
 
 class HarnessVerdictMoleculeV1(BaseModel):

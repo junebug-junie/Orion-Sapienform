@@ -22,6 +22,7 @@ from jinja2 import Environment
 
 from pydantic import BaseModel
 
+from orion.llm.routes import ACCEPTED_LLM_ROUTES, LLM_ROUTE_ALIASES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
@@ -1846,7 +1847,11 @@ def _journal_pageindex_query(user_text: str) -> bool:
 # to "agent" for a normal chat_general turn), so the selection had no effect.
 # Confirmed live 2026-08-14: Hub Mode: Quick + Compute: Agent produced a response
 # but nothing reached Circe's dedicated agent worker -- traced to this allowlist.
-_ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
+# Shared with orion-actions via `orion.llm.routes` -- these two services each kept their own
+# copy of this set until 2026-08-18, and the copies drifted: orion-actions was still on
+# {chat, quick, metacog} and silently rewrote `quick_background` (its own configured journal
+# route) to `chat`. One definition, two importers.
+_ACCEPTED_LLM_ROUTE_OVERRIDES = ACCEPTED_LLM_ROUTES
 
 
 def _apply_autonomous_background_route(
@@ -1910,13 +1915,13 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
     raw = ctx.get("llm_route") or (
         (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
     )
-    override = str(raw or "").strip().lower()
-    if override in {"chat_quick", "quick_chat", "chat_kids_story"}:
-        override = "quick"
-    attempted = override or None
-    if override in _ACCEPTED_LLM_ROUTE_OVERRIDES:
-        return override, attempted
-    return None, attempted
+    # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
+    # override stays visible in the llm_route_selected log line (see docstring).
+    resolved = str(raw or "").strip().lower()
+    resolved = LLM_ROUTE_ALIASES.get(resolved, resolved)
+    attempted = resolved or None
+    accepted = normalize_llm_route(raw)
+    return accepted, attempted
 
 
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:

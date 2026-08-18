@@ -22,6 +22,7 @@ from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.llm_json import parse_json_object
+from orion.llm.routes import ACCEPTED_LLM_ROUTES, normalize_llm_route
 from orion.journaler import (
     JOURNAL_CREATED_KIND,
     JOURNAL_WRITE_KIND,
@@ -131,13 +132,30 @@ _ensure_logging()
 workflow_schedule_metrics = WorkflowScheduleMetrics()
 
 
-def _normalized_llm_route(preferred: str | None, fallback: str) -> str:
-    route = str(preferred or fallback or "").strip().lower()
-    if route in {"chat_quick", "quick_chat", "chat_kids_story"}:
-        return "quick"
-    if route in {"chat", "quick", "metacog"}:
-        return route
-    return "chat"
+def _normalized_llm_route(preferred: str | None, fallback: str) -> str | None:
+    """Canonical route for a configured override, or None meaning "do not override".
+
+    This used to carry its own allow-list of {chat, quick, metacog} and fall back to "chat" for
+    anything else. `ACTIONS_JOURNAL_LLM_ROUTE=quick_background` -- set in `.env` and
+    `.env_example` -- was therefore silently rewritten to `chat`, sending every journal compose
+    to circe's single-slot 131k lane instead of atlas's background lane. `agent` was rewritten
+    the same way. The allow-list now lives in `orion.llm.routes` and is shared with
+    orion-cortex-exec so the two cannot drift again.
+
+    A value that is still unrecognised returns None rather than defaulting to `chat`: falling
+    back to the largest, most contended upstream in the fleet is the worst possible guess. None
+    lets the executor apply its own verb-based default, and the rejected value is logged rather
+    than absorbed.
+    """
+    raw = str(preferred or fallback or "").strip()
+    route = normalize_llm_route(raw)
+    if route is None and raw:
+        logger.warning(
+            "actions_llm_route_unrecognized value=%r accepted=%s -- sending no override",
+            raw,
+            sorted(ACCEPTED_LLM_ROUTES),
+        )
+    return route
 
 
 def _cfg() -> ChassisConfig:
@@ -1135,7 +1153,10 @@ async def lifespan(app: FastAPI):
                     user_id=settings.actions_recipient_group,
                     extra={
                         "mode": "brain",
-                        "llm_route": daily_llm_route,
+                        # Omitted entirely when unrecognized, rather than sent as null: an
+                        # absent override is what makes the executor fall through to its own
+                        # verb-based default.
+                        **({"llm_route": daily_llm_route} if daily_llm_route else {}),
                         "session_id": settings.actions_session_id,
                         "verb": verb_name,
                         "trace_id": request_id,
@@ -1198,7 +1219,7 @@ async def lifespan(app: FastAPI):
             recall_profile=recall_profile,
             options={
                 "timeout_sec": float(settings.actions_exec_timeout_seconds),
-                "llm_route": journal_llm_route,
+                **({"llm_route": journal_llm_route} if journal_llm_route else {}),
             },
         )
         reply_channel = new_reply_channel("orion:cortex:result")

@@ -49,3 +49,15 @@ def test_absent_override_returns_none_none():
 def test_top_level_llm_route_takes_precedence_over_options():
     ctx = {"llm_route": "agent", "options": {"llm_route": "quick"}}
     assert _resolve_llm_route_override(ctx) == ("agent", "agent")
+
+
+def test_the_accepted_set_is_the_shared_one_not_a_private_copy():
+    """orion-actions kept its own copy of this set and it drifted: it was still
+    {chat, quick, metacog} long after `quick_background` and `agent` existed here, so its
+    configured `ACTIONS_JOURNAL_LLM_ROUTE=quick_background` was silently rewritten to `chat` --
+    circe's single-slot 131k lane -- with no log line. One definition, two importers, checked by
+    identity so a future private copy fails here."""
+    from app.executor import _ACCEPTED_LLM_ROUTE_OVERRIDES
+    from orion.llm.routes import ACCEPTED_LLM_ROUTES
+
+    assert _ACCEPTED_LLM_ROUTE_OVERRIDES is ACCEPTED_LLM_ROUTES

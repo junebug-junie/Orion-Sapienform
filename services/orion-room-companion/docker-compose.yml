@@ -27,6 +27,16 @@ services:
       # same reasons, as orion-self-study-enrichment; see that service's
       # README "Credential isolation (safety requirement)" and this one's
       # README for why the credential lives here and NOT in orion-hub.
+      #
+      # These two lines and the volumes: entry below all interpolate the same
+      # ROOM_COMPANION_CLAUDE_CONFIG_DIR var with the same /root/.claude
+      # fallback -- normally identical by construction, but the fallback is a
+      # literal in three places, not a shared reference. Edit only one and
+      # they diverge whenever the env var itself is unset: the session store
+      # (see volumes: below) lands somewhere `claude` isn't pointed at, and
+      # nothing errors -- it just silently fails to persist across a rebuild.
+      # test_compose_claude_config_dir_interpolations_match asserts they stay
+      # identical.
       - CLAUDE_CONFIG_DIR=${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}
       - ROOM_COMPANION_CLAUDE_CONFIG_DIR=${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}
       # Long-lived OAuth token from `claude setup-token` (see .env_example).

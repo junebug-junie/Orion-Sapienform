@@ -25,6 +25,7 @@ on its own, and no redirection vector reaches the subprocess env.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,9 +40,17 @@ ENV_EXAMPLE = Path(__file__).resolve().parents[1] / ".env_example"
 
 
 def _settings(**overrides) -> Settings:
+    """`_env_file=None` is load-bearing, not tidiness: Settings.model_config
+    points at a real local `.env` (settings.py), and once an operator fills
+    in ROOM_COMPANION_CLAUDE_OAUTH_TOKEN there per the documented workflow,
+    any test run from this service's own directory (as the README's own
+    `cd services/orion-room-companion && pytest tests -q` does) would
+    otherwise pick up the real 1-year token here -- silently, since nothing
+    about a passing test would reveal it, until an unrelated assertion
+    failure printed it straight into a pytest diff."""
     base = {"ROOM_COMPANION_CLAUDE_CONFIG_DIR": "/root/.claude"}
     base.update(overrides)
-    return Settings(**base)
+    return Settings(_env_file=None, **base)
 
 
 def test_subprocess_env_strips_api_key_and_fcc_gateway_vars():
@@ -219,6 +228,20 @@ def test_compose_persists_the_claude_session_store():
     assert config_dir_mounts, f"CLAUDE_CONFIG_DIR must be on a named volume, got {volumes}"
 
 
+def test_compose_claude_config_dir_interpolations_match():
+    """Three separate literal `${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}`
+    occurrences (CLAUDE_CONFIG_DIR, ROOM_COMPANION_CLAUDE_CONFIG_DIR, and the
+    session-store volume target) must stay byte-identical. They resolve
+    identically today because they read the same underlying var, but the
+    `:-/root/.claude` fallback is copy-pasted, not shared -- editing only one
+    would silently point the volume somewhere `claude` never looks, with no
+    error, only once ROOM_COMPANION_CLAUDE_CONFIG_DIR itself goes unset."""
+    raw = COMPOSE.read_text(encoding="utf-8")
+    occurrences = re.findall(r"\$\{ROOM_COMPANION_CLAUDE_CONFIG_DIR[^}]*\}", raw)
+    assert len(occurrences) == 3, f"expected exactly 3 occurrences, got {occurrences}"
+    assert len(set(occurrences)) == 1, f"interpolations diverged: {occurrences}"
+
+
 def test_subprocess_env_carries_the_deliberately_configured_oauth_token():
     """The one deliberate exception to the allowlist: a token that arrives
     through Settings (i.e. from this service's own .env, translated by
@@ -234,3 +257,24 @@ def test_subprocess_env_omits_oauth_token_key_when_unconfigured():
     auth precedence ahead of a legitimate /login credential."""
     env = build_subprocess_env(_settings())
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_oauth_token_strips_paste_artifacts():
+    """The documented workflow is copying a token out of a terminal print and
+    pasting it into a .env KEY=VALUE line by hand -- a trailing newline or
+    space would otherwise make the value truthy-but-wrong, and Claude Code's
+    401 for that looks identical to a genuinely revoked token."""
+    settings = _settings(ROOM_COMPANION_CLAUDE_OAUTH_TOKEN="  sk-ant-oat01-pasted \n")
+    assert settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN.get_secret_value() == "sk-ant-oat01-pasted"
+
+
+def test_settings_helper_does_not_leak_a_real_dotenv_token(tmp_path, monkeypatch):
+    """Regression for _settings()'s `_env_file=None`: without it, any test run
+    from a cwd holding a real .env with a filled-in
+    ROOM_COMPANION_CLAUDE_OAUTH_TOKEN -- exactly what
+    `cd services/orion-room-companion && pytest tests -q` does once an
+    operator completes the documented setup-token workflow -- would silently
+    pick up the live secret instead of the None this helper's callers expect."""
+    (tmp_path / ".env").write_text("ROOM_COMPANION_CLAUDE_OAUTH_TOKEN=sk-ant-oat01-should-never-leak\n")
+    monkeypatch.chdir(tmp_path)
+    assert _settings().ROOM_COMPANION_CLAUDE_OAUTH_TOKEN is None

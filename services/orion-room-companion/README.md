@@ -151,9 +151,13 @@ unfixed there.
   copy-paste mistake) that isn't the one this service was deliberately
   configured with — see `test_subprocess_env_is_an_allowlist_not_a_denylist`.
 - This service never logs or echoes the token.
-- No `.credentials.json` file, mount, or `CLAUDE_CONFIG_DIR`/mount-path
-  interpolation-matching concern exists any more — that entire class of
-  wiring (and the bug below) is retired, not patched.
+- No `.credentials.json` file or mount exists any more — that specific bug
+  (below) is retired, not patched. `CLAUDE_CONFIG_DIR`'s own
+  interpolation-matching concern is unrelated to the credential and still
+  applies (three literal `${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}`
+  occurrences in `docker-compose.yml` must stay identical, or the session
+  store silently stops persisting) — see the comment in `docker-compose.yml`
+  and `test_compose_claude_config_dir_interpolations_match`.
 
 `build_subprocess_env()` additionally strips `ANTHROPIC_BASE_URL` and
 `ANTHROPIC_AUTH_TOKEN`. Those are what Hub's FCC lane
@@ -255,6 +259,15 @@ docker compose \
 
 Prefer `scripts/safe_docker_build.sh orion-room-companion up -d --build` — it
 refuses to run from the shared checkout.
+
+**Rotating the token needs `up -d`, not `docker compose restart`.**
+`ROOM_COMPANION_CLAUDE_OAUTH_TOKEN` is read once into `Settings`
+(`@lru_cache`-d, `app/main.py`) at process start, and the container's env is
+fixed at container creation. `restart` reuses the existing container as-is;
+only `up -d` (recreate) re-reads `.env` into a fresh container. This is a real
+difference from the retired file mount, which the `claude` binary re-read
+per-invocation regardless of the container's own lifecycle — a habit worth
+unlearning, not carrying forward.
 
 ### Live smoke
 

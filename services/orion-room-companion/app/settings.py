@@ -5,7 +5,7 @@ from functools import lru_cache
 
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -61,7 +61,22 @@ class Settings(BaseSettings):
     # copy-paste mistake, an inherited shell var) -- only the value that
     # arrives through this specific Settings field, sourced from this
     # service's own .env, ever reaches the subprocess.
-    ROOM_COMPANION_CLAUDE_OAUTH_TOKEN: Optional[str] = Field(default=None)
+    #
+    # SecretStr, not str: this is the first real secret this Settings class
+    # has ever held (the old design mounted a file and never put credential
+    # bytes into a Python object at all). Without it, any future
+    # `logger.debug(settings)` or a debug endpoint's `model_dump()` would
+    # render the live token in full.
+    ROOM_COMPANION_CLAUDE_OAUTH_TOKEN: Optional[SecretStr] = Field(default=None)
+
+    @field_validator("ROOM_COMPANION_CLAUDE_OAUTH_TOKEN", mode="before")
+    @classmethod
+    def _strip_pasted_token(cls, value: object) -> object:
+        """Documented workflow is a manual terminal copy-paste; a trailing
+        newline or space riding along would make the token silently wrong
+        (truthy, present, and still rejected by Claude Code) and misread as a
+        revoked credential rather than a paste artifact."""
+        return value.strip() if isinstance(value, str) else value
 
     ROOM_COMPANION_CLAUDE_BIN: str = Field(default="claude")
     ROOM_COMPANION_MODEL: str = Field(default="claude-sonnet-5")

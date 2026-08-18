@@ -106,7 +106,7 @@ def build_subprocess_env(settings: Settings) -> Dict[str, str]:
     }
     env["CLAUDE_CONFIG_DIR"] = settings.ROOM_COMPANION_CLAUDE_CONFIG_DIR
     if settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN:
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN.get_secret_value()
     return env
 
 

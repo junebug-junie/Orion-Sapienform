@@ -42,20 +42,59 @@ panel.** Never wired into attention, proposals, or dispatch. This design wires i
 
 ## Missing questions (the reason this isn't code yet)
 
-1. **Where does this run, and how often?** `channel_regime()` needs a *window* of history
-   (`statistics.median`/`pstdev` over N samples), not a single incremental update like
-   `DeviationGate`. Field-digester's hot loop runs every ~2s; recomputing a real window
-   from Postgres inside that loop either means (a) a new incremental rolling-buffer data
-   structure (real new state, real new failure surface) or (b) a much slower cadence
-   (every 30-60s?) as a side-process, not inside the tick loop at all. This is the single
-   decision that shapes everything else and I don't have a strong answer yet.
-2. **Scope: all 38 raw channels × all nodes, or a subset?** All-channels is
-   `~4 nodes x 38 = ~150` regime computations per cycle — cheap per computation, but the
-   question of whether ALL of them are meaningful competition inputs (vs. noise) is open.
-3. **What baseline window for a live producer?** The Hub panel lets an operator pick
-   1/6/24h. A live producer needs one fixed, disclosed window — and that choice needs its
-   own real live-data check (does `loaded_steady` actually occur at a genuine,
-   non-degenerate rate at that window size, for real channels, not just in theory).
+1. **Where does this run, and how often? ANSWERED, 2026-08-18.** `FieldDigesterWorker`
+   (`services/orion-field-digester/app/worker.py`) already runs FIVE independent asyncio
+   loops off one `start()`, each on its own interval, each wrapping its tick in
+   `asyncio.to_thread` + a broad `except Exception: logger.exception(...)`: `_poll_loop`
+   (the 2s hot loop), `_prune_loop`, `_health_loop`, `_causal_geometry_producer_loop`
+   (hourly), `_anomaly_loop`. A sixth loop on the same pattern (`_significance_loop`, its
+   own `field_significance_check_interval_sec`) is not a new architecture, it's the
+   established idiom, already proven safe five times over.
+   More specifically, **the exact "new rolling-buffer data structure" option (a) worried
+   about is not new either** — `FieldChannelAnomalyScorer` (`app/anomaly_scorer.py`) already
+   does precisely this: `append_row()` is called cheaply from the hot loop on every tick
+   (the row is already computed there for the corpus sink), pushed into a bounded
+   `deque(maxlen=window_size + margin)`; a *separate*, slower `_anomaly_loop` timer reads
+   that buffer and does the expensive computation. Same shape works here directly: append
+   the same per-tick `channel_pressures` row into a second rolling buffer, and let
+   `_significance_loop` compute `channel_regime()` per channel from it on a slow cadence —
+   zero new DB round-trips in the hot loop, zero new failure-handling pattern.
+   One real wrinkle: today `channel_pressures` is only computed when `_FIELD_CHANNEL_SINK.
+   enabled or self._anomaly_scorer is not None` (`worker.py` `_tick()`); wiring in
+   significance means widening that `or` to include it too — a small, disclosed, real cost
+   (one extra `collect_field_channel_pressures()` call per hot tick when only significance
+   is enabled), not a hidden one.
+2. **Scope: all 38 raw channels × all nodes, or a subset? PARTIALLY ANSWERED, 2026-08-18.**
+   Real live distribution at `hours=1` (1,419 real rows, 2026-08-18): of 39 channels,
+   14 `quiet_volatile`, 11 `pinned_min`, 10 `no_new_input`, 2 `calm`, 1 `loaded_volatile`,
+   1 `loaded_steady`. Most channels sit in structurally uninteresting states
+   (`pinned_min`/`no_new_input`) most of the time — real evidence for scoping the Borda
+   vote (Q4) to channels currently in a `loaded_*`/`calm` regime, mirroring how `deviation_
+   pressure` already scopes its own vote, rather than forcing all ~150 channel×node
+   combinations to cast a ballot every cycle regardless of whether they carry information.
+3. **What baseline window for a live producer? PARTIALLY ANSWERED, 2026-08-18 — plus one
+   unrelated bug found along the way.** Bug: Hub's `/api/field-channel-glossary/health`
+   panel offers 1/6/24h, but the query is capped at `row_cap=6000` rows
+   (`field_channel_glossary_routes.py`) — at the live ~2.5s cadence that's **~3.3 hours**.
+   Confirmed live: `hours=6` and `hours=24` both returned `row_count=6000,
+   truncated=true` and IDENTICAL regime-label distributions across all 39 channels — the
+   panel's 6h/24h options are silently the same effective window today, not what their
+   labels claim. Out of scope to fix here (a debug-panel-only issue, not this design), but
+   worth its own follow-up ticket.
+   For the actual question: ran `channel_regime()` directly against a real 15-minute window
+   (350 real rows, no baseline) — the timescale a live significance producer would plausibly
+   use, not the debug panel's hour-scale presets. Result was non-degenerate and, more
+   importantly, demonstrated real independence between level and dispersion on live data:
+   `disk_capacity_pressure` (level=0.7655, dispersion=0.00079) read `loaded_steady` —
+   literally "looks peaceful but running high load", Juniper's own example — while `power_
+   pressure` at a similar level (0.868) but much higher dispersion (0.146) read `loaded_
+   volatile`, and `memory_pressure` read genuine `calm`. Level and dispersion are
+   demonstrably NOT the same axis on real data at this timescale, which is the entire
+   premise this design rests on. Not yet answered: whether 15 minutes specifically (vs.
+   10/20/30) is the right final choice, or what baseline window (for `level_percentile`/
+   `dispersion_ratio`/`drift`) pairs with it — that still needs its own pass once a
+   producer is actually being built, same as `MIN_RUN_LENGTH` was tuned from real replay
+   data rather than picked in the abstract.
 4. **Combination mechanism.** Proposed: reuse `aggregate_borda` exactly as `deviation_
    pressure` does — each channel ranks nodes by `pressure_equivalent_level` (or votes only
    when in a `loaded_*` regime), same "scorers rank targets, no cross-scorer exchange rate"
@@ -63,7 +102,8 @@ panel.** Never wired into attention, proposals, or dispatch. This design wires i
 5. **Independence from `deviation_pressure`, checked or assumed?** Expected to be low
    correlation (they answer different questions), but "expected" isn't "checked" — CLAUDE.md
    0A's independence-check item needs a real number here before this ships, not an
-   assumption carried over from a different metric's clean bill.
+   assumption carried over from a different metric's clean bill. Not yet run: the 15-minute
+   spot-check above didn't compute this correlation, only regime labels.
 
 ## Proposed schema / API changes (sketch — not final until Q1-Q4 above are answered)
 
@@ -111,16 +151,27 @@ proposal_policy.v1.yaml` for actual action wiring.
 
 ## Recommended next patch
 
-Investigate Missing Question 1 first — specifically, whether `orion-field-digester` already
-has (or could cheaply gain) a slower periodic-task lane separate from its 2s hot loop
-(worth checking `services/orion-field-digester/app/worker.py` for an existing pattern before
-assuming one needs to be built), since that answer determines whether this is a small
-addition to an existing mechanism or a genuinely new one. Then a sensing-only patch,
-metric-gated against real data, with zero action wiring — same shape as PR #1699's own first
-half.
+Q1 is answered: a sixth `worker.py` loop (`_significance_loop`) on `FieldChannelAnomalyScorer`'s
+exact append-to-a-bounded-deque-then-slow-read pattern, no new architecture. Q2 and Q3 have
+real, live, non-degenerate evidence behind them, though the final window size and baseline
+pairing still need their own tuning pass once a producer actually exists. Remaining before a
+sensing-only patch (same staged shape as PR #1699's own first half — no consumer/action
+wiring in the same patch):
+
+1. Build the `_significance_loop`/rolling-buffer producer per Q1's answer, computing
+   `channel_regime()` per channel scoped to `loaded_*`/`calm` regimes per Q2's evidence.
+2. Pick and disclose a final window (15 minutes is a reasonable starting point per the
+   live check above, not yet a locked answer) and a baseline window for the relative axes.
+3. Run the real independence check against `deviation_pressure` (Q5) and the Borda
+   scale-freedom test (Q4) before anything downstream reads this.
+4. New `PRESSURE_DIMENSIONS` entry + `FieldStateV1` field(s), metric-gated against real
+   data per CLAUDE.md 0A, same discipline as `tension_deviation_pressure`.
 
 ## Exact question for Juniper
 
-Given the two real open decisions above (Q1: where/how often this runs; Q4/Q5: Borda reuse
-and the independence check) — go ahead and investigate Q1 now, or do you want to weigh in on
-the cadence/architecture call first?
+The architecture/cadence call (Q1) is resolved with real evidence, not a guess — reuse the
+anomaly scorer's rolling-buffer pattern. Remaining before implementation: the Borda-reuse
+validation (Q4) and the independence check against `deviation_pressure` (Q5), both of which
+need to be run against real data as part of building the sensing-only patch itself, not
+answerable from investigation alone. Ready to build that sensing-only patch, or hold for
+explicit go-ahead per CLAUDE.md's proposal-mode rule for cognition-loop changes?

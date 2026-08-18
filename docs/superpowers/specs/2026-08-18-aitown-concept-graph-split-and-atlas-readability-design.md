@@ -82,9 +82,15 @@ a graph that turns to mush past a few dozen nodes.
   Cytoscape.js, `layout: { name: "cose", animate: false, padding: 24 }`
   (line ~304) — no `nodeDimensionsIncludeLabels`, no overlap/spacing tuning.
   `promotion_state` has a working client-side filter
-  (`applyClientPromotionStateFilter`); `anchor_scope` is fetched and shown as
-  a stat breakdown (`renderBreakdown(ANCHOR_SCOPE_BREAKDOWN, ...)`) but is
-  never wired into an actual node filter.
+  (`applyClientPromotionStateFilter`).
+  **Correction (2026-08-18, later same day):** this doc originally claimed
+  `anchor_scope` was never wired into an actual filter — wrong, caught
+  before implementing a duplicate. `caFilterScope`
+  (`templates/concept_atlas.html:26`) already round-trips as a real
+  server-side `scope` query param on `/api/substrate/concepts/network`
+  (`concept-atlas.js`'s `currentFilters()`/`fetchNetwork()`). The only real
+  gap here was the layout's label-collision handling — fixed same day, see
+  "Recommended next patch" / Track A.
 - **Analysis already computed**: activation-weighted degree → top-5 "god
   nodes," computed fresh per request
   (`concept_atlas_routes.py:48`, `_GOD_NODE_TOP_N`). That's the only graph
@@ -246,10 +252,15 @@ ever appears.
 
 **Readability** — additive, UI + backend, no schema changes:
 
-- Cytoscape layout: add `nodeDimensionsIncludeLabels: true` plus tuned
-  `nodeRepulsion`/`idealEdgeLength`/`componentSpacing` for denser graphs.
-- Wire `anchor_scope` into an actual client-side filter (mirrors the existing
-  `applyClientPromotionStateFilter` pattern exactly).
+- ~~Cytoscape layout: add `nodeDimensionsIncludeLabels`~~ **Shipped same
+  day** (`nodeDimensionsIncludeLabels: true` + `componentSpacing: 80` in
+  `concept-atlas.js`'s cose config) alongside the Track A corpus filter —
+  see fix branch/PR. `nodeRepulsion`/`idealEdgeLength` tuning intentionally
+  left alone: no way to visually verify a chosen magnitude is actually
+  better without a live render, so guessing at absolute numbers risked
+  making it worse; revisit with real before/after screenshots.
+- ~~Wire `anchor_scope` into an actual client-side filter~~ **Not needed —
+  already existed**, see the corrected "Current architecture" note above.
 - Default label visibility to god-nodes-only (or above a zoom threshold),
   full labels on hover/click — data already carries `god_node: bool` per
   node (`concept_atlas_routes.py:715`), this is a pure frontend change.
@@ -350,21 +361,31 @@ split, and vice versa:
 
 **Track A — concept graph (smallest, ships fastest):**
 
-1. **Corpus fix now** (Phase 0 above, no new table needed yet): add
-   `where_sql` to the existing single topic-foundry dataset, using the
-   canonical `client_meta` tag, not the `source` column. Stops new
-   AI-Town concepts entering Orion's graph immediately — a ~10-line change,
-   `where_sql` already works end-to-end in topic-foundry.
-2. **Cleanup pass**: purge already-ingested AI-Town-sourced nodes from
-   `orion_substrate` (one-off script, snapshot-first per this repo's
-   backfill protocol).
+1. ~~**Corpus fix**~~ **shipped same day**: `where_sql` added to
+   `_TOPIC_FOUNDRY_WHERE_SQL` on a renamed dataset/model
+   (`-v2` suffix — topic-foundry's dataset/model routes are create-only, no
+   update endpoint, so the old unfiltered names had to be superseded by new
+   ones rather than patched in place), using the canonical `client_meta`
+   tag. Stops new AI-Town concepts entering Orion's graph from the next
+   scheduler tick onward. Old `orion-hub-autonomous-dataset`/
+   `orion-hub-autonomous` left in place, unreferenced (no delete endpoint
+   either).
+1b. ~~**Layout label-collision fix**~~ **shipped same day**, see the
+   Readability section above.
+2. **Cleanup pass** (not yet done — a delete, deliberately left for an
+   explicit go-ahead rather than run unattended): purge already-ingested
+   AI-Town-sourced nodes from `orion_substrate` (one-off script,
+   snapshot-first per this repo's backfill protocol). Without this, the
+   *already-ingested* god nodes stay AI-Town-derived until the next full
+   retrain cycle naturally ages them out via decay, or this runs.
 3. **AI Town's own concept graph**: second dataset/model/FalkorDB-graph/
    ingestion path, per the earlier schema section — reads from
    `aitown_chat_history_log` once Track B's Phase 1 exists, or from
    `chat_history_log` filtered to the aitown tag in the interim.
-4. **Readability**: layout tuning + `anchor_scope` filter (cheap, ship
-   independently/in parallel with 1-3) → connected-components → community
-   coloring, roughly in that order of effort-to-value.
+4. **Readability, remaining**: connected-components → community coloring,
+   roughly in that order of effort-to-value. `nodeRepulsion`/
+   `idealEdgeLength` layout tuning also still open — needs a live
+   before/after render to tune responsibly, not a guessed number.
 5. **AI Town Concept Atlas page**: only once someone's actually looking at
    the new graph regularly.
 

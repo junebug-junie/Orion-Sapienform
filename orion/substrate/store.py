@@ -255,3 +255,30 @@ class InMemorySubstrateGraphStore:
             limit_nodes=limit_nodes,
             limit_edges=limit_edges,
         )
+
+
+def select_concept_nodes_by_anchor_scope(
+    nodes: "list[BaseSubstrateNodeV1]", subjects: "list[str]"
+) -> dict[str, list]:
+    """Group concept-region query results into `node_kind == "concept"` nodes
+    bucketed by `anchor_scope`, restricted to `subjects`.
+
+    Shared by the two live readers of `query_concept_region()`'s concept
+    nodes: `orion/substrate/relational/adapters/concept_induction_ctx.py`
+    (chat_stance's `concept_induced` tier) and
+    `orion/spark/concept_induction/substrate_repository.py`
+    (`concept_induction_pass`'s `substrate` backend). Both need the exact
+    same node_kind/anchor_scope filter; pulling it out here means a future
+    change to that filter (a new node_kind, a new anchor scope) only has to
+    be made once.
+    """
+    wanted = set(subjects)
+    by_subject: dict[str, list] = {subject: [] for subject in subjects}
+    for node in nodes:
+        if getattr(node, "node_kind", None) != "concept":
+            continue
+        anchor = getattr(node, "anchor_scope", None)
+        if anchor not in wanted:
+            continue
+        by_subject[anchor].append(node)
+    return by_subject

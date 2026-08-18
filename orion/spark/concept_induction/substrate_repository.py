@@ -38,14 +38,12 @@ import logging
 from typing import Sequence
 
 from orion.core.schemas.concept_induction import ConceptItem, ConceptProfile, make_concept_id
-from orion.substrate import build_substrate_store_from_env
+from orion.substrate import InMemorySubstrateGraphStore, build_substrate_store_from_env, select_concept_nodes_by_anchor_scope
 from orion.substrate.store import SubstrateGraphStore
 
 from .profile_repository import ConceptProfileLookupV1, ConceptProfileRepositoryStatus
 
 logger = logging.getLogger("orion.spark.concept.substrate_repository")
-
-_SUBJECTS = ("orion", "relationship", "juniper")
 
 
 class SubstrateConceptProfileRepository:
@@ -64,10 +62,30 @@ class SubstrateConceptProfileRepository:
         if self._store is not None:
             return self._store
         try:
-            self._store = build_substrate_store_from_env()
+            store = build_substrate_store_from_env()
         except Exception as exc:
             logger.debug("substrate_concept_repository_store_init_failed error=%s", exc)
             return None
+
+        # build_substrate_store_from_env() never raises on misconfiguration --
+        # an unset SUBSTRATE_STORE_BACKEND, or `falkor` with a missing
+        # FALKORDB_URI, both silently resolve to a working-but-empty
+        # InMemorySubstrateGraphStore (see graphdb_store.py's
+        # build_substrate_store_from_env / falkor_store.py's
+        # build_falkor_substrate_store_from_env). Left unchecked, that reads
+        # here as "queried fine, zero concepts" (availability="empty") instead
+        # of "never actually reached FalkorDB" (availability="unavailable"),
+        # which silently skips the fail_open_local/fail_closed cutover in
+        # workflow_runtime.py's _execute_concept_induction_pass -- exactly the
+        # decayed-to-zero-vs-genuinely-calm-at-zero failure class CLAUDE.md's
+        # metric-quality gate warns about. An in-memory store is never a
+        # legitimate live substrate read for this repository (nothing else
+        # writes to a process-local instance), so treat it as unavailable.
+        if isinstance(store, InMemorySubstrateGraphStore):
+            logger.warning("substrate_concept_repository_resolved_in_memory_store_treating_as_unavailable")
+            return None
+
+        self._store = store
         return self._store
 
     def status(self) -> ConceptProfileRepositoryStatus:
@@ -92,16 +110,8 @@ class SubstrateConceptProfileRepository:
         if result is None or result.degraded:
             return None
 
-        wanted = set(subjects)
-        by_subject: dict[str, list] = {subject: [] for subject in subjects}
-        for node in list(getattr(result.slice, "nodes", None) or []):
-            if getattr(node, "node_kind", None) != "concept":
-                continue
-            anchor = getattr(node, "anchor_scope", None)
-            if anchor not in wanted:
-                continue
-            by_subject[anchor].append(node)
-        return by_subject
+        nodes = list(getattr(result.slice, "nodes", None) or [])
+        return select_concept_nodes_by_anchor_scope(nodes, list(subjects))
 
     def _build_profile(self, subject: str, nodes: list) -> ConceptProfile:
         observed_ats = [node.temporal.observed_at for node in nodes if node.temporal is not None]

@@ -8,6 +8,7 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
 )
+from orion.substrate import InMemorySubstrateGraphStore
 from orion.substrate.store import SubstrateNeighborhoodSliceV1, SubstrateQueryResultV1
 
 from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
@@ -103,6 +104,34 @@ class TestSubstrateConceptProfileRepository:
         results = repo.list_latest(["orion"])
         assert results[0].availability == "unavailable"
         assert results[0].unavailable_reason == "substrate_store_unavailable"
+
+    def test_lazy_get_store_treats_in_memory_fallback_as_unavailable_not_empty(self, monkeypatch):
+        """build_substrate_store_from_env() never raises when SUBSTRATE_STORE_BACKEND
+        is unset, or is `falkor` with a missing FALKORDB_URI -- both silently
+        resolve to a working InMemorySubstrateGraphStore. That must surface as
+        "unavailable" (misconfigured), not "empty" (genuinely zero concepts) --
+        otherwise a dropped env var silently skips concept_induction_pass's
+        fail_open_local/fail_closed cutover."""
+        from orion.spark.concept_induction import substrate_repository as module
+
+        monkeypatch.setattr(module, "build_substrate_store_from_env", lambda: InMemorySubstrateGraphStore())
+
+        repo = SubstrateConceptProfileRepository()  # no store injected -> lazy path
+        results = repo.list_latest(["orion", "juniper", "relationship"])
+
+        for result in results:
+            assert result.availability == "unavailable"
+            assert result.unavailable_reason == "substrate_store_unavailable"
+            assert result.profile is None
+
+    def test_status_reports_unavailable_when_store_resolves_to_in_memory(self, monkeypatch):
+        from orion.spark.concept_induction import substrate_repository as module
+
+        monkeypatch.setattr(module, "build_substrate_store_from_env", lambda: InMemorySubstrateGraphStore())
+
+        repo = SubstrateConceptProfileRepository()
+        status = repo.status()
+        assert status.source_available is False
 
     def test_list_latest_reports_unavailable_when_degraded(self):
         repo = SubstrateConceptProfileRepository(store=FakeSubstrateStore([], degraded=True))

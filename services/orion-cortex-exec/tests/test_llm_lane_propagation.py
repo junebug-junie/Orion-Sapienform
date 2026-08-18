@@ -81,14 +81,25 @@ def test_chat_lane_allow_chat_fallback_can_be_false() -> None:
     assert out["allow_chat_fallback"] is False
 
 
-def test_finalize_reflect_ctx_llm_lane_resolves_background() -> None:
+def test_finalize_reflect_ctx_llm_lane_resolves_agent() -> None:
     """Mirror the finalize_reflect context (top-level llm_lane) as cortex-exec merges it
-    into ctx; the 5b reflection must resolve to the background/metacog lane, not chat."""
+    into ctx; the 5b reflection must resolve to the agent lane (circe-worker-agent-1),
+    not chat or background.
+
+    Was `background` until confirmed wrong live 2026-08-16
+    (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd): 5c's own orion_voice_finalize call also
+    resolves to `background`/atlas-worker-2 and can occupy it for 90s+, starving this
+    call's LLMGatewayService RPC entirely. `chat` was considered and rejected: it maps
+    to circe-worker-1, the same worker chat_general's own live draft generation uses,
+    with no admission/concurrency throttling on that route -- would trade the 5b-vs-5c
+    collision for 5b-vs-live-user-chat contention. `agent` (circe-worker-agent-1,
+    verified live) is currently unused by any other verb, isolating this call from both.
+    """
     step = SimpleNamespace(verb_name="harness_finalize_reflect", step_name="llm_harness_finalize_reflect")
     out = resolve_llm_lane_for_step(
         step=step,
-        ctx={"llm_lane": "background", "allow_chat_fallback": True, "metadata": {"mode": "brain"}},
+        ctx={"llm_lane": "agent", "allow_chat_fallback": True, "metadata": {"mode": "brain"}},
         settings=_settings(),
     )
-    assert out["llm_lane"] == "background"
+    assert out["llm_lane"] == "agent"
     assert out["allow_chat_fallback"] is True

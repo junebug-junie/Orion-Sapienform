@@ -64,8 +64,7 @@ def main() -> int:
         forget_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, room_key)
 
     print(f"model={settings.ROOM_COMPANION_MODEL} config_dir={settings.ROOM_COMPANION_CLAUDE_CONFIG_DIR}")
-    creds = Path(settings.ROOM_COMPANION_CLAUDE_CONFIG_DIR) / ".credentials.json"
-    print(f"credential mounted: {creds.exists()} ({creds})")
+    print(f"oauth token configured: {bool(settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN)}")
 
     first = RoomClaudeRequestV1(
         room_id=args.room_id,

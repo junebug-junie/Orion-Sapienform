@@ -29,12 +29,18 @@ Hub-resident agent. `services/orion-hub/docker-compose.yml:62` mounts
 an FCC turn with Bash in Hub can simply run:
 
 ```bash
-docker exec orion-athena-room-companion cat /root/.claude/.credentials.json
+docker exec orion-athena-room-companion env | grep ROOM_COMPANION_CLAUDE_OAUTH_TOKEN
+# or, without even needing exec access:
+docker inspect orion-athena-room-companion --format '{{json .Config.Env}}'
 ```
 
-Verified live 2026-08-14: that returns the credential. Docker-socket access is
-root-equivalent on the host, so no arrangement of *this* service's mounts can
-close it.
+Verified live 2026-08-14 against the credential's previous form (a mounted
+`.credentials.json` file, then readable via `docker exec ... cat`); the
+property is unchanged by the 2026-08-18 switch to an OAuth token env var —
+`docker inspect` reads a container's configured environment without even
+needing `exec`, so this is if anything an easier read than the file was.
+Docker-socket access is root-equivalent on the host, so no arrangement of
+*this* service's mounts or env can close it.
 
 Consequence for v2: a spend cap enforced by owning the credential would be
 **advisory, not enforced**, for exactly as long as Hub holds the docker
@@ -87,16 +93,21 @@ N minutes.
   is out-of-band usage.
 - **Cap state** lives in a host file the containers cannot write.
 - **On breach**: `docker stop` the companion (immediate, reversible) and
-  notify. Escalation: revoke the credential.
+  notify. Escalation: revoke the token server-side at
+  https://claude.ai/settings/claude-code.
 
 Three things that will bite whoever builds it:
 
-1. **Moving the credential file on the host does NOT cut the container off.**
-   Verified 2026-08-14: a bind mount holds the inode, so the container keeps
-   reading the old file after a host-side `mv`. Only an in-place overwrite
-   propagates. A "move the creds away" kill switch looks like it worked and
-   does nothing. Use `docker stop`, in-place overwrite, or server-side
-   revocation.
+1. **A stopped/removed container is the fast kill switch; `docker stop` still
+   works exactly as described here.** The credential's *form* changed
+   2026-08-18 (OAuth token env var, not a mounted file — see "Credential
+   isolation" below), which retires the specific file-mount trap that used to
+   live here (moving `.credentials.json` on the host didn't cut the container
+   off, because a bind mount holds the old inode). There is no equivalent
+   trick with an env var baked into the container's config — there is nothing
+   to "move" — but there's also no in-place-overwrite escape hatch either;
+   `docker stop`/`docker rm` or the server-side revoke link above are the
+   real options now.
 2. **Absence is not zero.** Missing or unreadable transcripts must read as
    *unknown spend*, never as *no spend* — an event-triggered stat cannot
    detect its own silence, and a watchdog that reads "quiet" during an outage
@@ -108,33 +119,41 @@ ceiling**. Turns are serialized at ~3s and ~$0.03 each, so a 5-minute window
 allows roughly $3 of overshoot before the watchdog can act. Size the interval
 against that, and do not call it a hard cap.
 
-**Worth reopening:** `claude setup-token` was rejected in phase 1 (see the
-design doc) when the question was *how to authenticate*, where a tested mount
-pattern beat a new one. Under a watchdog the question becomes *how to revoke*,
-and a dedicated token's independent revocability — killing the room's access
-without touching Juniper's own login — becomes the load-bearing property. That
-earlier rejection answered a different question and should not be treated as
-settled here.
+**Resolved 2026-08-18, see "Credential isolation" below:** `claude
+setup-token` was rejected in phase 1 (a tested mount pattern beat a new one),
+reopened here for its revocability, and then adopted outright once the file
+mount's ~7.5h staleness bug (below) forced the question regardless. Both
+reasons for wanting it converged on the same fix.
 
 ## Credential isolation
 
 Identical in shape and rationale to `orion-self-study-enrichment` — read that
 service's "Credential isolation (safety requirement)" section too; it carries
-the incident history.
+the incident history. That service still uses the file-mount pattern this one
+retired 2026-08-18; the staleness bug below applies to it identically and is
+unfixed there.
 
-- Authenticates as the operator's **already-logged-in Claude Code session**,
-  reusing the existing subscription. Never `ANTHROPIC_API_KEY`, which would
-  open a second pay-per-token billing relationship.
-- `docker-compose.yml` bind-mounts **only** the host's `.credentials.json`
-  file, read-only. Not the whole `~/.claude`, which also holds session
-  transcripts, `history.jsonl`, and caches.
-- `ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH` has **no default in code** —
+- Authenticates against the operator's **own Claude subscription** via a
+  long-lived (1-year) OAuth token from `claude setup-token`
+  (`ROOM_COMPANION_CLAUDE_OAUTH_TOKEN`, see `.env_example`). Never
+  `ANTHROPIC_API_KEY`, which would open a second pay-per-token billing
+  relationship — same billing relationship as the file-login flow this
+  replaces, just without that flow's refresh cycle.
+- `ROOM_COMPANION_CLAUDE_OAUTH_TOKEN` has **no default in code** —
   compose uses `:?`, so a missing value fails loudly rather than silently
-  mounting nothing and leaving the room mysteriously unauthenticated.
-- `CLAUDE_CONFIG_DIR` must point at the directory that mount lands in. The two
-  interpolations in `docker-compose.yml` must stay identical; if they diverge
-  the credential becomes invisible to `claude` with no error.
-- This service never writes to, logs, or echoes any part of that file.
+  starting with no credential.
+- The token never sits in this container's own environment under its real
+  Claude-Code-recognized name (`CLAUDE_CODE_OAUTH_TOKEN`) — only under the
+  `ROOM_COMPANION_`-prefixed name. `app/main.py`'s `build_subprocess_env()`
+  translates it into the `claude` subprocess's env explicitly, from
+  `Settings`, not from the ambient allowlist path. `_ENV_DENY_PREFIXES` still
+  strips any *ambient* `CLAUDE_CODE_OAUTH_TOKEN` (a leaked host var, a
+  copy-paste mistake) that isn't the one this service was deliberately
+  configured with — see `test_subprocess_env_is_an_allowlist_not_a_denylist`.
+- This service never logs or echoes the token.
+- No `.credentials.json` file, mount, or `CLAUDE_CONFIG_DIR`/mount-path
+  interpolation-matching concern exists any more — that entire class of
+  wiring (and the bug below) is retired, not patched.
 
 `build_subprocess_env()` additionally strips `ANTHROPIC_BASE_URL` and
 `ANTHROPIC_AUTH_TOKEN`. Those are what Hub's FCC lane
@@ -144,16 +163,17 @@ producing fluent text that was never Claude — the hardest failure in this
 service to catch by eye, and why every utterance records the CLI's own
 reported `model` and `cost_usd`.
 
-### CONFIRMED BUG: the `:ro` credential mount goes stale on token refresh
+### FIXED 2026-08-18: the `:ro` credential mount went stale on token refresh
 
-Predicted on 2026-08-14 as "unconfirmed either way", then confirmed the same
-day. **This breaks the room roughly every 7.5 hours, and it breaks
-`orion-self-study-enrichment` identically.**
+This section is kept as the incident record; the mount it describes no longer
+exists in this service. **It still applies unfixed to
+`orion-self-study-enrichment`**, which uses the same pattern.
 
-Claude Code refreshes the OAuth token by **atomic rename**, which creates a new
-inode. A single-file bind mount is bound to the *inode*, not the path, so the
-container keeps reading the old file forever. The old token is revoked
-server-side at refresh, so every subsequent turn fails:
+Confirmed live 2026-08-14, and it broke the room roughly every 7.5 hours.
+Claude Code refreshes the OAuth login by **atomic rename**, which creates a
+new inode. A single-file bind mount is bound to the *inode*, not the path, so
+the container kept reading the old file forever. The old token is revoked
+server-side at refresh, so every subsequent turn failed:
 
 ```text
 Failed to authenticate. API Error: 401 OAuth access token has been revoked.
@@ -168,31 +188,23 @@ after refresh        host      inode=5936397 mtime=1786725885
 ```
 
 `orion-self-study-enrichment` was silently in this state too, with the same
-revoked-token error, and had been since the refresh.
+revoked-token error, and had been since the refresh — still is, as of this
+writing, since it has not received this fix.
 
-**Band-aid**: `docker restart` re-resolves the mount to the current inode.
-Verified — both containers came back on inode 5936397 and the smoke passed
-again. It buys ~7.5 hours.
+**Real fix applied**: switched to `claude setup-token`'s long-lived (1-year)
+OAuth token, passed as `CLAUDE_CODE_OAUTH_TOKEN` — see "Credential isolation"
+above. It never refreshes, so there is no rename and nothing to go stale.
+This was the third time this option had surfaced as correct for a different
+reason; it was rejected in phase 1 when the question was "how do we
+authenticate", where a tested mount pattern beat a new one. That reasoning
+does not survive a credential that structurally cannot stay fresh.
 
-**Real fix, not yet applied** (needs a decision, see below): the single-file
-`:ro` mount is *structurally* wrong for a credential that refreshes. Options:
-
-1. **`claude setup-token`** — a long-lived token passed as an env var. It never
-   refreshes, so there is no rename and nothing to go stale. This is the third
-   time this option has surfaced as correct for a different reason; it was
-   rejected in phase 1 when the question was "how do we authenticate", where a
-   tested mount pattern beat a new one. That reasoning does not survive a
-   credential that structurally cannot stay fresh.
-2. **Mount the `~/.claude` directory** instead of the one file. Directory
-   mounts track renames correctly. Costs the narrow exposure this pattern was
-   specifically designed to preserve — transcripts, plugins and caches would
-   enter the container.
-3. **Re-copy the credential into `CLAUDE_CONFIG_DIR` before each turn**, from a
-   directory-mounted source. Keeps turns fresh; still needs the directory
-   mount, so it inherits option 2's exposure.
-
-Until one is applied, treat a `401 ... has been revoked` in this service as
-"the mount went stale", not "the operator logged out".
+The two file-mount alternatives considered and rejected: mounting the whole
+`~/.claude` directory (tracks renames, but drags transcripts/plugins/caches
+into the container — the exposure the single-file mount was built to avoid),
+and re-copying the credential into `CLAUDE_CONFIG_DIR` before each turn (still
+needs a directory mount as its source, so it inherits the same exposure).
+Neither was needed once the credential itself stopped being a file.
 
 ## Session continuity
 
@@ -268,6 +280,6 @@ PYTHONPATH=<repo-root>:. pytest tests -q
 ```
 
 `tests/test_credential_isolation.py` is the load-bearing one — it asserts on
-the parsed compose file, not on Python settings, and it has been
-mutation-tested against the real file (adding a docker.sock mount or widening
-the credential bind to a directory both make it fail).
+the parsed compose file, not on Python settings (adding a docker.sock mount
+makes it fail; so does a bare `CLAUDE_CODE_OAUTH_TOKEN` key appearing in the
+compose environment block instead of the `ROOM_COMPANION_`-prefixed one).

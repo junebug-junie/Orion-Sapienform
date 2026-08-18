@@ -10,10 +10,13 @@ surface (repo tree, backups, graphify index, `docker inspect` on Hub).
 
 It does NOT make the credential unreachable from Hub: Hub mounts
 /var/run/docker.sock read-write and ships the docker CLI, so
-`docker exec orion-athena-room-companion cat /root/.claude/.credentials.json`
-works -- confirmed live 2026-08-14. Docker-socket access is root-equivalent,
-and nothing in THIS service's config can close it. The v2 budget cap must
-therefore not be built on the premise that owning the credential enforces it.
+`docker inspect orion-athena-room-companion --format '{{json .Config.Env}}'`
+reads the configured token straight out of this container's config -- no
+`exec` even required. True of the file-mounted credential this service used
+before 2026-08-18 too (confirmed live 2026-08-14, via `docker exec ... cat`).
+Docker-socket access is root-equivalent, and nothing in THIS service's config
+can close it. The v2 budget cap must therefore not be built on the premise
+that owning the credential enforces it.
 
 What these tests do enforce: this container stays worth nothing to break into
 on its own, and no redirection vector reaches the subprocess env.
@@ -71,7 +74,7 @@ def test_settings_has_no_api_key_field():
     assert not hasattr(Settings(), "ANTHROPIC_API_KEY")
 
 
-def test_compose_requires_credentials_host_path_and_has_no_api_key():
+def test_compose_requires_oauth_token_and_has_no_api_key():
     """Deterministic check on the real runtime wiring, not just Python settings.
 
     Asserts on the PARSED environment list rather than the raw file text:
@@ -87,26 +90,30 @@ def test_compose_requires_credentials_host_path_and_has_no_api_key():
     assert not any(k.startswith("ANTHROPIC_") for k in keys), (
         f"no ANTHROPIC_* var belongs in this service's env: {sorted(keys)}"
     )
+    # The real Claude-Code-recognized name must never appear bare in compose --
+    # only the ROOM_COMPANION_-prefixed one. build_subprocess_env() does the
+    # translation explicitly in code; if the bare name ever lands in compose
+    # too, main.py's own _ENV_DENY_PREFIXES would strip it right back out of
+    # this service's os.environ (silently, since it's a deny-prefix not a
+    # loud failure), which is a confusing way to discover a compose typo.
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in keys, (
+        "set ROOM_COMPANION_CLAUDE_OAUTH_TOKEN, not the bare Claude Code name"
+    )
 
     raw = COMPOSE.read_text(encoding="utf-8")
-    # `:?` makes a missing host path fail loudly instead of silently mounting
-    # nothing and leaving the room mysteriously unauthenticated.
-    assert "ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH:?" in raw
-    assert ".credentials.json:ro" in raw, "credential mount must be read-only"
+    # `:?` makes a missing token fail loudly instead of silently starting
+    # with no credential and leaving the room mysteriously unauthenticated.
+    assert "ROOM_COMPANION_CLAUDE_OAUTH_TOKEN:?" in raw
 
 
-def test_compose_credential_mount_is_a_single_file_not_a_directory():
-    """A directory mount would drag session transcripts, history.jsonl and
-    caches out of the operator's ~/.claude into this container. Only the one
-    credential file belongs here."""
+def test_compose_has_no_credentials_file_mount():
+    """2026-08-18: the `.credentials.json` single-file bind mount is retired
+    outright (see README's 'FIXED 2026-08-18' section) -- its ~7.5h staleness
+    bug must not come back via a re-added mount, partial or otherwise."""
     compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     volumes = compose["services"]["room-companion"]["volumes"]
     cred_mounts = [v for v in volumes if ".credentials.json" in v]
-    assert len(cred_mounts) == 1, f"expected exactly one credential mount, got {cred_mounts}"
-    assert cred_mounts[0].endswith(":ro")
-    assert cred_mounts[0].split(":")[-2].endswith(".credentials.json"), (
-        "the mount target must be the credential FILE, not a directory"
-    )
+    assert not cred_mounts, f"credential file mount must not exist any more, got {cred_mounts}"
 
 
 @pytest.mark.parametrize(
@@ -158,13 +165,15 @@ def test_env_example_carries_no_real_secret():
     assert '"claudeAiOauth"' not in raw
 
 
-def test_env_example_credentials_key_is_a_path_not_a_value():
-    """The operator contract points at a file on their own disk; the secret
-    itself never enters the repo."""
+def test_env_example_oauth_token_key_is_present_and_empty():
+    """The operator contract documents the key and how to fill it in
+    themselves (`claude setup-token`, pasted straight into their own local
+    .env); the secret itself never enters the repo."""
     assignments = _env_example_assignments()
-    host_path = assignments["ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH"]
-    assert host_path.startswith("/"), f"expected an absolute host path, got {host_path!r}"
-    assert host_path.endswith(".credentials.json")
+    assert "ROOM_COMPANION_CLAUDE_OAUTH_TOKEN" in assignments
+    assert assignments["ROOM_COMPANION_CLAUDE_OAUTH_TOKEN"] == "", (
+        "committed .env_example must ship this key empty, never a real token"
+    )
 
 
 def test_setting_sources_excludes_project_scope():
@@ -208,8 +217,20 @@ def test_compose_persists_the_claude_session_store():
     volumes = service["volumes"]
     config_dir_mounts = [v for v in volumes if v.startswith("room_companion_claude:")]
     assert config_dir_mounts, f"CLAUDE_CONFIG_DIR must be on a named volume, got {volumes}"
-    # And it must be mounted before the credential file bind, so the :ro file
-    # layers on top of the volume rather than being shadowed by it.
-    cred_index = next(i for i, v in enumerate(volumes) if ".credentials.json" in v)
-    vol_index = next(i for i, v in enumerate(volumes) if v.startswith("room_companion_claude:"))
-    assert vol_index < cred_index, "config-dir volume must be declared before the credential bind"
+
+
+def test_subprocess_env_carries_the_deliberately_configured_oauth_token():
+    """The one deliberate exception to the allowlist: a token that arrives
+    through Settings (i.e. from this service's own .env, translated by
+    docker-compose's ROOM_COMPANION_-prefixed key) reaches the subprocess
+    under Claude Code's real expected name."""
+    env = build_subprocess_env(_settings(ROOM_COMPANION_CLAUDE_OAUTH_TOKEN="sk-ant-oat01-real-token"))
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-real-token"
+
+
+def test_subprocess_env_omits_oauth_token_key_when_unconfigured():
+    """No token configured must mean no key at all, not an empty-string one --
+    an empty CLAUDE_CODE_OAUTH_TOKEN could still short-circuit Claude Code's
+    auth precedence ahead of a legitimate /login credential."""
+    env = build_subprocess_env(_settings())
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env

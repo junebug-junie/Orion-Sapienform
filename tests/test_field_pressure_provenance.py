@@ -156,8 +156,13 @@ def test_dimension_provenance_survives_a_walkover() -> None:
     # 2026-08-16: deviation_pressure is always present (a derived scalar off
     # field.tension_deviation_pressure, not a channel-merge dimension -- see
     # field_pressures_with_provenance()'s own comment), 0.0 here since this
-    # fixture never sets it.
-    assert dims == {"resource_pressure": 0.42, "deviation_pressure": 0.0}
+    # fixture never sets it. 2026-08-18: sustained_load_pressure is a second
+    # always-present derived scalar, same reasoning.
+    assert dims == {
+        "resource_pressure": 0.42,
+        "deviation_pressure": 0.0,
+        "sustained_load_pressure": 0.0,
+    }
     resource = detail["resource_pressure"]
     assert resource.winning_channel == "pressure"
     assert resource.winning_source_id == "node:only"
@@ -210,7 +215,7 @@ def test_values_are_identical_to_the_provenance_free_path() -> None:
     # `dims`/`field_pressures()` output only, `detail` (channel-merge
     # provenance) is untouched since deviation_pressure has no channel to
     # attribute.
-    expected_dims = {**expected, "deviation_pressure": 0.0}
+    expected_dims = {**expected, "deviation_pressure": 0.0, "sustained_load_pressure": 0.0}
     assert dims == expected_dims
     assert field_pressures(state) == expected_dims
     assert set(detail) == set(expected)
@@ -226,11 +231,11 @@ def test_unmapped_channels_produce_no_dimension() -> None:
     dims, detail = field_pressures_with_provenance(
         _state({"node:a": {"cpu_pressure": 0.99}})
     )
-    # deviation_pressure is the one dimension that is always present (see
-    # test_dimension_provenance_survives_a_walkover's comment) -- an
-    # unmapped raw channel still produces no dimension of ITS OWN, which is
-    # the property this test guards.
-    assert dims == {"deviation_pressure": 0.0}
+    # deviation_pressure and sustained_load_pressure are the two dimensions
+    # always present (see test_dimension_provenance_survives_a_walkover's
+    # comment) -- an unmapped raw channel still produces no dimension of ITS
+    # OWN, which is the property this test guards.
+    assert dims == {"deviation_pressure": 0.0, "sustained_load_pressure": 0.0}
     assert detail == {}
 
 
@@ -264,10 +269,10 @@ def test_missing_channel_provenance_reads_as_none_not_a_fabricated_source() -> N
 
 def test_empty_field_produces_no_dimensions() -> None:
     dims, detail = field_pressures_with_provenance(_state({}))
-    # deviation_pressure is always present -- see
-    # test_dimension_provenance_survives_a_walkover's comment. 0.0 on an
+    # deviation_pressure and sustained_load_pressure are always present --
+    # see test_dimension_provenance_survives_a_walkover's comment. 0.0 on an
     # empty field is a real "nothing admitted" reading, not a fabricated one.
-    assert dims == {"deviation_pressure": 0.0}
+    assert dims == {"deviation_pressure": 0.0, "sustained_load_pressure": 0.0}
     assert detail == {}
     assert map_channels_to_dimensions({}) == {}
 

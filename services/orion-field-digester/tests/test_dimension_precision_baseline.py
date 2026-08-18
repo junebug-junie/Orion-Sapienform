@@ -86,13 +86,21 @@ def test_only_dimensions_present_this_tick_are_updated() -> None:
     node_vectors never mention it -- that is the honest "nothing admitted"
     reading, not the same "no channel mapped this tick" absence the other 3
     dimensions can have.
+
+    2026-08-18: `sustained_load_pressure` is a 6th entry, same shape as
+    deviation_pressure directly above (derived, always present, 0.0 on a
+    quiet/untouched field) -- same reasoning applies.
     """
     state = _empty_state("tick_0")
     state.node_vectors["node:athena"] = {"execution_pressure": 0.3}
     update_dimension_precision_baseline(state)
     pressures = field_pressures(state)
-    assert set(pressures) == {"execution_pressure", "deviation_pressure"}
-    assert state.dimension_precision_ewma_n == {"execution_pressure": 1, "deviation_pressure": 1}
+    assert set(pressures) == {"execution_pressure", "deviation_pressure", "sustained_load_pressure"}
+    assert state.dimension_precision_ewma_n == {
+        "execution_pressure": 1,
+        "deviation_pressure": 1,
+        "sustained_load_pressure": 1,
+    }
     assert "resource_pressure" not in state.dimension_precision_ewma_n
     assert "reasoning_pressure" not in state.dimension_precision_ewma_n
     assert "reliability_pressure" not in state.dimension_precision_ewma_n

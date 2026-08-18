@@ -195,6 +195,46 @@ class FieldDigesterStore:
             payload = json.loads(payload)
         return FieldStateV1.model_validate(payload)
 
+    def load_recent_field_json(
+        self, *, window_seconds: float, row_cap: int = 4000
+    ) -> list[dict]:
+        """Raw `field_json` payloads (decoded dicts) from the last
+        `window_seconds`, oldest first -- the real window `orion.field.
+        significance.compute_tick` needs `channel_regime()`-style, which
+        cannot be reduced to an incrementally-updatable running stat the way
+        `tension.py`'s EWMA baseline can (median needs the real values).
+
+        `row_cap` guards the read the way `field_channel_glossary_routes.py`'s
+        own `row_cap=6000` already does for its 1/6/24h Hub panel queries --
+        that guard exists precisely because this service's own live cadence
+        (~0.4 rows/sec, confirmed 2026-08-18) means even a modest window is
+        several hundred rows; a caller passing an unexpectedly large window
+        must not turn this into an unbounded query. `secs`, not `mins`/
+        `hours`: `make_interval`'s `mins`/`hours` args are integer-typed in
+        real Postgres, so a float there raises `UndefinedFunction` -- fixed
+        live 2026-08-18 in `services/orion-hub/scripts/tension_outreach_
+        trigger.py` after it silently broke that module for its entire
+        deployed lifetime; `secs` is `double precision` and takes a float
+        directly.
+        """
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT field_json FROM substrate_field_state
+                        WHERE generated_at > now() - make_interval(secs => :secs)
+                        ORDER BY generated_at ASC
+                        LIMIT :row_cap
+                        """
+                    ),
+                    {"secs": float(window_seconds), "row_cap": row_cap},
+                )
+                .scalars()
+                .all()
+            )
+        return [json.loads(r) if isinstance(r, str) else r for r in rows]
+
     def save_field(self, state: FieldStateV1) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:

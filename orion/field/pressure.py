@@ -501,6 +501,12 @@ def field_pressures_with_provenance(
     # dimension absent from `detail` (iterates `detail.items()`, does not
     # assume every PRESSURE_DIMENSIONS key is present).
     dims["deviation_pressure"] = clamp01(field.tension_deviation_pressure)
+    # sustained_load_pressure (2026-08-18, docs/superpowers/specs/2026-08-16-
+    # level-aware-significance-design.md): same "derived, stateful scalar
+    # already computed once per digestion tick and carried on `field`
+    # itself" shape as deviation_pressure directly above -- no channel-merge
+    # provenance to report, same reason.
+    dims["sustained_load_pressure"] = clamp01(field.sustained_load_pressure)
     return dims, detail
 
 

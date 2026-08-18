@@ -44,7 +44,13 @@ DEFAULT_SUBPROCESS_TIMEOUT_SEC = 300
 # 2026-07-30). A logical dump has no natural upper bound the way a fixed-size
 # snapshot does, so this gets its own generous timeout instead of sharing the
 # 300s default used for fast operations elsewhere in this script.
-POSTGRES_DUMP_TIMEOUT_SEC = 1800
+#
+# Bumped 1800s -> 5400s (tripled) on 2026-08-18: the database kept growing
+# past what the 1800s ceiling above was sized for and nightly runs started
+# failing on this timeout again. deploy/systemd/orion-backup-databases.
+# service's TimeoutStartSec was widened in the same change so the outer
+# service-level timeout doesn't just become the next place this fails.
+POSTGRES_DUMP_TIMEOUT_SEC = 5400
 
 
 @dataclass(frozen=True)

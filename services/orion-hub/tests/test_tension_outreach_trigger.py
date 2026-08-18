@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scripts import tension_outreach_trigger
 
 
@@ -144,3 +146,32 @@ def test_raw_sql_json_keys_match_the_real_schema_fields():
     field_names = set(FieldStateV1.model_fields)
     assert "tension_borda_winner_target_id" in field_names
     assert "tension_deviation_pressure" in field_names
+
+
+def test_lookback_query_uses_seconds_not_minutes_for_make_interval():
+    """Regression guard, 2026-08-18: `make_interval`'s `mins`/`hours` args are
+    `integer` in real Postgres -- a float bound to `mins` raises
+    `UndefinedFunction`, silently swallowed by this module's own "never
+    raise, degrade to None" contract, so `current_run()` had been returning
+    `None` on EVERY call since deploy without a single test catching it (every
+    existing test here mocks `_engine()`, so none exercised real Postgres
+    type coercion). Confirmed live against the real database before this fix:
+    `_fetch_recent_winners(10.0)` raised `sqlalchemy.exc.ProgrammingError:
+    ... function make_interval(mins => numeric) does not exist`. `secs` is
+    `double precision` and takes a float directly -- same convention
+    `services/orion-hub/scripts/chat_history_rehydrate.py`'s own comment
+    already documents for this exact pitfall. This test can't spin up a real
+    Postgres (this suite has no such fixture), so it locks the query TEXT and
+    the bound-parameter shape instead -- a fast, deterministic, non-flaky
+    gate for the one mistake that actually caused this."""
+    engine = _fake_engine_with_rows([])
+    conn = engine.connect.return_value.__enter__.return_value
+    with patch.object(tension_outreach_trigger, "_engine", return_value=engine):
+        tension_outreach_trigger.current_run(limit_minutes=10.0)
+
+    query, bound_params = conn.execute.call_args.args
+    query_text = str(query)
+    assert "make_interval(secs =>" in query_text
+    assert "make_interval(mins =>" not in query_text
+    assert "make_interval(hours =>" not in query_text
+    assert bound_params == {"secs": pytest.approx(600.0)}

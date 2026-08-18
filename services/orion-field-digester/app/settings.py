@@ -146,6 +146,20 @@ class Settings(BaseSettings):
         "orion:field_channel:anomaly_score", alias="CHANNEL_FIELD_CHANNEL_ANOMALY_SCORE"
     )
 
+    # Level-aware significance (docs/superpowers/specs/2026-08-16-level-aware-
+    # significance-design.md). See app/digestion/significance.py's own
+    # docstring for why this runs throttled-inline in the hot tick rather than
+    # a separate worker loop. Real-data-derived defaults (scripts/analysis/
+    # measure_sustained_load_pressure.py, 2026-08-18): 15-minute window, 30s
+    # recompute cadence -- see that script's own output for the live
+    # non-degenerate/independence check this floor rests on.
+    field_significance_window_seconds: float = Field(
+        900.0, alias="FIELD_SIGNIFICANCE_WINDOW_SECONDS"
+    )
+    field_significance_check_interval_sec: float = Field(
+        30.0, alias="FIELD_SIGNIFICANCE_CHECK_INTERVAL_SEC"
+    )
+
 
 _settings: Settings | None = None
 

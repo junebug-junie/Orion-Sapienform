@@ -156,7 +156,12 @@ def test_dimension_provenance_survives_a_walkover() -> None:
     # 2026-08-16: deviation_pressure is always present (a derived scalar off
     # field.tension_deviation_pressure, not a channel-merge dimension -- see
     # field_pressures_with_provenance()'s own comment), 0.0 here since this
-    # fixture never sets it.
+    # fixture never sets it. 2026-08-18: sustained_load_pressure is a SECOND
+    # derived scalar but, unlike deviation_pressure, only present on the tick
+    # that actually recomputed it (sustained_load_computed_at ==
+    # generated_at) -- this bare fixture never calls the real producer, so
+    # sustained_load_computed_at stays None and the dimension is correctly
+    # absent, not 0.0.
     assert dims == {"resource_pressure": 0.42, "deviation_pressure": 0.0}
     resource = detail["resource_pressure"]
     assert resource.winning_channel == "pressure"
@@ -226,10 +231,11 @@ def test_unmapped_channels_produce_no_dimension() -> None:
     dims, detail = field_pressures_with_provenance(
         _state({"node:a": {"cpu_pressure": 0.99}})
     )
-    # deviation_pressure is the one dimension that is always present (see
-    # test_dimension_provenance_survives_a_walkover's comment) -- an
-    # unmapped raw channel still produces no dimension of ITS OWN, which is
-    # the property this test guards.
+    # deviation_pressure is always present (see test_dimension_provenance_
+    # survives_a_walkover's comment) -- sustained_load_pressure is NOT (this
+    # fixture never went through the real producer) -- an unmapped raw
+    # channel still produces no dimension of ITS OWN, which is the property
+    # this test guards.
     assert dims == {"deviation_pressure": 0.0}
     assert detail == {}
 
@@ -267,6 +273,8 @@ def test_empty_field_produces_no_dimensions() -> None:
     # deviation_pressure is always present -- see
     # test_dimension_provenance_survives_a_walkover's comment. 0.0 on an
     # empty field is a real "nothing admitted" reading, not a fabricated one.
+    # sustained_load_pressure is NOT present (this fixture never went
+    # through the real producer, so sustained_load_computed_at stays None).
     assert dims == {"deviation_pressure": 0.0}
     assert detail == {}
     assert map_channels_to_dimensions({}) == {}

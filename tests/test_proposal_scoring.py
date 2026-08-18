@@ -395,6 +395,13 @@ _REAL_MEASURED_MAX = {
     # orion.attention.tension.competition.deviation_pressure() itself), not
     # an approximation.
     "deviation_pressure": 1.0,
+    # sustained_load_pressure's own real measured max: the 24h/1,395-point/
+    # 34,316-real-row window cited in orion/proposals/scoring.py's
+    # PRESSURE_DIMENSIONS comment (scripts/analysis/measure_sustained_load_
+    # pressure.py, 2026-08-18) reports a real max of 0.7703 -- the ceiling
+    # was set by node:athena's disk_capacity_pressure, the one channel
+    # driving nearly the whole reading over that window.
+    "sustained_load_pressure": 0.7703,
 }
 
 

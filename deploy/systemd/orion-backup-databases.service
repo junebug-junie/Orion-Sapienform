@@ -9,9 +9,12 @@ Type=oneshot
 # Finite, not infinity: each subprocess call inside the script already has
 # its own timeout, but a wedged docker daemon could still hang the overall
 # run without this, holding db/backup.lock and failing every subsequent
-# night until someone notices. 2h is generous for the current data sizes
-# (~1.2GB Postgres dump, ~20GB Convex copy) with headroom to grow.
-TimeoutStartSec=2h
+# night until someone notices. Widened 2h -> 3h on 2026-08-18 alongside
+# POSTGRES_DUMP_TIMEOUT_SEC's 1800s -> 5400s bump in
+# scripts/backup/orion_backup_databases.py, so this outer ceiling keeps the
+# same ~5400s of headroom for falkordb/chroma after Postgres that it had
+# before, instead of becoming the next thing this fails on.
+TimeoutStartSec=3h
 UMask=0077
 WorkingDirectory=/mnt/scripts/Orion-Sapienform
 Environment=PYTHONPATH=/mnt/scripts/Orion-Sapienform

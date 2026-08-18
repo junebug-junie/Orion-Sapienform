@@ -1,5 +1,6 @@
-"""Level-aware significance: `loaded_steady`-scoped Borda competition over
-real per-(node, channel) regime reads.
+"""Level-aware significance: `loaded_steady`-scoped regime reads, collapsed
+to a single [0, 1] scalar via a plain max() (no Borda ranking -- see
+orion/field/significance.py's own module docstring for why).
 
 Every fixture is hand-computed and stated longhand -- see test_field_regime.py's
 own header for why a tautological "assert regime == the constant just
@@ -32,7 +33,7 @@ assert LOADED_LEVEL == 0.70
 assert STEADY_DISPERSION == 0.02
 
 
-def test_loaded_steady_channel_votes_and_wins() -> None:
+def test_loaded_steady_channel_votes() -> None:
     """8 samples alternating 0.81/0.815 -- median 0.8125, pstdev 0.0025.
     0.8125 >= 0.70 (loaded) and 0.0025 <= 0.02 (steady) -> loaded_steady,
     same fixture shape test_field_regime.py's own headline test uses."""
@@ -44,7 +45,6 @@ def test_loaded_steady_channel_votes_and_wins() -> None:
     assert tick.channels_evaluated == 1
     assert tick.channels_loaded_steady == 1
     assert tick.loaded == {"memory_pressure": {"node:athena": pytest.approx(0.8125)}}
-    assert tick.winner == "node:athena"
     assert sustained_load_pressure(tick) == pytest.approx(0.8125)
 
 
@@ -58,7 +58,7 @@ def test_calm_channel_does_not_vote() -> None:
     assert tick.channels_evaluated == 1
     assert tick.channels_loaded_steady == 0
     assert tick.loaded == {}
-    assert tick.winner is None
+    assert tick.any_loaded is False
     assert sustained_load_pressure(tick) == 0.0
 
 
@@ -79,6 +79,21 @@ def test_loaded_volatile_channel_does_not_vote() -> None:
     assert tick.channels_loaded_steady == 0
     assert tick.loaded == {}
     assert sustained_load_pressure(tick) == 0.0
+
+
+def test_loaded_volatile_votes_when_included_via_voting_regimes() -> None:
+    """`voting_regimes` is a real parameter, not a module constant you edit
+    to test -- confirms widening it actually changes admission, using the
+    exact same loaded_volatile fixture the exclusion test above uses."""
+    values = [0.75, 0.99] * 4
+    ticks = _ticks("power_pressure", "node:athena", values)
+
+    tick = compute_tick(
+        ticks, window_seconds=900.0, voting_regimes=frozenset({"loaded_steady", "loaded_volatile"})
+    )
+
+    assert tick.channels_loaded_steady == 1
+    assert tick.loaded == {"power_pressure": {"node:athena": pytest.approx(0.87)}}
 
 
 def test_fewer_than_min_regime_samples_does_not_vote() -> None:
@@ -113,11 +128,10 @@ def test_polarity_inverted_channel_reads_pressure_equivalent_not_raw_level() -> 
     assert sustained_load_pressure(tick) == pytest.approx(0.8)
 
 
-def test_two_nodes_borda_ranks_by_pressure_equivalent_level() -> None:
+def test_scalar_is_the_max_across_all_loaded_ballots() -> None:
     """Two channels, two nodes, each channel loaded_steady for both nodes but
-    at different levels -- node:athena strictly higher on both, so it must
-    win regardless of channel identity (same Borda "commensurable across
-    scorers" property orion.attention.tension.competition already proves).
+    at different levels -- the scalar must be the single highest reading
+    across every ballot, not e.g. an average or a per-channel pick.
     Alternating pairs, not flat (see the polarity test's own note): each
     pair's median is its own mean, pstdev is half the pair's spread --
     memory_pressure athena/atlas medians 0.900/0.750 (pstdev 0.005 each),
@@ -158,16 +172,14 @@ def test_two_nodes_borda_ranks_by_pressure_equivalent_level() -> None:
             "node:atlas": pytest.approx(0.72),
         },
     }
-    assert tick.winner == "node:athena"
     assert sustained_load_pressure(tick) == pytest.approx(0.90)
 
 
-def test_empty_window_returns_zero_and_no_winner() -> None:
+def test_empty_window_returns_zero() -> None:
     tick = compute_tick([], window_seconds=900.0)
 
     assert tick.channels_evaluated == 0
     assert tick.any_loaded is False
-    assert tick.winner is None
     assert sustained_load_pressure(tick) == 0.0
 
 
@@ -185,4 +197,4 @@ def test_non_finite_and_non_numeric_values_are_skipped_not_crashed() -> None:
 
     # Only the 8 well-formed trailing samples count.
     assert tick.channels_loaded_steady == 1
-    assert tick.winner == "node:athena"
+    assert tick.loaded == {"memory_pressure": {"node:athena": pytest.approx(0.8125)}}

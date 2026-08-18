@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from orion.attention.tension.competition import FieldTensionCompetition, deviation_pressure  # noqa: E402
-from orion.field.significance import compute_tick, sustained_load_pressure  # noqa: E402
+from orion.field.significance import VOTING_REGIME, compute_tick, sustained_load_pressure  # noqa: E402
 
 logger = logging.getLogger("measure_sustained_load_pressure")
 
@@ -71,7 +71,20 @@ def main() -> int:
     parser.add_argument("--window-seconds", type=float, default=900.0, help="sustained_load_pressure's own window")
     parser.add_argument("--step-seconds", type=float, default=30.0, help="how often a live producer would recompute")
     parser.add_argument("--postgres-uri", default=os.environ.get("POSTGRES_URI", DEFAULT_POSTGRES_URI))
+    parser.add_argument(
+        "--include-volatile",
+        action="store_true",
+        help=(
+            "Also count loaded_volatile channels (not just loaded_steady) -- "
+            "for measuring, not assuming, the independence-check cost of "
+            "widening VOTING_REGIME. See orion/field/significance.py's own "
+            "module docstring for why loaded_steady-only is the shipped default."
+        ),
+    )
     args = parser.parse_args()
+    voting_regimes = (
+        frozenset({"loaded_steady", "loaded_volatile"}) if args.include_volatile else frozenset({VOTING_REGIME})
+    )
 
     from sqlalchemy import create_engine
 
@@ -107,7 +120,7 @@ def main() -> int:
         while lo < hi and rows[lo][0] < window_start:
             lo += 1
         payloads = [p for _, p in rows[lo : hi + 1]]
-        tick = compute_tick(payloads, window_seconds=args.window_seconds)
+        tick = compute_tick(payloads, window_seconds=args.window_seconds, voting_regimes=voting_regimes)
         slp_series.append((generated_at, sustained_load_pressure(tick)))
         next_check = generated_at + step
 
@@ -124,7 +137,10 @@ def main() -> int:
     variance = statistics.pvariance(values) if n > 1 else 0.0
 
     logger.info("")
-    logger.info("=== sustained_load_pressure, %d points, step=%.0fs window=%.0fs ===", n, args.step_seconds, args.window_seconds)
+    logger.info(
+        "=== sustained_load_pressure, %d points, step=%.0fs window=%.0fs voting_regimes=%s ===",
+        n, args.step_seconds, args.window_seconds, sorted(voting_regimes),
+    )
     logger.info("nonzero: %d/%d (%.1f%%)", nonzero, n, 100.0 * nonzero / n)
     logger.info("distinct values: %d", distinct)
     logger.info("mean=%.6f median=%.6f pvariance=%.6e", mean, median, variance)

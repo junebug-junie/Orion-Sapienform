@@ -503,10 +503,28 @@ def field_pressures_with_provenance(
     dims["deviation_pressure"] = clamp01(field.tension_deviation_pressure)
     # sustained_load_pressure (2026-08-18, docs/superpowers/specs/2026-08-16-
     # level-aware-significance-design.md): same "derived, stateful scalar
-    # already computed once per digestion tick and carried on `field`
-    # itself" shape as deviation_pressure directly above -- no channel-merge
-    # provenance to report, same reason.
-    dims["sustained_load_pressure"] = clamp01(field.sustained_load_pressure)
+    # carried on `field` itself" shape as deviation_pressure directly above,
+    # but NOT unconditionally present the way deviation_pressure is --
+    # deviation_pressure is genuinely recomputed every real digestion tick,
+    # so "always present" is an honest reading of ITS freshness.
+    # sustained_load_pressure is throttled (a real Postgres window read, not
+    # an O(1) update -- see app/digestion/significance.py), so most ticks
+    # only CARRY FORWARD the last real computation unchanged. Exposing the
+    # carried-forward value here on every one of those ticks would feed the
+    # identical float into update_dimension_precision_baseline()'s per-tick
+    # EWMA as a "fresh" observation ~15x for every one real observation --
+    # code review, 2026-08-18: artificially deflates this one dimension's
+    # measured variance/z-score between real recomputes, then jumps at the
+    # tick that actually refreshes it, a duplicated-sample bias none of the
+    # other PRESSURE_DIMENSIONS members have. Present ONLY on the tick that
+    # actually recomputed it (`sustained_load_computed_at == generated_at`,
+    # set together in that same call) -- absent otherwise, same "a dimension
+    # absent from field_pressures() this tick" convention the original 4
+    # channel-merge dimensions and this module's own consumers
+    # (dimension_score()'s `.get(..., 0.0)`, precision.py's own docstring)
+    # already support. No `detail` entry, same reason as deviation_pressure.
+    if field.sustained_load_computed_at == field.generated_at:
+        dims["sustained_load_pressure"] = clamp01(field.sustained_load_pressure)
     return dims, detail
 
 

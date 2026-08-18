@@ -69,17 +69,24 @@ from orion.schemas.field_state import FieldStateV1
 #      whatever a channel currently reads, so a channel steadily overloaded
 #      for hours reads calm, by design. sustained_load_pressure reads
 #      orion.field.regime.channel_regime() (level + dispersion as SEPARATE
-#      axes over a declared window, no adaptive baseline at all) and counts
-#      only channels currently `loaded_steady` (high AND not moving) --
-#      deliberately excludes `loaded_volatile`, which deviation_pressure or
-#      the reconstruction-loss anomaly scorer can plausibly already catch, to
-#      avoid the "independence check needs a real number, not architectural
-#      reasoning" trap. Measured: 24h real replay (1,395 points, 15-min
-#      window, 60s step, 34,316 real rows, 2026-08-18), Pearson r vs
-#      deviation_pressure = -0.0313 -- genuinely uncorrelated on real data,
-#      not assumed (a smaller 3h/316-point pilot run first found r=0.0437;
-#      both are effectively zero, the 24h number is the one this floor and
-#      writeup rest on).
+#      axes over a declared window, no adaptive baseline at all). Measured:
+#      24h real replay (1,395 points, 15-min window, 60s step, 34,316 real
+#      rows, 2026-08-18), Pearson r vs deviation_pressure = -0.0313 --
+#      genuinely uncorrelated on real data, not assumed (a smaller
+#      3h/316-point pilot run first found r=0.0437; both are effectively
+#      zero, the 24h number is the one this floor and writeup rest on).
+#      Scoped to only channels currently `loaded_steady` (high AND not
+#      moving), deliberately excluding `loaded_volatile` -- but that scoping
+#      is NOT what the independence number above is about: measured
+#      separately (--include-volatile on the same script), a `loaded_
+#      volatile`-inclusive reading correlates at r=-0.0021, just as
+#      uncorrelated as the loaded_steady-only scope. The exclusion is a real
+#      but CONCEPTUAL design choice (a volatile-and-loaded channel is
+#      already the kind of thing deviation_pressure or the reconstruction-
+#      loss anomaly scorer can plausibly catch), stated here as reasoned,
+#      not measured -- code review, 2026-08-18, caught an earlier draft of
+#      this comment implying the correlation number itself justified the
+#      exclusion, which it does not.
 #   3. Theory anchor: level+dispersion regime classification, restricted to
 #      the one cell ("high, not moving") a pure change-detector structurally
 #      cannot see -- Juniper's own framing, verbatim: "looks peaceful but is

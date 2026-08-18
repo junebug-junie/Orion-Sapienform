@@ -36,11 +36,18 @@ def test_every_route_the_executor_dispatches_survives_normalization():
         assert normalize_llm_route(route) == route
 
 
-def test_actions_uses_the_shared_set_rather_than_its_own_copy():
-    """The drift was two private copies. orion-cortex-exec's half of this pairing is asserted in
-    that service's own suite (test_llm_route_override.py)."""
-    from app.main import ACCEPTED_LLM_ROUTES as actions_set
-    assert actions_set is ACCEPTED_LLM_ROUTES
+def test_every_shared_route_survives_this_services_wrapper():
+    """BEHAVIOURAL drift guard, not an identity assertion.
+
+    `assert app.main.ACCEPTED_LLM_ROUTES is ACCEPTED_LLM_ROUTES` would be tautological -- it
+    only checks a re-export, so someone reintroducing a private set and using THAT inside
+    `_normalized_llm_route` passes it cleanly. That is precisely the bug this file exists for.
+    Drive the real wrapper instead.
+    """
+    from app.main import _normalized_llm_route
+
+    for route in sorted(ACCEPTED_LLM_ROUTES):
+        assert _normalized_llm_route(route, "metacog") == route, route
 
 
 # ------------------------------------------------------------ the fallback

@@ -22,7 +22,7 @@ from jinja2 import Environment
 
 from pydantic import BaseModel
 
-from orion.llm.routes import ACCEPTED_LLM_ROUTES, LLM_ROUTE_ALIASES, normalize_llm_route
+from orion.llm.routes import LLM_ROUTE_ALIASES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
@@ -1847,11 +1847,6 @@ def _journal_pageindex_query(user_text: str) -> bool:
 # to "agent" for a normal chat_general turn), so the selection had no effect.
 # Confirmed live 2026-08-14: Hub Mode: Quick + Compute: Agent produced a response
 # but nothing reached Circe's dedicated agent worker -- traced to this allowlist.
-# Shared with orion-actions via `orion.llm.routes` -- these two services each kept their own
-# copy of this set until 2026-08-18, and the copies drifted: orion-actions was still on
-# {chat, quick, metacog} and silently rewrote `quick_background` (its own configured journal
-# route) to `chat`. One definition, two importers.
-_ACCEPTED_LLM_ROUTE_OVERRIDES = ACCEPTED_LLM_ROUTES
 
 
 def _apply_autonomous_background_route(
@@ -1901,7 +1896,7 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
 
     Returns (accepted, attempted):
     - accepted: the value to actually route with, or None if no override was
-      supplied or it was outside _ACCEPTED_LLM_ROUTE_OVERRIDES -- callers fall
+      supplied or it was outside `orion.llm.routes.ACCEPTED_LLM_ROUTES` -- callers fall
       through to their own verb-based default mapping in that case, rather
       than forwarding an unrecognized route key.
     - attempted: the normalized value the caller asked for, or None only when
@@ -3977,7 +3972,7 @@ async def call_step_services(
                 )
 
                 # Keep lane selection explicit by internal flow, with optional caller override.
-                # Accepted override values: see _ACCEPTED_LLM_ROUTE_OVERRIDES.
+                # Accepted override values: see `orion.llm.routes.ACCEPTED_LLM_ROUTES`.
                 # quick_background: same upstream/model as quick, gated by the gateway's
                 # background-priority admission (services/orion-llm-gateway/app/
                 # priority_admission.py) so a caller opting into it never makes other

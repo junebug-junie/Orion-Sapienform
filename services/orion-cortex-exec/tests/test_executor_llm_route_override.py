@@ -51,13 +51,19 @@ def test_top_level_llm_route_takes_precedence_over_options():
     assert _resolve_llm_route_override(ctx) == ("agent", "agent")
 
 
-def test_the_accepted_set_is_the_shared_one_not_a_private_copy():
-    """orion-actions kept its own copy of this set and it drifted: it was still
-    {chat, quick, metacog} long after `quick_background` and `agent` existed here, so its
-    configured `ACTIONS_JOURNAL_LLM_ROUTE=quick_background` was silently rewritten to `chat` --
-    circe's single-slot 131k lane -- with no log line. One definition, two importers, checked by
-    identity so a future private copy fails here."""
-    from app.executor import _ACCEPTED_LLM_ROUTE_OVERRIDES
+def test_every_shared_route_survives_this_services_resolver():
+    """BEHAVIOURAL drift guard, not an identity assertion.
+
+    orion-actions kept its own copy of the accepted set and it drifted: still {chat, quick,
+    metacog} long after `quick_background` and `agent` existed here, so its configured
+    `ACTIONS_JOURNAL_LLM_ROUTE=quick_background` was silently rewritten to `chat` -- circe's
+    single-slot 131k lane -- with no log line.
+
+    Asserting `_SOME_LOCAL_NAME is ACCEPTED_LLM_ROUTES` would be tautological: a future private
+    copy used by the resolver passes that cleanly. This drives the ACTUAL resolver with every
+    route in the shared set instead, so a resolver that stops honouring one fails here.
+    """
     from orion.llm.routes import ACCEPTED_LLM_ROUTES
 
-    assert _ACCEPTED_LLM_ROUTE_OVERRIDES is ACCEPTED_LLM_ROUTES
+    for route in sorted(ACCEPTED_LLM_ROUTES):
+        assert _resolve_llm_route_override({"options": {"llm_route": route}}) == (route, route), route

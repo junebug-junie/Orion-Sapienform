@@ -15,7 +15,36 @@ intent was rewritten -- with no log line and no error -- into `chat`, which is c
 131,072-token lane. Orion's journaling ran there for a 1,749-token median prompt because a stale
 `if route in {...}` two services away disagreed about what routes exist.
 
-`agent` had the same fate. The set is now defined once, here, and imported by both.
+`agent` had the same fate.
+
+WHAT THIS MODULE DOES AND DOES NOT COVER
+----------------------------------------
+Imported by the three services that set or accept an `llm_route` override:
+
+    services/orion-actions/app/main.py                     (_normalized_llm_route)
+    services/orion-cortex-exec/app/executor.py             (_resolve_llm_route_override)
+    services/orion-hub/scripts/cortex_request_builder.py   (POST /api/chat -- found by review
+                                                            2026-08-18 carrying a THIRD copy,
+                                                            also missing quick_background)
+
+It is **not** yet the only place route names are enumerated in this repo. These are known,
+deliberately out of scope for this patch, and are the follow-up slice -- do not assume a route
+name added here reaches the Hub UI:
+
+    services/orion-llm-gateway/app/route_catalog.py:16     CATALOG_ROUTE_IDS
+    services/orion-hub/scripts/llm_gateway_client.py:14    VALID_ROUTE_IDS (+ 2 inline copies)
+    services/orion-hub/static/js/app.js:100                HUB_COMPUTE_ROUTE_IDS
+    scripts/smoke_llm_gateway_routes.py:105                never exercises quick_background
+
+Two neighbouring vocabularies are NOT this axis and must not be folded in here:
+
+    orion/schemas/context_exec.py:13   ALLOWED_CONTEXT_EXEC_LLM_PROFILES -- a narrower
+        investigation-profile allow-list that RAISES rather than degrading. Deliberately
+        separate; widening it is a schema decision, not a routing one.
+    "brain"  -- MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE's vocabulary
+        (services/orion-hub/scripts/memory_graph_suggest.py:47) is mode, not route.
+        `normalize_llm_route("brain")` returns None BY DESIGN; never route that path
+        through this function without translating first.
 
 THE FALLBACK IS `None`, NOT A ROUTE
 -----------------------------------

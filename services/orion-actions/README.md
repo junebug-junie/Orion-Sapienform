@@ -488,15 +488,23 @@ Actions names an upstream lane per workload, via `ACTIONS_LLM_ROUTE` (fallback),
 (`journal.compose`). The value is passed to orion-cortex-exec as an `llm_route` override; the
 executor honours it verbatim rather than applying its own verb-based default.
 
-Accepted values are defined **once**, in `orion/llm/routes.py`:
+Accepted values live in `orion/llm/routes.py`:
 
 ```
 chat  quick  metacog  quick_background  agent
 ```
 
 plus the legacy aliases `chat_quick` / `quick_chat` / `chat_kids_story`, which all resolve to
-`quick`. `orion-cortex-exec` imports the same set (`_ACCEPTED_LLM_ROUTE_OVERRIDES`), and a test in
-each service asserts the two are the *same object* so they cannot drift apart again.
+`quick`. The three services that set or accept an override — this one, `orion-cortex-exec`
+(`_resolve_llm_route_override`), and `orion-hub`'s `cortex_request_builder` — all import it, and
+each has a test that drives its *real* resolver with every route in the shared set. Identity
+assertions (`is ACCEPTED_LLM_ROUTES`) were deliberately avoided: they only check a re-export and
+pass cleanly for anyone who reintroduces a private copy, which is exactly the bug below.
+
+That is **not** the same as "route names are enumerated in one place repo-wide" — the gateway
+route catalog, Hub's gateway client, and Hub's front-end each still carry a stale 4-name list that
+does not include `quick_background`. `orion/llm/routes.py`'s docstring names them with file:line.
+Adding a route here does not make it selectable in the Hub UI.
 
 **An unrecognised value sends no override at all.** It logs
 `actions_llm_route_unrecognized value=... accepted=[...]` and lets the executor fall through to

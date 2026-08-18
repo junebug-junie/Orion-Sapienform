@@ -276,6 +276,47 @@ def test_ensure_dataset_and_model_finds_existing_by_name(monkeypatch: pytest.Mon
     assert create_calls == []
 
 
+def test_ensure_dataset_and_model_warns_on_where_sql_drift(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Code review 2026-08-18: get-or-create matches purely by name, so a
+    where_sql edited under an already-used name would silently keep training
+    on the stale filter forever. Not fixable without an update endpoint
+    topic-foundry doesn't have -- but it must at least be loud (logged), not
+    silent, so drift shows up on the very next scheduler tick.
+    """
+    from scripts import concept_atlas_routes as car
+    from scripts import topic_foundry_client as tfc
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/datasets"):
+            return _FakeResponse(
+                200,
+                {
+                    "datasets": [
+                        {
+                            "dataset_id": FAKE_DATASET_ID,
+                            "name": car._TOPIC_FOUNDRY_DATASET_NAME,
+                            "where_sql": "some stale filter that no longer matches",
+                        }
+                    ]
+                },
+            )
+        if url.endswith("/models"):
+            return _FakeResponse(
+                200, {"models": [{"model_id": FAKE_MODEL_ID, "name": car._TOPIC_FOUNDRY_MODEL_NAME}]}
+            )
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    caplog.set_level("WARNING")
+
+    result = car._ensure_topic_foundry_dataset_and_model(FAKE_BASE_URL)
+
+    assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
+    assert "topic_foundry_dataset_where_sql_drift" in caplog.text
+
+
 def test_ensure_dataset_and_model_creates_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts import concept_atlas_routes as car
     from scripts import topic_foundry_client as tfc
@@ -506,7 +547,7 @@ def test_trigger_topic_foundry_enrichment_no_completed_run(monkeypatch: pytest.M
     monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
 
-    def fake_fetch_latest_completed_run(base_url, timeout=None):
+    def fake_fetch_latest_completed_run(base_url, model_name=None, timeout=None):
         raise TopicFoundryClientError("no completed run")
 
     monkeypatch.setattr(car, "fetch_latest_completed_run", fake_fetch_latest_completed_run)
@@ -522,9 +563,13 @@ def test_trigger_topic_foundry_enrichment_success(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
     monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT", 150)
 
-    monkeypatch.setattr(
-        car, "fetch_latest_completed_run", lambda base_url, timeout=None: {"run_id": FAKE_RUN_ID}
-    )
+    seen_fetch_kwargs = {}
+
+    def fake_fetch_latest_completed_run(base_url, model_name=None, timeout=None):
+        seen_fetch_kwargs["model_name"] = model_name
+        return {"run_id": FAKE_RUN_ID}
+
+    monkeypatch.setattr(car, "fetch_latest_completed_run", fake_fetch_latest_completed_run)
 
     seen_kwargs = {}
 
@@ -546,6 +591,10 @@ def test_trigger_topic_foundry_enrichment_success(monkeypatch: pytest.MonkeyPatc
         "limit": 150,
         "force": False,
     }
+    # Code review 2026-08-18: fetch_latest_completed_run must be scoped to
+    # this scheduler's own model, or it can silently resolve to a
+    # *different* model's latest run (e.g. the old, unfiltered one).
+    assert seen_fetch_kwargs["model_name"] == car._TOPIC_FOUNDRY_MODEL_NAME
 
 
 @pytest.mark.parametrize("configured_limit", [0, -5])
@@ -564,7 +613,7 @@ def test_trigger_topic_foundry_enrichment_non_positive_limit_does_not_call_endpo
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
     monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT", configured_limit)
     monkeypatch.setattr(
-        car, "fetch_latest_completed_run", lambda base_url, timeout=None: {"run_id": FAKE_RUN_ID}
+        car, "fetch_latest_completed_run", lambda base_url, model_name=None, timeout=None: {"run_id": FAKE_RUN_ID}
     )
 
     called = []
@@ -588,7 +637,7 @@ def test_trigger_topic_foundry_enrichment_client_error_degrades(monkeypatch: pyt
     monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
     monkeypatch.setattr(
-        car, "fetch_latest_completed_run", lambda base_url, timeout=None: {"run_id": FAKE_RUN_ID}
+        car, "fetch_latest_completed_run", lambda base_url, model_name=None, timeout=None: {"run_id": FAKE_RUN_ID}
     )
 
     def fake_trigger_enrichment_for_run(base_url, run_id, *, limit=None, force=False, timeout=None):

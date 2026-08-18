@@ -279,6 +279,16 @@ def test_ingest_normal_run_writes_concepts_excludes_outlier_and_below_floor(
     assert all("/topics/-1/" not in url for url in keyword_call_urls)
     assert len(keyword_call_urls) == 3  # topics 0, 1, 2 (adapter drops 2 later, but client fetches before filtering)
 
+    # Code review 2026-08-18: the "latest completed run" lookup must be
+    # scoped to this scheduler's own model, or ingestion can silently keep
+    # reading a *different* model's runs (e.g. an old, unfiltered one).
+    from scripts import concept_atlas_routes as car
+
+    runs_calls = [params for url, params in calls if url.endswith("/runs")]
+    assert runs_calls, "expected at least one /runs lookup"
+    assert runs_calls[0] is not None
+    assert runs_calls[0].get("model_name") == car._TOPIC_FOUNDRY_MODEL_NAME
+
 
 def test_ingest_is_idempotent_on_repeated_calls(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Re-running ingestion for the same run must upsert, not duplicate, nodes/edges."""

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orion.execution_dispatch.builder import build_execution_dispatch_frame
@@ -20,11 +20,30 @@ NOW = datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc)
 FIELD_TICK_ID = "field.tick:test"
 
 
-def _field(tick_id: str, node_vectors: dict[str, dict[str, float]] | None = None) -> FieldStateV1:
+def _field(
+    tick_id: str,
+    node_vectors: dict[str, dict[str, float]] | None = None,
+    *,
+    generated_at: datetime = NOW,
+    node_vector_updated_at: dict[str, dict[str, datetime]] | None = None,
+) -> FieldStateV1:
+    """R5b (write-evidence guard): `node_vector_updated_at` defaults to a
+    fresh stamp (`generated_at`) for every node_vectors entry, matching what
+    R5a's own rebuild measured live (reliability_pressure is 100%
+    node_vector_updated_at-stamped over 3,000 live ticks) -- an unstamped
+    fixture would now read as `channel_write_backed() is None` and have its
+    evidence withheld, which is the guard doing its job on a fixture that
+    doesn't look like real data, not a bug. Pass
+    `node_vector_updated_at={}` explicitly for the "never stamped" / stale
+    case a guard test wants to exercise."""
+    nv = node_vectors or {}
+    if node_vector_updated_at is None:
+        node_vector_updated_at = {node: {ch: generated_at for ch in channels} for node, channels in nv.items()}
     return FieldStateV1(
-        generated_at=NOW,
+        generated_at=generated_at,
         tick_id=tick_id,
-        node_vectors=node_vectors or {},
+        node_vectors=nv,
+        node_vector_updated_at=node_vector_updated_at,
     )
 
 
@@ -545,6 +564,197 @@ def test_completed_and_failed_is_mixed() -> None:
         now=NOW,
     )
     assert frame.outcome_status == "mixed"
+
+
+def test_stale_reliability_write_is_withheld_not_credited() -> None:
+    """R5b: the exact trap the roadmap names -- a real-looking drop
+    (0.6 -> 0.2) whose AFTER tick's winning write is 300s old (older than
+    stale_after_sec=120) must NOT read as "improved". It must read "stale"
+    and land in withheld_evidence, not positive_evidence."""
+    dispatch = _dispatch_dry_run()
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.6}})
+    after = _field(
+        "field.tick:after",
+        {"node:test": {"reliability_pressure": 0.2}},
+        node_vector_updated_at={"node:test": {"reliability_pressure": NOW - timedelta(seconds=300)}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert not any(o.outcome_kind == "improved" for o in frame.observations)
+    assert any(o.outcome_kind == "stale" for o in frame.observations)
+    assert not any("reliability_pressure" in e for e in frame.positive_evidence)
+    assert any(e.startswith("withheld:reliability_pressure:") for e in frame.withheld_evidence)
+
+
+def test_stale_write_withholds_negative_evidence_too() -> None:
+    """The gate withholds BOTH directions, not just positive -- an unbacked
+    reading is not selectively trusted for bad news either. A worsening
+    (increase) delta on a stale write must not land in negative_evidence."""
+    dispatch = _dispatch_dry_run()
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.2}})
+    after = _field(
+        "field.tick:after",
+        {"node:test": {"reliability_pressure": 0.6}},
+        node_vector_updated_at={"node:test": {"reliability_pressure": NOW - timedelta(seconds=300)}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert not any(o.outcome_kind == "worsened" for o in frame.observations)
+    assert not any("reliability_pressure" in e for e in frame.negative_evidence)
+    assert any(e.startswith("withheld:reliability_pressure:") for e in frame.withheld_evidence)
+
+
+def test_stale_reliability_write_produces_exactly_one_withheld_entry() -> None:
+    """reliability_pressure is checked twice internally (once for pressure-
+    delta evidence, once for the improved/worsened observation) -- review
+    caught an earlier version double-recording the same channel/tick into
+    withheld_evidence. Must be exactly one entry, not two."""
+    dispatch = _dispatch_dry_run()
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.6}})
+    after = _field(
+        "field.tick:after",
+        {"node:test": {"reliability_pressure": 0.2}},
+        node_vector_updated_at={"node:test": {"reliability_pressure": NOW - timedelta(seconds=300)}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    reliability_withheld = [e for e in frame.withheld_evidence if e.startswith("withheld:reliability_pressure:")]
+    assert reliability_withheld == ["withheld:reliability_pressure:no_recent_write"]
+
+
+def test_fresh_write_still_credited_with_guard_on() -> None:
+    """Guard-on does not mean nothing is ever credited -- a genuinely fresh
+    write still gets the real positive/'improved' credit. Regresses the
+    guard against becoming a blanket suppressor."""
+    dispatch = _dispatch_dry_run()
+    before = _field(
+        "field.tick:before",
+        # "resource_pressure" the DIMENSION is fed by raw channel "pressure",
+        # not a raw channel literally named "resource_pressure" -- see
+        # orion/field/credit_integrity.py's DIMS_RESOURCE / CHANNEL_DIMENSION_MAP.
+        {"node:test": {"execution_pressure": 0.6, "pressure": 0.6, "reliability_pressure": 0.6}},
+    )
+    after = _field(
+        "field.tick:after",
+        {"node:test": {"execution_pressure": 0.2, "pressure": 0.2, "reliability_pressure": 0.2}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert any(o.outcome_kind == "improved" for o in frame.observations)
+    assert frame.withheld_evidence == []
+    assert len(frame.positive_evidence) == 3
+
+
+def test_unmapped_channel_in_present_field_after_is_withheld() -> None:
+    """A field_after snapshot CAN be present while a specific credited
+    channel never contributed a value this tick at all (distinct from
+    "stale" -- channel_write_backed() returns None, not False). Regresses a
+    mutant (`backed is False` instead of `backed is not True`) that
+    survived every other test in this file: it let a None-backed channel
+    fall through to being credited as if it were True."""
+    dispatch = _dispatch_dry_run()
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.6, "pressure": 0.6}})
+    # "after" only carries reliability_pressure this tick -- pressure
+    # (resource_pressure's dimension) is entirely absent from the merge,
+    # not stale.
+    after = _field("field.tick:after", {"node:test": {"reliability_pressure": 0.2}})
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert "withheld:resource_pressure:unmapped_this_tick" in frame.withheld_evidence
+    assert not any("resource_pressure" in e for e in frame.positive_evidence)
+    assert not any("resource_pressure" in e for e in frame.negative_evidence)
+
+
+def test_missing_field_after_withholds_everything() -> None:
+    """R5b's most acute case: no AFTER snapshot at all is zero write
+    evidence for every credited channel, not partial evidence -- must not
+    fall back to crediting a phantom 0.0-vs-before delta."""
+    dispatch = _dispatch_dry_run()
+    before = _field(
+        "field.tick:before",
+        # "resource_pressure" the DIMENSION is fed by raw channel "pressure",
+        # not a raw channel literally named "resource_pressure" -- see
+        # orion/field/credit_integrity.py's DIMS_RESOURCE / CHANNEL_DIMENSION_MAP.
+        {"node:test": {"execution_pressure": 0.6, "pressure": 0.6, "reliability_pressure": 0.6}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=None,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert frame.positive_evidence == []
+    assert "withheld:field_after_missing:no_write_evidence" in frame.withheld_evidence
+
+
+def test_guard_disabled_preserves_pre_guard_behavior() -> None:
+    """One-line rollback: write_evidence_guard_enabled=False must reproduce
+    the exact pre-R5b behavior -- a stale write still gets credited, same as
+    it did before this rung existed."""
+    disabled_policy = FEEDBACK_POLICY.model_copy(update={"write_evidence_guard_enabled": False})
+    dispatch = _dispatch_dry_run()
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.6}})
+    after = _field(
+        "field.tick:after",
+        {"node:test": {"reliability_pressure": 0.2}},
+        node_vector_updated_at={"node:test": {"reliability_pressure": NOW - timedelta(seconds=300)}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=disabled_policy,
+        now=NOW,
+    )
+    assert any(o.outcome_kind == "improved" for o in frame.observations)
+    assert frame.withheld_evidence == []
 
 
 def test_no_mutation_side_effects() -> None:

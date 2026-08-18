@@ -88,6 +88,13 @@ class FeedbackFrameV1(BaseModel):
     positive_evidence: list[str] = Field(default_factory=list)
     negative_evidence: list[str] = Field(default_factory=list)
     absence_evidence: list[str] = Field(default_factory=list)
+    # R5b (phase-5 feedback-loop guard, 2026-08-18): a pressure-delta or
+    # reliability observation that was NOT credited (either direction)
+    # because orion.field.credit_integrity.channel_write_backed() found the
+    # credited AFTER tick had no fresh write evidence -- e.g.
+    # "withheld:resource_pressure:no_recent_write". Never silently dropped;
+    # see orion/feedback/builder.py::build_feedback_frame.
+    withheld_evidence: list[str] = Field(default_factory=list)
 
     pressure_before: dict[str, float] = Field(default_factory=dict)
     pressure_after: dict[str, float] = Field(default_factory=dict)

@@ -94,16 +94,53 @@ review), plus a separate vacuous-truth bug already fixed and released as
 PR #1694 before this rebuild (`all()` over an empty generator when a
 multi-channel dimension's contributor was entirely absent from the merge).
 
-WHAT IT DELIBERATELY DOES NOT DO
---------------------------------
-No guard, no gating of the feedback loop itself. Changing a learning loop is
-proposal-mode work (CLAUDE.md 0A) and needs a measured real instance to
-design against, not a hypothesis -- this module is that measurement.
+WHAT THIS MODULE STILL DOES NOT DO (R5a, the watch)
+-----------------------------------------------------
+Everything above this line is report-only, swept over a BATCH of ticks after
+the fact -- it cannot gate a single feedback decision because it needs a
+whole window to find a silent RUN, and by the time a run is long enough to
+report, the credit for every tick in it has already been assigned.
+
+R5B, THE GATE -- `channel_write_backed()` BELOW
+--------------------------------------------------
+2026-08-18. CLAUDE.md 0A requires proposal mode before changing a learning
+loop unless Juniper directly asks to implement; Juniper did
+("build it", after the R5a rebuild above and its own two review passes
+landed and the roadmap doc recorded the open decision as resolved -- "offline
+suppression is binary when shit is variable... live with it": design the
+guard against the CURRENT loop, not a hypothetically-fixed one).
+
+`channel_write_backed()` is the single-tick sibling of the batch watch above
+-- same two mechanisms (`_classify_tick`, `_refresh_from_timestamps`), same
+vocabulary, evaluated at exactly the one tick a feedback decision is about to
+credit, not swept over history. It answers "should THIS credit decision trust
+THIS tick's value" rather than "was there ever a silent run" -- a real-time
+question the batch watch cannot answer because it needs a whole window's
+worth of future ticks before it can conclude anything.
+
+Consumed by `orion/feedback/builder.py::build_feedback_frame` to withhold
+positive/negative pressure-delta evidence and the `reliability_pressure`
+improved/worsened observation when the credited AFTER tick has no fresh
+write evidence -- the exact trap this doc names above ("a DROP is credited
+... If the drop happens because a producer went quiet ... the loop learns
+from an outage"). Withheld evidence is recorded (`FeedbackFrameV1
+.withheld_evidence`), never silently dropped, and the whole gate is a policy
+flag (`FeedbackPolicyV1.write_evidence_guard_enabled`, default `true`) so it
+is a one-line rollback, not a code revert, if it needs to come out.
+
+Deliberately NOT reused for this gate: `analyse_credit_integrity()`'s
+window-based signals. A live feedback tick has exactly two `FieldStateV1`
+snapshots on hand (`field_before`, `field_after`) -- there is no store method
+that returns the intervening window (confirmed: `FeedbackRuntimeStore` only
+exposes `load_field_for_tick` and `load_latest_field_after`, both single-tick
+loaders). Building one to reuse the window-based signals here would be a
+second, heavier mechanism for a question the single-tick classifier already
+answers correctly. If that changes, revisit.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from orion.field.pressure import (
@@ -236,6 +273,64 @@ def _classify_tick(
         return "node", winning_write_time(state, source_id, channel), None
     fresh = bool(source_id) and source_id in state.node_vectors
     return "capability", None, fresh
+
+
+def channel_write_backed(
+    state: FieldStateV1,
+    dimension: str,
+    *,
+    max_staleness_seconds: float,
+) -> bool | None:
+    """R5b's gate primitive: is THIS tick's credited dimension backed by a
+    real, fresh write -- checked at exactly the tick a feedback decision is
+    about to use, not swept over a window (see the module docstring's R5B
+    section for why this is a separate, single-tick sibling of
+    `analyse_credit_integrity`, not a caller of it).
+
+    Reuses the same two mechanisms `_classify_tick`/`_find_silent_*` use,
+    nothing new: `_classify_tick` for which mechanism the winner actually
+    used, `_refresh_from_timestamps` (regime.py, R2) for the node-sourced
+    staleness comparison, given a synthetic one-sample "window" whose start
+    is `max_staleness_seconds` before this tick -- the single-sample case
+    degenerates cleanly (one non-None stamp is 100% coverage, so the
+    coverage floor that exists for a real multi-sample window is a no-op
+    here; a None stamp returns "unknown" directly on regime.py's first
+    line). No new staleness heuristic.
+
+    Returns:
+      True  -- real write evidence, inside `max_staleness_seconds` (a node
+               stamp, or a capability winner whose provenance resolved to a
+               real node THIS tick).
+      False -- a winner exists but its evidence says stale (a node stamp
+               older than `max_staleness_seconds`) or not-fresh-this-tick (a
+               capability winner whose provenance did not resolve to a real
+               node this tick) -- the exact "reads calm during a producer
+               outage" trap this rung exists to close.
+      None  -- the dimension did not win a value from the merge at all this
+               tick, or a node winner has never been stamped. Distinct from
+               False on purpose, same unknown/silent distinction R5a's own
+               tests regress (`test_low_stamp_coverage_reads_unknown_not_
+               silent`) -- callers that need a single yes/no should treat
+               `is not True` as "do not credit", not conflate this with
+               False.
+    """
+    merged, provenance = collect_field_channel_pressures(state)
+    dims, detail = map_channels_to_dimensions_with_provenance(merged, provenance)
+    if dimension not in dims:
+        return None
+    winning_channel = detail[dimension].winning_channel if dimension in detail else None
+    kind, node_stamp, cap_fresh = _classify_tick(state, merged, provenance, winning_channel)
+    if kind == "absent":
+        return None
+    if kind == "capability":
+        return bool(cap_fresh)
+    verdict = _refresh_from_timestamps(
+        [node_stamp],
+        window_start=state.generated_at - timedelta(seconds=max_staleness_seconds),
+    )
+    if verdict == "unknown":
+        return None
+    return verdict == "producer_written"
 
 
 def _samples_for(

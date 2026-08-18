@@ -28,10 +28,19 @@ def test_scoring_keys() -> None:
 def test_pressure_channels() -> None:
     policy = load_feedback_policy(POLICY_PATH)
     assert "execution_pressure" in policy.pressure_channels
-    assert policy.positive_delta_channels["agency_readiness"] == "increase"
+    # agency_readiness was a SelfStateV1 composite dimension, removed
+    # 2026-07-22 (SelfStateV1 burn) -- this test asserted a stale key that
+    # no longer exists in the yaml; pre-existing failure, unrelated to R5b,
+    # fixed here in passing since this is the exact file that policy lives in.
+    assert policy.positive_delta_channels["reliability_pressure"] == "decrease"
 
 
 def test_absence_rules() -> None:
     policy = load_feedback_policy(POLICY_PATH)
     assert policy.absence_rules["dry_run_needs_no_cortex_result"] is True
     assert policy.absence_rules["dispatch_read_only_requires_result"] is True
+
+
+def test_write_evidence_guard_enabled_by_default() -> None:
+    policy = load_feedback_policy(POLICY_PATH)
+    assert policy.write_evidence_guard_enabled is True

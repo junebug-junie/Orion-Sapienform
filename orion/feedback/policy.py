@@ -39,6 +39,13 @@ class FeedbackPolicyV1(BaseModel):
     pressure_channels: list[str] = Field(default_factory=list)
     positive_delta_channels: dict[str, str] = Field(default_factory=dict)
     absence_rules: dict[str, bool | str] = Field(default_factory=dict)
+    # R5b (phase-5 feedback-loop guard, 2026-08-18): withhold positive/
+    # negative pressure-delta evidence for a channel when the credited AFTER
+    # tick has no fresh write evidence (orion.field.credit_integrity.
+    # channel_write_backed(), gated by windows.stale_after_sec). One-line
+    # rollback if the guard needs to come out: flip this to false and
+    # restart orion-feedback-runtime.
+    write_evidence_guard_enabled: bool = True
 
 
 def load_feedback_policy(path: str | Path) -> FeedbackPolicyV1:

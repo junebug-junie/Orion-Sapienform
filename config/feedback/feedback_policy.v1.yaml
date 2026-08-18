@@ -33,6 +33,13 @@ positive_delta_channels:
   execution_pressure: decrease
   resource_pressure: decrease
 
+# R5b (phase-5 feedback-loop guard, 2026-08-18): withhold a positive_delta_
+# channels credit when the AFTER tick has no fresh write evidence for it
+# (orion.field.credit_integrity.channel_write_backed(), windows.
+# stale_after_sec above is the freshness bar). Flip to false + restart
+# orion-feedback-runtime to roll back to the pre-guard behavior.
+write_evidence_guard_enabled: true
+
 absence_rules:
   dry_run_needs_no_cortex_result: true
   dispatch_read_only_requires_result: true

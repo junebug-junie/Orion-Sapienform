@@ -11,6 +11,7 @@ from orion.feedback.extractors import (
 )
 from orion.feedback.policy import FeedbackPolicyV1
 from orion.feedback.scoring import aggregate_confidence, score_for_outcome_status
+from orion.field.credit_integrity import channel_write_backed
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.field_state import FieldStateV1
@@ -54,6 +55,36 @@ OutcomeKind = Literal[
 
 def stable_feedback_frame_id(*, dispatch_frame_id: str, policy_id: str) -> str:
     return f"feedback.frame:{dispatch_frame_id}:{policy_id}"
+
+
+def _write_evidence_reason(backed: bool | None) -> str:
+    return "unmapped_this_tick" if backed is None else "no_recent_write"
+
+
+def _gate_positive_delta_channels(
+    field_after: FieldStateV1 | None,
+    positive_delta_channels: dict[str, str],
+    *,
+    max_staleness_seconds: float,
+) -> tuple[dict[str, str], list[str]]:
+    """R5b: drop a channel from crediting (either direction -- see
+    build_feedback_frame's docstring note) when its AFTER-tick value has no
+    fresh write evidence. Reuses orion.field.credit_integrity.
+    channel_write_backed() -- the single-tick sibling of R5a's batch watch --
+    never a second staleness heuristic."""
+    if field_after is None:
+        # No AFTER snapshot at all is the most acute case of "no write
+        # evidence" -- every channel is unbacked, not just some.
+        return {}, ["withheld:field_after_missing:no_write_evidence"]
+    gated: dict[str, str] = {}
+    withheld: list[str] = []
+    for channel, direction in positive_delta_channels.items():
+        backed = channel_write_backed(field_after, channel, max_staleness_seconds=max_staleness_seconds)
+        if backed is not True:
+            withheld.append(f"withheld:{channel}:{_write_evidence_reason(backed)}")
+            continue
+        gated[channel] = direction
+    return gated, withheld
 
 
 def _observation(
@@ -176,14 +207,23 @@ def build_feedback_frame(
     positive_evidence: list[str] = []
     negative_evidence: list[str] = []
     absence_evidence: list[str] = []
+    withheld_evidence: list[str] = []
     warnings: list[str] = list(dispatch_frame.warnings)
 
     channels = list(policy.pressure_channels)
+    stale_after_sec = float(policy.windows.stale_after_sec)
 
     pressure_before = extract_field_pressure_snapshot(field_before, channels)
     pressure_after = extract_field_pressure_snapshot(field_after, channels)
     delta = pressure_delta(pressure_before, pressure_after)
-    pos_delta, neg_delta = classify_pressure_deltas(delta, policy.positive_delta_channels)
+    if policy.write_evidence_guard_enabled:
+        gated_positive_delta_channels, gate_withheld = _gate_positive_delta_channels(
+            field_after, policy.positive_delta_channels, max_staleness_seconds=stale_after_sec
+        )
+        withheld_evidence.extend(gate_withheld)
+    else:
+        gated_positive_delta_channels = policy.positive_delta_channels
+    pos_delta, neg_delta = classify_pressure_deltas(delta, gated_positive_delta_channels)
     positive_evidence.extend(pos_delta)
     negative_evidence.extend(neg_delta)
 
@@ -280,7 +320,29 @@ def build_feedback_frame(
         reliability_delta = pressure_after.get("reliability_pressure", 0.0) - pressure_before.get(
             "reliability_pressure", 0.0
         )
-        if reliability_delta < -0.05:
+        reliability_backed = (
+            channel_write_backed(field_after, "reliability_pressure", max_staleness_seconds=stale_after_sec)
+            if policy.write_evidence_guard_enabled
+            else True
+        )
+        if reliability_backed is not True:
+            # R5b: a real delta may still be sitting in reliability_delta
+            # here -- the point is we cannot tell a real fix from a decayed-
+            # to-calm reading, so this reports "stale", never "improved".
+            withheld_evidence.append(f"withheld:reliability_pressure:{_write_evidence_reason(reliability_backed)}")
+            observations.append(
+                _observation(
+                    observation_id=f"obs:field:{field_after.tick_id}:stale",
+                    source_kind="field_delta",
+                    source_id=field_after.tick_id,
+                    outcome_kind="stale",
+                    score=scoring.unknown_score,
+                    confidence=_FIELD_DELTA_OBSERVATION_CONFIDENCE,
+                    observed_at=generated_at,
+                    reasons=[f"reliability_pressure_{_write_evidence_reason(reliability_backed)}"],
+                )
+            )
+        elif reliability_delta < -0.05:
             observations.append(
                 _observation(
                     observation_id=f"obs:field:{field_after.tick_id}:improved",
@@ -346,6 +408,7 @@ def build_feedback_frame(
         positive_evidence=positive_evidence,
         negative_evidence=negative_evidence,
         absence_evidence=absence_evidence,
+        withheld_evidence=withheld_evidence,
         pressure_before=pressure_before,
         pressure_after=pressure_after,
         pressure_delta=delta,

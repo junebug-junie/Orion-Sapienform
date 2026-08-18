@@ -24,6 +24,7 @@ from orion.field.credit_integrity import (  # noqa: E402
     SILENT,
     _classify_tick,
     analyse_credit_integrity,
+    channel_write_backed,
     load_credited_dimensions,
 )
 from orion.field.pressure import collect_field_channel_pressures  # noqa: E402
@@ -345,6 +346,57 @@ def test_short_histories_do_not_raise(n):
     states = [_node_state(i, value=0.5, write_at=T0) for i in range(n)]
     report = analyse_credit_integrity(states, DIMS_RELIABILITY, 30.0)
     assert report.findings == [] or all(f.kind == "unmappable_dimension" for f in report.findings)
+
+
+def test_channel_write_backed_true_for_fresh_node_write():
+    """R5b's gate primitive, single-tick: a write stamped at exactly this
+    tick's own time is inside any positive max_staleness_seconds."""
+    state = _node_state(0, value=0.5, write_at=T0, channel="reliability_pressure")
+    assert channel_write_backed(state, "reliability_pressure", max_staleness_seconds=120.0) is True
+
+
+def test_channel_write_backed_false_for_stale_node_write():
+    """A write real 300s ago, checked against a 120s staleness bar, must
+    read False -- not True and not None. This is the exact gate that
+    protects build_feedback_frame from crediting a decayed-to-calm reading."""
+    at = T0 + timedelta(seconds=500)
+    state = FieldStateV1.model_validate(
+        {
+            "schema_version": "field.state.v1",
+            "generated_at": at.isoformat(),
+            "tick_id": "t-stale",
+            "node_vectors": {"node:athena": {"reliability_pressure": 0.1}},
+            "node_vector_updated_at": {"node:athena": {"reliability_pressure": T0.isoformat()}},
+            "capability_vectors": {},
+            "capability_provenance": {},
+            "edges": [],
+            "recent_perturbations": [],
+        }
+    )
+    assert channel_write_backed(state, "reliability_pressure", max_staleness_seconds=120.0) is False
+
+
+def test_channel_write_backed_none_for_never_stamped_node_write():
+    state = _node_state(0, value=0.5, write_at=None, channel="reliability_pressure")
+    assert channel_write_backed(state, "reliability_pressure", max_staleness_seconds=120.0) is None
+
+
+def test_channel_write_backed_none_when_dimension_absent_from_merge():
+    state = _node_state(0, value=0.5, write_at=T0, channel="reliability_pressure")
+    assert channel_write_backed(state, "resource_pressure", max_staleness_seconds=120.0) is None
+
+
+def test_channel_write_backed_capability_true_when_contributing_this_tick():
+    state = _capability_state(0, value=0.5, contributing=True)
+    assert channel_write_backed(state, "resource_pressure", max_staleness_seconds=120.0) is True
+
+
+def test_channel_write_backed_capability_false_when_not_contributing_this_tick():
+    """apply_diffusion's documented behavior: provenance is popped, not left
+    stale, the instant nobody contributes -- this tick reads not-fresh, not
+    unknown, since the dimension DID win a value from the merge."""
+    state = _capability_state(0, value=0.5, contributing=False)
+    assert channel_write_backed(state, "resource_pressure", max_staleness_seconds=120.0) is False
 
 
 def test_absent_channel_tick_is_not_read_as_fresh():

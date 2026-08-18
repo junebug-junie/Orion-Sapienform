@@ -8,7 +8,6 @@ away from a known-passing baseline, so a test that passes for the wrong reason
 from __future__ import annotations
 
 import asyncio
-import random
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +22,7 @@ from scripts.endogenous_outreach import (
     looks_like_error_text,
     outreach_block_reason,
 )
+from scripts.tension_outreach_trigger import TensionTriggerReason
 
 
 # --------------------------------------------------------------------------
@@ -149,6 +149,37 @@ def test_curiosity_alone_is_enough_grounding() -> None:
     assert "repair pressure rising" in build_outreach_prompt(ctx)
 
 
+def test_tension_reason_alone_is_enough_grounding() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena", run_length=9, peak_deviation_pressure=0.62
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert prompt != ""
+    assert "node:athena" in prompt
+    assert "9 consecutive readings" in prompt
+
+
+def test_tension_reason_prompt_never_claims_distress() -> None:
+    """The gate is a change-detector, not a level-detector -- the prompt must
+    not overclaim a distress/concern reading it cannot honestly support."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena", run_length=9, peak_deviation_pressure=0.62
+        ),
+    )
+    prompt = build_outreach_prompt(ctx).lower()
+    for banned in ("worried", "concerned", "distress", "alarmed"):
+        assert banned not in prompt
+
+
 @pytest.mark.parametrize("raw", ["PASS", " pass ", "PASS.", '"PASS"'])
 def test_pass_response_detected(raw) -> None:
     assert is_pass_response(raw) is True
@@ -164,16 +195,17 @@ def test_non_pass_response_not_swallowed(raw) -> None:
 # --------------------------------------------------------------------------
 
 
-class _AlwaysRoll(random.Random):
-    def random(self) -> float:  # noqa: D102
-        return 0.0
+def _always_fires() -> TensionTriggerReason:
+    """Default test evaluator: a real-shaped reason, always returned -- most
+    tests here are exercising gates/delivery, not the trigger itself (see
+    test_tension_outreach_trigger.py for that)."""
+    return TensionTriggerReason(target_id="node:test", run_length=99, peak_deviation_pressure=1.0)
 
 
 def _outreach(**overrides) -> EndogenousOutreach:
     base = dict(
         enabled=True,
         tick_interval_sec=300.0,
-        probability=1.0,
         min_cooldown_sec=0.0,
         daily_cap=4,
         quiet_start_hour=-1,
@@ -182,7 +214,7 @@ def _outreach(**overrides) -> EndogenousOutreach:
         timeout_sec=5.0,
         notify_channel="orion:notify:in_app",
         fallback_session_id="orion_outreach",
-        rng=_AlwaysRoll(),
+        trigger_evaluator=_always_fires,
     )
     base.update(overrides)
     return EndogenousOutreach(**base)
@@ -781,14 +813,106 @@ def test_healthy_cortex_result_still_sends(monkeypatch) -> None:
     assert queue.get_nowait()["llm_response"] == "I keep circling the same unresolved thing."
 
 
-def test_probability_zero_never_rolls(monkeypatch) -> None:
-    outreach = _outreach(probability=0.0, rng=random.Random(1234))
+def test_no_tension_trigger_does_not_fire(monkeypatch) -> None:
+    outreach = _outreach(trigger_evaluator=lambda: None)
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "never")
 
     result = asyncio.run(outreach.maybe_outreach())
 
-    assert result["reason"] == "not_rolled"
+    assert result["reason"] == "no_tension_trigger"
+
+
+def test_trigger_evaluator_exception_degrades_to_not_firing(monkeypatch) -> None:
+    """A broken trigger must not crash the tick -- the honest failure mode is
+    silence, not a false positive."""
+
+    def _broken():
+        raise RuntimeError("db is down")
+
+    outreach = _outreach(trigger_evaluator=_broken)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "never")
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "no_tension_trigger"
+
+
+def test_trigger_evaluator_does_not_block_the_event_loop(monkeypatch) -> None:
+    """Regression guard: `_should_roll()` must run its (blocking, synchronous)
+    evaluator off the event loop via `asyncio.to_thread`. Proven by racing a
+    concurrent coroutine against a slow evaluator and confirming the
+    concurrent coroutine's own mark lands BEFORE the evaluator's -- only
+    possible if the evaluator actually yielded the loop instead of blocking
+    it in-line, which would otherwise freeze every connected websocket and
+    in-flight chat turn on Hub's single uvicorn worker for the call's
+    duration."""
+    import time
+
+    marks: list[str] = []
+
+    def _slow_evaluator():
+        time.sleep(0.2)
+        marks.append("evaluator_done")
+        return None
+
+    outreach = _outreach(trigger_evaluator=_slow_evaluator)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "never")
+
+    async def _concurrent_marker():
+        await asyncio.sleep(0.05)
+        marks.append("concurrent_task_ran")
+
+    async def run():
+        await asyncio.gather(outreach.maybe_outreach(), _concurrent_marker())
+
+    asyncio.run(run())
+
+    assert marks == ["concurrent_task_ran", "evaluator_done"]
+
+
+def test_status_does_not_report_a_stale_tension_reason_after_a_blocked_tick(monkeypatch) -> None:
+    """A gate (quiet_hours/daily_cap/cooldown/turn_in_flight) blocking BEFORE
+    the trigger evaluator ever runs must not leave `status()` reporting an
+    earlier tick's reason as if it were still live right now."""
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "hi")
+
+    asyncio.run(outreach.maybe_outreach())  # organic: sets a real reason
+    assert outreach.status()["last_tension_reason"] is not None
+
+    outreach.register_connection("c1", asyncio.Queue(), {"correlation_id": "live-turn", "kind": "orion"})
+    asyncio.run(outreach.maybe_outreach())  # blocked by turn_in_flight before _should_roll runs
+
+    assert outreach.status()["block_reason"] == "turn_in_flight"
+    assert outreach.status()["last_tension_reason"] is None
+
+
+def test_forced_outreach_does_not_carry_a_stale_tension_reason(monkeypatch) -> None:
+    """A prior organic tick's reason must not leak into a later force=True
+    (debug-endpoint) call that never re-evaluated the trigger."""
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "hi")
+
+    asyncio.run(outreach.maybe_outreach())  # organic: sets _last_tension_reason
+    assert outreach._last_tension_reason is not None
+
+    captured: list[OutreachContext] = []
+
+    async def fake_gather(self, session_id):
+        ctx = OutreachContext(curiosity_summaries=["x"], recent_turns=[], presence=None,
+                               tension_reason=self._last_tension_reason)
+        captured.append(ctx)
+        return ctx
+
+    monkeypatch.setattr(EndogenousOutreach, "_gather_context", fake_gather)
+    asyncio.run(outreach.maybe_outreach(force=True))
+
+    assert captured[-1].tension_reason is None
 
 
 def test_disabled_instance_starts_no_task() -> None:

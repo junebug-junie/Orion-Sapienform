@@ -140,3 +140,47 @@ def test_field_pressures_reports_deviation_pressure_even_on_an_empty_field() -> 
     silently degrades to the old absent-key 0.0 path for a different reason."""
     state = _empty_state("tick_0")
     assert field_pressures(state)["deviation_pressure"] == 0.0
+
+
+# --- tension_borda_winner_target_id (2026-08-16, outreach follow-on) -------
+
+
+def test_winner_is_none_on_a_quiet_tick() -> None:
+    state = _empty_state("tick_0")
+    state.node_vectors["node:athena"] = {"cpu_pressure": 0.20}
+    update_tension_pressure(state)
+    assert state.tension_borda_winner_target_id is None
+
+
+def test_winner_names_the_node_that_admitted_the_spike() -> None:
+    state = _empty_state("tick_0")
+    for i in range(6):
+        state.tick_id = f"tick_{i}"
+        state.node_vectors["node:athena"] = {"cpu_pressure": 0.20}
+        update_tension_pressure(state)
+    assert state.tension_borda_winner_target_id is None
+
+    state.tick_id = "tick_spike"
+    state.node_vectors["node:athena"] = {"cpu_pressure": 0.95}
+    update_tension_pressure(state)
+    assert state.tension_borda_winner_target_id == "node:athena"
+
+
+def test_winner_updates_to_whichever_node_actually_admits() -> None:
+    """Two nodes warmed up steady; only the one that spikes should win."""
+    state = _empty_state("tick_0")
+    for i in range(6):
+        state.tick_id = f"tick_{i}"
+        state.node_vectors = {
+            "node:athena": {"cpu_pressure": 0.20},
+            "node:atlas": {"cpu_pressure": 0.20},
+        }
+        update_tension_pressure(state)
+
+    state.tick_id = "tick_spike"
+    state.node_vectors = {
+        "node:athena": {"cpu_pressure": 0.20},
+        "node:atlas": {"cpu_pressure": 0.95},
+    }
+    update_tension_pressure(state)
+    assert state.tension_borda_winner_target_id == "node:atlas"

@@ -174,6 +174,19 @@ class FieldStateV1(BaseModel):
     # function's own docstring. Consumed by orion.field.pressure.
     # field_pressures() as the "deviation_pressure" PRESSURE_DIMENSIONS entry.
     tension_deviation_pressure: float = 0.0
+    # This tick's Borda-winning target (orion.attention.tension.competition
+    # .TickResult.winner) -- a node_id (e.g. "node:athena"), or None on a
+    # quiet tick where nothing was admitted. Deliberately NOT wired into
+    # orion/proposals/builder.py's target_binding when tension_deviation_
+    # pressure first shipped (docs/superpowers/specs/2026-08-16-tension-
+    # driven-mutating-dispatch-design.md's own non-goals -- no real consumer
+    # yet, and CLAUDE.md 0A's keyword-cathedral rule requires one in the same
+    # patch that adds a new concept). Added now because a real consumer
+    # exists: Hub's endogenous-outreach trigger (services/orion-hub/scripts/
+    # tension_outreach_trigger.py) needs identity, not just magnitude, to
+    # honestly claim "I noticed X changing" rather than a content-free "I'm
+    # reaching out" wrapped around an unrelated number.
+    tension_borda_winner_target_id: str | None = None
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

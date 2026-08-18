@@ -110,6 +110,49 @@ def _chmod_tree_owner_only(root: Path) -> None:
 
 # --- per-target capture -----------------------------------------------------
 
+def _terminate_stale_pg_dump_backends(*, container: str, pg_user: str, log: list[str]) -> None:
+    """Best-effort: terminate any pg_dump/pg_dumpall backend still alive inside
+    the container, from this run or a prior one.
+
+    `subprocess.run(cmd, timeout=...)` on a `docker exec ... pg_dumpall` command
+    only kills the local `docker exec` client process when it times out --
+    `docker exec` does not forward that signal into the container, so the
+    server-side dump backend keeps running orphaned. Confirmed live
+    2026-08-16/17/18: three consecutive nights left an orphaned `pg_dump`
+    backend (application_name=pg_dump, per pg_stat_activity) holding
+    AccessShareLock on every table for 1+ hour past this script's own 30-minute
+    timeout, which blocked all schema-init DDL repo-wide -- and, via Postgres's
+    FIFO lock-queue fairness, every plain read queued behind that DDL too, not
+    just writes.
+
+    Runs as a query against pg_stat_activity, not the locked user tables, so it
+    is not itself blocked by the lock storm it is trying to clear. Never
+    raises -- a failed cleanup attempt must not mask the real capture error (on
+    the timeout path) or block a normal run (on the pre-flight path).
+
+    Blast radius: this terminates ANY pg_dump/pg_dumpall backend in the
+    container, not just ones this script started -- acceptable on this
+    dedicated Orion Postgres container, but it would also kill a concurrent
+    manual admin dump if one happened to be running.
+    """
+    cmd = [
+        "docker", "exec", container, "psql", "-U", pg_user, "-d", "postgres", "-tAc",
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE application_name IN ('pg_dump', 'pg_dumpall') AND pid <> pg_backend_pid();",
+    ]
+    try:
+        proc = _run(cmd, log=log, timeout=30)
+    except subprocess.TimeoutExpired:
+        log.append("WARNING: stale pg_dump backend cleanup itself timed out")
+        return
+    if proc.returncode != 0:
+        log.append(f"WARNING: stale pg_dump backend cleanup failed: {proc.stderr.decode(errors='replace')[:300]}")
+    else:
+        terminated = [line for line in proc.stdout.decode(errors="replace").splitlines() if line.strip()]
+        if terminated:
+            log.append(f"terminated stale pg_dump backend(s): {terminated}")
+
+
 def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[str]) -> None:
     """pg_dumpall inside the running container -- logical dump, always
     consistent regardless of concurrent writes, unlike a raw data-dir copy.
@@ -119,12 +162,23 @@ def capture_postgres(dest_dir: Path, *, container: str, pg_user: str, log: list[
     grows, so capturing it as a Python bytes object first would double peak
     memory for no reason.
     """
+    # Clear any backend orphaned by a prior run's timeout before starting a new
+    # dump -- see _terminate_stale_pg_dump_backends for why this can happen.
+    _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
     dest_dir.mkdir(parents=True)
     dest_file = dest_dir / "pg_dumpall.sql"
     cmd = ["docker", "exec", container, "pg_dumpall", "-U", pg_user]
     log.append("$ " + " ".join(cmd) + f" > {dest_file}")
-    with dest_file.open("wb") as fh:
-        proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=POSTGRES_DUMP_TIMEOUT_SEC)
+    try:
+        with dest_file.open("wb") as fh:
+            proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, timeout=POSTGRES_DUMP_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        # The local docker-exec client just got killed by the timeout above --
+        # the server-side backend it started did not. Clear it now rather than
+        # leaving it to hold locks for however long the dump would otherwise
+        # have taken to finish on its own (observed: 1hr+ and still running).
+        _terminate_stale_pg_dump_backends(container=container, pg_user=pg_user, log=log)
+        raise
     if proc.returncode != 0:
         dest_file.unlink(missing_ok=True)
         raise RuntimeError(f"pg_dumpall failed ({proc.returncode}): {proc.stderr.decode(errors='replace')[:500]}")

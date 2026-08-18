@@ -89,5 +89,9 @@ def update_tension_pressure(state: FieldStateV1) -> FieldStateV1:
     competition.import_baselines(_load_gate_state(state))
     tick = competition.observe_tick({"node_vectors": state.node_vectors})
     state.tension_deviation_pressure = deviation_pressure(tick)
+    # See FieldStateV1.tension_borda_winner_target_id's own docstring for why
+    # this is written now (2026-08-16) rather than at the same time as the
+    # scalar above -- a real consumer exists.
+    state.tension_borda_winner_target_id = tick.winner
     _dump_gate_state(state, competition.export_baselines())
     return state

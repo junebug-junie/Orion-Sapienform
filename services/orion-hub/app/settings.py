@@ -331,7 +331,7 @@ class Settings(BaseSettings):
     NOTIFY_BASE_URL: str = Field(default="http://orion-notify:7140", alias="NOTIFY_BASE_URL")
     NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
 
-    # --- Endogenous outreach (Orion speaks first; stub random trigger) ---
+    # --- Endogenous outreach (Orion speaks first; real deviation-tension trigger) ---
     # See scripts/endogenous_outreach.py. The only path by which Orion emits
     # chat text nobody asked for. Enabled in .env_example / the live .env; this
     # Field default stays False so an absent key fails closed rather than
@@ -343,10 +343,24 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_TICK_SEC: float = Field(
         default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
     )
-    # STUB trigger: chance per tick that Orion considers speaking. Replaced by a
-    # real endogenous signal when autonomy provides one.
-    HUB_ENDOGENOUS_OUTREACH_PROBABILITY: float = Field(
-        default=0.15, alias="HUB_ENDOGENOUS_OUTREACH_PROBABILITY"
+    # 2026-08-16: HUB_ENDOGENOUS_OUTREACH_PROBABILITY removed -- the coin-flip
+    # stub it configured is gone (scripts/endogenous_outreach.py::
+    # _should_roll() now calls scripts/tension_outreach_trigger.py's real
+    # trigger, which has its own derived-from-data constants, not an
+    # operator-tunable probability). Kill means kill, per CLAUDE.md 0A: no
+    # fallback to the removed mechanism.
+    #
+    # This one constant IS operator-tunable, unlike the trigger's other
+    # internals: MIN_RUN_LENGTH=8 is derived from a one-time 2-hour replay of
+    # live history (see scripts/tension_outreach_trigger.py's module
+    # docstring) against one FieldTensionCompetition tuning snapshot. If that
+    # tuning drifts later, the natural run-length distribution the "~1st
+    # percentile" bar rests on drifts with it -- an operator needs to be able
+    # to retune the bar from real post-deploy firing data without a code
+    # change/deploy. Default matches the derived value; changing this does
+    # not change what MIN_RUN_LENGTH means, only where the bar sits.
+    HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH: int = Field(
+        default=8, alias="HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH"
     )
     HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC: float = Field(
         default=2700.0, alias="HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC"

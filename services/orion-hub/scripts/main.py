@@ -1,5 +1,6 @@
 # scripts/main.py
 
+import functools
 import html
 import json
 import logging
@@ -34,6 +35,7 @@ from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from scripts.endogenous_outreach import EndogenousOutreach
+import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
 from scripts.agent_step_relay import AgentStepRelay
 from scripts.harness_step_relay import HarnessStepRelay
@@ -440,12 +442,15 @@ async def startup_event():
             )
             await bus_synaptic_trigger_notifier.start(bus)
 
-            # Orion speaks first (stub random trigger). Off unless explicitly
+            # Orion speaks first, on a real trigger (2026-08-16 -- see
+            # scripts/tension_outreach_trigger.py). Off unless explicitly
             # enabled -- see scripts/endogenous_outreach.py for the safety gates.
+            # min_run_length is operator-tunable (settings.py's own comment on
+            # HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH explains why); everything
+            # else about the trigger's internals stays fixed.
             endogenous_outreach = EndogenousOutreach(
                 enabled=settings.HUB_ENDOGENOUS_OUTREACH_ENABLED,
                 tick_interval_sec=settings.HUB_ENDOGENOUS_OUTREACH_TICK_SEC,
-                probability=settings.HUB_ENDOGENOUS_OUTREACH_PROBABILITY,
                 min_cooldown_sec=settings.HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC,
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
@@ -455,6 +460,10 @@ async def startup_event():
                 notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
                 fallback_session_id=settings.HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                trigger_evaluator=functools.partial(
+                    tension_outreach_trigger.current_run,
+                    min_run_length=settings.HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH,
+                ),
             )
             await endogenous_outreach.start(bus, cortex_client)
 

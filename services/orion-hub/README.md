@@ -225,14 +225,19 @@ nobody asked for. **Enabled** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=true` in
 `False`, so a deploy that loses the key fails closed rather than silently
 reaching out.
 
-**The trigger is a deliberate stub.** Orion has no endogenous "I want to speak
-now" signal yet, so a randomized timer stands in: every
-`HUB_ENDOGENOUS_OUTREACH_TICK_SEC` the loop rolls
-`HUB_ENDOGENOUS_OUTREACH_PROBABILITY`. When a real signal exists, replace
-`EndogenousOutreach._should_roll()` — nothing else in the module assumes a
-timer. Only the trigger is stubbed: the message itself is generated from live
-substrate signals and real chat history, and lands on the same rails a normal
-turn uses.
+**The trigger is real** (2026-08-16, replacing a randomized-timer stub).
+Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` the loop asks
+`scripts/tension_outreach_trigger.py::current_run()`: has the same node been
+winning `orion.attention.tension`'s live Borda competition for a sustained,
+unbroken run of real ticks right now — not a single blip. See that module's
+own docstring for the full account, including why it is honestly scoped
+("I noticed X change", never "I am worried about X") and why the persistence
+bar (`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default 8) is derived from a
+real replay of live history rather than guessed — it stays operator-tunable
+from real post-deploy firing-rate data, unlike the trigger's other internals.
+The message itself is generated from live substrate signals and real chat
+history, and lands on the same rails a normal turn uses — that part never
+changed.
 
 Pipeline:
 

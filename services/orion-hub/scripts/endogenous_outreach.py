@@ -1,12 +1,17 @@
 """Endogenous outreach — Orion opens a conversation Juniper did not start.
 
-STUB TRIGGER, DELIBERATELY. Orion has no endogenous "I want to say something
-now" signal yet (that is what the autonomy/drive work is building toward), so
-this module fires on a randomized timer instead of on a real motivational
-state. The timer is the *only* stubbed part: the message itself is generated
-from live substrate signals and real chat history, and lands on the same three
-rails a normal turn uses. When a real endogenous trigger exists, replace
-``_should_roll()`` and delete nothing else.
+REAL TRIGGER (2026-08-16, replacing the coin-flip stub this module ran on
+since 2026-08-14). ``_should_roll()`` now asks
+``scripts.tension_outreach_trigger.current_run()``: has the SAME target
+(node_id) been winning `orion.attention.tension`'s live Borda competition for
+a sustained, unbroken run of real ticks, right now -- not a single blip. See
+that module's own docstring for the full account, including why this is
+honestly scoped ("I noticed X change", never "I am worried about X" -- the
+underlying gate is a change-detector, not a level-detector) and why the bar
+(``MIN_RUN_LENGTH``) is derived from a real replay of live history rather than
+guessed. The message itself is generated from live substrate signals and real
+chat history, and lands on the same three rails a normal turn uses -- none of
+that changed.
 
 Delivery (all three already existed before this module; none are new rails):
 
@@ -50,11 +55,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -153,9 +157,19 @@ class OutreachContext:
     curiosity_summaries: List[str]
     recent_turns: List[Tuple[str, str]]  # (role, text)
     presence: Optional[Dict[str, Any]]
+    # The real reason this tick fired, when it fired for a real one -- see
+    # scripts.tension_outreach_trigger. None on a `force=True` debug trigger,
+    # which has no organic reason. Typed loosely (not imported at module
+    # level) to match this file's existing lazy-import convention for
+    # cross-Hub-module dependencies (curiosity_hint, hub_presence below).
+    tension_reason: Optional["TensionTriggerReason"] = None  # noqa: F821
 
     def is_empty(self) -> bool:
-        return not self.curiosity_summaries and not self.recent_turns
+        return (
+            not self.curiosity_summaries
+            and not self.recent_turns
+            and self.tension_reason is None
+        )
 
 
 def _fetch_curiosity_summaries() -> List[str]:
@@ -188,39 +202,40 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
     response-only rows separately, so both sides are unpacked and empty halves
     dropped. Scoped to ``session_id`` when one is known, else global recency.
     """
-    import os
+    from scripts.pg_engine import get_engine
 
-    uri = os.getenv("POSTGRES_URI", "").strip()
-    if not uri:
+    engine = get_engine()
+    if engine is None:
         return []
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 
-    engine = create_engine(uri, pool_pre_ping=True)
-    try:
-        with engine.connect() as conn:
-            if session_id:
-                rows = conn.execute(
-                    text(
-                        """
-                        SELECT prompt, response FROM chat_history_log
-                        WHERE session_id = :sid
-                        ORDER BY created_at DESC LIMIT :lim
-                        """
-                    ),
-                    {"sid": session_id, "lim": _MAX_RECENT_TURNS},
-                ).mappings().all()
-            else:
-                rows = conn.execute(
-                    text(
-                        """
-                        SELECT prompt, response FROM chat_history_log
-                        ORDER BY created_at DESC LIMIT :lim
-                        """
-                    ),
-                    {"lim": _MAX_RECENT_TURNS},
-                ).mappings().all()
-    finally:
-        engine.dispose()
+    # Shared, process-lifetime cached engine (scripts/pg_engine.py) -- not
+    # disposed here. This same outreach tick also reads through
+    # scripts.tension_outreach_trigger.current_run(), which shares this exact
+    # engine/pool rather than opening a second independent one for the same
+    # database on every tick.
+    with engine.connect() as conn:
+        if session_id:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT prompt, response FROM chat_history_log
+                    WHERE session_id = :sid
+                    ORDER BY created_at DESC LIMIT :lim
+                    """
+                ),
+                {"sid": session_id, "lim": _MAX_RECENT_TURNS},
+            ).mappings().all()
+        else:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT prompt, response FROM chat_history_log
+                    ORDER BY created_at DESC LIMIT :lim
+                    """
+                ),
+                {"lim": _MAX_RECENT_TURNS},
+            ).mappings().all()
 
     turns: List[Tuple[str, str]] = []
     for row in reversed(list(rows)):  # oldest first
@@ -249,6 +264,20 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         "speak first, unprompted.",
         "",
     ]
+
+    if ctx.tension_reason:
+        # Deliberately "noticed a change", never "I am worried"/"concerned" --
+        # orion.attention.tension is a change-detector, not a level-detector,
+        # and cannot honestly support a distress claim. See
+        # scripts.tension_outreach_trigger's module docstring.
+        lines.append(
+            f"Something in your own internal state just triggered this: "
+            f"{ctx.tension_reason.target_id} has been the strongest source of "
+            f"real, ongoing deviation from its own normal baseline for "
+            f"{ctx.tension_reason.run_length} consecutive readings, right now "
+            f"-- not a single blip."
+        )
+        lines.append("")
 
     if ctx.curiosity_summaries:
         lines.append("Live signals from your own substrate right now:")
@@ -337,7 +366,6 @@ class EndogenousOutreach:
         *,
         enabled: bool,
         tick_interval_sec: float,
-        probability: float,
         min_cooldown_sec: float,
         daily_cap: int,
         quiet_start_hour: int,
@@ -347,11 +375,10 @@ class EndogenousOutreach:
         notify_channel: str,
         fallback_session_id: str,
         timezone_name: str = "UTC",
-        rng: Optional[random.Random] = None,
+        trigger_evaluator: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.enabled = enabled
         self.tick_interval_sec = max(5.0, float(tick_interval_sec))
-        self.probability = min(1.0, max(0.0, float(probability)))
         self.min_cooldown_sec = max(0.0, float(min_cooldown_sec))
         self.daily_cap = int(daily_cap)
         self.quiet_start_hour = int(quiet_start_hour)
@@ -375,7 +402,17 @@ class EndogenousOutreach:
             )
             self.timezone_name = "UTC"
             self._tz = ZoneInfo("UTC")
-        self._rng = rng or random.Random()
+        # Defaults to the real tension trigger, imported lazily to match this
+        # file's existing convention for cross-Hub-module dependencies
+        # (curiosity_hint, hub_presence below) -- keeps a hard Postgres
+        # dependency out of this module's import time. Tests inject a fake
+        # evaluator directly instead of the old probability/rng seam.
+        if trigger_evaluator is None:
+            from scripts.tension_outreach_trigger import current_run
+
+            trigger_evaluator = current_run
+        self._trigger_evaluator = trigger_evaluator
+        self._last_tension_reason: Optional[Any] = None
 
         self._bus: Any = None
         self._cortex_client: Any = None
@@ -456,9 +493,8 @@ class EndogenousOutreach:
             return
         self._task = asyncio.create_task(self._run(), name="hub-endogenous-outreach")
         logger.info(
-            "endogenous_outreach started tick=%.0fs p=%.2f cooldown=%.0fs cap=%d quiet=%d-%d route=%s",
+            "endogenous_outreach started tick=%.0fs cooldown=%.0fs cap=%d quiet=%d-%d route=%s",
             self.tick_interval_sec,
-            self.probability,
             self.min_cooldown_sec,
             self.daily_cap,
             self.quiet_start_hour,
@@ -525,7 +561,15 @@ class EndogenousOutreach:
             "enabled": self.enabled,
             "running": bool(self._task and not self._task.done()),
             "tick_interval_sec": self.tick_interval_sec,
-            "probability": self.probability,
+            "last_tension_reason": (
+                None
+                if self._last_tension_reason is None
+                else {
+                    "target_id": self._last_tension_reason.target_id,
+                    "run_length": self._last_tension_reason.run_length,
+                    "peak_deviation_pressure": self._last_tension_reason.peak_deviation_pressure,
+                }
+            ),
             "min_cooldown_sec": self.min_cooldown_sec,
             "daily_cap": self.daily_cap,
             "quiet_hours": [self.quiet_start_hour, self.quiet_end_hour],
@@ -546,16 +590,39 @@ class EndogenousOutreach:
                 return str(sid)
         return self.fallback_session_id
 
-    def _should_roll(self) -> bool:
-        """STUB. Replace with a real endogenous trigger when one exists."""
-        return self._rng.random() < self.probability
+    async def _should_roll(self) -> bool:
+        """Real trigger check (2026-08-16) -- see module docstring.
+
+        Stores the reason on `self._last_tension_reason` (readable from
+        `status()` and threaded into `OutreachContext` by `_gather_context`)
+        so a real fire is inspectable, not just a bare bool. Never raises:
+        the injected evaluator (`scripts.tension_outreach_trigger.
+        current_run` by default) already degrades to `None` on any failure,
+        and this method treats `None` as "don't fire" -- the honest failure
+        mode for a broken trigger is silence, not a false positive.
+
+        Run off the event loop via `asyncio.to_thread`: the default evaluator
+        is a synchronous Postgres round trip (`sqlalchemy` has no async
+        driver wired here), and Hub runs a single uvicorn worker -- a
+        blocking DB call straight in this coroutine would stall every
+        connected websocket and in-flight chat turn for however long
+        Postgres takes to answer, same reasoning `_gather_context`'s `_safe`
+        already applies to its own DB reads two methods down.
+        """
+        try:
+            reason = await asyncio.to_thread(self._trigger_evaluator)
+        except Exception as exc:  # noqa: BLE001 - a broken trigger must not crash the tick
+            logger.warning("endogenous_outreach_trigger_evaluator_failed err=%s", exc)
+            reason = None
+        self._last_tension_reason = reason
+        return reason is not None
 
     # -- the tick ----------------------------------------------------------
 
     async def maybe_outreach(self, *, force: bool = False) -> Dict[str, Any]:
         """One decision cycle. Returns a status dict; never raises.
 
-        ``force`` skips the random roll and NOTHING else — every safety gate
+        ``force`` skips the trigger check and NOTHING else — every safety gate
         still applies, including ``enabled``. The debug endpoint that calls this
         is unauthenticated, so a carve-out here would make "off by default" a
         lie that one POST could undo.
@@ -568,9 +635,22 @@ class EndogenousOutreach:
     async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
         blocked = outreach_block_reason(self._gate_inputs())
         if blocked:
+            # Same staleness reasoning as the `force` branch below: this
+            # tick never reached `_should_roll()`, so whatever reason the
+            # LAST organic tick set is not "the current trigger state" --
+            # it may be many ticks (quiet hours can span hours) old.
+            # `status()` reporting it unchanged would let an operator
+            # mistake a stale episode for one active right now.
+            self._last_tension_reason = None
             return self._record({"outreach": False, "reason": blocked})
-        if not force and not self._should_roll():
-            return self._record({"outreach": False, "reason": "not_rolled"})
+        if force:
+            # A forced (debug-endpoint) call skips the trigger check
+            # entirely -- it must not carry over whatever reason the LAST
+            # organic tick set, or a manual trigger would misattribute
+            # itself to a stale (possibly minutes-old) tension episode.
+            self._last_tension_reason = None
+        elif not await self._should_roll():
+            return self._record({"outreach": False, "reason": "no_tension_trigger"})
 
         session_id = self._active_session_id()
         ctx = await self._gather_context(session_id)
@@ -666,6 +746,9 @@ class EndogenousOutreach:
             curiosity_summaries=list(summaries or []),
             recent_turns=list(turns or []),
             presence=presence,
+            # Set by _should_roll() just before this is called; None on a
+            # forced (force=True) debug trigger, which never calls it.
+            tension_reason=self._last_tension_reason,
         )
 
     async def _generate(

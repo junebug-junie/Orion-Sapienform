@@ -141,8 +141,9 @@ def test_an_explicit_llm_lane_still_drives_priority():
 def test_quick_background_is_an_accepted_route_value():
     """The redirect must produce a route the override validator recognises, or a later
     round-trip through _resolve_llm_route_override would silently drop it."""
-    from app.executor import _ACCEPTED_LLM_ROUTE_OVERRIDES, _resolve_llm_route_override
+    from app.executor import _resolve_llm_route_override
+    from orion.llm.routes import ACCEPTED_LLM_ROUTES
 
-    assert "quick_background" in _ACCEPTED_LLM_ROUTE_OVERRIDES
+    assert "quick_background" in ACCEPTED_LLM_ROUTES
     assert _resolve_llm_route_override({"options": {"llm_route": "quick_background"}}) == (
         "quick_background", "quick_background")

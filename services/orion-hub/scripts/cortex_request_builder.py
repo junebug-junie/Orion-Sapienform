@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
+from orion.llm.routes import normalize_llm_route
 from orion.cognition.verb_activation import is_active
 from orion.cognition.workflows import (
     derive_workflow_execution_policy,
@@ -465,9 +466,15 @@ def build_cortex_chat_request(
         options["action_execution_policy"] = "none"
         options["no_write_active"] = True
 
-    llm_route_raw = str(payload.get("llm_route") or options.get("llm_route") or "quick").strip().lower()
-    if llm_route_raw in {"chat", "quick", "agent", "metacog"}:
-        options["llm_route"] = llm_route_raw
+    # Third copy of the same allow-list, found by review 2026-08-18. It was missing
+    # `quick_background` and handled none of the legacy aliases, so a Hub caller naming either
+    # had the key silently dropped -- the identical failure that sent orion-actions' journal
+    # traffic to circe's 131k lane. Same shared definition as orion-actions/orion-cortex-exec now.
+    # Unrecognized still means "leave the key unset", exactly as before.
+    llm_route_raw = payload.get("llm_route") or options.get("llm_route") or "quick"
+    llm_route_norm = normalize_llm_route(llm_route_raw)
+    if llm_route_norm:
+        options["llm_route"] = llm_route_norm
 
     workflow_match = None
     workflow_management = None

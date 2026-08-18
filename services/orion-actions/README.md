@@ -481,6 +481,50 @@ gates this: it fails if any `trigger_kind` in
 
 ---
 
+## LLM route selection
+
+Actions names an upstream lane per workload, via `ACTIONS_LLM_ROUTE` (fallback),
+`ACTIONS_DAILY_LLM_ROUTE` (daily pulse/metacog plans), and `ACTIONS_JOURNAL_LLM_ROUTE`
+(`journal.compose`). The value is passed to orion-cortex-exec as an `llm_route` override; the
+executor honours it verbatim rather than applying its own verb-based default.
+
+Accepted values live in `orion/llm/routes.py`:
+
+```
+chat  quick  metacog  quick_background  agent
+```
+
+plus the legacy aliases `chat_quick` / `quick_chat` / `chat_kids_story`, which all resolve to
+`quick`. The three services that set or accept an override — this one, `orion-cortex-exec`
+(`_resolve_llm_route_override`), and `orion-hub`'s `cortex_request_builder` — all import it, and
+each has a test that drives its *real* resolver with every route in the shared set. Identity
+assertions (`is ACCEPTED_LLM_ROUTES`) were deliberately avoided: they only check a re-export and
+pass cleanly for anyone who reintroduces a private copy, which is exactly the bug below.
+
+That is **not** the same as "route names are enumerated in one place repo-wide" — the gateway
+route catalog, Hub's gateway client, and Hub's front-end each still carry a stale 4-name list that
+does not include `quick_background`. `orion/llm/routes.py`'s docstring names them with file:line.
+Adding a route here does not make it selectable in the Hub UI.
+
+**An unrecognised value sends no override at all.** It logs
+`actions_llm_route_unrecognized value=... accepted=[...]` and lets the executor fall through to
+its verb-based default. It does **not** fall back to `chat`.
+
+### Why that last paragraph exists
+
+Until 2026-08-18 this service kept its own private allow-list — `{chat, quick, metacog}` — and
+returned `"chat"` for everything outside it. Two consequences, both silent:
+
+- `ACTIONS_JOURNAL_LLM_ROUTE=quick_background`, set by ROADMAP A3 in both `.env` and
+  `.env_example`, was rewritten to `chat` before it ever left the service. Every journal compose
+  went to circe's **single-slot, 131,072-token** lane instead of atlas's 4-slot background lane —
+  for a prompt whose measured median is 1,749 tokens. The config said one thing and the runtime
+  did another, with no log line on the disagreement.
+- `agent` was rewritten the same way, for the same reason.
+
+The old fallback also picked the worst possible default: `chat` is the largest, slowest, most
+contended upstream in the fleet, so a typo in an env file cost the most expensive lane available.
+
 ## Error handling and response contracts
 
 Schedule management returns structured responses with:

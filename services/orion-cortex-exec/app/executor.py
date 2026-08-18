@@ -22,6 +22,7 @@ from jinja2 import Environment
 
 from pydantic import BaseModel
 
+from orion.llm.routes import LLM_ROUTE_ALIASES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
@@ -1846,7 +1847,6 @@ def _journal_pageindex_query(user_text: str) -> bool:
 # to "agent" for a normal chat_general turn), so the selection had no effect.
 # Confirmed live 2026-08-14: Hub Mode: Quick + Compute: Agent produced a response
 # but nothing reached Circe's dedicated agent worker -- traced to this allowlist.
-_ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
 
 
 def _apply_autonomous_background_route(
@@ -1896,7 +1896,7 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
 
     Returns (accepted, attempted):
     - accepted: the value to actually route with, or None if no override was
-      supplied or it was outside _ACCEPTED_LLM_ROUTE_OVERRIDES -- callers fall
+      supplied or it was outside `orion.llm.routes.ACCEPTED_LLM_ROUTES` -- callers fall
       through to their own verb-based default mapping in that case, rather
       than forwarding an unrecognized route key.
     - attempted: the normalized value the caller asked for, or None only when
@@ -1910,13 +1910,13 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
     raw = ctx.get("llm_route") or (
         (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
     )
-    override = str(raw or "").strip().lower()
-    if override in {"chat_quick", "quick_chat", "chat_kids_story"}:
-        override = "quick"
-    attempted = override or None
-    if override in _ACCEPTED_LLM_ROUTE_OVERRIDES:
-        return override, attempted
-    return None, attempted
+    # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
+    # override stays visible in the llm_route_selected log line (see docstring).
+    resolved = str(raw or "").strip().lower()
+    resolved = LLM_ROUTE_ALIASES.get(resolved, resolved)
+    attempted = resolved or None
+    accepted = normalize_llm_route(raw)
+    return accepted, attempted
 
 
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
@@ -3972,7 +3972,7 @@ async def call_step_services(
                 )
 
                 # Keep lane selection explicit by internal flow, with optional caller override.
-                # Accepted override values: see _ACCEPTED_LLM_ROUTE_OVERRIDES.
+                # Accepted override values: see `orion.llm.routes.ACCEPTED_LLM_ROUTES`.
                 # quick_background: same upstream/model as quick, gated by the gateway's
                 # background-priority admission (services/orion-llm-gateway/app/
                 # priority_admission.py) so a caller opting into it never makes other

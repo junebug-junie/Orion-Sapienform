@@ -301,7 +301,24 @@ if (typeof document !== "undefined") {
           },
         },
       ],
-      layout: { name: "cose", animate: false, padding: 24 },
+      layout: {
+        name: "cose",
+        animate: false,
+        padding: 24,
+        // Without this, cose's collision physics only avoid overlapping
+        // node circles, not their labels -- with font-size 9 labels
+        // rendered below/beside each node, that let unrelated nodes'
+        // labels stack directly on top of each other once the graph got
+        // dense (see the 2026-08-18 design spec's screenshot). Node size
+        // is now (radius + label bounding box), so cose's normal
+        // node-overlap avoidance keeps labels apart too.
+        nodeDimensionsIncludeLabels: true,
+        // Denser graphs need more room between disconnected clusters than
+        // cose's default, or unrelated components visually collide into
+        // one blob -- see the same spec's "connected components" gap this
+        // doesn't fix on its own, just makes less bad in the interim.
+        componentSpacing: 80,
+      },
       wheelSensitivity: 0.3,
     });
     cy.on("tap", "node", (evt) => {

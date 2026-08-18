@@ -293,6 +293,11 @@ def test_ensure_dataset_and_model_creates_when_missing(monkeypatch: pytest.Monke
         create_calls.append(url)
         if url.endswith("/datasets"):
             assert json["name"] == car._TOPIC_FOUNDRY_DATASET_NAME
+            # AI Town rows (client_meta.external_room.platform == "aitown")
+            # must be excluded from Orion's own concept-graph dataset -- see
+            # docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md.
+            assert json["where_sql"] == car._TOPIC_FOUNDRY_WHERE_SQL
+            assert "aitown" in json["where_sql"]
             return _FakeResponse(200, {"dataset_id": FAKE_DATASET_ID, "created_at": "2026-07-17T00:00:00Z"})
         if url.endswith("/models"):
             assert json["name"] == car._TOPIC_FOUNDRY_MODEL_NAME

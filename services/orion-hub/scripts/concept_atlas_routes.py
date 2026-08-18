@@ -86,13 +86,39 @@ _RELATION_CLASSIFICATION_PAIR_CAP = 10
 # services/orion-topic-foundry/scripts/smoke_topic_foundry_train_and_poll.sh's
 # defaults (the only other place this pipeline has been exercised end-to-end
 # against real chat history).
-_TOPIC_FOUNDRY_DATASET_NAME = "orion-hub-autonomous-dataset"
-_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous"
+#
+# "-v2" (2026-08-18): renamed from "orion-hub-autonomous-dataset"/
+# "orion-hub-autonomous" to force fresh creation with _TOPIC_FOUNDRY_WHERE_SQL
+# applied. topic-foundry's dataset/model routes are create/list/preview only
+# -- no update endpoint (services/orion-topic-foundry/app/routers/datasets.py,
+# models.py) -- so changing where_sql on the *old* name would have been a
+# silent no-op: _ensure_topic_foundry_dataset_and_model does get-or-create by
+# name, and would keep finding and reusing the pre-existing, unfiltered
+# dataset/model forever. See
+# docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md
+# ("Track A") for why this filter exists: chat_history_log is ~90%
+# source='orion-embodiment' (AI Town) rows with no prior platform scoping,
+# so Orion's "organically clustered" concept graph had been mostly AI Town
+# topics since this pipeline first ran. The old, unfiltered dataset/model are
+# left in place, unreferenced -- topic-foundry has no delete endpoint either.
+_TOPIC_FOUNDRY_DATASET_NAME = "orion-hub-autonomous-dataset-v2"
+_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous-v2"
 _TOPIC_FOUNDRY_MODEL_VERSION = "v1"
 _TOPIC_FOUNDRY_SOURCE_TABLE = "chat_history_log"
 _TOPIC_FOUNDRY_ID_COLUMN = "correlation_id"
 _TOPIC_FOUNDRY_TIME_COLUMN = "created_at"
 _TOPIC_FOUNDRY_TEXT_COLUMNS = ["prompt", "response"]
+# Excludes AI Town rows via the canonical platform-tagging signal
+# services/orion-recall/app/chat_source_tagging.py already established
+# (client_meta.external_room.platform == "aitown"), not the source column --
+# confirmed live 2026-08-18 that source='orion-embodiment' is 100%
+# correlated with this tag today, but the tag is the sanctioned signal the
+# rest of the codebase (chat_source_tagging.py, the aitown crystallization
+# gate) already builds around, and is the one that stays correct if a
+# second AI-Town-adjacent producer service ever appears. `IS DISTINCT FROM`
+# (not `!=`) so NULL client_meta / non-aitown rows are kept, not silently
+# dropped by SQL's three-valued NULL comparison semantics.
+_TOPIC_FOUNDRY_WHERE_SQL = "(client_meta -> 'external_room' ->> 'platform') IS DISTINCT FROM 'aitown'"
 
 # HDBSCAN's noise/outlier bucket (topic-foundry side). Never a real topic --
 # same convention as orion/substrate/adapters/topic_foundry.py's own
@@ -144,6 +170,7 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
                     "time_column": _TOPIC_FOUNDRY_TIME_COLUMN,
                     "text_columns": _TOPIC_FOUNDRY_TEXT_COLUMNS,
                     "timezone": "UTC",
+                    "where_sql": _TOPIC_FOUNDRY_WHERE_SQL,
                 },
             )
         dataset_id = str(dataset["dataset_id"])

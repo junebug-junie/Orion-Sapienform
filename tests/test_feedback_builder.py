@@ -594,6 +594,58 @@ def test_stale_reliability_write_is_withheld_not_credited() -> None:
     assert any(e.startswith("withheld:reliability_pressure:") for e in frame.withheld_evidence)
 
 
+def test_stale_write_withholds_negative_evidence_too() -> None:
+    """The gate withholds BOTH directions, not just positive -- an unbacked
+    reading is not selectively trusted for bad news either. A worsening
+    (increase) delta on a stale write must not land in negative_evidence."""
+    dispatch = _dispatch_dry_run()
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.2}})
+    after = _field(
+        "field.tick:after",
+        {"node:test": {"reliability_pressure": 0.6}},
+        node_vector_updated_at={"node:test": {"reliability_pressure": NOW - timedelta(seconds=300)}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert not any(o.outcome_kind == "worsened" for o in frame.observations)
+    assert not any("reliability_pressure" in e for e in frame.negative_evidence)
+    assert any(e.startswith("withheld:reliability_pressure:") for e in frame.withheld_evidence)
+
+
+def test_stale_reliability_write_produces_exactly_one_withheld_entry() -> None:
+    """reliability_pressure is checked twice internally (once for pressure-
+    delta evidence, once for the improved/worsened observation) -- review
+    caught an earlier version double-recording the same channel/tick into
+    withheld_evidence. Must be exactly one entry, not two."""
+    dispatch = _dispatch_dry_run()
+    before = _field("field.tick:before", {"node:test": {"reliability_pressure": 0.6}})
+    after = _field(
+        "field.tick:after",
+        {"node:test": {"reliability_pressure": 0.2}},
+        node_vector_updated_at={"node:test": {"reliability_pressure": NOW - timedelta(seconds=300)}},
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        field_before=before,
+        field_after=after,
+        cortex_results=None,
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    reliability_withheld = [e for e in frame.withheld_evidence if e.startswith("withheld:reliability_pressure:")]
+    assert reliability_withheld == ["withheld:reliability_pressure:no_recent_write"]
+
+
 def test_fresh_write_still_credited_with_guard_on() -> None:
     """Guard-on does not mean nothing is ever credited -- a genuinely fresh
     write still gets the real positive/'improved' credit. Regresses the

@@ -585,6 +585,78 @@ def test_concept_induction_pass_reviews_existing_profiles(monkeypatch, tmp_path)
     assert build_concept_profile_repository(FakeConceptSettings()).status().backend == 'local'
 
 
+def test_concept_induction_pass_reads_live_substrate_concepts_when_configured(monkeypatch, tmp_path) -> None:
+    """`concept_induction_pass` reads real substrate concept nodes, not the dead
+    local spaCy store / Fuseki graph, when configured for the `substrate` backend
+    (the fix for those being wired to sources that were both effectively dead)."""
+    from app import workflow_runtime
+    from orion.core.schemas.cognitive_substrate import (
+        ConceptNodeV1,
+        SubstrateProvenanceV1,
+        SubstrateSignalBundleV1,
+        SubstrateTemporalWindowV1,
+    )
+    from orion.substrate.store import SubstrateNeighborhoodSliceV1, SubstrateQueryResultV1
+    from orion.spark.concept_induction import substrate_repository as substrate_repository_module
+
+    class FakeConceptSettings(SimpleNamespace):
+        store_path = str(tmp_path / 'concepts.json')
+        subjects = ['orion']
+        concept_profile_repository_backend = 'local'
+        concept_profile_backend_concept_induction_pass = 'substrate'
+        concept_profile_graph_cutover_fallback_policy = 'fail_open_local'
+
+    monkeypatch.setattr(workflow_runtime, 'build_orch_concept_profile_settings', lambda *_args, **_kwargs: FakeConceptSettings())
+
+    node = ConceptNodeV1(
+        node_id="sub-node-tissue",
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 8, 11, tzinfo=timezone.utc)),
+        signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.9),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="topic_foundry",
+            source_channel="orion:topic:foundry:concept",
+            producer="orion-topic-foundry",
+        ),
+        label="tissue continuity",
+        metadata={"concept_type": "self"},
+    )
+
+    class FakeSubstrateStore:
+        def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64):
+            return SubstrateQueryResultV1(
+                query_kind="concept_region",
+                slice=SubstrateNeighborhoodSliceV1(nodes=[node], edges=[]),
+                source_kind="falkor",
+            )
+
+    monkeypatch.setattr(
+        substrate_repository_module, "build_substrate_store_from_env", lambda: FakeSubstrateStore()
+    )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name='cortex-orch'),
+            req=_req('concept_induction_pass'),
+            correlation_id='00000000-0000-0000-0000-000000000096',
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=lambda *args, **kwargs: None,
+        )
+    )
+
+    assert result.ok is True
+    details = result.metadata["workflow"]["concept_induction_details"]
+    assert details["profiles"][0]["subject"] == "orion"
+    assert details["profiles"][0]["concepts"][0]["label"] == "tissue continuity"
+    resolution = details["trace"]["repository_resolution"]
+    assert resolution["requested_backend"] == "substrate"
+    assert resolution["resolved_backend"] == "substrate"
+    assert resolution["fallback_used"] is False
+
+
 def test_concept_induction_pass_synthesize_to_journal_uses_append_only_write(monkeypatch, tmp_path) -> None:
     from app import workflow_runtime
 

@@ -52,7 +52,31 @@ def test_orch_adapter_builds_local_graph_shadow_repositories_without_missing_fie
     local_repo = build_concept_profile_repository(base, backend_override="local")
     graph_repo = build_concept_profile_repository(base, backend_override="graph")
     shadow_repo = build_concept_profile_repository(base, backend_override="shadow")
+    substrate_repo = build_concept_profile_repository(base, backend_override="substrate")
 
     assert local_repo.status().backend == "local"
     assert graph_repo.status().backend == "graph"
     assert shadow_repo.status().backend == "shadow"
+    assert substrate_repo.status().backend == "substrate"
+
+
+def test_orch_adapter_accepts_substrate_backend_values(monkeypatch) -> None:
+    monkeypatch.setenv("CONCEPT_PROFILE_REPOSITORY_BACKEND", "substrate")
+    monkeypatch.setenv("CONCEPT_PROFILE_BACKEND_CONCEPT_INDUCTION_PASS", "substrate")
+
+    get_orch_concept_profile_settings.cache_clear()
+    cfg = build_orch_concept_profile_settings()
+
+    assert cfg.concept_profile_repository_backend == "substrate"
+    assert cfg.concept_profile_backend_concept_induction_pass == "substrate"
+
+
+def test_orch_adapter_rejects_unknown_backend_values(monkeypatch) -> None:
+    monkeypatch.setenv("CONCEPT_PROFILE_REPOSITORY_BACKEND", "nonsense")
+    monkeypatch.setenv("CONCEPT_PROFILE_BACKEND_CONCEPT_INDUCTION_PASS", "nonsense")
+
+    get_orch_concept_profile_settings.cache_clear()
+    cfg = build_orch_concept_profile_settings()
+
+    assert cfg.concept_profile_repository_backend == "local"
+    assert cfg.concept_profile_backend_concept_induction_pass == ""

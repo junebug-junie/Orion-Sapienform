@@ -372,6 +372,27 @@ split, and vice versa:
    either).
 1b. ~~**Layout label-collision fix**~~ **shipped same day**, see the
    Readability section above.
+1c. **Code review (2026-08-18) caught a real correctness bug in step 1**:
+   `fetch_latest_completed_run()`/`fetch_run_topics_and_keywords()` resolved
+   "the latest run" globally across *every* topic-foundry model, not scoped
+   to the new one -- so ingestion could keep silently reading the old,
+   unfiltered model's runs regardless of the rename. Fixed same day: both
+   now take `model_name` and both call sites in `concept_atlas_routes.py`
+   pass it. Also fixed: a where_sql-drift warning (get-or-create matches by
+   name only, so a future edit under the same name would again silently
+   no-op), and the raw SQL fragment now references a named
+   `_AITOWN_PLATFORM_TAG` constant instead of an inline string literal.
+   **Live-verified consequence worth knowing**: the new filtered dataset's
+   first real run processed only 60 documents (vs. the full corpus of
+   ~1,743), and topic-foundry's default `min_cluster_size=15` found zero
+   real clusters at that volume -- ingestion honestly reports
+   `topic_foundry_no_usable_topics` rather than fabricating concepts.
+   Concept Atlas will show few or no "Orion" concepts for a while after
+   this ships, until real chat volume accumulates in the 30-day rolling
+   window or `min_cluster_size` is deliberately tuned down for a smaller
+   corpus -- correct behavior (no fake data), but a visible change from
+   "graph full of AI Town topics" to "graph mostly empty," not "graph full
+   of clean Orion topics" immediately.
 2. **Cleanup pass** (not yet done — a delete, deliberately left for an
    explicit go-ahead rather than run unattended): purge already-ingested
    AI-Town-sourced nodes from `orion_substrate` (one-off script,

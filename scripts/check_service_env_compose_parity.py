@@ -121,8 +121,11 @@ def _read_compose_env_keys(path: Path, service_dirname: str) -> tuple[set[str], 
 
     # Keys consumed by compose INTERPOLATION rather than passed into the
     # container. The canonical case is a `*_HOST_PATH` used in `volumes:` --
-    # e.g. orion-room-companion's ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH
-    # and orion-self-study-enrichment's SELF_STUDY_ENRICHMENT_*_HOST_PATH.
+    # e.g. orion-self-study-enrichment's SELF_STUDY_ENRICHMENT_*_HOST_PATH.
+    # (orion-room-companion used to be a second example here --
+    # ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH -- retired 2026-08-18 when
+    # that service switched off the file-mount credential pattern entirely;
+    # self-study still uses it and is the live example as of this writing.)
     # Those name a path on the OPERATOR'S disk; adding them to `environment:`
     # would push a host path into the container that means nothing there, and
     # for a credential mount it would advertise where the secret lives on the

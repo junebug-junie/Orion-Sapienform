@@ -53,9 +53,15 @@ def build_heartbeat_chassis(settings: Settings) -> HeartbeatOnly:
 # a denylist has to enumerate every way Claude Code can be redirected to a
 # different provider or credential, and the first draft of this function
 # already missed CLAUDE_CODE_OAUTH_TOKEN -- which is exactly the variable
-# proven to bypass the mounted credential entirely -- plus the Bedrock/Vertex
-# switches and ANTHROPIC_MODEL. Anything genuinely needed gets added here
-# deliberately; nothing arrives by accident.
+# that, if it arrived from ambient os.environ rather than deliberately, would
+# authenticate as someone else's credential entirely -- plus the
+# Bedrock/Vertex switches and ANTHROPIC_MODEL. Anything genuinely needed gets
+# added here deliberately; nothing arrives by accident. As of 2026-08-18 the
+# ONE deliberate exception is CLAUDE_CODE_OAUTH_TOKEN itself: build_subprocess_env
+# injects it explicitly from settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN below,
+# the same way it already does for CLAUDE_CONFIG_DIR -- never through this
+# allowlist, so _ENV_DENY_PREFIXES still blocks any *ambient* CLAUDE_CODE_OAUTH_TOKEN
+# that isn't the one this service was deliberately configured with.
 _ENV_ALLOWLIST = frozenset(
     {
         "PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM",
@@ -84,8 +90,14 @@ def build_subprocess_env(settings: Settings) -> Dict[str, str]:
     room would still produce fluent text -- it just would not be Claude, which
     is the hardest failure here to notice by eye. ANTHROPIC_API_KEY would open
     a second pay-per-token billing relationship instead of reusing the
-    operator's subscription. CLAUDE_CODE_OAUTH_TOKEN would authenticate as
-    some other credential entirely, bypassing the mounted one.
+    operator's subscription. An *ambient* CLAUDE_CODE_OAUTH_TOKEN (leaked from
+    the host shell, a copy-paste mistake) would authenticate as someone else's
+    credential entirely -- which is why it is still on _ENV_DENY_PREFIXES and
+    never read out of os.environ here.
+
+    The real, deliberately-configured token is injected below from
+    settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN -- the same explicit-injection
+    pattern already used for CLAUDE_CONFIG_DIR, not the ambient allowlist path.
     """
     env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOWLIST}
     env = {
@@ -93,6 +105,8 @@ def build_subprocess_env(settings: Settings) -> Dict[str, str]:
         if not any(k.startswith(prefix) for prefix in _ENV_DENY_PREFIXES)
     }
     env["CLAUDE_CONFIG_DIR"] = settings.ROOM_COMPANION_CLAUDE_CONFIG_DIR
+    if settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN.get_secret_value()
     return env
 
 

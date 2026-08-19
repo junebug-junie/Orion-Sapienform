@@ -213,11 +213,12 @@ brand-new table with exactly one writer.
   a same-day incident found a different worktree's `docker compose up` for this same service
   (its own `.env` never having this key) silently reverted an already-flipped-on container back to
   the stale `false` fallback, killing the tick for over an hour with no error.
-- `SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS` (default `10`): in-process rolling-window size,
-  counted in attention-broadcast ticks (10 × 30s = 5min), a real-world-time-comparable starting
-  anchor to the offline replay's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30` default (sized against
-  the field lane's ~2s cadence, ~60s span). Not independently calibrated — same documented status as
-  that offline constant.
+- `SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS` (default `2`): in-process rolling-window size,
+  counted in attention-broadcast ticks (~30s cadence). 2026-08-19: calibrated via real TRAIN/TEST
+  validation against 7 days of live biometrics `prediction_error` history — window=2 beat both the
+  old default (10) and the offline replay script's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30`
+  default on held-out TEST (61.9% vs 56.4% vs 54.2% reversion accuracy). See `app/settings.py`'s
+  `attention_self_model_trend_window_ticks` docstring for the full numbers and methodology.
 - `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` (default `168.0`): append-only retention,
   matching `ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS`'s own 7-day default.
 

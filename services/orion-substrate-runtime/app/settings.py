@@ -133,12 +133,34 @@ class Settings(BaseSettings):
     # (orion/substrate/prediction_error_trend.py), appended once per
     # attention-broadcast tick (~30s cadence by default) rather than once per
     # ~2s field-lane tick like the offline replay script's own
-    # PREDICTION_ERROR_TREND_WINDOW_TICKS=30 default -- 10 ticks here is a
-    # real-world-time-comparable starting anchor (10 * 30s = 5min), not
-    # independently calibrated. Needs its own live-data check before being
-    # trusted, same as the offline constant's own documented status.
+    # PREDICTION_ERROR_TREND_WINDOW_TICKS=30 default.
+    #
+    # 2026-08-19: calibrated via real TRAIN/TEST validation, closing the gap
+    # this constant's own comment previously flagged ("not independently
+    # calibrated"). Swept {2, 10 (the old default), 30} against real
+    # substrate_attention_self_model biometrics prediction_error history
+    # (19,425 ticks, 7-day span, this exact ~30s cadence -- see
+    # docs/superpowers/pr-reports/2026-08-19-l6-item34-hit-it-all-pr.md for the
+    # full methodology, chronological 70/30 split, held-out TEST results):
+    #   window= 2: TEST reversion accuracy 61.9% (n=4885, z=+16.6 vs 50% null)
+    #   window=10: TEST reversion accuracy 56.4% (n=5300, z=+9.3)  <- old default
+    #   window=30: TEST reversion accuracy 54.2% (n=5293, z=+6.1) <- offline default
+    # window=2 wins on held-out TEST, not just TRAIN it was tuned on (TEST
+    # accuracy is actually slightly *higher* than TRAIN's 59.9% -- not an
+    # overfit result). This is item 4 sub-idea #3's original "hit it all"
+    # deliverable, paused since 2026-07-23 by a Postgres data loss that also
+    # wiped the table this validation used to depend on (substrate_field_state,
+    # since repurposed for unrelated content -- see
+    # project_item4_predicted_shift_reversion_paused_data_loss.md's 2026-08-19
+    # correction). Real trade-off, not a free win: at window=2, mid=1, so the
+    # trend is a single-prior-sample vs single-recent-sample comparison -- very
+    # reactive, no smoothing. Validated on biometrics only (the only domain
+    # with enough real variance, same caveat as the reversion-sign fix itself
+    # -- docs/superpowers/specs/2026-07-23-predicted-shift-reversion-finding.md),
+    # applied uniformly for the same reasoned-extrapolation reason that doc
+    # already accepted for the sign fix.
     attention_self_model_trend_window_ticks: int = Field(
-        10, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS"
+        2, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS"
     )
     # Same 168h (7-day) default as attention_broadcast_log_retention_hours
     # above -- covers this repo's default 48h analysis-window scripts with

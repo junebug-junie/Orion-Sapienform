@@ -1068,6 +1068,9 @@ def test_disabled_instance_starts_no_task() -> None:
 
     asyncio.run(run())
 
+    assert outreach.status()["running"] is False
+    assert outreach.status()["block_reason"] == "disabled"
+
 
 def test_start_falls_back_to_bus_when_no_harness_rpc_bus_given() -> None:
     """Mirrors websocket_handler.py's own `harness_rpc_bus=rpc_bus or bus`
@@ -1098,9 +1101,6 @@ def test_start_prefers_the_forked_harness_rpc_bus_when_given() -> None:
 
     assert outreach._bus is sentinel_bus
     assert outreach._harness_rpc_bus is sentinel_rpc_bus
-
-    assert outreach.status()["running"] is False
-    assert outreach.status()["block_reason"] == "disabled"
 
 
 def _env_example_value(key: str) -> str:

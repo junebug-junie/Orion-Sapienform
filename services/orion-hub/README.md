@@ -358,7 +358,8 @@ Three details that are easy to get wrong and are enforced by tests:
   `note_busy()`/`note_idle()` are called for every inbound message regardless of
   mode.
 - **The gate is re-checked immediately before delivery.** Generation is a bus
-  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 60s), and a turn
+  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 300s — raised
+  from 60s 2026-08-19, see "Through the real unified turn" above), and a turn
   can start inside that window. A tick that becomes blocked mid-generation is
   dropped with reason `<gate>_after_generation`.
 - **Quiet hours and the daily-cap reset use `HUB_ENDOGENOUS_OUTREACH_TZ`,** not

@@ -4,7 +4,12 @@
 cognition change — but any *fix* to a metric this layer classifies as dead is
 proposal-mode territory per CLAUDE.md §0A and needs its own sign-off.
 
-**Date:** 2026-08-12
+**Date:** 2026-08-12, revised 2026-08-19 once phase 3 (the phase that was
+never built) shipped.
+
+**Status:** phases 1, 2, and 4 shipped 2026-08-12/13. **Phase 3 shipped
+2026-08-19** — see its section below for what actually got built. Phase 5
+(liveness beyond field channels) remains deliberately deferred.
 
 ## Arsonist summary
 
@@ -261,10 +266,47 @@ has no way to see. It also mechanically re-derives the hand-maintained consumer
 lists in `inner_state_registry.py` and `ORGAN_REGISTRY`, and any disagreement
 between hand-list and discovered-list is an immediate finding.
 
-**Phase 3 — edit-time PreToolUse hook.**
+**Phase 3 — edit-time PreToolUse hook. SHIPPED 2026-08-19.**
 The actual answer to "agents don't trace upstream." Puts the lineage card in
 front of the agent *before* the edit lands, using the same mechanism as the
 graphify nudge that already works in this repo.
+
+`scripts/hooks/metric_lineage_nudge.py`, registered in `.claude/settings.json`
+on the same `Edit|Write|NotebookEdit` matcher as `shared_checkout_edit_guard.py`.
+Fails open throughout (matches RTK's and graphify's own "no match" shape):
+malformed input, no matched token, or a missing cache all just print nothing.
+
+**The one real design problem, solved by not solving it live.**
+`scan_repo()` walks ~3900 files in ~13-14s (measured, both in the original
+design doc and again live building this) — far too slow to run synchronously
+on every Edit/Write. The hook does not call it. `scripts/refresh_metric_lineage_cache.py`
+runs the exact same `build_graph()` + `scan_repo()` calls `check_metric_lineage.py`
+already makes and persists them to `.cache/metric_lineage.json` (gitignored,
+atomic write via temp-file + `os.replace`) instead of discarding the result
+after one CLI invocation. The hook just reads that file — measured at ~65ms
+per call including Python startup, not 14s.
+
+Self-healing, not a hard dependency someone has to remember to run: if the
+cache is missing entirely, or older than an hour, the hook kicks a refresh
+off in the background (`subprocess.Popen(..., start_new_session=True)`, same
+"hand the expensive part to a detached process" shape as
+`scripts/hooks/stop_worktree_wip_snapshot.py`) and returns immediately either
+way — first-ever edit in a fresh worktree shows nothing rather than paying a
+14s synchronous cost, and self-heals within the one background refresh's
+runtime. A cooldown lock (`.cache/metric_lineage.refresh.lock`, 60s) stops a
+burst of edits from spawning a pile of concurrent scans.
+
+Skips FCC subprocess turns (`ORION_FCC_SUBPROCESS`), same convention and same
+reasoning as `graphify_hook_guard_gate.sh`: token-budget-constrained, no
+code-navigation payoff.
+
+Verified live, not just unit-tested: built a real cache against this repo
+(601 nodes, 8,679 hits, 3,877 files, 14.4s) and fed the hook a real edit
+touching `field_coherence_warning` — the exact channel this session's R6
+investigation spent an hour manually running `check_metric_lineage.py` against
+by hand. The hook produced the correct card (URN, meaning, blast radius,
+consumer sites) in 65ms, unprompted. That gap — remembering to run the CLI
+tool by hand — is precisely what phase 3 exists to close.
 
 **Phase 4 — gate + `make` target.** SHIPPED 2026-08-13.
 

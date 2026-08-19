@@ -18,7 +18,10 @@ logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.
 logger = logging.getLogger("orion.policy.runtime.main")
 
 worker = PolicyRuntimeWorker()
-store = PolicyRuntimeStore(_settings.postgres_uri)
+store = PolicyRuntimeStore(
+    _settings.postgres_uri,
+    reconcile_interval_sec=_settings.policy_reconcile_interval_sec,
+)
 heartbeat_chassis: HeartbeatOnly | None = None
 
 

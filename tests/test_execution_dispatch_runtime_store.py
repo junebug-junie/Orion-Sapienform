@@ -215,12 +215,16 @@ def test_load_oldest_policy_frames_without_dispatch_skips_only_the_bad_row_in_a_
     assert insert_calls[0]["source_policy_frame_id"] == "policy.frame:legacy:substrate_policy.v1"
 
 
-def test_load_freshest_policy_frame_without_dispatch_uses_not_exists(monkeypatch) -> None:
-    """2026-07-30 perf fix: this direction uses WHERE NOT EXISTS, not
-    LEFT JOIN ... WHERE d.frame_id IS NULL -- EXPLAIN ANALYZE confirmed live
-    this is ~1500x cheaper for the DESC/newest-first direction specifically
-    (0.19ms vs ~294ms), because almost nothing near "now" has been processed
-    yet, so a nested-loop anti-join terminates on the very first probe."""
+def test_load_freshest_policy_frame_without_dispatch_uses_the_pending_marker(monkeypatch) -> None:
+    """SUPERSEDED 2026-08-19 (ROADMAP D2). This used to assert `WHERE NOT EXISTS`, from the
+    2026-07-30 perf fix that measured it ~1500x cheaper than `LEFT JOIN ... IS NULL` for the
+    DESC direction (0.19ms vs ~294ms), because almost nothing near "now" has been processed yet
+    so a nested-loop anti-join terminates on the first probe.
+
+    That reasoning was right and is now moot: this is not a join at all. It reads
+    `dispatch_pending` off a partial index containing only unprocessed rows, so neither shape
+    has anything to walk. The assertion is inverted deliberately -- a `NOT EXISTS` reappearing
+    here means someone reverted the marker."""
     store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
     fake_engine = MagicMock()
     conn = MagicMock()
@@ -238,14 +242,45 @@ def test_load_freshest_policy_frame_without_dispatch_uses_not_exists(monkeypatch
 
     conn.execute.side_effect = execute_side_effect
     monkeypatch.setattr(store, "_engine", fake_engine)
+    # The read-boundary guard is exercised by its own tests; here it must not intercept.
+    monkeypatch.setattr(store, "_already_dispatched", lambda _fid: False)
 
     result = store.load_freshest_policy_frame_without_dispatch()
 
     assert result is not None
     assert result.frame_id == "policy.frame:freshest"
-    assert "NOT EXISTS" in captured_sql[0]
+    assert "dispatch_pending" in captured_sql[0]
+    assert "NOT EXISTS" not in captured_sql[0]
     assert "LEFT JOIN" not in captured_sql[0]
     assert "DESC" in captured_sql[0]
+
+
+def test_freshest_lookup_skips_an_already_dispatched_frame(monkeypatch) -> None:
+    """The marker defaults to TRUE and can be stale (every pre-migration row is, until
+    backfilled). Re-dispatching is NOT a harmless repeat -- it would run a real cortex action a
+    second time against a policy decision already acted on. The anti-join could not do that
+    because it looked; the marker can, so the guard is explicit."""
+    store = ExecutionDispatchRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    result_mock = MagicMock()
+    result_mock.mappings.return_value.first.return_value = {
+        "policy_decision_frame_json": _valid_policy_payload("policy.frame:stale")
+    }
+    conn.execute.return_value = result_mock
+    monkeypatch.setattr(store, "_engine", fake_engine)
+    seen: list[str] = []
+
+    def _already(fid):
+        seen.append(fid)
+        return True
+
+    monkeypatch.setattr(store, "_already_dispatched", _already)
+
+    assert store.load_freshest_policy_frame_without_dispatch() is None
+    assert seen == ["policy.frame:stale"]
 
 
 def test_load_by_policy_frame_id(monkeypatch) -> None:

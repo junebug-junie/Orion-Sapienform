@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     )
     notify_url: str = Field("http://notify:7140", alias="NOTIFY_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+    # ROADMAP D2, 2026-08-19. How often to re-queue policy frames whose `dispatch_pending`
+    # marker was cleared without a dispatch frame existing. The marker is cleared
+    # transactionally so this should find nothing -- but the failure it guards is SILENT WORK
+    # LOSS, and it can only add work back, never remove it. It runs the expensive anti-join the
+    # marker exists to avoid, hence once every 15 min rather than on every tick.
+    dispatch_reconcile_interval_sec: float = Field(
+        900.0, alias="DISPATCH_RECONCILE_INTERVAL_SEC"
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

@@ -434,3 +434,29 @@ anything left to perceive is this entry.
 **Not a defect and not scheduled.** Roadmap A5's own gate wording anticipated it: "a lane that
 defers only harness or arena work, and never Orion's, is a ceiling Orion does not personally
 meet — which would be a genuine finding."
+
+---
+
+## A fourth consumer full-scans `substrate_proposal_frames` (2026-08-19, from D2)
+
+All three substrate pipeline stages now use pending markers (PR #1745), and their tables dropped
+to ~2,824 tuples/sec each from 140k-336k. **`substrate_proposal_frames` did not** -- it sits at
+**149,664 tuples/sec**, now 80% of all remaining sequential-scan load in the database.
+
+What is known:
+
+- **82 sequential scans per 90 s**, ~140,809 rows each. That row count is 423k/3, i.e. a
+  *parallel* seq scan across 3 workers -- so roughly **27 real queries per 90 s, one every
+  3.3 seconds**, each scanning the whole table.
+- **Too fast to catch.** 14 consecutive `pg_stat_activity` samples for
+  `query ilike '%proposal_frames%'` returned nothing, so each execution is well under the
+  sampling gap. It is not one of the three pipeline lookups -- those are now index scans.
+- `pg_stat_statements` is **not installed** on this database, which is why this could not simply
+  be looked up. Installing it is probably the cheapest next move.
+
+Why it matters: it is the last large sequential-scan source, and the same class of fix
+(marker + partial index, or just the right index) very likely applies. It is a *different*
+consumer from the pipeline, so it needs identifying before anything is designed.
+
+**Not scheduled.** Start by enabling `pg_stat_statements`, or by logging statements above a
+duration threshold for a few minutes.

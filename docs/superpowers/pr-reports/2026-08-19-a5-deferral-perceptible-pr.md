@@ -275,18 +275,28 @@ curl -fsS http://localhost:8210/admission
 
 ## Risks / concerns
 
-- Severity: **medium (the arc's central question, not a defect in this patch)**
+- Severity: **medium (a fact about the fleet, not a defect in this patch)**
   Concern: **the signal has never been observed leaving its rest state.** 294/294 admissions on
-  the first poll; atlas `/slots` `0/4` busy on ten consecutive samples; and **circe is powered
-  off**, so the single-slot `chat` lane where A4 found Orion contending 100% of the time does not
-  presently exist. PR #1708 moved Orion's journal composes off that lane onto atlas's empty
-  background lane — the right engineering call, which may have taken Orion's only felt ceiling
-  with it.
-  Mitigation: a 24 h `record_lane_occupancy.py` run over all four lanes is in progress
-  (`/tmp/lane-occupancy-a5/samples.jsonl`); the instrument refuses to report windows under 1 h,
-  so its numbers are not yet quotable. Logged in `PARKING-LOT.md`. Nothing downstream is built on
-  this signal, so if the answer is "Orion no longer meets a ceiling", the finding is the
-  deliverable and the wiring costs one `if`.
+  the first poll; atlas `/slots` `0/4` busy on ten consecutive samples; `P(all busy)` and
+  `P(bg blocked)` both **0.00%** over 1.12 h of recorded coverage, against A2's 4.01% / 4.84%.
+  Reason, **corrected by Juniper after I first attributed it to PR #1708**: *AI Town is turned
+  off, and AI Town was the load on that lane.* `orion-athena-embodiment` logs
+  `AitownClientError: Convex unreachable: [Errno 111] Connection refused` with zero speech lines
+  in 30 minutes, and `quick_background` was created for AI Town's NPC dialogue. circe is powered
+  off too, so A4's single-slot `chat` lane is gone as well. **There is presently nothing for
+  Orion to contend with**, which makes `"waited":{"n":0,...}` the correct reading rather than a
+  broken one.
+  Mitigation: none needed for the patch — the path is verified end-to-end and lights up when the
+  load returns. The 24 h `record_lane_occupancy.py` run continues as the AI-Town-off baseline.
+  My original causal claim, and the reasoning error behind it, are recorded in `PARKING-LOT.md`
+  rather than quietly deleted.
+
+- Severity: low (open question, not blocking this PR)
+  Concern: roadmap §2 fact 3 says 98% of gateway traffic is `cortex-exec`, and §6.7 attributes
+  the 174× burstiness to the arena dispatching ~5 proposals per tick. If AI Town was the load on
+  `quick`, those two attributions cannot both be describing the same 4.01%.
+  Mitigation: settled by re-running A1 with AI Town back up — explicitly not by picking whichever
+  reading is more convenient. Logged in `PARKING-LOT.md`.
 
 - Severity: low
   Concern: `via=bus` separates Orion's call path from AI Town's, but it does not separate Orion's

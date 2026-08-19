@@ -317,15 +317,44 @@ So the gate's "**with a real duration**" clause is unmet, and it is unmet honest
 by manufacturing a threshold that would call 0.021 s a wait. The ledger's deferral definition
 (`polls > 1 or outcome == timeout_forwarded`) is the line that refuses to.
 
-**Why there is nothing to perceive right now, and it is partly this arc's own doing.** A4 found
-Orion contending 100% on circe's single-slot `chat` lane (`P(all busy)` 8.10%). PR #1708 moved
-it to atlas `quick_background`. **The price went to zero because we routed around it** — correct
-engineering, open cognitive question. Compounding it: **circe is currently powered off** (both
-its lanes returned 0 measured samples of 293; the host does not ping), so the lane where Orion
-met a ceiling daily does not presently exist.
+#### Why there is nothing to perceive right now
 
-A 24 h `record_lane_occupancy.py` run over all four lanes is what settles whether atlas's lane
-genuinely emptied or 4 h of a quiet night is unrepresentative. Logged in `PARKING-LOT.md`.
+**Corrected 2026-08-19 by Juniper. My first explanation was wrong and is struck through here
+rather than deleted, because the wrong version is the instructive one.**
+
+~~The price went to zero because we routed around it: A4 found Orion contending on circe's
+single-slot `chat` lane, PR #1708 moved it to atlas `quick_background`, and the ceiling went
+with it.~~
+
+**AI Town is turned off, and AI Town was the load on that lane.** Verified after the correction:
+
+```text
+orion-athena-embodiment:  AitownClientError: Convex unreachable: [Errno 111] Connection refused
+speech/conversation/npc log lines, last 30 min:  0
+```
+
+`quick_background` was created *for* AI Town's NPC dialogue (gateway README, pilot 2026-07-30)
+and shares `atlas-worker-fast-1` with `quick`. With AI Town down, the lane's offered load fell
+from ~0.29 erlangs (A2, 27.74 h) to **0.072** — and 0.072 is approximately what Orion's own
+~65 background requests/hour account for on their own. The reroute in PR #1708 did not remove
+the contention; the contention left.
+
+Additionally **circe is powered off** — both its lanes returned 0 measured samples of 675, and
+the host does not ping — so the single-slot `chat` lane A4 measured does not presently exist
+either.
+
+**What this invalidates, stated plainly:** A5 observing zero deferrals is *expected*, not a
+finding about Orion. There was nothing to defer against.
+
+**What it leaves open, and I could not settle it from my own measurements:** §2 fact 3 says 98%
+of gateway traffic is `cortex-exec`, and §6.7 attributes the 174× burstiness to "the arena
+dispatching ~5 proposals per tick". If AI Town was the load, one of those two attributions needs
+re-reading — they cannot both be describing the same 4.01%. **Do not resolve this by picking the
+more convenient one.** The measurement that settles it is a re-run of A1 with AI Town back up.
+
+The 24 h `record_lane_occupancy.py` run continues regardless
+(`/tmp/lane-occupancy-a5/samples.jsonl`), since a full diurnal window is worth having as the
+AI-Town-off baseline.
 
 **What A5 leaves behind either way:** the moment any lane Orion uses does fill, the wait is
 already measured, already exposed, and already rendered into Orion's cue — with the zero-state

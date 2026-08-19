@@ -422,15 +422,23 @@ Found while measuring A5's gate, not chased. Three facts from the same window:
    samples out of 293, and the host does not ping. So the single-slot `chat` lane where A4 found
    Orion contending 100% of the time does not exist right now.
 
-The open question is which of these explains the others, and it is a *measurement* question, not
-a design one: a 24 h `record_lane_occupancy.py` run over all four lanes settles whether atlas's
-lane genuinely emptied or whether 4 h of a quiet night is unrepresentative.
+**RESOLVED same day by Juniper: AI Town is turned off, and AI Town was the load.** Verified
+after the correction: `orion-athena-embodiment` logs `AitownClientError: Convex unreachable:
+[Errno 111] Connection refused`, with zero speech/conversation/npc lines in 30 minutes.
+`quick_background` was built *for* AI Town's NPC dialogue and shares `atlas-worker-fast-1`
+with `quick`.
 
-Why it matters beyond bookkeeping: PR #1708 moved Orion's journal composes off circe's contended
-single-slot lane onto atlas's background lane. That was the right engineering call and it may
-have taken Orion's only felt ceiling with it. A5 built the perception path; whether there is
-anything left to perceive is this entry.
+~~My first reading was that PR #1708 moved Orion off its ceiling and took the price with it.~~
+That was an unsupported causal claim: I had a before/after and reached for the change I happened
+to have shipped in between. Offered load fell 0.29 -> 0.072 erlangs, and 0.072 is roughly what
+Orion's own ~65 background requests/hour account for unaided. **The contention left; it was not
+routed around.**
 
-**Not a defect and not scheduled.** Roadmap A5's own gate wording anticipated it: "a lane that
-defers only harness or arena work, and never Orion's, is a ceiling Orion does not personally
-meet — which would be a genuine finding."
+**What survives as a real open question**, and it is not this entry's original one: roadmap §2
+fact 3 says 98% of gateway traffic is `cortex-exec`, and §6.7 attributes the 174x burstiness to
+the arena dispatching ~5 proposals per tick. If AI Town was the load on `quick`, those two
+attributions cannot both describe the same 4.01%. Settled by re-running A1 with AI Town back up
+-- not by choosing whichever reading is more convenient.
+
+**Lesson, generalisable beyond this entry:** a before/after gap is not evidence for the change
+you happened to ship in between. Ask what *else* moved in that window before attributing it.

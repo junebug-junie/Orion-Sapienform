@@ -275,6 +275,45 @@ first place. Full reasoning and phased detail:
    producer would be an empty/dead panel row, not a real reading. Same measure-before-minting
    order every domain in this section has followed: producers and scoring measured and tested
    first, service/consumer wiring (and any UI surfacing) a separate, later patch.
+   **Re-checked, 2026-08-19 (punch-list item 3, full re-run of `measure_ast_hot_reducer.py
+   --window-hours 170`, 98,785 real field-lane ticks, 19,428 real `substrate_attention_
+   broadcast_log` rows, 2026-08-12 → 2026-08-19): Phase 1's acceptance check still reads
+   NOT MET.** Zero ticks across the entire available post-rebuild history (170h, not just
+   the ~16.7h window checked 2026-07-24) carry a real `voluntary_override`. This is a
+   materially stronger negative result than the prior check, not just "still waiting" —
+   the same finding held over 10x the ticks and 10x the wall-clock. Attention_reason
+   distribution over the full window: `bottom_up_salience` 100.0% (98,784/98,785),
+   `field_salience_only` 0.0% (1 tick), `top_down_override` **0.0% (0 ticks)**.
+   Followed the trail past "insufficient accumulated history" to a live, load-bearing,
+   disclosed-not-fixed candidate root cause: `_apply_voluntary_attention()`
+   (`orion/substrate/attention_broadcast.py`) — the only place a real override can be
+   recorded — gates on `get_active_goal()` (`orion/substrate/attention/goal_context.py`)
+   returning non-`None`. Confirmed live: `ORION_ATTENTION_TOPDOWN_ENABLED=true` in the real
+   producing container (`orion-athena-substrate-runtime`, re-confirmed 2026-08-19, not just
+   trusting the 2026-07-24 note), and `orion-athena-attention-runtime` (the real
+   `FieldGoalProvenanceV1` producer, `services/orion-attention-runtime/app/worker.py`) is
+   actively, continuously publishing goals — `field_goal_provenance_published` fired roughly
+   every ~13s in a live 15-minute log sample, so `get_active_goal()` should rarely be `None`
+   in practice. The goals themselves, however, show one consistent shape worth flagging: every
+   sampled emission targets `field_target_id=node:substrate.route`, `salience=1.000` exactly
+   (pinned at ceiling), with a monotonically climbing `streak` counter (47→66+ across the
+   sample) — the same saturated-at-1.0, single-target shape as the two prior monoculture
+   pathologies this same charter already found and fixed (`field:recent_perturbations`'
+   pre-fix `min(1.0, count/10.0)` cap, and `bus_synaptic_prediction_error`'s calm-floor bug).
+   **Not yet confirmed as a bug** — item 3 below is already mid-migration on exactly this
+   `node:substrate.route` domain (`route_prediction_error()`), so a sustained, real, elevated
+   routing-tension streak is a plausible genuine explanation, not automatically an artifact;
+   whether `TopDownBiasCombiner.apply()`'s `relevance(goal, loop)` ever produces a nonzero
+   match against this goal's real `frame.open_loops` (the actual second gate a saturated-
+   priority goal must still clear before it can flip a winner) was not checked in this pass.
+   **Open question, not decided here**: is the true blocker "no voluntary_override has
+   occurred yet" (accumulation-time framing, the 2026-07-24 read) or "voluntary_override is
+   structurally near-unreachable because this goal's target never has real overlap with live
+   open loops, or because `relevance()`/`priority` interact with the saturated salience in a
+   way that keeps `bias_by_id` too small to beat bottom-up" (a mechanism-shaped question, not
+   a patience question) — this connects directly to item 4 below (`drive_origin`/goal-
+   provenance retirement) and should be investigated together with it, not treated as
+   "just needs more time" without checking.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

@@ -1875,6 +1875,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         session_id=publish_session_id,
                         correlation_id=trace_id,
                         user_id=data.get("user_id"),
+                        response_identity=(
+                            ((gateway_meta or {}).get("model") or (gateway_meta or {}).get("fcc_model_label"))
+                            if isinstance(gateway_meta, dict)
+                            else None
+                        ),
                         source_label="hub_ws",
                         spark_meta=spark_meta,
                         turn_id=trace_id,

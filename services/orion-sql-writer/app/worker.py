@@ -1298,6 +1298,8 @@ def _ensure_chat_history_from_message(
     memory_status: str | None,
     memory_tier: str | None,
     client_meta: Any,
+    model: str | None = None,
+    speaker: str | None = None,
 ) -> None:
     """Merge a single chat message into its turn's chat_history_log row.
 
@@ -1319,6 +1321,16 @@ def _ensure_chat_history_from_message(
         values["prompt"] = content
     elif role == "assistant":
         values["response"] = content
+        # `model`/`speaker` were already present on ChatHistoryMessageV1 and
+        # already reaching this function's caller (room_claude_relay sets
+        # `model`, everything sets `speaker`) but were silently dropped here --
+        # never forwarded into `values`, so `response_identity` stayed unset on
+        # every message-path row regardless of what the producer sent. Prefer
+        # the real served model-card name; fall back to a human-readable
+        # responder name (e.g. "Orion", "Claude") when no model is known.
+        response_identity = str(model or speaker or "").strip()
+        if response_identity:
+            values["response_identity"] = response_identity
     else:
         return
     if session_id:
@@ -1509,6 +1521,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                         memory_status=memory_status,
                         memory_tier=memory_tier,
                         client_meta=client_meta,
+                        model=data.get("model"),
+                        speaker=data.get("speaker"),
                     )
             except Exception as ex:
                 # Its own session now, so this really is contained: the

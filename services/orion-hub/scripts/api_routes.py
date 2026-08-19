@@ -3292,6 +3292,7 @@ async def api_chat(
                 session_id=session_id,
                 correlation_id=final_corr_id,
                 user_id=payload.get("user_id"),
+                response_identity=spark_meta.get("model"),
                 source_label="hub_http",
                 spark_meta=spark_meta,
                 turn_id=final_corr_id,

@@ -101,6 +101,12 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_uncertainty_available BOOLEAN;"
             )
             conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS aitown_chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
+            )
+            conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
             )
             conn.exec_driver_sql(

@@ -957,6 +957,16 @@ class EndogenousOutreach:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
 
+            # No `model=` here: `_generate` runs the FCC harness pipeline
+            # (`execute_unified_turn` -> `HarnessRunV1`), which has no served-
+            # model field at all today (unlike the LLM-gateway "brain" chat
+            # path cortex-exec's `_last_model_used` now reports for a normal
+            # Hub turn). `speaker="Orion"` is the real, honest identity
+            # available here and becomes `chat_history_log.response_identity`
+            # (see worker.py::_ensure_chat_history_from_message) -- a genuine
+            # improvement over blank, not the served model name yet. Giving
+            # this path a real model name needs `HarnessRunV1` to track one,
+            # which is a harness-pipeline change, not a chat-history one.
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",

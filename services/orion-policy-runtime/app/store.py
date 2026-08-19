@@ -31,7 +31,11 @@ class PolicyRuntimeStore:
         )
         # The safety net for the `policy_pending` marker. See reconcile_policy_pending.
         self._reconcile_interval_sec = float(reconcile_interval_sec)
-        self._last_reconcile_mono: float | None = None
+        # Seeded to NOW, not None: otherwise the expensive full-table anti-join runs on the
+        # first tick of every process start, and a crash loop (this service has documented
+        # schema-incompat stalls) would re-run it on each restart -- defeating the rate limit
+        # that is the entire reason the reconciler is safe to call every tick.
+        self._last_reconcile_mono: float | None = time.monotonic()
 
     # ROADMAP D2 follow-through, 2026-08-19. Same fix as the dispatch->feedback stage; see
     # services/orion-sql-db/manual_migration_substrate_pending_markers.sql for the measurements
@@ -234,6 +238,46 @@ class PolicyRuntimeStore:
                 """),
                 {"frame_id": frame.source_proposal_frame_id},
             )
+
+    def clear_policy_pending(self, proposal_frame_id: str, *, drain_batch: int = 5000) -> int:
+        """Clear this row's marker, and up to `drain_batch` others that are already done.
+
+        The marker defaults to TRUE, so every pre-migration row starts pending. Clearing ONE per
+        poll would drain 423k rows at 1 per POLICY_POLL_INTERVAL_SECs -- about 9.8 days during which the stage
+        produces nothing, with no error and no log line to show it, because
+        `ORDER BY generated_at ASC` puts every stale row ahead of genuinely new work. The batch
+        is the same statement the migration's backfill uses and rides the partial index, so it
+        turns that 9.8 days into a few minutes.
+
+        Returns the number of markers cleared.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames
+                       SET policy_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": proposal_frame_id},
+            )
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames u
+                       SET policy_pending = false
+                     WHERE u.frame_id IN (
+                           SELECT x.frame_id
+                             FROM substrate_proposal_frames x
+                             JOIN substrate_policy_decision_frames y ON y.source_proposal_frame_id = x.frame_id
+                            WHERE x.policy_pending
+                            LIMIT :batch
+                     )
+                """),
+                {"batch": max(0, int(drain_batch))},
+            )
+        drained = 1 + int(result.rowcount or 0)
+        if drained > 1:
+            logger.info("policy_pending_bulk_drained cleared=%s", drained)
+        return drained
 
     def reconcile_policy_pending(self, *, force: bool = False) -> int:
         """Re-queue any proposal whose marker was cleared without a policy decision frame.

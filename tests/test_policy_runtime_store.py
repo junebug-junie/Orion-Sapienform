@@ -177,5 +177,12 @@ def test_save_idempotent_by_frame_id(monkeypatch) -> None:
     monkeypatch.setattr(store, "_engine", fake_engine)
 
     store.save_policy_decision_frame(_frame())
-    sql = str(conn.execute.call_args[0][0])
-    assert "ON CONFLICT (frame_id)" in sql
+    # `any` over ALL statements, not `call_args` (the LAST one). The marker-clear UPDATE now
+    # runs after the insert in the same transaction, so a last-call assertion silently starts
+    # testing the wrong statement -- which is exactly what happened here. The sibling feedback
+    # test already used this form and survived; that asymmetry is why only this one broke.
+    sqls = [str(c[0][0]) for c in conn.execute.call_args_list]
+    assert any("ON CONFLICT (frame_id)" in sql for sql in sqls)
+    assert any("SET policy_pending = false" in sql for sql in sqls), (
+        "the marker must be cleared in the same transaction as the insert"
+    )

@@ -55,6 +55,15 @@ class PolicyRuntimeWorker:
         proposal = self._store.load_next_proposal_without_policy_frame()
         if proposal is None:
             return
+        if self._store.load_policy_frame_for_proposal(proposal.frame_id) is not None:
+            # Marker was stale-true and a decision ALREADY EXISTS. Re-deciding would not be a
+            # harmless repeat: stable_policy_frame_id() is deterministic and the insert is
+            # ON CONFLICT DO UPDATE, so it would overwrite the original decision with a fresh
+            # evaluation under today's policy and today's timestamp -- silently rewriting
+            # history. The old `WHERE d.frame_id IS NULL` anti-join made that structurally
+            # impossible; the marker does not, so the guard has to be explicit.
+            self._store.clear_policy_pending(proposal.frame_id)
+            return
 
         # 2026-07-22 (SelfStateV1 burn): build_policy_decision_frame now
         # evaluates directly off proposal_frame (which already carries

@@ -34,7 +34,11 @@ class FeedbackRuntimeStore:
         )
         # The safety net for the `feedback_pending` marker. See reconcile_feedback_pending.
         self._reconcile_interval_sec = float(reconcile_interval_sec)
-        self._last_reconcile_mono: float | None = None
+        # Seeded to NOW, not None: otherwise the expensive full-table anti-join runs on the
+        # first tick of every process start, and a crash loop (this service has documented
+        # schema-incompat stalls) would re-run it on each restart -- defeating the rate limit
+        # that is the entire reason the reconciler is safe to call every tick.
+        self._last_reconcile_mono: float | None = time.monotonic()
 
     # ROADMAP D2 follow-through, 2026-08-19. This lookup WAS athena's I/O ceiling.
     #
@@ -110,14 +114,17 @@ class FeedbackRuntimeStore:
         )
         self.save_feedback_frame(stub)
 
-    def clear_feedback_pending(self, dispatch_frame_id: str) -> None:
-        """Clear a marker whose feedback frame already exists.
+    def clear_feedback_pending(self, dispatch_frame_id: str, *, drain_batch: int = 5000) -> int:
+        """Clear this row's marker, and up to `drain_batch` others that are already done.
 
-        Needed because the marker defaults to TRUE, so every pre-migration row starts pending
-        even though most already have feedback. Without this the worker's existing
-        already-have-feedback guard would return early WITHOUT advancing the marker, and the
-        FIFO would re-select that same row every tick forever -- the exact stuck-loop the
-        2026-07-22 incident note above describes, reintroduced by the marker's safe default.
+        The marker defaults to TRUE, so every pre-migration row starts pending. Clearing ONE per
+        poll would drain 423k rows at 1 per FEEDBACK_POLL_INTERVAL_SECs -- about 9.8 days during which the stage
+        produces nothing, with no error and no log line to show it, because
+        `ORDER BY generated_at ASC` puts every stale row ahead of genuinely new work. The batch
+        is the same statement the migration's backfill uses and rides the partial index, so it
+        turns that 9.8 days into a few minutes.
+
+        Returns the number of markers cleared.
         """
         with self._engine.begin() as conn:
             conn.execute(
@@ -128,6 +135,24 @@ class FeedbackRuntimeStore:
                 """),
                 {"frame_id": dispatch_frame_id},
             )
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_execution_dispatch_frames u
+                       SET feedback_pending = false
+                     WHERE u.frame_id IN (
+                           SELECT x.frame_id
+                             FROM substrate_execution_dispatch_frames x
+                             JOIN substrate_feedback_frames y ON y.source_execution_dispatch_frame_id = x.frame_id
+                            WHERE x.feedback_pending
+                            LIMIT :batch
+                     )
+                """),
+                {"batch": max(0, int(drain_batch))},
+            )
+        drained = 1 + int(result.rowcount or 0)
+        if drained > 1:
+            logger.info("feedback_pending_bulk_drained cleared=%s", drained)
+        return drained
 
     def reconcile_feedback_pending(self, *, force: bool = False) -> int:
         """Re-queue any dispatch frame whose marker was cleared without a feedback frame.

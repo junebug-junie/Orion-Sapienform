@@ -53,6 +53,23 @@ alter table substrate_execution_dispatch_frames
 alter table substrate_proposal_frames
     add column if not exists policy_pending boolean not null default true;
 
+-- The partial indexes, created BEFORE the backfill on purpose.
+--
+-- If they came after and the backfill aborted (this file sets ON_ERROR_STOP, and the backfill
+-- is the slow part most likely to be interrupted), you would be left with the column added,
+-- every row `true`, and NO index -- so the pending lookup becomes a seq scan plus a sort of
+-- 423k rows every 2 seconds, STRICTLY WORSE than the anti-join this migration replaces.
+-- Built first, a half-finished run is merely slow-to-drain, never worse than before.
+--
+-- `generated_at` is the ordering column both stages use for oldest-first.
+create index concurrently if not exists idx_substrate_execution_dispatch_frames_feedback_pending
+    on substrate_execution_dispatch_frames (generated_at)
+    where feedback_pending;
+
+create index concurrently if not exists idx_substrate_proposal_frames_policy_pending
+    on substrate_proposal_frames (generated_at)
+    where policy_pending;
+
 -- Backfill. Batched deliberately: a single UPDATE over 419,526 rows creates that many dead
 -- tuples at once and holds one long transaction. This clears at most 20,000 rows per pass and
 -- is safe to run repeatedly until it reports 0 -- each pass is its own transaction.
@@ -106,11 +123,15 @@ begin
     raise notice 'proposal policy_pending backfill cleared % row(s)', total;
 end $$;
 
--- The partial indexes. `generated_at` is the ordering column both stages use for oldest-first.
-create index concurrently if not exists idx_substrate_execution_dispatch_frames_feedback_pending
-    on substrate_execution_dispatch_frames (generated_at)
-    where feedback_pending;
+-- VERIFY. Run this after the script and read it -- a partially-applied migration is not
+-- self-announcing. `pending` should be a handful (genuinely unprocessed work), NOT ~423k, and
+-- both indexes must be present and valid.
+select 'dispatch pending' as what, count(*) filter (where feedback_pending) as pending,
+       count(*) as total from substrate_execution_dispatch_frames
+union all
+select 'proposal pending', count(*) filter (where policy_pending), count(*)
+  from substrate_proposal_frames;
 
-create index concurrently if not exists idx_substrate_proposal_frames_policy_pending
-    on substrate_proposal_frames (generated_at)
-    where policy_pending;
+select indexrelid::regclass as index, indisvalid
+  from pg_index
+ where indexrelid::regclass::text like '%_pending';

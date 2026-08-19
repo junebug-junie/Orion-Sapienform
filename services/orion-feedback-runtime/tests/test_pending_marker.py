@@ -158,13 +158,34 @@ class TestTheReconcilerCanOnlyAddWork:
 
 
 class TestStaleMarkersCannotSpinTheFifo:
-    def test_clear_feedback_pending_targets_one_row(self):
+    def test_it_clears_the_specific_row(self):
         """The marker defaults to TRUE, so every pre-migration row starts pending even though
         most already have feedback. Without this the worker's already-have-feedback guard
         returns early without advancing, and the FIFO re-selects the same row forever."""
-        eng = _Engine(begin_script=[_Result()])
+        eng = _Engine(begin_script=[_Result(), _Result(rowcount=0)])
         _store(eng).clear_feedback_pending("dispatch-9")
-        assert len(eng.calls) == 1
-        assert "SET feedback_pending = false" in eng.calls[0][1]
-        assert eng.calls[0][2] == {"frame_id": "dispatch-9"}
-        assert "WHERE frame_id = :frame_id" in eng.calls[0][1], "must not clear in bulk"
+        first = eng.calls[0]
+        assert "SET feedback_pending = false" in first[1]
+        assert "WHERE frame_id = :frame_id" in first[1]
+        assert first[2] == {"frame_id": "dispatch-9"}
+
+    def test_it_also_drains_a_batch_of_already_done_rows(self):
+        """One row per poll is not enough. `ORDER BY generated_at ASC` puts every stale row
+        ahead of genuinely new work, so a skipped backfill would drain 423k rows at 1 per 2s --
+        about 9.8 days producing nothing, with no error and no log line to show it."""
+        eng = _Engine(begin_script=[_Result(), _Result(rowcount=4999)])
+        drained = _store(eng).clear_feedback_pending("dispatch-9")
+        assert len(eng.calls) == 2
+        bulk = eng.calls[1]
+        assert "LIMIT :batch" in bulk[1] and bulk[2] == {"batch": 5000}
+        assert "JOIN substrate_feedback_frames" in bulk[1], "only rows that ARE done"
+        assert drained == 5000
+
+    def test_the_batch_only_clears_rows_that_actually_have_feedback(self):
+        """A bulk clear that could touch un-processed rows would lose work silently -- the same
+        class of failure as the reverted time bound, arriving through the drain path."""
+        eng = _Engine(begin_script=[_Result(), _Result(rowcount=0)])
+        _store(eng).clear_feedback_pending("dispatch-9")
+        bulk = eng.calls[1][1]
+        assert "JOIN substrate_feedback_frames y" in bulk
+        assert "WHERE x.feedback_pending" in bulk

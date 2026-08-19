@@ -796,36 +796,75 @@ async def lifespan(app: FastAPI):
     # zero deletes ever. Same bounded-startup shape as grammar_events above, each with
     # its own retention_days knob (settings.py), each independently best-effort (one
     # table's failure must not skip the others or block boot).
-    for _table_label, _apply_fn_name, _days_attr in (
-        ("grammar_edges", "apply_grammar_edges_retention", "grammar_edges_retention_days"),
-        ("grammar_atoms", "apply_grammar_atoms_retention", "grammar_atoms_retention_days"),
-        (
-            "substrate_organ_emissions",
-            "apply_substrate_organ_emissions_retention",
-            "substrate_organ_emissions_retention_days",
-        ),
-    ):
-        _retention_days = int(getattr(settings, _days_attr, 0) or 0)
-        if _retention_days <= 0:
-            continue
+    #
+    # Deliberately three explicit blocks, not a (label, function-name-string,
+    # settings-attr-string) loop: a typo in a string dispatched via getattr() would
+    # raise AttributeError, get swallowed by this same try/except, and silently skip
+    # that table's retention forever -- exactly the failure class this patch exists to
+    # eliminate, just moved up a layer. Explicit imports/calls are typo-proof at
+    # import time instead.
+    grammar_edges_retention_days = int(getattr(settings, "grammar_edges_retention_days", 0) or 0)
+    if grammar_edges_retention_days > 0:
         try:
-            import app.grammar_truth as _grammar_truth
+            from app.grammar_truth import apply_grammar_edges_retention
 
-            _apply_fn = getattr(_grammar_truth, _apply_fn_name)
-            _result = _apply_fn(_retention_days)
+            retention_result = apply_grammar_edges_retention(grammar_edges_retention_days)
             logger.info(
-                "🧹 %s retention cutoff=%s rows_pruned=%s batches=%s "
+                "🧹 grammar_edges retention cutoff=%s rows_pruned=%s batches=%s "
                 "remaining_debt=%s elapsed_sec=%.2f failure=%s",
-                _table_label,
-                _result.cutoff_at.isoformat() if _result.cutoff_at else None,
-                _result.rows_pruned_last_run,
-                _result.batches_attempted,
-                _result.remaining_debt,
-                _result.elapsed_sec,
-                _result.failure_reason,
+                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
+                retention_result.rows_pruned_last_run,
+                retention_result.batches_attempted,
+                retention_result.remaining_debt,
+                retention_result.elapsed_sec,
+                retention_result.failure_reason,
             )
         except Exception as exc:
-            logger.exception("%s retention startup failed (continuing boot): %s", _table_label, exc)
+            logger.exception("grammar_edges retention startup failed (continuing boot): %s", exc)
+
+    grammar_atoms_retention_days = int(getattr(settings, "grammar_atoms_retention_days", 0) or 0)
+    if grammar_atoms_retention_days > 0:
+        try:
+            from app.grammar_truth import apply_grammar_atoms_retention
+
+            retention_result = apply_grammar_atoms_retention(grammar_atoms_retention_days)
+            logger.info(
+                "🧹 grammar_atoms retention cutoff=%s rows_pruned=%s batches=%s "
+                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
+                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
+                retention_result.rows_pruned_last_run,
+                retention_result.batches_attempted,
+                retention_result.remaining_debt,
+                retention_result.elapsed_sec,
+                retention_result.failure_reason,
+            )
+        except Exception as exc:
+            logger.exception("grammar_atoms retention startup failed (continuing boot): %s", exc)
+
+    substrate_organ_emissions_retention_days = int(
+        getattr(settings, "substrate_organ_emissions_retention_days", 0) or 0
+    )
+    if substrate_organ_emissions_retention_days > 0:
+        try:
+            from app.grammar_truth import apply_substrate_organ_emissions_retention
+
+            retention_result = apply_substrate_organ_emissions_retention(
+                substrate_organ_emissions_retention_days
+            )
+            logger.info(
+                "🧹 substrate_organ_emissions retention cutoff=%s rows_pruned=%s batches=%s "
+                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
+                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
+                retention_result.rows_pruned_last_run,
+                retention_result.batches_attempted,
+                retention_result.remaining_debt,
+                retention_result.elapsed_sec,
+                retention_result.failure_reason,
+            )
+        except Exception as exc:
+            logger.exception(
+                "substrate_organ_emissions retention startup failed (continuing boot): %s", exc
+            )
 
     task: asyncio.Task | None = None
     if settings.orion_bus_enabled:

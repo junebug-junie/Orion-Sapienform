@@ -226,30 +226,7 @@ def test_retention_stops_at_max_batch_cap_and_reports_debt(monkeypatch) -> None:
     assert result.capped_by_startup_limit is True
 
 
-@pytest.mark.parametrize(
-    "apply_fn, table, id_column, extra_state_key",
-    [
-        (apply_grammar_edges_retention, "grammar_edges", "edge_id", "grammar_edges"),
-        (apply_grammar_atoms_retention, "grammar_atoms", "atom_id", "grammar_atoms"),
-        (
-            apply_substrate_organ_emissions_retention,
-            "substrate_organ_emissions",
-            "emission_id",
-            "substrate_organ_emissions",
-        ),
-    ],
-)
-def test_new_table_retention_deletes_and_records_extra_state(
-    monkeypatch, apply_fn, table, id_column, extra_state_key
-) -> None:
-    # Regression coverage for the three tables that had NO retention at all before
-    # this patch (confirmed live 2026-08-19: unbounded growth, zero deletes ever).
-    settings = _mock_settings(
-        grammar_events_retention_batch_size=10,
-        grammar_events_retention_max_batches_per_startup=5,
-    )
-    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
-
+def _make_fake_engine() -> MagicMock:
     conn = MagicMock()
     conn.execute.side_effect = [
         MagicMock(scalar_one=lambda: 0),  # FK check
@@ -266,17 +243,56 @@ def test_new_table_retention_deletes_and_records_extra_state(
     engine = MagicMock()
     engine.connect.return_value = conn
     engine.begin.return_value = begin_conn
-    # substrate_organ_emissions uses the plain `engine`, the other two use
-    # `grammar_engine` -- patch both so the same test body works for all three.
-    monkeypatch.setattr(grammar_truth_module, "grammar_engine", engine)
-    monkeypatch.setattr(grammar_truth_module, "default_engine", engine)
+    return engine
+
+
+@pytest.mark.parametrize(
+    "apply_fn, table, id_column, extra_state_key, expected_engine_attr",
+    [
+        (apply_grammar_edges_retention, "grammar_edges", "edge_id", "grammar_edges", "grammar_engine"),
+        (apply_grammar_atoms_retention, "grammar_atoms", "atom_id", "grammar_atoms", "grammar_engine"),
+        (
+            apply_substrate_organ_emissions_retention,
+            "substrate_organ_emissions",
+            "emission_id",
+            "substrate_organ_emissions",
+            "default_engine",
+        ),
+    ],
+)
+def test_new_table_retention_deletes_and_records_extra_state(
+    monkeypatch, apply_fn, table, id_column, extra_state_key, expected_engine_attr
+) -> None:
+    # Regression coverage for the three tables that had NO retention at all before
+    # this patch (confirmed live 2026-08-19: unbounded growth, zero deletes ever).
+    #
+    # Two DISTINCT mock engines, not one shared mock -- substrate_organ_emissions
+    # must use `default_engine`, the other two must use `grammar_engine` (real
+    # reason: different statement_timeout per pool, see db.py). A single shared
+    # mock would let a wrong-engine regression pass silently since both names
+    # would resolve to the same object either way.
+    settings = _mock_settings(
+        grammar_events_retention_batch_size=10,
+        grammar_events_retention_max_batches_per_startup=5,
+    )
+    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
+
+    expected_engine = _make_fake_engine()
+    other_attr = "default_engine" if expected_engine_attr == "grammar_engine" else "grammar_engine"
+    other_engine = _make_fake_engine()
+    monkeypatch.setattr(grammar_truth_module, expected_engine_attr, expected_engine)
+    monkeypatch.setattr(grammar_truth_module, other_attr, other_engine)
 
     result = apply_fn(15)
     assert result.rows_pruned_last_run == 7
     assert result.failure_reason is None
-    sql_texts = [str(c.args[0]) for c in begin_conn.execute.call_args_list]
+    sql_texts = [str(c.args[0]) for c in expected_engine.begin.return_value.execute.call_args_list]
     assert all(f"DELETE FROM {table}" in sql for sql in sql_texts)
     assert all(f"{id_column} IN" in sql for sql in sql_texts)
+
+    # The un-expected engine must never have been touched.
+    other_engine.connect.assert_not_called()
+    other_engine.begin.assert_not_called()
 
     # Recorded into the per-table slot, NOT the legacy single grammar_events global.
     assert extra_retention_state(extra_state_key) is result

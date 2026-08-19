@@ -49,6 +49,13 @@ RULES ENFORCED IN CODE, NOT REMEMBERED
    coverage. Ranking a 5-minute container against a 24-hour one on raw totals would be a
    category error.
 
+3a. ATTRIBUTE TO THE SERVICE, NOT THE CONTAINER INSTANCE. A restart gives the same service a new
+   container id, and keying rows by id splits its stall across two rows and inflates the
+   denominator ("top 8 of 156 containers" on a host running 85). Observed on the first real
+   read: `orion-athena-bus-mirror` appeared twice, at 0.94 h and 0.01 h, and a reader would
+   either double-count it or dismiss the small row as noise. Rows are keyed by NAME; instance
+   changes are counted in `inst` and their per-instance counter resets in `rst`.
+
 4. STATE THE WINDOW AS COVERAGE, NOT SPAN. `--out` appends and the file may hold several runs.
    Inter-sample gaps larger than DISCONTINUITY_FACTOR x median are holes between runs and are
    excluded from both the numerator and the denominator.
@@ -272,12 +279,15 @@ def cmd_report(args: argparse.Namespace) -> int:
             if prev_entry is None:
                 # Rule 3: it was not observed over this interval, so it gets no exposure for it.
                 continue
-            row = per.setdefault(cid, {
-                "name": cur_entry.get("name") or cid[:12],
+            # Rule 3a: key by NAME. Deltas are still computed per container id (the counters
+            # belong to the instance and reset with it); only the accumulation is by service.
+            name = cur_entry.get("name") or cid[:12]
+            row = per.setdefault(name, {
+                "name": name, "instances": set(),
                 "full_us": 0, "some_us": 0, "rbytes": 0, "wbytes": 0,
                 "coverage_s": 0.0, "resets": 0,
             })
-            row["name"] = cur_entry.get("name") or row["name"]
+            row["instances"].add(cid)
             reset = False
             deltas: Dict[str, int] = {}
             for key, field in (("full", "full_us"), ("some", "some_us"),
@@ -319,9 +329,9 @@ def cmd_report(args: argparse.Namespace) -> int:
     print()
 
     ranked = sorted(per.values(), key=lambda r: r["full_us"], reverse=True)
-    print(f"{'container':<38} {'full%':>7} {'some%':>7} {'share':>7} "
-          f"{'read':>10} {'write':>10} {'cov':>7} {'rst':>4}")
-    print("-" * 96)
+    print(f"{'service':<38} {'full%':>7} {'some%':>7} {'share':>7} "
+          f"{'read':>10} {'write':>10} {'cov':>7} {'inst':>5} {'rst':>4}")
+    print("-" * 102)
     attributed_us = 0
     for row in ranked[: args.top]:
         cov = row["coverage_s"] or 1.0
@@ -331,11 +341,13 @@ def cmd_report(args: argparse.Namespace) -> int:
         attributed_us += row["full_us"]
         print(f"{row['name'][:38]:<38} {full_pct:7.2f} {some_pct:7.2f} {share:6.1f}% "
               f"{_h(row['rbytes']):>10} {_h(row['wbytes']):>10} "
-              f"{cov / 3600:6.2f}h {row['resets']:4d}")
+              f"{cov / 3600:6.2f}h {len(row['instances']):5d} {row['resets']:4d}")
     total_share = 100.0 * attributed_us / host_full_us if host_full_us else 0.0
-    print("-" * 96)
-    print(f"top {min(args.top, len(ranked))} of {len(ranked)} containers "
-          f"account for {total_share:.1f}% of host full-stall time")
+    print("-" * 102)
+    restarted = sum(1 for r in ranked if len(r["instances"]) > 1)
+    print(f"top {min(args.top, len(ranked))} of {len(ranked)} services "
+          f"account for {total_share:.1f}% of host full-stall time"
+          + (f"  ({restarted} restarted mid-window)" if restarted else ""))
     print()
     print("NOTE: container `full` shares need not sum to the host's -- containers stall")
     print("      concurrently, and host-level stall includes non-container tasks. A share far")

@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
@@ -40,7 +41,13 @@ from orion.schemas.thought import CoalitionSnapshotV1
 from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
-from .store import load_recent_loop_outcomes, persist_reverie_thought, persist_salience_trace
+from .store import (
+    load_pending_expectations,
+    load_recent_loop_outcomes,
+    persist_expectation_verdict,
+    persist_reverie_thought,
+    persist_salience_trace,
+)
 
 logger = logging.getLogger("orion-thought.reverie")
 
@@ -318,6 +325,19 @@ def parse_reverie_payload(
         evidence_refs = []
     evidence_refs = [str(x) for x in evidence_refs][: 50]
 
+    # Phase E (Movement III): optional falsifiable claim about the room. Only
+    # ever present when the prompt actually offered a recent_percepts block
+    # (ORION_REVERIE_PERCEPTION_ENABLED) -- the LLM is free to omit it even
+    # then. Truncated here (not left for pydantic to reject) so a slightly-
+    # long LLM claim degrades to a clipped string rather than discarding the
+    # whole thought.
+    expectation_raw = data.get("expectation")
+    expectation: str | None = None
+    if isinstance(expectation_raw, str):
+        candidate = expectation_raw.strip()
+        if candidate:
+            expectation = candidate[:200]
+
     salience = derive_salience(broadcast)
 
     thought = SpontaneousThoughtV1(
@@ -328,6 +348,7 @@ def parse_reverie_payload(
         salience=salience,
         evidence_refs=evidence_refs,
         model_id=str(data.get("model_id")) if data.get("model_id") else None,
+        expectation=expectation,
     )
     return thought.marked_hollow()
 
@@ -339,6 +360,147 @@ def _envelope_correlation_id(raw: str | None) -> UUID:
         except ValueError:
             pass
     return uuid4()
+
+
+# --- Phase E (Movement III): expectation scoring -----------------------------
+
+
+def build_expectation_judge_context(*, expectation: str, percept_narrative: str) -> dict[str, Any]:
+    """Context for the `reverie_expectation_judge` verb.
+
+    `options.llm_lane = "background"` reuses the exact override mechanism
+    `build_reverie_context`'s semantic-lift branch already uses to force the
+    background lane without registering a new verb name in orion-cortex-exec's
+    `_BACKGROUND_VERBS` -- same lane reverie_narrate itself lands in for its
+    own low-priority, nobody-waiting-on-it ticks.
+    """
+    return {
+        "expectation": expectation,
+        "percept_narrative": percept_narrative,
+        "metadata": {"mode": "reverie_expectation_judge", "llm_profile": "brain"},
+        "options": {"llm_lane": "background", "allow_chat_fallback": False},
+    }
+
+
+def build_expectation_judge_plan_request(
+    *, expectation: str, percept_narrative: str, correlation_id: str
+) -> PlanExecutionRequest:
+    plan = build_plan_for_verb("reverie_expectation_judge", mode="brain")
+    return PlanExecutionRequest(
+        plan=plan,
+        args=PlanExecutionArgs(
+            request_id=correlation_id,
+            trigger_source=settings.service_name,
+            extra={"llm_profile": "brain", "mode": "reverie_expectation_judge"},
+        ),
+        context=build_expectation_judge_context(
+            expectation=expectation, percept_narrative=percept_narrative
+        ),
+    )
+
+
+_EXPECTATION_VERDICTS = ("confirmed", "disconfirmed", "unscored")
+
+
+def parse_expectation_judge_verdict(raw: dict[str, Any] | str) -> str:
+    """Extract the judge's verdict, fail-closed to "unscored" on anything else
+    (missing field, unparseable JSON, unrecognized value) -- a wrong-but-
+    confident verdict is worse than an honest "unscored"."""
+    data: dict[str, Any] = {}
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str):
+        with suppress(Exception):
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                data = parsed
+
+    verdict = str(data.get("verdict") or "").strip().lower()
+    return verdict if verdict in _EXPECTATION_VERDICTS else "unscored"
+
+
+async def _maybe_score_pending_expectation(
+    bus: OrionBusAsync,
+    *,
+    cortex_client: CortexExecClient | None = None,
+) -> None:
+    """Best-effort: resolve at most one overdue expectation per tick.
+
+    Fully independent of this tick's own narration -- called before the
+    narration logic below and never allowed to raise, so a failure (or a
+    success) here has no bearing on whether narration runs or what it
+    returns. Flag off (`ORION_REVERIE_EXPECTATION_SCORING_ENABLED`) is a
+    complete no-op: returns before touching the store or the bus.
+    """
+    if not settings.reverie_expectation_scoring_enabled:
+        return
+    try:
+        pending = await asyncio.to_thread(load_pending_expectations, 1)
+    except Exception as exc:
+        logger.warning("expectation scoring: pending load failed err=%s", exc)
+        return
+    if not pending:
+        return
+
+    row = pending[0]
+    thought_id = str(row.get("thought_id") or "").strip()
+    expectation_text = str(row.get("expectation") or "").strip()
+    if not thought_id or not expectation_text:
+        return
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        from .vision_reader import read_recent_vision_events
+
+        percepts = await asyncio.to_thread(
+            read_recent_vision_events,
+            max_age_sec=settings.reverie_perception_max_age_sec,
+            limit=1,
+        )
+    except Exception as exc:
+        logger.warning(
+            "expectation scoring: percept fetch failed thought_id=%s err=%s", thought_id, exc
+        )
+        percepts = []
+
+    if not percepts:
+        # No fresh-enough percept to check against -- cheap, deterministic
+        # path, no LLM call. Never leave it permanently pending: a closed
+        # window with nothing to check it against is "unscored", not a retry.
+        with suppress(Exception):
+            await asyncio.to_thread(persist_expectation_verdict, thought_id, "unscored", now)
+        return
+
+    verdict = "unscored"
+    try:
+        judge_correlation_id = str(uuid4())
+        judge_client = cortex_client or CortexExecClient(
+            bus, request_channel=settings.channel_cortex_exec_request
+        )
+        plan_request = build_expectation_judge_plan_request(
+            expectation=expectation_text,
+            percept_narrative=str(percepts[0].get("narrative") or ""),
+            correlation_id=judge_correlation_id,
+        )
+        exec_result = await judge_client.execute_plan(
+            source=_source(),
+            req=plan_request,
+            correlation_id=judge_correlation_id,
+            timeout_sec=settings.stance_react_timeout_sec,
+        )
+        raw_payload = extract_stance_react_payload(exec_result)
+        verdict = parse_expectation_judge_verdict(raw_payload)
+    except Exception as exc:
+        # Judge call/parse failure -- fail closed to "unscored" rather than
+        # raise or leave the row pending forever.
+        logger.warning(
+            "expectation scoring: judge call failed thought_id=%s err=%s", thought_id, exc
+        )
+        verdict = "unscored"
+
+    with suppress(Exception):
+        await asyncio.to_thread(persist_expectation_verdict, thought_id, verdict, now)
 
 
 async def run_reverie_once(
@@ -353,6 +515,15 @@ async def run_reverie_once(
     Returns None (publishes nothing) when there is no coalition to narrate or the
     narration comes back hollow — never empty-shell cognition, never a raise.
     """
+    # Expectation scoring (Movement III) is fully independent of this tick's
+    # own narration -- run it first, wrapped so nothing it does can affect
+    # narration below, in either direction. `_maybe_score_pending_expectation`
+    # itself no-ops immediately when the flag is off.
+    try:
+        await _maybe_score_pending_expectation(bus, cortex_client=cortex_client)
+    except Exception as exc:  # defense-in-depth; the helper already catches internally
+        logger.warning("expectation scoring tick failed unexpectedly: %s", exc)
+
     reader = broadcast_reader or _default_broadcast_reader
     broadcast = reader()
     coalition = build_coalition_snapshot(broadcast)
@@ -437,6 +608,16 @@ async def run_reverie_once(
             correlation_id=correlation_id,
             broadcast=broadcast,
         )
+        if settings.reverie_expectation_scoring_enabled and thought.expectation:
+            # Open the checkable window only when scoring is actually on --
+            # otherwise nothing will ever query expectation_checkable_by, so
+            # stamping it would just be an inert timestamp nobody reads.
+            thought = thought.model_copy(
+                update={
+                    "expectation_checkable_by": datetime.now(timezone.utc)
+                    + timedelta(seconds=settings.reverie_expectation_check_window_sec)
+                }
+            )
         if settings.reverie_semantic_lift_enabled and concern_cards:
             thought = enforce_semantic_quality(
                 thought,

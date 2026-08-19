@@ -60,6 +60,23 @@ HARD_BUDGET_CEILING = 8
 # with zero code change here. This staleness-decay guard remains load-bearing
 # for every other node this function reads, not specifically for transport.
 #
+# `node:substrate.perception` (P2 camera-surprise, PR #1746, shipped
+# 2026-08-19) is the newest domain to join this same generic scan the same
+# way -- checked deliberately, not accidentally inherited: the P2 PR itself
+# only claimed shadow-only status for the field-digester receipt path and
+# did not audit this consumer. Reviewed 2026-08-19 against 60 real ticks
+# (30 min, `substrate_reduction_receipts` where
+# `delta_id like 'prediction_error:perception:%'`): calm floor ~0.002-0.005,
+# and a real environmental transition (camera owner's room occupancy
+# changing) only reached 0.031 -- still ~18x below `min_error=0.55`, unlike
+# the always-1.0 transport case above. Left generic on purpose: this
+# function's own architecture treats "any node with a real, non-degenerate
+# `prediction_error`" as fair game by design (see module docstring), and the
+# budget cap / staleness decay / signals-only-into-rung-6-governance chain
+# already gates what a crossed threshold can actually do. Re-run this same
+# live-data check before trusting it again if the camera, embedding model,
+# or EWMA window changes.
+#
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):
 # `dynamic_pressure` is a composite of drive/prediction-error/contradiction pressure

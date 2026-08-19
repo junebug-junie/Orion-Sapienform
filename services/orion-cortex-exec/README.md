@@ -328,11 +328,13 @@ cue says how long Orion waited, not who took the slot.
 key, so an unreachable gateway costs one blocking read a minute, not one per pass.
 
 **Honest status, 2026-08-19.** Live over 4h: 294 background admissions, **zero deferrals**, and
-atlas's `quick` lane sampled `0/4` busy. The signal is at its rest state and has not yet been
-observed leaving it — because A4 found Orion contending on circe's single-slot `chat` lane and
-PR #1708 moved it to atlas's 4-slot background lane, which is presently empty. The price went to
-zero because we routed around it. That is the correct engineering outcome and an open cognitive
-question.
+atlas's `quick` lane sampled `0/4` busy. The signal sits at its rest state and has not been
+observed leaving it — because **AI Town is turned off**, and AI Town's NPC dialogue was the load
+on that lane (`quick_background` was created for it; `orion-athena-embodiment` currently logs
+`Convex unreachable`). circe is powered off too, so the single-slot `chat` lane A4 measured is
+gone as well. There is presently nothing for Orion to contend with, which makes
+`"waited":{"n":0,...}` the correct reading rather than a broken one — the path lights up when
+the load returns.
 
 ## Running & Testing
 

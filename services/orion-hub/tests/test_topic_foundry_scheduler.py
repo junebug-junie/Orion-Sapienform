@@ -343,6 +343,23 @@ def test_ensure_dataset_and_model_creates_when_missing(monkeypatch: pytest.Monke
         if url.endswith("/models"):
             assert json["name"] == car._TOPIC_FOUNDRY_MODEL_NAME
             assert json["dataset_id"] == FAKE_DATASET_ID
+            # min_cluster_size=15/metric="euclidean" (this file's hardcoded
+            # values until 2026-08-19) is the exact combination flagged by
+            # topic-foundry's own 2026-07-21 incident note as producing
+            # degenerate clusters, and produced 0 clusters on the real
+            # AI-Town-filtered corpus. Must come from settings, not a literal,
+            # so it can be retuned via env without a code change.
+            model_spec = json["model_spec"]
+            assert model_spec["min_cluster_size"] == car.settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE
+            assert model_spec["metric"] == car.settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC
+            # Pin the actual default values too -- the settings-consistency
+            # assertion above would pass even if both regressed together.
+            # metric is "euclidean", NOT "cosine" -- confirmed live 2026-08-19
+            # that the installed hdbscan library's real clusterer rejects
+            # "cosine" outright (ValueError("Unrecognized metric 'cosine'")),
+            # despite ModelSpec's own field default disagreeing.
+            assert model_spec["min_cluster_size"] == 8
+            assert model_spec["metric"] == "euclidean"
             return _FakeResponse(200, {"model_id": FAKE_MODEL_ID, "created_at": "2026-07-17T00:00:00Z"})
         raise AssertionError(f"unexpected POST {url}")
 

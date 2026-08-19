@@ -109,8 +109,27 @@ _RELATION_CLASSIFICATION_PAIR_CAP = 10
 # ingestion could keep silently reading the old model's runs regardless of
 # this rename. Both call sites below now pass
 # model_name=_TOPIC_FOUNDRY_MODEL_NAME.
+#
+# "-v3"/"-v4" model names (2026-08-19): this file's model_spec had
+# hardcoded min_cluster_size=15 / metric="euclidean" since the pipeline
+# first shipped -- min_cluster_size=15 is flagged by topic-foundry's own
+# 2026-07-21 incident note (services/orion-topic-foundry/app/models.py::
+# ModelSpec) as producing 1-2 degenerate clusters on a 676-document corpus,
+# and produced 0 clusters every run on the real, much smaller "-v2" corpus
+# (60-160ish documents after the AI Town filter, live-verified
+# 2026-08-18/19). Fixed to read from settings
+# (SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE/_METRIC, see
+# app/settings.py for the full live-verification story, including a first
+# attempt at "-v3" with metric="cosine" that failed outright --
+# "Unrecognized metric 'cosine'" -- because the installed hdbscan library's
+# real clusterer does not support it). "-v4" is the model that actually
+# carries a working spec (min_cluster_size=8, metric="euclidean"). Same
+# create-only constraint as the dataset above: model_spec is fixed at
+# creation, get-or-create is by name, so retuning it requires a new name,
+# not just changing the literals/settings here. Dataset name is unchanged
+# -- only the model_spec is different, the where_sql filter is not.
 _TOPIC_FOUNDRY_DATASET_NAME = "orion-hub-autonomous-dataset-v2"
-_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous-v2"
+_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous-v4"
 _TOPIC_FOUNDRY_MODEL_VERSION = "v1"
 _TOPIC_FOUNDRY_SOURCE_TABLE = "chat_history_log"
 _TOPIC_FOUNDRY_ID_COLUMN = "correlation_id"
@@ -226,8 +245,8 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
                     "model_spec": {
                         "algorithm": "hdbscan",
                         "embedding_source_url": str(settings.SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL),
-                        "min_cluster_size": 15,
-                        "metric": "euclidean",
+                        "min_cluster_size": settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE,
+                        "metric": settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC,
                         "params": {},
                     },
                     "windowing_spec": {
@@ -241,6 +260,15 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
                     "metadata": {},
                 },
             )
+        # No model_spec-drift warning analogous to the dataset's where_sql
+        # one above: topic-foundry's GET /models list route returns
+        # ModelSummary (app/models.py), which does not include model_spec at
+        # all -- only DatasetSpec (returned by GET /datasets) carries the
+        # field this file would need to compare against. Detecting drift here
+        # would need a GET /models/{model_id} call topic-foundry does not
+        # expose; same risk as the dataset case still applies by hand --
+        # changing SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_* without also bumping
+        # _TOPIC_FOUNDRY_MODEL_NAME silently keeps training on the OLD spec.
         model_id = str(model["model_id"])
         return dataset_id, model_id
     except Exception as exc:

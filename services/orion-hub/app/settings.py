@@ -744,6 +744,41 @@ class Settings(BaseSettings):
         default="http://orion-athena-vector-host:8320/embedding",
         alias="SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL",
     )
+    # HDBSCAN model_spec fields for the scheduler's own model (get-or-create,
+    # see concept_atlas_routes.py::_ensure_topic_foundry_dataset_and_model).
+    # min_cluster_size=15 (this module's hardcoded literal until 2026-08-19)
+    # is flagged by topic-foundry's own 2026-07-21 incident note
+    # (app/models.py::ModelSpec) as producing 1-2 degenerate clusters on a
+    # 676-document corpus, and produced 0 clusters on the real, much smaller
+    # ~60-160 document AI-Town-filtered corpus (live-verified 2026-08-18/19).
+    # min_cluster_size=8 is that incident's own confirmed-live fix.
+    #
+    # metric: NOT "cosine" despite ModelSpec's own field default and this
+    # deployment's TOPIC_FOUNDRY_HDBSCAN_METRIC=euclidean env value already
+    # disagreeing with each other -- confirmed live 2026-08-19 that the
+    # installed `hdbscan` library's real clusterer (used by the actual
+    # /runs/train path, app/services/training.py::_build_clusterer) does not
+    # support "cosine" at all: `HDBSCAN(metric="cosine").fit(...)` raises
+    # `ValueError("Unrecognized metric 'cosine'")` outright, so a training
+    # run with this file's initial fix (min_cluster_size=8, metric="cosine",
+    # model "orion-hub-autonomous-v3") failed immediately with that exact
+    # error instead of clustering anything. "cosine" is also topic-foundry's
+    # own UMAP-stage metric (topic_foundry_umap_metric), a different,
+    # unrelated setting -- easy to conflate but not interchangeable.
+    # "euclidean" is what topic-foundry's TOPIC_FOUNDRY_HDBSCAN_METRIC has
+    # actually defaulted to the whole time and is what a live retrain
+    # (model "orion-hub-autonomous-v4") confirmed actually clusters.
+    #
+    # Exposed as env (not just fixed inline) because topic-foundry's
+    # model-create API is create-only -- retuning for corpus-size growth
+    # means bumping _TOPIC_FOUNDRY_MODEL_NAME to force a fresh model either
+    # way, and an env knob means that doesn't also require a code change.
+    SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE: int = Field(
+        default=8, alias="SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE"
+    )
+    SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC: str = Field(
+        default="euclidean", alias="SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC"
+    )
     # Own gate, separate from SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED above --
     # ships disabled by default, matching this repo's established convention
     # for a new dispatch path with a real side effect (LLM enrichment calls

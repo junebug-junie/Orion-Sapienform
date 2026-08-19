@@ -208,6 +208,31 @@ def test_timestamps_mirror_query_failure_preserves_primary_results(monkeypatch) 
     assert "turn-1" in out
 
 
+def test_connection_close_failure_still_returns_already_fetched_results(monkeypatch) -> None:
+    """Regression (code review, 2026-08-19): the finally: await conn.close()
+    block had no enclosing except, so a close() failure (asyncpg's own
+    Connection.close() can raise on a failed graceful close) propagated
+    uncaught AFTER both queries already succeeded, discarding the results
+    this whole fix exists to preserve. close() failures must be swallowed
+    (best-effort), not left to blow away already-built results."""
+
+    class _FakeConn:
+        async def fetch(self, query, ids):
+            return [{"id": "turn-1", "prompt": "hi", "response": "ok", "client_meta": None}]
+
+        async def close(self):
+            raise RuntimeError("connection reset by peer")
+
+    class _FakeAsyncpg:
+        @staticmethod
+        async def connect(dsn):
+            return _FakeConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
+    out = _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
+    assert out == {"turn-1": ("hi", "ok", None)}
+
+
 def test_timestamps_queries_both_tables_separately(monkeypatch) -> None:
     captured: list = []
 

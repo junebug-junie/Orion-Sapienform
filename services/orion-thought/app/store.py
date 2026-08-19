@@ -186,7 +186,8 @@ def load_pending_expectations(limit: int = 1) -> list[dict[str, Any]]:
     -- nothing is re-filtered in Python after the row set comes back.
 
     Returns [{"thought_id": str, "expectation": str, "expectation_checkable_by":
-    datetime}], newest-overdue-first by `expectation_checkable_by ASC`.
+    datetime}], ordered `expectation_checkable_by ASC` -- the row whose window
+    closed longest ago (most overdue) sorts first.
     """
     limit = max(0, int(limit))
     if limit == 0:

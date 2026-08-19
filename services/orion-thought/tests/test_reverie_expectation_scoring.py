@@ -427,6 +427,29 @@ async def test_scoring_noop_when_no_pending(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scoring_malformed_pending_row_is_logged_not_silent(monkeypatch, caplog):
+    """Defensive gap the review found: a row with a blank thought_id/expectation
+    isn't reachable via the live write path today, but must not disappear
+    silently -- with limit=1 it would otherwise keep resurfacing (still
+    most-overdue) and starve every other real pending expectation forever with
+    no trace of why."""
+    from app import reverie
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_expectation_scoring_enabled", True)
+    monkeypatch.setattr(
+        reverie, "load_pending_expectations", lambda limit: [{"thought_id": "", "expectation": ""}]
+    )
+    persisted = []
+    monkeypatch.setattr(reverie, "persist_expectation_verdict", lambda *a: persisted.append(a))
+    bus = AsyncMock()
+    with caplog.at_level("WARNING", logger="orion-thought.reverie"):
+        await reverie._maybe_score_pending_expectation(bus)
+    assert persisted == []  # nothing valid to persist against
+    assert any("missing thought_id/expectation" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_scoring_pending_no_fresh_percept_persists_unscored_no_llm_call(monkeypatch):
     from app import reverie, vision_reader
     from app.settings import settings
@@ -531,27 +554,34 @@ async def test_scoring_pending_load_failure_never_raises(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_reverie_once_calls_scoring_pass_before_narration(monkeypatch):
     """The scoring pass runs on every enabled tick, wired into the real
-    run_reverie_once entrypoint (not just the helper in isolation)."""
+    run_reverie_once entrypoint (not just the helper in isolation) -- and
+    genuinely runs *before* the narration LLM call, not merely "at some point"
+    during the tick. A shared order list, appended to by both the scoring stub
+    and the narration mock's own side_effect, is what actually proves the
+    ordering claim in this test's name."""
     from app import reverie
     from app.settings import settings
 
     monkeypatch.setattr(settings, "reverie_expectation_scoring_enabled", True)
-    called = []
+    order: list[str] = []
 
     async def _fake_score(bus, *, cortex_client=None):
-        called.append(True)
+        order.append("scoring")
 
     monkeypatch.setattr(reverie, "_maybe_score_pending_expectation", _fake_score)
     bus = AsyncMock()
     cortex = AsyncMock()
-    cortex.execute_plan = AsyncMock(
-        return_value={"final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]})}
-    )
+
+    async def _narrate_side_effect(**_kwargs):
+        order.append("narration")
+        return {"final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]})}
+
+    cortex.execute_plan = AsyncMock(side_effect=_narrate_side_effect)
     result = await reverie.run_reverie_once(
         bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex
     )
     assert result is not None
-    assert called == [True]
+    assert order == ["scoring", "narration"]
 
 
 @pytest.mark.asyncio

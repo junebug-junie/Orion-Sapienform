@@ -446,10 +446,23 @@ async def _maybe_score_pending_expectation(
     thought_id = str(row.get("thought_id") or "").strip()
     expectation_text = str(row.get("expectation") or "").strip()
     if not thought_id or not expectation_text:
+        # Not reachable via the live write path today (`load_pending_expectations`'s
+        # own WHERE clause requires `expectation IS NOT NULL`, and thought_id is
+        # always a uuid4 -- see persist_reverie_thought), but logged rather than
+        # silently dropped: with limit=1, a malformed row would otherwise keep
+        # resurfacing every tick (still most-overdue) and starve every other real
+        # pending expectation behind it with no visible trace of why.
+        logger.warning("expectation scoring: pending row missing thought_id/expectation row=%s", row)
         return
 
     now = datetime.now(timezone.utc)
 
+    # Deliberately sequential, not asyncio.gather'd like run_reverie_once's own
+    # loop_outcomes/percepts fetch -- those two are unconditionally needed every
+    # tick regardless of each other's result. Here, the percept fetch is only
+    # worth paying for once we already know a pending row exists (the common
+    # "nothing pending" tick above returns before ever touching vision_reader),
+    # so the two calls have a real control dependency, not just a data one.
     try:
         from .vision_reader import read_recent_vision_events
 

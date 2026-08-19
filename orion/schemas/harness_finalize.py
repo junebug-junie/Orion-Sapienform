@@ -239,3 +239,9 @@ class HarnessRunV1(BaseModel):
     grammar_event_ids: list[str] = Field(default_factory=list)
     recall_debug: dict[str, Any] | None = None
     memory_digest: str | None = None
+    # Real backend model discovered from the CLI's own stream-json "assistant"
+    # events (see orion/harness/fcc_motor.py's _served_model_from_assistant),
+    # distinct from HarnessRunRequestV1.fcc_model_label -- that's just the
+    # ~/.fcc/.env route alias requested (e.g. "MODEL_SONNET"), which cannot
+    # distinguish backends sharing one route. None when discovery never fired.
+    fcc_served_model: str | None = None

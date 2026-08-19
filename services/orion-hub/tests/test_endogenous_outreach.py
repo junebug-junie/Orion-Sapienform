@@ -555,6 +555,63 @@ def test_generation_calls_the_real_unified_turn_pipeline(monkeypatch) -> None:
     assert seen["payload"]["no_write"] is True
 
 
+def test_generation_threads_fcc_model_label_into_publish_history(monkeypatch) -> None:
+    """Regression for the live-confirmed gap (2026-08-19): the final frame's
+    fcc_model_label (now exposed by turn_orchestrator._success_frames, see
+    that module's own change) must reach _publish_history's model= kwarg so
+    chat_history_log.response_identity is the real served identity instead
+    of always falling back to speaker='Orion'."""
+    outreach = _outreach()
+    outreach._bus = object()
+
+    async def fake_execute(**kwargs):
+        return [
+            _final_frame(
+                "a real unprompted thought",
+                correlation_id=kwargs["correlation_id"],
+                fcc_model_label="MODEL_SONNET",
+            )
+        ]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    captured: dict = {}
+
+    async def fake_publish_history(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_publish_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert captured["model"] == "MODEL_SONNET"
+
+
+def test_generation_omits_model_when_frame_has_no_fcc_model_label(monkeypatch) -> None:
+    outreach = _outreach()
+    outreach._bus = object()
+
+    async def fake_execute(**kwargs):
+        return [_final_frame("a real unprompted thought", correlation_id=kwargs["correlation_id"])]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    captured: dict = {}
+
+    async def fake_publish_history(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_publish_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert captured["model"] is None
+
+
 class _FakeBus:
     def __init__(self) -> None:
         self.published: list = []

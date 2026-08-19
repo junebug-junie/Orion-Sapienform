@@ -5,13 +5,21 @@ since 2026-08-14). ``_should_roll()`` now asks
 ``scripts.tension_outreach_trigger.current_run()``: has the SAME target
 (node_id) been winning `orion.attention.tension`'s live Borda competition for
 a sustained, unbroken run of real ticks, right now -- not a single blip. See
-that module's own docstring for the full account, including why this is
-honestly scoped ("I noticed X change", never "I am worried about X" -- the
-underlying gate is a change-detector, not a level-detector) and why the bar
+that module's own docstring for the full account, including why the bar
 (``MIN_RUN_LENGTH``) is derived from a real replay of live history rather than
 guessed. The message itself is generated from live substrate signals and real
 chat history, and lands on the same three rails a normal turn uses -- none of
 that changed.
+
+LEVEL-AWARE, NOT JUST CHANGE-AWARE (2026-08-19). The trigger's own reason
+object now also carries ``sustained_load_pressure`` -- a real, currently-
+loaded reading (`orion.field.significance`, `loaded_steady` regime, no
+adaptive baseline), not a second change-detector. `build_outreach_prompt`
+below states it as a separate real fact alongside the deviation-run fact
+when it is nonzero; it does not put words like "worried" in Orion's mouth --
+that judgment is left to generation, grounded in the real numbers. See
+`scripts.tension_outreach_trigger`'s module docstring for the full account
+of what this can and cannot honestly claim.
 
 Delivery (all three already existed before this module; none are new rails):
 
@@ -266,9 +274,10 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
     ]
 
     if ctx.tension_reason:
-        # Deliberately "noticed a change", never "I am worried"/"concerned" --
-        # orion.attention.tension is a change-detector, not a level-detector,
-        # and cannot honestly support a distress claim. See
+        # Deliberately "noticed a change", never a scripted "I am
+        # worried"/"concerned" -- orion.attention.tension is a
+        # change-detector, not a level-detector, and this fact alone cannot
+        # honestly support a distress claim. See
         # scripts.tension_outreach_trigger's module docstring.
         lines.append(
             f"Something in your own internal state just triggered this: "
@@ -277,6 +286,21 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
             f"{ctx.tension_reason.run_length} consecutive readings, right now "
             f"-- not a single blip."
         )
+        # A second, genuinely different fact -- level, not change (see
+        # scripts.tension_outreach_trigger's "COMBINED WITH THE LEVEL-AWARE
+        # SIGNAL" docstring section). Stated as a plain reading, not narrated
+        # as a feeling: this module does not decide FOR Orion whether the two
+        # true facts together warrant a "worried" tone -- generation does.
+        # Honestly scoped GLOBAL, not necessarily the same node named above,
+        # and worded that way here on purpose.
+        if ctx.tension_reason.sustained_load_pressure > 0.0:
+            lines.append(
+                f"Separately: somewhere in your field state right now, a "
+                f"channel has been genuinely, steadily loaded -- not "
+                f"spiking, just staying high (sustained_load_pressure="
+                f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
+                f"or may not be the same thing as the change above."
+            )
         lines.append("")
 
     if ctx.curiosity_summaries:
@@ -568,6 +592,7 @@ class EndogenousOutreach:
                     "target_id": self._last_tension_reason.target_id,
                     "run_length": self._last_tension_reason.run_length,
                     "peak_deviation_pressure": self._last_tension_reason.peak_deviation_pressure,
+                    "sustained_load_pressure": self._last_tension_reason.sustained_load_pressure,
                 }
             ),
             "min_cooldown_sec": self.min_cooldown_sec,

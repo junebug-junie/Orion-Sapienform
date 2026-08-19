@@ -201,3 +201,51 @@ guessed. It does **not** establish that `MIN_RUN_LENGTH=8` is well-calibrated fo
 outreach cadence, or that a change-noticed message is what Juniper actually wants to
 receive unprompted — both are real open questions to watch against live firing data, not
 resolved by this patch.
+
+## Combined with the level-aware signal (2026-08-19)
+
+The "distress-shaped trigger needs a genuinely different, level-aware signal... combined
+honestly with this one" line above is done, not still future work. `orion.field.
+significance.sustained_load_pressure` (PR #1718) shipped as a sensing-only patch first,
+then this same-day follow-up wired it into `TensionTriggerReason` and
+`build_outreach_prompt()`: the LATEST tick's `sustained_load_pressure`, read straight off
+the same `substrate_field_state` row this trigger already queries (no recomputation in
+Hub), rides alongside the run's own `peak_deviation_pressure`. When nonzero,
+`build_outreach_prompt()` states it as a second, separate real fact — it still does not put
+"worried"/"concerned" in Orion's mouth (same banned-word test, now also exercised with a
+nonzero `sustained_load_pressure` present, still passes); that judgment is left to
+generation. Honestly scoped **global**, not per-target — `sustained_load_pressure` is a
+`max()` over every `loaded_steady` channel/node in the significance window and carries no
+node identity yet, so a nonzero reading means "something, somewhere is genuinely loaded
+right now," not necessarily the same node `target_id` names. `GET .../status` reports both
+numbers on `last_tension_reason` for operator inspection.
+
+**Metric-quality-gate for THIS wiring** (CLAUDE.md §0A requires re-running the gate every
+time a metric is wired into a NEW pipeline/cognition loop, not just once at its original
+introduction):
+
+1. **Provenance**: unchanged from PR #1718 — `orion.field.significance.
+   sustained_load_pressure()`, `orion/field/regime.py::channel_regime()`'s `loaded_steady`
+   classification, `LOADED_LEVEL=0.70` floor. This patch adds no new computation, only a
+   new *reader* of the already-computed, already-persisted column.
+2. **Independence**: not a new independence claim. This is not a second dimension entering
+   `PRESSURE_DIMENSIONS`/proposal scoring (that gate already ran and is recorded in
+   `orion/proposals/scoring.py`'s own comment) — it is a read-only display consumer of an
+   already-qualified metric in an unrelated pipeline (an outreach prompt, not scoring or
+   mutation). No new independence chain to check.
+3. **Theory anchor**: unchanged — "level, not change" (see "What this deliberately does
+   NOT claim" above).
+4. **Live-data sanity, specific to this wiring**: confirmed live 2026-08-19 (post-deploy of
+   PR #1718): `sustained_load_pressure` observed at a real nonzero value (0.7776) in
+   `substrate_field_state`, and the ≥0.70-or-exactly-0.0 step behavior `regime.py`'s
+   `LOADED_LEVEL` floor guarantees was re-verified directly against this patch's own code
+   during review (a "does this ever render as a misleadingly tiny nonzero value" candidate
+   finding was checked and refuted on exactly this basis).
+5. **Existing-mechanism check**: this consumption pattern (read latest field_json column,
+   no recomputation) mirrors exactly how `tension_deviation_pressure`/
+   `tension_borda_winner_target_id` are already read by this same trigger — no new
+   mechanism invented.
+6. **Reversibility**: trivial. This wiring is a single `if ctx.tension_reason.
+   sustained_load_pressure > 0.0:` branch in `build_outreach_prompt()` plus one extra
+   dataclass field with a safe default — removing it deletes a few lines and touches no
+   schema, manifest, or persisted training default. Nothing here is baked in.

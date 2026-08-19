@@ -22,16 +22,26 @@ import pytest
 from scripts import tension_outreach_trigger
 
 
-def _fake_engine_with_rows(rows: list[tuple[str | None, float | None]]):
-    """rows: (winner, deviation) oldest-first, matching the real query's
-    `ORDER BY generated_at ASC`."""
+def _fake_engine_with_rows(rows: list[tuple]):
+    """rows: (winner, deviation[, sustained_load]) oldest-first, matching the
+    real query's `ORDER BY generated_at ASC`. `sustained_load` defaults to
+    0.0 when omitted -- most tests here are about the deviation-run logic
+    and don't care about the level-aware field."""
     fake_engine = MagicMock()
     conn = MagicMock()
     fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
     fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-    conn.execute.return_value.fetchall.return_value = [
-        (w, None if d is None else str(d)) for w, d in rows
-    ]
+
+    def _row(r):
+        winner, deviation = r[0], r[1]
+        load = r[2] if len(r) > 2 else 0.0
+        return (
+            winner,
+            None if deviation is None else str(deviation),
+            None if load is None else str(load),
+        )
+
+    conn.execute.return_value.fetchall.return_value = [_row(r) for r in rows]
     return fake_engine
 
 
@@ -74,6 +84,7 @@ def test_run_meeting_the_bar_fires_with_real_target_and_length():
         target_id="node:athena",
         run_length=n,
         peak_deviation_pressure=max(d for _, d in rows),
+        sustained_load_pressure=0.0,
     )
 
 
@@ -146,6 +157,7 @@ def test_raw_sql_json_keys_match_the_real_schema_fields():
     field_names = set(FieldStateV1.model_fields)
     assert "tension_borda_winner_target_id" in field_names
     assert "tension_deviation_pressure" in field_names
+    assert "sustained_load_pressure" in field_names
 
 
 def test_lookback_query_uses_seconds_not_minutes_for_make_interval():
@@ -175,3 +187,60 @@ def test_lookback_query_uses_seconds_not_minutes_for_make_interval():
     assert "make_interval(mins =>" not in query_text
     assert "make_interval(hours =>" not in query_text
     assert bound_params == {"secs": pytest.approx(600.0)}
+
+
+def test_query_also_selects_sustained_load_pressure():
+    """Regression guard for the level-aware combination (2026-08-19): the
+    query must read the new column, not just the two tension ones."""
+    engine = _fake_engine_with_rows([])
+    conn = engine.connect.return_value.__enter__.return_value
+    with patch.object(tension_outreach_trigger, "_engine", return_value=engine):
+        tension_outreach_trigger.current_run()
+
+    query, _bound_params = conn.execute.call_args.args
+    assert "sustained_load_pressure" in str(query)
+
+
+def test_reason_carries_the_latest_ticks_sustained_load_pressure():
+    """`sustained_load_pressure` on the reason is the LATEST row's value, not
+    a run-tracked max like `peak_deviation_pressure` -- it's a throttled
+    gauge, not a per-tick series (see the module docstring)."""
+    n = tension_outreach_trigger.MIN_RUN_LENGTH
+    rows = [("node:athena", 0.3, 0.10)] * (n - 1) + [("node:athena", 0.3, 0.55)]
+    with patch.object(tension_outreach_trigger, "_engine", return_value=_fake_engine_with_rows(rows)):
+        result = tension_outreach_trigger.current_run()
+    assert result is not None
+    assert result.sustained_load_pressure == 0.55
+
+
+def test_malformed_sustained_load_value_degrades_to_zero_not_a_crash():
+    n = tension_outreach_trigger.MIN_RUN_LENGTH
+    rows = [("node:athena", 0.3, "not-a-number")] * n  # type: ignore[list-item]
+    with patch.object(tension_outreach_trigger, "_engine", return_value=_fake_engine_with_rows(rows)):
+        result = tension_outreach_trigger.current_run()
+    assert result is not None
+    assert result.sustained_load_pressure == 0.0
+
+
+def test_fetch_recent_winners_keeps_missing_sustained_load_distinct_from_zero():
+    """Regression guard, 2026-08-19: a SQL NULL (pre-#1718 row, no
+    `sustained_load_pressure` key) must not be silently indistinguishable
+    from a genuine 0.0 reading at the layer that can still tell them apart
+    -- CLAUDE.md's metric-quality-gate names this exact failure shape
+    (missing-looks-like-calm) by incident."""
+    engine = _fake_engine_with_rows([("node:athena", 0.3, None)])
+    with patch.object(tension_outreach_trigger, "_engine", return_value=engine):
+        rows = tension_outreach_trigger._fetch_recent_winners(10.0)
+    assert rows == [("node:athena", 0.3, None)]
+
+
+def test_missing_sustained_load_column_collapses_to_zero_in_the_reason():
+    """The None/0.0 distinction is deliberately NOT carried onto
+    `TensionTriggerReason` -- both mean "nothing to add to the prompt" to
+    every real caller (see that field's own comment)."""
+    n = tension_outreach_trigger.MIN_RUN_LENGTH
+    rows = [("node:athena", 0.3, None)] * n  # type: ignore[list-item]
+    with patch.object(tension_outreach_trigger, "_engine", return_value=_fake_engine_with_rows(rows)):
+        result = tension_outreach_trigger.current_run()
+    assert result is not None
+    assert result.sustained_load_pressure == 0.0

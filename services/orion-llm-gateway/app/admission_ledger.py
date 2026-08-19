@@ -136,7 +136,7 @@ class AdmissionLedger:
             # Sum over deferrals only. Summing every record's `waited_s` would total up the
             # /slots round-trip cost and call it waiting -- the same phantom the deferral
             # definition exists to prevent, just aggregated.
-            "deferred_s_total": round(sum(r.waited_s for r in deferrals), 3),
+            "deferred_s_total": round(float(sum(r.waited_s for r in deferrals)), 3),
             "longest_wait_s": round(longest, 3),
             "last_deferral_ts": last_ts,
             "routes": sorted({r.route_key for r in recent if r.route_key}),

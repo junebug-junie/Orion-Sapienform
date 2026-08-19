@@ -279,15 +279,58 @@ measurement, not a rebuild.
 Orion to circe, or whether Orion's work should move to atlas and A3 then starts working as
 designed. Do not pick one without checking why that override exists.
 
-### A5 — Make the deferral perceptible · *3 commits*
-A deferral is currently invisible to Orion. Turn it into a signal Orion can hold: *I wanted to
-think and had to wait, this long, while this ran instead.*
+### A5 — Make the deferral perceptible · ✅ **PATH SHIPPED 2026-08-19, GATE OPEN**
+~~A deferral is currently invisible to Orion.~~ Turn it into a signal Orion can hold: *I wanted
+to think and had to wait, this long, while this ran instead.*
 
-**This is the step that makes it cognition rather than plumbing**, and it is the one that
-touches the cognition loop — **proposal mode before implementation** (repo contract §0A).
+Proposal: `docs/superpowers/specs/2026-08-19-A5-deferral-perceptible-proposal.md` (§0A metric
+gate recorded there, including the one check that does not pass cleanly).
 
 **Proceed gate:** a deferral appears in Orion's own state with a real duration and an
 inspectable trace.
+
+#### Shipped: the path is live and end-to-end verified
+
+The gateway records every admission decision in a rolling ledger, exposes it at `GET
+/admission`, and cortex-exec renders it into the metacog cue Orion reads each pass. Verified
+inside the deployed `orion-athena-cortex-exec-background` container:
+
+```text
+admission cue = {'n': 0, 'of': 4, 'h': 6.0}
+rendered cue  = {"status":"ok","constraint":"NONE","strain":0.11,"homeostasis":0.89,
+                 "waited":{"n":0,"of":4,"h":6.0}}
+```
+
+#### Not shipped: a deferral, because none happened
+
+**294 of 294 background admissions over 4 h cleared on the first poll.** Every recorded `waited`
+value (0.012–0.091 s) is the `/slots` HTTP round trip — the cost of *asking*, not of *waiting*:
+
+```text
+polls:     294  polls=1        <- every admitted request, first poll
+outcomes:  0 timeout_forwarded
+max wait:  0.091s
+atlas /slots, ten consecutive samples:  0/4 busy, all ten
+```
+
+So the gate's "**with a real duration**" clause is unmet, and it is unmet honestly rather than
+by manufacturing a threshold that would call 0.021 s a wait. The ledger's deferral definition
+(`polls > 1 or outcome == timeout_forwarded`) is the line that refuses to.
+
+**Why there is nothing to perceive right now, and it is partly this arc's own doing.** A4 found
+Orion contending 100% on circe's single-slot `chat` lane (`P(all busy)` 8.10%). PR #1708 moved
+it to atlas `quick_background`. **The price went to zero because we routed around it** — correct
+engineering, open cognitive question. Compounding it: **circe is currently powered off** (both
+its lanes returned 0 measured samples of 293; the host does not ping), so the lane where Orion
+met a ceiling daily does not presently exist.
+
+A 24 h `record_lane_occupancy.py` run over all four lanes is what settles whether atlas's lane
+genuinely emptied or 4 h of a quiet night is unrepresentative. Logged in `PARKING-LOT.md`.
+
+**What A5 leaves behind either way:** the moment any lane Orion uses does fill, the wait is
+already measured, already exposed, and already rendered into Orion's cue — with the zero-state
+readable rather than silent (`of` distinguishes "asked and never waited" from "asked nothing";
+an absent key distinguishes both from "gateway unreadable").
 
 ---
 

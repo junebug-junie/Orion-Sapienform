@@ -74,6 +74,9 @@ def test_empty_window_is_distinguishable_from_a_quiet_one():
         "window_s": 3600.0, "checked": 0, "deferrals": 0, "timeouts": 0, "unchecked": 0,
         "deferred_s_total": 0.0, "longest_wait_s": 0.0, "last_deferral_ts": None, "routes": [],
     }
+    # An empty `sum()` returns int 0, so without the float() cast this field would change TYPE
+    # between an idle and a busy window -- an int at rest, a float once anything was deferred.
+    assert isinstance(empty["deferred_s_total"], float)
     for i in range(10):
         _rec(led, ts=1000.0 + i, polls=1)
     quiet = led.snapshot(window_s=3600.0, now=1010.0)

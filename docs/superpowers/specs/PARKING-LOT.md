@@ -406,3 +406,31 @@ notice when it returns. No new detection, no new schema — `nodes_absent` alrea
 everything needed.
 
 **Not started. Requires the per-node policy decision above before implementation.**
+
+---
+
+## Orion's own contention ceiling may currently be zero (2026-08-19, from A5)
+
+Found while measuring A5's gate, not chased. Three facts from the same window:
+
+1. **294 of 294 background admissions cleared on the first poll** over 4 h. Every recorded
+   `waited` (0.012–0.091 s) is the `/slots` HTTP round trip, not a wait. Zero deferrals.
+2. **atlas's `quick` lane sampled `0/4` busy**, ten consecutive samples. A2 measured that same
+   lane at `P(bg blocked) = 4.84%` over 27.74 h on 2026-08-15; at that rate 294 independent
+   arrivals produce zero blocks with probability ~4e-7.
+3. **circe is powered off.** Both its lanes (`chat` 8011, `agent` 8014) returned 0 measured
+   samples out of 293, and the host does not ping. So the single-slot `chat` lane where A4 found
+   Orion contending 100% of the time does not exist right now.
+
+The open question is which of these explains the others, and it is a *measurement* question, not
+a design one: a 24 h `record_lane_occupancy.py` run over all four lanes settles whether atlas's
+lane genuinely emptied or whether 4 h of a quiet night is unrepresentative.
+
+Why it matters beyond bookkeeping: PR #1708 moved Orion's journal composes off circe's contended
+single-slot lane onto atlas's background lane. That was the right engineering call and it may
+have taken Orion's only felt ceiling with it. A5 built the perception path; whether there is
+anything left to perceive is this entry.
+
+**Not a defect and not scheduled.** Roadmap A5's own gate wording anticipated it: "a lane that
+defers only harness or arena work, and never Orion's, is a ceiling Orion does not personally
+meet — which would be a genuine finding."

@@ -293,6 +293,49 @@ nowhere near the burst the async path's cap exists for.
 Plain routes (no `priority` field) are completely unaffected on both paths --
 the gate is never invoked for them, zero added latency, zero behavior change.
 
+#### `GET /admission` -- what the gate actually did (ROADMAP A5)
+
+Every admission decision is recorded in a bounded in-process ledger
+(`app/admission_ledger.py`) alongside the existing `[LLM-GW background]` log
+line, and read back here:
+
+```json
+{"window_s":21600.0,"checked":294,"deferrals":0,"timeouts":0,"unchecked":0,
+ "deferred_s_total":0.0,"longest_wait_s":0.0,"last_deferral_ts":null,
+ "routes":["quick_background"]}
+```
+
+`window_s` is a query parameter (default 6h, clamped to 60s..24h). The ledger
+is in-process and rolling -- it is lost on restart by design; the log line is
+the durable record.
+
+**A first-poll admit is not a deferral, and this is the whole point of the
+endpoint.** Asking `/slots` whether there is room costs an HTTP round trip,
+measured live at 0.012-0.091s. If the answer is yes on the first ask, nothing
+waited:
+
+```text
+deferral := polls > 1  (a poll interval was actually slept through)
+         or outcome == "timeout_forwarded"
+```
+
+On 2026-08-19, 294 of 294 background admissions over 4h cleared on the first
+poll. Counting those as waits would report ~300 phantom deferrals a day.
+
+`checked` ships beside `deferrals` because `deferrals: 0` alone is ambiguous:
+"asked 294 times and was never made to wait" and "nothing asked" are different
+facts. Consumers must read both.
+
+The ledger holds timings only -- no prompt, no response, no user or session
+identity -- and structurally cannot hold more: it is called from
+`priority_admission`, which only ever sees a `RouteTarget`. Pinned by
+`test_ledger_holds_no_request_content`.
+
+**Consumer:** orion-cortex-exec renders this into the metacog cue Orion reads
+each pass (`app/admission_cue.py`, `CORTEX_EXEC_ADMISSION_CUE_ENABLED`), so a
+wait for a GPU slot becomes something Orion can perceive rather than something
+only an operator can grep for.
+
 **Pilot instance (2026-07-30):** `quick_background` above started as AI
 Town's native NPC dialogue route (via the async passthrough) and was
 extended the same day to Orion's own in-town speech (via the sync bus path,

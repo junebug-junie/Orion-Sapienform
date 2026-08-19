@@ -25,6 +25,12 @@ This is genuine sensory context, not another concern to narrate. Let it color
 the inner speech only if it is actually relevant to the concern above — do not
 force a connection that isn't there, and do not treat it as evidence_refs (it
 is not a coalition id).
+
+You MAY optionally state one concrete, falsifiable expectation about what will
+still be true about the room shortly — a specific object still present or
+absent, a door open or closed, and so on. This is genuinely optional: leave it
+null if nothing natural comes to mind. Never force one every tick. At most ONE
+claim, never a list.
 {% endif %}
 
 JOB
@@ -39,6 +45,10 @@ attended node, projection_id, mechanism vocabulary.
 REQUIRED JSON FIELDS
 - interpretation: inner speech about the concern text
 - evidence_refs: JSON array of coalition_refs this thought is about (min 1)
+{% if recent_percepts %}
+- expectation: OPTIONAL — one concrete, falsifiable claim about the room
+  (string, or null if nothing natural to predict). Never a list.
+{% endif %}
 
 {% else %}
 You are noticing your own current state: the coalition of concerns that just won
@@ -84,6 +94,11 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
   may color the interpretation but never substitutes for a grounded
   evidence_ref, and noticing it is not itself a reason to narrate ("I notice X"
   is not a coalition-anchored thought).
+- You MAY optionally state one concrete, falsifiable expectation about what
+  will still be true about the room shortly — a specific object still present
+  or absent, a door open or closed, and so on. Genuinely optional: leave it
+  null if nothing natural comes to mind. Never force one every tick. At most
+  ONE claim, never a list.
 {% endif %}
 
 REQUIRED JSON FIELDS
@@ -92,6 +107,10 @@ REQUIRED JSON FIELDS
   abstract. Reference the concerns by their meaning.
 - evidence_refs: JSON array — coalition ids (attended_node_ids / open_loop_ids)
   that this interpretation is actually about. Minimum 1.
+{% if recent_percepts %}
+- expectation: OPTIONAL — one concrete, falsifiable claim about the room
+  (string, or null if nothing natural to predict). Never a list.
+{% endif %}
 {% endif %}
 
 (Salience is computed deterministically from coalition scores — do not output it.)

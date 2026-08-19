@@ -437,6 +437,40 @@ meet — which would be a genuine finding."
 
 ---
 
+## ~~A fourth consumer full-scans `substrate_proposal_frames`~~ RESOLVED 2026-08-19 (from D2)
+
+**Resolved same day, in `chore/pg-stat-statements`.** It was never a fourth *consumer*: it was
+the proposal stage's own per-tick dedup guard,
+`ProposalRuntimeStore.load_proposal_frame_for_field_tick`, filtering
+`WHERE source_field_tick_id = '<a different literal every tick>'` on a column with **no index**,
+while three sibling frame tables have indexed that same column all along. Adding
+`(source_field_tick_id, generated_at desc)` took it from a parallel seq scan of 18,515 blocks
+(144 MB) at 52 ms to an index scan of **4 blocks at 0.104 ms**.
+
+Two corrections to what the entry below asserted, both worth keeping:
+
+1. **"Too fast to catch" was wrong** -- the sampling was broken, not the target. `pg_stat_activity`
+   is a per-transaction cached snapshot: a `DO` loop that samples it 600 times without calling
+   `pg_stat_clear_snapshot()` re-reads the *same frozen instant* 600 times. That is why 14 rounds
+   (and my own first 600-sample run) returned zero rows. With the snapshot cleared each pass, the
+   query was caught within one 30-second window.
+2. **The query text was never the obstacle either.** Each execution embeds a distinct
+   `tick_<hash>` literal, so no two are textually identical -- which is exactly the shape that
+   sampling *and* naive text grouping both handle badly, and exactly the shape
+   `pg_stat_statements` normalises away.
+
+`pg_stat_statements` is still worth having and the compose change is in the same branch, but it
+is no longer blocking: it needs a Postgres restart, and this was answered without one.
+
+A second, larger offender surfaced in the same sweep and was fixed alongside it:
+`load_attention_frame_for_field_tick` filtered `frame_json ->> 'source_field_tick_id'` while the
+table carried an index on the real column -- so the planner walked `idx_..._generated_at` end to
+end de-TOASTing every blob: **553,906 buffers (~4.3 GB) and 4,777 ms** for a single-row lookup,
+now 7 buffers and 0.174 ms. It was invisible to every seq-scan measurement in this arc because it
+is an *index* scan, and `pg_stat_user_tables.seq_scan` does not count it.
+
+<details><summary>Original entry, kept for the reasoning trail</summary>
+
 ## A fourth consumer full-scans `substrate_proposal_frames` (2026-08-19, from D2)
 
 All three substrate pipeline stages now use pending markers (PR #1745), and their tables dropped
@@ -460,3 +494,5 @@ consumer from the pipeline, so it needs identifying before anything is designed.
 
 **Not scheduled.** Start by enabling `pg_stat_statements`, or by logging statements above a
 duration threshold for a few minutes.
+
+</details>

@@ -123,6 +123,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 
@@ -387,41 +388,16 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
     return "\n".join(lines)
 
 
-_ERROR_TEXT_PREFIXES = (
-    "[error",
-    "error:",
-    "traceback (most recent call last)",
-    "internal server error",
-)
-_ERROR_TEXT_MARKERS = (
-    "llamacpp failed",
-    "client error '4",
-    "client error '5",
-    "server error '5",
-    "connection refused",
-    "read timeout",
-)
-
-
-def looks_like_error_text(text: str) -> bool:
-    """True when generated 'prose' is really a plumbing error report.
-
-    Backstop only — the ok/error fields on the result contract are the primary
-    gate. This exists because an upstream can report failure purely in the text
-    (confirmed live: a llamacpp 400 arrived as a non-empty final_text). Kept
-    deliberately narrow: it matches error *framing*, not the mere presence of
-    the word "error", so Orion can still say "the codebase is throwing errors
-    I can't map yet" -- which it genuinely has.
-    """
-    stripped = str(text or "").strip().lower()
-    if not stripped:
-        return False
-    if stripped.startswith(_ERROR_TEXT_PREFIXES):
-        return True
-    # Markers only count near the start; a long reflective passage that happens
-    # to mention a timeout deep in the body is not an error report.
-    head = stripped[:200]
-    return any(marker in head for marker in _ERROR_TEXT_MARKERS)
+# looks_like_error_text is imported at module top now (2026-08-19) -- this
+# module found the real incident (2026-08-14: a llamacpp 400 arrived as a
+# non-empty final_text and was nearly delivered as if Orion had said it)
+# and built the fix, but orion/harness/finalize.py's own extract_voice_
+# finalize_text()/extract_finalize_reflection_payload() -- the SHARED
+# finalize chain every real unified turn runs through, not just outreach's
+# -- had the identical gap. The canonical definition and its own tests now
+# live in orion.cognition.cortex_payload_extract; still importable from
+# `scripts.endogenous_outreach` for existing call sites since it's a normal
+# top-level import, not a re-export shim.
 
 
 def is_pass_response(text: str) -> bool:

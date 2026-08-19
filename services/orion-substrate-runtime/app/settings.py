@@ -316,6 +316,48 @@ class Settings(BaseSettings):
         180.0, alias="SUBSTRATE_CODEBASE_DELTA_LOG_RETENTION_DAYS"
     )
 
+    # Perceptual prediction error (P2, docs/superpowers/specs/2026-08-12-
+    # perception-frontier-design.md): surprise = 1 - cos(frame_embedding,
+    # EWMA_embedding) per camera stream. Own explicit flag, not piggybacked on
+    # SUBSTRATE_VISION_CHANNEL_TICK_ENABLED or SUBSTRATE_WRITE_PREDICTION_
+    # ERROR_NODES -- same domain-independence convention every tick in this
+    # file follows (bus_synaptic vs vision_channel vs codebase all have their
+    # own flags despite structural similarity). Distinct from
+    # node:substrate.vision's P3 channels: perception_staleness measures
+    # ARRIVAL TIMING, perception_yield measures the detector's OBJECT COUNT;
+    # this measures the embedding model's own CONTENT ENCODING of the frame
+    # (see orion/substrate/prediction_error.py's P2 section for the full
+    # independence check).
+    #
+    # Ships shadow-only, default OFF -- unlike bus_synaptic/vision_channel/
+    # codebase above, this has NOT been given Juniper's explicit go-ahead to
+    # flip on yet (contrast their .env_example comments, each dated to a real
+    # authorization). Do not flip this true and do not wire any consumer to
+    # node:substrate.perception until the live-data sanity check documented in
+    # perception_prediction_error()'s own docstring has run against real
+    # accumulated history in substrate_perception_embedding_baseline.
+    enable_perception_prediction_error_tick: bool = Field(
+        False, alias="SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED"
+    )
+    # Clock-driven companion tick to the event-driven listener above -- writes
+    # node:substrate.perception (prediction_error + embedding_staleness) on a
+    # fixed interval regardless of whether a new embedding arrived this tick.
+    # Not optional: an event-only write would reproduce the node:substrate.
+    # route decay-to-zero incident CLAUDE.md section 0A names -- silence would
+    # mean this node is never rewritten again, and orion-field-digester's
+    # generic per-tick staleness decay would multiply whatever was last
+    # written toward 0.0 forever, indistinguishable from genuine calm. Same
+    # 30s default as bus_synaptic/vision_channel above.
+    perception_prediction_error_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_INTERVAL_SEC"
+    )
+    # Append-only substrate_perception_embedding_baseline retention, same
+    # 30-day convention as codebase_mass_baseline_retention_days above (each
+    # stream's own running EWMA state only needs its latest row functionally).
+    perception_baseline_retention_days: float = Field(
+        30.0, alias="SUBSTRATE_PERCEPTION_BASELINE_RETENTION_DAYS"
+    )
+
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only
     # on healthy->unhealthy transitions), not polled-and-spammed.
     health_check_interval_sec: float = Field(

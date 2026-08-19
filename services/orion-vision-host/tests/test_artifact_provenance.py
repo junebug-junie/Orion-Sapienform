@@ -82,6 +82,25 @@ def test_build_artifact_payload_preserves_request_and_meta_provenance() -> None:
     assert art.model_fingerprints == {"retina_detect_open_vocab": "gdino", "vlm_caption": "blip2"}
 
 
+def test_build_artifact_payload_passes_embedding_vector_through() -> None:
+    """2026-08-19 (P2 wire-contract patch): the inline vector field is new and
+    additive -- must round-trip when the runner supplies one, and must stay
+    None (not raise) when it doesn't (see
+    test_build_artifact_payload_preserves_request_and_meta_provenance above,
+    whose embedding dict has no "vector" key at all)."""
+    res = VisionResult(
+        corr_id="c2",
+        ok=True,
+        task_type="retina_fast",
+        artifacts={
+            "embedding": {"ref": "emb:y", "path": "/tmp/e2.npy", "dim": 4, "vector": [0.1, 0.2, 0.3, 0.4]},
+        },
+    )
+    art = build_artifact_payload(res)
+    assert art is not None
+    assert art.outputs.embedding.vector == [0.1, 0.2, 0.3, 0.4]
+
+
 def test_build_artifact_payload_none_when_empty() -> None:
     res = VisionResult(corr_id="c", ok=True, task_type="retina_fast", artifacts={})
     assert build_artifact_payload(res) is None

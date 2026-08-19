@@ -371,6 +371,13 @@ class VisionRunner:
                 "ref": ref,
                 "path": str(npy_path),
                 "dim": int(vec.shape[0]),
+                # 2026-08-19 (P2 wire-contract patch, orion/schemas/vision.py
+                # VisionEmbedding.vector): inlined so a bus consumer can score
+                # this vector without a filesystem seam into this service's
+                # own model-cache volume. `vec` is already L2-normalized above
+                # when normalize=true (the profile default) -- consumers doing
+                # cosine similarity get a real unit vector, not a raw one.
+                "vector": [float(x) for x in vec.tolist()],
             }
         }
 

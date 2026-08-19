@@ -25,6 +25,17 @@ class VisionEmbedding(BaseModel):
     ref: str
     path: str
     dim: int
+    # Additive (2026-08-19, P2, docs/superpowers/specs/2026-08-12-perception-
+    # frontier-design.md). Previously the embedding vector itself lived only
+    # in the on-disk .npy at `path`, inside orion-vision-host's own model
+    # cache volume -- not a documented cross-service seam another service may
+    # reach into (CLAUDE.md section 5). Inlining the vector on the wire is
+    # what lets a bus consumer (e.g. orion-substrate-runtime's perceptual
+    # prediction-error tick) score it without touching vision-host's
+    # filesystem. `ref`/`path`/`dim` are unchanged and still written for the
+    # existing on-disk/reference consumers -- this is a new field, not a
+    # replacement.
+    vector: Optional[List[float]] = None
 
 
 class VisionArtifactOutputs(BaseModel):

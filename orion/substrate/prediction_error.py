@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from orion.bus.ewma import compute_ewma_update
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
@@ -813,3 +813,233 @@ def perceptual_blindness_pressure(
     if len(object_counts) < min_samples:
         return 0.0
     return 1.0 if perceptual_yield(object_counts) <= 0.0 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# node:substrate.perception -- P2, perceptual prediction error
+#
+# 2026-08-19 (docs/superpowers/specs/2026-08-12-perception-frontier-design.md,
+# "P2 -- Perceptual prediction error"). Proposal-mode record (CLAUDE.md
+# section 0A -- memory/identity/cognition-loop changes need it): this patch
+# was authored in the same design-conversation-then-explicit-go-ahead pattern
+# as commit ac633a411 and the Movement III PR, not a separate proposal doc.
+#
+# **Theory anchor** (metric quality gate step 3): predictive-coding / free-
+# energy-style surprise -- deviation of a new observation from a running
+# expectation of "what this stream normally looks like". This is the same
+# family the design doc's own Thesis/Movement sections cite, not a
+# post-hoc label; `bus_synaptic_prediction_error` and every domain above use
+# the identical shape (an EWMA baseline, a real-time deviation from it), just
+# over a scalar rather than a vector.
+#
+# **Independence** (metric quality gate step 2, checked explicitly against
+# every existing perceptual signal, not assumed): distinct causal chain from
+# each of the other three signals a naive reader might conflate this with.
+#   - `node:substrate.vision`'s `perception_staleness`
+#     (``vision_channel_staleness_pressure``) measures ARRIVAL TIMING -- the
+#     age of the newest artifact against a wall clock. It cannot see a
+#     healthy-cadence, content-frozen or content-drifting stream at all.
+#   - `node:substrate.vision`'s `perception_yield`
+#     (``perceptual_yield``) measures the DETECTOR'S OBJECT COUNT -- a
+#     completely different model's discrete label output, unrelated to the
+#     embedding model's continuous feature space this function reads.
+#   - `bus_synaptic_prediction_error` measures MESH-WIDE PUBLISH-LATENCY
+#     anomalies across ~all bus edges -- transport timing, not any single
+#     stream's visual content.
+#   This function is the only one of the four whose input is the embedding
+#   MODEL'S OWN CONTENT ENCODING of a frame. A camera that is perfectly on
+#   schedule (staleness=0), still returning detections (yield>0), on a mesh
+#   with zero anomalous edges (bus_synaptic=0) can still have its visual
+#   content silently change (someone walks into frame, the lighting flips) --
+#   exactly the case none of the other three can see, and the reason this is
+#   additive signal, not a redundant re-derivation of one already in place.
+#
+# **Existing-mechanism check** (metric quality gate step 5): searched the
+# repo for a vector-valued EWMA utility before writing one.
+# ``orion/bus/ewma.py::compute_ewma_update`` and every ``_DomainEwmaBaseline``
+# above are scalar-only (one float mean/variance/z-score per domain); no
+# vector-EWMA exists anywhere in this repo as of this patch. The EWMA below
+# is therefore a fresh, minimal, componentwise mean update over a list of
+# floats -- no numpy dependency added (neither this module nor
+# ``services/orion-substrate-runtime`` had one in ``requirements.txt`` before
+# this patch; a 1152-dim Python list comprehension at this tick's real
+# cadence, one real embedding message every several seconds at most, costs
+# nothing worth a new dependency for). Unlike the six scalar domains above,
+# no z-score/variance tracking is needed here -- the design doc's own P2
+# formula is a direct cosine deviation from the running mean vector, not a
+# z-scored magnitude, so there is no variance state to maintain.
+#
+# **Reversibility** (metric quality gate step 6): shipped shadow-only,
+# default-off (``SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED=false``),
+# wired to no consumer. Trivially reversible -- flip the flag back off, or
+# delete the isolated ``substrate_perception_embedding_baseline`` table this
+# patch adds (single writer, see that table's own migration comment).
+#
+# **Live-data sanity check** (metric quality gate step 4): NOT YET VERIFIED
+# in this patch, and cannot be -- it needs accumulated real history after
+# deploy, same two-phase pattern ``bus_synaptic_prediction_error`` used (ship
+# shadow, wait, verify by hand later; see that function's own docstring for
+# the two wrong versions a skipped version of this exact check produced
+# there). Required before flipping the flag to true or wiring any consumer:
+#   (a) does this signal reach a genuine near-zero rest point on a verified-
+#       static camera window -- confirmed by pulling raw per-tick scores by
+#       hand from ``substrate_perception_embedding_baseline``/the receipt
+#       log, not by eyeballing aggregate variance;
+#   (b) does it fire (score clearly above that rest point) on at least one
+#       transition ``orion-vision-window``'s existing label-habituation gate
+#       already called a stable scene -- the design doc's own explicit P2
+#       requirement ("measured side-by-side... before it earns a place");
+#   (c) run the successive-value geometric-ratio check on the persisted
+#       ``embedding_staleness`` channel specifically to rule out a silent
+#       decay-to-zero artifact -- the ``node:substrate.route`` incident
+#       CLAUDE.md section 0A names, where a value that had merely stopped
+#       being refreshed was indistinguishable from genuine calm until the
+#       raw history was pulled and the exact ratio between successive values
+#       was checked by hand.
+# ---------------------------------------------------------------------------
+
+# Same alpha convention as execution_prediction_error/codebase_prediction_error
+# above (0.2, one real observation per real embedding-bearing artifact, not a
+# fixed wall-clock cadence). Not independently calibrated against this
+# domain's own real variance the way _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE
+# was -- there is no variance floor to calibrate here at all (see this
+# section's own "Existing-mechanism check" above), so there is nothing this
+# constant could silently dominate the way a mis-set variance floor did for
+# execution/PR/graph. Still needs the live-data sanity check above before the
+# flag flips, same as every other constant in this module.
+_PERCEPTION_PREDICTION_ERROR_EWMA_ALPHA = 0.2
+
+
+@dataclass(frozen=True)
+class PerceptionEmbeddingBaseline:
+    """Per-stream running EWMA of the embedding vector itself (not a scalar
+    mean/variance like every other domain above) -- ``embedding_ewma`` is
+    componentwise ``alpha * new + (1 - alpha) * prev`` over the whole vector.
+    ``n`` counts real observations folded in, mirroring every other
+    domain's cold-start bookkeeping (``n == 0`` means no baseline yet).
+    """
+
+    embedding_ewma: tuple[float, ...] = ()
+    n: int = 0
+
+    def to_json_dict(self) -> dict:
+        return {"embedding_ewma": list(self.embedding_ewma), "n": self.n}
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> "PerceptionEmbeddingBaseline":
+        raw = data.get("embedding_ewma") if isinstance(data, dict) else None
+        vec: tuple[float, ...] = ()
+        if isinstance(raw, list):
+            try:
+                vec = tuple(float(x) for x in raw)
+            except (TypeError, ValueError):
+                vec = ()
+        n_raw = data.get("n", 0) if isinstance(data, dict) else 0
+        try:
+            n = int(n_raw)
+        except (TypeError, ValueError):
+            n = 0
+        return cls(embedding_ewma=vec, n=max(0, n))
+
+
+@dataclass(frozen=True)
+class PerceptionPredictionErrorResult:
+    """``score`` is ``None`` on cold start (no prior baseline for this
+    stream, or a dimension mismatch against a prior one -- e.g. the
+    embedding model changed) -- there is no expectation yet to be surprised
+    against, and reporting 0.0 there would misrepresent "no baseline yet" as
+    "measured, not anomalous" (this repo's "no empty-shell cognition" rule,
+    same convention every EWMA domain above follows via
+    ``compute_ewma_update``'s own ``zscore=None`` first-observation case).
+    """
+
+    score: float | None
+    baseline: PerceptionEmbeddingBaseline
+
+
+def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float | None:
+    """``None`` on a degenerate comparison (mismatched length or a zero-norm
+    vector) rather than raising or returning a fabricated 0.0 -- a zero-norm
+    embedding is itself a malformed-input case, not a legitimate "maximally
+    different" reading.
+    """
+    if len(a) != len(b) or not a:
+        return None
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return None
+    return dot / (norm_a * norm_b)
+
+
+def perception_prediction_error(
+    embedding: Sequence[float],
+    baseline: PerceptionEmbeddingBaseline,
+    *,
+    alpha: float = _PERCEPTION_PREDICTION_ERROR_EWMA_ALPHA,
+) -> PerceptionPredictionErrorResult:
+    """0-1 surprise score for one real embedding-bearing vision artifact:
+    ``1 - cos(embedding, running_EWMA_embedding)`` for this artifact's own
+    camera stream, per the design doc's own P2 formula (the "honest crude
+    first version", explicitly deferred to a day-shape prior in Movement II
+    later).
+
+    Cold start (``baseline.n == 0``) and a dimension mismatch against the
+    prior baseline (e.g. the embedding model was swapped) are treated the
+    same way: seed a fresh baseline from this observation, report no score.
+    A dimension change is not a real optimizer for "how did this frame
+    differ" -- there is no honest way to cosine-compare vectors of different
+    length, so re-seeding (not raising, not silently truncating) is the only
+    behavior that doesn't fabricate a reading.
+
+    **A zero-norm (all-zero) observation is rejected outright, before the
+    cold-start/reseed check runs, not just on the comparison path** (review
+    finding): seeding a fresh baseline from a zero vector would make every
+    subsequent real observation permanently degenerate too, since
+    ``_cosine_similarity`` already refuses to compare against a zero-norm
+    baseline -- one bad reading at cold start would otherwise silently stall
+    the whole stream (score always ``None``, baseline never updates again)
+    instead of just skipping that one reading and staying genuinely cold
+    until a real observation arrives.
+
+    Cosine similarity of two real (non-degenerate) vectors ranges [-1, 1], so
+    ``1 - cos`` ranges [0, 2] in principle; clamped to [0, 1] here for
+    consistency with every other domain's pressure-typed [0, 1] convention
+    in this module (SigLIP-style embeddings are L2-normalized and in
+    practice cluster in a positive cone for real photographic frames, so
+    this clamp is a safety bound, not the expected operating point).
+
+    The EWMA baseline itself is updated on every real, non-degenerate
+    observation -- including cold-start and dimension-mismatch reseeds --
+    the same "the baseline absorbs this tick's value regardless of whether a
+    score was reported" behavior ``execution_prediction_error`` documents
+    for its own first-tick case.
+    """
+    vec = [float(x) for x in embedding]
+    if not vec:
+        return PerceptionPredictionErrorResult(score=None, baseline=baseline)
+
+    vec_norm = math.sqrt(sum(x * x for x in vec))
+    if vec_norm <= 0.0:
+        # Degenerate on arrival -- do not seed/reseed the baseline from bad
+        # data, and do not report a score for it. Baseline (including a
+        # genuinely cold ``n == 0`` one) is left untouched.
+        return PerceptionPredictionErrorResult(score=None, baseline=baseline)
+
+    if baseline.n == 0 or len(baseline.embedding_ewma) != len(vec):
+        new_baseline = PerceptionEmbeddingBaseline(embedding_ewma=tuple(vec), n=1)
+        return PerceptionPredictionErrorResult(score=None, baseline=new_baseline)
+
+    cos = _cosine_similarity(vec, baseline.embedding_ewma)
+    if cos is None:
+        # Degenerate (zero-norm) input -- do not update the baseline on bad
+        # data, and do not report a score for it either.
+        return PerceptionPredictionErrorResult(score=None, baseline=baseline)
+
+    surprise = max(0.0, min(1.0, 1.0 - cos))
+    new_ewma = tuple(
+        alpha * e + (1.0 - alpha) * b for e, b in zip(vec, baseline.embedding_ewma)
+    )
+    new_baseline = PerceptionEmbeddingBaseline(embedding_ewma=new_ewma, n=baseline.n + 1)
+    return PerceptionPredictionErrorResult(score=surprise, baseline=new_baseline)

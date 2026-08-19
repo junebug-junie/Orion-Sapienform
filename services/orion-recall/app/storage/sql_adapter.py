@@ -228,9 +228,14 @@ def fetch_sql_fragments(
             # AI Town chat-history table split (docs/superpowers/specs/
             # 2026-08-19-aitown-table-split-phase2-recall-migration-design.md):
             # unions RECALL_SQL_AITOWN_CHAT_TABLE in -- column-for-column
-            # identical schema, an id lives in exactly one table (orion-
-            # sql-writer routes each row once, historical rows were moved
-            # not copied), so UNION ALL needs no dedup.
+            # identical schema. This is a recency scan with no known id set
+            # to query separately and merge (contrast sql_chat.py's id-batch
+            # lookups, which do exactly that to avoid this), so it keeps
+            # UNION ALL and accepts the same bounded, self-resolving
+            # duplicate-row risk documented in sql_timeline.py's functions:
+            # while orion-sql-writer's Phase 1 dual-write (additive, both
+            # tables) is the live write path, a turn present in both tables
+            # could occupy two of this query's 300-row window instead of one.
             #
             # Pre-existing bug found and fixed while touching this exact
             # query (2026-08-19): this SELECT referenced a bare `trace_id`

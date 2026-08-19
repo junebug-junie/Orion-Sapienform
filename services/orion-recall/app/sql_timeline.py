@@ -287,10 +287,18 @@ async def fetch_recent_fragments(
                 # aitown_chat_history_log is column-for-column identical to
                 # chat_history_log (gated by a schema-parity test in
                 # orion-sql-writer), so the same picked column names apply to
-                # both -- no separate introspection pass needed. An id lives
-                # in exactly one table (orion-sql-writer routes each row to
-                # one table, never both; historical rows were moved, not
-                # copied), so UNION ALL needs no dedup. source_ref is a
+                # both -- no separate introspection pass needed. This is a
+                # recency scan, not an id-batch lookup (contrast sql_chat.py's
+                # fetch_chat_turn_timestamps/fetch_chat_turns_by_id, which
+                # query the two tables separately and merge in Python instead
+                # of UNION ALL, specifically to avoid this exact risk) -- kept
+                # as UNION ALL here, matching this file's own accepted
+                # shape-2/3 tradeoff: while orion-sql-writer's Phase 1
+                # dual-write (additive, both tables) is the live write path,
+                # a turn present in both tables could occupy two of this
+                # query's result slots instead of one. Accepted as a bounded,
+                # self-resolving cosmetic risk (a duplicate fragment, not
+                # data loss), not eliminated. source_ref is a
                 # per-branch literal, not the shared `timeline_table`
                 # variable, so each row's real physical origin survives the
                 # union instead of every row claiming the primary table.
@@ -440,15 +448,16 @@ async def fetch_related_by_entities(
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 select_client_meta = f"{client_meta_col} AS client_meta," if client_meta_col else ""
                 # AI Town chat-history table split -- see fetch_recent_fragments
-                # above for the full rationale (identical schema, no id
-                # overlap, per-branch source_ref literal).
+                # above for the full rationale (identical schema, accepted
+                # duplicate-row tradeoff while dual-write is live, per-branch
+                # source_ref literal).
                 aitown_table = settings.RECALL_SQL_AITOWN_CHAT_TABLE
                 aitown_memory_clause = _memory_filter_clause(cur, aitown_table)
-                params: List[Any] = [
-                    since_hours, patterns, patterns,
-                    since_hours, patterns, patterns,
-                    limit,
-                ]
+                # Both UNION ALL branches share an identical WHERE shape, so
+                # the same param triple is repeated once per branch rather
+                # than hand-written twice (code review 2026-08-19).
+                branch_params = [since_hours, patterns, patterns]
+                params: List[Any] = branch_params + branch_params + [limit]
                 cur.execute(
                     f"""
                     SELECT
@@ -613,15 +622,14 @@ async def fetch_exact_fragments(
                     if since_minutes is not None and int(since_minutes) > 0:
                         time_clause = f"AND {ts_col} >= NOW() - INTERVAL '%s minutes'"
                         params.append(int(since_minutes))
-                    # Second branch: same token/time params, repeated in the
-                    # same order.
-                    aitown_params = []
-                    for token in tokens:
-                        aitown_params.append(f"%{token}%")
-                        aitown_params.append(f"%{token}%")
-                    if since_minutes is not None and int(since_minutes) > 0:
-                        aitown_params.append(int(since_minutes))
-                    params.extend(aitown_params)
+                    # Second branch: same filter_clause -> same token params
+                    # in the same order (code review 2026-08-19: this used
+                    # to be a second hand-written loop recomputing byte-
+                    # identical values instead of reusing the already-built
+                    # list). time_clause is identical too, so its one
+                    # trailing param (if present) is already included in
+                    # this copy.
+                    params.extend(params)
                     params.append(limit)
                     cur.execute(
                         f"""

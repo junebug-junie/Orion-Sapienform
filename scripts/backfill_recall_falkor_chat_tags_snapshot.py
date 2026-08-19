@@ -64,15 +64,21 @@ async def _snapshot(dsn: str, out_dir: Path) -> dict:
         await conn.close()
 
     # AI Town chat-history table split (docs/superpowers/specs/2026-08-19-
-    # aitown-table-split-phase2-recall-migration-design.md): AI-Town rows
-    # physically moved to aitown_chat_history_log (Track B cutover,
-    # 2026-08-19). Without the UNION ALL above, a fresh snapshot here would
+    # aitown-table-split-phase2-recall-migration-design.md). The historical
+    # AI-Town rows were moved (not copied) to aitown_chat_history_log via a
+    # one-off backfill script run live against this deployment on
+    # 2026-08-19 (chat_history_log 1,747 -> 170 rows, aitown_chat_history_log
+    # now 1,577). Without the UNION ALL above, a fresh snapshot here would
     # silently omit every AI-Town-originated row -- the sole upstream input
     # both backfill_recall_falkor_chat_tags_extract_and_write.py and
     # backfill_recall_entity_graph_cleanup_reconcile.py depend on for full-
-    # table coverage. Column-for-column identical schema, an id lives in
-    # exactly one table (routed once, historical rows moved not copied), so
-    # UNION ALL needs no dedup.
+    # table coverage. Column-for-column identical schema. The write-path
+    # cutover (orion-sql-writer routing new rows to one table instead of
+    # Phase 1's additive dual-write) is a separate, not-yet-merged PR as of
+    # this commit -- until it lands, a new AI-Town turn could still exist
+    # in both tables (dual-write, gated off by default). UNION ALL does not
+    # dedupe that case; accepted as a bounded, occasional-tool-only risk
+    # (this script is not a live service), not eliminated.
     snapshot = {
         "snapshot_taken_at": datetime.now(timezone.utc).isoformat(),
         "source_dsn_host": dsn.rsplit("@", 1)[-1] if "@" in dsn else "unknown",

@@ -1,11 +1,35 @@
 # AI Town table split, Phase 2 migration design — `orion-recall`
 
-Status: DESIGN, not implemented. Answers the open question left in
-`docs/superpowers/specs/2026-08-19-aitown-table-split-phase2-consumer-audit.md`:
+Status: DESIGN written, then IMPLEMENTED same day with one material
+correction to its own premise -- see below. Answers the open question left
+in `docs/superpowers/specs/2026-08-19-aitown-table-split-phase2-consumer-audit.md`:
 *"does `orion-recall`'s shared join point query both tables and merge, or
 does the caller need to know which table a turn lives in?"* Ground-truthed
 2026-08-19 by reading every bucket-(b) query site directly, not inferred
 from the earlier audit summary.
+
+**Correction (same day, after this doc's original draft below):** Juniper
+asked directly why not just do the cutover now, given AI Town's own
+backend was confirmed dead (Convex connection refused) with zero
+concurrent-write risk. That changed the premise this doc's "dual-write
+transition window" analysis was built on -- Phase 1's additive dual-write
+was retired the same day (a separate, service-boundary-respecting PR to
+`orion-sql-writer`) and replaced with routing (one table per row, never
+both) plus a real, live, one-off move of the 1,577 historical AI-Town rows
+(`chat_history_log` 1,747 -> 170 rows, `aitown_chat_history_log` now
+1,577). The "Shape 1 -- two queries, Python-merge, mirror wins" and "Shape
+2/3 -- UNION ALL, accept bounded duplicate risk" recommendations below are
+still what got implemented (mirror-wins-on-conflict for id-batch lookups
+was the right call regardless of the doc-staleness issue this correction
+fixes), but the *reason* has changed: it is no longer "correct handling of
+an ongoing, permanent dual-write window," it's "correct regardless of
+whether the sql-writer cutover PR has merged yet" -- as of this recall PR
+shipping, that cutover PR had NOT yet merged to `main`, so Phase 1's
+dual-write (gated off by default) was still technically the live write
+path in git history even though the real Postgres data had already been
+migrated by the separate backfill script. Both PRs need to land for the
+full, permanent guarantee; the recall-side code here is written to be
+correct either way.
 
 ## Arsonist summary
 

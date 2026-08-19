@@ -65,18 +65,18 @@ def test_returns_prompt_response_client_meta_tuple_by_id(monkeypatch) -> None:
     assert out == {"turn-1": ("hi Circe", "hello", {"external_room": {"platform": "aitown"}})}
 
 
-def test_query_unions_the_aitown_table(monkeypatch) -> None:
+def test_queries_both_tables_separately(monkeypatch) -> None:
     """AI Town chat-history table split (docs/superpowers/specs/2026-08-19-
     aitown-table-split-phase2-recall-migration-design.md): a turn id can
-    live in aitown_chat_history_log instead of chat_history_log (orion-
-    sql-writer routes each row to exactly one table). Without unioning it
-    in, any AI-Town-originated turn id would silently resolve to nothing
-    here -- the exact failure mode the design doc's audit flagged."""
-    captured: dict = {}
+    live in aitown_chat_history_log instead of chat_history_log. Queries
+    both tables as two separate calls (not a single UNION ALL) -- see
+    fetch_chat_turns_by_id's docstring for why this deliberately does not
+    assume an id lives in exactly one table."""
+    captured: list = []
 
     class _FakeConn:
         async def fetch(self, query, ids):
-            captured["query"] = query
+            captured.append(query)
             return []
 
         async def close(self):
@@ -89,16 +89,48 @@ def test_query_unions_the_aitown_table(monkeypatch) -> None:
 
     monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
     _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
-    assert "aitown_chat_history_log" in captured["query"]
-    assert "union all" in captured["query"].lower()
+    assert len(captured) == 2
+    assert "chat_history_log" in captured[0] and "aitown_chat_history_log" not in captured[0]
+    assert "aitown_chat_history_log" in captured[1]
+    assert "union all" not in captured[0].lower() and "union all" not in captured[1].lower()
 
 
-def test_timestamps_query_unions_the_aitown_table(monkeypatch) -> None:
-    captured: dict = {}
+def test_mirror_table_wins_on_id_conflict(monkeypatch) -> None:
+    """The load-bearing guarantee this two-query-merge exists for: if the
+    same id somehow exists in both tables (a real possibility while
+    orion-sql-writer's Phase 1 dual-write is the live write path), the
+    mirror table's value must deterministically win, not whichever table
+    a plain UNION ALL happened to return last."""
+
+    class _FakeConn:
+        def __init__(self):
+            self._call = 0
+
+        async def fetch(self, query, ids):
+            self._call += 1
+            if self._call == 1:
+                return [{"id": "turn-1", "prompt": "primary version", "response": "old", "client_meta": None}]
+            return [{"id": "turn-1", "prompt": "mirror version", "response": "new", "client_meta": {"external_room": {"platform": "aitown"}}}]
+
+        async def close(self):
+            pass
+
+    class _FakeAsyncpg:
+        @staticmethod
+        async def connect(dsn):
+            return _FakeConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
+    out = _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
+    assert out["turn-1"][0] == "mirror version"
+
+
+def test_timestamps_queries_both_tables_separately(monkeypatch) -> None:
+    captured: list = []
 
     class _FakeConn:
         async def fetch(self, query, ids):
-            captured["query"] = query
+            captured.append(query)
             return []
 
         async def close(self):
@@ -111,5 +143,6 @@ def test_timestamps_query_unions_the_aitown_table(monkeypatch) -> None:
 
     monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
     _run(sql_chat.fetch_chat_turn_timestamps(["turn-1"], 60))
-    assert "aitown_chat_history_log" in captured["query"]
-    assert "union all" in captured["query"].lower()
+    assert len(captured) == 2
+    assert "aitown_chat_history_log" in captured[1]
+    assert "union all" not in captured[0].lower() and "union all" not in captured[1].lower()

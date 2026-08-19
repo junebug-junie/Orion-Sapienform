@@ -48,15 +48,22 @@ DEFAULT_DSN = os.environ.get(
 # i.e. still reviewed), never be silently dropped from the unanimity check.
 #
 # AI Town chat-history table split (docs/superpowers/specs/2026-08-19-aitown-
-# table-split-phase2-recall-migration-design.md): AI-Town rows physically
-# moved to aitown_chat_history_log (Track B cutover, 2026-08-19) -- without
-# this second join, every AI-Town turn's platform/prompt/response would
-# resolve to NULL here (the row simply isn't in chat_history_log anymore),
-# and every AI-Town-unanimous window would misclassify as "mixed" instead of
-# "external", defeating the exact thing this script exists to verify.
-# COALESCE prefers chat_history_log when a correlation_id somehow matches
-# both (should not happen post-cutover -- an id lives in exactly one table --
-# but costs nothing to be defensive about).
+# table-split-phase2-recall-migration-design.md). The historical AI-Town
+# rows were moved (not copied) out of chat_history_log into
+# aitown_chat_history_log via a one-off backfill script, run live against
+# this deployment's Postgres on 2026-08-19 -- verified: chat_history_log
+# went from 1,747 to 170 rows, aitown_chat_history_log now holds 1,577. The
+# corresponding orion-sql-writer WRITE-PATH change (routing new rows to one
+# table instead of Phase 1's additive dual-write) is a separate PR, not
+# merged as of this commit -- until it lands, new AI-Town turns can still
+# land in chat_history_log too (Phase 1's dual-write, gated by
+# SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED, default off). Without this second
+# join, every AI-Town turn whose row lives only in aitown_chat_history_log
+# would resolve to NULL here, and every AI-Town-unanimous window would
+# misclassify as "mixed" instead of "external", defeating the exact thing
+# this script exists to verify. COALESCE prefers chat_history_log when a
+# correlation_id matches both -- a real possibility until the write-path
+# cutover merges, not just defensive padding.
 QUERY = """
 WITH prop AS (
     SELECT crystallization_id,

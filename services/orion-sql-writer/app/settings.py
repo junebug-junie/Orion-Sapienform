@@ -215,6 +215,19 @@ class Settings(BaseSettings):
     channel_chat_history_spark_meta_patch: str = Field(
         "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
+    # AI Town chat-history table split, Phase 1 (docs/superpowers/specs/
+    # 2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
+    # Additive mirror write only -- chat_history_log's own write path is
+    # completely unchanged either way, this only controls whether AI-Town
+    # rows ALSO land in aitown_chat_history_log. Ships disabled by default,
+    # matching this repo's established convention for a new write path
+    # exercised for the first time in production (same pattern as
+    # SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE/HUB_ROOM_CLAUDE_AUTO_RESPOND) --
+    # flip on only after the aitown_chat_history_log table exists (see
+    # manual_migration_aitown_chat_history_log_v1.sql).
+    sql_writer_aitown_dual_write_enabled: bool = Field(
+        False, alias="SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED"
+    )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
     # drive_audits_retention_days removed 2026-08-13: the drive_audits table
     # (and orion-sql-writer's whole write path for it) was fully removed that

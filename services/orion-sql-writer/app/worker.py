@@ -26,6 +26,7 @@ from app.models import (
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
     ChatHistoryLogSQL,
+    AitownChatHistoryLogSQL,
     ChatGptLogSQL,
     ChatGptMessageSQL,
     ChatGptImportRunSQL,
@@ -748,9 +749,10 @@ def _merge_spark_meta(
 
 
 def _chat_history_conflict_updates(
-    cols: Iterable[str], stmt: Any, *, incoming_wins: bool
+    cols: Iterable[str], stmt: Any, *, incoming_wins: bool, model_cls: type = ChatHistoryLogSQL
 ) -> dict[str, Any]:
-    """Per-column ON CONFLICT rule for chat_history_log.
+    """Per-column ON CONFLICT rule for chat_history_log (or its AI Town
+    mirror, ``AitownChatHistoryLogSQL`` -- see ``model_cls`` below).
 
     ``chat_history_log`` is not append-only -- one row is assembled from three
     separate bus events (user message, assistant message, turn), each carrying a
@@ -779,8 +781,14 @@ def _chat_history_conflict_updates(
     declares ``prompt``/``response`` as required ``str``: the turn event always
     carries both keys and either can legitimately be the empty string, which must
     not overwrite real text.
+
+    ``model_cls``: defaults to ``ChatHistoryLogSQL``. ``AitownChatHistoryLogSQL``
+    is column-for-column identical (see that model's own docstring), so the
+    same merge policy applies unchanged when Track B Phase 1's dual-write
+    targets the mirror table instead -- one implementation of this
+    concurrency-critical logic, not two hand-kept-in-sync copies.
     """
-    table = ChatHistoryLogSQL.__table__
+    table = model_cls.__table__
     updates: dict[str, Any] = {}
     for name in cols:
         if name == "id":
@@ -797,9 +805,12 @@ def _chat_history_conflict_updates(
 
 
 def upsert_chat_history_row(
-    sess: Any, values: dict[str, Any], *, incoming_wins: bool = True
+    sess: Any, values: dict[str, Any], *, incoming_wins: bool = True, model_cls: type = ChatHistoryLogSQL
 ) -> None:
-    """Atomically merge one event's contribution into a chat_history_log row.
+    """Atomically merge one event's contribution into a chat_history_log row
+    (or, when ``model_cls=AitownChatHistoryLogSQL``, its AI Town mirror --
+    see that model's docstring and ``_maybe_dual_write_aitown_chat_history``
+    below, Track B Phase 1).
 
     Replaces a SELECT-then-INSERT/merge. That pattern was not safe here: the
     three events for a single turn are dispatched as independent chassis tasks
@@ -823,14 +834,92 @@ def upsert_chat_history_row(
     """
     if not values.get("id"):
         raise ValueError("chat_history_log upsert requires an id")
-    stmt = pg_insert(ChatHistoryLogSQL).values(**values)
+    stmt = pg_insert(model_cls).values(**values)
     stmt = stmt.on_conflict_do_update(
-        index_elements=[ChatHistoryLogSQL.id],
+        index_elements=[model_cls.id],
         set_=_chat_history_conflict_updates(
-            values.keys(), stmt, incoming_wins=incoming_wins
+            values.keys(), stmt, incoming_wins=incoming_wins, model_cls=model_cls
         ),
     )
     sess.execute(stmt)
+
+
+# AI Town chat-history table split, Phase 1
+# (docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
+_AITOWN_PLATFORM_TAG = "aitown"
+# Value must match services/orion-recall/app/chat_source_tagging.py's
+# AITOWN_TAG constant exactly -- reimplemented locally rather than
+# cross-imported, matching this repo's service-boundary convention
+# (CLAUDE.md section 5) and the same choice
+# services/orion-hub/scripts/concept_atlas_routes.py's own
+# _AITOWN_PLATFORM_TAG already made for the same signal.
+
+
+def _is_aitown_client_meta(client_meta: Any) -> bool:
+    """The canonical AI Town detection signal: ``client_meta.external_room.platform
+    == 'aitown'`` -- not the ``source`` column, which is only a coincidentally
+    correlated proxy (100% correlated as of 2026-08-18, but not the sanctioned
+    signal the rest of the codebase, e.g. the crystallization gate, builds
+    around).
+    """
+    if not isinstance(client_meta, dict):
+        return False
+    external_room = client_meta.get("external_room")
+    if not isinstance(external_room, dict):
+        return False
+    return external_room.get("platform") == _AITOWN_PLATFORM_TAG
+
+
+def _maybe_dual_write_aitown_chat_history(
+    sess: Any, values: dict[str, Any], *, incoming_wins: bool
+) -> None:
+    """Additive mirror write into ``aitown_chat_history_log`` for AI Town
+    rows -- Track B Phase 1. Zero consumer-visible change: this never
+    touches ``chat_history_log`` itself, only ever ADDS a row to the new
+    table, and is a complete no-op unless
+    ``SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED`` is set.
+
+    Classification is per-call, from whatever ``client_meta`` this specific
+    event's ``values`` carries -- not a lookup against the row's full,
+    already-merged state. Known, accepted limitation for Phase 1 (nothing
+    reads this table yet, so it costs nothing today): if a message-path
+    event without ``client_meta`` lands before the turn event (which always
+    carries it), that message's fields go into ``chat_history_log`` as
+    normal but are not yet mirrored; the turn event's own arrival still
+    creates/merges the mirror row correctly once it lands. A field
+    contributed only by a client_meta-less event, on a row later confirmed
+    AI Town, could in principle be missing from the mirror row -- acceptable
+    for Phase 1's job (new table exists, dual-write proven, zero disruption
+    to existing readers), revisit only if Phase 2 needs stronger fidelity.
+
+    Never allowed to take the real ``chat_history_log`` write it rides
+    alongside down with it -- same isolation principle as
+    ``_ensure_chat_history_from_message``'s own docstring, but a different
+    mechanism: both writes share the caller's session/transaction here (by
+    design, so they commit together), so a plain try/except around the
+    mirror write is NOT enough -- Postgres aborts the whole transaction on
+    the first failed statement, so a swallowed exception would still leave
+    the caller's own subsequent ``commit()`` doomed ("current transaction is
+    aborted"). ``sess.begin_nested()`` opens a SAVEPOINT so a mirror-write
+    failure rolls back only the mirror write, not the real one riding
+    alongside it in the same transaction.
+    """
+    if not settings.sql_writer_aitown_dual_write_enabled:
+        return
+    if not _is_aitown_client_meta(values.get("client_meta")):
+        return
+    try:
+        with sess.begin_nested():
+            upsert_chat_history_row(
+                sess, values, incoming_wins=incoming_wins, model_cls=AitownChatHistoryLogSQL
+            )
+    except Exception as exc:
+        logger.warning(
+            "aitown_chat_history_dual_write_failed id=%s corr=%s error=%s",
+            values.get("id"),
+            values.get("correlation_id"),
+            exc,
+        )
 
 
 def _apply_spark_meta_patch(payload: dict) -> bool:
@@ -852,11 +941,51 @@ def _apply_spark_meta_patch(payload: dict) -> bool:
             .where(ChatHistoryLogSQL.correlation_id == corr)
             .values(spark_meta=merged)
         )
+        _maybe_dual_patch_aitown_spark_meta(sess, correlation_id=corr, patch_spark_meta=patch.spark_meta)
         sess.commit()
         return True
     finally:
         sess.close()
         remove_session()
+
+
+def _maybe_dual_patch_aitown_spark_meta(
+    sess: Any, *, correlation_id: str, patch_spark_meta: dict
+) -> None:
+    """Mirror-table half of ``_apply_spark_meta_patch`` -- Track B Phase 1.
+
+    ``ChatHistorySparkMetaPatchV1`` carries no ``client_meta``, so AI-Town-ness
+    can't be classified from the patch payload alone the way the two
+    dual-write call sites above do. Instead: patch-only, never insert -- if a
+    row with this ``correlation_id`` already exists in
+    ``aitown_chat_history_log`` (meaning some earlier dual-write already
+    classified it AI Town), apply the same merge there too, keeping the
+    mirror's ``spark_meta`` from going stale relative to the primary table.
+    If no mirror row exists (never dual-written, or dual-write was off at the
+    time), this is a correct no-op -- there is nothing to patch, and this
+    function must never create a row on its own classification-blind say-so.
+    """
+    if not settings.sql_writer_aitown_dual_write_enabled:
+        return
+    try:
+        with sess.begin_nested():
+            mirror_existing = (
+                sess.query(AitownChatHistoryLogSQL)
+                .filter(AitownChatHistoryLogSQL.correlation_id == correlation_id)
+                .first()
+            )
+            if mirror_existing is None:
+                return
+            mirror_merged = _merge_spark_meta(getattr(mirror_existing, "spark_meta", None), patch_spark_meta)
+            sess.execute(
+                update(AitownChatHistoryLogSQL)
+                .where(AitownChatHistoryLogSQL.correlation_id == correlation_id)
+                .values(spark_meta=mirror_merged)
+            )
+    except Exception as exc:
+        logger.warning(
+            "aitown_chat_history_dual_patch_failed corr=%s error=%s", correlation_id, exc
+        )
 
 
 def _coerce_sql_timestamp(value: Any) -> Optional[datetime]:
@@ -1183,6 +1312,7 @@ def _ensure_chat_history_from_message(
         # Fill-only: a message must never overwrite what the turn event already
         # wrote. Reproduces the old per-field `if not existing.<col>` guards.
         upsert_chat_history_row(own_sess, values, incoming_wins=False)
+        _maybe_dual_write_aitown_chat_history(own_sess, values, incoming_wins=False)
         own_sess.commit()
     except Exception:
         own_sess.rollback()
@@ -1407,6 +1537,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 # reliable casualty -- hence every corrupted row having
                 # source IS NULL and exactly one of prompt/response.
                 upsert_chat_history_row(sess, filtered_data)
+                _maybe_dual_write_aitown_chat_history(sess, filtered_data, incoming_wins=True)
                 sess.commit()
                 return True
             sess.merge(sql_model_cls(**filtered_data))

@@ -1032,3 +1032,34 @@ def test_shipped_timezone_is_a_real_iana_zone() -> None:
     # Round-trip through the real constructor: proves it did not fall back.
     outreach = _outreach(timezone_name=zone)
     assert outreach.status()["timezone"] == zone
+
+
+def test_tick_sec_default_is_not_the_root_caused_300s_value() -> None:
+    """Regression guard, 2026-08-19: 300s was root-caused live as the reason
+    outreach had never fired -- a real qualifying run's catchable window is
+    typically 0-8s, so a 300s poll essentially never observes one (0 of 9
+    real episodes caught, replayed against real history). This does not
+    pin the exact new value (that's a real, data-derived tuning knob an
+    operator may retune from live firing-rate data, same as
+    MIN_RUN_LENGTH) -- it only guards against silently drifting back to the
+    specific value already proven broken."""
+    import re
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / ".env_example"
+    match = re.search(r"^HUB_ENDOGENOUS_OUTREACH_TICK_SEC=(.+)$", example.read_text(), re.M)
+    assert match, "HUB_ENDOGENOUS_OUTREACH_TICK_SEC missing from .env_example"
+    assert float(match.group(1).strip()) != 300.0
+
+    # Source-text check, not a live `Settings()` import -- this suite has no
+    # fixture supplying the class's other required env keys
+    # (CHANNEL_VOICE_*/CHANNEL_COLLAPSE_* etc.), so instantiating it here
+    # would fail for reasons unrelated to this key. Same "read the file, do
+    # not instantiate" approach the .env_example check above already uses.
+    settings_src = (Path(__file__).resolve().parents[1] / "app" / "settings.py").read_text()
+    settings_match = re.search(
+        r'HUB_ENDOGENOUS_OUTREACH_TICK_SEC:\s*float\s*=\s*Field\(\s*default=([\d.]+)',
+        settings_src,
+    )
+    assert settings_match, "HUB_ENDOGENOUS_OUTREACH_TICK_SEC Field default not found in settings.py"
+    assert float(settings_match.group(1)) != 300.0

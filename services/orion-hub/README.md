@@ -226,17 +226,35 @@ nobody asked for. **Enabled** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=true` in
 reaching out.
 
 **The trigger is real** (2026-08-16, replacing a randomized-timer stub).
-Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` the loop asks
-`scripts/tension_outreach_trigger.py::current_run()`: has the same node been
-winning `orion.attention.tension`'s live Borda competition for a sustained,
-unbroken run of real ticks right now — not a single blip. See that module's
-own docstring for the full account, including why the persistence bar
-(`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default 8) is derived from a real
-replay of live history rather than guessed — it stays operator-tunable from
-real post-deploy firing-rate data, unlike the trigger's other internals. The
-message itself is generated from live substrate signals and real chat
-history, and lands on the same rails a normal turn uses — that part never
-changed.
+Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` (default **10s**, see caveat below)
+the loop asks `scripts/tension_outreach_trigger.py::current_run()`: has the
+same node been winning `orion.attention.tension`'s live Borda competition for
+a sustained, unbroken run of real ticks right now — not a single blip. See
+that module's own docstring for the full account, including why the
+persistence bar (`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default 8) is
+derived from a real replay of live history rather than guessed — it stays
+operator-tunable from real post-deploy firing-rate data, unlike the trigger's
+other internals. The message itself is generated from live substrate signals
+and real chat history, and lands on the same rails a normal turn uses — that
+part never changed.
+
+**Poll cadence root-caused live, 2026-08-19** — Orion had never once reached
+out since this shipped. Two stacked causes: (1) the trigger's own query was
+broken 2026-08-16→2026-08-18 (the `make_interval` bug PR #1715 fixed — see
+that module's docstring); (2) even after that fix, the original 300s poll
+interval almost never observed a qualifying run — a real run lasts only
+~18-27s wall-clock, and replaying 6h of real history against the actual poll
+loop caught 0 of 9 real qualifying episodes at 300s. `HUB_ENDOGENOUS_
+OUTREACH_TICK_SEC` was lowered to 10s (data-derived episode catch rate ~33%
+on that sample) as a deliberate middle ground, not the class's own 5.0s
+floor (~56% catch) — the query is cheap, but this shares one Postgres
+instance with every other service. **Disclosed, not silently accepted: this
+remains a partial fix** — even the floor tops out around ~56% catch on the
+measured sample, because several real episodes' catchable window is under 5
+seconds. Full closure needs a wall-clock-persistence redesign ("was there a
+qualifying run since last checked", not "is one happening right now"), not
+done here — see `docs/superpowers/specs/2026-08-16-tension-driven-outreach-
+design.md`'s "Poll-cadence root cause" section for the full replay numbers.
 
 **Level-aware, not just change-aware** (2026-08-19). The trigger's reason
 object now also carries `sustained_load_pressure`

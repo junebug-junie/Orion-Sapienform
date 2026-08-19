@@ -249,3 +249,66 @@ introduction):
    sustained_load_pressure > 0.0:` branch in `build_outreach_prompt()` plus one extra
    dataclass field with a safe default — removing it deletes a few lines and touches no
    schema, manifest, or persisted training default. Nothing here is baked in.
+
+## Poll-cadence root cause (2026-08-19)
+
+Juniper reported Orion had never actually reached out, on any of the rails above, since
+this trigger shipped. Root-caused against the live deploy and real Postgres history, no
+guessing:
+
+**Layer 1 (already fixed before this investigation): the trigger's own query was broken
+from 2026-08-16 to 2026-08-18** — the `make_interval(mins => ...)` bug fixed by PR #1715.
+`current_run()` raised on every call and degraded to `None` for its entire first ~2 days
+of existence, confirmed via `docker logs orion-athena-hub --since 48h`: zero `outreach_sent`
+or even organic-trigger log lines anywhere in that window.
+
+**Layer 2 (the actual remaining root cause, addressed by this patch): a poll-cadence vs.
+episode-duration mismatch.** Pulled 6h of real `substrate_field_state` ticks and replayed
+the exact grouping logic `current_run()` uses:
+
+- A qualifying run (`run_length >= 8`, the real firing bar) occurred in 9 distinct episodes
+  over 6h.
+- Each episode's "catchable window" — the span between the tick where it first crosses 8
+  and the tick where it ends — was typically **0-8 seconds** (3 of 9 were exactly 0.0s: the
+  qualifying tick and the last tick were the same one).
+- Simulating the real poll loop (`HUB_ENDOGENOUS_OUTREACH_TICK_SEC=300`, i.e. checking
+  `current_run()` once every 5 minutes) against this real data, across multiple poll-phase
+  offsets: **0 of 9 real episodes would ever have been caught.** A ~20-second-average event
+  sampled every 300 seconds is essentially always already over by the time anyone looks.
+
+`MIN_RUN_LENGTH=8` itself was correctly calibrated against tick-count rarity (the original
+2-hour replay found p99=8) — but nobody had asked the follow-on question this investigation
+answers: *how long does a length-8 run last in wall-clock time, and is that longer than how
+often the loop actually checks?* It is not, by roughly 15x.
+
+**Fix chosen (partial, disclosed as partial):** lower `HUB_ENDOGENOUS_OUTREACH_TICK_SEC`
+from 300 to 10 — a real-data-derived middle ground, not a guess. Replaying the same 6h
+window at different candidate intervals (episode-catch-rate, i.e. "was any poll inside the
+episode's catchable window", not the diluted per-poll hit rate):
+
+| interval | episode catch rate |
+|---|---|
+| 300s (old default) | 0% |
+| 30s | ~9% |
+| 15s | ~18% |
+| 10s (new default) | ~33% |
+| 5s (the class's existing floor, `max(5.0, ...)`) | ~56% |
+
+10s was chosen over the 5.0 floor as a deliberate middle ground: the query itself is cheap
+(a single indexed range scan, confirmed via `EXPLAIN` — index-only scan on
+`idx_substrate_field_state_generated`), and `maybe_outreach()`'s gate checks that run before
+it are all in-memory, so polling faster costs one more cheap SQL round-trip per tick, not
+more LLM generation (the expensive path is still gated on how rarely a real reason is
+actually found, independent of poll rate) — but this shares one Postgres instance with
+every other service, so tightening all the way to the floor "because it's cheap" was not
+treated as free.
+
+**Disclosed, not silently accepted: even at the 5.0s floor, catch rate tops out around
+~56% on this sample.** Polling faster narrows the gap but cannot close it, because a
+meaningful fraction of real episodes have a catchable window under 5 seconds. Fully closing
+it needs a different mechanism — tracking "was there a qualifying run at any point *since
+the last check*" (a rolling lookback against history) rather than "is one happening at this
+exact instant" — a genuine redesign, not a tuning knob, and real, separate follow-up work,
+not done here. The n=9-episode sample this table rests on is small; if real firing behavior
+after this patch deploys disagrees with these numbers, re-derive from more data rather than
+trusting this table indefinitely.

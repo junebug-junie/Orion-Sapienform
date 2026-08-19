@@ -790,6 +790,30 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
     return traces
 
 
+def _last_model_used(step_results: List[StepExecutionResult]) -> str | None:
+    """Real served model-card name from the last LLMGatewayService step.
+
+    Deliberately independent of reasoning_content -- `_collect_metacog_traces`
+    above only builds a trace when reasoning_content is non-empty,
+    which most models never populate, so a model-name read gated on that is
+    dead for most turns (confirmed live: MetacognitiveTraceV1.model reads
+    'unknown' on essentially every real turn). This walks the plan's steps
+    newest-first for the same LLMGatewayService payload shape that function
+    already reads (payload.get('model_used') or payload.get('model')), so it
+    answers regardless of whether a reasoning trace was ever collected.
+    """
+    for step in reversed(step_results):
+        if not isinstance(step.result, dict):
+            continue
+        payload = step.result.get("LLMGatewayService")
+        if not isinstance(payload, dict):
+            continue
+        model_name = payload.get("model_used") or payload.get("model")
+        if model_name:
+            return str(model_name)
+    return None
+
+
 def _extract_reasoning_payload(
     step_results: List[StepExecutionResult],
     *,
@@ -1585,6 +1609,14 @@ class PlanRunner:
             metadata["grounding_capsule"] = ctx["grounding_capsule"]
         if isinstance(ctx.get("autonomy_slice"), dict):
             metadata["autonomy_slice"] = ctx["autonomy_slice"]
+        # Real served model-card name (e.g. "qwen-36-instruct"), independent of
+        # whether a reasoning trace was collected -- see _last_model_used's own
+        # docstring. Hub already reads metadata["model"] off CortexClientResult
+        # at several chat_history call sites; this is the first thing that
+        # actually populates it.
+        model_used = _last_model_used(step_results)
+        if model_used:
+            metadata["model"] = model_used
         mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         record_assembled_grammar(

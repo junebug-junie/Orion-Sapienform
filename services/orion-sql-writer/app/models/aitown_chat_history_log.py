@@ -36,6 +36,7 @@ class AitownChatHistoryLogSQL(Base):
     prompt = Column(Text)
     response = Column(Text)
     user_id = Column(String, nullable=True)
+    response_identity = Column(String, nullable=True)
     session_id = Column(String, nullable=True)
     spark_meta = Column(JSONB, nullable=True)
     memory_status = Column(String, index=True, nullable=True)

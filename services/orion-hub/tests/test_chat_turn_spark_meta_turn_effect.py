@@ -59,6 +59,44 @@ def test_chat_turn_spark_meta_preserves_turn_effect_for_quick_trace_verb():
     assert sm.get("turn_effect_status") == "present"
 
 
+def test_chat_turn_envelope_carries_response_identity():
+    """Regression guard for the response_identity plumbing (chat_history_log's
+    additive response-side identity column): every real call site
+    (websocket_handler.py's normal + agent_claude lanes, api_routes.py's HTTP
+    lane) is expected to pass this through from whatever model/fcc_model_label
+    value it already has. This is the schema-level guarantee that value
+    survives the envelope; the call-site wiring itself is covered by manual
+    review (code review 2026-08-19 caught two call sites that omitted it)."""
+    cid = UUID("22222222-3333-4444-5555-666666666666")
+    env = build_chat_turn_envelope(
+        prompt="q",
+        response="a",
+        session_id="s4",
+        correlation_id=cid,
+        user_id="juniper",
+        response_identity="qwen-36-instruct",
+        source_label="test",
+        turn_id=str(cid),
+    )
+    dumped = env.payload.model_dump(mode="json")
+    assert dumped["user_id"] == "juniper"
+    assert dumped["response_identity"] == "qwen-36-instruct"
+
+
+def test_chat_turn_envelope_response_identity_defaults_to_none():
+    cid = UUID("33333333-4444-5555-6666-777777777777")
+    env = build_chat_turn_envelope(
+        prompt="q",
+        response="a",
+        session_id="s5",
+        correlation_id=cid,
+        user_id="juniper",
+        source_label="test",
+        turn_id=str(cid),
+    )
+    assert env.payload.model_dump(mode="json")["response_identity"] is None
+
+
 def test_chat_turn_envelope_coerces_reasoning_trace_to_schema_model():
     cid = UUID("aaaaaaaa-1111-2222-3333-ffffffffffff")
     env = build_chat_turn_envelope(

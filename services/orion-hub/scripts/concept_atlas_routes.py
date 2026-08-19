@@ -747,6 +747,51 @@ async def concept_atlas_summary() -> dict[str, Any]:
     }
 
 
+def _compute_connected_components(nodes: list[Any], edges: list[Any]) -> dict[str, int]:
+    """Assign each node id a 0-indexed connected-component id via plain
+    union-find over the (already filtered) node/edge lists.
+
+    Readability gap named in
+    ``docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md``:
+    cose's force layout pulls disconnected components toward each other with
+    nothing marking where one ends and another begins once the graph gets
+    dense (``componentSpacing`` in concept-atlas.js only makes that less bad,
+    it doesn't label components). This doesn't touch the layout -- it hands
+    the frontend the grouping so it can (e.g. per-component styling, or a
+    plain node count per component in the inspector).
+
+    Component ids are numbered in the order their first member appears in
+    ``nodes`` (not by root node id), so the numbering is deterministic given
+    the same input ordering -- ``query_concept_region()`` already returns a
+    stable order, this just doesn't add its own randomness on top.
+    """
+    parent: dict[str, str] = {n.node_id: n.node_id for n in nodes}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for e in edges:
+        if e.source.node_id in parent and e.target.node_id in parent:
+            union(e.source.node_id, e.target.node_id)
+
+    component_id_by_root: dict[str, int] = {}
+    result: dict[str, int] = {}
+    for n in nodes:
+        root = find(n.node_id)
+        if root not in component_id_by_root:
+            component_id_by_root[root] = len(component_id_by_root)
+        result[n.node_id] = component_id_by_root[root]
+    return result
+
+
 @router.get("/api/substrate/concepts/network")
 async def concept_atlas_network(
     scope: Optional[str] = Query(None),
@@ -755,13 +800,17 @@ async def concept_atlas_network(
 ) -> dict[str, Any]:
     store = _get_substrate_store()
     if store is None:
-        return _unavailable("substrate_store_unavailable", nodes=[], edges=[], god_node_count=0)
+        return _unavailable(
+            "substrate_store_unavailable", nodes=[], edges=[], god_node_count=0, component_count=0
+        )
 
     try:
         result = store.query_concept_region(limit_nodes=300, limit_edges=600)
     except Exception as exc:
         logger.warning("concept_atlas_network_query_failed error=%s", exc)
-        return _unavailable("substrate_store_error", str(exc), nodes=[], edges=[], god_node_count=0)
+        return _unavailable(
+            "substrate_store_error", str(exc), nodes=[], edges=[], god_node_count=0, component_count=0
+        )
 
     nodes = list(result.slice.nodes)
     edges = list(result.slice.edges)
@@ -828,6 +877,7 @@ async def concept_atlas_network(
 
     ranked = sorted((nid for nid in degree if degree[nid] > 0.0), key=lambda nid: degree[nid], reverse=True)
     god_ids = set(ranked[:_GOD_NODE_TOP_N])
+    component_of = _compute_connected_components(nodes, edges)
 
     node_payload = [
         {
@@ -841,6 +891,12 @@ async def concept_atlas_network(
             "confidence": float(n.signals.confidence),
             "degree": degree.get(n.node_id, 0.0),
             "god_node": n.node_id in god_ids,
+            "component_id": component_of.get(n.node_id, 0),
+            # topic-foundry's HDBSCAN cluster id, when this node came from an
+            # ingested topic-foundry run (orion/substrate/adapters/topic_foundry.py
+            # writes it into metadata as "topic_id" -- there is no dedicated
+            # schema field for it). None for concepts from any other producer.
+            "topic_id": n.metadata.get("topic_id") if isinstance(n.metadata, dict) else None,
         }
         for n in nodes
     ]
@@ -869,6 +925,7 @@ async def concept_atlas_network(
         "nodes": node_payload,
         "edges": edge_payload,
         "god_node_count": len(god_ids),
+        "component_count": len(set(component_of.values())),
         "truncated": bool(result.truncated),
         "degraded": degraded,
         "degraded_error": getattr(result, "error", None) if degraded else None,

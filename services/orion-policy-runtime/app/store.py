@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
@@ -11,7 +12,6 @@ from sqlalchemy.engine import Engine
 
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
-from orion.db.pending_scan import BoundedPendingScan
 
 logger = logging.getLogger("orion.policy_runtime.store")
 
@@ -21,8 +21,7 @@ class PolicyRuntimeStore:
         self,
         postgres_uri: str,
         *,
-        scan_window_sec: float = 0.0,
-        backstop_interval_sec: float = 300.0,
+        reconcile_interval_sec: float = 900.0,
     ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
@@ -30,50 +29,29 @@ class PolicyRuntimeStore:
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
-        # scan_window_sec <= 0 disables the bound and restores the pre-2026-08-19 behaviour --
-        # the rollback, with no code change. See orion/db/pending_scan.py.
-        self._scan = BoundedPendingScan(
-            label="proposal->policy",
-            window_sec=scan_window_sec,
-            backstop_interval_sec=backstop_interval_sec,
-            logger=logger,
-        )
+        # The safety net for the `policy_pending` marker. See reconcile_policy_pending.
+        self._reconcile_interval_sec = float(reconcile_interval_sec)
+        self._last_reconcile_mono: float | None = None
 
-    # ROADMAP D2 follow-through, 2026-08-19. Same unbounded anti-join that was athena's I/O
-    # ceiling one stage downstream -- see orion/db/pending_scan.py for the measurements
-    # and for why the unbounded query survives as a rate-limited backstop rather than being
-    # deleted. After the dispatch->feedback stage was bounded, this stage was the largest
-    # remaining sequential-scan source in the database at 340,766 tuples/sec.
+    # ROADMAP D2 follow-through, 2026-08-19. Same fix as the dispatch->feedback stage; see
+    # services/orion-sql-db/manual_migration_substrate_pending_markers.sql for the measurements
+    # and for why a time bound was tried first and reverted (it strands the backlog, and this
+    # pipeline legitimately runs hours to days behind).
     #
-    # Window justification, measured rather than copied from the other stage:
-    #   proposal -> policy lag over 24h:  p50 3.4s   p99 17.0s   max 31.8s   (n=852)
-    # The 3600s default is ~113x the observed maximum.
-    _FAST_PATH_SQL = text("""
+    # `policy_pending` defaults to TRUE, so anything new -- or anything this code has never seen
+    # -- is work. It is cleared inside the same transaction as the policy decision insert, and
+    # reconcile_policy_pending re-sets it for any row that lost it without a decision frame.
+    _PENDING_SQL = text("""
         SELECT p.proposal_frame_json, p.generated_at
         FROM substrate_proposal_frames p
-        LEFT JOIN substrate_policy_decision_frames d
-          ON d.source_proposal_frame_id = p.frame_id
-        WHERE d.frame_id IS NULL
-          AND p.generated_at > now() - make_interval(secs => :window_sec)
-        ORDER BY p.generated_at ASC
-        LIMIT 1
-    """)
-
-    _BACKSTOP_SQL = text("""
-        SELECT p.proposal_frame_json, p.generated_at
-        FROM substrate_proposal_frames p
-        LEFT JOIN substrate_policy_decision_frames d
-          ON d.source_proposal_frame_id = p.frame_id
-        WHERE d.frame_id IS NULL
+        WHERE p.policy_pending
         ORDER BY p.generated_at ASC
         LIMIT 1
     """)
 
     def load_next_proposal_without_policy_frame(self) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
-            row = self._scan.fetch(
-                conn, bounded_sql=self._FAST_PATH_SQL, unbounded_sql=self._BACKSTOP_SQL
-            )
+            row = conn.execute(self._PENDING_SQL).mappings().first()
         if not row:
             return None
         payload = row["proposal_frame_json"]
@@ -245,3 +223,48 @@ class PolicyRuntimeStore:
                     "created_at": now,
                 },
             )
+            # SAME TRANSACTION as the insert above -- a crash between the two would otherwise
+            # either lose the work (marker cleared, no decision frame) or reprocess it. Only one
+            # of those is recoverable, so this is the direction to be strict in.
+            conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames
+                       SET policy_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": frame.source_proposal_frame_id},
+            )
+
+    def reconcile_policy_pending(self, *, force: bool = False) -> int:
+        """Re-queue any proposal whose marker was cleared without a policy decision frame.
+
+        Only ever sets the marker back to TRUE -- it can add work, never remove it, so a bug
+        here costs duplicated effort rather than lost effort. This is the expensive anti-join
+        the marker exists to avoid, so it is rate-limited to once per `reconcile_interval_sec`
+        (default 900s) rather than running on the 2s poll. Returns rows re-queued.
+        """
+        now = time.monotonic()
+        if not force and self._last_reconcile_mono is not None:
+            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
+                return 0
+        self._last_reconcile_mono = now
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames p
+                       SET policy_pending = true
+                     WHERE NOT p.policy_pending
+                       AND NOT EXISTS (
+                             SELECT 1 FROM substrate_policy_decision_frames d
+                              WHERE d.source_proposal_frame_id = p.frame_id
+                       )
+                """)
+            )
+        requeued = int(result.rowcount or 0)
+        if requeued:
+            logger.warning(
+                "policy_pending_reconciled requeued=%s -- proposals had their pending marker "
+                "cleared with no policy decision frame present. Work would have been lost.",
+                requeued,
+            )
+        return requeued

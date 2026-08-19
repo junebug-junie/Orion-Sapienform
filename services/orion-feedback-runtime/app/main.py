@@ -19,8 +19,7 @@ logger = logging.getLogger("orion.feedback.runtime.main")
 worker = FeedbackRuntimeWorker()
 store = FeedbackRuntimeStore(
     _settings.postgres_uri,
-    scan_window_sec=_settings.feedback_scan_window_sec,
-    backstop_interval_sec=_settings.feedback_scan_backstop_interval_sec,
+    reconcile_interval_sec=_settings.feedback_reconcile_interval_sec,
 )
 heartbeat_chassis: HeartbeatOnly | None = None
 

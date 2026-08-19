@@ -18,8 +18,7 @@ class PolicyRuntimeWorker:
         self._settings = get_settings()
         self._store = PolicyRuntimeStore(
             self._settings.postgres_uri,
-            scan_window_sec=self._settings.policy_scan_window_sec,
-            backstop_interval_sec=self._settings.policy_scan_backstop_interval_sec,
+            reconcile_interval_sec=self._settings.policy_reconcile_interval_sec,
         )
         self._policy = load_substrate_policy(Path(self._settings.substrate_policy_path))
         self._stop = asyncio.Event()
@@ -49,6 +48,9 @@ class PolicyRuntimeWorker:
     def _tick(self) -> None:
         if not self._settings.enable_policy_runtime:
             return
+
+        # Rate-limited internally (default once per 15 min); safe to call every tick.
+        self._store.reconcile_policy_pending()
 
         proposal = self._store.load_next_proposal_without_policy_frame()
         if proposal is None:

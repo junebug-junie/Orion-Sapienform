@@ -16,6 +16,14 @@ class Settings(BaseSettings):
         alias="FEEDBACK_POLICY_PATH",
     )
     feedback_poll_interval_sec: float = Field(2.0, alias="FEEDBACK_POLL_INTERVAL_SEC")
+    # ROADMAP D2. How often to re-queue rows whose `*_pending` marker was cleared without the
+    # downstream frame actually existing. The marker is cleared transactionally so this should
+    # find nothing -- but the failure it guards is SILENT WORK LOSS, and it can only add work
+    # back, never remove it. It runs the expensive anti-join the marker exists to avoid, hence
+    # once every 15 min rather than on the 2s poll. 0 runs it every poll (do not).
+    feedback_reconcile_interval_sec: float = Field(
+        900.0, alias="FEEDBACK_RECONCILE_INTERVAL_SEC"
+    )
     # ROADMAP D2 follow-through. The "oldest dispatch frame without feedback" lookup used to be
     # an unbounded anti-join over two ~420k-row tables -- 829 MB read + 465 MB temp spill per
     # execution, every 2s, and the single largest contributor to athena being fully I/O-stalled
@@ -24,21 +32,9 @@ class Settings(BaseSettings):
     # 3600s is ~42x the measured maximum feedback lag (p99 77.1s, max 85.6s over 24h).
     # Set to 0 to disable the bound and restore the previous behaviour -- that is the rollback.
         # DISABLED BY DEFAULT, 2026-08-19, after code review found the bound UNSAFE as designed.
-    # `fetch()` only reaches the backstop when the fast path is EMPTY -- so during a real
-    # backlog, where fresh in-window work always exists, the backstop never fires and pre-window
-    # rows are stranded permanently. Live evidence: on 2026-08-14 this stage produced 29,264
-    # feedback frames for dispatch rows ~34 HOURS old, while 26,148 new rows arrived the same
-    # day. 8 of the last 30 days were entirely in that regime. The measurement that justified a
-    # 1h window (n=514, max 85.6s) was taken during an unrepresentative quiet spell; over 7 days
-    # the lag p50 is 124,613s and the max is 975,770s.
-    # Do NOT re-enable without redesigning -- see orion/db/pending_scan.py.
-    feedback_scan_window_sec: float = Field(0.0, alias="FEEDBACK_SCAN_WINDOW_SEC")
     # How often the unbounded backstop may run when the bounded query finds nothing. This is
     # what guarantees a frame older than the window is never skipped forever -- it is picked up
     # within one interval instead of instantly, and logged as a tripwire when it happens.
-    feedback_scan_backstop_interval_sec: float = Field(
-        300.0, alias="FEEDBACK_SCAN_BACKSTOP_INTERVAL_SEC"
-    )
     enable_feedback_runtime: bool = Field(True, alias="ENABLE_FEEDBACK_RUNTIME")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

@@ -20,8 +20,7 @@ logger = logging.getLogger("orion.policy.runtime.main")
 worker = PolicyRuntimeWorker()
 store = PolicyRuntimeStore(
     _settings.postgres_uri,
-    scan_window_sec=_settings.policy_scan_window_sec,
-    backstop_interval_sec=_settings.policy_scan_backstop_interval_sec,
+    reconcile_interval_sec=_settings.policy_reconcile_interval_sec,
 )
 heartbeat_chassis: HeartbeatOnly | None = None
 

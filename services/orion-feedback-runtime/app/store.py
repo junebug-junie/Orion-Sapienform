@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
@@ -10,7 +11,6 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
-from orion.db.pending_scan import BoundedPendingScan
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
@@ -24,8 +24,7 @@ class FeedbackRuntimeStore:
         self,
         postgres_uri: str,
         *,
-        scan_window_sec: float = 0.0,
-        backstop_interval_sec: float = 300.0,
+        reconcile_interval_sec: float = 900.0,
     ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
@@ -33,49 +32,39 @@ class FeedbackRuntimeStore:
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
-        # scan_window_sec <= 0 disables the bound and restores the pre-2026-08-19 behaviour --
-        # the rollback, with no code change. See orion/db/pending_scan.py.
-        self._scan = BoundedPendingScan(
-            label="dispatch->feedback",
-            window_sec=scan_window_sec,
-            backstop_interval_sec=backstop_interval_sec,
-            logger=logger,
-        )
+        # The safety net for the `feedback_pending` marker. See reconcile_feedback_pending.
+        self._reconcile_interval_sec = float(reconcile_interval_sec)
+        self._last_reconcile_mono: float | None = None
 
-    # ROADMAP D2 follow-through, 2026-08-19. This lookup was athena's I/O ceiling: an unbounded
-    # anti-join over two ~420k-row tables, 829 MB read + 465 MB temp spill per execution, every
-    # FEEDBACK_POLL_INTERVAL_SEC. See orion/db/pending_scan.py for the full account, the
-    # measured numbers, and why the unbounded query has to survive as a backstop.
+    # ROADMAP D2 follow-through, 2026-08-19. This lookup WAS athena's I/O ceiling.
     #
-    # Window justification, measured rather than assumed:
-    #   dispatch -> feedback lag over 24h:  p50 16.0s   p99 77.1s   max 85.6s   (n=514)
-    # The 3600s default is ~42x the observed maximum.
-    _FAST_PATH_SQL = text("""
+    # It used to ask "which dispatch frame has no feedback frame yet" as an unbounded anti-join
+    # over both full tables: 106,052 blocks read (829 MB) plus 465 MB spilled to temp, PER
+    # EXECUTION, every FEEDBACK_POLL_INTERVAL_SEC.
+    #
+    # A time bound was tried first and REVERTED -- it strands the backlog. This pipeline
+    # legitimately runs hours to days behind (2026-08-14: 29,264 frames processed at ~34h of
+    # age), and any "recent rows only" window silently abandons everything older once fresh work
+    # keeps the fast path busy. See the migration
+    # services/orion-sql-db/manual_migration_substrate_pending_markers.sql.
+    #
+    # The marker makes the question O(pending) instead of O(history), which is correct at ANY
+    # backlog depth. `feedback_pending` defaults to TRUE, so anything new -- or anything this
+    # code has never seen -- is work, never silently skipped. It is cleared inside the same
+    # transaction as the feedback insert (see save_feedback_frame), and a periodic reconciler
+    # (reconcile_feedback_pending) re-sets it for any row that lost it without a feedback frame
+    # actually existing. The reconciler can only ADD work back, never remove it.
+    _PENDING_SQL = text("""
         SELECT d.dispatch_frame_json, d.generated_at
         FROM substrate_execution_dispatch_frames d
-        LEFT JOIN substrate_feedback_frames f
-          ON f.source_execution_dispatch_frame_id = d.frame_id
-        WHERE f.frame_id IS NULL
-          AND d.generated_at > now() - make_interval(secs => :window_sec)
-        ORDER BY d.generated_at ASC
-        LIMIT 1
-    """)
-
-    _BACKSTOP_SQL = text("""
-        SELECT d.dispatch_frame_json, d.generated_at
-        FROM substrate_execution_dispatch_frames d
-        LEFT JOIN substrate_feedback_frames f
-          ON f.source_execution_dispatch_frame_id = d.frame_id
-        WHERE f.frame_id IS NULL
+        WHERE d.feedback_pending
         ORDER BY d.generated_at ASC
         LIMIT 1
     """)
 
     def load_latest_dispatch_frame_without_feedback(self) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:
-            row = self._scan.fetch(
-                conn, bounded_sql=self._FAST_PATH_SQL, unbounded_sql=self._BACKSTOP_SQL
-            )
+            row = conn.execute(self._PENDING_SQL).mappings().first()
         if not row:
             return None
         payload = row["dispatch_frame_json"]
@@ -120,6 +109,63 @@ class FeedbackRuntimeStore:
             warnings=["source_dispatch_frame_schema_incompatible"],
         )
         self.save_feedback_frame(stub)
+
+    def clear_feedback_pending(self, dispatch_frame_id: str) -> None:
+        """Clear a marker whose feedback frame already exists.
+
+        Needed because the marker defaults to TRUE, so every pre-migration row starts pending
+        even though most already have feedback. Without this the worker's existing
+        already-have-feedback guard would return early WITHOUT advancing the marker, and the
+        FIFO would re-select that same row every tick forever -- the exact stuck-loop the
+        2026-07-22 incident note above describes, reintroduced by the marker's safe default.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE substrate_execution_dispatch_frames
+                       SET feedback_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": dispatch_frame_id},
+            )
+
+    def reconcile_feedback_pending(self, *, force: bool = False) -> int:
+        """Re-queue any dispatch frame whose marker was cleared without a feedback frame.
+
+        The marker is cleared transactionally, so this should find nothing -- but "should" is
+        not a guarantee across manual SQL, restores, or a future bug, and the failure it guards
+        against is silent work loss. It only ever sets the marker back to TRUE: it can add work,
+        never remove it, so a bug here costs duplicated effort rather than lost effort.
+
+        This is the expensive anti-join the marker exists to avoid, which is why it is
+        rate-limited to once per `reconcile_interval_sec` (default 900s) instead of running on
+        the 2s poll. Returns the number of rows re-queued.
+        """
+        now = time.monotonic()
+        if not force and self._last_reconcile_mono is not None:
+            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
+                return 0
+        self._last_reconcile_mono = now
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_execution_dispatch_frames d
+                       SET feedback_pending = true
+                     WHERE NOT d.feedback_pending
+                       AND NOT EXISTS (
+                             SELECT 1 FROM substrate_feedback_frames f
+                              WHERE f.source_execution_dispatch_frame_id = d.frame_id
+                       )
+                """)
+            )
+        requeued = int(result.rowcount or 0)
+        if requeued:
+            logger.warning(
+                "feedback_pending_reconciled requeued=%s -- dispatch frames had their pending "
+                "marker cleared with no feedback frame present. Work would have been lost.",
+                requeued,
+            )
+        return requeued
 
     def load_latest_dispatch_frame(self) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:
@@ -445,4 +491,17 @@ class FeedbackRuntimeStore:
                     "feedback_frame_json": Json(frame.model_dump(mode="json")),
                     "created_at": now,
                 },
+            )
+            # SAME TRANSACTION as the insert above, deliberately. Clearing the marker in a
+            # separate transaction would mean a crash between the two either loses the work
+            # (marker cleared, no frame) or reprocesses it. Inside one transaction, neither can
+            # happen. Reprocessing would be harmless anyway -- the insert is ON CONFLICT DO
+            # UPDATE -- but losing work would not, so this is the direction to be strict in.
+            conn.execute(
+                text("""
+                    UPDATE substrate_execution_dispatch_frames
+                       SET feedback_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": frame.source_execution_dispatch_frame_id},
             )

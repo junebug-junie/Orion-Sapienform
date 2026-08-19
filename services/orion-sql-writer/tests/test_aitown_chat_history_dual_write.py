@@ -301,12 +301,15 @@ class TestApplySparkMetaPatchRouting:
         assert len(sess.lock_calls) == 1
         assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()
 
-    def test_does_not_lock_when_routing_disabled(self, monkeypatch: pytest.MonkeyPatch):
-        """Review follow-up (2026-08-19): the advisory lock exists solely to
-        protect the cross-table routing decision -- with routing off every
-        write targets ChatHistoryLogSQL unconditionally, so there is no
-        cross-table race to serialize against and the lock round trip is
-        skipped."""
+    def test_acquires_lock_even_when_routing_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Regression test for a bug in this fix's own first draft: a
+        second review pass (2026-08-19) caught that gating this lock on
+        sql_writer_aitown_routing_enabled reopens the exact race this fix
+        exists to close, because the writer-side locks
+        (_write_row/_ensure_chat_history_from_message) stay unconditional
+        regardless of the routing flag -- a gated reader would race an
+        in-flight, still-unconditionally-locked writer. The lock must be
+        acquired every time, routing enabled or not."""
         class _Row:
             spark_meta = {"existing": True}
 
@@ -314,7 +317,8 @@ class TestApplySparkMetaPatchRouting:
 
         self._run(monkeypatch, sess=sess, routing_enabled=False)
 
-        assert sess.lock_calls == []
+        assert len(sess.lock_calls) == 1
+        assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()
 
 
 class TestMirrorTableSchemaParity:

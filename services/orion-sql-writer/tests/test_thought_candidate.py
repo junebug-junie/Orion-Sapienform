@@ -217,9 +217,17 @@ def test_chat_history_thought_for_merge_acquires_lock_when_routing_enabled(
     assert sess.lock_calls[0][1] == {"row_id": "corr-lock"}
 
 
-def test_chat_history_thought_for_merge_does_not_lock_when_routing_disabled(
+def test_chat_history_thought_for_merge_acquires_lock_even_when_routing_disabled(
     monkeypatch,
 ) -> None:
+    """Regression test for a bug in this fix's own first draft: a second
+    review pass (2026-08-19) caught that gating this lock on
+    sql_writer_aitown_routing_enabled reopens the exact race this fix
+    exists to close, because the writer-side locks
+    (_write_row/_ensure_chat_history_from_message) stay unconditional
+    regardless of the routing flag -- a gated reader would race an
+    in-flight, still-unconditionally-locked writer. The lock must be
+    acquired every time, routing enabled or not."""
     monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
     sess = _FakeSessionByModel({worker.ChatHistoryLogSQL: _FakeRow("chat-thought")})
 
@@ -229,7 +237,8 @@ def test_chat_history_thought_for_merge_does_not_lock_when_routing_disabled(
         {"correlation_id": "corr-nolock"},
     )
 
-    assert sess.lock_calls == []
+    assert len(sess.lock_calls) == 1
+    assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()
 
 
 def test_chat_history_thought_for_merge_does_not_check_mirror_when_routing_disabled(

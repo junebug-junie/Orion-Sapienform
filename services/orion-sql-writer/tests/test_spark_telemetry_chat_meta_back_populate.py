@@ -155,14 +155,19 @@ def test_acquires_the_advisory_lock_before_any_lookup(monkeypatch: pytest.Monkey
     assert sess.lock_calls[0][1] == {"row_id": "corr-lock"}
 
 
-def test_does_not_lock_when_routing_disabled(monkeypatch: pytest.MonkeyPatch):
-    """Review follow-up (2026-08-19): the advisory lock exists solely to
-    protect the cross-table routing decision below -- with routing off there
-    is no cross-table race, so this hot-path telemetry write skips the lock
-    round trip entirely rather than paying for it unconditionally."""
+def test_acquires_lock_even_when_routing_disabled(monkeypatch: pytest.MonkeyPatch):
+    """Regression test for a bug in this fix's own first draft: a second
+    review pass (2026-08-19) caught that gating this lock on
+    sql_writer_aitown_routing_enabled reopens the exact race this fix
+    exists to close, because the writer-side locks
+    (_write_row/_ensure_chat_history_from_message) stay unconditional
+    regardless of the routing flag -- a gated reader would race an
+    in-flight, still-unconditionally-locked writer. The lock must be
+    acquired every time, routing enabled or not."""
     monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
     sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row({})})
 
     worker._back_populate_chat_spark_meta_from_telemetry(sess, "corr-nolock", {"correlation_id": "corr-nolock"})
 
-    assert sess.lock_calls == []
+    assert len(sess.lock_calls) == 1
+    assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()

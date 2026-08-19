@@ -982,17 +982,23 @@ def _apply_spark_meta_patch(payload: dict) -> bool:
         # correlation_id (see upsert_chat_history_row's own docstring), so
         # correlation_id is the correct lock key here.
         #
-        # Gated on sql_writer_aitown_routing_enabled (review follow-up,
-        # 2026-08-19): the lock exists solely to protect the cross-table
-        # routing decision below. When routing is disabled every write
-        # (turn-path and message-path alike) targets ChatHistoryLogSQL
-        # unconditionally -- see _resolve_chat_history_model_cls's own
-        # early return, which skips its DB lookup entirely in that case --
-        # so there is no cross-table race left to serialize against, and
-        # paying for a round trip on every patch write for zero correctness
-        # benefit isn't worth it.
-        if settings.sql_writer_aitown_routing_enabled:
-            _lock_chat_history_row(sess, corr)
+        # Deliberately UNCONDITIONAL, not gated on
+        # sql_writer_aitown_routing_enabled -- a second review pass
+        # (2026-08-19) caught that an earlier version of this patch gated
+        # it, reasoning "no routing decision to protect when routing is
+        # off." That reasoning missed that this lock does double duty: the
+        # turn-path and message-path writer sites (_write_row,
+        # _ensure_chat_history_from_message) acquire this SAME lock
+        # unconditionally, regardless of the routing flag, and hold it
+        # until their transaction commits -- so it also serializes "does
+        # the row exist yet" against an in-flight write, independent of
+        # which table ends up holding it. Gating only the reader side
+        # broke that symmetry: with routing disabled, a writer still locks
+        # and blocks, but a gated reader would skip its own lock and race
+        # the writer's uncommitted insert anyway -- reintroducing the exact
+        # bug this whole fix exists to close. Do not re-add this gate
+        # without also gating every writer-side lock call the same way.
+        _lock_chat_history_row(sess, corr)
         model_cls = ChatHistoryLogSQL
         existing = (
             sess.query(ChatHistoryLogSQL)
@@ -1221,11 +1227,20 @@ def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], ra
     # nothing serializing it, same failure shape _apply_spark_meta_patch was
     # fixed for. Self-contained here rather than relying on caller ordering,
     # matching _apply_spark_meta_patch/_back_populate_chat_spark_meta_from_
-    # telemetry's own pattern. Gated on routing being enabled for the same
-    # reason those two are: with routing off there is no cross-table race
-    # to protect against.
-    if settings.sql_writer_aitown_routing_enabled:
-        _lock_chat_history_row(sess, str(candidate_id))
+    # telemetry's own pattern.
+    #
+    # Deliberately UNCONDITIONAL -- see _apply_spark_meta_patch's own
+    # comment on this exact point (a second review pass, 2026-08-19, caught
+    # that gating this on routing_enabled reopens the race, because the
+    # writer-side locks this serializes against are themselves
+    # unconditional). Yes, this means a chat turn write now acquires this
+    # same advisory lock twice in one call (once here, once again at
+    # _write_row's own pre-existing call site further down) -- confirmed
+    # harmless: pg_advisory_xact_lock is reentrant per session/transaction,
+    # both calls target the same row id, and the redundant round trip is
+    # accepted as the cost of not having to reason about call-order
+    # coupling between this function and its caller.
+    _lock_chat_history_row(sess, str(candidate_id))
     existing = (
         sess.query(ChatHistoryLogSQL)
         .filter(
@@ -1264,16 +1279,26 @@ def _back_populate_chat_spark_meta_from_telemetry(sess: Any, corr_id: Any, filte
 
     Callers MUST hold `_lock_chat_history_row(sess, corr_id)` before calling
     this if their session hasn't already acquired it for this row (this
-    function does so itself, gated on routing being enabled -- with routing
-    off there is no cross-table race to protect against, see
-    _apply_spark_meta_patch's identical gating and rationale) -- same race
-    `_apply_spark_meta_patch` and `_resolve_chat_history_model_cls` guard
-    against: a concurrent turn-path write for the same row.
+    function does so itself) -- same race `_apply_spark_meta_patch` and
+    `_resolve_chat_history_model_cls` guard against: a concurrent turn-path
+    write for the same row.
+
+    Deliberately UNCONDITIONAL, not gated on
+    sql_writer_aitown_routing_enabled -- see _apply_spark_meta_patch's own
+    comment for why an earlier version of this gate was wrong (a second
+    review pass, 2026-08-19, caught that it reopens the very race this
+    fix exists to close, since the writer-side locks stay unconditional).
+    Accepted cost: on the common miss case (a telemetry tick whose
+    correlation_id has no matching chat row at all -- background/non-chat
+    telemetry), this now pays for a lock round trip plus up to 2
+    `with_for_update()` SELECTs instead of 1 unlocked SELECT. Not optimized
+    away because there is currently no cheap way to distinguish "this will
+    be a miss" from "this could race a concurrent write" ahead of taking
+    the lock.
 
     Returns True if a chat_history_log row was found and updated.
     """
-    if settings.sql_writer_aitown_routing_enabled:
-        _lock_chat_history_row(sess, str(corr_id))
+    _lock_chat_history_row(sess, str(corr_id))
     meta_for_chat = _spark_meta_minimal(filtered_data)
     chat_model_cls = ChatHistoryLogSQL
     # .with_for_update(): review follow-up (2026-08-19) -- this is a

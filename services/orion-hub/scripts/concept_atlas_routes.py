@@ -86,13 +86,58 @@ _RELATION_CLASSIFICATION_PAIR_CAP = 10
 # services/orion-topic-foundry/scripts/smoke_topic_foundry_train_and_poll.sh's
 # defaults (the only other place this pipeline has been exercised end-to-end
 # against real chat history).
-_TOPIC_FOUNDRY_DATASET_NAME = "orion-hub-autonomous-dataset"
-_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous"
+#
+# "-v2" (2026-08-18): renamed from "orion-hub-autonomous-dataset"/
+# "orion-hub-autonomous" to force fresh creation with _TOPIC_FOUNDRY_WHERE_SQL
+# applied. topic-foundry's dataset/model routes are create/list/preview only
+# -- no update endpoint (services/orion-topic-foundry/app/routers/datasets.py,
+# models.py) -- so changing where_sql on the *old* name would have been a
+# silent no-op: _ensure_topic_foundry_dataset_and_model does get-or-create by
+# name, and would keep finding and reusing the pre-existing, unfiltered
+# dataset/model forever. See
+# docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md
+# ("Track A") for why this filter exists: chat_history_log is ~90%
+# source='orion-embodiment' (AI Town) rows with no prior platform scoping,
+# so Orion's "organically clustered" concept graph had been mostly AI Town
+# topics since this pipeline first ran. The old, unfiltered dataset/model
+# are left in place -- topic-foundry has no delete endpoint either -- and
+# get-or-create-by-name (above) never looks them up again once this file's
+# constants point at the "-v2" names. They were *not* fully inert until a
+# second review-caught bug was fixed the same day: fetch_latest_completed_run
+# (topic_foundry_client.py) and fetch_run_topics_and_keywords resolved "the
+# latest run" globally across every model, not scoped to this one, so
+# ingestion could keep silently reading the old model's runs regardless of
+# this rename. Both call sites below now pass
+# model_name=_TOPIC_FOUNDRY_MODEL_NAME.
+_TOPIC_FOUNDRY_DATASET_NAME = "orion-hub-autonomous-dataset-v2"
+_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous-v2"
 _TOPIC_FOUNDRY_MODEL_VERSION = "v1"
 _TOPIC_FOUNDRY_SOURCE_TABLE = "chat_history_log"
 _TOPIC_FOUNDRY_ID_COLUMN = "correlation_id"
 _TOPIC_FOUNDRY_TIME_COLUMN = "created_at"
 _TOPIC_FOUNDRY_TEXT_COLUMNS = ["prompt", "response"]
+# Value must match services/orion-recall/app/chat_source_tagging.py's
+# AITOWN_TAG constant exactly -- that module is this repo's canonical
+# ai-town platform-tagging signal (client_meta.external_room.platform), and
+# this file deliberately does NOT cross-import it (orion-hub reaching into
+# another service's app/ package would violate this repo's service-boundary
+# convention -- CLAUDE.md section 5 -- and no other test/route in this repo
+# does that either). test_topic_foundry_scheduler.py asserts this literal
+# stays "aitown" so drift is at least test-visible, even without an
+# import-time link. If AITOWN_TAG's value ever changes, this must change
+# with it by hand.
+_AITOWN_PLATFORM_TAG = "aitown"
+# Excludes AI Town rows via that canonical tag, not the `source` column --
+# confirmed live 2026-08-18 that source='orion-embodiment' is 100%
+# correlated with this tag today, but the tag is the sanctioned signal the
+# rest of the codebase (chat_source_tagging.py, the aitown crystallization
+# gate) already builds around, and is the one that stays correct if a
+# second AI-Town-adjacent producer service ever appears. `IS DISTINCT FROM`
+# (not `!=`) so NULL client_meta / non-aitown rows are kept, not silently
+# dropped by SQL's three-valued NULL comparison semantics.
+_TOPIC_FOUNDRY_WHERE_SQL = (
+    f"(client_meta -> 'external_room' ->> 'platform') IS DISTINCT FROM '{_AITOWN_PLATFORM_TAG}'"
+)
 
 # HDBSCAN's noise/outlier bucket (topic-foundry side). Never a real topic --
 # same convention as orion/substrate/adapters/topic_foundry.py's own
@@ -144,7 +189,27 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
                     "time_column": _TOPIC_FOUNDRY_TIME_COLUMN,
                     "text_columns": _TOPIC_FOUNDRY_TEXT_COLUMNS,
                     "timezone": "UTC",
+                    "where_sql": _TOPIC_FOUNDRY_WHERE_SQL,
                 },
+            )
+        elif dataset.get("where_sql") != _TOPIC_FOUNDRY_WHERE_SQL:
+            # Get-or-create matches purely by name -- topic-foundry's
+            # dataset routes are create/list/preview only, no update
+            # endpoint, so a where_sql edited here without also bumping
+            # _TOPIC_FOUNDRY_DATASET_NAME silently keeps training on the
+            # OLD filter forever (this is the exact bug the "-v2" rename in
+            # this file's constants comment exists to fix once already;
+            # code review 2026-08-18 flagged that nothing stops the same
+            # mistake next time). Loud, not silent: log so a future change
+            # here that forgets to rename shows up in the scheduler's own
+            # logs on the very next tick, instead of only being discoverable
+            # by noticing stale concepts months later.
+            logger.warning(
+                "topic_foundry_dataset_where_sql_drift dataset_name=%s expected=%r actual=%r "
+                "-- rename _TOPIC_FOUNDRY_DATASET_NAME to force a fresh dataset with the new filter",
+                _TOPIC_FOUNDRY_DATASET_NAME,
+                _TOPIC_FOUNDRY_WHERE_SQL,
+                dataset.get("where_sql"),
             )
         dataset_id = str(dataset["dataset_id"])
 
@@ -287,7 +352,10 @@ def trigger_topic_foundry_enrichment() -> dict[str, Any]:
         return {"triggered": False, "reason": "topic_foundry_base_url_not_configured"}
 
     try:
-        run = fetch_latest_completed_run(base_url)
+        # model_name-scoped: without it this can resolve to a *different*
+        # model's latest run (e.g. the old, unfiltered "orion-hub-autonomous"
+        # model, still live and still ticking) -- code review 2026-08-18.
+        run = fetch_latest_completed_run(base_url, model_name=_TOPIC_FOUNDRY_MODEL_NAME)
     except TopicFoundryClientError as exc:
         logger.info("topic_foundry_enrich_no_completed_run reason=%s", exc)
         return {"triggered": False, "reason": "no_completed_run"}
@@ -817,7 +885,10 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         )
 
     try:
-        fetched = fetch_run_topics_and_keywords(base_url)
+        # model_name-scoped -- see trigger_topic_foundry_enrichment()'s
+        # identical comment; without this, ingestion could keep pulling
+        # topics from the old, unfiltered model's runs indefinitely.
+        fetched = fetch_run_topics_and_keywords(base_url, model_name=_TOPIC_FOUNDRY_MODEL_NAME)
     except TopicFoundryClientError as exc:
         logger.warning("concept_atlas_ingest_topic_foundry_fetch_failed error=%s", exc)
         return _unavailable(

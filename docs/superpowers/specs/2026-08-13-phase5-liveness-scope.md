@@ -1,14 +1,15 @@
 # Phase 5 — signal semantics: provenance, window, commensurability
 
-**Mode:** Was design/scoping. **R1–R5b are all shipped and merged.** The one
-open item is the fourth-axis question (R6, "can this metric express rest") —
-see "Open decisions". Kept as the arc's record rather than closed, because
-most of what it now says was learned by building it.
+**Mode:** Was design/scoping. **R1–R5b are all shipped and merged. The
+fourth-axis question (R6) is resolved: investigated, no live victim found,
+no rung, no code.** See "Open decisions". Kept as the arc's record rather
+than closed, because most of what it now says was learned by building it.
 
 **Date:** 2026-08-13, revised same day, 2026-08-15 with shipped status and
-measured outcomes, 2026-08-16 once R5a's watch shipped, and again 2026-08-19
-once R5b (the actual guard) shipped and was live-verified — see "What this
-revision retracts" and "What building it changed".
+measured outcomes, 2026-08-16 once R5a's watch shipped, 2026-08-19 once R5b
+(the actual guard) shipped and was live-verified, and again 2026-08-19 once
+the R6 investigation closed — see "What this revision retracts" and "What
+building it changed".
 
 ## Status
 
@@ -407,13 +408,61 @@ critical path.
 
 1. ~~**R5 scope.**~~ **RESOLVED 2026-08-16, see above.** R5a shipped without
    waiting on `expected_offline_suppression`.
-2. **The fourth axis.** Is "can this metric reach rest" worth its own rung
-   (R6), or does it fold into R5b's guard? It has three measured instances and
-   no detector. **Still open as a decision** -- R5b shipped as its own patch
-   and did not fold this in, so it did not get decided by default. Investigation
-   started 2026-08-19: current state of the three known instances, whether
-   others exist, and what a detector would actually need to check, before any
-   scope decision or code.
+2. ~~**The fourth axis.**~~ **RESOLVED 2026-08-19 -- no rung, no code, park it.**
+   Investigated properly (`scripts/check_metric_lineage.py` blast radius +
+   direct Postgres history, then a full adversarial pass after the first
+   pass's headline instance turned out to be wrong) before deciding, per this
+   doc's own "measure before building" discipline.
+
+   **The mechanism is real.** `apply_decay()`
+   (`services/orion-field-digester/app/digestion/decay.py`) has no floor on
+   any of its 28 `NODE_DECAY_CHANNELS` entries -- `vec[ch] = vec[ch] *
+   decay_rate` forever, and float64 repeatedly multiplied by 0.92 hits a
+   fixed point in the subnormal range before reaching true 0.0. Proved this
+   is the only way `field_coherence_warning` reaches `3e-323`: its one write
+   site (`worker.py:275`) can only ever write `round(hits/applicable, 4)`, a
+   ratio of small integers rounded to 4dp -- never a subnormal float directly
+   -- confirmed with a whole-repo grep for any other writer, not just the two
+   modules already in view.
+
+   **The instance that motivated it was wrong.** The first pass presented
+   `node:circe`'s frozen `field_coherence_warning` as a live, currently-active
+   defect. It wasn't checked whether circe was actually up. It is not: every
+   real channel on `node:circe` (`thermal_pressure`, `cpu_pressure`,
+   `gpu_pressure`, `staleness`, seven others) stopped writing within the same
+   ~2-minute window, 10+ hours before the check, while `node:athena` /
+   `node:atlas` / the `substrate.*` nodes all had writes within the prior
+   1-2 minutes -- confirmed with a corrected *per-node* query after the first
+   version of that query wrongly merged timestamps across all nodes and
+   couldn't actually distinguish "circe specifically is down" from "the whole
+   pipeline stalled". Circe going offline is already-documented expected
+   behavior for that node (see R5 timing section above, direct quote:
+   "circe is up sometimes, not always... live with it"), not an anomaly.
+
+   **No live consumer was found to actually be fooled.** Checked the 5
+   magnitude-sensitive sites out of the channel's 17 discovered generic
+   whole-vector consumers (`check_metric_lineage.py --generic-consumers`):
+   `pressure_delta()` (feeds R5b) treats a subnormal `before` the same as an
+   exact-zero one (`after - before` is insensitive to the difference, plus
+   its own `1e-6` deadband); `commensurability.py`'s existing
+   `DECAY_RATIO_EPSILON` carve-out is unaffected either way; the
+   `capability_vectors` decay branch is architecturally exempt in practice
+   (its own 2026-07-12 comment: `apply_diffusion()` overwrites every live
+   entry the same tick, so nothing decays away from a real value there);
+   and Hub's `build_channel_series()` already documents this exact
+   phenomenon by name ("blind in the subnormal range where decay stops
+   producing a 0.92 ratio") as the reason R2's timestamp-based regime path
+   exists -- and every stuck channel checked on circe carries a real
+   `node_vector_updated_at` stamp, so all of them ride that already-fixed
+   path, not the blind ratio-inference fallback it replaced.
+
+   **What's still genuinely open, not chased:** R2's own docstring states
+   only 22-25 of 38 channels get the timestamp fix; the remaining 13-16 still
+   use blind ratio-inference and theoretically could misread a subnormal
+   freeze as live data. No specific channel has been shown to hit this live.
+   If this doc's thesis (a known defect with no mechanism behind it does not
+   stay known) applies to itself: this paragraph is that mechanism for this
+   one.
 
 ## Risk note — tooling, not code
 

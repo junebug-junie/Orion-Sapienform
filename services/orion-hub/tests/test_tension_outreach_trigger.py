@@ -220,3 +220,27 @@ def test_malformed_sustained_load_value_degrades_to_zero_not_a_crash():
         result = tension_outreach_trigger.current_run()
     assert result is not None
     assert result.sustained_load_pressure == 0.0
+
+
+def test_fetch_recent_winners_keeps_missing_sustained_load_distinct_from_zero():
+    """Regression guard, 2026-08-19: a SQL NULL (pre-#1718 row, no
+    `sustained_load_pressure` key) must not be silently indistinguishable
+    from a genuine 0.0 reading at the layer that can still tell them apart
+    -- CLAUDE.md's metric-quality-gate names this exact failure shape
+    (missing-looks-like-calm) by incident."""
+    engine = _fake_engine_with_rows([("node:athena", 0.3, None)])
+    with patch.object(tension_outreach_trigger, "_engine", return_value=engine):
+        rows = tension_outreach_trigger._fetch_recent_winners(10.0)
+    assert rows == [("node:athena", 0.3, None)]
+
+
+def test_missing_sustained_load_column_collapses_to_zero_in_the_reason():
+    """The None/0.0 distinction is deliberately NOT carried onto
+    `TensionTriggerReason` -- both mean "nothing to add to the prompt" to
+    every real caller (see that field's own comment)."""
+    n = tension_outreach_trigger.MIN_RUN_LENGTH
+    rows = [("node:athena", 0.3, None)] * n  # type: ignore[list-item]
+    with patch.object(tension_outreach_trigger, "_engine", return_value=_fake_engine_with_rows(rows)):
+        result = tension_outreach_trigger.current_run()
+    assert result is not None
+    assert result.sustained_load_pressure == 0.0

@@ -70,6 +70,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Reused, not re-copied -- `_safe_float` already implements exactly the
+# "None/malformed degrades to a caller-chosen default" contract this module
+# needs, and this would otherwise be the THIRD hand-rolled copy of it in this
+# codebase (that docstring names the other two: attention_broadcast.py's
+# `_f()`, dynamics.py). Not promoted to a public name / moved to a shared
+# module in this patch -- that would touch `falkor_codec.py` for no other
+# reason this patch already has, same scope call this module's own design doc
+# already made for its "3 near-duplicate hand-rolled SQL fetches" finding.
+# `orion/` is the shared package (CLAUDE.md section 5's acceptable
+# cross-service seam), not another service's internals -- Hub already
+# imports `orion.field.significance`/`orion.attention.tension.*` the same
+# way.
+from orion.substrate.falkor_codec import _safe_float
 from scripts.pg_engine import get_engine as _engine
 
 # Derived default -- see "WHERE THE BAR CAME FROM" above. Real callers get
@@ -112,18 +125,32 @@ class TensionTriggerReason:
     # module docstring's "COMBINED WITH THE LEVEL-AWARE SIGNAL" section. No
     # "peak_" tracking here: unlike deviation_pressure this is already a
     # ~30s-throttled, carried-forward gauge read off one field_json column,
-    # not a per-tick series worth taking a running max over. 0.0 means "no
-    # channel field-digester's significance producer sees is loaded_steady
-    # right now" -- a real reading, not a missing one (see
-    # `orion.field.significance.sustained_load_pressure`'s own docstring).
+    # not a per-tick series worth taking a running max over.
+    #
+    # 0.0 here means EITHER "no channel field-digester's significance
+    # producer sees is loaded_steady right now" (a real calm reading) OR "the
+    # field_json row that produced this reason predates PR #1718 and has no
+    # `sustained_load_pressure` key at all" (SQL NULL, collapsed to 0.0 by
+    # `current_run` -- see its own comment). The two cases are NOT
+    # distinguishable on this field once constructed; `_fetch_recent_winners`
+    # keeps them apart as `float | None` for any caller that needs to. This
+    # is a narrow, self-healing ambiguity (LOOKBACK_MINUTES=10.0 caps how
+    # long a pre-migration row can still be "latest") -- CLAUDE.md's own
+    # metric-quality-gate names exactly this failure shape
+    # (missing-looks-like-calm) by incident, so it is disclosed here rather
+    # than silently assumed away.
     sustained_load_pressure: float = 0.0
 
 
 def _fetch_recent_winners(
     limit_minutes: float,
-) -> list[tuple[str | None, float, float]]:
+) -> list[tuple[str | None, float, float | None]]:
     """(winner_target_id, deviation_pressure, sustained_load_pressure)
-    triples, oldest first.
+    triples, oldest first. `sustained_load_pressure` is `None` when the row's
+    `field_json` has no such key (a pre-`PR #1718` row) or the value is
+    malformed -- kept distinct from a genuine `0.0` reading here; `current_run`
+    is where that distinction collapses (see `TensionTriggerReason`'s own
+    comment for why collapsing it there, not here, is deliberate).
 
     Reads the already-computed columns `orion-field-digester` wrote once per
     real digestion tick -- does NOT replay `FieldTensionCompetition` or
@@ -159,16 +186,17 @@ def _fetch_recent_winners(
             ),
             {"secs": limit_minutes * 60.0},
         ).fetchall()
-    out: list[tuple[str | None, float, float]] = []
+    out: list[tuple[str | None, float, float | None]] = []
     for winner, deviation, sustained_load in rows:
-        try:
-            dev = float(deviation) if deviation is not None else 0.0
-        except (TypeError, ValueError):
-            dev = 0.0
-        try:
-            load = float(sustained_load) if sustained_load is not None else 0.0
-        except (TypeError, ValueError):
-            load = 0.0
+        # deviation's 0.0 default is intentional arithmetic, not an honesty
+        # claim -- an absent/malformed reading contributes nothing to the
+        # run's max() below, same as a genuine 0.0 would.
+        dev = _safe_float(deviation, default=0.0)
+        # sustained_load's default is None, not 0.0 -- see this function's
+        # own docstring and `TensionTriggerReason.sustained_load_pressure`'s
+        # comment for why the None/0.0 distinction is kept this far and no
+        # further.
+        load = _safe_float(sustained_load, default=None)
         out.append((winner, dev, load))
     return out
 
@@ -213,5 +241,11 @@ def current_run(
         target_id=latest_winner,
         run_length=run_length,
         peak_deviation_pressure=max_deviation_in_run,
-        sustained_load_pressure=latest_sustained_load,
+        # None (missing key / pre-#1718 row) collapses to 0.0 here, same as
+        # genuine calm -- both mean "nothing to add to the prompt" to every
+        # real caller, so the type-level distinction `_fetch_recent_winners`
+        # keeps has done its job by the time it reaches this object.
+        sustained_load_pressure=(
+            0.0 if latest_sustained_load is None else latest_sustained_load
+        ),
     )

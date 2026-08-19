@@ -1486,6 +1486,10 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             route_target,
             poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
             max_wait_sec=settings.llm_gateway_background_max_wait_sec,
+            # ROADMAP A5: the ledger is keyed by route so a deferral can be attributed to a
+            # lane. This is the bus path, and as of 2026-08-19 it carries 100% of live
+            # background traffic (openai_passthrough logged zero background requests in 4h).
+            route_key=str(route or ""),
         )
 
     route_url: Optional[str] = None

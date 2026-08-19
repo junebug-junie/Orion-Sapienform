@@ -23,6 +23,7 @@ from .llm_backend import get_route_targets, run_llm_chat
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
 from .route_catalog import get_routes_payload
+from .admission_ledger import get_ledger
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .settings import settings
@@ -108,6 +109,19 @@ async def ready() -> JSONResponse:
 @app.get("/routes")
 async def routes_catalog() -> Dict[str, Any]:
     return await get_routes_payload()
+
+
+# ROADMAP A5. The read side of the admission ledger: how often background dispatch was actually
+# made to wait, and for how long. This is what cortex-exec reads to put the wait into Orion's
+# own context, and it is deliberately the whole picture rather than only the deferrals --
+# `checked` is the denominator, so a caller can tell "asked 294 times, never waited" apart from
+# "nothing asked", which are different facts and would otherwise be the same zero.
+#
+# Read-only, no content, no identity. See admission_ledger.py's docstring.
+@app.get("/admission")
+async def admission_snapshot(window_s: float = 21600.0) -> Dict[str, Any]:
+    window = min(max(float(window_s), 60.0), 86400.0)
+    return get_ledger().snapshot(window_s=window)
 
 
 def _cfg() -> ChassisConfig:

@@ -295,3 +295,99 @@ class TestWaitForSlackSync:
                 _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=5.0
             )
         assert ok is False
+
+
+class TestAdmissionIsRecordedInTheLedger:
+    """ROADMAP A5: every admission decision must reach the ledger, not just the log.
+
+    Six call sites emit an admission outcome. These drive the real functions rather than
+    asserting on `_log_and_record` directly, because the failure this guards against is a call
+    site that logs and forgets to record -- which a test of the helper in isolation cannot see.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_ledger(self, monkeypatch: pytest.MonkeyPatch):
+        from app.admission_ledger import AdmissionLedger
+
+        led = AdmissionLedger()
+        monkeypatch.setattr(priority_admission, "get_ledger", lambda: led)
+        yield led
+
+    @pytest.mark.asyncio
+    async def test_immediate_admit_records_a_non_deferral(self, _fresh_ledger, monkeypatch):
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
+        assert await priority_admission.wait_for_slack(
+            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0,
+            route_key="quick_background",
+        ) is True
+        snap = _fresh_ledger.snapshot(window_s=600.0)
+        assert (snap["checked"], snap["deferrals"]) == (1, 0)
+        assert snap["routes"] == ["quick_background"]
+
+    @pytest.mark.asyncio
+    async def test_a_real_wait_records_a_deferral_with_its_duration(self, _fresh_ledger, monkeypatch):
+        """Busy, busy, then room: two slept intervals, so polls=3 and it IS a deferral."""
+        monkeypatch.setattr(
+            priority_admission, "_free_slot_count", AsyncMock(side_effect=[0, 1, 4])
+        )
+        assert await priority_admission.wait_for_slack(
+            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=5.0,
+            route_key="quick_background",
+        ) is True
+        snap = _fresh_ledger.snapshot(window_s=600.0)
+        assert (snap["checked"], snap["deferrals"]) == (1, 1)
+        assert snap["longest_wait_s"] > 0.0
+        assert snap["last_deferral_ts"] is not None
+
+    @pytest.mark.asyncio
+    async def test_unreachable_slots_records_unchecked(self, _fresh_ledger, monkeypatch):
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=None))
+        assert await priority_admission.wait_for_slack(
+            _target(), poll_interval_sec=0.01, max_wait_sec=1.0,
+        ) is False
+        snap = _fresh_ledger.snapshot(window_s=600.0)
+        assert (snap["checked"], snap["unchecked"], snap["deferrals"]) == (1, 1, 0)
+
+    @pytest.mark.asyncio
+    async def test_timeout_records_a_deferral(self, _fresh_ledger, monkeypatch):
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=0))
+        assert await priority_admission.wait_for_slack(
+            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=0.0,
+        ) is False
+        snap = _fresh_ledger.snapshot(window_s=600.0)
+        assert (snap["deferrals"], snap["timeouts"]) == (1, 1)
+
+    def test_sync_path_records_too(self, _fresh_ledger, monkeypatch):
+        """run_llm_chat's blocking path carries 100% of live background traffic (2026-08-19),
+        so a ledger wired only to the async path would record nothing at all in production."""
+        monkeypatch.setattr(
+            priority_admission, "_free_slot_count_sync", lambda url, **kw: 4
+        )
+        assert priority_admission.wait_for_slack_sync(
+            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0,
+            route_key="quick_background",
+        ) is True
+        assert _fresh_ledger.snapshot(window_s=600.0)["checked"] == 1
+
+    @pytest.mark.asyncio
+    async def test_background_admission_passes_its_route_key_through(self, _fresh_ledger, monkeypatch):
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
+        async with priority_admission.background_admission(
+            "quick_background", _target(reserved_free_slots=2),
+            concurrency=1, poll_interval_sec=0.01, max_wait_sec=1.0,
+        ):
+            pass
+        assert _fresh_ledger.snapshot(window_s=600.0)["routes"] == ["quick_background"]
+
+    @pytest.mark.asyncio
+    async def test_a_broken_ledger_never_breaks_a_dispatch(self, monkeypatch):
+        """Bookkeeping is not allowed to cost a request. Fail-open is the whole contract here."""
+        class _Exploding:
+            def record(self, **kw):
+                raise RuntimeError("ledger on fire")
+
+        monkeypatch.setattr(priority_admission, "get_ledger", lambda: _Exploding())
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
+        assert await priority_admission.wait_for_slack(
+            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0,
+        ) is True

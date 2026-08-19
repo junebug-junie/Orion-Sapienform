@@ -43,6 +43,7 @@ from typing import Dict, Optional
 
 import httpx
 
+from .admission_ledger import get_ledger
 from .llm_backend import RouteTarget
 
 logger = logging.getLogger("orion-llm-gateway.priority_admission")
@@ -89,11 +90,42 @@ async def _free_slot_count(base_url: str, *, timeout_sec: float = 5.0) -> Option
 _DEFERRAL_LOG = "[LLM-GW background] admission waited=%.3fs polls=%d reserved=%d url=%s outcome=%s"
 
 
+# ROADMAP A5. The log line above is a durable record for an operator and is invisible to Orion.
+# Every decision is now also written to the process ledger (admission_ledger.py), which is what
+# `GET /admission` reads and what puts the wait into Orion's own context. Logging and recording
+# go through this one helper on purpose: six call sites emitted the log line, and any of them
+# forgetting to also record would make the ledger quietly under-count the very event it exists
+# to hold.
+def _log_and_record(
+    *,
+    route_key: str,
+    target: "RouteTarget",
+    waited_s: float,
+    polls: int,
+    reserved: int,
+    outcome: str,
+) -> None:
+    log = logger.warning if outcome == "timeout_forwarded" else logger.info
+    log(_DEFERRAL_LOG, waited_s, polls, reserved, target.url, outcome)
+    try:
+        get_ledger().record(
+            route_key=route_key,
+            url=target.url,
+            waited_s=waited_s,
+            polls=polls,
+            reserved=reserved,
+            outcome=outcome,
+        )
+    except Exception:  # noqa: BLE001 -- bookkeeping must never break a dispatch
+        logger.debug("[LLM-GW background] admission ledger record failed", exc_info=True)
+
+
 async def wait_for_slack(
     target: RouteTarget,
     *,
     poll_interval_sec: float,
     max_wait_sec: float,
+    route_key: str = "",
 ) -> bool:
     """Block until the upstream has enough free slots for background dispatch.
 
@@ -111,16 +143,19 @@ async def wait_for_slack(
         free = await _free_slot_count(target.url)
         polls += 1
         if free is None:
-            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
-                        target.url, "unchecked")
+            _log_and_record(route_key=route_key, target=target,
+                            waited_s=time.monotonic() - started, polls=polls,
+                            reserved=reserved, outcome="unchecked")
             return False
         if free >= reserved:
-            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
-                        target.url, "admitted")
+            _log_and_record(route_key=route_key, target=target,
+                            waited_s=time.monotonic() - started, polls=polls,
+                            reserved=reserved, outcome="admitted")
             return True
         if time.monotonic() >= deadline:
-            logger.warning(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
-                           target.url, "timeout_forwarded")
+            _log_and_record(route_key=route_key, target=target,
+                            waited_s=time.monotonic() - started, polls=polls,
+                            reserved=reserved, outcome="timeout_forwarded")
             return False
         await asyncio.sleep(interval)
 
@@ -144,6 +179,7 @@ def wait_for_slack_sync(
     *,
     poll_interval_sec: float,
     max_wait_sec: float,
+    route_key: str = "",
 ) -> bool:
     """Blocking counterpart to wait_for_slack, for run_llm_chat's sync call path.
 
@@ -160,16 +196,19 @@ def wait_for_slack_sync(
         free = _free_slot_count_sync(target.url)
         polls += 1
         if free is None:
-            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
-                        target.url, "unchecked")
+            _log_and_record(route_key=route_key, target=target,
+                            waited_s=time.monotonic() - started, polls=polls,
+                            reserved=reserved, outcome="unchecked")
             return False
         if free >= reserved:
-            logger.info(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
-                        target.url, "admitted")
+            _log_and_record(route_key=route_key, target=target,
+                            waited_s=time.monotonic() - started, polls=polls,
+                            reserved=reserved, outcome="admitted")
             return True
         if time.monotonic() >= deadline:
-            logger.warning(_DEFERRAL_LOG, time.monotonic() - started, polls, reserved,
-                           target.url, "timeout_forwarded")
+            _log_and_record(route_key=route_key, target=target,
+                            waited_s=time.monotonic() - started, polls=polls,
+                            reserved=reserved, outcome="timeout_forwarded")
             return False
         time.sleep(interval)
 
@@ -195,6 +234,7 @@ class background_admission:
         poll_interval_sec: float,
         max_wait_sec: float,
     ) -> None:
+        self._route_key = route_key
         self._target = target
         self._poll_interval_sec = poll_interval_sec
         self._max_wait_sec = max_wait_sec
@@ -211,6 +251,7 @@ class background_admission:
                 self._target,
                 poll_interval_sec=self._poll_interval_sec,
                 max_wait_sec=self._max_wait_sec,
+                route_key=self._route_key,
             )
         except BaseException:
             self._sem.release()

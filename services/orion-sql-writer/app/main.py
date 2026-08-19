@@ -791,6 +791,42 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.exception("grammar_events retention startup failed (continuing boot): %s", exc)
 
+    # grammar_edges/grammar_atoms/substrate_organ_emissions had NO retention at all
+    # until this patch -- confirmed live 2026-08-19: unbounded growth, ~13GB combined,
+    # zero deletes ever. Same bounded-startup shape as grammar_events above, each with
+    # its own retention_days knob (settings.py), each independently best-effort (one
+    # table's failure must not skip the others or block boot).
+    for _table_label, _apply_fn_name, _days_attr in (
+        ("grammar_edges", "apply_grammar_edges_retention", "grammar_edges_retention_days"),
+        ("grammar_atoms", "apply_grammar_atoms_retention", "grammar_atoms_retention_days"),
+        (
+            "substrate_organ_emissions",
+            "apply_substrate_organ_emissions_retention",
+            "substrate_organ_emissions_retention_days",
+        ),
+    ):
+        _retention_days = int(getattr(settings, _days_attr, 0) or 0)
+        if _retention_days <= 0:
+            continue
+        try:
+            import app.grammar_truth as _grammar_truth
+
+            _apply_fn = getattr(_grammar_truth, _apply_fn_name)
+            _result = _apply_fn(_retention_days)
+            logger.info(
+                "🧹 %s retention cutoff=%s rows_pruned=%s batches=%s "
+                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
+                _table_label,
+                _result.cutoff_at.isoformat() if _result.cutoff_at else None,
+                _result.rows_pruned_last_run,
+                _result.batches_attempted,
+                _result.remaining_debt,
+                _result.elapsed_sec,
+                _result.failure_reason,
+            )
+        except Exception as exc:
+            logger.exception("%s retention startup failed (continuing boot): %s", _table_label, exc)
+
     task: asyncio.Task | None = None
     if settings.orion_bus_enabled:
         svc = build_hunter()

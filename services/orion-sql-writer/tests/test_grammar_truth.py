@@ -35,8 +35,12 @@ if str(SQL_WRITER_ROOT) not in sys.path:
 # cannot break this way, whatever else the suite does to sys.modules.
 import app.grammar_truth as grammar_truth_module  # noqa: E402
 from app.grammar_truth import (
+    apply_grammar_atoms_retention,
+    apply_grammar_edges_retention,
     apply_grammar_events_retention,
+    apply_substrate_organ_emissions_retention,
     build_grammar_truth_snapshot,
+    extra_retention_state,
     reset_retention_state_for_tests,
 )
 
@@ -52,10 +56,13 @@ def _mock_settings(**overrides):
         sql_writer_enable_grammar_channel=True,
         effective_subscribe_channels=["orion:grammar:event"],
         sql_writer_grammar_workers=4,
-        grammar_events_retention_days=30,
+        grammar_events_retention_days=15,
         grammar_events_retention_batch_size=5000,
         grammar_events_retention_max_batches_per_startup=20,
         grammar_events_retention_max_elapsed_sec=120.0,
+        grammar_edges_retention_days=15,
+        grammar_atoms_retention_days=15,
+        substrate_organ_emissions_retention_days=15,
         sql_writer_allow_accepted_pressure_ingest=False,
     )
     for key, value in overrides.items():
@@ -64,19 +71,41 @@ def _mock_settings(**overrides):
 
 
 def _patch_truth_deps(monkeypatch, settings) -> None:
+    # All four of these target app.grammar_truth (or its sibling app.worker) by
+    # MODULE OBJECT, not by string path -- see the file-level comment above about
+    # why: monkeypatch's string form re-resolves "app.grammar_truth.<name>" by
+    # walking sys.modules at call time, and something elsewhere in a full-suite
+    # run can leave that walk raising AttributeError mid-suite, silently
+    # skipping the patch and leaving the real DB-backed function bound (which
+    # then fails with a DNS/connection error instead of the intended
+    # assertion). Confirmed live 2026-08-19: `_grammar_index_valid` and
+    # `_fallback_counts` were still using the string form and both failed this
+    # way under `pytest services/orion-sql-writer/tests -q` (the documented
+    # gate command) despite passing every time when this file ran alone.
     monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
+    from app import worker as worker_mod
+
     monkeypatch.setattr(
-        "app.worker.grammar_queue_snapshot",
+        worker_mod,
+        "grammar_queue_snapshot",
         lambda: {"workers": 4, "total_depth": 0, "shards": []},
     )
     monkeypatch.setattr(
-        "app.grammar_truth._fallback_counts",
+        grammar_truth_module,
+        "_fallback_counts",
         lambda: {"total": 0, "last_5m": 0, "last_30m": 0, "last_60m": 0},
     )
     monkeypatch.setattr(grammar_truth_module, "_latest_events_by_source", lambda: [])
     monkeypatch.setattr(
-        "app.grammar_truth._grammar_index_valid",
-        lambda: {"idx_grammar_events_source_created": True, "indexdef": "CREATE INDEX ..."},
+        grammar_truth_module,
+        "_grammar_index_valid",
+        lambda: {
+            "idx_grammar_events_source_created": True,
+            "idx_grammar_events_created_at": True,
+            "idx_grammar_edges_created_at": True,
+            "idx_grammar_atoms_created_at": True,
+            "indexdef": "CREATE INDEX ...",
+        },
     )
 
 
@@ -195,6 +224,102 @@ def test_retention_stops_at_max_batch_cap_and_reports_debt(monkeypatch) -> None:
     assert result.rows_pruned_last_run == 20
     assert result.remaining_debt == 5
     assert result.capped_by_startup_limit is True
+
+
+@pytest.mark.parametrize(
+    "apply_fn, table, id_column, extra_state_key",
+    [
+        (apply_grammar_edges_retention, "grammar_edges", "edge_id", "grammar_edges"),
+        (apply_grammar_atoms_retention, "grammar_atoms", "atom_id", "grammar_atoms"),
+        (
+            apply_substrate_organ_emissions_retention,
+            "substrate_organ_emissions",
+            "emission_id",
+            "substrate_organ_emissions",
+        ),
+    ],
+)
+def test_new_table_retention_deletes_and_records_extra_state(
+    monkeypatch, apply_fn, table, id_column, extra_state_key
+) -> None:
+    # Regression coverage for the three tables that had NO retention at all before
+    # this patch (confirmed live 2026-08-19: unbounded growth, zero deletes ever).
+    settings = _mock_settings(
+        grammar_events_retention_batch_size=10,
+        grammar_events_retention_max_batches_per_startup=5,
+    )
+    monkeypatch.setattr(grammar_truth_module, "get_settings", lambda: settings)
+
+    conn = MagicMock()
+    conn.execute.side_effect = [
+        MagicMock(scalar_one=lambda: 0),  # FK check
+        MagicMock(scalar_one=lambda: 0),  # remaining debt
+    ]
+    conn.__enter__ = MagicMock(return_value=conn)
+    conn.__exit__ = MagicMock(return_value=False)
+
+    begin_conn = MagicMock()
+    begin_conn.execute.side_effect = [MagicMock(rowcount=7)]
+    begin_conn.__enter__ = MagicMock(return_value=begin_conn)
+    begin_conn.__exit__ = MagicMock(return_value=False)
+
+    engine = MagicMock()
+    engine.connect.return_value = conn
+    engine.begin.return_value = begin_conn
+    # substrate_organ_emissions uses the plain `engine`, the other two use
+    # `grammar_engine` -- patch both so the same test body works for all three.
+    monkeypatch.setattr(grammar_truth_module, "grammar_engine", engine)
+    monkeypatch.setattr(grammar_truth_module, "default_engine", engine)
+
+    result = apply_fn(15)
+    assert result.rows_pruned_last_run == 7
+    assert result.failure_reason is None
+    sql_texts = [str(c.args[0]) for c in begin_conn.execute.call_args_list]
+    assert all(f"DELETE FROM {table}" in sql for sql in sql_texts)
+    assert all(f"{id_column} IN" in sql for sql in sql_texts)
+
+    # Recorded into the per-table slot, NOT the legacy single grammar_events global.
+    assert extra_retention_state(extra_state_key) is result
+    assert grammar_truth_module._retention_state.rows_pruned_last_run == 0
+
+
+def test_other_table_retention_failure_flags_its_own_degraded_reason(monkeypatch) -> None:
+    settings = _mock_settings()
+    _patch_truth_deps(monkeypatch, settings)
+
+    gt = grammar_truth_module
+    from app.grammar_truth import GrammarRetentionState
+
+    failed = GrammarRetentionState()
+    failed.last_run_at = datetime.now(timezone.utc)
+    failed.failure_reason = "timeout"
+    gt._extra_retention_state["grammar_edges"] = failed
+
+    snap = build_grammar_truth_snapshot()
+    assert "grammar_edges_retention_failed" in snap["degraded_reasons"]
+    assert snap["other_table_retention"]["grammar_edges"]["failure_reason"] == "timeout"
+    # grammar_atoms/substrate_organ_emissions weren't touched -- shouldn't be flagged
+    # just because a sibling table's retention failed.
+    assert "grammar_atoms_retention_failed" not in snap["degraded_reasons"]
+
+
+def test_missing_new_retention_index_flags_degraded(monkeypatch) -> None:
+    settings = _mock_settings()
+    _patch_truth_deps(monkeypatch, settings)
+    monkeypatch.setattr(
+        grammar_truth_module,
+        "_grammar_index_valid",
+        lambda: {
+            "idx_grammar_events_source_created": True,
+            "idx_grammar_events_created_at": False,
+            "idx_grammar_edges_created_at": True,
+            "idx_grammar_atoms_created_at": True,
+            "indexdef": "CREATE INDEX ...",
+        },
+    )
+
+    snap = build_grammar_truth_snapshot()
+    assert "grammar_events_created_at_index_missing" in snap["degraded_reasons"]
 
 
 def test_fk_unsafe_state_prevents_prune_and_marks_degraded(monkeypatch) -> None:

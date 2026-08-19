@@ -294,14 +294,20 @@ episode's catchable window", not the diluted per-poll hit rate):
 | 10s (new default) | ~33% |
 | 5s (the class's existing floor, `max(5.0, ...)`) | ~56% |
 
-10s was chosen over the 5.0 floor as a deliberate middle ground: the query itself is cheap
-(a single indexed range scan, confirmed via `EXPLAIN` — index-only scan on
-`idx_substrate_field_state_generated`), and `maybe_outreach()`'s gate checks that run before
-it are all in-memory, so polling faster costs one more cheap SQL round-trip per tick, not
-more LLM generation (the expensive path is still gated on how rarely a real reason is
-actually found, independent of poll rate) — but this shares one Postgres instance with
-every other service, so tightening all the way to the floor "because it's cheap" was not
-treated as free.
+10s was chosen over the 5.0 floor as a deliberate middle ground: the query itself is cheap,
+confirmed by running `EXPLAIN` live against the real query text (2026-08-19) — a **Bitmap
+Heap Scan** off `idx_substrate_field_state_generated` (cost ~323), narrowing candidate rows
+cheaply via the index then fetching `field_json` from the heap for each match. **Not**
+index-only — `field_json` itself isn't part of the index, so a heap fetch per matching row
+is unavoidable; an earlier version of this doc wrongly called it "index-only", conflating
+this query with an unrelated bare `COUNT(*)` `EXPLAIN` (which legitimately was index-only,
+since it needs no columns outside the index) run during the same investigation. Still cheap
+in absolute terms at this row volume, just not literally free of heap I/O. `maybe_outreach()`'s
+gate checks that run before it are all in-memory, so polling faster costs one more Bitmap
+Heap Scan per tick, not more LLM generation (the expensive path is still gated on how rarely
+a real reason is actually found, independent of poll rate) — but this shares one Postgres
+instance with every other service, so tightening all the way to the floor "because it's
+cheap" was not treated as free.
 
 **Disclosed, not silently accepted: even at the 5.0s floor, catch rate tops out around
 ~56% on this sample.** Polling faster narrows the gap but cannot close it, because a
@@ -312,3 +318,17 @@ exact instant" — a genuine redesign, not a tuning knob, and real, separate fol
 not done here. The n=9-episode sample this table rests on is small; if real firing behavior
 after this patch deploys disagrees with these numbers, re-derive from more data rather than
 trusting this table indefinitely.
+
+**Known gap, disclosed not fixed: no instrumentation distinguishes "no qualifying run
+occurred" from "one occurred and this poll missed it."** The exact failure mode this whole
+patch responds to — outreach silently never firing, for days, with nobody noticing until
+Juniper asked directly — has no automated tripwire even after this fix. `status()`'s
+`last_result.reason == "no_tension_trigger"` reads identically in both cases. If real
+production catch rate turns out worse than the ~33% this table estimates (DB latency, tick
+jitter, a field-digester cadence change), the symptom is indistinguishable from "genuinely
+nothing to report" and would again require a manual investigation like this one to surface.
+A cheap real option: log/count when a `sustained_load_pressure`-style companion signal
+implies a run *should* have been catchable but `current_run()` came back empty on the
+adjacent poll — not built here; this patch's own scope is the poll-cadence root cause, not
+a new observability channel, which would need its own metric-quality-gate treatment
+(CLAUDE.md §0A) before being wired in. Real, separate follow-up work.

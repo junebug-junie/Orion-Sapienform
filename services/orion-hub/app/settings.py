@@ -350,13 +350,21 @@ class Settings(BaseSettings):
     # seconds. Simulating the real poll loop against 6h of real
     # substrate_field_state history (scripts/tension_outreach_trigger.py's
     # own query, replayed offline): 300s caught 0 of 9 real qualifying
-    # episodes (0%); 30s caught ~9%; 15s ~18%; 10s ~33%; the 5.0 floor this
-    # class already enforces (see __init__'s `max(5.0, ...)`) caught ~56%.
+    # episodes (0%); 30s caught ~9%; 15s ~18%; 10s ~33%; the 5.0 floor caught
+    # ~56% -- that floor is enforced by the CONSUMER, not this Field:
+    # `EndogenousOutreach.__init__` (scripts/endogenous_outreach.py) does
+    # `self.tick_interval_sec = max(5.0, float(tick_interval_sec))`; this
+    # raw setting itself carries no floor and would happily accept e.g. 0.5.
     # 10.0 is a deliberate middle ground, not the theoretical best (5.0
-    # would catch more) -- the query is cheap (one indexed range scan, see
-    # tension_outreach_trigger.py's own EXPLAIN-verified index-only-scan
-    # plan) but this shares the same Postgres instance as every other
-    # service, so this does not poll at the floor "because it can."
+    # would catch more) -- the query is cheap (`EXPLAIN`'d live against the
+    # real query text, 2026-08-19: a Bitmap Heap Scan off
+    # idx_substrate_field_state_generated, cost ~323 -- NOT an index-only
+    # scan, since `field_json` itself isn't indexed and still needs a heap
+    # fetch per matching row; corrected after an earlier version of this
+    # comment wrongly claimed "index-only", conflating this query with an
+    # unrelated bare COUNT(*) EXPLAIN that legitimately was) -- but this
+    # shares the same Postgres instance as every other service, so this
+    # does not poll at the floor "because it can."
     # DISCLOSED, not silently accepted: even at the floor, catch rate tops
     # out around ~56% on this sample -- polling faster narrows but does not
     # close the gap, because many real episodes' catchable window is under

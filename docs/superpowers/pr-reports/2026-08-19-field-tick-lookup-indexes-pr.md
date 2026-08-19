@@ -17,17 +17,20 @@ Whole-database sequential rows read per second, sampled live over 120 s:
 |---|---|---|
 | Before PR #1745 (arc baseline) | 1,021,558 | — |
 | After PR #1745 (pending markers) | 157,464 | −84.6% |
-| **After this patch** | **31,505** | **−96.9%** |
+| After the two field-tick indexes | 31,505 | −96.9% |
+| **After the receipts fix (final)** | **7,715** | **−99.2%** |
 
-`substrate_proposal_frames` no longer appears in the top-8 at all (was 128,164/sec, 81% of all remaining scan load).
+`substrate_proposal_frames` and `substrate_reduction_receipts` are both gone from the top-8 entirely. Nothing above 5,444/sec remains.
 
-Host I/O pressure at the moment of measurement, mid-decay from the old regime:
+Host I/O pressure, `/proc/pressure/io`:
 
 ```
-full avg10=0.22  avg60=2.62  avg300=13.02
+at the start of the D2 investigation:   full avg60 = 22.29
+after PR #1745:                         full avg60 =  2.62   (avg300 still 13.02, mid-decay)
+now:                                    full avg60 =  0.57   (avg300 1.70)
 ```
 
-`avg300` still carries the pre-patch regime; `avg10` is the new one.
+athena was I/O-stalled roughly 22% of wall time. It is now stalled well under 1%.
 
 Per-query, measured with `EXPLAIN (ANALYZE, BUFFERS)` on the live tables:
 

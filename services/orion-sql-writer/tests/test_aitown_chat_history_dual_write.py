@@ -44,11 +44,19 @@ class _FakeSession:
 
     def __init__(self, *, query_result_by_model: dict[type, Any] | None = None):
         self.executed: list[Any] = []
+        self.lock_calls: list[Any] = []
         self.query_calls: list[type] = []
         self._query_result_by_model = query_result_by_model or {}
         self._current_model: type | None = None
 
-    def execute(self, stmt):
+    def execute(self, stmt, params=None):
+        # params is not None => _lock_chat_history_row's advisory-lock call
+        # (added to _apply_spark_meta_patch by the 2026-08-19
+        # routing-awareness follow-up). Tracked separately so the existing
+        # `sess.executed[0]` assertions below still see the real UPDATE.
+        if params is not None:
+            self.lock_calls.append((stmt, params))
+            return None
         self.executed.append(stmt)
 
     def commit(self):

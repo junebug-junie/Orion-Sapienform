@@ -970,6 +970,18 @@ def _apply_spark_meta_patch(payload: dict) -> bool:
         # clobber the first's merged keys). Closed now while this function
         # was already being touched for routing, rather than leaving it as
         # a standing follow-up.
+        #
+        # _lock_chat_history_row(): code review on #1743 (2026-08-19)
+        # caught that this function never acquired it, despite
+        # _resolve_chat_history_model_cls's own docstring saying callers
+        # MUST hold it -- without it, a patch racing a concurrent turn-path
+        # write for the same row could find "existing is None" in BOTH
+        # tables (the turn event hasn't committed yet) and silently drop
+        # the patch (spark_meta_patch_missing_row) instead of applying it
+        # once the row lands. Every current producer sets id ==
+        # correlation_id (see upsert_chat_history_row's own docstring), so
+        # correlation_id is the correct lock key here.
+        _lock_chat_history_row(sess, corr)
         model_cls = ChatHistoryLogSQL
         existing = (
             sess.query(ChatHistoryLogSQL)
@@ -1199,10 +1211,73 @@ def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], ra
         )
         .first()
     )
+    # Not routing-aware before this fix (code review on the substrate-purge
+    # branch, 2026-08-19): a row already routed to aitown_chat_history_log
+    # (PR #1743) was invisible here, so an existing AI-Town thought_process
+    # was silently dropped in favor of the incoming value on every merge.
+    if existing is None and settings.sql_writer_aitown_routing_enabled:
+        existing = (
+            sess.query(AitownChatHistoryLogSQL)
+            .filter(
+                (AitownChatHistoryLogSQL.id == str(candidate_id))
+                | (AitownChatHistoryLogSQL.correlation_id == str(candidate_id))
+            )
+            .first()
+        )
     existing_thought = _normalized_text(getattr(existing, "thought_process", None)) if existing is not None else None
     if existing_thought:
         return existing_thought
     return incoming
+
+
+def _back_populate_chat_spark_meta_from_telemetry(sess: Any, corr_id: Any, filtered_data: dict[str, Any]) -> bool:
+    """SparkTelemetrySQL writes back-populate the corresponding chat_history_log
+    row's spark_meta ("Bi-Directional Metadata Sync"). Extracted to its own
+    function (code review on the substrate-purge branch, 2026-08-19) so the
+    routing-awareness fix below is directly unit-testable: this branch used
+    to only ever query ChatHistoryLogSQL, so telemetry for a correlation_id
+    already routed to aitown_chat_history_log (PR #1743) silently
+    back-populated nothing -- no error, just a missed spark_meta merge.
+
+    Callers MUST hold `_lock_chat_history_row(sess, corr_id)` before calling
+    this if their session hasn't already acquired it for this row (this
+    function does so itself) -- same race `_apply_spark_meta_patch` and
+    `_resolve_chat_history_model_cls` guard against: a concurrent turn-path
+    write for the same row.
+
+    Returns True if a chat_history_log row was found and updated.
+    """
+    _lock_chat_history_row(sess, str(corr_id))
+    meta_for_chat = _spark_meta_minimal(filtered_data)
+    chat_model_cls = ChatHistoryLogSQL
+    existing_chat = (
+        sess.query(ChatHistoryLogSQL)
+        .filter(ChatHistoryLogSQL.correlation_id == corr_id)
+        .first()
+    )
+    if existing_chat is None and settings.sql_writer_aitown_routing_enabled:
+        existing_chat = (
+            sess.query(AitownChatHistoryLogSQL)
+            .filter(AitownChatHistoryLogSQL.correlation_id == corr_id)
+            .first()
+        )
+        if existing_chat is not None:
+            chat_model_cls = AitownChatHistoryLogSQL
+    if existing_chat is None:
+        return False
+    merged = _merge_spark_meta(
+        getattr(existing_chat, "spark_meta", None),
+        meta_for_chat,
+        source="telemetry",
+    )
+    stmt = (
+        update(chat_model_cls)
+        .where(chat_model_cls.correlation_id == corr_id)
+        .values(spark_meta=merged)
+    )
+    sess.execute(stmt)
+    sess.commit()
+    return True
 
 
 def _map_spark_to_telemetry_row(
@@ -1456,25 +1531,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             corr_id = filtered_data.get("correlation_id")
             if corr_id:
                 try:
-                    meta_for_chat = _spark_meta_minimal(filtered_data)
-                    existing_chat = (
-                        sess.query(ChatHistoryLogSQL)
-                        .filter(ChatHistoryLogSQL.correlation_id == corr_id)
-                        .first()
-                    )
-                    if existing_chat is not None:
-                        merged = _merge_spark_meta(
-                            getattr(existing_chat, "spark_meta", None),
-                            meta_for_chat,
-                            source="telemetry",
-                        )
-                        stmt = (
-                            update(ChatHistoryLogSQL)
-                            .where(ChatHistoryLogSQL.correlation_id == corr_id)
-                            .values(spark_meta=merged)
-                        )
-                        sess.execute(stmt)
-                        sess.commit()
+                    _back_populate_chat_spark_meta_from_telemetry(sess, corr_id, filtered_data)
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
             return True

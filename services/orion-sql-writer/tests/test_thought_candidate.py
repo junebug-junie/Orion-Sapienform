@@ -127,3 +127,77 @@ def test_chat_history_thought_for_merge_writes_insert_and_update_when_empty_exis
         {"correlation_id": "corr-2"},
     )
     assert update_resolved == "chat-thought-refresh"
+
+
+class _FakeQueryByModel:
+    def __init__(self, row: _FakeRow | None) -> None:
+        self._row = row
+
+    def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return self
+
+    def first(self):
+        return self._row
+
+
+class _FakeSessionByModel:
+    """Model-aware fake -- distinct from ``_FakeSession`` above, which
+    always returns the same row regardless of which model is queried and so
+    cannot distinguish "found in the primary table" from "found in the
+    mirror table" (the exact distinction the routing-awareness bug below
+    depended on)."""
+
+    def __init__(self, rows_by_model: dict[type, _FakeRow | None]) -> None:
+        self._rows_by_model = rows_by_model
+        self.query_calls: list[type] = []
+
+    def query(self, model):  # noqa: ANN001
+        self.query_calls.append(model)
+        return _FakeQueryByModel(self._rows_by_model.get(model))
+
+
+def test_chat_history_thought_for_merge_checks_mirror_table_when_primary_misses(
+    monkeypatch,
+) -> None:
+    """Regression test: before this fix (code review on the substrate-purge
+    branch, 2026-08-19), this function only ever queried ChatHistoryLogSQL,
+    so an existing thought_process on a row already routed to
+    aitown_chat_history_log (PR #1743) was silently dropped in favor of the
+    incoming value."""
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
+    sess = _FakeSessionByModel(
+        {
+            worker.ChatHistoryLogSQL: None,
+            worker.AitownChatHistoryLogSQL: _FakeRow("mirror-table-thought"),
+        }
+    )
+
+    resolved = worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "aitown-corr-1", "thought_process": "incoming-thought"},
+        {"correlation_id": "aitown-corr-1"},
+    )
+
+    assert resolved == "mirror-table-thought"
+    assert sess.query_calls == [worker.ChatHistoryLogSQL, worker.AitownChatHistoryLogSQL]
+
+
+def test_chat_history_thought_for_merge_does_not_check_mirror_when_routing_disabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
+    sess = _FakeSessionByModel(
+        {
+            worker.ChatHistoryLogSQL: None,
+            worker.AitownChatHistoryLogSQL: _FakeRow("mirror-table-thought"),
+        }
+    )
+
+    resolved = worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "aitown-corr-2", "thought_process": "incoming-thought"},
+        {"correlation_id": "aitown-corr-2"},
+    )
+
+    assert resolved == "incoming-thought"
+    assert sess.query_calls == [worker.ChatHistoryLogSQL]

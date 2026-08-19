@@ -19,6 +19,7 @@ to an honest "unavailable" response instead of fabricating data or raising a
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -109,9 +110,57 @@ _RELATION_CLASSIFICATION_PAIR_CAP = 10
 # ingestion could keep silently reading the old model's runs regardless of
 # this rename. Both call sites below now pass
 # model_name=_TOPIC_FOUNDRY_MODEL_NAME.
+#
+# Model name history (2026-08-19): this file's model_spec had hardcoded
+# min_cluster_size=15 / metric="euclidean" since the pipeline first shipped
+# -- min_cluster_size=15 is flagged by topic-foundry's own 2026-07-21
+# incident note (services/orion-topic-foundry/app/models.py::ModelSpec) as
+# producing 1-2 degenerate clusters on a 676-document corpus, and produced
+# 0 clusters every run on the real, much smaller "-v2" corpus (60-160ish
+# documents after the AI Town filter, live-verified 2026-08-18/19). Fixed
+# to read from settings (SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE/
+# _METRIC, see app/settings.py for the full live-verification story,
+# including a first attempt with metric="cosine" that failed outright --
+# "Unrecognized metric 'cosine'" -- because the installed hdbscan library's
+# real clusterer does not support it; corrected to "euclidean", confirmed
+# live to actually cluster: cluster_count=3 on 62 real documents).
+#
+# The base name below is suffixed with a fingerprint of the exact settings
+# that feed the model_spec (see _topic_foundry_model_spec_fingerprint) --
+# NOT a hand-bumped "-v3"/"-v4" version suffix. Same create-only
+# constraint as the dataset above (model_spec is fixed at creation,
+# get-or-create is by name), but code review on this exact patch flagged
+# that a hand-bumped suffix silently reproduces the same bug class it was
+# introduced to fix: change SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_* without also
+# remembering to bump the name, and get-or-create keeps training on the
+# OLD model_spec forever with no warning (unlike the dataset's where_sql
+# case just above, topic-foundry's GET /models returns ModelSummary, not
+# model_spec, so there's nothing to compare against after creation to even
+# detect the drift). Deriving the suffix from the settings themselves
+# means a real config change always produces a new name automatically --
+# the failure mode is structurally closed, not just documented. Dataset
+# name is unchanged -- only the model_spec is settings-driven, the
+# where_sql filter is not.
 _TOPIC_FOUNDRY_DATASET_NAME = "orion-hub-autonomous-dataset-v2"
-_TOPIC_FOUNDRY_MODEL_NAME = "orion-hub-autonomous-v2"
+_TOPIC_FOUNDRY_MODEL_NAME_BASE = "orion-hub-autonomous-v4"
 _TOPIC_FOUNDRY_MODEL_VERSION = "v1"
+
+
+def _topic_foundry_model_spec_fingerprint() -> str:
+    """Short, deterministic fingerprint of the settings-driven HDBSCAN
+    model_spec fields. See the "Model name history" comment above.
+    """
+    fingerprint_input = "|".join(
+        [
+            str(settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE),
+            str(settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC),
+            str(settings.SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL),
+        ]
+    )
+    return hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:8]
+
+
+_TOPIC_FOUNDRY_MODEL_NAME = f"{_TOPIC_FOUNDRY_MODEL_NAME_BASE}-{_topic_foundry_model_spec_fingerprint()}"
 _TOPIC_FOUNDRY_SOURCE_TABLE = "chat_history_log"
 _TOPIC_FOUNDRY_ID_COLUMN = "correlation_id"
 _TOPIC_FOUNDRY_TIME_COLUMN = "created_at"
@@ -226,8 +275,8 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
                     "model_spec": {
                         "algorithm": "hdbscan",
                         "embedding_source_url": str(settings.SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL),
-                        "min_cluster_size": 15,
-                        "metric": "euclidean",
+                        "min_cluster_size": settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE,
+                        "metric": settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC,
                         "params": {},
                     },
                     "windowing_spec": {
@@ -241,6 +290,17 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
                     "metadata": {},
                 },
             )
+        # No model_spec-drift warning analogous to the dataset's where_sql
+        # one above, and none is needed: topic-foundry's GET /models list
+        # route returns ModelSummary (app/models.py), which does not
+        # include model_spec at all -- only DatasetSpec (returned by
+        # GET /datasets) carries the field a drift check would need to
+        # compare against, so detecting drift after the fact isn't
+        # possible here without a GET /models/{model_id} call topic-foundry
+        # doesn't expose. Instead, _TOPIC_FOUNDRY_MODEL_NAME's fingerprint
+        # suffix (see above) closes the failure mode structurally: a real
+        # settings change always produces a new name, so get-or-create can
+        # never find a stale model and silently reuse it.
         model_id = str(model["model_id"])
         return dataset_id, model_id
     except Exception as exc:

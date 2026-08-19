@@ -3,8 +3,30 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Live-queried 2026-08-19 against this deployment's pinned hdbscan==0.8.41 /
+# scikit-learn>=1.6,<1.7 (services/orion-topic-foundry/requirements.txt):
+# sklearn.neighbors.KDTree.valid_metrics | BallTree.valid_metrics, the full
+# set HDBSCAN's real clusterer (app/services/training.py::_build_clusterer,
+# algorithm="best") could possibly dispatch to depending on the chosen
+# metric/dimensionality. "cosine" is deliberately absent -- confirmed live
+# it raises ValueError("Unrecognized metric 'cosine'") outright, the exact
+# bug SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC's own default fixes. This does
+# not claim every listed metric produces *good* clusters for text
+# embeddings, only that it is a real distance metric hdbscan/sklearn
+# recognize -- "euclidean" is this deployment's only
+# live-verified-to-cluster-well value.
+_VALID_HDBSCAN_METRICS = frozenset(
+    {
+        "braycurtis", "canberra", "chebyshev", "cityblock", "dice",
+        "euclidean", "hamming", "haversine", "infinity", "jaccard",
+        "l1", "l2", "mahalanobis", "manhattan", "minkowski", "p",
+        "pyfunc", "rogerstanimoto", "russellrao", "seuclidean",
+        "sokalmichener", "sokalsneath",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -744,6 +766,65 @@ class Settings(BaseSettings):
         default="http://orion-athena-vector-host:8320/embedding",
         alias="SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL",
     )
+    # HDBSCAN model_spec fields for the scheduler's own model (get-or-create,
+    # see concept_atlas_routes.py::_ensure_topic_foundry_dataset_and_model).
+    # min_cluster_size=15 (this module's hardcoded literal until 2026-08-19)
+    # is flagged by topic-foundry's own 2026-07-21 incident note
+    # (app/models.py::ModelSpec) as producing 1-2 degenerate clusters on a
+    # 676-document corpus, and produced 0 clusters on the real, much smaller
+    # ~60-160 document AI-Town-filtered corpus (live-verified 2026-08-18/19).
+    # min_cluster_size=8 is that incident's own confirmed-live fix.
+    #
+    # metric: NOT "cosine" despite ModelSpec's own field default and this
+    # deployment's TOPIC_FOUNDRY_HDBSCAN_METRIC=euclidean env value already
+    # disagreeing with each other -- confirmed live 2026-08-19 that the
+    # installed `hdbscan` library's real clusterer (used by the actual
+    # /runs/train path, app/services/training.py::_build_clusterer) does not
+    # support "cosine" at all: `HDBSCAN(metric="cosine").fit(...)` raises
+    # `ValueError("Unrecognized metric 'cosine'")` outright, so a training
+    # run with this file's initial fix (min_cluster_size=8, metric="cosine",
+    # model "orion-hub-autonomous-v3") failed immediately with that exact
+    # error instead of clustering anything. "cosine" is also topic-foundry's
+    # own UMAP-stage metric (topic_foundry_umap_metric), a different,
+    # unrelated setting -- easy to conflate but not interchangeable.
+    # "euclidean" is what topic-foundry's TOPIC_FOUNDRY_HDBSCAN_METRIC has
+    # actually defaulted to the whole time and is what a live retrain
+    # confirmed actually clusters (cluster_count=3 on 62 real documents).
+    #
+    # Exposed as env (not just fixed inline) because topic-foundry's
+    # model-create API is create-only -- retuning requires a fresh model
+    # name either way, which concept_atlas_routes.py now derives
+    # automatically from a fingerprint of these settings (see
+    # _TOPIC_FOUNDRY_MODEL_NAME there) instead of depending on a human
+    # remembering to hand-bump a version suffix -- exactly the mistake
+    # code review already caught once for the dataset's where_sql field
+    # (see the drift-warning branch in that file), and a mistake with no
+    # equivalent warning possible on the model side (topic-foundry's
+    # GET /models returns ModelSummary, not model_spec, so there is
+    # nothing to compare against after creation).
+    SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE: int = Field(
+        default=8, alias="SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE"
+    )
+    SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC: str = Field(
+        default="euclidean", alias="SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC"
+    )
+
+    # Fail fast at Hub startup, not deep inside a background training task
+    # that only surfaces the mistake after topic-foundry has already
+    # accepted the model creation (POST /models has no metric validation of
+    # its own -- ModelSpec.metric in app/models.py is an unconstrained str).
+    @field_validator("SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC")
+    @classmethod
+    def _validate_topic_foundry_hdbscan_metric(cls, value: str) -> str:
+        if value not in _VALID_HDBSCAN_METRICS:
+            raise ValueError(
+                f"SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC={value!r} is not a metric "
+                f"sklearn's KDTree/BallTree recognize (checked against hdbscan==0.8.41's "
+                f"real dependency) -- it would create a topic-foundry model successfully "
+                f"and only fail later, deep in a background training task. Valid: "
+                f"{sorted(_VALID_HDBSCAN_METRICS)}"
+            )
+        return value
     # Own gate, separate from SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED above --
     # ships disabled by default, matching this repo's established convention
     # for a new dispatch path with a real side effect (LLM enrichment calls

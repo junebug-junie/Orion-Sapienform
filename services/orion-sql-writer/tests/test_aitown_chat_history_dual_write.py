@@ -1,13 +1,14 @@
-"""Tests for the AI Town chat-history table split, Phase 1
+"""Tests for the AI Town chat-history table split
 (docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
 
-Covers ``_is_aitown_client_meta``, ``_maybe_dual_write_aitown_chat_history``,
-and ``_maybe_dual_patch_aitown_spark_meta`` in
-``services/orion-sql-writer/app/worker.py``. All DB access is faked at the
-session boundary -- no real Postgres, matching the existing convention in
-``test_chat_history_turn_coalesce.py`` (the regression test this design doc
-itself calls out as needing to keep passing unmodified, which it does --
-see that file, unchanged, still green).
+Covers ``_is_aitown_client_meta`` and ``_resolve_chat_history_model_cls`` in
+``services/orion-sql-writer/app/worker.py`` -- the routing logic that
+replaced Phase 1's additive dual-write (PR #1734) the same day it shipped,
+once AI Town's own backend was confirmed dead and the dual-write bridge it
+was built for became pure unneeded complexity. All DB access is faked at
+the session boundary -- no real Postgres, matching the existing convention
+in ``test_chat_history_turn_coalesce.py`` (still green, unmodified by this
+change -- the ``model_cls`` parameter it exercises is untouched).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import pytest
 
 SQL_WRITER_ROOT = Path(__file__).resolve().parents[1]
 WORKER_PATH = SQL_WRITER_ROOT / "app" / "worker.py"
-SPEC = importlib.util.spec_from_file_location("sql_writer_worker_aitown_dual_write_tests", WORKER_PATH)
+SPEC = importlib.util.spec_from_file_location("sql_writer_worker_aitown_routing_tests", WORKER_PATH)
 assert SPEC and SPEC.loader
 worker = importlib.util.module_from_spec(SPEC)
 if str(SQL_WRITER_ROOT) not in sys.path:
@@ -33,40 +34,36 @@ AITOWN_CLIENT_META = {"external_room": {"platform": "aitown", "room_id": "town-s
 HUB_CLIENT_META = {"external_room": {"platform": "hub"}}
 
 
-class _NestedCtx:
-    """Fake ``Session.begin_nested()`` SAVEPOINT context manager.
-
-    Real SQLAlchemy semantics: on a clean exit, the savepoint is released
-    (no-op here); on an exception, it's rolled back and the exception
-    re-raises (returning False from __exit__ does that automatically).
+class _FakeSession:
+    """Fake session supporting the ``query(...).filter(...).with_for_update()
+    .first()`` chain both ``_resolve_chat_history_model_cls`` and
+    ``_apply_spark_meta_patch`` use. ``query_result_by_model`` lets a test
+    control what each model class's query resolves to independently (e.g.
+    "the primary table has this row, the mirror table doesn't").
     """
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class _FakeSession:
-    def __init__(self, *, raise_on_execute: bool = False, query_result: Any = None):
+    def __init__(self, *, query_result_by_model: dict[type, Any] | None = None):
         self.executed: list[Any] = []
-        self.nested_calls = 0
-        self._raise_on_execute = raise_on_execute
-        self._query_result = query_result
-        self.query_calls: list[Any] = []
+        self.query_calls: list[type] = []
+        self._query_result_by_model = query_result_by_model or {}
+        self._current_model: type | None = None
 
     def execute(self, stmt):
-        if self._raise_on_execute:
-            raise RuntimeError("simulated mirror-table write failure")
         self.executed.append(stmt)
 
-    def begin_nested(self):
-        self.nested_calls += 1
-        return _NestedCtx()
+    def commit(self):
+        pass
 
-    def query(self, model_cls):
+    def close(self):
+        pass
+
+    def query(self, entity):
+        # _resolve_chat_history_model_cls queries a bare column
+        # (AitownChatHistoryLogSQL.id), not the model class itself --
+        # resolve back to the owning model either way.
+        model_cls = getattr(entity, "class_", entity)
         self.query_calls.append(model_cls)
+        self._current_model = model_cls
         return self
 
     def filter(self, *args, **kwargs):
@@ -76,7 +73,7 @@ class _FakeSession:
         return self
 
     def first(self):
-        return self._query_result
+        return self._query_result_by_model.get(self._current_model)
 
 
 def _compiled_sql(stmt) -> str:
@@ -103,180 +100,96 @@ class TestIsAitownClientMeta:
         assert worker._is_aitown_client_meta("garbage") is False
 
 
-class TestMaybeDualWriteAitownChatHistory:
-    def test_noop_when_disabled(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", False)
+class TestLockChatHistoryRow:
+    """Code review (2026-08-19) found _resolve_chat_history_model_cls's
+    fallback lookup races across separate sessions/transactions --
+    _lock_chat_history_row exists to close it. See that function's own
+    docstring for the full scenario."""
+
+    def test_issues_an_advisory_xact_lock_keyed_on_the_row_id(self):
+        captured = {}
+
+        class _Capturing:
+            def execute(self, stmt, params=None):
+                captured["stmt"] = stmt
+                captured["params"] = params
+
+        worker._lock_chat_history_row(_Capturing(), "row-123")
+
+        sql = str(captured["stmt"]).lower()
+        assert "pg_advisory_xact_lock" in sql
+        assert "hashtext" in sql
+        assert captured["params"] == {"row_id": "row-123"}
+
+
+class TestResolveChatHistoryModelCls:
+    def test_routes_to_primary_when_routing_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        """False is the real rollback path -- every row goes to
+        chat_history_log regardless of client_meta, no exceptions."""
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
         sess = _FakeSession()
 
-        worker._maybe_dual_write_aitown_chat_history(
-            sess, {"id": "x", "client_meta": AITOWN_CLIENT_META}, incoming_wins=True
-        )
+        result = worker._resolve_chat_history_model_cls(sess, {"id": "x", "client_meta": AITOWN_CLIENT_META})
 
-        assert sess.executed == []
-        assert sess.nested_calls == 0
+        assert result is worker.ChatHistoryLogSQL
+        assert sess.query_calls == []  # no lookup needed, routing is off outright
 
-    def test_noop_when_not_aitown(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
+    def test_routes_to_mirror_from_this_events_own_client_meta(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
         sess = _FakeSession()
 
-        worker._maybe_dual_write_aitown_chat_history(
-            sess, {"id": "x", "client_meta": HUB_CLIENT_META}, incoming_wins=True
-        )
+        result = worker._resolve_chat_history_model_cls(sess, {"id": "x", "client_meta": AITOWN_CLIENT_META})
 
-        assert sess.executed == []
-        assert sess.nested_calls == 0
+        assert result is worker.AitownChatHistoryLogSQL
+        assert sess.query_calls == []  # classified from this event alone, no lookup needed
 
-    def test_noop_when_client_meta_absent(self, monkeypatch: pytest.MonkeyPatch):
-        """Known Phase 1 limitation, documented in the function's own
-        docstring: a call whose ``values`` don't carry client_meta at all
-        can't be classified, and is correctly skipped rather than guessed."""
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
+    def test_routes_to_primary_for_non_aitown_client_meta(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
         sess = _FakeSession()
 
-        worker._maybe_dual_write_aitown_chat_history(sess, {"id": "x"}, incoming_wins=True)
+        result = worker._resolve_chat_history_model_cls(sess, {"id": "x", "client_meta": HUB_CLIENT_META})
 
-        assert sess.executed == []
+        assert result is worker.ChatHistoryLogSQL
 
-    def test_writes_to_the_mirror_table_when_aitown_and_enabled(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
+    def test_falls_back_to_mirror_table_lookup_when_client_meta_absent(self, monkeypatch: pytest.MonkeyPatch):
+        """The real bug this lookup exists to prevent: a message-path
+        contribution with no client_meta of its own, arriving after the
+        turn event already routed this id to the mirror table. Routing
+        purely on this event's own (missing) signal would wrongly create a
+        stray duplicate row in chat_history_log instead of merging into the
+        row the turn event already created."""
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
+        sess = _FakeSession(query_result_by_model={worker.AitownChatHistoryLogSQL: ("existing-id",)})
+
+        result = worker._resolve_chat_history_model_cls(sess, {"id": "x"})
+
+        assert result is worker.AitownChatHistoryLogSQL
+        assert sess.query_calls == [worker.AitownChatHistoryLogSQL]
+
+    def test_falls_back_to_primary_when_no_id_and_no_client_meta(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
         sess = _FakeSession()
 
-        worker._maybe_dual_write_aitown_chat_history(
-            sess, {"id": "x", "correlation_id": "x", "client_meta": AITOWN_CLIENT_META}, incoming_wins=True
-        )
+        result = worker._resolve_chat_history_model_cls(sess, {})
 
-        assert sess.nested_calls == 1
-        assert len(sess.executed) == 1
-        sql = _compiled_sql(sess.executed[0])
-        assert "insert into aitown_chat_history_log" in sql
-        assert "on conflict (id)" in sql
-        assert "do update set" in sql
+        assert result is worker.ChatHistoryLogSQL
+        assert sess.query_calls == []  # no id to look up
 
-    def test_never_targets_the_real_table(self, monkeypatch: pytest.MonkeyPatch):
-        """The one thing this function must never do: mutate chat_history_log
-        itself. Same session object the caller's real upsert also uses, so
-        the only thing distinguishing safety here is which table the
-        compiled statement actually names."""
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
-        sess = _FakeSession()
+    def test_falls_back_to_primary_when_mirror_lookup_misses(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
+        sess = _FakeSession(query_result_by_model={worker.AitownChatHistoryLogSQL: None})
 
-        worker._maybe_dual_write_aitown_chat_history(
-            sess, {"id": "x", "client_meta": AITOWN_CLIENT_META}, incoming_wins=False
-        )
+        result = worker._resolve_chat_history_model_cls(sess, {"id": "x"})
 
-        sql = _compiled_sql(sess.executed[0])
-        assert 'insert into aitown_chat_history_log' in sql
-
-    def test_a_mirror_write_failure_is_contained_not_raised(self, monkeypatch: pytest.MonkeyPatch):
-        """Must never take the real chat_history_log write it rides alongside
-        down with it -- this must not raise even when the underlying execute
-        does."""
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
-        sess = _FakeSession(raise_on_execute=True)
-
-        worker._maybe_dual_write_aitown_chat_history(
-            sess, {"id": "x", "client_meta": AITOWN_CLIENT_META}, incoming_wins=True
-        )  # must not raise
-
-        assert sess.nested_calls == 1
-
-    def test_uses_a_savepoint_not_the_bare_session(self, monkeypatch: pytest.MonkeyPatch):
-        """Regression guard for the transaction-abort trap documented in the
-        function's own docstring: both writes share one session/transaction,
-        so a mirror-write failure without a SAVEPOINT would poison the
-        caller's own subsequent commit() for the real write. begin_nested()
-        must be used, not a plain try/except around sess.execute alone."""
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
-        sess = _FakeSession()
-
-        worker._maybe_dual_write_aitown_chat_history(
-            sess, {"id": "x", "client_meta": AITOWN_CLIENT_META}, incoming_wins=True
-        )
-
-        assert sess.nested_calls == 1
-
-
-class TestMaybeDualPatchAitownSparkMeta:
-    def test_noop_when_disabled(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", False)
-        sess = _FakeSession(query_result=object())
-
-        worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={"a": 1})
-
-        assert sess.executed == []
-        assert sess.query_calls == []
-
-    def test_noop_when_no_mirror_row_exists(self, monkeypatch: pytest.MonkeyPatch):
-        """Patch-only, never insert: a correlation_id never dual-written
-        (dual-write was off, or the row was never classified AI Town) must
-        not spawn a new mirror row on the patch path's say-so.
-
-        Also the no-SAVEPOINT-on-no-op case (code review 2026-08-19): the
-        cheap existence check runs un-transacted, so nested_calls stays 0.
-        """
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
-        sess = _FakeSession(query_result=None)
-
-        worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={"a": 1})
-
-        assert len(sess.query_calls) == 1  # only the cheap existence check, no locked read
-        assert sess.executed == []
-        assert sess.nested_calls == 0
-
-    def test_patches_the_mirror_row_when_it_exists(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
-
-        class _ExistingRow:
-            spark_meta = {"existing": True}
-
-        sess = _FakeSession(query_result=_ExistingRow())
-
-        worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={"new": True})
-
-        assert sess.nested_calls == 1  # SAVEPOINT wraps the locked read + write, real work exists
-        assert len(sess.executed) == 1
-        sql = _compiled_sql(sess.executed[0])
-        assert "update aitown_chat_history_log" in sql
-
-    def test_locks_the_mirror_row_before_merging(self, monkeypatch: pytest.MonkeyPatch):
-        """Regression guard for the lost-update race code review flagged: a
-        plain SELECT-then-UPDATE here would let two concurrent patches for
-        the same correlation_id clobber each other's merged spark_meta.
-        FOR UPDATE serializes them instead."""
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
-
-        class _ExistingRow:
-            spark_meta = {}
-
-        calls: list[str] = []
-
-        class _LockTrackingSession(_FakeSession):
-            def with_for_update(self):
-                calls.append("with_for_update")
-                return self
-
-        sess = _LockTrackingSession(query_result=_ExistingRow())
-
-        worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={"new": True})
-
-        assert calls == ["with_for_update"]
-
-    def test_a_patch_failure_is_contained_not_raised(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
-
-        class _ExistingRow:
-            spark_meta = {}
-
-        sess = _FakeSession(query_result=_ExistingRow(), raise_on_execute=True)
-
-        worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={})  # must not raise
+        assert result is worker.ChatHistoryLogSQL
+        assert sess.query_calls == [worker.AitownChatHistoryLogSQL]
 
 
 class TestUpsertChatHistoryRowModelClsParam:
     """The refactor that made model_cls a parameter must not change a single
     byte of the default (ChatHistoryLogSQL) call shape -- test_chat_history_
     turn_coalesce.py already covers that exhaustively and stays green
-    unmodified; this only covers the new non-default path directly."""
+    unmodified; this only covers the non-default (routed) path directly."""
 
     def test_model_cls_targets_the_named_table(self):
         captured = {}
@@ -290,7 +203,7 @@ class TestUpsertChatHistoryRowModelClsParam:
         )
 
         sql = _compiled_sql(captured["stmt"])
-        assert "aitown_chat_history_log" in sql
+        assert "insert into aitown_chat_history_log" in sql
 
     def test_default_model_cls_is_still_chat_history_log(self):
         captured = {}
@@ -305,19 +218,81 @@ class TestUpsertChatHistoryRowModelClsParam:
         assert "insert into chat_history_log" in sql
 
 
+class TestApplySparkMetaPatchRouting:
+    """``_apply_spark_meta_patch`` no longer assumes the row lives in
+    chat_history_log -- routing may have sent it to the mirror table
+    instead, and the patch payload carries no client_meta to reclassify
+    from. Uses the real ``get_session``/session-factory plumbing
+    (monkeypatched), so these go through ``ChatHistorySparkMetaPatchV1``
+    validation like the real call path.
+    """
+
+    def _run(self, monkeypatch, *, sess, routing_enabled=True):
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", routing_enabled)
+        monkeypatch.setattr(worker, "get_session", lambda: sess)
+        monkeypatch.setattr(worker, "remove_session", lambda: None)
+        return worker._apply_spark_meta_patch({"correlation_id": "c1", "spark_meta": {"new": True}})
+
+    def test_patches_primary_table_when_row_found_there(self, monkeypatch: pytest.MonkeyPatch):
+        class _Row:
+            spark_meta = {"existing": True}
+
+        sess = _FakeSession(query_result_by_model={worker.ChatHistoryLogSQL: _Row()})
+
+        ok = self._run(monkeypatch, sess=sess)
+
+        assert ok is True
+        assert sess.query_calls == [worker.ChatHistoryLogSQL]  # found on first try, no mirror lookup
+        sql = _compiled_sql(sess.executed[0])
+        assert "update chat_history_log" in sql
+
+    def test_falls_back_to_mirror_table_when_primary_misses(self, monkeypatch: pytest.MonkeyPatch):
+        class _Row:
+            spark_meta = {"existing": True}
+
+        sess = _FakeSession(
+            query_result_by_model={
+                worker.ChatHistoryLogSQL: None,
+                worker.AitownChatHistoryLogSQL: _Row(),
+            }
+        )
+
+        ok = self._run(monkeypatch, sess=sess)
+
+        assert ok is True
+        assert sess.query_calls == [worker.ChatHistoryLogSQL, worker.AitownChatHistoryLogSQL]
+        sql = _compiled_sql(sess.executed[0])
+        assert "update aitown_chat_history_log" in sql
+
+    def test_does_not_check_mirror_table_when_routing_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        sess = _FakeSession(query_result_by_model={worker.ChatHistoryLogSQL: None})
+
+        ok = self._run(monkeypatch, sess=sess, routing_enabled=False)
+
+        assert ok is False
+        assert sess.query_calls == [worker.ChatHistoryLogSQL]  # no fallback attempted
+
+    def test_returns_false_when_missing_from_both_tables(self, monkeypatch: pytest.MonkeyPatch):
+        sess = _FakeSession(
+            query_result_by_model={worker.ChatHistoryLogSQL: None, worker.AitownChatHistoryLogSQL: None}
+        )
+
+        ok = self._run(monkeypatch, sess=sess)
+
+        assert ok is False
+        assert sess.executed == []
+
+
 class TestMirrorTableSchemaParity:
-    """Code review (2026-08-19): the dual-write path has no gate ensuring
+    """Code review (2026-08-19, PR #1734): no gate ensures
     AitownChatHistoryLogSQL stays column-for-column identical to
     ChatHistoryLogSQL. Without one, a future column added to
-    chat_history_log alone would make ``pg_insert(AitownChatHistoryLogSQL)
-    .values(**values)`` raise ``CompileError('Unconsumed column names: ...')``
-    on every dual-write call from then on -- caught only by the broad
-    ``except Exception`` in ``_maybe_dual_write_aitown_chat_history`` and
-    logged as a warning, so the mirror table would silently stop receiving
-    ANY writes with nothing failing loudly. This test is the deterministic
-    gate that catches that drift at test time instead -- CLAUDE.md's "the
-    right fix for [a] forgotten ... rule is not a louder prompt, it is a
-    failing gate," applied to this exact failure mode.
+    chat_history_log alone would break routed writes for every AI-Town row
+    silently. Kept unmodified by the dual-write -> routing change --
+    exactly as true a concern for routing as it was for the additive
+    mirror write. CLAUDE.md's "the right fix for [a] forgotten ... rule is
+    not a louder prompt, it is a failing gate," applied to this exact
+    failure mode.
     """
 
     def test_column_names_match_exactly(self):

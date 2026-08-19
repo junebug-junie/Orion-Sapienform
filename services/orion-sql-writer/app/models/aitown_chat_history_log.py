@@ -7,19 +7,20 @@ from app.db import Base
 class AitownChatHistoryLogSQL(Base):
     """Mirror of ``ChatHistoryLogSQL`` (chat_history_log), for AI Town rows only.
 
-    Track B Phase 1 of
-    docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md
-    -- new table, dual-write, zero consumer-visible change. AI Town rows keep
-    landing in ``chat_history_log`` exactly as before (every current reader
-    of that table is unaffected); this table is purely additive, populated by
-    ``worker.py``'s dual-write path when a row's ``client_meta`` carries the
-    canonical AI Town platform tag
-    (``client_meta -> 'external_room' ->> 'platform' == 'aitown'``, the same
-    signal ``services/orion-recall/app/chat_source_tagging.py::chat_source_platform()``
+    Track B of docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md
+    -- physical table split. Phase 1 (PR #1734, 2026-08-19) shipped this
+    table with an additive dual-write bridge (every AI-Town row landed in
+    both tables). Retired the same day, with AI Town's own backend
+    confirmed dead and zero concurrent-write risk: ``worker.py`` now
+    *routes* each row to exactly one table
+    (``_resolve_chat_history_model_cls``) instead of duplicating it. An
+    AI-Town row (``client_meta -> 'external_room' ->> 'platform' == 'aitown'``,
+    the same signal ``services/orion-recall/app/chat_source_tagging.py::chat_source_platform()``
     uses -- reimplemented locally rather than cross-imported, matching this
     repo's service-boundary convention (CLAUDE.md section 5), same choice
     ``services/orion-hub/scripts/concept_atlas_routes.py``'s ``_AITOWN_PLATFORM_TAG``
-    already made for the same signal).
+    already made for the same signal) now lands here ONLY, never in
+    ``chat_history_log`` too.
 
     Column-for-column identical to ``ChatHistoryLogSQL`` so the same
     ``upsert_chat_history_row()``/conflict-merge logic can target either

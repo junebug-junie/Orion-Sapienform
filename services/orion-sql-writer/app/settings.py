@@ -215,18 +215,24 @@ class Settings(BaseSettings):
     channel_chat_history_spark_meta_patch: str = Field(
         "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
-    # AI Town chat-history table split, Phase 1 (docs/superpowers/specs/
+    # AI Town chat-history table split (docs/superpowers/specs/
     # 2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
-    # Additive mirror write only -- chat_history_log's own write path is
-    # completely unchanged either way, this only controls whether AI-Town
-    # rows ALSO land in aitown_chat_history_log. Ships disabled by default,
-    # matching this repo's established convention for a new write path
-    # exercised for the first time in production (same pattern as
-    # SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE/HUB_ROOM_CLAUDE_AUTO_RESPOND) --
-    # flip on only after the aitown_chat_history_log table exists (see
-    # manual_migration_aitown_chat_history_log_v1.sql).
-    sql_writer_aitown_dual_write_enabled: bool = Field(
-        False, alias="SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED"
+    # Retired SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED (PR #1734, 2026-08-19) --
+    # that was an additive bridge (every AI-Town row landed in BOTH tables),
+    # built for a live AI Town world. Retired same-day with AI Town's own
+    # backend confirmed dead (Convex connection refused, zero concurrent
+    # writes) -- no fallback to the dual-write it replaced (CLAUDE.md's
+    # "kill means kill"). This flag controls ROUTING instead: an AI-Town
+    # row lands in exactly one table, chosen once
+    # (worker.py::_resolve_chat_history_model_cls), never duplicated.
+    # Defaults True -- unlike the dual-write bridge this replaces, routing
+    # carries no first-time-in-production write-path risk (chat_history_log
+    # itself is untouched for every non-AI-Town row either way), so there is
+    # no reason to ship it off. False is a real rollback path: every row
+    # (AI-Town or not) goes to chat_history_log only, the pre-split
+    # behavior, if routing is ever suspected of picking the wrong table.
+    sql_writer_aitown_routing_enabled: bool = Field(
+        True, alias="SQL_WRITER_AITOWN_ROUTING_ENABLED"
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
     # drive_audits_retention_days removed 2026-08-13: the drive_audits table

@@ -34,6 +34,9 @@ class _FakeQuery:
     def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return self
 
+    def with_for_update(self):
+        return self
+
     def first(self):
         return self._row
 

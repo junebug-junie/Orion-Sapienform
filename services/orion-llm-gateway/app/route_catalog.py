@@ -10,10 +10,18 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from orion.llm.routes import LLM_ROUTE_DISPLAY_ORDER
+
 from .llm_backend import RouteTarget, get_route_targets
 from .settings import settings
 
-CATALOG_ROUTE_IDS = ("chat", "quick", "agent", "metacog")
+# Derived, not re-typed. This was a hardcoded ("chat", "quick", "agent", "metacog") until
+# 2026-08-19 -- one of four independent copies that between them made `quick_background`
+# invisible to `GET /routes`, the Hub UI and the routes smoke, months after Orion's own
+# journalling had been moved onto it. `orion/llm/routes.py` raises at import if a route is
+# accepted but absent from the display order, so the next route to exist cannot be omitted here
+# by forgetting.
+CATALOG_ROUTE_IDS = LLM_ROUTE_DISPLAY_ORDER
 _CACHE_TTL_SEC = 15.0
 
 
@@ -27,6 +35,12 @@ class RouteHealthEntry:
     last_checked_at: Optional[str]
     model: Optional[str] = None
     vision: Optional[bool] = None
+    # Why two routes on the same worker behave differently. Without this, `quick` and
+    # `quick_background` appear in the catalog as duplicate rows pointing at one URL with no
+    # visible reason -- and the Hub has no property to filter its picker on, forcing it back
+    # to a hardcoded name list.
+    priority: Optional[str] = None
+    reserved_free_slots: Optional[int] = None
 
 
 _cache: Dict[str, RouteHealthEntry] = {}
@@ -123,6 +137,24 @@ async def _probe_health(target: RouteTarget) -> tuple[str, Optional[int]]:
     return status, latency_ms
 
 
+async def _probe_backend(target: RouteTarget) -> tuple[str, Optional[int], Optional[str], Optional[bool]]:
+    """Health + model + vision for ONE upstream URL, concurrently.
+
+    Split out from `_probe_one` because routes are not one-to-one with workers: `quick` and
+    `quick_background` are the same llama.cpp process under two admission policies, so probing
+    per *route* would send three identical HTTP calls to `atlas-worker-fast-1` every refresh
+    for no new information. `refresh_route_health_cache` probes each distinct URL once and
+    fans the result out.
+    """
+    (status, latency_ms), model, vision = await asyncio.gather(
+        _probe_health(target), _probe_model(target), _probe_vision(target)
+    )
+    if status != "up":
+        model = None
+        vision = None
+    return status, latency_ms, model, vision
+
+
 async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
     # Health and model are two independent HTTP calls to the same backend --
     # run them concurrently rather than sequentially (review finding,
@@ -131,12 +163,18 @@ async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
     # firing it unconditionally costs one (fail-open, cheap) extra request
     # when a route is down, in exchange for a bounded refresh in the common
     # case where routes are healthy.
-    (status, latency_ms), model, vision = await asyncio.gather(
-        _probe_health(target), _probe_model(target), _probe_vision(target)
-    )
-    if status != "up":
-        model = None
-        vision = None
+    status, latency_ms, model, vision = await _probe_backend(target)
+    return _entry_from_probe(route_id, target, status, latency_ms, model, vision)
+
+
+def _entry_from_probe(
+    route_id: str,
+    target: RouteTarget,
+    status: str,
+    latency_ms: Optional[int],
+    model: Optional[str],
+    vision: Optional[bool],
+) -> RouteHealthEntry:
     return RouteHealthEntry(
         route_id=route_id,
         served_by=target.served_by,
@@ -146,6 +184,8 @@ async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
         last_checked_at=_utc_now_iso(),
         model=model,
         vision=vision,
+        priority=getattr(target, "priority", None),
+        reserved_free_slots=getattr(target, "reserved_free_slots", None),
     )
 
 
@@ -156,10 +196,23 @@ async def refresh_route_health_cache(*, force: bool = False) -> None:
         if not force and _cache and (now - _last_refresh_mono) < _CACHE_TTL_SEC:
             return
         targets = get_route_targets()
+        # One probe per distinct upstream URL, all URLs concurrently. Previously this awaited
+        # each route in sequence, so refresh latency grew linearly with the catalog -- and the
+        # catalog just grew, with a route that shares a URL with one already in it.
+        by_url: Dict[str, RouteTarget] = {}
+        for route_id in CATALOG_ROUTE_IDS:
+            target = targets.get(route_id)
+            if target is not None and target.url:
+                by_url.setdefault(target.url, target)
+        urls = list(by_url)
+        results = await asyncio.gather(*(_probe_backend(by_url[u]) for u in urls))
+        probes = dict(zip(urls, results))
+
         entries: Dict[str, RouteHealthEntry] = {}
         for route_id in CATALOG_ROUTE_IDS:
             target = targets.get(route_id)
-            if target is None:
+            probe = probes.get(target.url) if target is not None else None
+            if target is None or probe is None:
                 entries[route_id] = RouteHealthEntry(
                     route_id=route_id,
                     served_by=None,
@@ -169,7 +222,7 @@ async def refresh_route_health_cache(*, force: bool = False) -> None:
                     last_checked_at=_utc_now_iso(),
                 )
             else:
-                entries[route_id] = await _probe_one(route_id, target)
+                entries[route_id] = _entry_from_probe(route_id, target, *probe)
         _cache.clear()
         _cache.update(entries)
         _last_refresh_mono = now
@@ -185,6 +238,8 @@ def _entry_to_dict(entry: RouteHealthEntry) -> Dict[str, Any]:
         "last_checked_at": entry.last_checked_at,
         "model": entry.model,
         "vision": entry.vision,
+        "priority": entry.priority,
+        "reserved_free_slots": entry.reserved_free_slots,
     }
 
 
@@ -208,6 +263,8 @@ def build_routes_response() -> Dict[str, Any]:
                     "last_checked_at": None,
                     "model": None,
                     "vision": None,
+                    "priority": None,
+                    "reserved_free_slots": None,
                 }
             )
         else:
@@ -221,6 +278,12 @@ def build_routes_response() -> Dict[str, Any]:
                     "last_checked_at": None,
                     "model": None,
                     "vision": None,
+                    # Config, not probe result -- so these are known even before the first
+                    # health refresh. Reporting None here would make a background lane look
+                    # pickable to the Hub (which filters on `priority`) for the first 15s of
+                    # gateway uptime, which is exactly when someone is most likely looking.
+                    "priority": getattr(target, "priority", None),
+                    "reserved_free_slots": getattr(target, "reserved_free_slots", None),
                 }
             )
     return {

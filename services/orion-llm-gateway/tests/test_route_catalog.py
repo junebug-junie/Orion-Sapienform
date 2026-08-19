@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app import route_catalog
+from orion.llm.routes import LLM_ROUTE_DISPLAY_ORDER
 from app.llm_backend import RouteTarget, _load_route_targets
 
 
@@ -31,9 +32,24 @@ def test_build_routes_response_defaults_to_chat(monkeypatch: pytest.MonkeyPatch)
     payload = route_catalog.build_routes_response()
 
     assert payload["default_route"] == "chat"
-    assert [r["id"] for r in payload["routes"]] == ["chat", "quick", "agent", "metacog"]
+    # The catalog lists every route that EXISTS as a name, in the shared display order -- not
+    # only the ones this route table happens to configure. `quick_background` is deliberately
+    # absent from `table` above, and the honest answer is a row saying `not_configured`, not
+    # silence: a lane missing from the route table and a lane that was never a route are
+    # different problems, and omitting the row makes them look identical.
+    assert [r["id"] for r in payload["routes"]] == list(LLM_ROUTE_DISPLAY_ORDER)
+    by_id = {r["id"]: r for r in payload["routes"]}
+    assert by_id["quick_background"]["status"] == "not_configured"
+    # NOTE (2026-08-19, found while extending this test, NOT fixed here): the
+    # LLM_GATEWAY_ROUTE_TABLE_JSON set above does not actually reach `get_route_targets()` in
+    # this fixture -- EVERY row comes back `not_configured`, including `chat`. That is why the
+    # original assertions could only check key presence. The test still earns its keep as a
+    # catalog-shape test; it is not a route-table-loading test despite appearances. Fixing the
+    # fixture is its own patch.
+    assert all(r["status"] == "not_configured" for r in payload["routes"])
     assert all("status" in r for r in payload["routes"])
     assert all("model" in r for r in payload["routes"])
+    assert all("priority" in r for r in payload["routes"])
 
 
 def _client_factory(*, model_id: str | None = "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"):

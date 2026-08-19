@@ -8,6 +8,7 @@ from typing import Dict
 import httpx
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.llm.routes import ACCEPTED_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, normalize_llm_route
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 
 
@@ -98,20 +99,49 @@ async def _verify_routes_http(gateway_url: str, timeout_sec: float) -> None:
         response = await client.get(url)
         response.raise_for_status()
         payload = response.json()
-    if payload.get("default_route") != "chat":
-        raise AssertionError(f"default_route={payload.get('default_route')} expected chat")
+    # Assert the default is a REAL route, not a specific name. This hardcoded `!= "chat"` until
+    # 2026-08-19 while both the live gateway and `services/orion-llm-gateway/.env_example` have
+    # said `LLM_ROUTE_DEFAULT=quick` -- so the smoke could only ever pass against a
+    # configuration nobody runs. Which lane is default is an operator choice; a default that is
+    # not a route at all is the actual bug, and that is what this now guards.
+    default_route = str(payload.get("default_route") or "")
+    if normalize_llm_route(default_route) is None:
+        raise AssertionError(
+            f"default_route={default_route!r} is not a recognised route "
+            f"(accepted: {sorted(ACCEPTED_LLM_ROUTES)})"
+        )
     routes = payload.get("routes") or []
     ids = [str(r.get("id")) for r in routes if isinstance(r, dict)]
-    for route_id in ("chat", "quick", "agent", "metacog"):
+    # Every accepted route, not a hardcoded four. Until 2026-08-19 this asserted a list that
+    # omitted `quick_background` -- so the smoke passed green for months while the lane Orion's
+    # own journalling runs on was absent from the catalog entirely.
+    for route_id in LLM_ROUTE_DISPLAY_ORDER:
         if route_id not in ids:
             raise AssertionError(f"GET /routes missing route id={route_id}")
+    # And assert the background lane declares itself as one. `priority` is what the Hub filters
+    # its picker on; a background route reporting no priority is indistinguishable from an
+    # interactive one and would be offered to a human as a normal lane.
+    bg = next((r for r in routes if isinstance(r, dict) and r.get("id") == "quick_background"), None)
+    if bg is not None and bg.get("status") != "not_configured":
+        if bg.get("priority") != "background":
+            raise AssertionError(
+                f"quick_background priority={bg.get('priority')!r} expected 'background'"
+            )
+        if not isinstance(bg.get("reserved_free_slots"), int):
+            raise AssertionError(
+                f"quick_background reserved_free_slots={bg.get('reserved_free_slots')!r} "
+                "expected an int"
+            )
     for entry in routes:
         if not isinstance(entry, dict):
             continue
         for key in ("id", "served_by", "backend", "status", "latency_ms", "last_checked_at"):
             if key not in entry:
                 raise AssertionError(f"route entry missing key={key}: {entry}")
-    print(f"[ok] GET /routes default_route=chat routes={ids}")
+    # Print the value that was actually read. This said "default_route=chat" literally,
+    # regardless of the response -- so the smoke reported the fact it was asserting rather
+    # than the fact it observed, which is how the stale assertion above stayed invisible.
+    print(f"[ok] GET /routes default_route={default_route} routes={ids}")
 
 
 async def _main_async(args: argparse.Namespace) -> None:

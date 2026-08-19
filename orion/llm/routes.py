@@ -27,14 +27,19 @@ Imported by the three services that set or accept an `llm_route` override:
                                                             2026-08-18 carrying a THIRD copy,
                                                             also missing quick_background)
 
-It is **not** yet the only place route names are enumerated in this repo. These are known,
-deliberately out of scope for this patch, and are the follow-up slice -- do not assume a route
-name added here reaches the Hub UI:
+The follow-up slice named here on 2026-08-18 -- the *catalog* half, four more copies of
+`("chat", "quick", "agent", "metacog")` that made `quick_background` invisible to every operator
+surface -- was closed on 2026-08-19. Those now derive from this module:
 
-    services/orion-llm-gateway/app/route_catalog.py:16     CATALOG_ROUTE_IDS
-    services/orion-hub/scripts/llm_gateway_client.py:14    VALID_ROUTE_IDS (+ 2 inline copies)
-    services/orion-hub/static/js/app.js:100                HUB_COMPUTE_ROUTE_IDS
-    scripts/smoke_llm_gateway_routes.py:105                never exercises quick_background
+    services/orion-llm-gateway/app/route_catalog.py        CATALOG_ROUTE_IDS
+    services/orion-hub/scripts/llm_gateway_client.py       VALID_ROUTE_IDS
+    scripts/smoke_llm_gateway_routes.py                    asserts every route in the order below
+
+The Hub UI's picker (`services/orion-hub/static/js/app.js`) deliberately does NOT show every
+route. It now derives from `GET /routes` and filters on the route's own `priority` field rather
+than on a hardcoded name list, so a background lane is visible to operators in the catalog while
+staying unpickable by a human who would only get a yielding lane's latency. That is a policy
+difference expressed as a property, not another list to drift.
 
 Two neighbouring vocabularies are NOT this axis and must not be folded in here:
 
@@ -71,6 +76,32 @@ LLM_ROUTE_ALIASES = {
     "quick_chat": "quick",
     "chat_kids_story": "quick",
 }
+
+
+# Display/catalog order. Every accepted route appears exactly once, and the assertion below
+# makes that a load-bearing guarantee rather than a convention: adding a name to
+# ACCEPTED_LLM_ROUTES without placing it here fails at import, in every service that imports
+# this module, rather than silently omitting the new route from `GET /routes`, the Hub, and the
+# smoke. That is the failure mode this whole module exists to stop, one layer up.
+#
+# Order is deliberate and is what operators read: interactive lanes first, then the yielding
+# lane beside the lane it yields on, then the specialist.
+LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
+    "chat",
+    "quick",
+    "quick_background",
+    "metacog",
+    "agent",
+)
+
+if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
+    LLM_ROUTE_DISPLAY_ORDER
+) != len(ACCEPTED_LLM_ROUTES):
+    raise RuntimeError(
+        "LLM_ROUTE_DISPLAY_ORDER must list every accepted route exactly once; "
+        f"missing={sorted(ACCEPTED_LLM_ROUTES - set(LLM_ROUTE_DISPLAY_ORDER))} "
+        f"extra={sorted(set(LLM_ROUTE_DISPLAY_ORDER) - ACCEPTED_LLM_ROUTES)}"
+    )
 
 
 def normalize_llm_route(raw: object) -> Optional[str]:

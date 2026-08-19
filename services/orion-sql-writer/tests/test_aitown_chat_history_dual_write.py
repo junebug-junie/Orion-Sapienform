@@ -72,6 +72,9 @@ class _FakeSession:
     def filter(self, *args, **kwargs):
         return self
 
+    def with_for_update(self):
+        return self
+
     def first(self):
         return self._query_result
 
@@ -206,14 +209,19 @@ class TestMaybeDualPatchAitownSparkMeta:
     def test_noop_when_no_mirror_row_exists(self, monkeypatch: pytest.MonkeyPatch):
         """Patch-only, never insert: a correlation_id never dual-written
         (dual-write was off, or the row was never classified AI Town) must
-        not spawn a new mirror row on the patch path's say-so."""
+        not spawn a new mirror row on the patch path's say-so.
+
+        Also the no-SAVEPOINT-on-no-op case (code review 2026-08-19): the
+        cheap existence check runs un-transacted, so nested_calls stays 0.
+        """
         monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
         sess = _FakeSession(query_result=None)
 
         worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={"a": 1})
 
-        assert sess.query_calls == [worker.AitownChatHistoryLogSQL]
+        assert len(sess.query_calls) == 1  # only the cheap existence check, no locked read
         assert sess.executed == []
+        assert sess.nested_calls == 0
 
     def test_patches_the_mirror_row_when_it_exists(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
@@ -225,9 +233,33 @@ class TestMaybeDualPatchAitownSparkMeta:
 
         worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={"new": True})
 
+        assert sess.nested_calls == 1  # SAVEPOINT wraps the locked read + write, real work exists
         assert len(sess.executed) == 1
         sql = _compiled_sql(sess.executed[0])
         assert "update aitown_chat_history_log" in sql
+
+    def test_locks_the_mirror_row_before_merging(self, monkeypatch: pytest.MonkeyPatch):
+        """Regression guard for the lost-update race code review flagged: a
+        plain SELECT-then-UPDATE here would let two concurrent patches for
+        the same correlation_id clobber each other's merged spark_meta.
+        FOR UPDATE serializes them instead."""
+        monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
+
+        class _ExistingRow:
+            spark_meta = {}
+
+        calls: list[str] = []
+
+        class _LockTrackingSession(_FakeSession):
+            def with_for_update(self):
+                calls.append("with_for_update")
+                return self
+
+        sess = _LockTrackingSession(query_result=_ExistingRow())
+
+        worker._maybe_dual_patch_aitown_spark_meta(sess, correlation_id="c1", patch_spark_meta={"new": True})
+
+        assert calls == ["with_for_update"]
 
     def test_a_patch_failure_is_contained_not_raised(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(worker.settings, "sql_writer_aitown_dual_write_enabled", True)
@@ -271,3 +303,47 @@ class TestUpsertChatHistoryRowModelClsParam:
 
         sql = _compiled_sql(captured["stmt"])
         assert "insert into chat_history_log" in sql
+
+
+class TestMirrorTableSchemaParity:
+    """Code review (2026-08-19): the dual-write path has no gate ensuring
+    AitownChatHistoryLogSQL stays column-for-column identical to
+    ChatHistoryLogSQL. Without one, a future column added to
+    chat_history_log alone would make ``pg_insert(AitownChatHistoryLogSQL)
+    .values(**values)`` raise ``CompileError('Unconsumed column names: ...')``
+    on every dual-write call from then on -- caught only by the broad
+    ``except Exception`` in ``_maybe_dual_write_aitown_chat_history`` and
+    logged as a warning, so the mirror table would silently stop receiving
+    ANY writes with nothing failing loudly. This test is the deterministic
+    gate that catches that drift at test time instead -- CLAUDE.md's "the
+    right fix for [a] forgotten ... rule is not a louder prompt, it is a
+    failing gate," applied to this exact failure mode.
+    """
+
+    def test_column_names_match_exactly(self):
+        primary_cols = set(worker.ChatHistoryLogSQL.__table__.columns.keys())
+        mirror_cols = set(worker.AitownChatHistoryLogSQL.__table__.columns.keys())
+        assert mirror_cols == primary_cols, (
+            f"aitown_chat_history_log has drifted from chat_history_log's columns -- "
+            f"missing from mirror: {primary_cols - mirror_cols}, "
+            f"extra on mirror: {mirror_cols - primary_cols}. Add the missing column(s) "
+            f"to app/models/aitown_chat_history_log.py AND "
+            f"services/orion-sql-db/manual_migration_aitown_chat_history_log_v1.sql "
+            f"(or a follow-up migration) in the same change that adds them to "
+            f"chat_history_log."
+        )
+
+    def test_column_types_match(self):
+        primary_table = worker.ChatHistoryLogSQL.__table__
+        mirror_table = worker.AitownChatHistoryLogSQL.__table__
+        for name in primary_table.columns.keys():
+            primary_type = type(primary_table.c[name].type)
+            mirror_type = type(mirror_table.c[name].type)
+            assert primary_type is mirror_type, (
+                f"column {name!r}: chat_history_log is {primary_type.__name__}, "
+                f"aitown_chat_history_log is {mirror_type.__name__}"
+            )
+
+    def test_primary_key_matches(self):
+        assert [c.name for c in worker.ChatHistoryLogSQL.__table__.primary_key] == ["id"]
+        assert [c.name for c in worker.AitownChatHistoryLogSQL.__table__.primary_key] == ["id"]

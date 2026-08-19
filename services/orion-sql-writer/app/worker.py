@@ -964,19 +964,46 @@ def _maybe_dual_patch_aitown_spark_meta(
     If no mirror row exists (never dual-written, or dual-write was off at the
     time), this is a correct no-op -- there is nothing to patch, and this
     function must never create a row on its own classification-blind say-so.
+
+    Code review (2026-08-19) caught two real issues in the first version:
+
+    1. A plain SELECT-then-UPDATE here is exactly the lost-update race
+       ``upsert_chat_history_row``'s own docstring says the ON CONFLICT
+       redesign exists to avoid -- two concurrent patches for the same
+       ``correlation_id`` could each read the same starting ``spark_meta``,
+       merge their own patch on top in Python, and the second UPDATE would
+       clobber the first's merged keys instead of folding both in. Fixed
+       with ``.with_for_update()``: the row lock serializes concurrent
+       patches within the SAVEPOINT instead of letting them race. (The
+       *primary*-table ``_apply_spark_meta_patch`` just above has this same
+       pre-existing race and is NOT touched here -- out of scope for this
+       diff, a real follow-up in its own right.)
+    2. The existence check was done *inside* ``begin_nested()``, paying for
+       a SAVEPOINT on every single no-mirror-row no-op call (the common case
+       while few rows have been dual-written yet). Reordered so the cheap
+       existence check runs first, un-transacted, and the SAVEPOINT only
+       wraps the actual locked read + write once there is real work to do.
     """
     if not settings.sql_writer_aitown_dual_write_enabled:
         return
+    mirror_exists = (
+        sess.query(AitownChatHistoryLogSQL.id)
+        .filter(AitownChatHistoryLogSQL.correlation_id == correlation_id)
+        .first()
+    )
+    if mirror_exists is None:
+        return
     try:
         with sess.begin_nested():
-            mirror_existing = (
+            mirror_row = (
                 sess.query(AitownChatHistoryLogSQL)
                 .filter(AitownChatHistoryLogSQL.correlation_id == correlation_id)
+                .with_for_update()
                 .first()
             )
-            if mirror_existing is None:
+            if mirror_row is None:
                 return
-            mirror_merged = _merge_spark_meta(getattr(mirror_existing, "spark_meta", None), patch_spark_meta)
+            mirror_merged = _merge_spark_meta(getattr(mirror_row, "spark_meta", None), patch_spark_meta)
             sess.execute(
                 update(AitownChatHistoryLogSQL)
                 .where(AitownChatHistoryLogSQL.correlation_id == correlation_id)

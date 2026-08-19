@@ -99,6 +99,7 @@ from .chat_stance import (
     parse_chat_stance_brief_with_debug,
     suppress_chat_general_speech_identity_priming,
 )
+from .admission_cue import admission_cue_for_settings
 from .situation import build_situation_for_ctx
 from .world_context import fetch_latest_world_context_capsule
 from .world_context_capsule_cache import get_world_context_capsule_cache
@@ -780,6 +781,15 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
         node = cluster.get("peak_pressure_node")
         if isinstance(channel, str) and channel:
             draft_payload["peak_at"] = f"{node}.{channel}" if isinstance(node, str) and node else channel
+    # ROADMAP A5: the one number in this cue that is not about the body -- whether Orion's own
+    # background thinking was made to wait for a slot, and for how long. Every other signal here
+    # is a hardware pressure; this is the opportunity cost, which is what Juniper actually pays
+    # (roadmap §2A). `of` ships beside `n` on purpose: "asked 294 times, never waited" and
+    # "made no background requests" are different facts and would otherwise be the same zero.
+    # The key is absent when the gateway could not be read -- see admission_cue.py.
+    admission = ctx.get("admission")
+    if isinstance(admission, dict) and admission:
+        draft_payload["waited"] = admission
     freshness_s = _metacog_cue_freshness_s(biometrics)
     if freshness_s is not None:
         draft_payload["freshness_s"] = freshness_s
@@ -3802,6 +3812,11 @@ async def call_step_services(
                 # question 5.
                 ctx["trigger_upstream_json"] = json.dumps(trigger.upstream or {}, indent=2, default=str)
                 ctx["context_summary"] = summary_text
+                # ROADMAP A5. Fetched here rather than inside the cue builder so that builder
+                # stays a pure function of ctx and can be tested without a live gateway.
+                # TTL-cached and fail-quiet: on any failure this is None and the cue omits the
+                # key entirely, because "could not read" must never render as "nothing waited".
+                ctx["admission"] = admission_cue_for_settings(settings)
                 ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx)
                 from app.substrate_felt_state_reader import hydrate_felt_state_ctx
                 from orion.substrate.metacog_trigger_signals import (

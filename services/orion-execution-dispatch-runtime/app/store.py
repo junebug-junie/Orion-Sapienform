@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, time, timedelta, timezone
+# NOT `import time`: this module already imports datetime.time above, and the plain module
+# import loses that race silently -- AttributeError: type object 'datetime.time' has no
+# attribute 'monotonic', at runtime, on the reconciler path only.
+from time import monotonic as _monotonic
 
 from psycopg2.extras import Json
 from pydantic import ValidationError
@@ -41,13 +45,19 @@ def _coerce_starvation_counts(raw: object) -> dict[str, int]:
 
 
 class ExecutionDispatchRuntimeStore:
-    def __init__(self, postgres_uri: str) -> None:
+    def __init__(self, postgres_uri: str, *, reconcile_interval_sec: float = 900.0) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
             pool_pre_ping=True,
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
+        # Seeded to NOW, not None: otherwise the expensive full-table anti-join in
+        # reconcile_dispatch_pending runs on the first tick of every process start, and a crash
+        # loop would re-run it per restart -- defeating the rate limit that makes it safe to
+        # call every tick.
+        self._reconcile_interval_sec = float(reconcile_interval_sec)
+        self._last_reconcile_mono: float | None = _monotonic()
 
     def _validate_policy_frame_row(
         self, payload: object, *, log_label: str
@@ -100,6 +110,16 @@ class ExecutionDispatchRuntimeStore:
         statistics as an alternative explanation -- ruled out, a fresh
         ANALYZE on both tables left the plan and cost unchanged).
 
+        SUPERSEDED 2026-08-19 (ROADMAP D2): this is no longer a join at all. It reads
+        `p.dispatch_pending` off a PARTIAL index containing only unprocessed rows, so the
+        "huge prefix of already-processed ancient history" the analysis below is about does not
+        exist to be walked. That analysis was correct and is kept because it explains why the
+        obvious `NOT EXISTS` rewrite was NOT the answer -- the marker is. Batching the LIMIT,
+        the actual fix from that patch, is unchanged and still right for reading a backlog in
+        chunks; only the cost of FINDING each chunk changed (829 MB hash join -> index scan).
+        See services/orion-sql-db/manual_migration_policy_dispatch_pending_marker.sql.
+
+        Historical note, still accurate for the join shape it describes:
         Deliberately still the `LEFT JOIN` shape here, not `NOT EXISTS`: a
         `NOT EXISTS` rewrite is dramatically cheaper for the DESC "freshest"
         direction (load_freshest_policy_frame_without_dispatch below,
@@ -124,11 +144,9 @@ class ExecutionDispatchRuntimeStore:
                 conn.execute(
                     text(
                         """
-                        SELECT p.policy_decision_frame_json
+                        SELECT p.policy_decision_frame_json, p.frame_id
                         FROM substrate_policy_decision_frames p
-                        LEFT JOIN substrate_execution_dispatch_frames d
-                          ON d.source_policy_frame_id = p.frame_id
-                        WHERE d.frame_id IS NULL
+                        WHERE p.dispatch_pending
                         ORDER BY p.generated_at ASC
                         LIMIT :limit
                         """
@@ -143,8 +161,11 @@ class ExecutionDispatchRuntimeStore:
             frame = self._validate_policy_frame_row(
                 row["policy_decision_frame_json"], log_label="oldest_batch_lookup"
             )
-            if frame is not None:
-                frames.append(frame)
+            if frame is None:
+                continue
+            if self._already_dispatched(frame.frame_id):
+                continue
+            frames.append(frame)
         return frames
 
     def load_freshest_policy_frame_without_dispatch(self) -> PolicyDecisionFrameV1 | None:
@@ -179,12 +200,9 @@ class ExecutionDispatchRuntimeStore:
                 conn.execute(
                     text(
                         """
-                        SELECT p.policy_decision_frame_json
+                        SELECT p.policy_decision_frame_json, p.frame_id
                         FROM substrate_policy_decision_frames p
-                        WHERE NOT EXISTS (
-                          SELECT 1 FROM substrate_execution_dispatch_frames d
-                          WHERE d.source_policy_frame_id = p.frame_id
-                        )
+                        WHERE p.dispatch_pending
                         ORDER BY p.generated_at DESC
                         LIMIT 1
                         """
@@ -195,9 +213,100 @@ class ExecutionDispatchRuntimeStore:
             )
         if not row:
             return None
-        return self._validate_policy_frame_row(
+        frame = self._validate_policy_frame_row(
             row["policy_decision_frame_json"], log_label="freshest_lookup"
         )
+        if frame is not None and self._already_dispatched(frame.frame_id):
+            return None
+        return frame
+
+    def _already_dispatched(self, policy_frame_id: str) -> bool:
+        """Restores, at the read boundary, the guarantee the anti-join used to give for free.
+
+        `WHERE d.frame_id IS NULL` could not return an already-dispatched frame -- it looked. A
+        marker can be stale-true (every pre-migration row is, until backfilled; so is anything
+        restored from a backup taken mid-migration), and re-dispatching is NOT a harmless
+        repeat: it would run a real cortex action a second time against a policy decision that
+        has already been acted on. Checked here rather than in the two workers' call sites, so
+        both read directions are covered by one guard and neither can be updated without it.
+
+        A stale marker found this way is cleared, in a batch, so the FIFO advances instead of
+        re-selecting the same rows every tick.
+        """
+        if self.load_dispatch_frame_for_policy_frame(policy_frame_id) is None:
+            return False
+        logger.info("dispatch_pending_stale_marker policy_frame_id=%s", policy_frame_id)
+        self.clear_dispatch_pending(policy_frame_id)
+        return True
+
+    def clear_dispatch_pending(self, policy_frame_id: str, *, drain_batch: int = 5000) -> int:
+        """Clear this row's marker, plus a batch of others that already have a dispatch frame.
+
+        The marker defaults to TRUE, so every pre-migration row starts pending. Clearing one at
+        a time would put 423k stale rows ahead of real work under `ORDER BY generated_at ASC`.
+        The batch is the migration's own backfill statement and rides the partial index.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames
+                       SET dispatch_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": policy_frame_id},
+            )
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames u
+                       SET dispatch_pending = false
+                     WHERE u.frame_id IN (
+                           SELECT x.frame_id
+                             FROM substrate_policy_decision_frames x
+                             JOIN substrate_execution_dispatch_frames d
+                               ON d.source_policy_frame_id = x.frame_id
+                            WHERE x.dispatch_pending
+                            LIMIT :batch
+                     )
+                """),
+                {"batch": max(0, int(drain_batch))},
+            )
+        drained = 1 + int(result.rowcount or 0)
+        if drained > 1:
+            logger.info("dispatch_pending_bulk_drained cleared=%s", drained)
+        return drained
+
+    def reconcile_dispatch_pending(self, *, force: bool = False) -> int:
+        """Re-queue any policy frame whose marker was cleared without a dispatch frame existing.
+
+        Only ever sets the marker TRUE -- it can add work, never remove it, so a bug here costs
+        duplicated effort rather than lost effort. It IS the expensive anti-join the marker
+        exists to avoid, hence rate-limited rather than run on every tick.
+        """
+        now = _monotonic()
+        if not force and self._last_reconcile_mono is not None:
+            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
+                return 0
+        self._last_reconcile_mono = now
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames p
+                       SET dispatch_pending = true
+                     WHERE NOT p.dispatch_pending
+                       AND NOT EXISTS (
+                             SELECT 1 FROM substrate_execution_dispatch_frames d
+                              WHERE d.source_policy_frame_id = p.frame_id
+                       )
+                """)
+            )
+        requeued = int(result.rowcount or 0)
+        if requeued:
+            logger.warning(
+                "dispatch_pending_reconciled requeued=%s -- policy frames had their pending "
+                "marker cleared with no dispatch frame present. Work would have been lost.",
+                requeued,
+            )
+        return requeued
 
     def _retire_incompatible_policy_frame(
         self, raw_frame_id: str, raw_proposal_frame_id: str | None
@@ -352,6 +461,17 @@ class ExecutionDispatchRuntimeStore:
                     "dispatch_frame_json": Json(frame.model_dump(mode="json")),
                     "created_at": now,
                 },
+            )
+            # ROADMAP D2, 2026-08-19. SAME TRANSACTION as the insert: a crash between the two
+            # would otherwise either lose the work (marker cleared, no dispatch frame) or
+            # reprocess it, and only one of those is recoverable.
+            conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames
+                       SET dispatch_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": frame.source_policy_frame_id},
             )
 
     def save_dispatch_result(

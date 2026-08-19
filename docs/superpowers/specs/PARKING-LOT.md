@@ -496,3 +496,61 @@ consumer from the pipeline, so it needs identifying before anything is designed.
 duration threshold for a few minutes.
 
 </details>
+
+---
+
+## `substrate_proposal_frames` has never been pruned (2026-08-19, from code review of #1751)
+
+```
+relname                     n_live_tup  n_tup_ins  n_tup_del  heap     idx
+substrate_proposal_frames      444,601    444,600          0  1485 MB  133 MB
+substrate_attention_frames      99,840    662,843    563,004  1022 MB   33 MB
+```
+
+`n_tup_del = 0`, and a repo-wide grep for `DELETE FROM substrate_proposal_frames` or `prune_proposal`
+returns nothing. The sibling table *is* pruned (`prune_attention_frames`,
+`services/orion-attention-runtime/app/store.py`). Proposal frames never have been.
+
+Why this is parked rather than fixed: PR #1751 just made this table cheap to query, which removes
+the only pressure that would have surfaced the growth. That is worth saying out loud — a fast
+index scan on an unbounded table raises no alarm at 444k rows and none at 1.5M either. The cost
+shows up later as disk, in whatever the next D2-shaped investigation turns out to be.
+
+Also parked here, same shape: **three of the four `created_at` indexes added by PR #1745 are
+near-unused.** Lifetime `idx_scan`:
+
+```
+substrate_proposal_frames_created_at              1   19 MB
+substrate_policy_decision_frames_created_at      10   19 MB
+substrate_feedback_frames_created_at             13   10 MB
+substrate_execution_dispatch_frames_created_at 98,979 23 MB
+```
+
+~48 MB of index doing almost nothing. Not dropped in #1751 because PR #1745 added all four as a
+set one day earlier; removing three is a decision about *that* patch's intent, and the right move
+is to check what the dispatch one is serving that the other three are not, rather than to prune by
+scan count alone.
+
+**Not scheduled.** A retention policy for proposal frames is the real item; the index question is
+a five-minute check that should happen first.
+
+---
+
+## No gate exists for the 79 hand-applied SQL migrations (2026-08-19, from code review of #1751)
+
+`services/orion-sql-db/manual_migration_*.sql` has no runner and no registry. Every one is applied
+by hand via `docker exec -i ... psql < file`. A database rebuilt from the base migrations gets
+`substrate_proposal_frames` with only its `generated_at` index and **silently** lacks everything
+added since — including the index that PR #1751 exists to add.
+
+This is the failure mode AGENTS.md §"Deterministic gates over repeated yelling" names directly: the
+right fix for a forgotten manual migration is not a comment pointing at the `.sql` file, it is a
+check that fails. PR #1751's tests pin the *query* half of its fix and say so explicitly in their
+own docstring; nothing pins the *index* half.
+
+Cheapest useful version: assert a list of expected index names against `pg_index` on the live
+database, run wherever the other live smokes run. That does not solve migration ordering or
+idempotency, but it converts "silently missing index" into a failing check, which is the actual
+recurring damage.
+
+**Not scheduled.**

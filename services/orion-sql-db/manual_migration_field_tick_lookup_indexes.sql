@@ -18,15 +18,25 @@
 --   -- at ~0.9 executions/sec, ~130 MB/sec of disk reads from this one guard.
 --
 -- Three sibling tables (substrate_attention_frames, substrate_execution_dispatch_frames,
--- substrate_policy_decision_frames) already index source_field_tick_id. substrate_proposal_frames
--- was simply missed, and nothing failed -- it just read the whole table forever instead.
+-- substrate_policy_decision_frames) already index source_field_tick_id, so this was an omission
+-- rather than a decision -- nothing failed, it just read the whole table forever instead.
+--
+-- Treat that consistency as context, not as the argument. Lifetime scan counts on those three
+-- sibling indexes are 674,758 / 1 / 0: two of the three cited precedents are themselves barely
+-- used, so "the siblings have it" proves convention, not value. The evidence is the 18,515-block
+-- seq scan above.
 --
 -- WHY (source_field_tick_id, generated_at DESC) AND NOT source_field_tick_id ALONE
--- The query orders by generated_at DESC and takes 1. With the composite the planner gets the
--- row directly from the index; with the bare column it must still fetch and sort every matching
--- row. In steady state that is one row, so the difference is small -- but the guard exists
--- precisely to handle the case where a tick produced MORE than one frame, which is exactly when
--- the sort would not be free. The column is the cheap half of the key either way.
+-- The query orders by generated_at DESC and takes 1. With the composite the planner gets the row
+-- straight from the index; with the bare column it must fetch every match and add a Sort node.
+-- Confirmed live: the proposal plan on the composite has NO Sort, while the attention plan on
+-- its bare (source_field_tick_id) index does.
+--
+-- Note what this reasoning is NOT. An earlier draft of this file justified the composite by "the
+-- guard exists to handle a tick that produced more than one frame." Live data flatly contradicts
+-- that: max frames per tick is 1 on both tables across 544,401 ticks (avg 1.000), which makes
+-- sense -- preventing a second frame is the guard's entire job. The composite is worth ~8 bytes
+-- per entry to make the ORDER BY structurally free, not because the fanout case occurs.
 --
 -- ALSO HERE: memory_crystallization_{sources,claims} are read by crystallization_id
 -- (orion/memory/crystallization/repository.py::load) and have no index on it. Live counters:
@@ -61,6 +71,24 @@ create index concurrently if not exists idx_mcr_sources_crystallization_id
 create index concurrently if not exists idx_mcr_claims_crystallization_id
     on memory_crystallization_claims (crystallization_id);
 
+-- substrate_reduction_receipts: the SAME defect as the attention lookup above, found by code
+-- review of this patch rather than by the metrics sweep that found the other two.
+-- services/orion-attention-runtime/app/store.py filtered
+-- `receipt_json -> 'state_deltas' -> 0 ->> 'reducer_id'` while the table has carried a real
+-- `reducer_name` column all along. Live equivalence check across all 9,345 rows: 0 disagreeing,
+-- the 4,138 NULLs coincide exactly, and max(jsonb_array_length(state_deltas)) = 1 so the
+-- `[0]` subscript in the JSON form cannot be hiding a second delta.
+--
+-- This one is NOT part of the I/O ceiling -- measured 3,248 of 3,254 buffers served from cache,
+-- so it costs CPU rather than disk. It is fixed here anyway because the fix is the same one-line
+-- swap plus this index, and because the table has no pruner bounding its growth: a seq scan that
+-- is cache-resident at 9k rows is not cache-resident at 500k.
+--
+-- Both call sites filter reducer_name and range/order on created_at (one DESC, one ASC with a
+-- cursor); a btree serves both directions from one index.
+create index concurrently if not exists idx_substrate_reduction_receipts_reducer_name
+    on substrate_reduction_receipts (reducer_name, created_at);
+
 -- VERIFY. A partially-applied migration is not self-announcing; read this output.
 -- All three must be present with indisvalid = t.
 select indexrelid::regclass as index, indisvalid
@@ -68,5 +96,6 @@ select indexrelid::regclass as index, indisvalid
  where indexrelid::regclass::text in (
         'idx_substrate_proposal_frames_source_field_tick_id',
         'idx_mcr_sources_crystallization_id',
-        'idx_mcr_claims_crystallization_id')
+        'idx_mcr_claims_crystallization_id',
+        'idx_substrate_reduction_receipts_reducer_name')
  order by 1;

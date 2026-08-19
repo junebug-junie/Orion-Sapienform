@@ -219,8 +219,14 @@ class TestFieldTickLookupsStayIndexEligible:
         assert "->>" not in sql
 
     def test_both_still_order_newest_first_and_take_one(self) -> None:
-        """The composite index is (source_field_tick_id, generated_at DESC); an ORDER BY that
-        drifted off generated_at would quietly stop using its second column."""
+        """Both lookups must stay newest-first-take-one.
+
+        Only substrate_proposal_frames has the composite (source_field_tick_id, generated_at
+        DESC), where an ORDER BY that drifted off generated_at would quietly stop using the
+        second column. substrate_attention_frames has a BARE (source_field_tick_id) index and
+        its live plan does carry a Sort node -- free at the observed fanout of exactly 1, but
+        do not read this assertion as proof that attention is covered by a composite too.
+        """
         store = ProposalRuntimeStore("postgresql://test:test@localhost/test")
         for method in ("load_attention_frame_for_field_tick", "load_proposal_frame_for_field_tick"):
             sql = _captured_sql(store, method, "tick_a")

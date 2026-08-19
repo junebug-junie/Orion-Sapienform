@@ -131,7 +131,45 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "CREATE EXTENS
 
 - **Severity: low.** Write cost of a 4th index on `substrate_proposal_frames` (~444k rows, actively inserted). Concern: index maintenance on every insert. Mitigation: the table takes roughly one insert per tick, and the read it replaces was 144 MB; the trade is not close. Reversible with a single `DROP INDEX`.
 - **Severity: low.** `memory_crystallization_claims` is currently empty (0 rows), so its index is provisioning for a load path that is running 848k times but finding nothing. Worth a separate look at *why* that loader is called that often — it is not a defect this patch introduces, but it is unexplained.
-- **Severity: informational.** `substrate_reduction_receipts` is now the largest remaining scan source at 22,574 tuples/sec. **Measured and deliberately not fixed**: `EXPLAIN` shows 3,248 of 3,254 buffers served from cache, so it costs CPU and buffer traffic, not disk, and is not part of the I/O ceiling this arc was chasing. Fixing it would need an expression index on a nested JSON path. Recorded here rather than done.
+- **Severity: low.** Three of the four `created_at` indexes added by PR #1745 are near-unused: lifetime `idx_scan` is 1 (`proposal_frames`, 19 MB), 10 (`policy_decision_frames`, 19 MB), 13 (`feedback_frames`, 10 MB) against 98,979 (`execution_dispatch_frames`, 23 MB). ~48 MB of index doing almost nothing. Recorded rather than dropped: PR #1745 added all four as a set one day ago, and removing three of them is a decision about that patch's intent, not a drive-by cleanup on this one. Parked.
+
+## Review findings fixed
+
+Review ran in a subagent against the pushed branch. It cleared the three angles I was most worried about and found one real defect **in my own PR report**.
+
+- **Finding (HIGH): the PR report justified skipping `substrate_reduction_receipts` with a claim that is false.** I wrote that fixing it "would need an expression index on a nested JSON path." It does not — the table has carried a real `reducer_name` column all along, making those two call sites *the identical defect this PR fixes*.
+  - **Fix:** verified the claim myself rather than taking the review's word for it (0 disagreeing rows across all 9,345, the 4,138 NULLs coincide exactly, `max(jsonb_array_length(state_deltas)) = 1` so the `[0]` subscript hides nothing), then did the actual fix: swapped both call sites in `services/orion-attention-runtime/app/store.py:130,253` to `WHERE reducer_name = :reducer_id` and added `idx_substrate_reduction_receipts_reducer_name (reducer_name, created_at)` — one index serving both the DESC read and the ASC cursor read.
+  - **Evidence:** `EXPLAIN` before: Seq Scan, 3,254 buffers, 37.4 ms, 9,948 rows discarded. After: `Index Scan Backward`, **2 buffers, 0.088 ms**, no Sort node. Deployed and verified: `orion-athena-attention-runtime` up, frames saving, no errors.
+  - This is why the finding mattered beyond the sentence: left alone, a durable doc would have told the next agent an expensive fix was required when a one-line swap was.
+
+- **Finding (MEDIUM): the compose comment explains what `shared_preload_libraries` buys but never mentions `CREATE EXTENSION`.** The flag only loads the `.so`; the view does not exist until the extension is created per-database.
+  - **Fix:** added the exact `CREATE EXTENSION` command to the compose comment block, with a note on the failure it prevents. The compose file is what gets read months later; the PR report is not.
+  - **Evidence:** `services/orion-sql-db/docker-compose.yml`, comment above the flag.
+
+- **Finding (LOW): the migration justified the composite index with a case live data contradicts.** I argued it earns its keep for ticks that produced more than one frame. Max frames per tick is **1** across 544,401 ticks on both tables — the guard's entire job is preventing that case.
+  - **Fix:** rewrote the justification to the true one (~8 bytes/entry to make the ORDER BY structurally free) and recorded the contradicting numbers in the file, rather than deleting the wrong reasoning silently.
+  - **Evidence:** confirmed independently — the proposal plan on the composite has **no Sort node**; the attention plan on its bare index does.
+
+- **Finding (LOW): "three sibling tables already index this column" reads as evidence of value; it is only evidence of convention.** Two of the three cited siblings have lifetime `idx_scan` of 1 and 0.
+  - **Fix:** demoted it to context in the migration comment and pointed at the 18,515-block seq scan as the actual argument.
+
+- **Finding (LOW): a test docstring claimed a composite index that half its subjects do not have.** `substrate_attention_frames` has a bare `(source_field_tick_id)` index.
+  - **Fix:** docstring now states which table has which, and that attention's live plan does carry a Sort node.
+
+- **Cleared, not defects:** the column swap (the review traced the single writer, found the column is `not null` and bound from the same pydantic attribute as the JSON, and noted the stronger argument I had missed — the attention runtime's *own* reader at `services/orion-attention-runtime/app/store.py:427` has always filtered the column, so the swap makes the two agree rather than inventing new semantics); `_captured_sql` shared state (no leak — `_engine` is a per-instance attribute and every test builds its own store); and the migration's transaction safety (no `BEGIN`/`DO` block, `CREATE INDEX CONCURRENTLY` is safe, VERIFY query re-run live).
+
+- **Independently swept for the same defect elsewhere:** the review checked all 116 `->>` uses in `services/`, `orion/`, and `scripts/` against `information_schema.columns` on the live DB. `substrate_reduction_receipts` was the only miss. Every other JSON filter is genuinely JSON-only (no column equivalent) or operates on a `jsonb_array_elements` lateral where no column is possible. A targeted grep for `->> 'source_field_tick_id'` now returns only comment text.
+
+## An error of mine, corrected mid-patch
+
+After deploying proposal-runtime I saw the "no attention frame for this tick" rate jump from a ~16-23%/hour baseline to 50% in the partial hour, which is the exact failure the column swap could have caused. It did not.
+
+```
+missed_ticks  attn_exists_by_column  attn_exists_by_json
+          86                     80                   80
+```
+
+Both predicates agree on every one of the 86, and the per-minute series decays back to baseline within five minutes of the restart (26/29 → 19/28 → 16/29 → 11/28 → 0/4). It is a restart race — proposal-runtime briefly running ahead of attention-runtime — not a predicate change. Recorded because the number looked exactly like the regression I was watching for, and "it decayed" alone would not have been enough to conclude that.
 
 ## PR link
 

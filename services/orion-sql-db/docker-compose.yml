@@ -22,6 +22,12 @@ services:
       # to invisible to sampling and dominant in aggregate. pg_stat_statements aggregates
       # every execution instead, so shared_blks_read/calls answers it directly.
       # Requires a restart to take effect (shared_preload_libraries is postmaster-only).
+      # THIS FLAG ONLY LOADS THE LIBRARY. The pg_stat_statements VIEW does not exist until
+      # `CREATE EXTENSION pg_stat_statements;` is run once per database:
+      #   docker exec orion-athena-sql-db psql -U postgres -d conjourney \
+      #     -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
+      # Without that step a rebuilt container pays the shared-memory and per-execution cost and
+      # still answers `relation "pg_stat_statements" does not exist`.
       # Cost: a fixed shared-memory allocation for pg_stat_statements.max entries and a
       # small per-execution bookkeeping overhead. Defaults kept (max=5000, track=top).
       - -c

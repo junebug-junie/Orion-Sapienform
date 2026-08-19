@@ -285,6 +285,7 @@ async def handle_harness_run_request(
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
             recall_debug=recall_debug,
             memory_digest=memory_digest,
+            fcc_served_model=motor.fcc_served_model,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -338,6 +339,7 @@ async def handle_harness_run_request(
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
             recall_debug=recall_debug,
             memory_digest=memory_digest,
+            fcc_served_model=motor.fcc_served_model,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -402,6 +404,7 @@ async def handle_harness_run_request(
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
             recall_debug=recall_debug,
             memory_digest=memory_digest,
+            fcc_served_model=motor.fcc_served_model,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -419,6 +422,7 @@ async def handle_harness_run_request(
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
             recall_debug=recall_debug,
             memory_digest=memory_digest,
+            fcc_served_model=motor.fcc_served_model,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -440,6 +444,7 @@ async def handle_harness_run_request(
         grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
         recall_debug=recall_debug,
         memory_digest=memory_digest,
+        fcc_served_model=motor.fcc_served_model,
     )
     if motor.grammar_collector is not None and run.final_text:
         await _emit_finalize_lifecycle_grammar(

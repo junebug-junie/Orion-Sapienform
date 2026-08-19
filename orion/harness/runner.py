@@ -84,10 +84,32 @@ class HarnessMotorResult:
     # This is a soft audit signal, not a motor failure -- never repurpose
     # grounding_status for it.
     tool_provenance_audit: str | None = None
+    # Real backend model the CLI's stream-json "assistant" events echoed back
+    # (see fcc_motor.py's _served_model_from_assistant), distinct from the
+    # ~/.fcc/.env route alias in HarnessRunRequestV1.fcc_model_label -- that
+    # label alone can't distinguish MODEL_SONNET from MODEL_OPUS when both
+    # point at the same route. None when discovery never fired (e.g. a
+    # fast-fail before any assistant turn).
+    fcc_served_model: str | None = None
 
 
 def _default_harness_node_name() -> str:
     return os.environ.get("HARNESS_NODE_NAME", "athena")
+
+
+def _served_model_from_metadata(meta: object) -> str | None:
+    """Read fcc_motor.py's fcc_served_model out of a "final"/"error" event's
+    metadata dict, if present. Shared by both branches below so the
+    extraction rule (and its stripping) can't drift between a clean turn and
+    a degraded/partial one.
+    """
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("fcc_served_model")
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    return raw or None
 
 
 def _record_recall_gate_from_debug(
@@ -271,6 +293,7 @@ class HarnessRunner:
         step_count = 0
         draft_text = ""
         exit_code: int | None = None
+        fcc_served_model: str | None = None
         compliance_verdict = "completed"
         grounding_status = "grounded"
         motor_failed = False
@@ -369,11 +392,17 @@ class HarnessRunner:
                     raw_exit = meta.get("exit_code")
                     if isinstance(raw_exit, int):
                         exit_code = raw_exit
+                seen_served_model = _served_model_from_metadata(meta)
+                if seen_served_model:
+                    fcc_served_model = seen_served_model
             elif etype == "error":
                 error_path_taken = True
                 partial = str(event.get("llm_response") or "").strip()
                 error_code = str(event.get("error_code") or "").strip()
                 error_msg = str(event.get("error") or "").strip()
+                seen_served_model = _served_model_from_metadata(event.get("metadata"))
+                if seen_served_model:
+                    fcc_served_model = seen_served_model
                 if partial:
                     draft_text = apply_context_overflow_hint(partial)
                     compliance_verdict = "partial"
@@ -482,6 +511,7 @@ class HarnessRunner:
                 reasoning_output_tokens=reasoning_output_tokens,
                 context_gathering_step_count=context_gathering_step_count,
                 execution_step_count=execution_step_count,
+                fcc_served_model=fcc_served_model,
             )
 
         await _publish_motor_lifecycle(
@@ -539,4 +569,5 @@ class HarnessRunner:
             reasoning_output_tokens=reasoning_output_tokens,
             context_gathering_step_count=context_gathering_step_count,
             execution_step_count=execution_step_count,
+            fcc_served_model=fcc_served_model,
         )

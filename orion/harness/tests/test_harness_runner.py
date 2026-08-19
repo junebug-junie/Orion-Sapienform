@@ -79,6 +79,56 @@ async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
     assert result.compliance_verdict == "completed"
 
 
+@pytest.mark.asyncio
+async def test_harness_runner_surfaces_fcc_served_model_from_final_metadata() -> None:
+    """A "final" event's metadata.fcc_served_model (the real backend model the
+    CLI's stream-json events echoed back, per fcc_motor.py's
+    _served_model_from_assistant) should reach HarnessMotorResult -- distinct
+    from HarnessRunRequestV1.fcc_model_label, which is only the requested
+    ~/.fcc/.env route alias.
+    """
+
+    async def _served_model_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "final",
+            "llm_response": "internal draft answer",
+            "metadata": {
+                "exit_code": 0,
+                "fcc_model_label": "MODEL_SONNET",
+                "fcc_served_model": "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+            },
+        }
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-served-model",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_served_model_runner).run(request)
+
+    assert result.fcc_served_model == "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_fcc_served_model_defaults_none_when_discovery_absent() -> None:
+    """No "fcc_served_model" key in the final event's metadata (e.g. a backend
+    that never echoed a model, or discovery never firing) must not crash and
+    must leave the field None so callers fall back to fcc_model_label.
+    """
+    request = HarnessRunRequestV1(
+        correlation_id="c-no-served-model",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_mock_fcc_runner).run(request)
+
+    assert result.fcc_served_model is None
+
+
 def _step_with_tool_result(*, is_error: bool, text: str) -> dict[str, Any]:
     return _step_with_tool_results([(is_error, text)])
 

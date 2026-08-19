@@ -749,7 +749,12 @@ class EndogenousOutreach:
                 }
             )
 
-        await self._deliver(text=text, session_id=session_id, correlation_id=correlation_id)
+        await self._deliver(
+            text=text,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            model=gen_debug.get("fcc_model_label"),
+        )
 
         self._last_outreach_at = time.time()
         self._sent_today += 1
@@ -889,16 +894,28 @@ class EndogenousOutreach:
             "elapsed_sec": elapsed,
             "final_len": len(text),
             "harness_grounding_status": final_frame.get("harness_grounding_status"),
+            # The identity that produced this response -- turn_orchestrator's
+            # _success_frames now exposes it on the final frame (it was always
+            # known at request time, just never surfaced to a caller that
+            # doesn't go through _publish_unified_turn_chat_history's own
+            # persistence, which this module suppresses via no_write=True).
+            "fcc_model_label": final_frame.get("fcc_model_label"),
         }
         return text, debug
 
     # -- delivery ----------------------------------------------------------
 
-    async def _deliver(self, *, text: str, session_id: str, correlation_id: str) -> None:
+    async def _deliver(
+        self, *, text: str, session_id: str, correlation_id: str, model: Optional[str] = None
+    ) -> None:
         message_id = str(uuid4())
         self._push_to_sockets(text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id)
         await self._publish_history(
-            text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id
+            text=text,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            message_id=message_id,
+            model=model,
         )
         await self._publish_notification(
             text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id
@@ -928,27 +945,27 @@ class EndogenousOutreach:
                 logger.warning("endogenous_outreach_push_failed connection=%s err=%s", connection_id, exc)
 
     async def _publish_history(
-        self, *, text: str, session_id: str, correlation_id: str, message_id: str
+        self, *, text: str, session_id: str, correlation_id: str, message_id: str, model: Optional[str] = None
     ) -> None:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
 
-            # No `model=` here: `_generate` runs the FCC harness pipeline
-            # (`execute_unified_turn` -> `HarnessRunV1`), which has no served-
-            # model field at all today (unlike the LLM-gateway "brain" chat
-            # path cortex-exec's `_last_model_used` now reports for a normal
-            # Hub turn). `speaker="Orion"` is the real, honest identity
-            # available here and becomes `chat_history_log.response_identity`
-            # (see worker.py::_ensure_chat_history_from_message) -- a genuine
-            # improvement over blank, not the served model name yet. Giving
-            # this path a real model name needs `HarnessRunV1` to track one,
-            # which is a harness-pipeline change, not a chat-history one.
+            # `model` is turn_orchestrator's `fcc_model_label` (e.g.
+            # "MODEL_SONNET"), threaded from `_success_frames`'s final frame
+            # through `_generate`'s debug dict -- the real identity that
+            # produced this response, known at request time and previously
+            # dropped on the floor between there and here. `speaker="Orion"`
+            # stays as the persona label regardless; `model` is the separate,
+            # additive `response_identity`/served-model field (see
+            # worker.py::_ensure_chat_history_from_message, which prefers
+            # `model` over `speaker` when both are present).
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",
                 session_id=session_id,
                 correlation_id=correlation_id,
                 speaker="Orion",
+                model=model,
                 tags=[OUTREACH_TAG],
                 message_id=message_id,
                 client_meta={"unsolicited": True},

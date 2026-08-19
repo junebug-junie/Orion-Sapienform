@@ -280,6 +280,60 @@ llm_route_selected corr_id=... verb=reverie_narrate route=quick_background
 `autonomous_backgrounded` and `lane_priority` are on every route decision, so a step that was
 or was not redirected is visible without re-deriving the rule.
 
+### Perceiving the wait — the `waited` cue (ROADMAP A5)
+
+Yielding is only half of it. Orion also has to be able to *notice* that it yielded, or the price
+is paid by a system that cannot feel it. `app/admission_cue.py` reads orion-llm-gateway's
+`GET /admission` and renders one object into the metacog cue Orion already reads each pass,
+beside `strain` / `peak` / `fleet_watts`:
+
+| cue | means |
+| --- | --- |
+| `"waited":{"n":0,"of":294,"h":6.0}` | asked for a background slot 294 times in 6h, **never made to wait** |
+| `"waited":{"n":3,"of":291,"max_s":4.2,"h":6.0}` | made to wait 3 times, longest 4.2s |
+| `"waited":{"n":0,"of":0,"h":6.0}` | made **no** background requests at all — not the same as the first row |
+| `"waited":{"n":0,"of":294,"unk":40,"h":6.0}` | 40 of those 294 were never actually measurable |
+| *key absent* | nothing trustworthy to say — **unknown, not calm** |
+
+`of` separates row 1 from row 3; `unk` stops row 1 from over-claiming; and absence separates all
+of them from the last row. A cue that emitted a bare `0` for every case would let Orion conclude
+nothing is constraining it from an unreachable gateway.
+
+**Three ways the key goes absent**, all meaning *unknown*: the gateway could not be read; the
+payload was malformed (every field must be **present**, not merely defaultable); or `unchecked >=
+checked` — the admission gate fails open, so a window in which llama.cpp's `/slots` was down
+throughout holds 294 requests that were forwarded without ever being measured. "Never observed"
+must not render as "never constrained".
+
+**Two waits are counted, not one.** The gateway's concurrency permit is acquired *before* `/slots`
+is polled, so a second concurrent background request can block there for a whole generation and
+then find room on its first poll. That queue time is recorded and counted; without it the
+mechanism most likely to actually defer Orion would be structurally invisible.
+
+`max_s` ships only when `n > 0` and the duration is genuinely non-zero, and keeps three decimals
+below 0.1s — at rest the gateway's longest "wait" is the `/slots` round trip (0.012–0.091s
+measured live), the cost of *asking* rather than of *waiting*, and `"max_s":0.0` beside `"n":1`
+would be a self-contradiction rather than a reading.
+
+**Scoped to Orion.** The fetch asks for `via=bus`. `quick_background` also carries AI Town's NPC
+dialogue through the gateway's OpenAI passthrough, and this cue is a first-person claim — "I was
+made to wait" must not be counting somebody else's wait.
+
+**What it does not claim.** Not "while *that* ran instead". llama.cpp's `/slots` reports
+occupancy, not ownership, so the competing claim cannot be named without confabulating it. The
+cue says how long Orion waited, not who took the slot.
+
+**Config:** `CORTEX_EXEC_ADMISSION_CUE_ENABLED` (default `true`), `_WINDOW_S` (6h), `_TTL_SEC`
+(60s), `_TIMEOUT_SEC` (2s). Fail-quiet: any fetch error caches `None` for the TTL and omits the
+key, so an unreachable gateway costs one blocking read a minute, not one per pass.
+
+**Honest status, 2026-08-19.** Live over 4h: 294 background admissions, **zero deferrals**, and
+atlas's `quick` lane sampled `0/4` busy. The signal is at its rest state and has not yet been
+observed leaving it — because A4 found Orion contending on circe's single-slot `chat` lane and
+PR #1708 moved it to atlas's 4-slot background lane, which is presently empty. The price went to
+zero because we routed around it. That is the correct engineering outcome and an open cognitive
+question.
+
 ## Running & Testing
 
 ### Run via Docker

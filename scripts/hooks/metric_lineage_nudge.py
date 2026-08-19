@@ -25,10 +25,12 @@ nothing (no cache yet) or shows a card built from whatever cache exists
 (possibly stale, never wrong-shaped -- it's the same join, just from an
 earlier commit).
 
-Fails open throughout: any missing cache, unreadable JSON, or unexpected
-tool_input shape means print nothing and exit 0, exactly like RTK's and
-graphify's own "no match" behavior. This is a nudge, not a gate -- it must
-never be the reason an unrelated edit fails.
+Fails open throughout: any missing cache, unreadable JSON, structurally
+unexpected cache content, or unexpected tool_input shape means print nothing
+and exit 0, exactly like RTK's and graphify's own "no match" behavior. This
+is a nudge, not a gate -- it must never be the reason an unrelated edit
+fails, and it must never be the reason a stderr traceback appears on every
+subsequent Edit/Write in the session either.
 """
 from __future__ import annotations
 
@@ -94,9 +96,20 @@ def _load_cache() -> dict | None:
 
 
 def _format_card(name: str, nodes: list[dict], hits: list[dict]) -> str:
-    non_test = [h for h in hits if not h.get("is_test") and h.get("token") == name]
+    # Defensive against a structurally-unexpected cache (not just unreadable
+    # JSON): a non-dict item here must degrade this one card, never crash the
+    # hook on every subsequent Edit/Write until the cache is fixed. Review
+    # finding 2026-08-19: a future field-rename in orion.metrics.lineage/
+    # consumers.py this hook wasn't updated for, or a hand-edited/interrupted
+    # cache file, tripped an unhandled AttributeError/ValueError here.
+    non_test = [
+        h for h in hits
+        if isinstance(h, dict) and not h.get("is_test") and h.get("token") == name
+    ]
     lines = [f"metric lineage: {name}"]
     for node in nodes:
+        if not isinstance(node, dict):
+            continue
         lines.append(
             f"  urn={node.get('urn')} surface={node.get('surface')} "
             f"producer={node.get('producer_service')}"
@@ -139,15 +152,18 @@ def build_nudge(payload: dict, cache: dict | None, *, now: float | None = None) 
     edited_text = _extract_edited_text(tool_input)
     if not edited_text.strip():
         return None
-    if cache is None:
-        return None
+    if not isinstance(cache, dict):
+        return None  # missing cache (None) and structurally-wrong cache alike
 
     nodes = cache.get("nodes") or []
     hits = cache.get("hits") or []
+    if not isinstance(nodes, list) or not isinstance(hits, list):
+        return None
 
     by_name: dict[str, list[dict]] = {}
     for node in nodes:
-        by_name.setdefault(node.get("name", ""), []).append(node)
+        if isinstance(node, dict):
+            by_name.setdefault(node.get("name", ""), []).append(node)
 
     edited_tokens = set(_TOKEN_RE.findall(edited_text))
     matched = sorted(t for t in edited_tokens if t in by_name)
@@ -183,18 +199,32 @@ def main() -> int:
     except Exception:
         return 0
 
-    cache = _load_cache()
-    if cache is None:
-        _maybe_refresh_in_background()
-        return 0  # no cache yet -- first-ever run pays no synchronous cost
+    # Everything from here on touches a cache file this process did not
+    # write and cannot fully trust the shape of. build_nudge() and
+    # _format_card() are already defensive against a structurally-wrong
+    # cache, but this outer guard is the actual contract: a crash here must
+    # never become a stderr traceback on every subsequent Edit/Write in the
+    # session (review finding 2026-08-19) -- print nothing, exit 0, same as
+    # every other fail-open path in this hook.
+    try:
+        cache = _load_cache()
+        if not isinstance(cache, dict):
+            _maybe_refresh_in_background()
+            return 0  # no cache yet, or not a dict -- treat the same
 
-    age = time.time() - float(cache.get("generated_at") or 0)
-    if age > STALE_AFTER_SECONDS:
-        _maybe_refresh_in_background()  # use the stale cache below anyway
+        try:
+            generated_at = float(cache.get("generated_at") or 0)
+        except (TypeError, ValueError):
+            generated_at = 0.0
+        age = time.time() - generated_at
+        if age > STALE_AFTER_SECONDS:
+            _maybe_refresh_in_background()  # use the stale cache below anyway
 
-    out = build_nudge(payload, cache)
-    if out:
-        sys.stdout.write(out)
+        out = build_nudge(payload, cache)
+        if out:
+            sys.stdout.write(out)
+    except Exception:
+        pass
     return 0
 
 

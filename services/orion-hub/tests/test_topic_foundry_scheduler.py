@@ -665,3 +665,53 @@ def test_trigger_topic_foundry_enrichment_client_error_degrades(monkeypatch: pyt
     result = car.trigger_topic_foundry_enrichment()
     assert result["triggered"] is False
     assert result["reason"] == "enrich_trigger_failed"
+
+
+def test_topic_foundry_hdbscan_metric_validator_rejects_unrecognized_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live incident 2026-08-19: metric="cosine" (topic-foundry's own
+    ModelSpec field default) creates a model successfully and only fails
+    deep inside a background training task -- ValueError("Unrecognized
+    metric 'cosine'") from the installed hdbscan library. The validator
+    must catch this (and any other typo/unsupported value) at Settings
+    construction time, not leave it to be discovered live again.
+    """
+    from app.settings import Settings
+
+    monkeypatch.setenv("SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC", "cosine")
+    with pytest.raises(Exception, match="cosine"):
+        Settings()
+
+
+def test_topic_foundry_hdbscan_metric_validator_accepts_euclidean(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.settings import Settings
+
+    monkeypatch.setenv("SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC", "euclidean")
+    settings_instance = Settings()
+    assert settings_instance.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC == "euclidean"
+
+
+def test_topic_foundry_model_spec_fingerprint_changes_with_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The model name is suffixed with a fingerprint of the settings that
+    feed model_spec (min_cluster_size/metric/embedding_source_url) instead
+    of a hand-bumped "-v3"/"-v4" version suffix -- code review on this
+    patch flagged that a hand-bumped suffix silently reproduces the exact
+    bug class it exists to fix (forget to bump it, get-or-create keeps
+    training on the OLD model_spec forever, with no drift warning possible
+    on the model side unlike the dataset's where_sql case). This test
+    pins: same settings -> same fingerprint (deterministic, required for
+    get-or-create idempotency); different settings -> different fingerprint
+    (required for the failure mode to actually be closed).
+    """
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE", 8)
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC", "euclidean")
+    fingerprint_a = car._topic_foundry_model_spec_fingerprint()
+    fingerprint_a_again = car._topic_foundry_model_spec_fingerprint()
+    assert fingerprint_a == fingerprint_a_again
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE", 12)
+    fingerprint_b = car._topic_foundry_model_spec_fingerprint()
+    assert fingerprint_b != fingerprint_a

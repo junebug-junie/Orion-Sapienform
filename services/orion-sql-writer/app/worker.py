@@ -784,9 +784,10 @@ def _chat_history_conflict_updates(
 
     ``model_cls``: defaults to ``ChatHistoryLogSQL``. ``AitownChatHistoryLogSQL``
     is column-for-column identical (see that model's own docstring), so the
-    same merge policy applies unchanged when Track B Phase 1's dual-write
-    targets the mirror table instead -- one implementation of this
-    concurrency-critical logic, not two hand-kept-in-sync copies.
+    same merge policy applies unchanged when routing (see
+    ``_resolve_chat_history_model_cls`` below) sends a row to the AI Town
+    mirror table instead -- one implementation of this concurrency-critical
+    logic, not two hand-kept-in-sync copies.
     """
     table = model_cls.__table__
     updates: dict[str, Any] = {}
@@ -809,8 +810,8 @@ def upsert_chat_history_row(
 ) -> None:
     """Atomically merge one event's contribution into a chat_history_log row
     (or, when ``model_cls=AitownChatHistoryLogSQL``, its AI Town mirror --
-    see that model's docstring and ``_maybe_dual_write_aitown_chat_history``
-    below, Track B Phase 1).
+    see that model's docstring and ``_resolve_chat_history_model_cls``
+    below, which decides which table a given row's writes belong to).
 
     Replaces a SELECT-then-INSERT/merge. That pattern was not safe here: the
     three events for a single turn are dispatched as independent chassis tasks
@@ -844,8 +845,19 @@ def upsert_chat_history_row(
     sess.execute(stmt)
 
 
-# AI Town chat-history table split, Phase 1
-# (docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
+# AI Town chat-history table split (docs/superpowers/specs/
+# 2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
+# Phase 1 (PR #1734, 2026-08-19) shipped an ADDITIVE dual-write -- every
+# AI-Town row landed in both chat_history_log and aitown_chat_history_log,
+# off by default, explicitly built as a bridge for a live-AI-Town world.
+# Retired the same day: with AI Town's Convex backend confirmed dead
+# (orion.embodiment.aitown_client.AitownClientError: Connection refused,
+# last real chat_history_log write 18 days stale) there is zero concurrent-
+# write risk, so the dual-write bridge was pure unneeded complexity --
+# CLAUDE.md's "kill means kill, no fallback to the thing being killed"
+# applied to retiring dual-write itself, not just the metric it replaced.
+# Routing (below) replaces it: an AI-Town row now lands in EXACTLY ONE
+# table, chosen once, never duplicated.
 _AITOWN_PLATFORM_TAG = "aitown"
 # Value must match services/orion-recall/app/chat_source_tagging.py's
 # AITOWN_TAG constant exactly -- reimplemented locally rather than
@@ -870,56 +882,42 @@ def _is_aitown_client_meta(client_meta: Any) -> bool:
     return external_room.get("platform") == _AITOWN_PLATFORM_TAG
 
 
-def _maybe_dual_write_aitown_chat_history(
-    sess: Any, values: dict[str, Any], *, incoming_wins: bool
-) -> None:
-    """Additive mirror write into ``aitown_chat_history_log`` for AI Town
-    rows -- Track B Phase 1. Zero consumer-visible change: this never
-    touches ``chat_history_log`` itself, only ever ADDS a row to the new
-    table, and is a complete no-op unless
-    ``SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED`` is set.
+def _resolve_chat_history_model_cls(sess: Any, values: dict[str, Any]) -> type:
+    """Which table THIS write belongs to -- ``ChatHistoryLogSQL`` or
+    ``AitownChatHistoryLogSQL``. Never both.
 
-    Classification is per-call, from whatever ``client_meta`` this specific
-    event's ``values`` carries -- not a lookup against the row's full,
-    already-merged state. Known, accepted limitation for Phase 1 (nothing
-    reads this table yet, so it costs nothing today): if a message-path
-    event without ``client_meta`` lands before the turn event (which always
-    carries it), that message's fields go into ``chat_history_log`` as
-    normal but are not yet mirrored; the turn event's own arrival still
-    creates/merges the mirror row correctly once it lands. A field
-    contributed only by a client_meta-less event, on a row later confirmed
-    AI Town, could in principle be missing from the mirror row -- acceptable
-    for Phase 1's job (new table exists, dual-write proven, zero disruption
-    to existing readers), revisit only if Phase 2 needs stronger fidelity.
+    Prefers this event's own ``client_meta`` when present (the turn event
+    always carries it -- ``ChatHistoryTurnV1`` declares it, and
+    ``_write_row``'s turn-path call site passes it straight through).
 
-    Never allowed to take the real ``chat_history_log`` write it rides
-    alongside down with it -- same isolation principle as
-    ``_ensure_chat_history_from_message``'s own docstring, but a different
-    mechanism: both writes share the caller's session/transaction here (by
-    design, so they commit together), so a plain try/except around the
-    mirror write is NOT enough -- Postgres aborts the whole transaction on
-    the first failed statement, so a swallowed exception would still leave
-    the caller's own subsequent ``commit()`` doomed ("current transaction is
-    aborted"). ``sess.begin_nested()`` opens a SAVEPOINT so a mirror-write
-    failure rolls back only the mirror write, not the real one riding
-    alongside it in the same transaction.
+    Falls back to checking whether a row with this ``id`` already exists in
+    ``aitown_chat_history_log`` when ``client_meta`` is absent from this
+    specific event -- the message-path fill-only contribution
+    (``_ensure_chat_history_from_message``) only sets ``client_meta`` when
+    the incoming chat.message event happens to carry one, and can arrive
+    after the turn event already routed this row to the mirror table. Route
+    the wrong way here on a missing signal and the message's fields insert
+    as a stray, wrongly-tabled duplicate row instead of merging into the
+    row the turn event already created -- the ON CONFLICT merge only
+    catches a collision within the SAME table, never across the two. This
+    lookup is what makes "route once" safe for a row assembled from
+    multiple partial-info events, the way the old additive dual-write never
+    had to worry about (it always wrote *something* to chat_history_log
+    regardless, so a partial contribution never had a wrong-table risk).
     """
-    if not settings.sql_writer_aitown_dual_write_enabled:
-        return
-    if not _is_aitown_client_meta(values.get("client_meta")):
-        return
-    try:
-        with sess.begin_nested():
-            upsert_chat_history_row(
-                sess, values, incoming_wins=incoming_wins, model_cls=AitownChatHistoryLogSQL
-            )
-    except Exception as exc:
-        logger.warning(
-            "aitown_chat_history_dual_write_failed id=%s corr=%s error=%s",
-            values.get("id"),
-            values.get("correlation_id"),
-            exc,
-        )
+    if not settings.sql_writer_aitown_routing_enabled:
+        return ChatHistoryLogSQL
+    if _is_aitown_client_meta(values.get("client_meta")):
+        return AitownChatHistoryLogSQL
+    row_id = values.get("id")
+    if row_id and (
+        sess.query(AitownChatHistoryLogSQL.id)
+        .filter(AitownChatHistoryLogSQL.id == row_id)
+        .first()
+        is not None
+    ):
+        return AitownChatHistoryLogSQL
+    return ChatHistoryLogSQL
 
 
 def _apply_spark_meta_patch(payload: dict) -> bool:
@@ -927,92 +925,46 @@ def _apply_spark_meta_patch(payload: dict) -> bool:
     corr = str(patch.correlation_id)
     sess = get_session()
     try:
+        # .with_for_update(): closes a pre-existing lost-update race this
+        # SELECT-then-UPDATE shape has always had (flagged, but left
+        # unfixed on this primary-table side, in PR #1734's own review --
+        # two concurrent patches for the same correlation_id could each
+        # read the same starting spark_meta and the second UPDATE would
+        # clobber the first's merged keys). Closed now while this function
+        # was already being touched for routing, rather than leaving it as
+        # a standing follow-up.
+        model_cls = ChatHistoryLogSQL
         existing = (
             sess.query(ChatHistoryLogSQL)
             .filter(ChatHistoryLogSQL.correlation_id == corr)
+            .with_for_update()
             .first()
         )
+        if existing is None and settings.sql_writer_aitown_routing_enabled:
+            # The row may live in the AI Town table instead -- routing puts
+            # a row in exactly one table, so a miss here isn't automatically
+            # "row doesn't exist," it might just be in the other one.
+            existing = (
+                sess.query(AitownChatHistoryLogSQL)
+                .filter(AitownChatHistoryLogSQL.correlation_id == corr)
+                .with_for_update()
+                .first()
+            )
+            model_cls = AitownChatHistoryLogSQL
         if existing is None:
             logger.error("spark_meta_patch_missing_row correlation_id=%s", corr)
             return False
         merged = _merge_spark_meta(getattr(existing, "spark_meta", None), patch.spark_meta)
         sess.execute(
-            update(ChatHistoryLogSQL)
-            .where(ChatHistoryLogSQL.correlation_id == corr)
+            update(model_cls)
+            .where(model_cls.correlation_id == corr)
             .values(spark_meta=merged)
         )
-        _maybe_dual_patch_aitown_spark_meta(sess, correlation_id=corr, patch_spark_meta=patch.spark_meta)
         sess.commit()
         return True
     finally:
         sess.close()
         remove_session()
-
-
-def _maybe_dual_patch_aitown_spark_meta(
-    sess: Any, *, correlation_id: str, patch_spark_meta: dict
-) -> None:
-    """Mirror-table half of ``_apply_spark_meta_patch`` -- Track B Phase 1.
-
-    ``ChatHistorySparkMetaPatchV1`` carries no ``client_meta``, so AI-Town-ness
-    can't be classified from the patch payload alone the way the two
-    dual-write call sites above do. Instead: patch-only, never insert -- if a
-    row with this ``correlation_id`` already exists in
-    ``aitown_chat_history_log`` (meaning some earlier dual-write already
-    classified it AI Town), apply the same merge there too, keeping the
-    mirror's ``spark_meta`` from going stale relative to the primary table.
-    If no mirror row exists (never dual-written, or dual-write was off at the
-    time), this is a correct no-op -- there is nothing to patch, and this
-    function must never create a row on its own classification-blind say-so.
-
-    Code review (2026-08-19) caught two real issues in the first version:
-
-    1. A plain SELECT-then-UPDATE here is exactly the lost-update race
-       ``upsert_chat_history_row``'s own docstring says the ON CONFLICT
-       redesign exists to avoid -- two concurrent patches for the same
-       ``correlation_id`` could each read the same starting ``spark_meta``,
-       merge their own patch on top in Python, and the second UPDATE would
-       clobber the first's merged keys instead of folding both in. Fixed
-       with ``.with_for_update()``: the row lock serializes concurrent
-       patches within the SAVEPOINT instead of letting them race. (The
-       *primary*-table ``_apply_spark_meta_patch`` just above has this same
-       pre-existing race and is NOT touched here -- out of scope for this
-       diff, a real follow-up in its own right.)
-    2. The existence check was done *inside* ``begin_nested()``, paying for
-       a SAVEPOINT on every single no-mirror-row no-op call (the common case
-       while few rows have been dual-written yet). Reordered so the cheap
-       existence check runs first, un-transacted, and the SAVEPOINT only
-       wraps the actual locked read + write once there is real work to do.
-    """
-    if not settings.sql_writer_aitown_dual_write_enabled:
-        return
-    mirror_exists = (
-        sess.query(AitownChatHistoryLogSQL.id)
-        .filter(AitownChatHistoryLogSQL.correlation_id == correlation_id)
-        .first()
-    )
-    if mirror_exists is None:
-        return
-    try:
-        with sess.begin_nested():
-            mirror_row = (
-                sess.query(AitownChatHistoryLogSQL)
-                .filter(AitownChatHistoryLogSQL.correlation_id == correlation_id)
-                .with_for_update()
-                .first()
-            )
-            if mirror_row is None:
-                return
-            mirror_merged = _merge_spark_meta(getattr(mirror_row, "spark_meta", None), patch_spark_meta)
-            sess.execute(
-                update(AitownChatHistoryLogSQL)
-                .where(AitownChatHistoryLogSQL.correlation_id == correlation_id)
-                .values(spark_meta=mirror_merged)
-            )
-    except Exception as exc:
-        logger.warning(
-            "aitown_chat_history_dual_patch_failed corr=%s error=%s", correlation_id, exc
-        )
 
 
 def _coerce_sql_timestamp(value: Any) -> Optional[datetime]:
@@ -1338,8 +1290,8 @@ def _ensure_chat_history_from_message(
     try:
         # Fill-only: a message must never overwrite what the turn event already
         # wrote. Reproduces the old per-field `if not existing.<col>` guards.
-        upsert_chat_history_row(own_sess, values, incoming_wins=False)
-        _maybe_dual_write_aitown_chat_history(own_sess, values, incoming_wins=False)
+        model_cls = _resolve_chat_history_model_cls(own_sess, values)
+        upsert_chat_history_row(own_sess, values, incoming_wins=False, model_cls=model_cls)
         own_sess.commit()
     except Exception:
         own_sess.rollback()
@@ -1563,8 +1515,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 # The turn event is the only one carrying `source`, so it was the
                 # reliable casualty -- hence every corrupted row having
                 # source IS NULL and exactly one of prompt/response.
-                upsert_chat_history_row(sess, filtered_data)
-                _maybe_dual_write_aitown_chat_history(sess, filtered_data, incoming_wins=True)
+                model_cls = _resolve_chat_history_model_cls(sess, filtered_data)
+                upsert_chat_history_row(sess, filtered_data, model_cls=model_cls)
                 sess.commit()
                 return True
             sess.merge(sql_model_cls(**filtered_data))

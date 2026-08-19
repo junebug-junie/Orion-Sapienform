@@ -65,6 +65,27 @@ _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
 # execution's real delta scale ever shifts by orders of magnitude.
 _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
 
+# 2026-08-19: same fix, same reasoning, for chat_prediction_error -- found via a
+# live self-model audit (predicted_shift's per-domain argmax, see that function's
+# own docstring in attention_self_model.py): chat had won 0/19,426 ticks over a
+# real 7-day window despite having genuine, non-flat prediction-error deltas. Root
+# cause confirmed live: chat_prediction_error still used the module's fixed
+# `_THRESHOLD = 0.30` divisor -- the exact defect execution_prediction_error was
+# fixed for on 2026-07-28 -- and this instrument's own prior docstring already
+# grouped "execution/chat/route" together as reading near-zero for that reason.
+# Derived chat's real raw-delta scale from live `prediction_error_by_domain.chat`
+# (already-scaled output, nowhere near the 1.0 saturation ceiling so
+# raw = output * 0.30 recovers it exactly): 19,425 real ticks, stddev 0.0024 ->
+# derived raw-delta stddev ~7.24e-4, derived raw variance ~5.24e-7. One order of
+# magnitude below that (same convention as _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE
+# above) is ~5.2e-8; using the round 5e-8 same as that convention's precedent.
+# Same alpha/saturation as execution -- no domain-specific reason found yet to
+# diverge from that already-established real-observation-cadence alpha and the
+# z>=3.0 "anomalous" convention shared by every other z-score domain in this module.
+_CHAT_PREDICTION_ERROR_EWMA_ALPHA = 0.2
+_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
+_CHAT_PREDICTION_ERROR_MIN_VARIANCE = 5e-8
+
 
 # 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 contract
 # patch, docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md). alpha=0.2
@@ -510,6 +531,22 @@ def chat_prediction_error(
     to avoid, just one layer down. If this weighting becomes a real problem in practice
     (verified against live data, not asserted), the fix is upstream in
     ``compute_chat_pressure_hints()`` itself, not a silent key-drop here.
+
+    **2026-08-19 baseline fix, same disease and same fix as
+    ``execution_prediction_error``.** Live-confirmed via a real self-model audit:
+    ``predicted_shift``'s per-domain argmax (`attention_self_model.py`) had never
+    once named ``chat`` across 19,426 real ticks over a 7-day window, despite chat
+    having genuine, non-flat deltas -- this function's own fixed ``_THRESHOLD =
+    0.30`` divisor (the exact defect fixed for execution on 2026-07-28) scaled
+    them down to a range execution/biometrics/bus_synaptic's much larger real
+    deltas could never lose to. Fixed the same way: track this domain's own EWMA
+    mean/variance of the raw per-tick ``_mean(deltas)`` (persisted on the
+    projection -- ``prediction_error_baseline_ewma``/``_var``/``_n``, see
+    ``ChatSessionProjectionV1``'s docstring) and score this tick's raw delta as a
+    z-score against that live baseline instead of the fixed divisor. See
+    ``_CHAT_PREDICTION_ERROR_MIN_VARIANCE``'s own comment for the live-data
+    derivation behind its value. Returns 0.0 on the first tick with any real
+    deltas, same reasoning as execution's identical cold-start case.
     """
     deltas: list[float] = []
     prev_fallback = _latest_run(prev.turns)
@@ -525,7 +562,24 @@ def chat_prediction_error(
             pv = prev_hints.get(key, 0.0)
             cv = curr_hints.get(key, 0.0)
             deltas.append(abs(cv - pv))
-    return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
+    if not deltas:
+        return 0.0
+
+    raw_mean_delta = _mean(deltas)
+    update = compute_ewma_update(
+        prev_ewma=prev.prediction_error_baseline_ewma,
+        prev_variance=prev.prediction_error_baseline_ewma_var,
+        prev_count=prev.prediction_error_baseline_ewma_n,
+        value=raw_mean_delta,
+        alpha=_CHAT_PREDICTION_ERROR_EWMA_ALPHA,
+        min_variance=_CHAT_PREDICTION_ERROR_MIN_VARIANCE,
+    )
+    curr.prediction_error_baseline_ewma = update.ewma
+    curr.prediction_error_baseline_ewma_var = update.variance
+    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
+    if update.zscore is None:
+        return 0.0
+    return min(1.0, max(0.0, update.zscore) / _CHAT_PREDICTION_ERROR_ZSCORE_SATURATION)
 
 
 def route_prediction_error(

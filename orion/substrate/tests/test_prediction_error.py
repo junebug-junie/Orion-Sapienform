@@ -379,11 +379,20 @@ def _chat_turn(
     )
 
 
-def _chat_projection(turns: dict[str, ChatTurnStateV1]) -> ChatSessionProjectionV1:
+def _chat_projection(
+    turns: dict[str, ChatTurnStateV1],
+    *,
+    baseline_ewma: float = 0.0,
+    baseline_ewma_var: float = 0.0,
+    baseline_ewma_n: int = 0,
+) -> ChatSessionProjectionV1:
     return ChatSessionProjectionV1(
         projection_id="chat_session_projection",
         generated_at=_NOW,
         turns=turns,
+        prediction_error_baseline_ewma=baseline_ewma,
+        prediction_error_baseline_ewma_var=baseline_ewma_var,
+        prediction_error_baseline_ewma_n=baseline_ewma_n,
     )
 
 
@@ -395,10 +404,32 @@ def test_chat_prediction_error_zero_when_no_change() -> None:
 
 def test_chat_prediction_error_zero_when_turn_not_in_prev_and_no_fallback_exists() -> None:
     """A brand-new turn_id with an entirely empty prev (no fallback candidate either)
-    still contributes no delta -- there is nothing to compare against."""
+    still contributes no delta -- there is nothing to compare against, and the baseline
+    must be left untouched (mirrors execution_prediction_error's identical case)."""
     prev = _chat_projection({})
     curr = _chat_projection({"t1": _chat_turn("t1", word_count=50)})
     assert chat_prediction_error(prev, curr) == 0.0
+    assert curr.prediction_error_baseline_ewma_n == 0
+
+
+def test_chat_prediction_error_first_tick_is_cold_start_but_seeds_baseline() -> None:
+    """2026-08-19 baseline fix: live-confirmed the old fixed ``_THRESHOLD=0.30`` divisor
+    made chat lose the predicted_shift argmax to execution/biometrics/bus_synaptic on
+    every one of 19,426 real ticks over a 7-day window -- the same disease
+    execution_prediction_error was fixed for on 2026-07-28. Fix tracks an EWMA baseline
+    instead. A tick with no established baseline yet (``prediction_error_baseline_ewma_n
+    == 0``) must still return 0.0 (no z-score to compute against -- 'no empty-shell
+    cognition'), but must seed the baseline with this tick's real raw delta so the very
+    next tick has something real to compare against."""
+    prev = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.0)})
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.30)})
+    result = chat_prediction_error(prev, curr)
+    assert result == 0.0
+    # repair_pressure delta 0.30, topic_coherence delta 0.30, conversation_load delta 0.0
+    # -> mean(0.30, 0.30, 0.0) = 0.20
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.20)
+    assert curr.prediction_error_baseline_ewma_var == 0.0
+    assert curr.prediction_error_baseline_ewma_n == 1
 
 
 def test_chat_prediction_error_uses_latest_prev_turn_as_fallback_for_new_turn() -> None:
@@ -406,12 +437,16 @@ def test_chat_prediction_error_uses_latest_prev_turn_as_fallback_for_new_turn() 
     bursts, never revised in place, so an exact turn_id match structurally never occurs)
     falls back to prev's most-recently-updated turn instead of being skipped. Without this
     fallback, chat_prediction_error was permanently 0.0 in production (confirmed live:
-    node:substrate.chat was never written despite 241 real accumulated turns)."""
+    node:substrate.chat was never written despite 241 real accumulated turns).
+
+    This call has no established baseline yet (a separate, legitimate reason for a 0.0
+    return -- see the cold-start test above), so the regression guard is on the *baseline*
+    the fallback-matched delta seeds, not the return value."""
     prev = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.0)})
     curr = _chat_projection({"t2": _chat_turn("t2", repair_pressure_level=0.30)})
-    # Same math as test_chat_prediction_error_scales_with_repair_pressure_delta:
-    # repair_pressure delta 0.30, topic_coherence delta 0.30, conversation_load delta 0.0.
-    assert chat_prediction_error(prev, curr) == pytest.approx(0.20 / 0.30)
+    assert chat_prediction_error(prev, curr) == 0.0
+    # Same math as test_chat_prediction_error_first_tick_is_cold_start_but_seeds_baseline.
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.20)
 
 
 def test_chat_prediction_error_exact_match_still_takes_priority_over_fallback() -> None:
@@ -429,38 +464,27 @@ def test_chat_prediction_error_exact_match_still_takes_priority_over_fallback() 
         }
     )
     curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.30)})
+    assert chat_prediction_error(prev, curr) == 0.0
     # If the fallback (t_other, repair_pressure_level=0.9) were used instead of the exact
-    # match (t1, repair_pressure_level=0.0), this would compute a different value.
-    assert chat_prediction_error(prev, curr) == pytest.approx(0.20 / 0.30)
+    # match (t1, repair_pressure_level=0.0), this baseline seed would be different.
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.20)
 
 
 def test_chat_prediction_error_zero_when_projections_empty() -> None:
     prev = _chat_projection({})
     curr = _chat_projection({})
     assert chat_prediction_error(prev, curr) == 0.0
+    assert curr.prediction_error_baseline_ewma_n == 0
 
 
-def test_chat_prediction_error_scales_with_conversation_load_delta() -> None:
+def test_chat_prediction_error_conversation_load_key_contributes_to_baseline_seed() -> None:
     # word_count 0 -> conversation_load 0.0; word_count 45 -> conversation_load 0.30
-    prev = _chat_turn("t1", word_count=0)
-    curr = _chat_turn("t1", word_count=45)
-    prev_proj = _chat_projection({"t1": prev})
-    curr_proj = _chat_projection({"t1": curr})
+    prev_proj = _chat_projection({"t1": _chat_turn("t1", word_count=0)})
+    curr_proj = _chat_projection({"t1": _chat_turn("t1", word_count=45)})
     # conversation_load delta = |0.30 - 0.0| = 0.30; repair_pressure delta = 0.0;
-    # topic_coherence delta = 0.0 (both 1.0). mean(0.30, 0, 0) = 0.10 -> 0.10/0.30 = 1/3
-    assert chat_prediction_error(prev_proj, curr_proj) == pytest.approx(0.30 / 3 / 0.30)
-
-
-def test_chat_prediction_error_scales_with_repair_pressure_delta() -> None:
-    # repair_pressure and topic_coherence both move by the same magnitude when
-    # repair_pressure_level changes (topic_coherence = 1 - repair_pressure_level).
-    prev = _chat_turn("t1", repair_pressure_level=0.0)
-    curr = _chat_turn("t1", repair_pressure_level=0.30)
-    prev_proj = _chat_projection({"t1": prev})
-    curr_proj = _chat_projection({"t1": curr})
-    # conversation_load delta = 0.0; repair_pressure delta = 0.30;
-    # topic_coherence delta = |0.70 - 1.0| = 0.30. mean(0, 0.30, 0.30) = 0.20 -> 0.20/0.30 = 2/3
-    assert chat_prediction_error(prev_proj, curr_proj) == pytest.approx(0.20 / 0.30)
+    # topic_coherence delta = 0.0 (both 1.0). mean(0.30, 0, 0) = 0.10
+    assert chat_prediction_error(prev_proj, curr_proj) == 0.0  # cold start
+    assert curr_proj.prediction_error_baseline_ewma == pytest.approx(0.30 / 3)
 
 
 def test_chat_prediction_error_averages_across_multiple_turns() -> None:
@@ -477,8 +501,81 @@ def test_chat_prediction_error_averages_across_multiple_turns() -> None:
         }
     )
     deltas = [0.0, 0.30, 0.30, 0.0, 0.0, 0.0]  # t1: cl/rp/tc, t2: cl/rp/tc
-    expected = min(1.0, (sum(deltas) / len(deltas)) / 0.30)
+    assert chat_prediction_error(prev, curr) == 0.0  # cold start
+    assert curr.prediction_error_baseline_ewma == pytest.approx(sum(deltas) / len(deltas))
+
+
+def test_chat_prediction_error_scores_deviation_from_established_baseline() -> None:
+    """Once a baseline exists, this tick's raw delta is scored as a z-score against it
+    (not divided by the old fixed ``_THRESHOLD``). Baseline mean/variance set directly
+    here (rather than simulated via prior calls) to keep the expected z-score exactly
+    checkable, mirroring execution_prediction_error's identically-shaped test."""
+    prev = _chat_projection(
+        {"t1": _chat_turn("t1", repair_pressure_level=0.0)},
+        baseline_ewma=0.05,
+        baseline_ewma_var=0.01,
+        baseline_ewma_n=4,
+    )
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.33)})
+    # repair_pressure delta 0.33, topic_coherence delta 0.33, conversation_load delta 0.0
+    # -> raw_mean_delta = 0.22; zscore = (0.22 - 0.05) / sqrt(0.01) = 1.7
+    expected = min(1.0, max(0.0, (0.22 - 0.05) / math.sqrt(0.01)) / 3.0)
     assert chat_prediction_error(prev, curr) == pytest.approx(expected)
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.2 * 0.22 + 0.8 * 0.05)
+    assert curr.prediction_error_baseline_ewma_n == 5
+
+
+def test_chat_prediction_error_clamps_below_baseline_tick_to_zero() -> None:
+    """A tick calmer than its own recent baseline (negative z-score) must clamp to 0.0,
+    not go negative -- "surprising" means "more turbulent than usual," not "different
+    from usual" in either direction."""
+    prev = _chat_projection(
+        {"t1": _chat_turn("t1", repair_pressure_level=0.20)},
+        baseline_ewma=0.10,
+        baseline_ewma_var=0.01,
+        baseline_ewma_n=5,
+    )
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.20)})
+    # delta 0.0 -> raw_mean_delta 0.0; zscore = (0.0-0.10)/sqrt(0.01) = -1.0
+    assert chat_prediction_error(prev, curr) == 0.0
+
+
+def test_chat_prediction_error_uses_domain_specific_variance_floor() -> None:
+    """Regression guard for the 2026-08-19 floor fix: live-confirmed 2026-08-19 that
+    chat's real derived raw-delta variance (~5.24e-7, from a 7-day/19,425-tick window)
+    is close to, but below, orion.bus.ewma's shared default ``_MIN_VARIANCE`` (1e-6,
+    calibrated for a different domain) -- close enough that the shared default would
+    still meaningfully flatten real z-scores, the same class of bug fixed harder for
+    execution_prediction_error on 2026-07-28. This locks in that chat_prediction_error
+    passes its own smaller floor (``_CHAT_PREDICTION_ERROR_MIN_VARIANCE`` = 5e-8), not
+    the shared default."""
+    prev = _chat_projection(
+        {"t1": _chat_turn("t1", repair_pressure_level=0.0)},
+        baseline_ewma=0.0,
+        baseline_ewma_var=1e-7,  # below shared default (1e-6), above the domain floor (5e-8)
+        baseline_ewma_n=5,
+    )
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.0015)})
+    # repair_pressure delta 0.0015, topic_coherence delta 0.0015, conversation_load delta 0.0
+    # -> raw_mean_delta = 0.001
+    result = chat_prediction_error(prev, curr)
+    # Domain floor (5e-8) loses to the real variance (1e-7): zscore = 0.001 /
+    # sqrt(1e-7) ~= 3.162 -> saturates at 1.0.
+    assert result == pytest.approx(1.0)
+    # Under the shared default floor (1e-6, which would win over 1e-7 instead):
+    # zscore = 0.001 / sqrt(1e-6) = 1.0 -> error 1.0/3.0 ~= 0.333, nowhere near 1.0.
+    assert result != pytest.approx(1.0 / 3.0)
+
+
+def test_chat_prediction_error_saturates_at_one_for_large_zscore() -> None:
+    prev = _chat_projection(
+        {"t1": _chat_turn("t1", repair_pressure_level=0.0)},
+        baseline_ewma=0.0,
+        baseline_ewma_var=1e-8,
+        baseline_ewma_n=5,
+    )
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=1.0)})
+    assert chat_prediction_error(prev, curr) == 1.0
 
 
 # -- route_prediction_error ---------------------------------------------------

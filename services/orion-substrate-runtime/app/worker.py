@@ -2813,6 +2813,20 @@ class BiometricsSubstrateWorker:
         if last_id is not None:
             curr_projection = _load_chat_projection()
             error = chat_prediction_error(prev_projection, curr_projection)
+            # chat_prediction_error mutates curr_projection's EWMA baseline
+            # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
+            # that regardless of whether error > 0.0 this tick, mirroring
+            # _execution_tick's identical save above it (execution_
+            # prediction_error has the same in-place-mutation contract). Without
+            # this, process_batch's own save above (of the turns-updated
+            # projection, before this mutation) is the only persist in scope, so
+            # the baseline never survives past this process's lifetime -- every
+            # tick reloads prediction_error_baseline_ewma_n=0 and re-takes the
+            # cold-start branch forever, reproducing this same patch's own bug
+            # (chat permanently reading near-zero) via a different mechanism.
+            # Found in code review, confirmed live-reproducible via the worker's
+            # own load/save call graph before this fix.
+            self._store.save_chat_session_projection(curr_projection)
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )

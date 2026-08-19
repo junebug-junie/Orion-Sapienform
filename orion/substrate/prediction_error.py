@@ -319,6 +319,53 @@ def _latest_run(runs) -> Any:
     return best
 
 
+def _score_and_update_ewma_prediction_error(
+    prev: Any,
+    curr: Any,
+    *,
+    raw_mean_delta: float,
+    alpha: float,
+    min_variance: float,
+    zscore_saturation: float,
+) -> float:
+    """Shared EWMA-baseline scoring + update, factored out 2026-08-19 (code
+    review, rule-of-three): `execution_prediction_error`'s 2026-07-28 fix and
+    `chat_prediction_error`'s 2026-08-19 fix had each independently hand-copied
+    this exact "score this tick's raw delta as a z-score against a live EWMA
+    baseline, then update that baseline" sequence, with no shared helper.
+    `biometrics_prediction_error` still uses the old fixed-`_THRESHOLD` divisor
+    and is the next domain that would need this same migration -- not done
+    here, out of scope for this patch (see that function's docstring: its
+    real dynamic range doesn't show the same near-zero-forever symptom chat
+    and execution did, so it wasn't independently confirmed broken).
+
+    `prev`/`curr` are duck-typed: any object exposing
+    `prediction_error_baseline_ewma`/`_var`/`_n` float/int attributes (every
+    projection using this pattern shares those exact field names -- see
+    `ExecutionTrajectoryProjectionV1`/`ChatSessionProjectionV1`'s matching
+    docstrings). Mutates `curr`'s three baseline fields in place -- same
+    contract every caller of this pattern already had before this extraction;
+    **callers remain responsible for persisting `curr` afterward** (this
+    function has no I/O of its own, matching this whole module's "pure
+    function" design) -- see each tick's own `worker.py` wiring for the
+    corresponding save call.
+    """
+    update = compute_ewma_update(
+        prev_ewma=prev.prediction_error_baseline_ewma,
+        prev_variance=prev.prediction_error_baseline_ewma_var,
+        prev_count=prev.prediction_error_baseline_ewma_n,
+        value=raw_mean_delta,
+        alpha=alpha,
+        min_variance=min_variance,
+    )
+    curr.prediction_error_baseline_ewma = update.ewma
+    curr.prediction_error_baseline_ewma_var = update.variance
+    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
+    if update.zscore is None:
+        return 0.0
+    return min(1.0, max(0.0, update.zscore) / zscore_saturation)
+
+
 def execution_prediction_error(
     prev: ExecutionTrajectoryProjectionV1,
     curr: ExecutionTrajectoryProjectionV1,
@@ -398,21 +445,14 @@ def execution_prediction_error(
     if not deltas:
         return 0.0
 
-    raw_mean_delta = _mean(deltas)
-    update = compute_ewma_update(
-        prev_ewma=prev.prediction_error_baseline_ewma,
-        prev_variance=prev.prediction_error_baseline_ewma_var,
-        prev_count=prev.prediction_error_baseline_ewma_n,
-        value=raw_mean_delta,
+    return _score_and_update_ewma_prediction_error(
+        prev,
+        curr,
+        raw_mean_delta=_mean(deltas),
         alpha=_EXECUTION_PREDICTION_ERROR_EWMA_ALPHA,
         min_variance=_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE,
+        zscore_saturation=_EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION,
     )
-    curr.prediction_error_baseline_ewma = update.ewma
-    curr.prediction_error_baseline_ewma_var = update.variance
-    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
-    if update.zscore is None:
-        return 0.0
-    return min(1.0, max(0.0, update.zscore) / _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION)
 
 
 # transport_prediction_error() DELETED 2026-07-31.
@@ -565,21 +605,14 @@ def chat_prediction_error(
     if not deltas:
         return 0.0
 
-    raw_mean_delta = _mean(deltas)
-    update = compute_ewma_update(
-        prev_ewma=prev.prediction_error_baseline_ewma,
-        prev_variance=prev.prediction_error_baseline_ewma_var,
-        prev_count=prev.prediction_error_baseline_ewma_n,
-        value=raw_mean_delta,
+    return _score_and_update_ewma_prediction_error(
+        prev,
+        curr,
+        raw_mean_delta=_mean(deltas),
         alpha=_CHAT_PREDICTION_ERROR_EWMA_ALPHA,
         min_variance=_CHAT_PREDICTION_ERROR_MIN_VARIANCE,
+        zscore_saturation=_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION,
     )
-    curr.prediction_error_baseline_ewma = update.ewma
-    curr.prediction_error_baseline_ewma_var = update.variance
-    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
-    if update.zscore is None:
-        return 0.0
-    return min(1.0, max(0.0, update.zscore) / _CHAT_PREDICTION_ERROR_ZSCORE_SATURATION)
 
 
 def route_prediction_error(

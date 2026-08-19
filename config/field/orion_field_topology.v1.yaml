@@ -151,6 +151,30 @@ edges:
     channel_map:
       prediction_error: pressure
 
+  # 2026-08-19 (P2, docs/superpowers/specs/2026-08-12-perception-frontier-
+  # design.md): node:substrate.perception exists as of this patch, written by
+  # services/orion-substrate-runtime/app/worker.py's
+  # _perception_prediction_error_tick / _handle_perception_prediction_error_
+  # message, through the same generic prediction_signal perturbation path as
+  # every other node:substrate.* domain node in this file. It is a SEPARATE
+  # node from node:substrate.vision above -- that node's prediction_error
+  # channel is availability (arrival timing); this one's prediction_error is
+  # `1 - cos(frame_embedding, EWMA_embedding)`, a measure of the embedding
+  # model's own content encoding, plus a distinct `embedding_staleness`
+  # freshness channel. See orion/substrate/prediction_error.py's own P2
+  # section for the independence check against every other perceptual signal.
+  #
+  # Deliberately NO edge below, and NO entry in `nodes:` above (same as
+  # node:substrate.vision/bus_synaptic: neither is declared there either --
+  # both are dynamically-created domain nodes, not part of the static
+  # topology). This is the explicit non-goal of the patch that introduces
+  # this node: "not promoting a perceptual domain into ACTIVE_INFERENCE_
+  # DOMAINS [or a capability edge] in the same patch that introduces it."
+  # Ships shadow-only, default-off (SUBSTRATE_PERCEPTION_PREDICTION_ERROR_
+  # TICK_ENABLED=false) -- an edge here would be premature before the
+  # live-data sanity check documented in perception_prediction_error()'s own
+  # docstring has run against real accumulated history.
+
   - source_id: node:athena
     target_id: capability:orchestration
     edge_type: node_capability

@@ -25,7 +25,7 @@ from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.schemas.codebase_delta import CodebaseDeltaV1
-from orion.substrate.prediction_error import CodebaseMassBaseline
+from orion.substrate.prediction_error import CodebaseMassBaseline, PerceptionEmbeddingBaseline
 from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.attention_self_model import AttentionSelfModelV1
@@ -778,6 +778,104 @@ class BiometricsSubstrateStore:
                     WHERE observed_at < now() - interval '{float(retention_days)} days'
                     """
                 ),
+            )
+
+    def get_latest_perception_embedding_baseline(self, stream_id: str) -> PerceptionEmbeddingBaseline:
+        """Latest row from `substrate_perception_embedding_baseline` for this
+        camera stream, or a fresh cold-start baseline if none exists yet --
+        same "no history yet is a real, honest state, not an error"
+        convention as `get_latest_codebase_mass_baseline` above.
+
+        Keyed by `stream_id` (unlike the codebase-mass baseline, which is
+        global) -- each camera stream's own running EWMA embedding must stay
+        independent; mixing two streams' visual content into one baseline
+        would produce a meaningless average vector.
+        """
+        try:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT baseline_json FROM substrate_perception_embedding_baseline
+                        WHERE stream_id = :stream_id
+                        ORDER BY generated_at DESC LIMIT 1
+                        """
+                    ),
+                    {"stream_id": stream_id},
+                ).mappings().first()
+            if not row:
+                return PerceptionEmbeddingBaseline()
+            payload = row["baseline_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict):
+                return PerceptionEmbeddingBaseline()
+            return PerceptionEmbeddingBaseline.from_json_dict(payload)
+        except Exception:
+            logger.exception("substrate_perception_embedding_baseline_load_failed")
+            return PerceptionEmbeddingBaseline()
+
+    def save_perception_embedding_baseline(
+        self, stream_id: str, baseline: PerceptionEmbeddingBaseline, *, retention_days: float
+    ) -> None:
+        """Append one PerceptionEmbeddingBaseline row per real embedding-
+        bearing vision artifact consumed for this stream; prunes rows beyond
+        retention.
+
+        `substrate_perception_embedding_baseline` has exactly one writer in
+        the whole repo -- this method, called only from
+        `_handle_perception_prediction_error_message()`. Same single-writer,
+        brand-new-table reasoning as `save_codebase_mass_baseline` above (see
+        `manual_migration_perception_embedding_baseline_v1.sql`'s own
+        comment): no existing reducer projection has anywhere to durably
+        carry a per-stream running embedding vector, and piggybacking on
+        `node:substrate.perception`'s own ConceptNodeV1.metadata would hit
+        the identical problem `save_codebase_mass_baseline`'s docstring
+        already documents for that node's sibling (`_write_prediction_error_
+        node()` builds a fresh metadata dict every call from a narrow,
+        dynamics-engine-owned key allowlist).
+
+        The retention DELETE below is scoped to `stream_id` (review finding:
+        an unscoped DELETE would prune rows for every stream on any single
+        stream's save, so an infrequently-active stream's only row could be
+        silently deleted by an unrelated busy stream's tick, forcing an
+        unnecessary cold-start reseed).
+        """
+        generated_at = datetime.now(timezone.utc)
+        digest = hashlib.sha256(
+            f"{stream_id}|{generated_at.isoformat()}|{json.dumps(baseline.to_json_dict(), sort_keys=True)}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:24]
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_perception_embedding_baseline (
+                        baseline_id, stream_id, generated_at, baseline_json, created_at
+                    ) VALUES (
+                        :baseline_id, :stream_id, :generated_at, :baseline_json, :created_at
+                    )
+                    ON CONFLICT (baseline_id) DO NOTHING
+                    """
+                ),
+                {
+                    "baseline_id": f"perception-embedding-baseline-{digest}",
+                    "stream_id": stream_id,
+                    "generated_at": generated_at,
+                    "baseline_json": Json(baseline.to_json_dict()),
+                    "created_at": generated_at,
+                },
+            )
+            conn.execute(
+                text(
+                    f"""
+                    DELETE FROM substrate_perception_embedding_baseline
+                    WHERE stream_id = :stream_id
+                      AND generated_at < now() - interval '{float(retention_days)} days'
+                    """
+                ),
+                {"stream_id": stream_id},
             )
 
     def save_attention_self_model(

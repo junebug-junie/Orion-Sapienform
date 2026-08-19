@@ -314,9 +314,16 @@ profiles:
       store_as: reference              # reference|inline
       collection: vision_embeddings
     outputs:
+      # Documentation-only -- app/runner.py never reads this `outputs:` block
+      # (confirmed: zero references to include_ref/include_vector/etc.
+      # anywhere in runner.py; every profile's runner method returns a fixed
+      # shape regardless of what's declared here). Kept accurate anyway:
+      # 2026-08-19 (P2 wire-contract patch, orion/schemas/vision.py's
+      # VisionEmbedding.vector) -- _run_embedding_siglip now always inlines
+      # the vector, so include_vector: false was stale as of that patch.
       embedding:
         include_ref: true
-        include_vector: false
+        include_vector: true
 
   - name: vlm_caption
     enabled: true

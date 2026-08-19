@@ -9,7 +9,24 @@ defaults:
     max_inflight_per_camera: 1
     request:
       want_caption: false
-      want_embeddings: false
+      # 2026-08-19 (P2, docs/superpowers/specs/2026-08-12-perception-frontier-
+      # design.md): flipped from false. This was P2's one named blocker --
+      # without embeddings on the baseline (every-frame-ish) tier, there is no
+      # frame_embedding input for a perceptual prediction-error signal at all.
+      #
+      # Checked before flipping, not assumed cheap: config/vision_profiles.yaml's
+      # `embed_image` profile (SigLIP2, kind=embedding) has `warm_on_start: true`
+      # and is already resident in VRAM at all times regardless of this flag --
+      # the `triggered` tier below already exercises it live on every detected
+      # person. So this does not add a new model load or new steady-state VRAM
+      # footprint (`cost.vram_estimate_mb: 1600`, already paid); it only adds one
+      # extra forward pass on an already-warm model per baseline task
+      # (`cost.latency_class: low`). `pipeline_retina_fast`'s `embed_image` step
+      # (`config/vision_profiles.yaml`) is gated purely on
+      # `request.want_embeddings == true`, so this is the only line needed to
+      # enable it for baseline; no other vision-host config depends on the old
+      # value.
+      want_embeddings: true
   triggered:
     task_type: retina_fast
     trigger_labels: [person]

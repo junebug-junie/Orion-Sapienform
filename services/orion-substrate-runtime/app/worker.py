@@ -51,6 +51,7 @@ from orion.substrate.prediction_error import (
     CodebaseMassBaseline,
     biometrics_prediction_error,
     bus_synaptic_prediction_error,
+    perception_prediction_error,
     perceptual_yield,
     vision_channel_staleness_pressure,
     chat_prediction_error,
@@ -375,6 +376,17 @@ class BiometricsSubstrateWorker:
         self._attention_self_model_trend_buffer: deque[dict[str, float]] = deque(
             maxlen=max(2, int(self._settings.attention_self_model_trend_window_ticks))
         )
+        # Perceptual prediction error (P2) state: the most recent real score
+        # this process has computed (in-memory cache, read by the clock-driven
+        # tick below; the durable source of truth is per-stream
+        # substrate_perception_embedding_baseline), and the clock reference
+        # used to detect silence -- same "how is this lately" bounded-window
+        # shape as the vision-channel state above, not an audit trail. None
+        # until any real embedding-bearing artifact has been observed this
+        # process lifetime.
+        self._last_perception_prediction_error: float | None = None
+        self._last_perception_embedding_at: datetime | None = None
+        self._last_perception_stream_id: str | None = None
 
     @property
     def bus(self):
@@ -406,6 +418,10 @@ class BiometricsSubstrateWorker:
             ),
             asyncio.create_task(
                 self._vision_channel_tick_loop(), name="substrate-vision-channel-tick"
+            ),
+            asyncio.create_task(
+                self._perception_prediction_error_tick_loop(),
+                name="substrate-perception-prediction-error-tick",
             ),
             asyncio.create_task(
                 self._attention_broadcast_loop(), name="substrate-attention-broadcast"
@@ -460,6 +476,20 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._vision_artifact_listener_loop(),
                     name="substrate-vision-artifact-listener",
+                )
+            )
+        # Perceptual prediction error (P2): own listener, own flag -- not the
+        # same subscription as _vision_artifact_listener_loop above, even
+        # though both read orion:vision:artifacts. Same domain-independence
+        # convention codebase_delta_listener_loop follows relative to the
+        # ticks above it: a shared subscription with two different consumers
+        # folded in would make the domains' flags stop being independent in
+        # practice, defeating the point of giving this its own flag at all.
+        if self._bus is not None and s.enable_perception_prediction_error_tick:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._perception_prediction_error_listener_loop(),
+                    name="substrate-perception-prediction-error-listener",
                 )
             )
         # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-
@@ -1150,6 +1180,211 @@ class BiometricsSubstrateWorker:
             except asyncio.CancelledError:
                 break
 
+    async def _perception_prediction_error_listener_loop(self) -> None:
+        """Subscribe to the same channel node:substrate.vision's listener
+        uses, and score each real embedding-bearing artifact's cosine
+        deviation from its own camera stream's running EWMA (P2, docs/
+        superpowers/specs/2026-08-12-perception-frontier-design.md).
+
+        A separate subscription from ``_vision_artifact_listener_loop``,
+        deliberately -- see this task's own registration comment in
+        ``start()`` for why folding this into that listener would defeat the
+        point of giving this domain its own independent flag.
+        """
+        channel = self._settings.vision_artifacts_channel
+        logger.info(
+            "substrate_perception_prediction_error_listener subscribing channel=%s", channel
+        )
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        self._handle_perception_prediction_error_message(msg)
+                    except Exception:
+                        logger.exception("substrate_perception_prediction_error_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info(
+                "substrate_perception_prediction_error_listener stopped channel=%s", channel
+            )
+
+    def _handle_perception_prediction_error_message(self, raw_msg: dict[str, Any]) -> None:
+        """Score one real ``orion:vision:artifacts`` message that carries an
+        inline embedding vector (``outputs.embedding.vector`` -- added by the
+        wire-contract patch this same PR ships, ``orion/schemas/vision.py``'s
+        ``VisionEmbedding.vector``).
+
+        A missing/absent vector is not evidence of anything wrong -- most
+        artifacts are detect-only (``want_embeddings`` unset for that task),
+        and even after this patch's config flip, not every task_type routes
+        through the baseline tier. Mirrors
+        ``_handle_vision_artifact_message``'s own "missing key is not a
+        failure" reasoning for the sibling ``objects`` field.
+        """
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_perception_prediction_error_decode_failed: %s", decoded.error)
+            return
+        payload = decoded.envelope.payload or {}
+        if not isinstance(payload, dict):
+            return
+        outputs = payload.get("outputs")
+        embedding = (outputs or {}).get("embedding") if isinstance(outputs, dict) else None
+        vector = embedding.get("vector") if isinstance(embedding, dict) else None
+        if not isinstance(vector, list) or not vector:
+            return
+        try:
+            embedding_vec = [float(x) for x in vector]
+        except (TypeError, ValueError):
+            logger.warning("substrate_perception_prediction_error_malformed_vector")
+            return
+
+        inputs = payload.get("inputs")
+        inputs = inputs if isinstance(inputs, dict) else {}
+        stream_id = str(inputs.get("camera_id") or inputs.get("stream_id") or "unknown")
+
+        baseline = self._store.get_latest_perception_embedding_baseline(stream_id)
+        result = perception_prediction_error(embedding_vec, baseline)
+        self._store.save_perception_embedding_baseline(
+            stream_id,
+            result.baseline,
+            retention_days=self._settings.perception_baseline_retention_days,
+        )
+        now = datetime.now(timezone.utc)
+        self._last_perception_embedding_at = now
+        self._last_perception_stream_id = stream_id
+        if result.score is not None:
+            self._last_perception_prediction_error = result.score
+            logger.info(
+                "substrate_perception_prediction_error_scored stream_id=%s score=%.3f n=%d",
+                stream_id,
+                result.score,
+                result.baseline.n,
+            )
+        else:
+            logger.info(
+                "substrate_perception_prediction_error_baseline_seeded stream_id=%s n=%d",
+                stream_id,
+                result.baseline.n,
+            )
+
+    def _perception_prediction_error_tick(self) -> None:
+        """Clock-driven companion to the event-driven listener above -- writes
+        node:substrate.perception on a fixed interval regardless of whether a
+        new embedding arrived this tick.
+
+        Not optional ceremony: an event-only write here would reproduce the
+        exact node:substrate.route decay-to-zero incident CLAUDE.md section
+        0A names -- silence (camera stopped, or embedding-bearing artifacts
+        simply stop arriving) would mean this node is never rewritten again,
+        and orion-field-digester's generic per-tick staleness decay would
+        multiply whatever value was last written toward 0.0 forever,
+        indistinguishable from genuine calm. Mirrors ``_vision_channel_tick``'s
+        own reasoning for the identical failure mode on the sibling node.
+
+        Default-off, fail-open: never raises out of a tick.
+        """
+        if not self._settings.enable_perception_prediction_error_tick:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            last_at = self._last_perception_embedding_at
+            if last_at is None:
+                # Nothing observed since this process started -- same startup-
+                # age fallback _vision_channel_tick uses, for the identical
+                # reason: an unbounded skip would report silence for a real
+                # ongoing outage across a restart.
+                startup_age = max(0.0, (now - self._process_started_at).total_seconds())
+                if vision_channel_staleness_pressure(startup_age) <= 0.0:
+                    logger.info(
+                        "substrate_perception_prediction_error_tick_awaiting_first_embedding"
+                    )
+                    return
+                age_seconds = startup_age
+            else:
+                age_seconds = max(0.0, (now - last_at).total_seconds())
+
+            staleness = vision_channel_staleness_pressure(age_seconds)
+            # A stale reading isn't "current calm" either -- once availability
+            # has faulted, the last real score no longer describes anything
+            # happening now. Same "must not outlive its own evidence" rule
+            # _vision_channel_tick applies to perceptual_yield, applied here
+            # to prediction_error itself.
+            score = 0.0 if staleness >= 1.0 else (self._last_perception_prediction_error or 0.0)
+
+            # Receipt on EVERY tick, unconditionally -- NOT gated on
+            # score > 0.0 the way _bus_synaptic_tick's is. This mirrors
+            # _vision_channel_tick's own receipt (a few hundred lines above
+            # in this file), not bus_synaptic's, and for the identical
+            # documented reason: the receipt is the ONLY path into
+            # orion-field-digester's field-node-vector `prediction_error`
+            # channel (state_deltas.py's `target_kind == "prediction_signal"`
+            # perturbation, a separate write path from the FalkorDB
+            # substrate-graph node `_write_prediction_error_node` writes
+            # below). Gating this receipt the way bus_synaptic's is would
+            # reproduce the exact bug _vision_channel_tick's own comment
+            # documents fixing on this same node shape: a real spike writes
+            # the field vector high, then a calm tick with score == 0.0 never
+            # sends a corrective receipt, so the field vector never refreshes
+            # back down -- confirmed live there as a stuck
+            # prediction_error=0.5714 while the eye was actually healthy.
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="perception",
+                    node_id="node:substrate.perception",
+                    prediction_error=score,
+                    now=now,
+                )
+            )
+            # Written every tick, not only on fault -- same "must not
+            # outlive its own evidence" reasoning as node:substrate.vision
+            # and node:substrate.bus_synaptic above: a node that can only go
+            # up and never refresh back down to a genuine calm reading
+            # produces permanent false alarms in any future consumer polling
+            # its raw value.
+            self._write_prediction_error_node(
+                node_id="node:substrate.perception",
+                error=score,
+                now=now,
+                reducer_key="perception",
+                extra_channels={"embedding_staleness": staleness},
+            )
+            logger.info(
+                "substrate_perception_prediction_error_tick_completed age_sec=%.1f "
+                "staleness=%.3f score=%.3f stream_id=%s",
+                age_seconds,
+                staleness,
+                score,
+                self._last_perception_stream_id or "none",
+            )
+        except Exception:
+            logger.exception("substrate_perception_prediction_error_tick_failed")
+
+    async def _perception_prediction_error_tick_loop(self) -> None:
+        interval = float(self._settings.perception_prediction_error_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._perception_prediction_error_tick)
+            except Exception:
+                logger.exception("substrate_perception_prediction_error_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     def _bus_synaptic_tick(self) -> None:
         """Periodic read of the live bus synaptic graph, feeding

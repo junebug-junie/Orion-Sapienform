@@ -45,7 +45,7 @@ from urllib.request import urlopen
 
 logger = logging.getLogger("orion-cortex-exec.admission_cue")
 
-_REQUIRED_FIELDS = frozenset({"checked", "deferrals", "window_s"})
+_REQUIRED_FIELDS = frozenset({"checked", "deferrals", "window_s", "unchecked"})
 
 UTC = timezone.utc
 
@@ -62,7 +62,10 @@ def fetch_admission_snapshot(
     timeout_sec: float,
 ) -> Dict[str, Any]:
     """Raw `GET /admission`. Raises on any failure so the caller degrades to "unknown"."""
-    url = f"{str(base_url).rstrip('/')}/admission?window_s={float(window_s):.0f}"
+    # via=bus restricts the count to Orion's own call path. The OpenAI passthrough shares the
+    # `quick_background` route key but is AI Town's NPC dialogue, and this cue is a FIRST-PERSON
+    # claim -- "I was made to wait" must not be somebody else's wait.
+    url = f"{str(base_url).rstrip('/')}/admission?window_s={float(window_s):.0f}&via=bus"
     with urlopen(url, timeout=timeout_sec) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     if not isinstance(payload, dict) or "checked" not in payload:
@@ -87,19 +90,40 @@ def render_admission_cue(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[st
     try:
         checked = int(snapshot["checked"])
         deferrals = int(snapshot["deferrals"])
+        unchecked = int(snapshot["unchecked"])
         window_s = float(snapshot["window_s"])
     except (TypeError, ValueError):
         return None
 
+    # The gate FAILS OPEN: when llama.cpp's /slots is unreachable or disabled, the request is
+    # forwarded without checking and recorded as `unchecked`. Those requests count toward
+    # `checked` but can never be deferrals, so a window where /slots was down throughout holds
+    # `{checked: 294, deferrals: 0, unchecked: 294}` -- and rendering that as "asked 294 times,
+    # never constrained" would be a confident first-person claim assembled entirely from 294
+    # measurements that did not happen. If nothing in the window was measurable, there is
+    # nothing trustworthy to say.
+    if checked > 0 and unchecked >= checked:
+        return None
+
     out: Dict[str, Any] = {"n": deferrals, "of": checked, "h": round(window_s / 3600.0, 1)}
+    if unchecked > 0:
+        # Partially measurable: report the count so the denominator is not read as fully
+        # observed.
+        out["unk"] = unchecked
     if deferrals > 0:
         # Only meaningful when something actually waited. Emitting `max_s` at n=0 would be the
         # /slots round-trip time dressed up as a wait -- the exact phantom the ledger's deferral
         # definition exists to prevent, leaking back in at the presentation layer.
         try:
-            out["max_s"] = round(float(snapshot.get("longest_wait_s") or 0.0), 1)
+            longest = float(snapshot.get("longest_wait_s") or 0.0)
         except (TypeError, ValueError):
-            pass
+            longest = 0.0
+        if longest > 0.0:
+            # Sub-0.05s waits round to 0.0 at one decimal, which would render "I was made to
+            # wait, for zero seconds" -- the same self-contradiction the comment above rejects.
+            # Reachable with LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC=0, where the first busy poll
+            # times out immediately. Keep more precision rather than rounding a real wait away.
+            out["max_s"] = round(longest, 1) if longest >= 0.1 else round(longest, 3)
     return out
 
 

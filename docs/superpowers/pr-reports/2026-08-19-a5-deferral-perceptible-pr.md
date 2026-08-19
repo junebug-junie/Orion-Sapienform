@@ -96,15 +96,15 @@ plus `strain` / `peak_pressure` / `fleet_watts` — all body, no opportunity cos
 $ pytest services/orion-llm-gateway/tests -q
 247 passed, 18 warnings in 4.54s          # before the new files
 
-$ pytest tests/test_admission_ledger.py tests/test_priority_admission.py -q
-40 passed
-
-$ pytest tests/test_admission_ledger.py -q                     # after the float-type fix
-15 passed
+$ pytest services/orion-llm-gateway/tests -q                    # after all review fixes
+258 passed, 18 warnings in 4.92s     (247 pre-existing + 11 new)
 
 # cortex-exec
+$ pytest tests/test_admission_cue.py -q -p no:randomly
+33 passed
+
 $ pytest tests/test_admission_cue.py tests/test_executor_llm_route_override.py -q
-32 passed
+32 passed                            (pre-review count; the file has since grown to 33)
 ```
 
 **Full cortex-exec suite, and why its number is not quoted as a pass/fail.** That suite has 13
@@ -146,23 +146,29 @@ $ curl -fsS http://localhost:8210/health
 {"status":"ok","service":"llm-gateway","node":null,
  "routes":["agent","chat","metacog","quick","quick_background"]}
 
-$ curl -fsS "http://localhost:8210/admission?window_s=3600"
-{"window_s":3600.0,"checked":3,"deferrals":0,"timeouts":0,"unchecked":0,
- "deferred_s_total":0.0,"longest_wait_s":0.0,"last_deferral_ts":null,
- "routes":["quick_background"]}          # real live traffic, real route key
+$ curl -fsS "http://localhost:8210/admission?window_s=21600&via=bus"
+{"window_s":21600.0,"via":"bus","checked":1,"deferrals":0,"timeouts":0,"unchecked":0,
+ "queued":0,"deferred_s_total":0.0,"longest_wait_s":0.0,"last_deferral_ts":null,
+ "truncated":false,"routes":["quick_background"]}    # real live traffic, real route key
 
 $ curl -fsS "http://localhost:8210/admission?window_s=1"        -> window_s 60.0     (clamped)
 $ curl -fsS "http://localhost:8210/admission?window_s=999999"   -> window_s 86400.0  (clamped)
+$ curl -fsS "http://localhost:8210/admission?window_s=nan"      -> window_s 21600.0  (isfinite)
 
 # import/traceback errors in the 4 exec containers, last 5 min: 0 / 0 / 0 / 0
 
 # END-TO-END, inside the deployed background executor:
 $ docker exec orion-athena-cortex-exec-background python -c "..."
-enabled = True | window_s = 21600.0
-gateway = http://llm-gateway:8210
-admission cue = {'n': 0, 'of': 4, 'h': 6.0}
-rendered cue  = {"status":"ok","constraint":"NONE","strain":0.11,"homeostasis":0.89,
-                 "waited":{"n":0,"of":4,"h":6.0}}
+live cue value   = {'n': 0, 'of': 1, 'h': 6.0}
+rendered         = {"status":"ok","constraint":"NONE","strain":0.11,"homeostasis":0.89,
+                    "waited":{"n":0,"of":1,"h":6.0}}
+all-unchecked    = None                                   # unknown, not calm
+partly-unchecked = {'n': 0, 'of': 294, 'h': 6.0, 'unk': 40}
+tiny deferral    = {'n': 1, 'of': 1, 'h': 6.0, 'max_s': 0.021}   # never 0.0 beside n=1
+
+# unreachable gateway, same container:
+unreachable gateway -> None
+cue -> {"status":"ok","constraint":"NONE"}                # key absent, no false calm
 
 # and `admission` is present in the live metacog context key list:
 INFO:orion.cortex.exec:Context Keys available: [... 'context_summary', 'admission',
@@ -170,6 +176,72 @@ INFO:orion.cortex.exec:Context Keys available: [... 'context_summary', 'admissio
 ```
 
 ## Review findings fixed
+
+Code review at `high` returned **seven findings. All seven are fixed** (plus the three
+self-caught ones below).
+
+- Finding (**HIGH**): the semaphore queue wait was invisible to the ledger, so the deferral
+  mechanism most likely to fire recorded zero deferrals. `background_admission.__aenter__`
+  acquires the per-route permit *before* polling `/slots`, and
+  `LLM_GATEWAY_BACKGROUND_CONCURRENCY` defaults to 1 — so a second concurrent request blocks
+  there for the whole of the first one's generation, then finds room on its first poll and
+  records `polls=1 admitted`. A request that waited minutes reported as one that never waited.
+  - Fix: `queued = self._sem.locked()` **before** `acquire()` — exact, not a duration threshold —
+    plus `queue_wait_s`; `is_deferral` includes `queued`, and `longest_wait_s` /
+    `deferred_s_total` are over queue + polls.
+  - Evidence: `test_the_second_concurrent_request_records_a_deferral` drives two real concurrent
+    `background_admission` blocks at concurrency=1. **Mutation-tested**: hardcoding
+    `queued = False` fails it with `assert 0 == 1`; restoring the line passes.
+
+- Finding (**HIGH**): `unchecked` was dropped by the renderer, so a permanently unreadable
+  `/slots` rendered as "asked 294 times, never made to wait". The gate fails open, so those 294
+  requests were forwarded without being measured — a confident first-person claim built from 294
+  non-observations, which is the exact unknown-as-calm failure the module exists to prevent,
+  arriving through the one field the renderer ignored.
+  - Fix: `unchecked` is now a required field; `unchecked >= checked` returns **None** (unknown);
+    a partial gap renders as `"unk":40` so the denominator is not read as fully observed.
+  - Evidence: `TestUncheckedIsNotCalm`, 4 cases. Live in-container:
+    `all-unchecked = None`, `partly-unchecked = {'n':0,'of':294,'h':6.0,'unk':40}`.
+
+- Finding (**MEDIUM**): no caller attribution — `quick_background` carries both Orion's bus path
+  and AI Town's NPC dialogue, so once NPC traffic resumes the cue would present somebody else's
+  deferrals to Orion as a first-person claim.
+  - Fix: records carry `via` (`bus` = `run_llm_chat`, i.e. Orion; `http` = OpenAI passthrough,
+    i.e. AI Town); `snapshot(via=…)` and `GET /admission?via=…` filter; the cue fetches
+    `via=bus`. `route_key` structurally cannot carry this — both share it.
+  - Evidence: `TestViaFilter`, `test_the_two_call_paths_are_distinguishable`,
+    `test_the_fetch_asks_only_for_orions_own_call_path`. Live: `?via=bus` returns
+    `"via":"bus","checked":1,"routes":["quick_background"]`.
+
+- Finding (**MEDIUM**): the cue's 350-char overrun fallback dropped `waited`, manufacturing a
+  false "gateway unreadable" with no trace — an absent key is load-bearing, unlike a dropped
+  `peak`.
+  - Fix: `waited` survives into the minimal fallback (it is also the smallest key there).
+  - Evidence: `test_waited_is_kept_when_the_payload_overruns`, whose fixture asserts the payload
+    *actually* overruns (`"peak_at" not in parsed`) so the test cannot pass vacuously — the first
+    draft of it did, and was rewritten with a longer absent-node list until it really overran.
+
+- Finding (**LOW**): `_MAX_RECORDS` silently truncated the window — `?window_s=86400` on a busy
+  day returned counters over the most recent 4096 records while still echoing `window_s: 86400`.
+  - Fix: `truncated` flag, true when the buffer is full and its oldest record is newer than the
+    cutoff.
+  - Evidence: `TestTruncationIsDeclared`, 3 cases including the two negatives.
+
+- Finding (**LOW**): `?window_s=nan` defeated the clamp. `min(max(nan, 60), 86400)` returns `nan`
+  (Python propagates a leading NaN), making every `ts >= cutoff` False and fabricating
+  `checked: 0` — "I made no background requests at all" out of a malformed query string, and
+  serialised as a bare `NaN` token that `json.loads` accepts without complaint.
+  - Fix: `math.isfinite` check ahead of the clamp, falling back to the default.
+  - Evidence: live `?window_s=nan` returns `window_s = 21600.0`.
+
+- Finding (**LOW**): `max_s` could render `0.0` beside `n: 1` — "I was made to wait, for zero
+  seconds". Reachable with `LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC=0`, where the first busy poll
+  times out immediately (a deferral by definition) after ~0.02s, which `round(_, 1)` erases.
+  - Fix: three decimals below 0.1s; `max_s` omitted entirely when the duration is genuinely zero.
+  - Evidence: `TestMaxSNeverContradictsItself`, 3 cases. Live: `{'n':1,...,'max_s':0.021}`.
+
+### Also fixed (self-caught before review)
+
 
 - Finding: `render_admission_cue` accepted any dict and defaulted missing fields to `0`, so a
   malformed `/admission` response rendered as `{"n":0,"of":0,"h":0.0}` — an "I made no requests"
@@ -217,12 +289,12 @@ curl -fsS http://localhost:8210/admission
   deliverable and the wiring costs one `if`.
 
 - Severity: low
-  Concern: the ledger is lane-level, not caller-level. `quick_background` carries both Orion's
-  journal and AI Town NPC speech, so `n` is "background requests that waited", not strictly
-  "Orion's thinking that waited". Today that distinction is moot (openai_passthrough logged zero
-  background requests in 4 h; all live background traffic is the bus path), but it will matter if
-  AI Town speech resumes.
-  Mitigation: `route_key` is already recorded; splitting by caller is an additive field.
+  Concern: `via=bus` separates Orion's call path from AI Town's, but it does not separate Orion's
+  *cognition* from Orion's *in-town speech* — orion-embodiment's speech also reaches the gateway
+  through `run_llm_chat`. Both are Orion, so the first-person claim is not false, but "I was made
+  to wait" currently blends thinking and speaking.
+  Mitigation: the record already carries `route_key`; a finer split is an additive field, and is
+  not worth building until the signal proves it moves.
 
 - Severity: low
   Concern: the cue adds ~30 chars to a payload with a 350-char truncation cliff that drops
@@ -239,4 +311,4 @@ curl -fsS http://localhost:8210/admission
 
 ## PR link
 
-<pending>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1724

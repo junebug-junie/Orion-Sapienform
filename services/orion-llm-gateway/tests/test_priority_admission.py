@@ -391,3 +391,86 @@ class TestAdmissionIsRecordedInTheLedger:
         assert await priority_admission.wait_for_slack(
             _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0,
         ) is True
+
+
+class TestSemaphoreQueueIsRecorded:
+    """REVIEW FIX (A5). `background_admission` acquires its permit BEFORE polling /slots, and
+    LLM_GATEWAY_BACKGROUND_CONCURRENCY defaults to 1. A second concurrent background request
+    therefore blocks on the semaphore for the whole of the first one's generation, then finds
+    room on its first poll -- recorded, until this fix, as `polls=1 admitted`: a request that
+    waited for the length of a generation, reported as one that never waited.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_ledger(self, monkeypatch: pytest.MonkeyPatch):
+        from app.admission_ledger import AdmissionLedger
+
+        led = AdmissionLedger()
+        monkeypatch.setattr(priority_admission, "get_ledger", lambda: led)
+        yield led
+
+    @pytest.mark.asyncio
+    async def test_the_second_concurrent_request_records_a_deferral(self, _fresh_ledger, monkeypatch):
+        """Two callers, concurrency=1, /slots always reports room. The first is not a deferral;
+        the second is, purely because it queued -- no /slots poll would ever reveal it."""
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
+        target = _target(reserved_free_slots=2)
+        release = asyncio.Event()
+
+        async def _holder():
+            async with priority_admission.background_admission(
+                "quick_background", target, concurrency=1,
+                poll_interval_sec=0.01, max_wait_sec=1.0,
+            ):
+                await release.wait()
+
+        held = asyncio.create_task(_holder())
+        await asyncio.sleep(0.05)          # let the holder take the only permit
+
+        async def _waiter():
+            async with priority_admission.background_admission(
+                "quick_background", target, concurrency=1,
+                poll_interval_sec=0.01, max_wait_sec=1.0,
+            ):
+                pass
+
+        queued = asyncio.create_task(_waiter())
+        await asyncio.sleep(0.15)          # the waiter is now blocked in acquire()
+        release.set()
+        await asyncio.gather(held, queued)
+
+        snap = _fresh_ledger.snapshot(window_s=600.0)
+        assert snap["checked"] == 2
+        assert snap["queued"] == 1
+        assert snap["deferrals"] == 1, "the queued request must be recorded as a deferral"
+        assert snap["longest_wait_s"] >= 0.1, "and its duration must be the queue time"
+
+    @pytest.mark.asyncio
+    async def test_an_uncontended_acquire_is_not_a_deferral(self, _fresh_ledger, monkeypatch):
+        """The complement: `locked()` is exact, so an idle semaphore must not mark anything."""
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
+        async with priority_admission.background_admission(
+            "quick_background", _target(reserved_free_slots=2),
+            concurrency=1, poll_interval_sec=0.01, max_wait_sec=1.0,
+        ):
+            pass
+        snap = _fresh_ledger.snapshot(window_s=600.0)
+        assert (snap["queued"], snap["deferrals"]) == (0, 0)
+
+    @pytest.mark.asyncio
+    async def test_the_two_call_paths_are_distinguishable(self, _fresh_ledger, monkeypatch):
+        """`quick_background` carries AI Town's NPC dialogue (http) and Orion's own work (bus).
+        The cue makes a first-person claim, so the ledger must keep them apart."""
+        monkeypatch.setattr(priority_admission, "_free_slot_count", AsyncMock(return_value=4))
+        monkeypatch.setattr(priority_admission, "_free_slot_count_sync", lambda url, **kw: 4)
+        async with priority_admission.background_admission(
+            "quick_background", _target(reserved_free_slots=2),
+            concurrency=1, poll_interval_sec=0.01, max_wait_sec=1.0,
+        ):
+            pass
+        priority_admission.wait_for_slack_sync(
+            _target(reserved_free_slots=2), poll_interval_sec=0.01, max_wait_sec=1.0,
+            route_key="quick_background", via="bus",
+        )
+        assert _fresh_ledger.snapshot(window_s=600.0, via="http")["checked"] == 1
+        assert _fresh_ledger.snapshot(window_s=600.0, via="bus")["checked"] == 1

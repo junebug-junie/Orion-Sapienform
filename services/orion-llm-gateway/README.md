@@ -300,14 +300,31 @@ Every admission decision is recorded in a bounded in-process ledger
 line, and read back here:
 
 ```json
-{"window_s":21600.0,"checked":294,"deferrals":0,"timeouts":0,"unchecked":0,
- "deferred_s_total":0.0,"longest_wait_s":0.0,"last_deferral_ts":null,
- "routes":["quick_background"]}
+{"window_s":21600.0,"via":null,"checked":294,"deferrals":0,"timeouts":0,
+ "unchecked":0,"queued":0,"deferred_s_total":0.0,"longest_wait_s":0.0,
+ "last_deferral_ts":null,"truncated":false,"routes":["quick_background"]}
 ```
 
-`window_s` is a query parameter (default 6h, clamped to 60s..24h). The ledger
-is in-process and rolling -- it is lost on restart by design; the log line is
-the durable record.
+`window_s` is a query parameter (default 6h, clamped to 60s..24h; a non-finite
+value falls back to the default rather than propagating through the clamp).
+`via` filters to one call path -- `bus` is `run_llm_chat`, i.e. orion-cortex-exec
+and orion-embodiment (**Orion**); `http` is the OpenAI passthrough, which on
+`quick_background` is AI Town's NPC dialogue (**not Orion**). Both share the
+route key, so `route_key` cannot make that distinction and the cue filters on
+`via=bus` because it renders a first-person claim.
+
+The ledger is in-process and rolling -- it is lost on restart by design; the log
+line is the durable record. `truncated` is `true` when the requested window
+reaches further back than the bounded buffer holds, so a partial denominator is
+never quoted as a full one.
+
+**Two waits, not one.** `background_admission` acquires its per-route
+concurrency permit (`LLM_GATEWAY_BACKGROUND_CONCURRENCY`, default 1) *before*
+`/slots` is ever polled, so a second concurrent background request blocks there
+for the whole of the first one's generation. That wait is recorded as
+`queue_wait_s` and flagged by `queued`, taken from `asyncio.Semaphore.locked()`
+so it is exact rather than thresholded. `longest_wait_s` and
+`deferred_s_total` are over **queue + polls**.
 
 **A first-poll admit is not a deferral, and this is the whole point of the
 endpoint.** Asking `/slots` whether there is room costs an HTTP round trip,
@@ -315,7 +332,8 @@ measured live at 0.012-0.091s. If the answer is yes on the first ask, nothing
 waited:
 
 ```text
-deferral := polls > 1  (a poll interval was actually slept through)
+deferral := queued              (the concurrency permit was not free)
+         or polls > 1           (a poll interval was actually slept through)
          or outcome == "timeout_forwarded"
 ```
 
@@ -324,7 +342,12 @@ poll. Counting those as waits would report ~300 phantom deferrals a day.
 
 `checked` ships beside `deferrals` because `deferrals: 0` alone is ambiguous:
 "asked 294 times and was never made to wait" and "nothing asked" are different
-facts. Consumers must read both.
+facts. **`unchecked` is a third**: the gate fails open, so when `/slots` is
+unreachable the request forwards without being measured. Those count toward
+`checked` and can never be deferrals, so a window where `/slots` was down
+throughout reads `{checked: 294, deferrals: 0, unchecked: 294}` -- which is not
+"never constrained", it is "never observed". Consumers must read all three;
+`admission_cue.py` returns *unknown* when `unchecked >= checked`.
 
 The ledger holds timings only -- no prompt, no response, no user or session
 identity -- and structurally cannot hold more: it is called from

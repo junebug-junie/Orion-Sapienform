@@ -795,7 +795,15 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
         draft_payload["freshness_s"] = freshness_s
     cue = json.dumps(draft_payload, separators=(",", ":"))
     if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
+        # `waited` survives the overrun fallback, unlike `peak`/`fleet_watts`/`freshness_s`.
+        # Not favouritism: an ABSENT `waited` key is a load-bearing signal in its own right --
+        # admission_cue.py defines it as "the gateway could not be read". Dropping a
+        # successfully-read, possibly non-zero deferral count here would manufacture a false
+        # "unknown" with no trace, where dropping `peak` merely omits a number. It is also the
+        # smallest key in the payload, so it is the cheapest one to keep.
         minimal: Dict[str, Any] = {"status": status, **composites}
+        if isinstance(admission, dict) and admission:
+            minimal["waited"] = admission
         cue = json.dumps(minimal, separators=(",", ":"))
     if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
         cue = json.dumps({"status": status}, separators=(",", ":"))

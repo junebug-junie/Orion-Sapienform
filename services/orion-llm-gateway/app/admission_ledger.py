@@ -64,15 +64,38 @@ class AdmissionRecord:
     polls: int
     reserved: int
     outcome: str       # "admitted" | "unchecked" | "timeout_forwarded"
+    # "bus" = run_llm_chat, orion-cortex-exec's RPC path and orion-embodiment's speech -- i.e.
+    # Orion. "http" = the OpenAI-compatible passthrough, which on `quick_background` is AI
+    # Town's native NPC dialogue -- i.e. NOT Orion. The cue renders a FIRST-PERSON claim ("I
+    # was made to wait"), so it must be able to exclude waits that were somebody else's. Both
+    # callers share the route key, so `route_key` cannot carry this distinction.
+    via: str = ""
+    # Time spent blocked on the per-route concurrency semaphore BEFORE /slots was ever asked.
+    # `background_admission` acquires that permit first, and with the default concurrency of 1
+    # a second background request waits there for the whole of the first one's generation --
+    # seconds to minutes. That wait used to be structurally invisible: by the time /slots was
+    # polled there was room, so it recorded polls=1 "admitted". It is the deferral mechanism
+    # most likely to actually fire.
+    queue_wait_s: float = 0.0
+    # True iff the semaphore had no free permit at the moment of the request. Taken from
+    # `asyncio.Semaphore.locked()` rather than from a duration threshold, so there is no
+    # magic number separating "queued briefly" from "did not queue".
+    queued: bool = False
+
+    @property
+    def total_wait_s(self) -> float:
+        """Everything the caller actually waited: the queue, then the polls."""
+        return self.queue_wait_s + self.waited_s
 
     @property
     def is_deferral(self) -> bool:
-        """True only if a poll interval was actually slept through, or the wait timed out.
+        """True if the caller was actually made to wait, by either mechanism.
 
-        `polls > 1` is the honest test: the first poll is the question, every poll after it
-        means the answer was "no room" and the caller slept. See the module docstring.
+        `polls > 1` is the honest test for the /slots wait: the first poll is the question,
+        every poll after it means the answer was "no room" and the caller slept. `queued` is
+        the honest test for the semaphore wait, and is exact rather than thresholded.
         """
-        return self.polls > 1 or self.outcome in _DEFERRED_OUTCOMES
+        return self.queued or self.polls > 1 or self.outcome in _DEFERRED_OUTCOMES
 
 
 class AdmissionLedger:
@@ -96,6 +119,9 @@ class AdmissionLedger:
         polls: int,
         reserved: int,
         outcome: str,
+        via: str = "",
+        queue_wait_s: float = 0.0,
+        queued: bool = False,
         ts: Optional[float] = None,
     ) -> AdmissionRecord:
         rec = AdmissionRecord(
@@ -106,39 +132,67 @@ class AdmissionLedger:
             polls=max(0, int(polls)),
             reserved=max(0, int(reserved)),
             outcome=str(outcome or ""),
+            via=str(via or ""),
+            queue_wait_s=max(0.0, float(queue_wait_s)),
+            queued=bool(queued),
         )
         with self._lock:
             self._records.append(rec)
         return rec
 
-    def snapshot(self, *, window_s: float, now: Optional[float] = None) -> Dict[str, Any]:
-        """Counters over the trailing `window_s`.
+    def snapshot(
+        self,
+        *,
+        window_s: float,
+        now: Optional[float] = None,
+        via: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Counters over the trailing `window_s`, optionally restricted to one call path.
 
         `checked` is the denominator and is what makes a quiet window legible: `deferrals == 0`
-        with `checked == 294` is "Orion asked 294 times and was never made to wait", which is a
-        real observation. `deferrals == 0` with `checked == 0` is "nothing asked", which is not.
-        A consumer that reads only `deferrals` cannot tell those apart, so both ship.
+        with `checked == 294` is "asked 294 times and was never made to wait", which is a real
+        observation. `deferrals == 0` with `checked == 0` is "nothing asked", which is not. And
+        `unchecked == checked` is "asked 294 times and never got an answer", which is neither --
+        it must not be summarised as calm. A consumer that reads only `deferrals` cannot tell
+        those apart, so all three ship.
+
+        `via` restricts to one call path ("bus" = Orion, "http" = AI Town's NPC dialogue). The
+        cue makes a first-person claim, so it filters; an operator reading /admission usually
+        does not.
         """
         cutoff = (time.time() if now is None else float(now)) - max(0.0, float(window_s))
         with self._lock:
-            recent = [r for r in self._records if r.ts >= cutoff]
+            in_window = [r for r in self._records if r.ts >= cutoff]
+            # The deque is bounded, so a window longer than the buffer holds silently reports a
+            # partial denominator while still echoing the requested window back. Flag it: a
+            # `checked` that covers 3 of 24 hours is not the same claim as one that covers 24.
+            truncated = len(self._records) == self._records.maxlen and bool(
+                self._records and self._records[0].ts > cutoff
+            )
+        recent = [r for r in in_window if via is None or r.via == via]
 
         deferrals = [r for r in recent if r.is_deferral]
         # max() over an empty sequence raises; an empty window is the normal case, not an error.
-        longest = max((r.waited_s for r in deferrals), default=0.0)
+        longest = max((r.total_wait_s for r in deferrals), default=0.0)
         last_ts = max((r.ts for r in deferrals), default=None)
         return {
             "window_s": float(window_s),
+            "via": via,
             "checked": len(recent),
             "deferrals": len(deferrals),
             "timeouts": sum(1 for r in recent if r.outcome == "timeout_forwarded"),
+            # Requests where /slots could not be read at all. The gate failed open, so nothing
+            # waited -- but nothing was measured either, and a consumer that ignores this field
+            # will report a confident "never constrained" built entirely from non-observations.
             "unchecked": sum(1 for r in recent if r.outcome == "unchecked"),
-            # Sum over deferrals only. Summing every record's `waited_s` would total up the
-            # /slots round-trip cost and call it waiting -- the same phantom the deferral
-            # definition exists to prevent, just aggregated.
-            "deferred_s_total": round(float(sum(r.waited_s for r in deferrals)), 3),
+            "queued": sum(1 for r in recent if r.queued),
+            # Sum over deferrals only. Summing every record's wait would total up the /slots
+            # round-trip cost and call it waiting -- the same phantom the deferral definition
+            # exists to prevent, just aggregated.
+            "deferred_s_total": round(float(sum(r.total_wait_s for r in deferrals)), 3),
             "longest_wait_s": round(longest, 3),
             "last_deferral_ts": last_ts,
+            "truncated": truncated,
             "routes": sorted({r.route_key for r in recent if r.route_key}),
         }
 

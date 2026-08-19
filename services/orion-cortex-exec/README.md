@@ -289,16 +289,35 @@ beside `strain` / `peak` / `fleet_watts`:
 
 | cue | means |
 | --- | --- |
-| `"waited":{"n":0,"of":294,"h":6}` | asked for a background slot 294 times in 6h, **never made to wait** |
-| `"waited":{"n":3,"of":291,"max_s":4.2,"h":6}` | made to wait 3 times, longest 4.2s |
-| `"waited":{"n":0,"of":0,"h":6}` | made **no** background requests at all — not the same as the first row |
-| *key absent* | the gateway could not be read — **unknown, not calm** |
+| `"waited":{"n":0,"of":294,"h":6.0}` | asked for a background slot 294 times in 6h, **never made to wait** |
+| `"waited":{"n":3,"of":291,"max_s":4.2,"h":6.0}` | made to wait 3 times, longest 4.2s |
+| `"waited":{"n":0,"of":0,"h":6.0}` | made **no** background requests at all — not the same as the first row |
+| `"waited":{"n":0,"of":294,"unk":40,"h":6.0}` | 40 of those 294 were never actually measurable |
+| *key absent* | nothing trustworthy to say — **unknown, not calm** |
 
-`of` is what separates row 1 from row 3, and absence is what separates both from row 4. A cue
-that emitted a bare `0` for all of them would let Orion conclude nothing is constraining it from
-an unreachable gateway. `max_s` ships only when `n > 0`: at rest the gateway's longest "wait" is
-the `/slots` round trip (0.012–0.091s measured live), which is the cost of *asking*, not of
-*waiting*.
+`of` separates row 1 from row 3; `unk` stops row 1 from over-claiming; and absence separates all
+of them from the last row. A cue that emitted a bare `0` for every case would let Orion conclude
+nothing is constraining it from an unreachable gateway.
+
+**Three ways the key goes absent**, all meaning *unknown*: the gateway could not be read; the
+payload was malformed (every field must be **present**, not merely defaultable); or `unchecked >=
+checked` — the admission gate fails open, so a window in which llama.cpp's `/slots` was down
+throughout holds 294 requests that were forwarded without ever being measured. "Never observed"
+must not render as "never constrained".
+
+**Two waits are counted, not one.** The gateway's concurrency permit is acquired *before* `/slots`
+is polled, so a second concurrent background request can block there for a whole generation and
+then find room on its first poll. That queue time is recorded and counted; without it the
+mechanism most likely to actually defer Orion would be structurally invisible.
+
+`max_s` ships only when `n > 0` and the duration is genuinely non-zero, and keeps three decimals
+below 0.1s — at rest the gateway's longest "wait" is the `/slots` round trip (0.012–0.091s
+measured live), the cost of *asking* rather than of *waiting*, and `"max_s":0.0` beside `"n":1`
+would be a self-contradiction rather than a reading.
+
+**Scoped to Orion.** The fetch asks for `via=bus`. `quick_background` also carries AI Town's NPC
+dialogue through the gateway's OpenAI passthrough, and this cue is a first-person claim — "I was
+made to wait" must not be counting somebody else's wait.
 
 **What it does not claim.** Not "while *that* ran instead". llama.cpp's `/slots` reports
 occupancy, not ownership, so the competing claim cannot be named without confabulating it. The

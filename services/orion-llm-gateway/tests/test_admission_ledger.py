@@ -15,10 +15,12 @@ from app.admission_ledger import AdmissionLedger, AdmissionRecord, get_ledger
 
 
 def _rec(ledger: AdmissionLedger, *, ts: float, polls: int = 1, waited: float = 0.02,
-         outcome: str = "admitted", route: str = "quick_background") -> AdmissionRecord:
+         outcome: str = "admitted", route: str = "quick_background", via: str = "bus",
+         queue_wait: float = 0.0, queued: bool = False) -> AdmissionRecord:
     return ledger.record(
         route_key=route, url="http://atlas:8013", waited_s=waited,
-        polls=polls, reserved=2, outcome=outcome, ts=ts,
+        polls=polls, reserved=2, outcome=outcome, ts=ts, via=via,
+        queue_wait_s=queue_wait, queued=queued,
     )
 
 
@@ -71,8 +73,9 @@ def test_empty_window_is_distinguishable_from_a_quiet_one():
     led = AdmissionLedger()
     empty = led.snapshot(window_s=3600.0, now=1000.0)
     assert empty == {
-        "window_s": 3600.0, "checked": 0, "deferrals": 0, "timeouts": 0, "unchecked": 0,
-        "deferred_s_total": 0.0, "longest_wait_s": 0.0, "last_deferral_ts": None, "routes": [],
+        "window_s": 3600.0, "via": None, "checked": 0, "deferrals": 0, "timeouts": 0,
+        "unchecked": 0, "queued": 0, "deferred_s_total": 0.0, "longest_wait_s": 0.0,
+        "last_deferral_ts": None, "truncated": False, "routes": [],
     }
     # An empty `sum()` returns int 0, so without the float() cast this field would change TYPE
     # between an idle and a busy window -- an int at rest, a float once anything was deferred.
@@ -116,7 +119,10 @@ def test_ledger_holds_no_request_content():
     carrying a prompt, a response, or a user id fails here rather than shipping.
     """
     fields = {f.name for f in dataclasses.fields(AdmissionRecord)}
-    assert fields == {"ts", "route_key", "url", "waited_s", "polls", "reserved", "outcome"}
+    assert fields == {
+        "ts", "route_key", "url", "waited_s", "polls", "reserved", "outcome",
+        "via", "queue_wait_s", "queued",
+    }
 
 
 def test_negative_and_junk_inputs_are_normalised():
@@ -125,6 +131,7 @@ def test_negative_and_junk_inputs_are_normalised():
                    outcome=None, ts=1000.0)
     assert (r.waited_s, r.polls, r.reserved, r.route_key, r.url, r.outcome) == (
         0.0, 0, 0, "", "", "")
+    assert (r.via, r.queue_wait_s, r.queued) == ("", 0.0, False)
     assert r.is_deferral is False
 
 
@@ -149,3 +156,72 @@ def test_a_negative_window_is_clamped_to_zero_not_run_backwards(window, expected
     _rec(led, ts=999.0)
     _rec(led, ts=1000.0)
     assert led.snapshot(window_s=window, now=1000.0)["checked"] == expected
+
+
+class TestSemaphoreQueueWait:
+    """The concurrency cap is the deferral mechanism most likely to actually fire, and it used
+    to be structurally invisible: `background_admission` acquires its permit BEFORE polling
+    /slots, so a request that blocked minutes behind another still recorded `polls=1 admitted`.
+    """
+
+    def test_a_queued_request_is_a_deferral_even_at_one_poll(self):
+        led = AdmissionLedger()
+        _rec(led, ts=1000.0, polls=1, waited=0.02, queue_wait=182.4, queued=True)
+        snap = led.snapshot(window_s=3600.0, now=1001.0)
+        assert snap["deferrals"] == 1
+        assert snap["queued"] == 1
+
+    def test_the_queue_time_is_counted_in_the_duration(self):
+        """182.4s behind another request + 0.02s asking /slots. Reporting 0.02 would be absurd."""
+        led = AdmissionLedger()
+        _rec(led, ts=1000.0, polls=1, waited=0.02, queue_wait=182.4, queued=True)
+        snap = led.snapshot(window_s=3600.0, now=1001.0)
+        assert snap["longest_wait_s"] == 182.42
+        assert snap["deferred_s_total"] == 182.42
+
+    def test_an_unqueued_first_poll_admit_is_still_not_a_deferral(self):
+        led = AdmissionLedger()
+        _rec(led, ts=1000.0, polls=1, waited=0.02, queue_wait=0.0, queued=False)
+        assert led.snapshot(window_s=3600.0, now=1001.0)["deferrals"] == 0
+
+
+class TestViaFilter:
+    """`quick_background` carries BOTH Orion's bus path and AI Town's NPC dialogue. The cue is a
+    first-person claim, so it must be able to exclude somebody else's wait."""
+
+    def test_filter_selects_one_call_path(self):
+        led = AdmissionLedger()
+        _rec(led, ts=1000.0, via="bus", polls=1)
+        _rec(led, ts=1001.0, via="http", polls=9, waited=6.0)      # AI Town waited, not Orion
+        assert led.snapshot(window_s=600.0, now=1002.0, via="bus")["deferrals"] == 0
+        assert led.snapshot(window_s=600.0, now=1002.0, via="http")["deferrals"] == 1
+
+    def test_unfiltered_reports_everything(self):
+        led = AdmissionLedger()
+        _rec(led, ts=1000.0, via="bus")
+        _rec(led, ts=1001.0, via="http")
+        snap = led.snapshot(window_s=600.0, now=1002.0)
+        assert snap["checked"] == 2 and snap["via"] is None
+
+
+class TestTruncationIsDeclared:
+    def test_a_window_longer_than_the_buffer_is_flagged(self):
+        """`checked` covering 3 of 24 requested hours is not the same claim as covering 24."""
+        led = AdmissionLedger(max_records=8)
+        for i in range(50):
+            _rec(led, ts=1000.0 + i)
+        snap = led.snapshot(window_s=86400.0, now=1050.0)
+        assert snap["truncated"] is True
+        assert snap["checked"] == 8
+
+    def test_a_window_the_buffer_covers_is_not_flagged(self):
+        led = AdmissionLedger(max_records=8)
+        for i in range(50):
+            _rec(led, ts=1000.0 + i)
+        # Only the last 5 seconds are asked for, and the buffer reaches back further than that.
+        assert led.snapshot(window_s=5.0, now=1050.0)["truncated"] is False
+
+    def test_an_unfilled_buffer_is_never_flagged(self):
+        led = AdmissionLedger(max_records=4096)
+        _rec(led, ts=1000.0)
+        assert led.snapshot(window_s=86400.0, now=1001.0)["truncated"] is False

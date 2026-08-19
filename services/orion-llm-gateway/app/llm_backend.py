@@ -1490,6 +1490,10 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             # lane. This is the bus path, and as of 2026-08-19 it carries 100% of live
             # background traffic (openai_passthrough logged zero background requests in 4h).
             route_key=str(route or ""),
+            # This path is orion-cortex-exec's bus RPC and orion-embodiment's speech -- Orion.
+            # The OpenAI passthrough on the same route key is AI Town's NPC dialogue, which is
+            # not. The cue makes a first-person claim, so it must be able to tell them apart.
+            via="bus",
         )
 
     route_url: Optional[str] = None

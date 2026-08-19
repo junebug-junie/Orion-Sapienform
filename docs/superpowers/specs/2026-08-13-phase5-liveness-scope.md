@@ -485,10 +485,43 @@ identifier corruption. The earlier version of this note assumed it was the
 same mechanism; it is not. A **third** occurrence, same session that wrote
 this revision: a plain `grep -h "^POSTGRES_URI="` call was silently
 intercepted and returned RTK's own help/usage text instead of running.
-Different symptom (a swallowed command instead of a substituted identifier),
-same root cause -- RTK's wrapper doing something other than what was asked,
-unpredictably, on ordinary shell commands.
 
-**Still ungated as of 2026-08-16.** Recorded three times now, acted on zero,
-across the entire arc above. Noted here as the standing example of this doc's
-own thesis: a known defect with no mechanism behind it does not stay known.
+**2026-08-19: root-caused for real, not just observed, and both symptoms
+turned out deterministic, not "unpredictable" as this note previously
+guessed.** Two distinct bugs, not one:
+
+1. **The `-h` swallow, reproduced live on demand.** RTK's clap-based arg
+   parser globally reserves `-h`/`--help` (and `-V`/`--version`) for
+   *itself* before the wrapped tool ever sees them. `grep -h`
+   (`--no-filename`, an ordinary flag) never reaches real grep -- RTK's own
+   help text comes back instead, silently, exit 0. 100% reproducible, not
+   intermittent.
+2. **The identifier corruption, root-caused via RTK's own public issue
+   tracker, not reproduced locally.** [rtk-ai/rtk#1613](https://github.com/rtk-ai/rtk/issues/1613)
+   (filed by someone else, open since April, still unfixed as of the
+   latest release checked, v0.45.0): RTK's output parser assumes
+   ripgrep/grep output is always `path:line:content`, via a naive
+   `splitn(3, ':')`. Ripgrep omits the path prefix for a single-file
+   search, so real output is `line:content`; when the matched content
+   itself contains a colon (a YAML key like `channel_map:` is exactly this
+   shape), the parser misassigns fields. Matches the originally recorded
+   symptom precisely.
+
+**Gated 2026-08-19.** `~/.claude/hooks/rtk-fcc-gate.sh` now blocks (exit 2,
+explains why, points at `--no-filename`) any grep/rg call carrying a bare
+`-h`-containing short-flag cluster before RTK's parser can swallow it, and
+unconditionally injects `-H`/`--with-filename` into every plain grep/rg
+rewrite so #1613's missing-path-prefix precondition can't occur -- purely
+additive, safe on every existing call. Not this repo's code (this hook is
+global, `~/.claude/`, not version-controlled, not part of this arc's usual
+PR/test discipline), so it's recorded here rather than shipped as a normal
+patch. Built and tested against 9 cases (blocks, safe-passthrough,
+FCC-bypass) in the authoring session; installing it required a permission
+grant this session didn't have, so as of this revision it is **written and
+verified in isolation, not yet confirmed installed and live** -- check
+`~/.claude/hooks/rtk-fcc-gate.sh` for the 2026-08-19 header comment before
+trusting that it's active.
+
+Recorded three times before this fix existed, acted on zero, across the
+entire arc above -- the standing example of this doc's own thesis, until
+now: a known defect with no mechanism behind it does not stay known.

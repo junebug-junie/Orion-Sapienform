@@ -175,6 +175,15 @@ wiring in the same patch):
 4. New `PRESSURE_DIMENSIONS` entry + `FieldStateV1` field(s), metric-gated against real
    data per CLAUDE.md 0A, same discipline as `tension_deviation_pressure`.
 
+1. Build the `_significance_loop`/rolling-buffer producer per Q1's answer, computing
+   `channel_regime()` per channel scoped to `loaded_*`/`calm` regimes per Q2's evidence.
+2. Pick and disclose a final window (15 minutes is a reasonable starting point per the
+   live check above, not yet a locked answer) and a baseline window for the relative axes.
+3. Run the real independence check against `deviation_pressure` (Q5) and the Borda
+   scale-freedom test (Q4) before anything downstream reads this.
+4. New `PRESSURE_DIMENSIONS` entry + `FieldStateV1` field(s), metric-gated against real
+   data per CLAUDE.md 0A, same discipline as `tension_deviation_pressure`.
+
 ## What changed from this doc's original proposal (2026-08-18, during implementation)
 
 Q1's answer above (a 6th `worker.py` loop reusing `FieldChannelAnomalyScorer`'s

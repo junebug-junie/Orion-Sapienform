@@ -29,6 +29,59 @@ async def test_feature_flag_on_adds_attention_frame(monkeypatch) -> None:
     assert built["attention_frame"]["open_loops"]
 
 
+@pytest.mark.asyncio
+async def test_frame_build_persists_salience_trace_when_enabled(monkeypatch) -> None:
+    import app.chat_stance as chat_stance_module
+
+    calls = []
+
+    async def _fake_persist(frame):
+        calls.append(frame)
+        return True
+
+    monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
+    monkeypatch.setattr(chat_stance_module, "persist_chat_attention_salience_trace", _fake_persist)
+    ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
+    await build_chat_stance_inputs(ctx)
+    assert len(calls) == 1
+    assert calls[0].open_loops  # the real built frame, not a stub
+
+
+@pytest.mark.asyncio
+async def test_frame_disabled_never_calls_persist(monkeypatch) -> None:
+    import app.chat_stance as chat_stance_module
+
+    calls = []
+
+    async def _fake_persist(frame):
+        calls.append(frame)
+        return True
+
+    monkeypatch.delenv("ORION_CURIOSITY_FRAME_ENABLED", raising=False)
+    monkeypatch.setattr(chat_stance_module, "persist_chat_attention_salience_trace", _fake_persist)
+    ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
+    await build_chat_stance_inputs(ctx)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_does_not_clear_attention_frame_ctx(monkeypatch) -> None:
+    import app.chat_stance as chat_stance_module
+
+    async def _boom(frame):
+        raise RuntimeError("db down")
+
+    monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
+    monkeypatch.setattr(chat_stance_module, "persist_chat_attention_salience_trace", _boom)
+    ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
+    built = await build_chat_stance_inputs(ctx)
+    # A trace-writer exception must not undo an already-successful frame build --
+    # the ctx keys and the returned inputs both still carry the real frame.
+    assert "attention_frame" in built
+    assert "chat_attention_frame" in ctx
+    assert ctx["chat_attention_frame"]["schema_version"] == "attention.frame.v1"
+
+
 def test_debug_payload_exposes_attention_frame() -> None:
     attention_frame = {
         "schema_version": "attention.frame.v1",

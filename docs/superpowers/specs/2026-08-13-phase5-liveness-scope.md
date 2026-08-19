@@ -1,13 +1,14 @@
 # Phase 5 — signal semantics: provenance, window, commensurability
 
-**Mode:** Was design/scoping. **R1–R4 are shipped and merged. R5 SPLITS INTO
-TWO: the precondition watch is now shipped; the actual feedback-loop guard is
-still open, proposal mode.** Kept as the arc's record rather than closed,
-because most of what it now says was learned by building it.
+**Mode:** Was design/scoping. **R1–R5b are all shipped and merged.** The one
+open item is the fourth-axis question (R6, "can this metric express rest") —
+see "Open decisions". Kept as the arc's record rather than closed, because
+most of what it now says was learned by building it.
 
 **Date:** 2026-08-13, revised same day, 2026-08-15 with shipped status and
-measured outcomes, and again 2026-08-16 once R5's watch (below) actually
-shipped — see "What this revision retracts" and "What building it changed".
+measured outcomes, 2026-08-16 once R5a's watch shipped, and again 2026-08-19
+once R5b (the actual guard) shipped and was live-verified — see "What this
+revision retracts" and "What building it changed".
 
 ## Status
 
@@ -18,13 +19,12 @@ shipped — see "What this revision retracts" and "What building it changed".
 | R3 commensurability | **merged** | #1638, #1654 + hourly cron | detector had drifted from production; decay-aware fix shipped uncommitted once |
 | R4 definition-change alert | **merged** | #1666, #1680 (tooling), #1677 | shipped a **fabricated alert** in its own lock file |
 | R5a feedback-credit watch | **merged** | #1686, #1694, #1700 | **first version measured the wrong thing entirely** -- 0 of 454 flagged windows over 6,000 ticks were real decay; rebuilt on write-evidence, not shape |
-| R5b feedback-loop guard | **open** | — | proposal mode, unstarted -- correctly waiting on R5a's now-real measurements instead of a hypothesis |
+| R5b feedback-loop guard | **merged** | #1709 | review caught a duplicate-entry bug and an untested negative-credit path; live-verified on real production traffic post-deploy |
 
-Four of five original rungs shipped, and the fifth split cleanly into a
-shipped measurement and a still-open change to the loop itself. Every shipped
-rung was materially wrong on first submission and was corrected by review or
-by live measurement — recorded below rather than smoothed over, because the
-pattern is the finding.
+All five rungs shipped. Every one was materially wrong on first submission and
+was corrected by review or by live measurement — recorded below rather than
+smoothed over, because the pattern is the finding. One rung (R6, the fourth
+axis) is unbudgeted and still open -- see "Open decisions".
 
 ## What this revision retracts
 
@@ -68,10 +68,10 @@ instance, below.
 | `perception_staleness` wired as a topology edge source, produced by nothing → fabricated `pressure=0.0/confidence=1.0` | Provenance | fixed 2026-08-13 by the perception P4 work; edge now maps `prediction_error` |
 | `thermal_pressure` (18 distinct) beating capability `pressure` (1,325 distinct) on 91.76% of ticks | Commensurability | fixed by deleting one routing entry |
 | **`node:substrate.codebase` dominating the merged `prediction_error` channel** | Commensurability | **FIXED** — merge staleness rule, 2026-08-14. `codebase` went 66.6% → 0.9% of merge wins; distinct values 98 → 564 on matched 6,000-tick windows; median 1.0000 → 0.1911 |
-| `resource_pressure` reading calm during a producer outage, crediting the in-flight action with success | Provenance | **OPEN — latent, see below** |
+| `resource_pressure` reading calm during a producer outage, crediting the in-flight action with success | Provenance | **FIXED** — R5b guard, 2026-08-18 (#1709), live-verified |
 | "very busy at near max but steady state, so actually peaceful" is not expressible | Window | **OPEN — no mechanism exists** |
 
-Six of eight are fixed. Every one was found **by hand** — by a person or a
+Seven of eight are fixed. Every one was found **by hand** — by a person or a
 review noticing. None was found by a gate. That was the thing to change, and
 it has now changed at least once: on 2026-08-14 the R3 cron gate and the R4
 definition gate each fired on main within hours of landing, on real edits
@@ -291,14 +291,53 @@ signals -- fixed before merge. Live result: 0 findings on the most recent
 Full account: `orion/field/credit_integrity.py`'s module docstring and
 `docs/superpowers/pr-reports/2026-08-16-credit-integrity-rebuild-pr.md`.
 
-### R5b — the guard itself (proposal mode, still not this roadmap)
+### R5b — the guard itself **MET** (#1709)
 
 A staleness guard on the dimension so a decayed-to-calm reading cannot be
-credited as a positive outcome. This changes a learning loop and needs its own
-proposal with rollback, per CLAUDE.md §0A. **R5a now gives it real measured
-behavior to design against, not a hypothesis** -- one genuine 31s outage was
-caught and hand-verified during R5a's development, and the hourly watch is
-live in `scripts/check_merge_domination.py`'s cron entry. Still unstarted.
+credited as a positive outcome. Changed a learning loop, so it went through
+proposal mode per CLAUDE.md §0A and shipped once Juniper said "build it".
+
+*Acceptance:* an unbacked or stale reading is withheld from credit in both
+directions, never silently dropped. **MET.** New primitive
+`channel_write_backed()` in `orion/field/credit_integrity.py` reuses R5a's
+exact two mechanisms (node-vector timestamp freshness, capability-routed tick
+freshness) -- no new heuristic. `orion/feedback/builder.py` gates
+`positive_delta_channels` through it; an unbacked reading is recorded in a new
+`FeedbackFrameV1.withheld_evidence` field rather than credited or silently
+dropped, so it stays inspectable. Rollback lever:
+`FeedbackPolicyV1.write_evidence_guard_enabled` (default on).
+
+Honest scope note, found by investigation before building: no live
+action-value/ranker consumer of the feedback-credit signal exists today, so
+this is not (yet) blocking RL-style reward hacking. The real, live consequence
+of the trap this closes is corrupted pattern/expectation building in
+`orion/consolidation/motif.py`, which reads `outcome_status` /
+`negative_evidence` directly.
+
+Review caught two real bugs before merge: `channel_write_backed()` was called
+twice for `reliability_pressure` on the same tick, producing a duplicate
+`withheld_evidence` entry (fixed by threading the already-computed verdict
+through instead of recomputing); and the negative-credit direction had no
+test coverage (fixed with a regression test). Mutation testing separately
+caught a coverage gap where a `None` (unmapped-this-tick) verdict fell through
+as if credited.
+
+Live-verified post-deploy, not just tested: confirmed the new code path
+actually loaded in the running container, then queried
+`substrate_feedback_frames` in production Postgres directly and confirmed
+`withheld_evidence` is round-tripping on genuinely fresh post-deploy frames
+(`tick_f22ec0fdb8fe`, empty list that tick since all deltas were flat 0.0 --
+correct, not a null result). Deploy verification also found and fixed an
+unrelated, pre-existing live bug: `services/orion-feedback-runtime/.env` had
+drifted from its own `.env_example` and every sibling service's `.env`,
+running `ORION_BUS_URL=redis://bus-core:6379/0` instead of the mandated
+tailscale address -- functionally fine inside the docker network, but a
+direct violation of CLAUDE.md's explicit bus-URL rule and fragile to network
+changes. Fixed and redeployed; confirmed via `docker inspect` and a direct
+Redis reachability check.
+
+Full account: `orion/field/credit_integrity.py`'s module docstring and
+`docs/superpowers/pr-reports/2026-08-18-feedback-write-evidence-guard-pr.md`.
 
 ## Non-goals
 
@@ -370,7 +409,11 @@ critical path.
    waiting on `expected_offline_suppression`.
 2. **The fourth axis.** Is "can this metric reach rest" worth its own rung
    (R6), or does it fold into R5b's guard? It has three measured instances and
-   no detector. **Still open** -- not decided as of this revision.
+   no detector. **Still open as a decision** -- R5b shipped as its own patch
+   and did not fold this in, so it did not get decided by default. Investigation
+   started 2026-08-19: current state of the three known instances, whether
+   others exist, and what a detector would actually need to check, before any
+   scope decision or code.
 
 ## Risk note — tooling, not code
 

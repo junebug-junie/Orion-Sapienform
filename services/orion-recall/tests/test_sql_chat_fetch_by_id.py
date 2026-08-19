@@ -63,3 +63,53 @@ def test_returns_prompt_response_client_meta_tuple_by_id(monkeypatch) -> None:
     monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
     out = _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
     assert out == {"turn-1": ("hi Circe", "hello", {"external_room": {"platform": "aitown"}})}
+
+
+def test_query_unions_the_aitown_table(monkeypatch) -> None:
+    """AI Town chat-history table split (docs/superpowers/specs/2026-08-19-
+    aitown-table-split-phase2-recall-migration-design.md): a turn id can
+    live in aitown_chat_history_log instead of chat_history_log (orion-
+    sql-writer routes each row to exactly one table). Without unioning it
+    in, any AI-Town-originated turn id would silently resolve to nothing
+    here -- the exact failure mode the design doc's audit flagged."""
+    captured: dict = {}
+
+    class _FakeConn:
+        async def fetch(self, query, ids):
+            captured["query"] = query
+            return []
+
+        async def close(self):
+            pass
+
+    class _FakeAsyncpg:
+        @staticmethod
+        async def connect(dsn):
+            return _FakeConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
+    _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
+    assert "aitown_chat_history_log" in captured["query"]
+    assert "union all" in captured["query"].lower()
+
+
+def test_timestamps_query_unions_the_aitown_table(monkeypatch) -> None:
+    captured: dict = {}
+
+    class _FakeConn:
+        async def fetch(self, query, ids):
+            captured["query"] = query
+            return []
+
+        async def close(self):
+            pass
+
+    class _FakeAsyncpg:
+        @staticmethod
+        async def connect(dsn):
+            return _FakeConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
+    _run(sql_chat.fetch_chat_turn_timestamps(["turn-1"], 60))
+    assert "aitown_chat_history_log" in captured["query"]
+    assert "union all" in captured["query"].lower()

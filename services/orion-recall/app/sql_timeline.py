@@ -282,8 +282,21 @@ async def fetch_recent_fragments(
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 select_spark_meta = f"{spark_meta_col} AS spark_meta," if spark_meta_col else ""
                 select_client_meta = f"{client_meta_col} AS client_meta," if client_meta_col else ""
-                params: List[Any] = [since_minutes]
-                params.append(limit)
+                # AI Town chat-history table split (docs/superpowers/specs/
+                # 2026-08-19-aitown-table-split-phase2-recall-migration-design.md):
+                # aitown_chat_history_log is column-for-column identical to
+                # chat_history_log (gated by a schema-parity test in
+                # orion-sql-writer), so the same picked column names apply to
+                # both -- no separate introspection pass needed. An id lives
+                # in exactly one table (orion-sql-writer routes each row to
+                # one table, never both; historical rows were moved, not
+                # copied), so UNION ALL needs no dedup. source_ref is a
+                # per-branch literal, not the shared `timeline_table`
+                # variable, so each row's real physical origin survives the
+                # union instead of every row claiming the primary table.
+                aitown_table = settings.RECALL_SQL_AITOWN_CHAT_TABLE
+                aitown_memory_clause = _memory_filter_clause(cur, aitown_table)
+                params: List[Any] = [since_minutes, since_minutes, limit]
                 cur.execute(
                     f"""
                     SELECT
@@ -293,11 +306,25 @@ async def fetch_recent_fragments(
                         {select_client_meta}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
-                        {ts_col} AS created_at
+                        {ts_col} AS created_at,
+                        '{timeline_table}' AS source_ref
                     FROM {timeline_table}
                     WHERE {ts_col} >= NOW() - INTERVAL '%s minutes'
                       {memory_clause}
-                    ORDER BY {ts_col} DESC
+                    UNION ALL
+                    SELECT
+                        {select_row_id}
+                        {select_sid}
+                        {select_spark_meta}
+                        {select_client_meta}
+                        {prompt_col} AS prompt,
+                        {response_col} AS response,
+                        {ts_col} AS created_at,
+                        '{aitown_table}' AS source_ref
+                    FROM {aitown_table}
+                    WHERE {ts_col} >= NOW() - INTERVAL '%s minutes'
+                      {aitown_memory_clause}
+                    ORDER BY created_at DESC
                     LIMIT %s
                     """,
                     params,
@@ -327,7 +354,7 @@ async def fetch_recent_fragments(
                         "session_id": str(sid) if sid is not None else None,
                         "node_id": None,
                         "tags": tags,
-                        "source_ref": timeline_table,
+                        "source_ref": row.get("source_ref") or timeline_table,
                         "turn_effect_delta": turn_effect_delta,
                     }
                     formatted.append(_parse_row(row_data))
@@ -412,8 +439,16 @@ async def fetch_related_by_entities(
                 select_row_id = f"{id_col} AS row_id," if id_col else ""
                 select_sid = f"{session_col} AS sid," if session_col else ""
                 select_client_meta = f"{client_meta_col} AS client_meta," if client_meta_col else ""
-                params: List[Any] = [since_hours, patterns, patterns]
-                params.append(limit)
+                # AI Town chat-history table split -- see fetch_recent_fragments
+                # above for the full rationale (identical schema, no id
+                # overlap, per-branch source_ref literal).
+                aitown_table = settings.RECALL_SQL_AITOWN_CHAT_TABLE
+                aitown_memory_clause = _memory_filter_clause(cur, aitown_table)
+                params: List[Any] = [
+                    since_hours, patterns, patterns,
+                    since_hours, patterns, patterns,
+                    limit,
+                ]
                 cur.execute(
                     f"""
                     SELECT
@@ -422,7 +457,8 @@ async def fetch_related_by_entities(
                         {select_client_meta}
                         {prompt_col} AS prompt,
                         {response_col} AS response,
-                        {ts_col} AS created_at
+                        {ts_col} AS created_at,
+                        '{timeline_table}' AS source_ref
                     FROM {timeline_table}
                     WHERE {ts_col} >= NOW() - INTERVAL '%s hours'
                       AND (
@@ -430,7 +466,23 @@ async def fetch_related_by_entities(
                         OR {response_col} ILIKE ANY (%s)
                       )
                       {memory_clause}
-                    ORDER BY {ts_col} DESC
+                    UNION ALL
+                    SELECT
+                        {select_row_id}
+                        {select_sid}
+                        {select_client_meta}
+                        {prompt_col} AS prompt,
+                        {response_col} AS response,
+                        {ts_col} AS created_at,
+                        '{aitown_table}' AS source_ref
+                    FROM {aitown_table}
+                    WHERE {ts_col} >= NOW() - INTERVAL '%s hours'
+                      AND (
+                        {prompt_col} ILIKE ANY (%s)
+                        OR {response_col} ILIKE ANY (%s)
+                      )
+                      {aitown_memory_clause}
+                    ORDER BY created_at DESC
                     LIMIT %s
                     """,
                     params,
@@ -458,7 +510,7 @@ async def fetch_related_by_entities(
                         "session_id": str(sid) if sid is not None else None,
                         "node_id": None,
                         "tags": tags,
-                        "source_ref": timeline_table,
+                        "source_ref": row.get("source_ref") or timeline_table,
                     }
                     formatted.append(_parse_row(row_data))
                 filtered = _filter_excluded_rows(
@@ -540,6 +592,15 @@ async def fetch_exact_fragments(
                     select_row_id = f"{id_col} AS row_id," if id_col else ""
                     select_sid = f"{session_col} AS sid," if session_col else ""
                     select_client_meta = f"{client_meta_col} AS client_meta," if client_meta_col else ""
+                    # AI Town chat-history table split -- see fetch_recent_
+                    # fragments above for the full rationale. Each branch
+                    # repeats the identical filter_clause/time_clause params
+                    # (%s placeholders are positional, not named, so the
+                    # second branch's params must be duplicated in the same
+                    # order) -- limit appears once at the very end since it
+                    # applies to the UNION ALL result, not per-branch.
+                    aitown_table = settings.RECALL_SQL_AITOWN_CHAT_TABLE
+                    aitown_memory_clause = _memory_filter_clause(cur, aitown_table)
                     params = []
                     term_filters = []
                     for token in tokens:
@@ -552,6 +613,15 @@ async def fetch_exact_fragments(
                     if since_minutes is not None and int(since_minutes) > 0:
                         time_clause = f"AND {ts_col} >= NOW() - INTERVAL '%s minutes'"
                         params.append(int(since_minutes))
+                    # Second branch: same token/time params, repeated in the
+                    # same order.
+                    aitown_params = []
+                    for token in tokens:
+                        aitown_params.append(f"%{token}%")
+                        aitown_params.append(f"%{token}%")
+                    if since_minutes is not None and int(since_minutes) > 0:
+                        aitown_params.append(int(since_minutes))
+                    params.extend(aitown_params)
                     params.append(limit)
                     cur.execute(
                         f"""
@@ -561,12 +631,26 @@ async def fetch_exact_fragments(
                             {select_client_meta}
                             {prompt_col} AS prompt,
                             {response_col} AS response,
-                            {ts_col} AS created_at
+                            {ts_col} AS created_at,
+                            '{timeline_table}' AS source_ref
                         FROM {timeline_table}
                         WHERE ({filter_clause})
                           {time_clause}
                           {memory_clause}
-                        ORDER BY {ts_col} DESC
+                        UNION ALL
+                        SELECT
+                            {select_row_id}
+                            {select_sid}
+                            {select_client_meta}
+                            {prompt_col} AS prompt,
+                            {response_col} AS response,
+                            {ts_col} AS created_at,
+                            '{aitown_table}' AS source_ref
+                        FROM {aitown_table}
+                        WHERE ({filter_clause})
+                          {time_clause}
+                          {aitown_memory_clause}
+                        ORDER BY created_at DESC
                         LIMIT %s
                         """,
                         params,
@@ -594,7 +678,7 @@ async def fetch_exact_fragments(
                             "session_id": str(sid) if sid is not None else None,
                             "node_id": None,
                             "tags": tags,
-                            "source_ref": timeline_table,
+                            "source_ref": row.get("source_ref") or timeline_table,
                         }
                         formatted.append(_parse_row(row_data))
                     filtered = _filter_excluded_rows(

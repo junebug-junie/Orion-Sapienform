@@ -53,8 +53,15 @@ async def fetch_chat_turn_timestamps(
 
     Used to window RDF chat-turn recall, which carries no usable timestamp in the graph
     (turns are joined back to ``chat_history_log`` on the turn id). Ids outside the window,
-    or not present in the chat table, are simply absent from the returned map so callers can
-    drop them.
+    or not present in either chat table, are simply absent from the returned map so callers
+    can drop them.
+
+    Unions ``RECALL_SQL_AITOWN_CHAT_TABLE`` in alongside the primary table
+    (AI Town table split, docs/superpowers/specs/2026-08-19-aitown-table-
+    split-phase2-recall-migration-design.md) -- a turn id lives in exactly
+    one of the two tables (orion-sql-writer routes each row to one table,
+    never both; the historical AI-Town rows were moved, not copied), so
+    ``UNION ALL`` is safe here: there is no id overlap to deduplicate.
     """
     if asyncpg is None:
         return {}
@@ -62,12 +69,17 @@ async def fetch_chat_turn_timestamps(
     if not ids:
         return {}
     id_col = settings.RECALL_SQL_CHAT_ID_COL
+    created_at_col = settings.RECALL_SQL_CHAT_CREATED_AT_COL
     query = f"""
-        SELECT {id_col} AS id,
-               {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at
+        SELECT {id_col} AS id, {created_at_col} AS created_at
         FROM {settings.RECALL_SQL_CHAT_TABLE}
         WHERE {id_col} = ANY($1::text[])
-          AND {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{int(since_minutes)} minutes'
+          AND {created_at_col} >= NOW() - INTERVAL '{int(since_minutes)} minutes'
+        UNION ALL
+        SELECT {id_col} AS id, {created_at_col} AS created_at
+        FROM {settings.RECALL_SQL_AITOWN_CHAT_TABLE}
+        WHERE {id_col} = ANY($1::text[])
+          AND {created_at_col} >= NOW() - INTERVAL '{int(since_minutes)} minutes'
     """
     try:
         conn = await asyncpg.connect(settings.RECALL_PG_DSN)
@@ -95,9 +107,13 @@ async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, st
     text; Postgres owns that, see
     services/orion-meta-tags/README.md's Falkor writer section) so a
     Falkor-backed chatturn fragment needs this join for the actual quoted
-    text. Ids not present in the chat table are simply absent from the
+    text. Ids not present in either chat table are simply absent from the
     returned map so callers can drop them, same contract as
     fetch_chat_turn_timestamps above.
+
+    Unions ``RECALL_SQL_AITOWN_CHAT_TABLE`` in for the same reason as
+    fetch_chat_turn_timestamps -- an id lives in exactly one table, so
+    ``UNION ALL`` needs no dedup.
 
     client_meta is the third tuple element (not folded into pre-rendered
     text here) so all three callers can share render_quoted_chat_text --
@@ -116,6 +132,13 @@ async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, st
                {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
                client_meta
         FROM {settings.RECALL_SQL_CHAT_TABLE}
+        WHERE {id_col} = ANY($1::text[])
+        UNION ALL
+        SELECT {id_col} AS id,
+               {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
+               {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
+               client_meta
+        FROM {settings.RECALL_SQL_AITOWN_CHAT_TABLE}
         WHERE {id_col} = ANY($1::text[])
     """
     try:
@@ -157,8 +180,17 @@ async def fetch_chat_history_pairs(
     exclude_text: Optional[str] = None,
     exclude_ids: Optional[List[str]] = None,
 ) -> List[ChatItem]:
+    """AI Town chat-history table split: unions ``RECALL_SQL_AITOWN_CHAT_TABLE``
+    in alongside the primary table, same reasoning as sql_chat.py's other
+    functions -- an id lives in exactly one table, ORDER BY/LIMIT applied
+    over the combined UNION ALL result rather than per-table (a per-table
+    LIMIT would risk starving one table's rows out of the top-N entirely).
+    """
     if asyncpg is None:
         return []
+    # Postgres names a UNION's output columns from the first SELECT, so
+    # ORDER BY/LIMIT below can reference the aliases (prompt/response/
+    # created_at) directly with no wrapping subquery needed.
     query = f"""
         SELECT {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
                {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
@@ -166,7 +198,14 @@ async def fetch_chat_history_pairs(
                client_meta
         FROM {settings.RECALL_SQL_CHAT_TABLE}
         WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{since_minutes} minutes'
-        ORDER BY {settings.RECALL_SQL_CHAT_CREATED_AT_COL} DESC
+        UNION ALL
+        SELECT {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
+               {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
+               {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at,
+               client_meta
+        FROM {settings.RECALL_SQL_AITOWN_CHAT_TABLE}
+        WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{since_minutes} minutes'
+        ORDER BY created_at DESC
         LIMIT {limit}
     """
     try:

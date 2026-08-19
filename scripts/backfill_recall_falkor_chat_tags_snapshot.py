@@ -50,7 +50,11 @@ async def _snapshot(dsn: str, out_dir: Path) -> dict:
     try:
         chat_rows = await conn.fetch(
             "SELECT id, correlation_id, prompt, response, session_id, created_at "
-            "FROM chat_history_log ORDER BY created_at ASC"
+            "FROM chat_history_log "
+            "UNION ALL "
+            "SELECT id, correlation_id, prompt, response, session_id, created_at "
+            "FROM aitown_chat_history_log "
+            "ORDER BY created_at ASC"
         )
         social_rows = await conn.fetch(
             "SELECT turn_id, correlation_id, prompt, response, text, session_id, created_at "
@@ -59,6 +63,16 @@ async def _snapshot(dsn: str, out_dir: Path) -> dict:
     finally:
         await conn.close()
 
+    # AI Town chat-history table split (docs/superpowers/specs/2026-08-19-
+    # aitown-table-split-phase2-recall-migration-design.md): AI-Town rows
+    # physically moved to aitown_chat_history_log (Track B cutover,
+    # 2026-08-19). Without the UNION ALL above, a fresh snapshot here would
+    # silently omit every AI-Town-originated row -- the sole upstream input
+    # both backfill_recall_falkor_chat_tags_extract_and_write.py and
+    # backfill_recall_entity_graph_cleanup_reconcile.py depend on for full-
+    # table coverage. Column-for-column identical schema, an id lives in
+    # exactly one table (routed once, historical rows moved not copied), so
+    # UNION ALL needs no dedup.
     snapshot = {
         "snapshot_taken_at": datetime.now(timezone.utc).isoformat(),
         "source_dsn_host": dsn.rsplit("@", 1)[-1] if "@" in dsn else "unknown",

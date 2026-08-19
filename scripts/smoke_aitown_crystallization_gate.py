@@ -42,10 +42,21 @@ DEFAULT_DSN = os.environ.get(
 )
 
 # One row per proposed crystallization, with its window's turns resolved to
-# their real platform. LEFT JOIN on chat_history_log because a window can
-# reference a correlation_id whose chat row was pruned -- those turns must read
-# as unknown/None (which forces the window to "mixed", i.e. still reviewed),
-# never be silently dropped from the unanimity check.
+# their real platform. LEFT JOIN on chat_history_log AND aitown_chat_history_log
+# because a window can reference a correlation_id whose chat row was pruned --
+# those turns must read as unknown/None (which forces the window to "mixed",
+# i.e. still reviewed), never be silently dropped from the unanimity check.
+#
+# AI Town chat-history table split (docs/superpowers/specs/2026-08-19-aitown-
+# table-split-phase2-recall-migration-design.md): AI-Town rows physically
+# moved to aitown_chat_history_log (Track B cutover, 2026-08-19) -- without
+# this second join, every AI-Town turn's platform/prompt/response would
+# resolve to NULL here (the row simply isn't in chat_history_log anymore),
+# and every AI-Town-unanimous window would misclassify as "mixed" instead of
+# "external", defeating the exact thing this script exists to verify.
+# COALESCE prefers chat_history_log when a correlation_id somehow matches
+# both (should not happen post-cutover -- an id lives in exactly one table --
+# but costs nothing to be defensive about).
 QUERY = """
 WITH prop AS (
     SELECT crystallization_id,
@@ -67,12 +78,13 @@ SELECT p.crystallization_id,
        p.created_at,
        p.kind,
        w.correlation_id,
-       h.prompt,
-       h.response,
-       h.client_meta->'external_room'->>'platform' AS platform
+       COALESCE(h.prompt, a.prompt) AS prompt,
+       COALESCE(h.response, a.response) AS response,
+       COALESCE(h.client_meta, a.client_meta)->'external_room'->>'platform' AS platform
 FROM prop p
 LEFT JOIN window_turns w ON w.memory_window_id = p.window_id
 LEFT JOIN chat_history_log h ON h.correlation_id = w.correlation_id
+LEFT JOIN aitown_chat_history_log a ON a.correlation_id = w.correlation_id
 ORDER BY p.created_at DESC, w.correlation_id
 """
 

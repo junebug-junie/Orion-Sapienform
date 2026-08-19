@@ -224,20 +224,54 @@ def fetch_sql_fragments(
             # apart from real Juniper/hub conversation, which the query
             # previously had no way to do at all. See
             # docs/superpowers/specs/2026-07-31-recall-aitown-source-tagging-design.md.
+            #
+            # AI Town chat-history table split (docs/superpowers/specs/
+            # 2026-08-19-aitown-table-split-phase2-recall-migration-design.md):
+            # unions RECALL_SQL_AITOWN_CHAT_TABLE in -- column-for-column
+            # identical schema, an id lives in exactly one table (orion-
+            # sql-writer routes each row once, historical rows were moved
+            # not copied), so UNION ALL needs no dedup.
+            #
+            # Pre-existing bug found and fixed while touching this exact
+            # query (2026-08-19): this SELECT referenced a bare `trace_id`
+            # column that does not exist on chat_history_log at all --
+            # confirmed live, `SELECT trace_id FROM chat_history_log` raises
+            # `column "trace_id" does not exist`. The bare `except Exception`
+            # below swallowed that on every single call (include_chat=True
+            # is this service's live default), so this branch had been
+            # silently contributing ZERO chat fragments, unconditionally,
+            # since whenever it was written -- confirmed via the fragment's
+            # own `id=str(trace_id or f"chat_{_epoch(created_at)}")` fallback
+            # never being reachable, because the query never even executed
+            # successfully to reach that line. Fixed by selecting the row's
+            # real `id` column instead (aliased to trace_id to keep the
+            # tuple-unpack shape below unchanged) -- a stable, real
+            # identity for the fragment instead of the lossy epoch-derived
+            # placeholder id the code was silently falling back to trying to
+            # use (and never even reaching).
             cur.execute(
                 f"""
                 SELECT
-                    trace_id,
+                    id AS trace_id,
                     {settings.RECALL_SQL_CHAT_TEXT_COL}      AS prompt,
                     {settings.RECALL_SQL_CHAT_RESPONSE_COL}  AS response,
                     {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at,
                     client_meta
                 FROM {settings.RECALL_SQL_CHAT_TABLE}
                 WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= %s
-                ORDER BY {settings.RECALL_SQL_CHAT_CREATED_AT_COL} DESC
+                UNION ALL
+                SELECT
+                    id AS trace_id,
+                    {settings.RECALL_SQL_CHAT_TEXT_COL}      AS prompt,
+                    {settings.RECALL_SQL_CHAT_RESPONSE_COL}  AS response,
+                    {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at,
+                    client_meta
+                FROM {settings.RECALL_SQL_AITOWN_CHAT_TABLE}
+                WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= %s
+                ORDER BY created_at DESC
                 LIMIT 300
                 """,
-                (since_dt,),
+                (since_dt, since_dt),
             )
             rows = cur.fetchall()
             for row in rows:

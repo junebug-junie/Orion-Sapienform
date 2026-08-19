@@ -87,8 +87,27 @@ async def _snapshot(conn: asyncpg.Connection, out_dir: Path) -> list[dict]:
     return payload
 
 
-async def _move(conn: asyncpg.Connection) -> int:
-    """Atomic INSERT + DELETE in one transaction. Returns rows moved."""
+async def _move(conn: asyncpg.Connection) -> dict[str, int]:
+    """Atomic INSERT + DELETE in one transaction. Returns row counts.
+
+    Code review (2026-08-19) found the original version compared
+    ``inserted`` (rows the INSERT actually wrote, post
+    ``ON CONFLICT DO NOTHING``) against ``deleted`` (every matching row,
+    unconditionally) and raised on any mismatch. That's wrong: a row can
+    legitimately already exist in ``aitown_chat_history_log`` before this
+    runs (e.g. from earlier orion-sql-writer dual-write activity -- this
+    session's own live verification of PR #1734 flipped
+    ``SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED`` on three times before this
+    backfill ran, each time cleaned up by hand, but the check had no way to
+    distinguish "already correctly present, skipped by ON CONFLICT" from a
+    real problem). ``inserted < deleted`` is the expected, benign shape
+    whenever some rows were already mirrored -- they still get deleted
+    from the primary table (the actual goal), just not re-inserted. Only
+    ``inserted > deleted`` would be a real anomaly (an insert with no
+    matching delete), which is structurally impossible given the same
+    WHERE clause runs in the same transaction with no concurrent writer
+    per this script's own premise -- checked defensively anyway.
+    """
     async with conn.transaction():
         inserted = await conn.fetchval(
             f"""
@@ -112,17 +131,13 @@ async def _move(conn: asyncpg.Connection) -> int:
             SELECT count(*) FROM removed
             """
         )
-        if inserted != deleted:
-            # Should be structurally impossible (same WHERE clause, same
-            # transaction, no concurrent writer per this script's own
-            # premise) -- if it ever happens, the transaction's own ROLLBACK
-            # (raising here inside `async with conn.transaction()`) is what
-            # keeps a partial move from ever committing.
+        if inserted > deleted:
             raise RuntimeError(
-                f"insert/delete count mismatch: inserted={inserted} deleted={deleted} "
+                f"insert/delete count anomaly: inserted={inserted} > deleted={deleted} "
                 "-- rolling back, nothing moved"
             )
-        return deleted
+        already_mirrored = deleted - inserted
+        return {"inserted": inserted, "deleted": deleted, "already_mirrored": already_mirrored}
 
 
 async def _counts(conn: asyncpg.Connection) -> dict[str, int]:
@@ -138,10 +153,82 @@ async def _counts(conn: asyncpg.Connection) -> dict[str, int]:
     }
 
 
+async def _register_json_codec(conn: asyncpg.Connection) -> None:
+    """Without this, asyncpg returns jsonb columns (spark_meta/client_meta)
+    as raw JSON text strings, not decoded objects -- code review (2026-08-19)
+    found the snapshot this produced had those columns double-encoded
+    (an escaped string blob, not readable nested JSON), degrading the
+    pre-mutation audit artifact's usefulness even though nothing was
+    actually lost (the raw text still faithfully preserved the content).
+    """
+    await conn.set_type_codec(
+        "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+    )
+
+
+def _write_before_after_csv(out_dir: Path, snapshot_rows: list[dict], moved_count: int) -> Path:
+    """AGENTS.md section 14: 'On completion, write ... before_after.csv'.
+    One row per moved id, before/after location -- all moved to the
+    primary-table-only real content sits in snapshot_before.json already;
+    this is the per-row audit trail the protocol asks for, not a
+    duplicate of the full snapshot."""
+    import csv
+
+    out_path = out_dir / "before_after.csv"
+    with open(out_path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["id", "correlation_id", "created_at", "before_table", "after_table"])
+        for row in snapshot_rows:
+            writer.writerow(
+                [
+                    row.get("id"),
+                    row.get("correlation_id"),
+                    row.get("created_at"),
+                    "chat_history_log",
+                    "aitown_chat_history_log",
+                ]
+            )
+    return out_path
+
+
+def _write_report_md(
+    out_dir: Path, *, before: dict, moved: dict, after: dict, snapshot_path: Path,
+    csv_path: Path, verdict: str,
+) -> Path:
+    """AGENTS.md section 14: 'On completion, write /tmp/<job-name>/report.md'."""
+    out_path = out_dir / "report.md"
+    lines = [
+        "# AI Town chat-history move backfill -- report",
+        "",
+        f"- verdict: **{verdict}**",
+        f"- rows deleted from chat_history_log: {moved['deleted']}",
+        f"- rows freshly inserted into aitown_chat_history_log: {moved['inserted']}",
+        f"- rows already present in aitown_chat_history_log (skipped insert, still deleted from primary): {moved['already_mirrored']}",
+        "",
+        "## Before",
+        f"- chat_history_log total: {before['chat_history_log_total']}",
+        f"- chat_history_log AI-Town rows: {before['chat_history_log_aitown_rows']}",
+        f"- aitown_chat_history_log total: {before['aitown_chat_history_log_total']}",
+        "",
+        "## After",
+        f"- chat_history_log total: {after['chat_history_log_total']}",
+        f"- chat_history_log AI-Town rows: {after['chat_history_log_aitown_rows']}",
+        f"- aitown_chat_history_log total: {after['aitown_chat_history_log_total']}",
+        "",
+        f"## Artifacts",
+        f"- snapshot (full row dump, pre-mutation): `{snapshot_path}`",
+        f"- before/after per-row audit: `{csv_path}`",
+    ]
+    out_path.write_text("\n".join(lines) + "\n")
+    return out_path
+
+
 async def _run(dsn: str, dry_run: bool) -> int:
     JOB_DIR.mkdir(parents=True, exist_ok=True)
     conn = await asyncpg.connect(dsn)
     try:
+        await _register_json_codec(conn)
+
         before = await _counts(conn)
         print(f"before: {json.dumps(before)}")
 
@@ -165,24 +252,34 @@ async def _run(dsn: str, dry_run: bool) -> int:
 
         moved = await _move(conn)
         after = await _counts(conn)
-        print(f"moved: {moved} rows")
+        print(f"moved: {json.dumps(moved)}")
         print(f"after: {json.dumps(after)}")
 
+        verdict = (
+            "ok"
+            if after["chat_history_log_aitown_rows"] == 0
+            and after["aitown_chat_history_log_total"] >= before["aitown_chat_history_log_total"] + moved["inserted"]
+            else "needs_review"
+        )
+        csv_path = _write_before_after_csv(JOB_DIR, snapshot_rows, moved["deleted"])
+        report_md_path = _write_report_md(
+            JOB_DIR, before=before, moved=moved, after=after,
+            snapshot_path=JOB_DIR / "snapshot_before.json", csv_path=csv_path, verdict=verdict,
+        )
         report = {
             "job": "aitown_chat_history_move_to_split_table",
             "before": before,
             "moved": moved,
             "after": after,
             "snapshot_path": str(JOB_DIR / "snapshot_before.json"),
-            "verdict": "ok" if after["chat_history_log_aitown_rows"] == 0 and after[
-                "aitown_chat_history_log_total"
-            ] >= moved else "needs_review",
+            "before_after_csv_path": str(csv_path),
+            "verdict": verdict,
         }
         with open(JOB_DIR / "report.json", "w") as fh:
             json.dump(report, fh, indent=2)
-        print(f"report: {JOB_DIR / 'report.json'}")
-        print(f"verdict: {report['verdict']}")
-        return 0 if report["verdict"] == "ok" else 1
+        print(f"report: {JOB_DIR / 'report.json'}, {report_md_path}, {csv_path}")
+        print(f"verdict: {verdict}")
+        return 0 if verdict == "ok" else 1
     finally:
         await conn.close()
 

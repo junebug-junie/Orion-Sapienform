@@ -12,7 +12,7 @@ from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, Optional, Tuple, Type
 
-from sqlalchemy import func, inspect, update
+from sqlalchemy import func, inspect, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.types import DateTime, String, Text
 from sqlalchemy.exc import IntegrityError
@@ -882,6 +882,39 @@ def _is_aitown_client_meta(client_meta: Any) -> bool:
     return external_room.get("platform") == _AITOWN_PLATFORM_TAG
 
 
+def _lock_chat_history_row(sess: Any, row_id: str) -> None:
+    """Serialize concurrent contributors to the same chat_history_log row
+    across separate sessions/transactions.
+
+    Code review (2026-08-19) found a real race in
+    ``_resolve_chat_history_model_cls``'s fallback lookup: the turn-path
+    write and the message-path fill-only write for the same id run in
+    SEPARATE sessions (``_write_row``'s ``get_session()`` vs.
+    ``_ensure_chat_history_from_message``'s own ``session_factory()``,
+    deliberately isolated per that function's own docstring), each its own
+    transaction, dispatched as independent chassis tasks with no
+    serialization point (``orion/core/bus/bus_service_chassis.py``). If the
+    message-path's fallback SELECT against ``aitown_chat_history_log.id``
+    runs before the turn-path's INSERT into that table COMMITS, it misses
+    under READ COMMITTED and routes to ``ChatHistoryLogSQL`` instead --
+    splitting one turn's contributions across both tables, exactly the
+    failure mode ``_resolve_chat_history_model_cls`` exists to prevent.
+    Dormant today only because AI Town's backend is confirmed dead (no
+    concurrent writers to race), not because the code closes the gap.
+
+    ``pg_advisory_xact_lock`` is the standard fix for this shape: it's
+    session-scoped but respects cross-connection contention (a second
+    session's lock request for the same key blocks until the first
+    session's transaction ends), and auto-releases at COMMIT/ROLLBACK --
+    no matching unlock call needed. Acquired on the row's own id (hashed to
+    a bigint key) before routing+writing, so a second contributor for the
+    SAME id blocks until the first's transaction (and therefore its
+    routing decision AND its write) is fully visible; different ids never
+    contend.
+    """
+    sess.execute(text("SELECT pg_advisory_xact_lock(hashtext(:row_id)::bigint)"), {"row_id": row_id})
+
+
 def _resolve_chat_history_model_cls(sess: Any, values: dict[str, Any]) -> type:
     """Which table THIS write belongs to -- ``ChatHistoryLogSQL`` or
     ``AitownChatHistoryLogSQL``. Never both.
@@ -904,6 +937,10 @@ def _resolve_chat_history_model_cls(sess: Any, values: dict[str, Any]) -> type:
     multiple partial-info events, the way the old additive dual-write never
     had to worry about (it always wrote *something* to chat_history_log
     regardless, so a partial contribution never had a wrong-table risk).
+
+    Callers MUST hold ``_lock_chat_history_row(sess, values["id"])`` before
+    calling this -- see that function's docstring for the cross-session
+    race this lookup alone does not close.
     """
     if not settings.sql_writer_aitown_routing_enabled:
         return ChatHistoryLogSQL
@@ -1290,6 +1327,7 @@ def _ensure_chat_history_from_message(
     try:
         # Fill-only: a message must never overwrite what the turn event already
         # wrote. Reproduces the old per-field `if not existing.<col>` guards.
+        _lock_chat_history_row(own_sess, values["id"])
         model_cls = _resolve_chat_history_model_cls(own_sess, values)
         upsert_chat_history_row(own_sess, values, incoming_wins=False, model_cls=model_cls)
         own_sess.commit()
@@ -1515,6 +1553,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 # The turn event is the only one carrying `source`, so it was the
                 # reliable casualty -- hence every corrupted row having
                 # source IS NULL and exactly one of prompt/response.
+                _lock_chat_history_row(sess, filtered_data["id"])
                 model_cls = _resolve_chat_history_model_cls(sess, filtered_data)
                 upsert_chat_history_row(sess, filtered_data, model_cls=model_cls)
                 sess.commit()

@@ -100,6 +100,28 @@ class TestIsAitownClientMeta:
         assert worker._is_aitown_client_meta("garbage") is False
 
 
+class TestLockChatHistoryRow:
+    """Code review (2026-08-19) found _resolve_chat_history_model_cls's
+    fallback lookup races across separate sessions/transactions --
+    _lock_chat_history_row exists to close it. See that function's own
+    docstring for the full scenario."""
+
+    def test_issues_an_advisory_xact_lock_keyed_on_the_row_id(self):
+        captured = {}
+
+        class _Capturing:
+            def execute(self, stmt, params=None):
+                captured["stmt"] = stmt
+                captured["params"] = params
+
+        worker._lock_chat_history_row(_Capturing(), "row-123")
+
+        sql = str(captured["stmt"]).lower()
+        assert "pg_advisory_xact_lock" in sql
+        assert "hashtext" in sql
+        assert captured["params"] == {"row_id": "row-123"}
+
+
 class TestResolveChatHistoryModelCls:
     def test_routes_to_primary_when_routing_disabled(self, monkeypatch: pytest.MonkeyPatch):
         """False is the real rollback path -- every row goes to

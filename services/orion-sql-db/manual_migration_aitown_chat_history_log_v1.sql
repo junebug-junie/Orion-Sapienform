@@ -45,3 +45,16 @@ create index if not exists idx_aitown_chat_history_log_memory_status
 
 create index if not exists idx_aitown_chat_history_log_memory_tier
     on aitown_chat_history_log (memory_tier);
+
+-- Added 2026-08-19 (code review on the Phase-2 recall migration): every
+-- orion-recall chat-content query filters and/or ORDER BYs on created_at
+-- against this table (fetch_recent_fragments, fetch_related_by_entities,
+-- fetch_exact_fragments, fetch_chat_turn_timestamps, fetch_chat_history_pairs,
+-- fetch_sql_fragments). Without this, those queries force a sequential scan
+-- on this table's side of every UNION ALL/separate query as row count grows.
+-- Note: chat_history_log itself has the SAME pre-existing gap (no
+-- created_at index at all, confirmed live via pg_indexes) -- not
+-- introduced by this migration, not fixed here (out of scope: that table
+-- is not owned by this migration file), but worth knowing.
+create index if not exists idx_aitown_chat_history_log_created_at
+    on aitown_chat_history_log (created_at);

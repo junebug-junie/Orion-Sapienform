@@ -130,6 +130,17 @@ create index if not exists idx_grammar_events_cortex_exec_consume
 create index if not exists idx_grammar_events_bus_transport_consume
   on grammar_events (created_at, event_id)
   where source_service = 'orion-bus' and trace_id like 'bus.transport:%';
+-- Retention support (2026-08-19): apply_*_retention()'s batched DELETE needs
+-- WHERE created_at < cutoff ORDER BY created_at, <id> LIMIT batch_size. None of
+-- the indexes above can serve that without a source_service/trace_id predicate,
+-- which retention doesn't have -- confirmed live: grammar_events retention failed
+-- on every startup with a statement timeout until idx_grammar_events_created_at
+-- existed. Apply CONCURRENTLY against a live/large database (see
+-- services/orion-sql-writer/README.md or the PR that added this comment for the
+-- exact live-apply commands used against athena's ~16-28GB tables).
+create index if not exists idx_grammar_events_created_at on grammar_events(created_at, event_id);
+create index if not exists idx_grammar_edges_created_at on grammar_edges(created_at, edge_id);
+create index if not exists idx_grammar_atoms_created_at on grammar_atoms(created_at, atom_id);
 create index if not exists idx_grammar_atoms_trace_id on grammar_atoms(trace_id);
 create index if not exists idx_grammar_atoms_layer on grammar_atoms(layer);
 create index if not exists idx_grammar_atoms_dimensions on grammar_atoms using gin(dimensions);

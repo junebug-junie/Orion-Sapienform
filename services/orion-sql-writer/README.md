@@ -67,6 +67,56 @@ Example logs:
 Legacy spark introspection channels/kinds are disabled by default; you can re-add them via
 `SQL_WRITER_SUBSCRIBE_CHANNELS` and `SQL_WRITER_ROUTE_MAP_JSON` if needed.
 
+## Grammar/substrate table retention
+
+`grammar_events`, `grammar_edges`, `grammar_atoms`, and `substrate_organ_emissions` all
+get bounded, startup-run retention (`*_RETENTION_DAYS` env keys, default 15). Each is a
+batched `DELETE ... LIMIT batch_size` loop (`GRAMMAR_EVENTS_RETENTION_BATCH_SIZE`/
+`_MAX_BATCHES_PER_STARTUP`/`_MAX_ELAPSED_SEC`, shared across all four tables), capped so
+a huge backlog can't turn startup into an unbounded operation. See
+`app/grammar_truth.py`'s `_apply_bounded_table_retention()`.
+
+This depends entirely on each table having a `(created_at, <id>)` index --
+`services/orion-sql-db/manual_migration_grammar_atlas.sql` declares
+`idx_grammar_events_created_at` / `idx_grammar_edges_created_at` /
+`idx_grammar_atoms_created_at` (`substrate_organ_emissions` already had
+`idx_substrate_organ_emissions_created` from its original table definition). Without
+these, the retention DELETE's `ORDER BY created_at ... LIMIT` has no efficient access
+path and forces a full scan on every run -- confirmed live 2026-08-19:
+`grammar_events` retention had been silently failing on every single startup with
+`psycopg2.errors.QueryCanceled: canceling statement due to statement timeout` since
+the table grew past whatever size made that scan exceed
+`SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS` (10s) -- `n_tup_del` on that table was 585
+lifetime against 8.58M inserts, i.e. retention had essentially never actually pruned
+anything despite being "enabled" the whole time.
+
+Applying the new indexes against a small/fresh database, the plain
+`create index if not exists` in the migration file (applied normally) is fine. Against
+a large, already-live database, add `CONCURRENTLY` and apply each index as its own
+statement (not inside the batch file, since `CONCURRENTLY` cannot run inside an
+implicit/explicit multi-statement transaction):
+
+```bash
+docker exec -e PGPASSWORD=postgres <sql-db-container> psql -U postgres -d <db> -c \
+  "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_grammar_events_created_at ON grammar_events(created_at, event_id);"
+docker exec -e PGPASSWORD=postgres <sql-db-container> psql -U postgres -d <db> -c \
+  "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_grammar_edges_created_at ON grammar_edges(created_at, edge_id);"
+docker exec -e PGPASSWORD=postgres <sql-db-container> psql -U postgres -d <db> -c \
+  "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_grammar_atoms_created_at ON grammar_atoms(created_at, atom_id);"
+```
+
+`build_grammar_truth_snapshot()` (`app/grammar_truth.py`) reports live status for all
+four tables' retention under `grammar_retention`/`other_table_retention`, and flags
+`degraded_reasons` if an index is missing or a retention run failed/never ran.
+
+**Known gap:** `grammar_traces` (and its other children -- `grammar_temporal_hops`,
+`grammar_compactions`, `grammar_projections`) still have no retention. Deleting a
+`grammar_events`/`grammar_atoms`/`grammar_edges` row doesn't touch its parent
+`grammar_traces` row or these other children, so they'll keep accumulating
+unbounded. Not addressed by this patch -- would need its own "safe to delete a
+trace" definition (e.g. all children older than the cutoff too) before extending
+retention there.
+
 ## Running & Testing
 
 ### Run via Docker

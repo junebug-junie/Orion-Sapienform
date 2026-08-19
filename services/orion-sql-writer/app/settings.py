@@ -262,15 +262,46 @@ class Settings(BaseSettings):
     sql_writer_grammar_pool_max_overflow: int = Field(4, alias="SQL_WRITER_GRAMMAR_POOL_MAX_OVERFLOW")
     sql_writer_grammar_statement_timeout_ms: int = Field(10_000, alias="SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS")
     sql_writer_grammar_lock_timeout_ms: int = Field(3_000, alias="SQL_WRITER_GRAMMAR_LOCK_TIMEOUT_MS")
-    grammar_events_retention_days: int = Field(30, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
-    grammar_events_retention_batch_size: int = Field(5000, alias="GRAMMAR_EVENTS_RETENTION_BATCH_SIZE")
+    # 2026-08-19: dropped 30->15 days. The 30-day default had never actually been
+    # enforced -- grammar_events retention was silently failing on every startup
+    # (missing index -> full-table scan -> statement timeout, see
+    # idx_grammar_events_created_at below) -- so this is a real policy change, not
+    # just re-enabling what was already the intended live behavior.
+    grammar_events_retention_days: int = Field(15, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
+    # batch_size 5000->1000, max_batches 20->100 (2026-08-19, live-verified): with the
+    # new created_at index, the SELECT half of the batched DELETE is fast (~13ms for
+    # 5000 rows), but the DELETE itself still needs one primary-key-index lookup per
+    # matched row to actually remove it -- on grammar_events (8 indexes, 16GB, poorly
+    # cached at this scale) that's real random I/O, observed at ~4.1ms/row under load
+    # (EXPLAIN ANALYZE: a real 5000-row DELETE took 20.6s, well past the 10s grammar
+    # statement timeout). 1000 rows/batch leaves real margin under that timeout; 100
+    # max batches removes the batch-count cap as the binding constraint so
+    # max_elapsed_sec below is what actually stops a run -- gracefully
+    # (capped_by_elapsed_limit=True, real committed progress, no exception) instead of
+    # occasionally dying mid-batch with a swallowed QueryCanceled and losing whatever
+    # that batch's rows would have been (previous behavior, confirmed live: grammar_edges
+    # committed 25000 rows across 5 successful batches, then batch 6 timed out and the
+    # whole run reported as a failure despite real progress having been made).
+    grammar_events_retention_batch_size: int = Field(1000, alias="GRAMMAR_EVENTS_RETENTION_BATCH_SIZE")
     grammar_events_retention_max_batches_per_startup: int = Field(
-        20,
+        100,
         alias="GRAMMAR_EVENTS_RETENTION_MAX_BATCHES_PER_STARTUP",
     )
     grammar_events_retention_max_elapsed_sec: float = Field(
         120.0,
         alias="GRAMMAR_EVENTS_RETENTION_MAX_ELAPSED_SEC",
+    )
+    # grammar_edges/grammar_atoms/substrate_organ_emissions had NO retention at all
+    # until this patch (confirmed live 2026-08-19: unbounded growth, ~13GB combined,
+    # zero deletes ever). Each gets its own retention_days knob, same precedent as
+    # goal_provenance_streak_ticks_retention_days above, but deliberately reuses the
+    # grammar_events batch/cap knobs above rather than adding a near-duplicate set
+    # per table -- same scale, same startup-bounded-batch shape, nothing about these
+    # three tables needs independently tunable batching.
+    grammar_edges_retention_days: int = Field(15, alias="GRAMMAR_EDGES_RETENTION_DAYS")
+    grammar_atoms_retention_days: int = Field(15, alias="GRAMMAR_ATOMS_RETENTION_DAYS")
+    substrate_organ_emissions_retention_days: int = Field(
+        15, alias="SUBSTRATE_ORGAN_EMISSIONS_RETENTION_DAYS"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,

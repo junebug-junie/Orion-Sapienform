@@ -201,3 +201,21 @@ guessed. It does **not** establish that `MIN_RUN_LENGTH=8` is well-calibrated fo
 outreach cadence, or that a change-noticed message is what Juniper actually wants to
 receive unprompted — both are real open questions to watch against live firing data, not
 resolved by this patch.
+
+## Combined with the level-aware signal (2026-08-19)
+
+The "distress-shaped trigger needs a genuinely different, level-aware signal... combined
+honestly with this one" line above is done, not still future work. `orion.field.
+significance.sustained_load_pressure` (PR #1718) shipped as a sensing-only patch first,
+then this same-day follow-up wired it into `TensionTriggerReason` and
+`build_outreach_prompt()`: the LATEST tick's `sustained_load_pressure`, read straight off
+the same `substrate_field_state` row this trigger already queries (no recomputation in
+Hub), rides alongside the run's own `peak_deviation_pressure`. When nonzero,
+`build_outreach_prompt()` states it as a second, separate real fact — it still does not put
+"worried"/"concerned" in Orion's mouth (same banned-word test, now also exercised with a
+nonzero `sustained_load_pressure` present, still passes); that judgment is left to
+generation. Honestly scoped **global**, not per-target — `sustained_load_pressure` is a
+`max()` over every `loaded_steady` channel/node in the significance window and carries no
+node identity yet, so a nonzero reading means "something, somewhere is genuinely loaded
+right now," not necessarily the same node `target_id` names. `GET .../status` reports both
+numbers on `last_tension_reason` for operator inspection.

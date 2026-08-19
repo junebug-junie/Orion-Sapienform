@@ -180,6 +180,66 @@ def test_tension_reason_prompt_never_claims_distress() -> None:
         assert banned not in prompt
 
 
+def test_sustained_load_pressure_adds_a_second_real_fact_when_nonzero() -> None:
+    """2026-08-19: the level-aware half is combined honestly into the same
+    prompt -- a real second fact, not folded into or replacing the change
+    fact above."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "sustained_load_pressure=0.71" in prompt
+    # The original change fact must still be present, untouched.
+    assert "9 consecutive readings" in prompt
+
+
+def test_sustained_load_pressure_omitted_from_prompt_when_zero() -> None:
+    """0.0 means 'nothing currently loaded_steady' -- a real reading, not
+    something worth stating as a fact (matches `orion.field.significance`'s
+    own 0.0 convention)."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.0,
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "sustained_load_pressure" not in prompt
+
+
+def test_tension_reason_with_sustained_load_still_never_claims_distress() -> None:
+    """Even with a real, nonzero level-aware reading present, this module
+    must not script a feeling for Orion -- that judgment is left to
+    generation, not hardcoded into the prompt."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+        ),
+    )
+    prompt = build_outreach_prompt(ctx).lower()
+    for banned in ("worried", "concerned", "distress", "alarmed"):
+        assert banned not in prompt
+
+
 @pytest.mark.parametrize("raw", ["PASS", " pass ", "PASS.", '"PASS"'])
 def test_pass_response_detected(raw) -> None:
     assert is_pass_response(raw) is True
@@ -889,6 +949,29 @@ def test_status_does_not_report_a_stale_tension_reason_after_a_blocked_tick(monk
 
     assert outreach.status()["block_reason"] == "turn_in_flight"
     assert outreach.status()["last_tension_reason"] is None
+
+
+def test_status_reports_sustained_load_pressure_alongside_deviation(monkeypatch) -> None:
+    """2026-08-19: the operator-visible debug surface must carry the new
+    level-aware number, not just the pre-existing deviation one -- an
+    un-updated status() would silently hide half of what the trigger now
+    knows (AGENTS.md §0A, "UI/debug surface")."""
+    outreach = _outreach(
+        trigger_evaluator=lambda: TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+        )
+    )
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "hi")
+
+    asyncio.run(outreach.maybe_outreach())
+
+    reason = outreach.status()["last_tension_reason"]
+    assert reason is not None
+    assert reason["sustained_load_pressure"] == 0.71
 
 
 def test_forced_outreach_does_not_carry_a_stale_tension_reason(monkeypatch) -> None:

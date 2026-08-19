@@ -1,15 +1,29 @@
 # Level-aware significance — wiring the unused half of the regime detector
 
-Status: SENSING-ONLY PATCH SHIPPED (2026-08-18), per this doc's own "Recommended
-next patch" and "Non-goals" sections below. `orion.field.significance` computes
-`sustained_load_pressure`, wired as a 6th `PRESSURE_DIMENSIONS` entry with a
-real-data-derived variance floor (`orion/proposals/scoring.py`'s own metric-gate
-comment has the full writeup, 24h/1,395-point/34,316-real-row replay). No
-consumer/action wiring (no target-binding, no policy-template scoring on it) --
-that stays deferred, same staged shape PR #1699/#1701's own tension package
-used. Q1 (where/how often this runs) turned out to have a BETTER answer than
-either option this doc originally proposed -- see "What changed from this
-doc's original proposal" near the end.
+Status: SENSING-ONLY PATCH SHIPPED (2026-08-18); first real consumer SHIPPED
+(2026-08-19), per this doc's own "Recommended next patch" and "Non-goals"
+sections below. `orion.field.significance` computes `sustained_load_pressure`,
+wired as a 6th `PRESSURE_DIMENSIONS` entry with a real-data-derived variance
+floor (`orion/proposals/scoring.py`'s own metric-gate comment has the full
+writeup, 24h/1,395-point/34,316-real-row replay). No target-binding/policy-
+template scoring consumer yet -- that stays deferred, same staged shape
+PR #1699/#1701's own tension package used. Q1 (where/how often this runs)
+turned out to have a BETTER answer than either option this doc originally
+proposed -- see "What changed from this doc's original proposal" near the
+end.
+
+**2026-08-19 update:** the first real consumer is `services/orion-hub/scripts/
+tension_outreach_trigger.py` -- not a target-binding/proposal-scoring
+consumer, a reading consumer. It reads the latest tick's
+`sustained_load_pressure` (no recomputation, straight off the same
+`substrate_field_state` row it already queries) and carries it on
+`TensionTriggerReason` alongside `orion.attention.tension`'s deviation data,
+so Hub's endogenous-outreach prompt can state a second, genuinely
+level-aware fact rather than only ever "I noticed a change." This is
+exactly the combination the sibling `2026-08-16-tension-driven-outreach-
+design.md` named as real, separate follow-up work -- see that doc's own
+"Combined with the level-aware signal (2026-08-19)" section for the account
+from the outreach side.
 
 ## Arsonist summary
 

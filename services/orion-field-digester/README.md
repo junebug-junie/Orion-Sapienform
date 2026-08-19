@@ -150,6 +150,8 @@ explicitly deferred pending live data on whether tension volume drops enough aft
 | `FIELD_CHANNEL_CORPUS_PATH` | (empty) | Field-channel raw-substrate corpus sink path — see section below. Empty/unset = disabled |
 | `CORPUS_SINK_MAX_BYTES` | `200000000` | Corpus sink rotation threshold (bytes) |
 | `CORPUS_SINK_ROTATED_KEEP` | `5` | Corpus sink rotated-file retention count |
+| `FIELD_SIGNIFICANCE_WINDOW_SECONDS` | `900.0` | Replay window for `sustained_load_pressure` — see section below |
+| `FIELD_SIGNIFICANCE_CHECK_INTERVAL_SEC` | `30.0` | Recompute throttle for `sustained_load_pressure` |
 
 v1 persists projections to Postgres only; bus emit is deferred (`orion/bus/channels.yaml` unchanged).
 
@@ -191,6 +193,79 @@ see `field_channel_corpus.v1` in `orion/inner_state_registry.py`.
 A future rework of `orion/mood_arc/fit_encoder.py` to train against this
 dict-shaped corpus instead of `mood_arc_corpus.v1` is separate, not-yet-
 built work.
+
+## Level-aware significance: `sustained_load_pressure` (PR #1718, 2026-08-18; consumed 2026-08-19)
+
+`app/digestion/significance.py::update_significance_pressure()`, called from
+`run_digestion_tick()` after `update_tension_pressure()` and before
+`update_dimension_precision_baseline()`. Answers a question
+`orion.attention.tension`'s `deviation_pressure` (an EWMA change-detector)
+structurally cannot: "has something been genuinely, steadily loaded for a
+while, even though nothing just changed?" A channel overloaded for hours
+re-centers its own EWMA baseline and reads calm by design — that's the
+detector working as intended for its own original purpose (attention
+starvation), not a bug, but it leaves a real blind spot for anything that
+wants to know about sustained level rather than a fresh deviation.
+
+Built on `orion.field.regime.channel_regime()` (PR #1622/#1633, previously
+unwired to anything) via the new `orion.field.significance` module:
+`compute_tick()` reads a `FIELD_SIGNIFICANCE_WINDOW_SECONDS`-wide window of
+real `substrate_field_state.field_json` rows and classifies every
+(node, channel) pair's regime — level and dispersion as separate axes, no
+adaptive baseline. `sustained_load_pressure()` is `max()` over every
+`loaded_steady`-regime ballot in that window, in `[0, 1]`; 0.0 means nothing
+is currently `loaded_steady` — a real "calm" reading, not a missing one.
+
+**Throttled inline in the hot tick, not a separate worker loop.** This
+service's `substrate_field_state` rows are append-only (`save_field()`
+INSERTs fresh every tick, never UPDATEs) — a separate async loop with its
+own write path risks a duplicate-tick/write-race against the hot tick. So
+`update_significance_pressure()` runs on the SAME tick, gated by comparing
+`state.sustained_load_computed_at` against `state.generated_at`:
+recomputation only happens every `FIELD_SIGNIFICANCE_CHECK_INTERVAL_SEC`
+(default 30s); every other tick carries the value forward unchanged.
+
+**Conditionally present in `field_pressures()`, unlike `deviation_pressure`.**
+`orion/field/pressure.py::field_pressures_with_provenance()` only includes
+`sustained_load_pressure` in the returned dims dict on the tick that
+ACTUALLY recomputed it (`sustained_load_computed_at == generated_at`) — an
+unconditional read would feed ~15 duplicate "fresh" observations per real
+computation into `orion/proposals/scoring.py`'s per-dimension EWMA precision
+tracking, biasing its variance estimate low. `deviation_pressure` has no
+such gate because it genuinely is fresh every tick.
+
+**Scoped to `loaded_steady` only, not `loaded_volatile`, and this is a
+conceptual choice, not a measured-independence one** — a loaded-and-volatile
+channel already moves, so a change-detector or the reconstruction-loss
+anomaly scorer above can plausibly catch it; `loaded_steady` is the one cell
+neither can see. Measured (`scripts/analysis/
+measure_sustained_load_pressure.py --include-volatile`, 24h real replay,
+2026-08-18): `loaded_steady`-only correlates with `deviation_pressure` at
+r=-0.0313; widening to also count `loaded_volatile` gives r=-0.0021 — both
+essentially zero, so the correlation number does not itself justify the
+scope choice. See `orion/proposals/scoring.py`'s `PRESSURE_DIMENSIONS`
+comment and `orion/field/significance.py`'s own module docstring for the
+full write-up, including the disclosed flat-repeat-channel limitation (a
+channel held at an exactly flat value for the whole window reads `static` →
+`no_new_input`, not `loaded_steady`, even if genuinely loaded throughout —
+checked against real data and not the live driver's behavior as of
+2026-08-18, but not fixed here).
+
+**Real consumer, 2026-08-19:** `services/orion-hub/scripts/
+tension_outreach_trigger.py` reads the latest tick's `sustained_load_pressure`
+straight off `substrate_field_state.field_json` (no recomputation in Hub)
+and carries it on `TensionTriggerReason` alongside the deviation-run data,
+so Hub's endogenous-outreach prompt can state a second, genuinely
+level-aware fact rather than only ever "I noticed a change." See
+`services/orion-hub/README.md` §4.1 and that trigger module's own docstring
+for the combined account — honestly scoped GLOBAL (this module ships no
+per-node identity yet), not necessarily the same node the deviation run
+names.
+
+Replay/measurement tooling: `scripts/analysis/measure_sustained_load_pressure.py`
+(`--hours`, `--window-seconds`, `--step-seconds`, `--include-volatile`,
+`--postgres-uri`) — the same non-degenerate/independence-check evidence cited
+above came from this script, run against real Postgres.
 
 ## Telemetry-anomaly metacog trigger (2026-07-21)
 

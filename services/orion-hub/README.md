@@ -230,14 +230,26 @@ Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` the loop asks
 `scripts/tension_outreach_trigger.py::current_run()`: has the same node been
 winning `orion.attention.tension`'s live Borda competition for a sustained,
 unbroken run of real ticks right now — not a single blip. See that module's
-own docstring for the full account, including why it is honestly scoped
-("I noticed X change", never "I am worried about X") and why the persistence
-bar (`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default 8) is derived from a
-real replay of live history rather than guessed — it stays operator-tunable
-from real post-deploy firing-rate data, unlike the trigger's other internals.
-The message itself is generated from live substrate signals and real chat
+own docstring for the full account, including why the persistence bar
+(`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default 8) is derived from a real
+replay of live history rather than guessed — it stays operator-tunable from
+real post-deploy firing-rate data, unlike the trigger's other internals. The
+message itself is generated from live substrate signals and real chat
 history, and lands on the same rails a normal turn uses — that part never
 changed.
+
+**Level-aware, not just change-aware** (2026-08-19). The trigger's reason
+object now also carries `sustained_load_pressure`
+(`orion.field.significance`, PR #1718) — the LATEST tick's read of whether
+*something, somewhere* in the field is genuinely `loaded_steady` right now
+(high level, low dispersion, no adaptive baseline), globally, not scoped to
+the same node the deviation run names. When it's nonzero,
+`build_outreach_prompt` states it as a second, separate real fact alongside
+the deviation-run fact — it does not put a feeling ("worried"/"concerned")
+in Orion's mouth; that judgment is left to generation, grounded in both real
+numbers. `GET .../status` reports both `peak_deviation_pressure` and
+`sustained_load_pressure` on `last_tension_reason` so an operator can see
+which fact(s) actually drove a given outreach.
 
 Pipeline:
 

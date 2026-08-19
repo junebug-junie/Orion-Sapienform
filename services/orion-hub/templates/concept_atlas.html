@@ -81,15 +81,23 @@
     <section id="caNetworkCard" class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <h2 class="text-sm font-semibold text-white">Network drill-down</h2>
-        <span id="caNetworkStatus" class="text-[10px] text-gray-500"></span>
+        <div class="flex items-center gap-3">
+          <label class="flex items-center gap-1.5 text-[10px] text-gray-400 cursor-pointer">
+            <input id="caShowAllLabels" type="checkbox" class="accent-indigo-500" />
+            Show all labels
+          </label>
+          <span id="caNetworkStatus" class="text-[10px] text-gray-500"></span>
+        </div>
       </div>
-      <div class="flex items-center gap-3 text-[10px] text-gray-400">
+      <div class="flex items-center gap-3 text-[10px] text-gray-400 flex-wrap">
         <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full" style="background:#a855f7"></span> god node (top degree)</span>
-        <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full" style="background:#0ea5e9"></span> concept node</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full" style="background:#0ea5e9"></span> concept node (uncolored cluster)</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-3 rounded-full" style="background:linear-gradient(90deg,#f87171,#34d399,#60a5fa)"></span> colored by topic-foundry cluster (when tagged)</span>
         <span class="flex items-center gap-1"><span class="inline-block w-4 h-0.5" style="background:#ef4444"></span> contradicts</span>
         <span class="flex items-center gap-1"><span class="inline-block w-4 h-0.5" style="background:#64748b"></span> co_occurs_with</span>
         <span class="flex items-center gap-1"><span class="inline-block w-4 h-0.5" style="background:#22c55e"></span> other predicate</span>
       </div>
+      <p class="text-[10px] text-gray-500">Only god-node labels show by default (dense graphs stack labels illegibly) — check "Show all labels" to see every node's label. Node labels only, not the topic-foundry cluster id itself; select a node to see its <code>topic_id</code>/<code>component_id</code> in the inspector below.</p>
       <div
         id="caNetworkCy"
         class="w-full rounded-lg border border-gray-800 bg-gray-950/80"

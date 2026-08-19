@@ -62,6 +62,7 @@ if (typeof document !== "undefined") {
   const NETWORK_STATUS = document.getElementById("caNetworkStatus");
   const NETWORK_CY_HOST = document.getElementById("caNetworkCy");
   const NETWORK_INSPECTOR = document.getElementById("caNetworkInspector");
+  const SHOW_ALL_LABELS = document.getElementById("caShowAllLabels");
 
   const CLUSTERING_BODY = document.getElementById("caClusteringBody");
 
@@ -76,6 +77,28 @@ if (typeof document !== "undefined") {
   let cy = null;
   let activated = false;
   let fetchGeneration = 0;
+  // Default label visibility to god-nodes-only (readability gap named in the
+  // 2026-08-18 design spec) -- at 300 nodes, unconditional labels stack
+  // illegibly even with componentSpacing/nodeDimensionsIncludeLabels. God
+  // nodes are the top-degree handful, so keeping their labels on by default
+  // gives orientation without the clutter; the checkbox opts back into the
+  // old always-on behavior for anyone who wants to read every label.
+  let showAllLabels = false;
+
+  // Deterministic hash -> hue so a given topic_id always renders the same
+  // color across refreshes/filters, without needing a server-assigned color
+  // table. Not cryptographic -- collisions between distinct topic_ids are
+  // possible but cosmetic (two clusters sharing a hue), not a correctness
+  // issue for a read-only interpretability view.
+  function topicColor(topicId) {
+    if (topicId === null || topicId === undefined || topicId === "") return null;
+    const s = String(topicId);
+    let hash = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+    }
+    return `hsl(${hash % 360}, 60%, 55%)`;
+  }
 
   function setStatus(msg, isErr) {
     if (!STATUS) return;
@@ -213,6 +236,8 @@ if (typeof document !== "undefined") {
         confidence: n.confidence,
         degree: n.degree,
         godNode: !!n.god_node,
+        componentId: n.component_id,
+        topicId: n.topic_id === undefined ? null : n.topic_id,
       },
     }));
     const cyEdges = edges.map((e) => ({
@@ -244,6 +269,8 @@ if (typeof document !== "undefined") {
       ["confidence", nodeData.confidence],
       ["degree", nodeData.degree],
       ["god_node", nodeData.godNode],
+      ["component_id", nodeData.componentId],
+      ["topic_id", nodeData.topicId],
     ];
     let html = '<dl class="grid grid-cols-2 gap-x-3 gap-y-1">';
     fields.forEach(([k, v]) => {
@@ -264,6 +291,13 @@ if (typeof document !== "undefined") {
       NETWORK_CY_HOST.textContent = "No concept nodes match the current filters.";
       return;
     }
+    // God-nodes-only labels are meant to declutter a dense, mostly-default
+    // view -- they're useless as a default on a filtered/sparse subgraph
+    // that happens to have zero god nodes (e.g. every node degree-0 after an
+    // anchor_scope filter), where hiding every label leaves unlabeled dots
+    // with nothing to orient on. Fall back to showing everything in that
+    // case; the checkbox still overrides either way.
+    const hasGodNodes = elements.some((el) => el.data && el.data.godNode);
     cy = window.cytoscape({
       container: NETWORK_CY_HOST,
       elements,
@@ -271,12 +305,21 @@ if (typeof document !== "undefined") {
         {
           selector: "node",
           style: {
-            label: "data(label)",
+            // God-nodes-only by default (see showAllLabels above); the
+            // checkbox flips this without needing a full remount, since
+            // cy.style().update() re-evaluates mapper functions in place.
+            label: (ele) =>
+              showAllLabels || !hasGodNodes || ele.data("godNode") ? ele.data("label") : "",
             "font-size": 9,
             color: "#e2e8f0",
             "text-valign": "bottom",
             "text-margin-y": 4,
-            "background-color": (ele) => (ele.data("godNode") ? "#a855f7" : "#0ea5e9"),
+            // God-node purple stays the priority signal (top-degree is the
+            // rarer, more load-bearing fact); community coloring from
+            // topic-foundry's HDBSCAN cluster id (when the node carries one)
+            // fills in for everyone else, default blue when neither applies.
+            "background-color": (ele) =>
+              ele.data("godNode") ? "#a855f7" : topicColor(ele.data("topicId")) || "#0ea5e9",
             width: (ele) => (ele.data("godNode") ? 42 : 24),
             height: (ele) => (ele.data("godNode") ? 42 : 24),
             "border-width": 2,
@@ -350,7 +393,20 @@ if (typeof document !== "undefined") {
       mountCytoscape(graphToElements(filtered.nodes, filtered.edges));
       renderInspector(null);
       if (NETWORK_STATUS) {
-        const base = `${filtered.nodes.length} node(s), ${filtered.edges.length} edge(s), ${payload.god_node_count || 0} god node(s)`;
+        // component_id is assigned server-side against the pre-client-filter
+        // graph, so counting distinct ids among the still-shown nodes is an
+        // approximation after a promotion_state filter removes interior
+        // nodes (a component could technically fragment further) -- treated
+        // as good enough for an informational status line, not re-derived
+        // client-side with a second union-find pass.
+        // Filter out missing ids (e.g. a stale cached bundle/backend response
+        // predating this field) instead of letting a Set of all-undefined
+        // collapse to size 1 -- a specific, confidently wrong number is
+        // worse than an honest 0 here.
+        const shownComponents = new Set(
+          filtered.nodes.map((n) => n.component_id).filter((id) => id !== undefined && id !== null)
+        );
+        const base = `${filtered.nodes.length} node(s), ${filtered.edges.length} edge(s), ${payload.god_node_count || 0} god node(s), ${shownComponents.size} component(s)`;
         // Surfaced when a non-default store backend (e.g. graphdb) fell back
         // to a stale snapshot after an upstream query failure -- see
         // concept_atlas_routes.py's "degraded" comment. The default
@@ -429,6 +485,15 @@ if (typeof document !== "undefined") {
   function init() {
     if (REFRESH_BTN) REFRESH_BTN.addEventListener("click", refreshAll);
     if (APPLY_FILTERS_BTN) APPLY_FILTERS_BTN.addEventListener("click", refreshAll);
+    if (SHOW_ALL_LABELS) {
+      SHOW_ALL_LABELS.addEventListener("change", () => {
+        showAllLabels = !!SHOW_ALL_LABELS.checked;
+        // Mapper-function style values (label above) don't auto-recompute on
+        // plain data changes -- style().update() forces re-evaluation
+        // without destroying/remounting the whole graph.
+        if (cy) cy.style().update();
+      });
+    }
     if (CLEAR_FILTERS_BTN) {
       CLEAR_FILTERS_BTN.addEventListener("click", () => {
         if (FILTER_SCOPE) FILTER_SCOPE.value = "";

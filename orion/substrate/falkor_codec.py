@@ -112,6 +112,7 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
         props["definition"] = getattr(node, "definition", None)
         props["taxonomy_path_json"] = _json_list(getattr(node, "taxonomy_path", None))
         props.update(_dynamics_properties_from_metadata(node.metadata))
+        props.update(_topic_foundry_properties_from_metadata(node.metadata))
     else:
         props["evidence_type"] = getattr(node, "evidence_type")
         props["content_ref"] = getattr(node, "content_ref")
@@ -251,6 +252,40 @@ def _safe_float(value: Any, *, default: float | None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+
+# topic-foundry's HDBSCAN cluster assignment (orion/substrate/adapters/
+# topic_foundry.py writes it into ConceptNodeV1.metadata as "topic_id").
+# Deliberately its own tiny allowlist, NOT folded into DYNAMICS_METADATA_KEYS
+# above -- this is topic-foundry-owned classification data, not
+# SubstrateDynamicsEngine.tick() state, and topic-foundry ingest is the only
+# writer, so it carries none of the concurrent-writer clobber risk
+# EXTERNALLY_OWNED_METADATA_KEYS exists to guard against. Added 2026-08-19
+# after code review found topic_id was durably persisted nowhere: it lived
+# only on the in-process FalkorSubstrateStore cache object and silently
+# reverted to None on the very next cache rehydrate (any snapshot() call
+# past the write-generation check, or a process restart) -- the exact same
+# "looked persisted because the cache held the real Python object" trap
+# documented at length above for prediction_error_evidence_event_ids and
+# perception_staleness. Real consumer: services/orion-hub/scripts/
+# concept_atlas_routes.py::concept_atlas_network() (Concept Atlas UI
+# community coloring).
+TOPIC_FOUNDRY_METADATA_KEYS: tuple[str, ...] = ("topic_id",)
+
+
+def _topic_foundry_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    meta = metadata or {}
+    # Scalar, always included (unlike prediction_error's conditional-omit
+    # pattern) -- there's no "computed value of exactly this" ambiguity to
+    # protect against for an id string, so "absent -> null" is unambiguous
+    # and matches how subject_ref/provenance_model_name are already encoded.
+    return {"topic_id": meta.get("topic_id")}
+
+
+def _topic_foundry_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    topic_id = row.get("topic_id")
+    return {"topic_id": topic_id} if topic_id is not None else {}
 
 
 def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -426,7 +461,7 @@ def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata=_dynamics_metadata_from_row(row),
+        metadata={**_dynamics_metadata_from_row(row), **_topic_foundry_metadata_from_row(row)},
     )
 
 

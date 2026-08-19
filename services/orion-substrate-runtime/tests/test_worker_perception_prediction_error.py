@@ -105,20 +105,48 @@ def test_cold_start_message_seeds_baseline_and_caches_no_score() -> None:
     assert worker._last_perception_stream_id == "cam0"
 
 
-def test_orthogonal_second_observation_scores_and_caches_result() -> None:
-    """Hand-computed: cos([1,0],[0,1]) = 0 -> surprise = 1.0 (same arithmetic
-    as orion/substrate/tests/test_perception_prediction_error.py's own
-    orthogonal-vector test)."""
+def test_orthogonal_second_observation_seeds_scalar_baseline_but_caches_no_score() -> None:
+    """Hand-computed raw magnitude: cos([1,0],[0,1]) = 0 -> raw surprise =
+    1.0 (same arithmetic as orion/substrate/tests/test_perception_
+    prediction_error.py's own orthogonal-vector test). This stream's first
+    real cosine comparison, but its scalar surprise EWMA (2026-08-19
+    z-score migration -- see orion/substrate/prediction_error.py's own
+    comment) is still cold, so no score is reported or cached yet -- same
+    "no empty-shell cognition" convention as the cold-start case above, one
+    layer up."""
     worker, fake_store = _make_worker(
         baseline=PerceptionEmbeddingBaseline(embedding_ewma=(1.0, 0.0), n=1)
     )
     worker._handle_perception_prediction_error_message(
         _encode_artifact(_artifact_payload(camera_id="cam0", vector=[0.0, 1.0]))
     )
-    assert worker._last_perception_prediction_error == 1.0
+    assert worker._last_perception_prediction_error is None
     saved_args, _ = fake_store.save_perception_embedding_baseline.call_args
     assert saved_args[1].embedding_ewma == (0.8, 0.2)
     assert saved_args[1].n == 2
+    assert saved_args[1].surprise_ewma == 1.0
+    assert saved_args[1].surprise_n == 1
+
+
+def test_warmed_scalar_baseline_scores_and_caches_zscored_result() -> None:
+    """Hand-computed (same numbers as orion/substrate/tests/
+    test_perception_prediction_error.py::
+    test_mid_range_zscore_hand_computed_against_seeded_baseline):
+    baseline=(1,0) unit, embedding chosen so cos=0.825 exactly -> raw
+    surprise=0.175. Scalar surprise baseline pre-seeded ewma=0.1,
+    variance=0.0025 (std=0.05), n=5.
+    zscore = (0.175-0.1)/0.05 = 1.5 -> score = min(1.0, 1.5/3.0) = 0.5.
+    """
+    warmed = PerceptionEmbeddingBaseline(
+        embedding_ewma=(1.0, 0.0), n=6, surprise_ewma=0.1, surprise_variance=0.0025, surprise_n=5
+    )
+    worker, fake_store = _make_worker(baseline=warmed)
+    worker._handle_perception_prediction_error_message(
+        _encode_artifact(_artifact_payload(camera_id="cam0", vector=[0.825, 0.5651327277728658]))
+    )
+    assert worker._last_perception_prediction_error == 0.5
+    saved_args, _ = fake_store.save_perception_embedding_baseline.call_args
+    assert saved_args[1].surprise_n == 6
 
 
 def test_falls_back_to_stream_id_when_camera_id_absent() -> None:

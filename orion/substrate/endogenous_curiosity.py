@@ -61,21 +61,38 @@ HARD_BUDGET_CEILING = 8
 # for every other node this function reads, not specifically for transport.
 #
 # `node:substrate.perception` (P2 camera-surprise, PR #1746, shipped
-# 2026-08-19) is the newest domain to join this same generic scan the same
-# way -- checked deliberately, not accidentally inherited: the P2 PR itself
-# only claimed shadow-only status for the field-digester receipt path and
-# did not audit this consumer. Reviewed 2026-08-19 against 60 real ticks
-# (30 min, `substrate_reduction_receipts` where
-# `delta_id like 'prediction_error:perception:%'`): calm floor ~0.002-0.005,
-# and a real environmental transition (camera owner's room occupancy
-# changing) only reached 0.031 -- still ~18x below `min_error=0.55`, unlike
-# the always-1.0 transport case above. Left generic on purpose: this
-# function's own architecture treats "any node with a real, non-degenerate
-# `prediction_error`" as fair game by design (see module docstring), and the
-# budget cap / staleness decay / signals-only-into-rung-6-governance chain
-# already gates what a crossed threshold can actually do. Re-run this same
-# live-data check before trusting it again if the camera, embedding model,
-# or EWMA window changes.
+# 2026-08-19) is the newest domain to join this same generic scan -- checked
+# deliberately, not accidentally inherited: the P2 PR itself only claimed
+# shadow-only status for the field-digester receipt path and did not audit
+# this consumer.
+#
+# **First review, same day, found a real problem and it has since been
+# fixed, not just left alone.** `perception_prediction_error()` originally
+# returned a raw `1 - cos(...)` cosine-distance magnitude directly (0.55
+# calibrated for `execution_trajectory`'s real 0-1 z-score range, see that
+# domain's own comment above) -- against 60 real ticks including a real
+# induced stimulus (the camera physically knocked over), the raw magnitude
+# peaked at 0.1219, ~4.5x below `min_error`. That was not "safely bounded,"
+# it was a scale mismatch: this domain could never have contributed a
+# curiosity candidate under any real event, silently, regardless of what
+# this function's generic-by-design architecture intended. Migrated
+# `orion/substrate/prediction_error.py::perception_prediction_error()` the
+# same day to z-score that raw magnitude against its own EWMA baseline
+# before returning it -- same mechanism `execution_prediction_error`/
+# `codebase_prediction_error` already use, see that function's own comment
+# for the full numbers and reasoning. `node:substrate.perception` is now on
+# the same numeric footing as every other z-scored domain reaching this
+# scan, not a scale-mismatched permanent exclusion dressed up as a live gate.
+#
+# Left in this generic scan on purpose, same reasoning as bus_synaptic
+# above: this function's own architecture treats "any node with a real,
+# non-degenerate `prediction_error`" as fair game by design, and the budget
+# cap / staleness decay / signals-only-into-rung-6-governance chain gates
+# what a crossed threshold can actually do. **Not yet re-verified against
+# live data post-migration** -- `perception_prediction_error()`'s own
+# comment names exactly what to check (calm ticks clamp near 0, no
+# saturating on ordinary room activity) before trusting a real `min_error`
+# crossing here as meaningful rather than a mis-set saturation constant.
 #
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):

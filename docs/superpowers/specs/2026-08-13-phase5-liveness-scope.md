@@ -507,20 +507,22 @@ guessed.** Two distinct bugs, not one:
    shape), the parser misassigns fields. Matches the originally recorded
    symptom precisely.
 
-**Gated 2026-08-19.** `~/.claude/hooks/rtk-fcc-gate.sh` now blocks (exit 2,
-explains why, points at `--no-filename`) any grep/rg call carrying a bare
-`-h`-containing short-flag cluster before RTK's parser can swallow it, and
-unconditionally injects `-H`/`--with-filename` into every plain grep/rg
-rewrite so #1613's missing-path-prefix precondition can't occur -- purely
-additive, safe on every existing call. Not this repo's code (this hook is
-global, `~/.claude/`, not version-controlled, not part of this arc's usual
-PR/test discipline), so it's recorded here rather than shipped as a normal
-patch. Built and tested against 9 cases (blocks, safe-passthrough,
-FCC-bypass) in the authoring session; installing it required a permission
-grant this session didn't have, so as of this revision it is **written and
-verified in isolation, not yet confirmed installed and live** -- check
-`~/.claude/hooks/rtk-fcc-gate.sh` for the 2026-08-19 header comment before
-trusting that it's active.
+**Gated 2026-08-19, confirmed installed and live same day.** `~/.claude/hooks/rtk-fcc-gate.sh`
+now blocks (exit 2, explains why, points at `--no-filename`) any grep/rg
+call carrying a bare `-h`-containing short-flag cluster before RTK's parser
+can swallow it, and unconditionally injects `-H`/`--with-filename` into
+every plain grep/rg rewrite so #1613's missing-path-prefix precondition
+can't occur -- purely additive, safe on every existing call. Not this
+repo's code (this hook is global, `~/.claude/`, not version-controlled, not
+part of this arc's usual PR/test discipline), so it's recorded here rather
+than shipped as a normal patch. Built and tested against 9 cases in
+isolation, then installing it required a permission grant the authoring
+session didn't have -- Juniper installed it directly. Re-verified against
+the live installed file, not just the pre-install test suite: `grep -h
+"^POSTGRES_URI="` now blocks with the exit-2 message, and the exact
+originally-recorded corruption case (`grep channel_map biometrics_lattice.yaml`)
+now gets `-H` injected into its rewrite. Original backed up at
+`/tmp/rtk-fcc-gate.sh.orig-backup` if a rollback is ever needed.
 
 Recorded three times before this fix existed, acted on zero, across the
 entire arc above -- the standing example of this doc's own thesis, until

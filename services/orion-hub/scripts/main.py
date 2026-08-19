@@ -455,7 +455,6 @@ async def startup_event():
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
-                llm_route=settings.HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE,
                 timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,
                 notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
                 fallback_session_id=settings.HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID,
@@ -465,7 +464,14 @@ async def startup_event():
                     min_run_length=settings.HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH,
                 ),
             )
-            await endogenous_outreach.start(bus, cortex_client)
+            # 2026-08-19: generation now goes through the real
+            # orion.hub.turn_orchestrator.execute_unified_turn pipeline (see
+            # endogenous_outreach.py's own docstring), the same
+            # harness-governed path `websocket_handler.py` uses for a real
+            # client_mode == "orion" turn -- not the bare CortexGatewayClient
+            # call this used before. harness_rpc_bus mirrors that call
+            # site's own `harness_rpc_bus=rpc_bus or bus` convention.
+            await endogenous_outreach.start(bus, harness_rpc_bus=rpc_bus)
 
             # Claude as a third room participant. Hub only publishes the
             # invite and relays the reply -- orion-room-companion owns the

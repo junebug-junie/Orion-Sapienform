@@ -441,12 +441,34 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
         default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
     )
-    # LLM gateway compute lane for generation: "quick" or "metacog".
-    HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE: str = Field(
-        default="quick", alias="HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE"
-    )
+    # 2026-08-19: HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE removed -- killed, not
+    # deprecated. Generation now goes through orion.hub.turn_orchestrator.
+    # execute_unified_turn (see endogenous_outreach.py's own docstring), the
+    # SAME harness-governed pipeline a real client_mode=="orion" turn uses.
+    # Route selection is the harness governor's decision, identically for
+    # outreach and real chat -- Hub has no separate route to configure here
+    # any more.
+    #
+    # 60.0 (the old default, sized for a bare quick-lane LLM call) is too
+    # short for this pipeline -- confirmed live, 2026-08-19: the FIRST real
+    # test after this switch timed out at 60s with the ThoughtClient.react()
+    # stance-evaluation step ALONE still in flight at ~33s elapsed, before
+    # the harness governor's own fcc-motor/finalize run had even started.
+    # Real turns have no hard Hub-side ceiling at all (the harness governor's
+    # own RPC wait is a soft HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC=960s,
+    # liveness-extendable to a hard HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC=
+    # 3600s) -- Juniper's UI just shows "thinking" for as long as it takes.
+    # 300.0 is a reasoned, NOT yet a measured-from-a-real-distribution,
+    # middle ground: generous enough to plausibly cover Thought react + a
+    # normal-speed harness run for a short, tool-free outreach message,
+    # while still bounding how long one attempt can hold this module's own
+    # `_send_lock` (a stuck attempt delays, not blocks, later ticks -- gates
+    # just report "already_sending"). Re-derive from real observed
+    # elapsed_sec once outreach has actually fired successfully a few times
+    # -- same "don't trust a guess longer than necessary" discipline
+    # MIN_RUN_LENGTH's own derivation already used.
     HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC: float = Field(
-        default=60.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
+        default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
     )
     # Session used for chat-history persistence when no live socket has
     # reported one (session_id lives in browser localStorage).

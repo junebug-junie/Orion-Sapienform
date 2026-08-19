@@ -127,8 +127,7 @@ class AttentionRuntimeStore:
                                 receipt_json -> 'state_deltas' -> 0 -> 'after'
                                     -> 'pressure_hints' ->> 'prediction_error' AS error
                             FROM substrate_reduction_receipts
-                            WHERE (receipt_json -> 'state_deltas' -> 0 ->> 'reducer_id')
-                                  = :reducer_id
+                            WHERE reducer_name = :reducer_id
                             ORDER BY created_at DESC
                             LIMIT :limit
                             """
@@ -251,8 +250,7 @@ class AttentionRuntimeStore:
                                     -> 'pressure_hints' ->> 'prediction_error' AS error,
                                 created_at
                             FROM substrate_reduction_receipts
-                            WHERE (receipt_json -> 'state_deltas' -> 0 ->> 'reducer_id')
-                                  = :reducer_id
+                            WHERE reducer_name = :reducer_id
                               AND (:cursor IS NULL OR created_at > :cursor)
                             ORDER BY created_at ASC
                             LIMIT :limit

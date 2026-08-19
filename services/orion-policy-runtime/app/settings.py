@@ -29,7 +29,16 @@ class Settings(BaseSettings):
     # bounded, the largest remaining sequential-scan source in the database (340,766 tuples/sec).
     # 3600s is ~113x the measured maximum proposal->policy lag (p99 17.0s, max 31.8s over 24h).
     # Set to 0 to disable the bound and restore the previous behaviour -- that is the rollback.
-    policy_scan_window_sec: float = Field(3600.0, alias="POLICY_SCAN_WINDOW_SEC")
+        # DISABLED BY DEFAULT, 2026-08-19, after code review found the bound UNSAFE as designed.
+    # `fetch()` only reaches the backstop when the fast path is EMPTY -- so during a real
+    # backlog, where fresh in-window work always exists, the backstop never fires and pre-window
+    # rows are stranded permanently. Live evidence: on 2026-08-14 this stage produced 29,264
+    # feedback frames for dispatch rows ~34 HOURS old, while 26,148 new rows arrived the same
+    # day. 8 of the last 30 days were entirely in that regime. The measurement that justified a
+    # 1h window (n=514, max 85.6s) was taken during an unrepresentative quiet spell; over 7 days
+    # the lag p50 is 124,613s and the max is 975,770s.
+    # Do NOT re-enable without redesigning -- see orion/db/pending_scan.py.
+    policy_scan_window_sec: float = Field(0.0, alias="POLICY_SCAN_WINDOW_SEC")
     policy_scan_backstop_interval_sec: float = Field(
         300.0, alias="POLICY_SCAN_BACKSTOP_INTERVAL_SEC"
     )

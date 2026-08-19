@@ -22,13 +22,20 @@
 -- ACCESS EXCLUSIVE lock. It cannot run inside a transaction block, so run this file with
 -- psql directly (single-statement autocommit), not wrapped in BEGIN/COMMIT.
 --
---   docker exec orion-athena-sql-db psql -U postgres -d conjourney \
---     -f /path/manual_migration_substrate_frames_created_at_index.sql
+--   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+--     < services/orion-sql-db/manual_migration_substrate_frames_created_at_index.sql
+--
+-- NOTE the `-i` and the SHELL redirect, not `-f`. The repo is not mounted into the sql-db
+-- container (its only bind is the data directory), so `-f /path/...` resolves inside the
+-- container and fails with "could not open file". Caught in review after the file shipped
+-- with the unusable form.
 --
 -- IF NOT EXISTS so re-running is a no-op. If a CONCURRENTLY build is interrupted it leaves an
 -- INVALID index behind -- check with:
 --   select indexrelid::regclass from pg_index where not indisvalid;
 -- and DROP INDEX + re-run if so.
+
+\set ON_ERROR_STOP on
 
 create index concurrently if not exists idx_substrate_execution_dispatch_frames_created_at
     on substrate_execution_dispatch_frames (created_at desc);

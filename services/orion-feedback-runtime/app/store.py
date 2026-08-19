@@ -24,7 +24,7 @@ class FeedbackRuntimeStore:
         self,
         postgres_uri: str,
         *,
-        scan_window_sec: float = 3600.0,
+        scan_window_sec: float = 0.0,
         backstop_interval_sec: float = 300.0,
     ) -> None:
         self._engine: Engine = create_engine(

@@ -18,8 +18,37 @@ At a 2s poll interval that was the single largest contributor to athena being fu
 ~20% of wall time (`/proc/pressure/io`), with Postgres reading 149 GB/hour against a 47 GB
 database.
 
-WHY THE BOUND ALONE IS NOT SAFE, AND WHAT MAKES IT SAFE
--------------------------------------------------------
+STATUS: DISABLED BY DEFAULT. THE BOUND IS UNSAFE AS DESIGNED.
+------------------------------------------------------------
+Code review, 2026-08-19, found a defect that no amount of window tuning fixes:
+
+    `fetch()` returns as soon as the BOUNDED query finds a row, so the backstop is only ever
+    reached when the fast path is EMPTY. During a real backlog -- precisely the condition the
+    backstop exists for -- fresh in-window work always exists, the backstop never fires, and
+    every row older than the window is stranded PERMANENTLY. Worse, it self-perpetuates: any
+    row that ages past the window before being reached joins the untouchable set.
+
+Live evidence that this is not hypothetical: on 2026-08-14 the dispatch->feedback stage produced
+29,264 feedback frames for dispatch rows that had waited ~34 HOURS, while 26,148 new rows
+arrived the same day. 8 of the last 30 days were entirely in that regime, ~30k rows/day.
+
+The measurement that justified a 1h window (n=514 over 24h, max 85.6s) was taken during an
+unrepresentative quiet spell -- 08-18 saw 133 dispatch frames against 26k-39k on active days.
+Over 7 days the real lag is p50 124,613s, max 975,770s. This pipeline legitimately runs hours
+to days behind, which makes "only look at recent rows" the wrong shape for it entirely.
+
+A rate limit compounds it: `_last_backstop` is stamped even when the backstop RETURNS a row, so
+straggler drain is capped at one row per interval -- 288/day against 26k-39k/day of real work.
+
+WHAT WOULD ACTUALLY WORK is a marker column (`*_pending boolean`) with a partial index, so
+"oldest unprocessed" is O(pending) instead of O(history) regardless of how far behind the stage
+is. That is a schema migration across the substrate pipeline and has not been done.
+
+Everything below describes the design AS BUILT. It is left in place, defaulted off, because the
+shape is reusable once the strand-the-backlog defect is fixed -- not because it is ready.
+
+WHY THE BOUND ALONE IS NOT SAFE, AND WHAT MAKES IT SAFE (as-built, INSUFFICIENT -- see above)
+--------------------------------------------------------------------------------------------
 The bound assumes the pipeline is roughly current. Measured, it is:
 
     proposal -> policy   lag over 24h:  p50  3.4s   p99 17.0s   max 31.8s

@@ -49,7 +49,13 @@ class _FakeSession:
     def query(self, _model):  # noqa: ANN001
         return _FakeQuery(self._row)
 
-    def execute(self, stmt):
+    def execute(self, stmt, params=None):
+        # params is not None => the advisory-lock call
+        # (_lock_chat_history_row), added to _apply_spark_meta_patch by the
+        # 2026-08-19 routing-awareness follow-up -- not the row update this
+        # fake exists to capture.
+        if params is not None:
+            return None
         self.updated = stmt
         if self._row is not None:
             self._row.spark_meta = worker._merge_spark_meta(

@@ -44,11 +44,19 @@ class _FakeSession:
 
     def __init__(self, *, query_result_by_model: dict[type, Any] | None = None):
         self.executed: list[Any] = []
+        self.lock_calls: list[Any] = []
         self.query_calls: list[type] = []
         self._query_result_by_model = query_result_by_model or {}
         self._current_model: type | None = None
 
-    def execute(self, stmt):
+    def execute(self, stmt, params=None):
+        # params is not None => _lock_chat_history_row's advisory-lock call
+        # (added to _apply_spark_meta_patch by the 2026-08-19
+        # routing-awareness follow-up). Tracked separately so the existing
+        # `sess.executed[0]` assertions below still see the real UPDATE.
+        if params is not None:
+            self.lock_calls.append((stmt, params))
+            return None
         self.executed.append(stmt)
 
     def commit(self):
@@ -281,6 +289,36 @@ class TestApplySparkMetaPatchRouting:
 
         assert ok is False
         assert sess.executed == []
+
+    def test_acquires_lock_when_routing_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        class _Row:
+            spark_meta = {"existing": True}
+
+        sess = _FakeSession(query_result_by_model={worker.ChatHistoryLogSQL: _Row()})
+
+        self._run(monkeypatch, sess=sess, routing_enabled=True)
+
+        assert len(sess.lock_calls) == 1
+        assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()
+
+    def test_acquires_lock_even_when_routing_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Regression test for a bug in this fix's own first draft: a
+        second review pass (2026-08-19) caught that gating this lock on
+        sql_writer_aitown_routing_enabled reopens the exact race this fix
+        exists to close, because the writer-side locks
+        (_write_row/_ensure_chat_history_from_message) stay unconditional
+        regardless of the routing flag -- a gated reader would race an
+        in-flight, still-unconditionally-locked writer. The lock must be
+        acquired every time, routing enabled or not."""
+        class _Row:
+            spark_meta = {"existing": True}
+
+        sess = _FakeSession(query_result_by_model={worker.ChatHistoryLogSQL: _Row()})
+
+        self._run(monkeypatch, sess=sess, routing_enabled=False)
+
+        assert len(sess.lock_calls) == 1
+        assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()
 
 
 class TestMirrorTableSchemaParity:

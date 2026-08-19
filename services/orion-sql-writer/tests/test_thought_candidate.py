@@ -100,6 +100,12 @@ class _FakeSession:
     def query(self, _model):  # noqa: ANN001
         return _FakeQuery(self._row)
 
+    def execute(self, stmt, params=None):
+        # _lock_chat_history_row's advisory-lock call, added to
+        # _chat_history_thought_for_merge by the 2026-08-19 code-review
+        # follow-up. Nothing to capture -- this fake has no UPDATE path.
+        return None
+
 
 def test_chat_history_thought_for_merge_preserves_existing_non_empty_thought() -> None:
     sess = _FakeSession(_FakeRow("chat-thought"))
@@ -127,3 +133,130 @@ def test_chat_history_thought_for_merge_writes_insert_and_update_when_empty_exis
         {"correlation_id": "corr-2"},
     )
     assert update_resolved == "chat-thought-refresh"
+
+
+class _FakeQueryByModel:
+    def __init__(self, row: _FakeRow | None) -> None:
+        self._row = row
+
+    def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return self
+
+    def first(self):
+        return self._row
+
+
+class _FakeSessionByModel:
+    """Model-aware fake -- distinct from ``_FakeSession`` above, which
+    always returns the same row regardless of which model is queried and so
+    cannot distinguish "found in the primary table" from "found in the
+    mirror table" (the exact distinction the routing-awareness bug below
+    depended on)."""
+
+    def __init__(self, rows_by_model: dict[type, _FakeRow | None]) -> None:
+        self._rows_by_model = rows_by_model
+        self.query_calls: list[type] = []
+        self.lock_calls: list[Any] = []
+
+    def query(self, model):  # noqa: ANN001
+        self.query_calls.append(model)
+        return _FakeQueryByModel(self._rows_by_model.get(model))
+
+    def execute(self, stmt, params=None):
+        if params is not None:
+            self.lock_calls.append((stmt, params))
+        return None
+
+
+def test_chat_history_thought_for_merge_checks_mirror_table_when_primary_misses(
+    monkeypatch,
+) -> None:
+    """Regression test: before this fix (code review on the substrate-purge
+    branch, 2026-08-19), this function only ever queried ChatHistoryLogSQL,
+    so an existing thought_process on a row already routed to
+    aitown_chat_history_log (PR #1743) was silently dropped in favor of the
+    incoming value."""
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
+    sess = _FakeSessionByModel(
+        {
+            worker.ChatHistoryLogSQL: None,
+            worker.AitownChatHistoryLogSQL: _FakeRow("mirror-table-thought"),
+        }
+    )
+
+    resolved = worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "aitown-corr-1", "thought_process": "incoming-thought"},
+        {"correlation_id": "aitown-corr-1"},
+    )
+
+    assert resolved == "mirror-table-thought"
+    assert sess.query_calls == [worker.ChatHistoryLogSQL, worker.AitownChatHistoryLogSQL]
+
+
+def test_chat_history_thought_for_merge_acquires_lock_when_routing_enabled(
+    monkeypatch,
+) -> None:
+    """Regression test: code review (2026-08-19) found this function's
+    caller doesn't acquire _lock_chat_history_row until well after this
+    function's own SELECT runs, so an unlocked read here could race a
+    concurrent turn-path write for the same id. Self-contained locking
+    added, matching _apply_spark_meta_patch's pattern."""
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
+    sess = _FakeSessionByModel({worker.ChatHistoryLogSQL: _FakeRow("chat-thought")})
+
+    worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "corr-lock", "thought_process": "incoming"},
+        {"correlation_id": "corr-lock"},
+    )
+
+    assert len(sess.lock_calls) == 1
+    lock_sql = str(sess.lock_calls[0][0]).lower()
+    assert "pg_advisory_xact_lock" in lock_sql
+    assert sess.lock_calls[0][1] == {"row_id": "corr-lock"}
+
+
+def test_chat_history_thought_for_merge_acquires_lock_even_when_routing_disabled(
+    monkeypatch,
+) -> None:
+    """Regression test for a bug in this fix's own first draft: a second
+    review pass (2026-08-19) caught that gating this lock on
+    sql_writer_aitown_routing_enabled reopens the exact race this fix
+    exists to close, because the writer-side locks
+    (_write_row/_ensure_chat_history_from_message) stay unconditional
+    regardless of the routing flag -- a gated reader would race an
+    in-flight, still-unconditionally-locked writer. The lock must be
+    acquired every time, routing enabled or not."""
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
+    sess = _FakeSessionByModel({worker.ChatHistoryLogSQL: _FakeRow("chat-thought")})
+
+    worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "corr-nolock", "thought_process": "incoming"},
+        {"correlation_id": "corr-nolock"},
+    )
+
+    assert len(sess.lock_calls) == 1
+    assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()
+
+
+def test_chat_history_thought_for_merge_does_not_check_mirror_when_routing_disabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
+    sess = _FakeSessionByModel(
+        {
+            worker.ChatHistoryLogSQL: None,
+            worker.AitownChatHistoryLogSQL: _FakeRow("mirror-table-thought"),
+        }
+    )
+
+    resolved = worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "aitown-corr-2", "thought_process": "incoming-thought"},
+        {"correlation_id": "aitown-corr-2"},
+    )
+
+    assert resolved == "incoming-thought"
+    assert sess.query_calls == [worker.ChatHistoryLogSQL]

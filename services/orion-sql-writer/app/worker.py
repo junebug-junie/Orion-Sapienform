@@ -970,6 +970,35 @@ def _apply_spark_meta_patch(payload: dict) -> bool:
         # clobber the first's merged keys). Closed now while this function
         # was already being touched for routing, rather than leaving it as
         # a standing follow-up.
+        #
+        # _lock_chat_history_row(): code review on #1743 (2026-08-19)
+        # caught that this function never acquired it, despite
+        # _resolve_chat_history_model_cls's own docstring saying callers
+        # MUST hold it -- without it, a patch racing a concurrent turn-path
+        # write for the same row could find "existing is None" in BOTH
+        # tables (the turn event hasn't committed yet) and silently drop
+        # the patch (spark_meta_patch_missing_row) instead of applying it
+        # once the row lands. Every current producer sets id ==
+        # correlation_id (see upsert_chat_history_row's own docstring), so
+        # correlation_id is the correct lock key here.
+        #
+        # Deliberately UNCONDITIONAL, not gated on
+        # sql_writer_aitown_routing_enabled -- a second review pass
+        # (2026-08-19) caught that an earlier version of this patch gated
+        # it, reasoning "no routing decision to protect when routing is
+        # off." That reasoning missed that this lock does double duty: the
+        # turn-path and message-path writer sites (_write_row,
+        # _ensure_chat_history_from_message) acquire this SAME lock
+        # unconditionally, regardless of the routing flag, and hold it
+        # until their transaction commits -- so it also serializes "does
+        # the row exist yet" against an in-flight write, independent of
+        # which table ends up holding it. Gating only the reader side
+        # broke that symmetry: with routing disabled, a writer still locks
+        # and blocks, but a gated reader would skip its own lock and race
+        # the writer's uncommitted insert anyway -- reintroducing the exact
+        # bug this whole fix exists to close. Do not re-add this gate
+        # without also gating every writer-side lock call the same way.
+        _lock_chat_history_row(sess, corr)
         model_cls = ChatHistoryLogSQL
         existing = (
             sess.query(ChatHistoryLogSQL)
@@ -1191,6 +1220,27 @@ def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], ra
     candidate_id = filtered_data.get("id") or filtered_data.get("correlation_id") or raw_data.get("correlation_id")
     if not candidate_id:
         return incoming
+    # _lock_chat_history_row(): code review follow-up (2026-08-19) caught
+    # this function's caller doesn't acquire it until well after this SELECT
+    # runs (_write_row's own lock, ~160 lines later in the same function) --
+    # so this read raced a concurrent turn-path write for the same id with
+    # nothing serializing it, same failure shape _apply_spark_meta_patch was
+    # fixed for. Self-contained here rather than relying on caller ordering,
+    # matching _apply_spark_meta_patch/_back_populate_chat_spark_meta_from_
+    # telemetry's own pattern.
+    #
+    # Deliberately UNCONDITIONAL -- see _apply_spark_meta_patch's own
+    # comment on this exact point (a second review pass, 2026-08-19, caught
+    # that gating this on routing_enabled reopens the race, because the
+    # writer-side locks this serializes against are themselves
+    # unconditional). Yes, this means a chat turn write now acquires this
+    # same advisory lock twice in one call (once here, once again at
+    # _write_row's own pre-existing call site further down) -- confirmed
+    # harmless: pg_advisory_xact_lock is reentrant per session/transaction,
+    # both calls target the same row id, and the redundant round trip is
+    # accepted as the cost of not having to reason about call-order
+    # coupling between this function and its caller.
+    _lock_chat_history_row(sess, str(candidate_id))
     existing = (
         sess.query(ChatHistoryLogSQL)
         .filter(
@@ -1199,10 +1249,104 @@ def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], ra
         )
         .first()
     )
+    # Not routing-aware before this fix (code review on the substrate-purge
+    # branch, 2026-08-19): a row already routed to aitown_chat_history_log
+    # (PR #1743) was invisible here, so an existing AI-Town thought_process
+    # was silently dropped in favor of the incoming value on every merge.
+    if existing is None and settings.sql_writer_aitown_routing_enabled:
+        existing = (
+            sess.query(AitownChatHistoryLogSQL)
+            .filter(
+                (AitownChatHistoryLogSQL.id == str(candidate_id))
+                | (AitownChatHistoryLogSQL.correlation_id == str(candidate_id))
+            )
+            .first()
+        )
     existing_thought = _normalized_text(getattr(existing, "thought_process", None)) if existing is not None else None
     if existing_thought:
         return existing_thought
     return incoming
+
+
+def _back_populate_chat_spark_meta_from_telemetry(sess: Any, corr_id: Any, filtered_data: dict[str, Any]) -> bool:
+    """SparkTelemetrySQL writes back-populate the corresponding chat_history_log
+    row's spark_meta ("Bi-Directional Metadata Sync"). Extracted to its own
+    function (code review on the substrate-purge branch, 2026-08-19) so the
+    routing-awareness fix below is directly unit-testable: this branch used
+    to only ever query ChatHistoryLogSQL, so telemetry for a correlation_id
+    already routed to aitown_chat_history_log (PR #1743) silently
+    back-populated nothing -- no error, just a missed spark_meta merge.
+
+    Callers MUST hold `_lock_chat_history_row(sess, corr_id)` before calling
+    this if their session hasn't already acquired it for this row (this
+    function does so itself) -- same race `_apply_spark_meta_patch` and
+    `_resolve_chat_history_model_cls` guard against: a concurrent turn-path
+    write for the same row.
+
+    Deliberately UNCONDITIONAL, not gated on
+    sql_writer_aitown_routing_enabled -- see _apply_spark_meta_patch's own
+    comment for why an earlier version of this gate was wrong (a second
+    review pass, 2026-08-19, caught that it reopens the very race this
+    fix exists to close, since the writer-side locks stay unconditional).
+    Accepted cost: on the common miss case (a telemetry tick whose
+    correlation_id has no matching chat row at all -- background/non-chat
+    telemetry), this now pays for a lock round trip plus up to 2
+    `with_for_update()` SELECTs instead of 1 unlocked SELECT. Not optimized
+    away because there is currently no cheap way to distinguish "this will
+    be a miss" from "this could race a concurrent write" ahead of taking
+    the lock.
+
+    Returns True if a chat_history_log row was found and updated.
+    """
+    _lock_chat_history_row(sess, str(corr_id))
+    meta_for_chat = _spark_meta_minimal(filtered_data)
+    chat_model_cls = ChatHistoryLogSQL
+    # .with_for_update(): review follow-up (2026-08-19) -- this is a
+    # read-modify-write of spark_meta (merge below, then UPDATE) with the
+    # same lost-update shape _apply_spark_meta_patch's own review finding
+    # already fixed on its side: two concurrent telemetry writes for the
+    # same correlation_id could each read the same starting spark_meta and
+    # the second UPDATE would clobber the first's merged keys. Added here
+    # for parity rather than left as an unexplained asymmetry between two
+    # near-identical patterns added in the same commit.
+    existing_chat = (
+        sess.query(ChatHistoryLogSQL)
+        .filter(ChatHistoryLogSQL.correlation_id == corr_id)
+        .with_for_update()
+        .first()
+    )
+    if existing_chat is None and settings.sql_writer_aitown_routing_enabled:
+        existing_chat = (
+            sess.query(AitownChatHistoryLogSQL)
+            .filter(AitownChatHistoryLogSQL.correlation_id == corr_id)
+            .with_for_update()
+            .first()
+        )
+        if existing_chat is not None:
+            chat_model_cls = AitownChatHistoryLogSQL
+    if existing_chat is None:
+        # debug, not error: unlike a spark_meta *patch* (which always names
+        # a specific row that's expected to exist), a telemetry tick's
+        # correlation_id commonly has no matching chat_history_log row at
+        # all (background/non-chat telemetry) -- that's an expected miss,
+        # not an operator-actionable failure. Logged at all only because
+        # review (2026-08-19) found this branch previously gave zero
+        # signal distinguishing "nothing to do" from a real routing miss.
+        logger.debug("spark_telemetry_chat_backfill_missing_row correlation_id=%s", corr_id)
+        return False
+    merged = _merge_spark_meta(
+        getattr(existing_chat, "spark_meta", None),
+        meta_for_chat,
+        source="telemetry",
+    )
+    stmt = (
+        update(chat_model_cls)
+        .where(chat_model_cls.correlation_id == corr_id)
+        .values(spark_meta=merged)
+    )
+    sess.execute(stmt)
+    sess.commit()
+    return True
 
 
 def _map_spark_to_telemetry_row(
@@ -1456,25 +1600,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             corr_id = filtered_data.get("correlation_id")
             if corr_id:
                 try:
-                    meta_for_chat = _spark_meta_minimal(filtered_data)
-                    existing_chat = (
-                        sess.query(ChatHistoryLogSQL)
-                        .filter(ChatHistoryLogSQL.correlation_id == corr_id)
-                        .first()
-                    )
-                    if existing_chat is not None:
-                        merged = _merge_spark_meta(
-                            getattr(existing_chat, "spark_meta", None),
-                            meta_for_chat,
-                            source="telemetry",
-                        )
-                        stmt = (
-                            update(ChatHistoryLogSQL)
-                            .where(ChatHistoryLogSQL.correlation_id == corr_id)
-                            .values(spark_meta=merged)
-                        )
-                        sess.execute(stmt)
-                        sess.commit()
+                    _back_populate_chat_spark_meta_from_telemetry(sess, corr_id, filtered_data)
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
             return True
@@ -1959,6 +2085,24 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             .filter(ChatHistoryLogSQL.correlation_id == corr_id)
             .first()
         )
+        # Not routing-aware before this fix (code review follow-up,
+        # 2026-08-19): a 4th primary-table-only blind spot found in the
+        # same pass that fixed the other three. For a turn already routed
+        # to aitown_chat_history_log (PR #1743), this returned None
+        # silently and the caller (_maybe_emit_memory_turn_from_row) just
+        # returned without logging -- dropping that turn from memory
+        # consolidation (services/orion-memory-consolidation, a real
+        # downstream consumer of orion:memory:turn:persisted) with zero
+        # trace. Read-only, no lock: called only after the row's own write
+        # has already completed (a "turn completes" precondition of the
+        # caller), so there is no cross-session commit-visibility race to
+        # guard against here, unlike the write/patch-side functions above.
+        if row is None and settings.sql_writer_aitown_routing_enabled:
+            row = (
+                sess.query(AitownChatHistoryLogSQL)
+                .filter(AitownChatHistoryLogSQL.correlation_id == corr_id)
+                .first()
+            )
         if row is None:
             return None
         prompt = str(getattr(row, "prompt", "") or "").strip()

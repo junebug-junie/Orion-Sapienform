@@ -11,37 +11,68 @@ from sqlalchemy.engine import Engine
 
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
+from orion.db.pending_scan import BoundedPendingScan
 
 logger = logging.getLogger("orion.policy_runtime.store")
 
 
 class PolicyRuntimeStore:
-    def __init__(self, postgres_uri: str) -> None:
+    def __init__(
+        self,
+        postgres_uri: str,
+        *,
+        scan_window_sec: float = 3600.0,
+        backstop_interval_sec: float = 300.0,
+    ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
             pool_pre_ping=True,
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
+        # scan_window_sec <= 0 disables the bound and restores the pre-2026-08-19 behaviour --
+        # the rollback, with no code change. See orion/db/pending_scan.py.
+        self._scan = BoundedPendingScan(
+            label="proposal->policy",
+            window_sec=scan_window_sec,
+            backstop_interval_sec=backstop_interval_sec,
+            logger=logger,
+        )
+
+    # ROADMAP D2 follow-through, 2026-08-19. Same unbounded anti-join that was athena's I/O
+    # ceiling one stage downstream -- see orion/db/pending_scan.py for the measurements
+    # and for why the unbounded query survives as a rate-limited backstop rather than being
+    # deleted. After the dispatch->feedback stage was bounded, this stage was the largest
+    # remaining sequential-scan source in the database at 340,766 tuples/sec.
+    #
+    # Window justification, measured rather than copied from the other stage:
+    #   proposal -> policy lag over 24h:  p50 3.4s   p99 17.0s   max 31.8s   (n=852)
+    # The 3600s default is ~113x the observed maximum.
+    _FAST_PATH_SQL = text("""
+        SELECT p.proposal_frame_json, p.generated_at
+        FROM substrate_proposal_frames p
+        LEFT JOIN substrate_policy_decision_frames d
+          ON d.source_proposal_frame_id = p.frame_id
+        WHERE d.frame_id IS NULL
+          AND p.generated_at > now() - make_interval(secs => :window_sec)
+        ORDER BY p.generated_at ASC
+        LIMIT 1
+    """)
+
+    _BACKSTOP_SQL = text("""
+        SELECT p.proposal_frame_json, p.generated_at
+        FROM substrate_proposal_frames p
+        LEFT JOIN substrate_policy_decision_frames d
+          ON d.source_proposal_frame_id = p.frame_id
+        WHERE d.frame_id IS NULL
+        ORDER BY p.generated_at ASC
+        LIMIT 1
+    """)
 
     def load_next_proposal_without_policy_frame(self) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT p.proposal_frame_json
-                        FROM substrate_proposal_frames p
-                        LEFT JOIN substrate_policy_decision_frames d
-                          ON d.source_proposal_frame_id = p.frame_id
-                        WHERE d.frame_id IS NULL
-                        ORDER BY p.generated_at ASC
-                        LIMIT 1
-                        """
-                    ),
-                )
-                .mappings()
-                .first()
+            row = self._scan.fetch(
+                conn, bounded_sql=self._FAST_PATH_SQL, unbounded_sql=self._BACKSTOP_SQL
             )
         if not row:
             return None

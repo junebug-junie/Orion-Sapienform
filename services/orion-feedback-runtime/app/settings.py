@@ -16,6 +16,20 @@ class Settings(BaseSettings):
         alias="FEEDBACK_POLICY_PATH",
     )
     feedback_poll_interval_sec: float = Field(2.0, alias="FEEDBACK_POLL_INTERVAL_SEC")
+    # ROADMAP D2 follow-through. The "oldest dispatch frame without feedback" lookup used to be
+    # an unbounded anti-join over two ~420k-row tables -- 829 MB read + 465 MB temp spill per
+    # execution, every 2s, and the single largest contributor to athena being fully I/O-stalled
+    # ~20% of wall time. Bounded to a window it becomes two index scans (916 blocks, 116x less).
+    #
+    # 3600s is ~42x the measured maximum feedback lag (p99 77.1s, max 85.6s over 24h).
+    # Set to 0 to disable the bound and restore the previous behaviour -- that is the rollback.
+    feedback_scan_window_sec: float = Field(3600.0, alias="FEEDBACK_SCAN_WINDOW_SEC")
+    # How often the unbounded backstop may run when the bounded query finds nothing. This is
+    # what guarantees a frame older than the window is never skipped forever -- it is picked up
+    # within one interval instead of instantly, and logged as a tripwire when it happens.
+    feedback_scan_backstop_interval_sec: float = Field(
+        300.0, alias="FEEDBACK_SCAN_BACKSTOP_INTERVAL_SEC"
+    )
     enable_feedback_runtime: bool = Field(True, alias="ENABLE_FEEDBACK_RUNTIME")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

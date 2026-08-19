@@ -10,6 +10,7 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
+from orion.db.pending_scan import BoundedPendingScan
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
@@ -19,32 +20,61 @@ logger = logging.getLogger("orion.feedback_runtime.store")
 
 
 class FeedbackRuntimeStore:
-    def __init__(self, postgres_uri: str) -> None:
+    def __init__(
+        self,
+        postgres_uri: str,
+        *,
+        scan_window_sec: float = 3600.0,
+        backstop_interval_sec: float = 300.0,
+    ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
             pool_pre_ping=True,
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
+        # scan_window_sec <= 0 disables the bound and restores the pre-2026-08-19 behaviour --
+        # the rollback, with no code change. See orion/db/pending_scan.py.
+        self._scan = BoundedPendingScan(
+            label="dispatch->feedback",
+            window_sec=scan_window_sec,
+            backstop_interval_sec=backstop_interval_sec,
+            logger=logger,
+        )
+
+    # ROADMAP D2 follow-through, 2026-08-19. This lookup was athena's I/O ceiling: an unbounded
+    # anti-join over two ~420k-row tables, 829 MB read + 465 MB temp spill per execution, every
+    # FEEDBACK_POLL_INTERVAL_SEC. See orion/db/pending_scan.py for the full account, the
+    # measured numbers, and why the unbounded query has to survive as a backstop.
+    #
+    # Window justification, measured rather than assumed:
+    #   dispatch -> feedback lag over 24h:  p50 16.0s   p99 77.1s   max 85.6s   (n=514)
+    # The 3600s default is ~42x the observed maximum.
+    _FAST_PATH_SQL = text("""
+        SELECT d.dispatch_frame_json, d.generated_at
+        FROM substrate_execution_dispatch_frames d
+        LEFT JOIN substrate_feedback_frames f
+          ON f.source_execution_dispatch_frame_id = d.frame_id
+        WHERE f.frame_id IS NULL
+          AND d.generated_at > now() - make_interval(secs => :window_sec)
+        ORDER BY d.generated_at ASC
+        LIMIT 1
+    """)
+
+    _BACKSTOP_SQL = text("""
+        SELECT d.dispatch_frame_json, d.generated_at
+        FROM substrate_execution_dispatch_frames d
+        LEFT JOIN substrate_feedback_frames f
+          ON f.source_execution_dispatch_frame_id = d.frame_id
+        WHERE f.frame_id IS NULL
+        ORDER BY d.generated_at ASC
+        LIMIT 1
+    """)
 
     def load_latest_dispatch_frame_without_feedback(self) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT d.dispatch_frame_json
-                        FROM substrate_execution_dispatch_frames d
-                        LEFT JOIN substrate_feedback_frames f
-                          ON f.source_execution_dispatch_frame_id = d.frame_id
-                        WHERE f.frame_id IS NULL
-                        ORDER BY d.generated_at ASC
-                        LIMIT 1
-                        """
-                    ),
-                )
-                .mappings()
-                .first()
+            row = self._scan.fetch(
+                conn, bounded_sql=self._FAST_PATH_SQL, unbounded_sql=self._BACKSTOP_SQL
             )
         if not row:
             return None

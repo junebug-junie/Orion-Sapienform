@@ -16,7 +16,11 @@ logger = logging.getLogger("orion.policy.runtime")
 class PolicyRuntimeWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._store = PolicyRuntimeStore(self._settings.postgres_uri)
+        self._store = PolicyRuntimeStore(
+            self._settings.postgres_uri,
+            scan_window_sec=self._settings.policy_scan_window_sec,
+            backstop_interval_sec=self._settings.policy_scan_backstop_interval_sec,
+        )
         self._policy = load_substrate_policy(Path(self._settings.substrate_policy_path))
         self._stop = asyncio.Event()
 

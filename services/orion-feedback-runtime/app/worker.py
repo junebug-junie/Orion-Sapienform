@@ -20,7 +20,11 @@ logger = logging.getLogger("orion.feedback.runtime")
 class FeedbackRuntimeWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._store = FeedbackRuntimeStore(self._settings.postgres_uri)
+        self._store = FeedbackRuntimeStore(
+            self._settings.postgres_uri,
+            scan_window_sec=self._settings.feedback_scan_window_sec,
+            backstop_interval_sec=self._settings.feedback_scan_backstop_interval_sec,
+        )
         self._policy = load_feedback_policy(Path(self._settings.feedback_policy_path))
         self._stop = asyncio.Event()
         self._bus = OrionBusAsync(

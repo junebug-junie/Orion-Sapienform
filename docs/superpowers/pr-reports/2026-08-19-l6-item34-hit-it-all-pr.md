@@ -65,6 +65,12 @@ independently calibrated."
   (`test_trend_buffer_accumulates_across_ticks`) was silently coupled to the old default=10 (it
   fired 4 ticks and asserted a buffer length of 4); now sets its window explicitly via
   `monkeypatch.setenv`, decoupling it from whatever the default happens to be.
+- `services/orion-substrate-runtime/app/worker.py`: `_chat_tick` now persists `curr_projection`
+  after `chat_prediction_error` mutates its baseline fields (review finding, see below).
+- `services/orion-substrate-runtime/tests/test_worker_chat_tick_baseline_persistence.py`: new,
+  regression coverage for the above.
+- `services/orion-substrate-runtime/README.md`: env-key doc updated to match the shipped default
+  (review finding).
 
 ## Schema / bus / API changes
 
@@ -99,14 +105,15 @@ independently calibrated."
 
 ```text
 /mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest orion/substrate/tests/test_prediction_error.py -q
-65 passed
+65 passed (unchanged after the review-driven EWMA-helper extraction)
 
-/mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest orion/substrate/tests/ -q
-546 passed
+/mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest services/orion-substrate-runtime/tests/test_worker_chat_tick_baseline_persistence.py -q
+2 passed — confirmed via `git stash` to fail (2 failed) against the pre-fix worker.py, pass
+against the post-fix version
 
-/mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest services/orion-substrate-runtime/tests -q \
+/mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest orion/substrate/tests/ services/orion-substrate-runtime/tests -q \
   --ignore=services/orion-substrate-runtime/tests/test_grammar_consumer_integration.py
-249 passed, 16 failed — confirmed pre-existing via `git stash -u` + re-run (identical 16 failures,
+797 passed, 16 failed — confirmed pre-existing via `git stash -u` + re-run (identical 16 failures,
 identical pass count, with this patch's changes stashed out). All 16 are local-Postgres-at-
 127.0.0.1:5432 / other-infra dependencies unrelated to this patch (2 of the 16,
 test_quarantine_truth / test_worker_independent_reducers, already documented as pre-existing in
@@ -156,8 +163,34 @@ Not deployed/restarted as part of this patch — see Restart required below.
 
 ## Review findings fixed
 
-See code-review skill run against this branch; findings and fixes recorded here once the run
-completes.
+- Finding: **(critical)** `_chat_tick` computed `chat_prediction_error` (which mutates
+  `curr_projection`'s EWMA baseline fields in place) but never persisted `curr_projection`
+  afterward, unlike `_execution_tick` which explicitly re-saves it for exactly this reason. Every
+  real tick would reload a projection whose baseline never survived, permanently re-taking the
+  `n==0` cold-start branch and returning `0.0` forever — reproducing this patch's own bug (chat
+  can't win `predicted_shift`'s argmax) via a different mechanism. Undetected by the pure-function
+  unit tests, which never exercise this load/save call graph.
+  - Fix: added the same explicit `self._store.save_chat_session_projection(curr_projection)` call
+    `_execution_tick` already has.
+  - Evidence: new `test_worker_chat_tick_baseline_persistence.py` (mirrors
+    `test_worker_execution_tick_baseline_persistence.py`), confirmed via `git stash` to fail
+    without the fix and pass with it.
+- Finding: `README.md` still documented `SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS` as
+  defaulting to 10 with the old "not independently calibrated" rationale.
+  - Fix: updated to the shipped default=2 and the real TEST-validation numbers.
+  - Evidence: `services/orion-substrate-runtime/README.md` diff.
+- Finding: `chat_prediction_error`'s new EWMA-baseline block was a byte-for-byte copy of
+  `execution_prediction_error`'s block with only the domain constants swapped — no shared helper,
+  and `biometrics_prediction_error` would be an obvious 3rd copy of the same bug class.
+  - Fix: extracted `_score_and_update_ewma_prediction_error()`, called by both functions.
+  - Evidence: `orion/substrate/tests/test_prediction_error.py`, 65/65 pass unchanged after the
+    refactor (behavior-preserving).
+- Finding: window=2 was TRAIN/TEST-validated on biometrics history only, then applied uniformly to
+  a trend buffer shared by all 5 Active-Inference domains — no per-domain override exists.
+  - Fix: none — already explicitly disclosed in this report's Risks section below, same
+    accepted-risk shape the original reversion-sign fix (PR #1304) used for the identical
+    biometrics-only-validated-applied-uniformly trade-off. Re-confirmed as intentional, not
+    overlooked.
 
 ## Restart required
 

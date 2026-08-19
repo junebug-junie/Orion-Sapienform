@@ -70,6 +70,9 @@ class _FakeSession:
     def filter(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return self
 
+    def with_for_update(self):
+        return self
+
     def first(self):
         return self._rows_by_model.get(self._current_model)
 
@@ -150,3 +153,16 @@ def test_acquires_the_advisory_lock_before_any_lookup(monkeypatch: pytest.Monkey
     lock_sql = str(sess.lock_calls[0][0]).lower()
     assert "pg_advisory_xact_lock" in lock_sql
     assert sess.lock_calls[0][1] == {"row_id": "corr-lock"}
+
+
+def test_does_not_lock_when_routing_disabled(monkeypatch: pytest.MonkeyPatch):
+    """Review follow-up (2026-08-19): the advisory lock exists solely to
+    protect the cross-table routing decision below -- with routing off there
+    is no cross-table race, so this hot-path telemetry write skips the lock
+    round trip entirely rather than paying for it unconditionally."""
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
+    sess = _FakeSession(rows_by_model={worker.ChatHistoryLogSQL: _Row({})})
+
+    worker._back_populate_chat_spark_meta_from_telemetry(sess, "corr-nolock", {"correlation_id": "corr-nolock"})
+
+    assert sess.lock_calls == []

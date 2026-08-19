@@ -290,6 +290,32 @@ class TestApplySparkMetaPatchRouting:
         assert ok is False
         assert sess.executed == []
 
+    def test_acquires_lock_when_routing_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        class _Row:
+            spark_meta = {"existing": True}
+
+        sess = _FakeSession(query_result_by_model={worker.ChatHistoryLogSQL: _Row()})
+
+        self._run(monkeypatch, sess=sess, routing_enabled=True)
+
+        assert len(sess.lock_calls) == 1
+        assert "pg_advisory_xact_lock" in str(sess.lock_calls[0][0]).lower()
+
+    def test_does_not_lock_when_routing_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Review follow-up (2026-08-19): the advisory lock exists solely to
+        protect the cross-table routing decision -- with routing off every
+        write targets ChatHistoryLogSQL unconditionally, so there is no
+        cross-table race to serialize against and the lock round trip is
+        skipped."""
+        class _Row:
+            spark_meta = {"existing": True}
+
+        sess = _FakeSession(query_result_by_model={worker.ChatHistoryLogSQL: _Row()})
+
+        self._run(monkeypatch, sess=sess, routing_enabled=False)
+
+        assert sess.lock_calls == []
+
 
 class TestMirrorTableSchemaParity:
     """Code review (2026-08-19, PR #1734): no gate ensures

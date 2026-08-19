@@ -100,6 +100,12 @@ class _FakeSession:
     def query(self, _model):  # noqa: ANN001
         return _FakeQuery(self._row)
 
+    def execute(self, stmt, params=None):
+        # _lock_chat_history_row's advisory-lock call, added to
+        # _chat_history_thought_for_merge by the 2026-08-19 code-review
+        # follow-up. Nothing to capture -- this fake has no UPDATE path.
+        return None
+
 
 def test_chat_history_thought_for_merge_preserves_existing_non_empty_thought() -> None:
     sess = _FakeSession(_FakeRow("chat-thought"))
@@ -150,10 +156,16 @@ class _FakeSessionByModel:
     def __init__(self, rows_by_model: dict[type, _FakeRow | None]) -> None:
         self._rows_by_model = rows_by_model
         self.query_calls: list[type] = []
+        self.lock_calls: list[Any] = []
 
     def query(self, model):  # noqa: ANN001
         self.query_calls.append(model)
         return _FakeQueryByModel(self._rows_by_model.get(model))
+
+    def execute(self, stmt, params=None):
+        if params is not None:
+            self.lock_calls.append((stmt, params))
+        return None
 
 
 def test_chat_history_thought_for_merge_checks_mirror_table_when_primary_misses(
@@ -180,6 +192,44 @@ def test_chat_history_thought_for_merge_checks_mirror_table_when_primary_misses(
 
     assert resolved == "mirror-table-thought"
     assert sess.query_calls == [worker.ChatHistoryLogSQL, worker.AitownChatHistoryLogSQL]
+
+
+def test_chat_history_thought_for_merge_acquires_lock_when_routing_enabled(
+    monkeypatch,
+) -> None:
+    """Regression test: code review (2026-08-19) found this function's
+    caller doesn't acquire _lock_chat_history_row until well after this
+    function's own SELECT runs, so an unlocked read here could race a
+    concurrent turn-path write for the same id. Self-contained locking
+    added, matching _apply_spark_meta_patch's pattern."""
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", True)
+    sess = _FakeSessionByModel({worker.ChatHistoryLogSQL: _FakeRow("chat-thought")})
+
+    worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "corr-lock", "thought_process": "incoming"},
+        {"correlation_id": "corr-lock"},
+    )
+
+    assert len(sess.lock_calls) == 1
+    lock_sql = str(sess.lock_calls[0][0]).lower()
+    assert "pg_advisory_xact_lock" in lock_sql
+    assert sess.lock_calls[0][1] == {"row_id": "corr-lock"}
+
+
+def test_chat_history_thought_for_merge_does_not_lock_when_routing_disabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(worker.settings, "sql_writer_aitown_routing_enabled", False)
+    sess = _FakeSessionByModel({worker.ChatHistoryLogSQL: _FakeRow("chat-thought")})
+
+    worker._chat_history_thought_for_merge(
+        sess,
+        {"id": "corr-nolock", "thought_process": "incoming"},
+        {"correlation_id": "corr-nolock"},
+    )
+
+    assert sess.lock_calls == []
 
 
 def test_chat_history_thought_for_merge_does_not_check_mirror_when_routing_disabled(

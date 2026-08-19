@@ -981,7 +981,18 @@ def _apply_spark_meta_patch(payload: dict) -> bool:
         # once the row lands. Every current producer sets id ==
         # correlation_id (see upsert_chat_history_row's own docstring), so
         # correlation_id is the correct lock key here.
-        _lock_chat_history_row(sess, corr)
+        #
+        # Gated on sql_writer_aitown_routing_enabled (review follow-up,
+        # 2026-08-19): the lock exists solely to protect the cross-table
+        # routing decision below. When routing is disabled every write
+        # (turn-path and message-path alike) targets ChatHistoryLogSQL
+        # unconditionally -- see _resolve_chat_history_model_cls's own
+        # early return, which skips its DB lookup entirely in that case --
+        # so there is no cross-table race left to serialize against, and
+        # paying for a round trip on every patch write for zero correctness
+        # benefit isn't worth it.
+        if settings.sql_writer_aitown_routing_enabled:
+            _lock_chat_history_row(sess, corr)
         model_cls = ChatHistoryLogSQL
         existing = (
             sess.query(ChatHistoryLogSQL)
@@ -1203,6 +1214,18 @@ def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], ra
     candidate_id = filtered_data.get("id") or filtered_data.get("correlation_id") or raw_data.get("correlation_id")
     if not candidate_id:
         return incoming
+    # _lock_chat_history_row(): code review follow-up (2026-08-19) caught
+    # this function's caller doesn't acquire it until well after this SELECT
+    # runs (_write_row's own lock, ~160 lines later in the same function) --
+    # so this read raced a concurrent turn-path write for the same id with
+    # nothing serializing it, same failure shape _apply_spark_meta_patch was
+    # fixed for. Self-contained here rather than relying on caller ordering,
+    # matching _apply_spark_meta_patch/_back_populate_chat_spark_meta_from_
+    # telemetry's own pattern. Gated on routing being enabled for the same
+    # reason those two are: with routing off there is no cross-table race
+    # to protect against.
+    if settings.sql_writer_aitown_routing_enabled:
+        _lock_chat_history_row(sess, str(candidate_id))
     existing = (
         sess.query(ChatHistoryLogSQL)
         .filter(
@@ -1241,29 +1264,50 @@ def _back_populate_chat_spark_meta_from_telemetry(sess: Any, corr_id: Any, filte
 
     Callers MUST hold `_lock_chat_history_row(sess, corr_id)` before calling
     this if their session hasn't already acquired it for this row (this
-    function does so itself) -- same race `_apply_spark_meta_patch` and
-    `_resolve_chat_history_model_cls` guard against: a concurrent turn-path
-    write for the same row.
+    function does so itself, gated on routing being enabled -- with routing
+    off there is no cross-table race to protect against, see
+    _apply_spark_meta_patch's identical gating and rationale) -- same race
+    `_apply_spark_meta_patch` and `_resolve_chat_history_model_cls` guard
+    against: a concurrent turn-path write for the same row.
 
     Returns True if a chat_history_log row was found and updated.
     """
-    _lock_chat_history_row(sess, str(corr_id))
+    if settings.sql_writer_aitown_routing_enabled:
+        _lock_chat_history_row(sess, str(corr_id))
     meta_for_chat = _spark_meta_minimal(filtered_data)
     chat_model_cls = ChatHistoryLogSQL
+    # .with_for_update(): review follow-up (2026-08-19) -- this is a
+    # read-modify-write of spark_meta (merge below, then UPDATE) with the
+    # same lost-update shape _apply_spark_meta_patch's own review finding
+    # already fixed on its side: two concurrent telemetry writes for the
+    # same correlation_id could each read the same starting spark_meta and
+    # the second UPDATE would clobber the first's merged keys. Added here
+    # for parity rather than left as an unexplained asymmetry between two
+    # near-identical patterns added in the same commit.
     existing_chat = (
         sess.query(ChatHistoryLogSQL)
         .filter(ChatHistoryLogSQL.correlation_id == corr_id)
+        .with_for_update()
         .first()
     )
     if existing_chat is None and settings.sql_writer_aitown_routing_enabled:
         existing_chat = (
             sess.query(AitownChatHistoryLogSQL)
             .filter(AitownChatHistoryLogSQL.correlation_id == corr_id)
+            .with_for_update()
             .first()
         )
         if existing_chat is not None:
             chat_model_cls = AitownChatHistoryLogSQL
     if existing_chat is None:
+        # debug, not error: unlike a spark_meta *patch* (which always names
+        # a specific row that's expected to exist), a telemetry tick's
+        # correlation_id commonly has no matching chat_history_log row at
+        # all (background/non-chat telemetry) -- that's an expected miss,
+        # not an operator-actionable failure. Logged at all only because
+        # review (2026-08-19) found this branch previously gave zero
+        # signal distinguishing "nothing to do" from a real routing miss.
+        logger.debug("spark_telemetry_chat_backfill_missing_row correlation_id=%s", corr_id)
         return False
     merged = _merge_spark_meta(
         getattr(existing_chat, "spark_meta", None),
@@ -2016,6 +2060,24 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             .filter(ChatHistoryLogSQL.correlation_id == corr_id)
             .first()
         )
+        # Not routing-aware before this fix (code review follow-up,
+        # 2026-08-19): a 4th primary-table-only blind spot found in the
+        # same pass that fixed the other three. For a turn already routed
+        # to aitown_chat_history_log (PR #1743), this returned None
+        # silently and the caller (_maybe_emit_memory_turn_from_row) just
+        # returned without logging -- dropping that turn from memory
+        # consolidation (services/orion-memory-consolidation, a real
+        # downstream consumer of orion:memory:turn:persisted) with zero
+        # trace. Read-only, no lock: called only after the row's own write
+        # has already completed (a "turn completes" precondition of the
+        # caller), so there is no cross-session commit-visibility race to
+        # guard against here, unlike the write/patch-side functions above.
+        if row is None and settings.sql_writer_aitown_routing_enabled:
+            row = (
+                sess.query(AitownChatHistoryLogSQL)
+                .filter(AitownChatHistoryLogSQL.correlation_id == corr_id)
+                .first()
+            )
         if row is None:
             return None
         prompt = str(getattr(row, "prompt", "") or "").strip()

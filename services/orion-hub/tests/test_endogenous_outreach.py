@@ -1010,6 +1010,23 @@ def test_disabled_instance_starts_no_task() -> None:
     assert outreach.status()["block_reason"] == "disabled"
 
 
+def _env_example_value(key: str) -> str:
+    """Read one KEY=value line straight out of the checked-in `.env_example`,
+    without instantiating `Settings` (see `test_tick_sec_default_is_not_the_
+    root_caused_300s_value`'s own comment for why that specifically doesn't
+    work here). Shared by every test in this file that needs to assert
+    something about the checked-in operator contract, not the runtime
+    default -- those are two different files and this repo has been burned
+    before by them drifting apart silently."""
+    import re
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / ".env_example"
+    match = re.search(rf"^{re.escape(key)}=(.+)$", example.read_text(), re.M)
+    assert match, f"{key} missing from .env_example"
+    return match.group(1).strip()
+
+
 def test_shipped_timezone_is_a_real_iana_zone() -> None:
     """A typo in .env_example's TZ degrades silently to UTC.
 
@@ -1018,17 +1035,46 @@ def test_shipped_timezone_is_a_real_iana_zone() -> None:
     hours with only a log line to show for it. This gate turns that into a
     failing test instead.
     """
-    import re
-    from pathlib import Path
     from zoneinfo import ZoneInfo
 
-    example = Path(__file__).resolve().parents[1] / ".env_example"
-    match = re.search(r"^HUB_ENDOGENOUS_OUTREACH_TZ=(.+)$", example.read_text(), re.M)
-    assert match, "HUB_ENDOGENOUS_OUTREACH_TZ missing from .env_example"
-
-    zone = match.group(1).strip()
+    zone = _env_example_value("HUB_ENDOGENOUS_OUTREACH_TZ")
     ZoneInfo(zone)  # raises if the zone is not real
 
     # Round-trip through the real constructor: proves it did not fall back.
     outreach = _outreach(timezone_name=zone)
     assert outreach.status()["timezone"] == zone
+
+
+def test_tick_sec_default_is_not_the_root_caused_300s_value() -> None:
+    """Regression guard, 2026-08-19: 300s was root-caused live as the reason
+    outreach had never fired -- a real qualifying run's catchable window is
+    typically 0-8s, so a 300s poll essentially never observes one (0 of 9
+    real episodes caught, replayed against real history). This does not
+    pin the exact new value (that's a real, data-derived tuning knob an
+    operator may retune from live firing-rate data, same as
+    MIN_RUN_LENGTH) -- it only guards against silently drifting back to the
+    specific value already proven broken."""
+    import re
+    from pathlib import Path
+
+    assert float(_env_example_value("HUB_ENDOGENOUS_OUTREACH_TICK_SEC")) != 300.0
+
+    # Source-text check, not a live `Settings()` import. Verified directly,
+    # 2026-08-19: `app/settings.py`'s module-level `settings = get_settings()`
+    # runs `Settings()` on the very first `from app.settings import
+    # <anything>` (any name, including the `Settings` class itself -- Python
+    # executes the whole module on first import regardless of which name is
+    # pulled from it), and this suite has no fixture supplying the class's
+    # other required env keys (CHANNEL_VOICE_*/CHANNEL_COLLAPSE_* etc.), so
+    # even a bare `Settings.model_fields[...]` lookup fails before it's ever
+    # reached -- reproduced live: `pydantic_core.ValidationError: 5
+    # validation errors for Settings`. There is no simpler import-based
+    # equivalent available in this environment; the regex is the workaround,
+    # not an oversight.
+    settings_src = (Path(__file__).resolve().parents[1] / "app" / "settings.py").read_text()
+    settings_match = re.search(
+        r'HUB_ENDOGENOUS_OUTREACH_TICK_SEC:\s*float\s*=\s*Field\(\s*default=([\d.]+)',
+        settings_src,
+    )
+    assert settings_match, "HUB_ENDOGENOUS_OUTREACH_TICK_SEC Field default not found in settings.py"
+    assert float(settings_match.group(1)) != 300.0

@@ -362,8 +362,42 @@ class Settings(BaseSettings):
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )
     # How often the loop wakes to consider reaching out.
+    #
+    # 300s (the original default) was root-caused live, 2026-08-19, as the
+    # reason outreach had NEVER fired since it shipped (2026-08-16): a
+    # qualifying persistence run (MIN_RUN_LENGTH=8 consecutive ticks) lasts
+    # only ~18-27s in wall-clock time at the field-digester's real ~2.1s tick
+    # cadence, and the "catchable window" -- from the tick where the run
+    # first CROSSES 8 to the tick where it ends -- is often just 0-8
+    # seconds. Simulating the real poll loop against 6h of real
+    # substrate_field_state history (scripts/tension_outreach_trigger.py's
+    # own query, replayed offline): 300s caught 0 of 9 real qualifying
+    # episodes (0%); 30s caught ~9%; 15s ~18%; 10s ~33%; the 5.0 floor caught
+    # ~56% -- that floor is enforced by the CONSUMER, not this Field:
+    # `EndogenousOutreach.__init__` (scripts/endogenous_outreach.py) does
+    # `self.tick_interval_sec = max(5.0, float(tick_interval_sec))`; this
+    # raw setting itself carries no floor and would happily accept e.g. 0.5.
+    # 10.0 is a deliberate middle ground, not the theoretical best (5.0
+    # would catch more) -- the query is cheap (`EXPLAIN`'d live against the
+    # real query text, 2026-08-19: a Bitmap Heap Scan off
+    # idx_substrate_field_state_generated, cost ~323 -- NOT an index-only
+    # scan, since `field_json` itself isn't indexed and still needs a heap
+    # fetch per matching row; corrected after an earlier version of this
+    # comment wrongly claimed "index-only", conflating this query with an
+    # unrelated bare COUNT(*) EXPLAIN that legitimately was) -- but this
+    # shares the same Postgres instance as every other service, so this
+    # does not poll at the floor "because it can."
+    # DISCLOSED, not silently accepted: even at the floor, catch rate tops
+    # out around ~56% on this sample -- polling faster narrows but does not
+    # close the gap, because many real episodes' catchable window is under
+    # 5 seconds. Fully closing it needs a wall-clock-persistence redesign
+    # (track "was there a qualifying run since last checked", not "is one
+    # happening at this exact instant") -- real, separate follow-up work,
+    # not done here. See docs/superpowers/specs/2026-08-16-tension-driven-
+    # outreach-design.md's "Poll-cadence root cause" section for the full
+    # account and replay numbers.
     HUB_ENDOGENOUS_OUTREACH_TICK_SEC: float = Field(
-        default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
+        default=10.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
     )
     # 2026-08-16: HUB_ENDOGENOUS_OUTREACH_PROBABILITY removed -- the coin-flip
     # stub it configured is gone (scripts/endogenous_outreach.py::

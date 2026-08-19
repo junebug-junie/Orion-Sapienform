@@ -27,13 +27,21 @@ with the actual AI-Town where_sql applied, both created 2026-08-19 after
 the fix shipped -- and are explicitly NOT touched by this script.
 
 Scope, live-verified before writing this script (not assumed): exactly 22
-Concept nodes + 22 Evidence nodes (44 total) + their supports/co_occurs_with
-edges, well under AGENTS.md section 14's 100k-row/100MB stop-and-ask
-threshold.
+Concept nodes + 22 Evidence nodes (44 total) + 231 outgoing edges, zero
+edges from any KEPT node into the polluted subgraph (confirmed via a
+direct query before the first real run) -- well under AGENTS.md section
+14's 100k-row/100MB stop-and-ask threshold, and fully self-contained.
+
+Uses ``orion.graph.falkor_client.RedisGraphQueryClient`` (code review
+2026-08-19: the first version of this script hand-rolled a raw
+``redis.Redis`` + ``GRAPH.QUERY`` wrapper instead of reusing the repo's
+existing, tested client -- every sibling Falkor backfill/cleanup script
+already uses this one).
 
 Snapshot-first per AGENTS.md section 14: full node+edge dump written to
 /tmp/aitown_substrate_concept_purge/snapshot_before.json before any
-mutation.
+mutation. On completion, writes report.json, report.md, and
+before_after.csv (code review: the first version only wrote report.json).
 
 Usage:
     python scripts/purge_aitown_polluted_substrate_concepts.py --dry-run
@@ -42,6 +50,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -52,12 +61,14 @@ from typing import Any
 _SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if sys.path and sys.path[0] == _SCRIPT_DIR:
     sys.path.pop(0)
+REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
-import redis  # noqa: E402
+from orion.graph.falkor_client import RedisGraphQueryClient  # noqa: E402
 
-DEFAULT_HOST = os.environ.get("FALKORDB_HOST", "localhost")
-DEFAULT_PORT = int(os.environ.get("FALKORDB_PORT", "6380"))
-GRAPH_NAME = "orion_substrate"
+DEFAULT_FALKORDB_URI = os.environ.get("FALKORDB_URI", "redis://localhost:6380")
+DEFAULT_GRAPH_NAME = os.environ.get("FALKORDB_SUBSTRATE_GRAPH", "orion_substrate")
 JOB_DIR = Path("/tmp/aitown_substrate_concept_purge")
 
 # The single confirmed-polluted run. Deliberately a hardcoded, explicit
@@ -70,130 +81,174 @@ _POLLUTED_RUN_ID = "87e6539e-0962-4ef3-8dc1-568866c4c57d"
 _NODE_ID_PREFIX = f"sub-concept-topicfoundry-{_POLLUTED_RUN_ID}-"
 _EVIDENCE_ID_PREFIX = f"sub-evidence-topicfoundry-{_POLLUTED_RUN_ID}-"
 
+# Parens here are load-bearing: this is an OR expression, and Cypher's AND
+# binds tighter than OR, so any caller combining this with "AND NOT (...)"
+# unparenthesized would silently mis-scope to "X OR (Y AND NOT (...))"
+# instead of "(X OR Y) AND NOT (...)" -- caught live before this script's
+# first real run (see _snapshot's incoming-edge query for why it matters).
 _MATCH_WHERE = (
-    f"n.node_id STARTS WITH '{_NODE_ID_PREFIX}' "
-    f"OR n.node_id STARTS WITH '{_EVIDENCE_ID_PREFIX}'"
+    f"(n.node_id STARTS WITH '{_NODE_ID_PREFIX}' OR n.node_id STARTS WITH '{_EVIDENCE_ID_PREFIX}')"
 )
 
 
+def _log_progress(message: str) -> None:
+    JOB_DIR.mkdir(parents=True, exist_ok=True)
+    line = f"{datetime.now(timezone.utc).isoformat()} {message}"
+    print(line)
+    with open(JOB_DIR / "progress.log", "a") as fh:
+        fh.write(line + "\n")
+
+
 def _json_default(value: Any) -> Any:
-    if isinstance(value, (datetime,)):
+    if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(f"not JSON serializable: {type(value)}")
 
 
-def _query(r: redis.Redis, cypher: str) -> tuple[list[str], list[list[Any]]]:
-    result = r.execute_command("GRAPH.QUERY", GRAPH_NAME, cypher)
-    header = [h[1] if isinstance(h, list) else h for h in result[0]] if result[0] else []
-    rows = result[1] if len(result) > 1 else []
-    return header, rows
-
-
-def _snapshot(r: redis.Redis, out_dir: Path) -> dict:
+def _snapshot(client: RedisGraphQueryClient, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    _, node_rows = _query(
-        r,
+    node_rows = client.graph_query(
         f"MATCH (n) WHERE {_MATCH_WHERE} "
-        "RETURN labels(n), n.node_id, n.label, n.anchor_scope, n.metadata, n.evidence_type",
+        "RETURN labels(n) AS labels, n.node_id AS node_id, n.label AS label, "
+        "n.anchor_scope AS anchor_scope, n.evidence_type AS evidence_type"
     )
-    _, edge_rows = _query(
-        r,
+    outgoing_edges = client.graph_query(
         f"MATCH (n)-[e]->(m) WHERE {_MATCH_WHERE} "
-        "RETURN n.node_id, type(e), m.node_id",
+        "RETURN n.node_id AS src, type(e) AS rel, m.node_id AS dst"
     )
-    # Parens around _MATCH_WHERE are load-bearing: it's an OR expression,
-    # and Cypher's AND binds tighter than OR, so combining it with "AND NOT
-    # (...)" unparenthesized silently mis-scopes to
-    # "X OR (Y AND NOT (...))" instead of "(X OR Y) AND NOT (...)" --
-    # caught live before this script's first real run: the unparenthesized
-    # version returned edges *between two polluted nodes* under a query
-    # named "edges from kept nodes", which is definitionally impossible for
-    # a correct query.
-    _, edge_rows_in = _query(
-        r,
-        f"MATCH (m)-[e]->(n) WHERE ({_MATCH_WHERE}) AND NOT ("
-        f"m.node_id STARTS WITH '{_NODE_ID_PREFIX}' OR m.node_id STARTS WITH '{_EVIDENCE_ID_PREFIX}') "
-        "RETURN m.node_id, type(e), n.node_id",
+    incoming_from_kept = client.graph_query(
+        f"MATCH (m)-[e]->(n) WHERE {_MATCH_WHERE} AND NOT "
+        f"(m.node_id STARTS WITH '{_NODE_ID_PREFIX}' OR m.node_id STARTS WITH '{_EVIDENCE_ID_PREFIX}') "
+        "RETURN m.node_id AS src, type(e) AS rel, n.node_id AS dst"
     )
 
     snapshot = {
         "snapshot_taken_at": datetime.now(timezone.utc).isoformat(),
-        "graph": GRAPH_NAME,
+        "graph": DEFAULT_GRAPH_NAME,
         "polluted_run_id": _POLLUTED_RUN_ID,
         "nodes": node_rows,
-        "outgoing_edges": edge_rows,
-        "incoming_edges_from_kept_nodes": edge_rows_in,
+        "outgoing_edges": outgoing_edges,
+        "incoming_edges_from_kept_nodes": incoming_from_kept,
     }
     out_path = out_dir / "snapshot_before.json"
     with open(out_path, "w") as fh:
         json.dump(snapshot, fh, default=_json_default, indent=2)
-    return {"path": out_path, "node_count": len(node_rows), "edge_count": len(edge_rows) + len(edge_rows_in)}
-
-
-def _counts(r: redis.Redis) -> dict[str, int]:
-    _, total = _query(r, "MATCH (n) RETURN count(n)")
-    _, matching = _query(r, f"MATCH (n) WHERE {_MATCH_WHERE} RETURN count(n)")
     return {
-        "graph_total_nodes": total[0][0] if total else 0,
-        "matching_polluted_nodes": matching[0][0] if matching else 0,
+        "path": out_path,
+        "node_count": len(node_rows),
+        "edge_count": len(outgoing_edges),
+        "incoming_from_kept_count": len(incoming_from_kept),
+        "nodes": node_rows,
     }
 
 
-def _purge(r: redis.Redis) -> dict:
+def _counts(client: RedisGraphQueryClient) -> dict[str, int]:
+    total = client.graph_query("MATCH (n) RETURN count(n) AS c")
+    matching = client.graph_query(f"MATCH (n) WHERE {_MATCH_WHERE} RETURN count(n) AS c")
+    return {
+        "graph_total_nodes": total[0]["c"] if total else 0,
+        "matching_polluted_nodes": matching[0]["c"] if matching else 0,
+    }
+
+
+def _purge(client: RedisGraphQueryClient) -> None:
     """DETACH DELETE the matched nodes -- removes the nodes and every edge
     touching them (both directions) in one atomic Cypher statement."""
-    _, result = _query(r, f"MATCH (n) WHERE {_MATCH_WHERE} DETACH DELETE n")
-    return {"deleted": True}
+    client.graph_query(f"MATCH (n) WHERE {_MATCH_WHERE} DETACH DELETE n")
+
+
+def _write_before_after_csv(out_dir: Path, nodes: list[dict]) -> Path:
+    out_path = out_dir / "before_after.csv"
+    with open(out_path, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["node_id", "label", "anchor_scope", "before", "after"])
+        for row in nodes:
+            writer.writerow([row.get("node_id"), row.get("label"), row.get("anchor_scope"), "present", "deleted"])
+    return out_path
+
+
+def _write_report_md(
+    out_dir: Path, *, before: dict, after: dict, snapshot_path: Path, csv_path: Path, verdict: str,
+) -> Path:
+    out_path = out_dir / "report.md"
+    lines = [
+        "# AI-Town-polluted substrate concept purge -- report",
+        "",
+        f"- verdict: **{verdict}**",
+        f"- polluted run_id: `{_POLLUTED_RUN_ID}`",
+        f"- nodes deleted: {before['matching_polluted_nodes']}",
+        "",
+        "## Before",
+        f"- graph total nodes: {before['graph_total_nodes']}",
+        f"- matching polluted nodes: {before['matching_polluted_nodes']}",
+        "",
+        "## After",
+        f"- graph total nodes: {after['graph_total_nodes']}",
+        f"- matching polluted nodes (must be 0): {after['matching_polluted_nodes']}",
+        "",
+        "## Artifacts",
+        f"- snapshot (full node+edge dump, pre-mutation): `{snapshot_path}`",
+        f"- before/after per-node audit: `{csv_path}`",
+        f"- progress log: `{out_dir / 'progress.log'}`",
+    ]
+    out_path.write_text("\n".join(lines) + "\n")
+    return out_path
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Purge AI-Town-polluted concept/evidence nodes from orion_substrate"
     )
-    parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--uri", default=DEFAULT_FALKORDB_URI)
+    parser.add_argument("--graph", default=DEFAULT_GRAPH_NAME)
     parser.add_argument("--dry-run", action="store_true", help="snapshot + report only, no mutation")
     args = parser.parse_args()
 
     JOB_DIR.mkdir(parents=True, exist_ok=True)
-    r = redis.Redis(host=args.host, port=args.port, decode_responses=True)
+    client = RedisGraphQueryClient(uri=args.uri, graph_name=args.graph)
 
-    before = _counts(r)
-    print(f"before: {json.dumps(before)}")
+    before = _counts(client)
+    _log_progress(f"before: {json.dumps(before)}")
 
-    snap = _snapshot(r, JOB_DIR)
-    print(f"snapshot: {snap['node_count']} nodes, {snap['edge_count']} edges -> {snap['path']}")
+    snap = _snapshot(client, JOB_DIR)
+    _log_progress(f"snapshot: {snap['node_count']} nodes, {snap['edge_count']} outgoing edges -> {snap['path']}")
+    _log_progress(f"incoming edges from kept nodes into the polluted subgraph: {snap['incoming_from_kept_count']}")
 
     if before["matching_polluted_nodes"] != snap["node_count"]:
-        print("ERROR: snapshot node count does not match the live match count -- aborting before any mutation.")
+        _log_progress("ERROR: snapshot node count does not match the live match count -- aborting before any mutation.")
         return 1
 
     if snap["node_count"] == 0:
-        print("Nothing to purge -- 0 matching polluted nodes. Done.")
+        _log_progress("Nothing to purge -- 0 matching polluted nodes. Done.")
         return 0
 
     if args.dry_run:
-        print(f"DRY RUN: would delete {snap['node_count']} nodes. No changes made.")
+        _log_progress(f"DRY RUN: would delete {snap['node_count']} nodes. No changes made.")
         return 0
 
-    _purge(r)
-    after = _counts(r)
-    print(f"after: {json.dumps(after)}")
+    _purge(client)
+    after = _counts(client)
+    _log_progress(f"after: {json.dumps(after)}")
 
     verdict = "ok" if after["matching_polluted_nodes"] == 0 else "needs_review"
+    csv_path = _write_before_after_csv(JOB_DIR, snap["nodes"])
+    report_md_path = _write_report_md(
+        JOB_DIR, before=before, after=after, snapshot_path=snap["path"], csv_path=csv_path, verdict=verdict,
+    )
     report = {
         "job": "purge_aitown_polluted_substrate_concepts",
         "polluted_run_id": _POLLUTED_RUN_ID,
         "before": before,
         "after": after,
         "snapshot_path": str(snap["path"]),
+        "before_after_csv_path": str(csv_path),
         "verdict": verdict,
     }
     with open(JOB_DIR / "report.json", "w") as fh:
         json.dump(report, fh, indent=2)
-    print(f"report: {JOB_DIR / 'report.json'}")
-    print(f"verdict: {verdict}")
+    _log_progress(f"report: {JOB_DIR / 'report.json'}, {report_md_path}, {csv_path}")
+    _log_progress(f"verdict: {verdict}")
     return 0 if verdict == "ok" else 1
 
 

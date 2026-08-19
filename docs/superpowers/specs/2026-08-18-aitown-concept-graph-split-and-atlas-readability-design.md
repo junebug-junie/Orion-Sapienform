@@ -192,6 +192,12 @@ ever appears.
   The recall/crystallization consumers with deliberate AI-Town handling
   are almost certainly bucket (b) — this phase is real investigative work
   per file, not something to pre-decide in this doc.
+  **Audit done, 2026-08-19** (`docs/superpowers/specs/2026-08-19-aitown-table-split-phase2-consumer-audit.md`)
+  — all 50 files traced directly, not guessed. 12 confirmed bucket (b),
+  concentrated in `orion-recall` (7 files, all fail *silently open* --
+  none error, they just quietly return fewer results) plus the
+  crystallization-gate tooling (2) and the Falkor entity-graph backfill
+  trio (3). Migration itself (adding the reads) is NOT started.
 - **Phase 3 (cutover):** stop writing AI Town rows into `chat_history_log`
   — single-write to `aitown_chat_history_log` only. Only safe once every
   bucket-(b) consumer from Phase 2 has actually shipped.

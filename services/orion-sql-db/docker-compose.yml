@@ -15,6 +15,17 @@ services:
     # Bound vacuum memory so a single worker cannot pin the cgroup before the cap trips.
     command:
       - postgres
+      # ROADMAP D2. Without this we cannot answer "which query is reading this table",
+      # only "which query happens to be running right now". Sampling pg_stat_activity 14
+      # times failed to identify the consumer scanning substrate_proposal_frames because
+      # each execution finishes in well under a second -- a fast, frequent query is close
+      # to invisible to sampling and dominant in aggregate. pg_stat_statements aggregates
+      # every execution instead, so shared_blks_read/calls answers it directly.
+      # Requires a restart to take effect (shared_preload_libraries is postmaster-only).
+      # Cost: a fixed shared-memory allocation for pg_stat_statements.max entries and a
+      # small per-execution bookkeeping overhead. Defaults kept (max=5000, track=top).
+      - -c
+      - shared_preload_libraries=pg_stat_statements
       - -c
       - autovacuum_work_mem=256MB
       - -c

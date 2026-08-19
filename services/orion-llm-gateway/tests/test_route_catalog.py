@@ -6,6 +6,7 @@ import pytest
 
 from app import route_catalog
 from orion.llm.routes import LLM_ROUTE_DISPLAY_ORDER
+from app import llm_backend
 from app.llm_backend import RouteTarget, _load_route_targets
 
 
@@ -26,7 +27,13 @@ def test_build_routes_response_defaults_to_chat(monkeypatch: pytest.MonkeyPatch)
         "agent": {"url": "http://agent:8014", "served_by": "atlas-worker-agent-1", "backend": "llamacpp"},
         "metacog": {"url": "http://metacog:8012", "served_by": "atlas-worker-2", "backend": "llamacpp"},
     }
+    # setenv is NOT enough: `settings` is a pydantic Settings instance built at import, so
+    # `_load_route_targets` reads `settings.llm_route_table_json`, not os.environ. This test
+    # set the env var and cleared the cache and every row still came back `not_configured` --
+    # it was a catalog-shape test wearing a route-table-loading test's clothes. Patch the
+    # settings attribute the loader actually reads.
     monkeypatch.setenv("LLM_GATEWAY_ROUTE_TABLE_JSON", json.dumps(table))
+    monkeypatch.setattr(llm_backend.settings, "llm_route_table_json", json.dumps(table))
     _load_route_targets.cache_clear()
 
     payload = route_catalog.build_routes_response()
@@ -39,14 +46,16 @@ def test_build_routes_response_defaults_to_chat(monkeypatch: pytest.MonkeyPatch)
     # different problems, and omitting the row makes them look identical.
     assert [r["id"] for r in payload["routes"]] == list(LLM_ROUTE_DISPLAY_ORDER)
     by_id = {r["id"]: r for r in payload["routes"]}
+    # The four configured routes resolve; `quick_background` is deliberately absent from
+    # `table`, and the honest answer is a row saying so -- not silence. A lane missing from the
+    # route table and a lane that was never a route are different problems, and omitting the
+    # row makes them identical.
     assert by_id["quick_background"]["status"] == "not_configured"
-    # NOTE (2026-08-19, found while extending this test, NOT fixed here): the
-    # LLM_GATEWAY_ROUTE_TABLE_JSON set above does not actually reach `get_route_targets()` in
-    # this fixture -- EVERY row comes back `not_configured`, including `chat`. That is why the
-    # original assertions could only check key presence. The test still earns its keep as a
-    # catalog-shape test; it is not a route-table-loading test despite appearances. Fixing the
-    # fixture is its own patch.
-    assert all(r["status"] == "not_configured" for r in payload["routes"])
+    assert by_id["chat"]["status"] != "not_configured"
+    assert by_id["chat"]["served_by"] == "atlas-worker-1"
+    # ...and it still declares itself a background lane even unconfigured, so a consumer
+    # filtering on `priority` cannot offer a yielding lane to a human.
+    assert by_id["quick_background"]["priority"] == "background"
     assert all("status" in r for r in payload["routes"])
     assert all("model" in r for r in payload["routes"])
     assert all("priority" in r for r in payload["routes"])

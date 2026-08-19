@@ -105,15 +105,30 @@ const HUB_COMPUTE_DEFAULT = 'quick';
 // hid `quick_background` from every operator surface.
 const HUB_COMPUTE_ROUTE_FALLBACK_IDS = ['chat', 'quick', 'agent', 'metacog'];
 
+// Fail-safe floor mirroring BACKGROUND_LLM_ROUTES in orion/llm/routes.py. The browser cannot
+// import Python, and the authoritative answer is the `priority` field that
+// llm_gateway_client._priority_for() now guarantees -- this is belt-and-braces for a page held
+// open across a deploy, or pointed straight at the gateway. Drift here degrades GRACEFULLY: a
+// new background route missing from this list is still excluded by its `priority`, so the worst
+// case is losing the second line of defence, never gaining a wrong answer.
+const HUB_KNOWN_BACKGROUND_ROUTE_IDS = ['quick_background'];
+
 /**
  * Routes a human may select. Background-priority lanes are deliberately excluded: they wait for
  * slot slack before dispatching, so choosing one interactively buys nothing but latency. They
  * still appear in the catalog (and in /routes) so their health is visible to an operator.
  */
+function isBackgroundRouteEntry(entry) {
+  if (!entry) return false;
+  const id = String(entry.id || '').toLowerCase();
+  if (HUB_KNOWN_BACKGROUND_ROUTE_IDS.includes(id)) return true;
+  return String(entry.priority || '').toLowerCase() === 'background';
+}
+
 function pickableComputeRouteIds() {
   const entries = (llmRouteCatalog && llmRouteCatalog.routes) || [];
   const ids = entries
-    .filter((entry) => entry && String(entry.priority || '').toLowerCase() !== 'background')
+    .filter((entry) => !isBackgroundRouteEntry(entry))
     .map((entry) => String(entry.id || '').toLowerCase())
     .filter(Boolean);
   return ids.length ? ids : HUB_COMPUTE_ROUTE_FALLBACK_IDS;

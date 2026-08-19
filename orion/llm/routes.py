@@ -32,8 +32,9 @@ The follow-up slice named here on 2026-08-18 -- the *catalog* half, four more co
 surface -- was closed on 2026-08-19. Those now derive from this module:
 
     services/orion-llm-gateway/app/route_catalog.py        CATALOG_ROUTE_IDS
-    services/orion-hub/scripts/llm_gateway_client.py       VALID_ROUTE_IDS
-    scripts/smoke_llm_gateway_routes.py                    asserts every route in the order below
+    services/orion-hub/scripts/llm_gateway_client.py       VALID_ROUTE_IDS + backfill + ordering
+    scripts/smoke_llm_gateway_routes.py                    both the GET /routes catalog check
+                                                           and the RPC dispatch loop
 
 The Hub UI's picker (`services/orion-hub/static/js/app.js`) deliberately does NOT show every
 route. It now derives from `GET /routes` and filters on the route's own `priority` field rather
@@ -101,6 +102,25 @@ if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
         "LLM_ROUTE_DISPLAY_ORDER must list every accepted route exactly once; "
         f"missing={sorted(ACCEPTED_LLM_ROUTES - set(LLM_ROUTE_DISPLAY_ORDER))} "
         f"extra={sorted(set(LLM_ROUTE_DISPLAY_ORDER) - ACCEPTED_LLM_ROUTES)}"
+    )
+
+
+# Routes that YIELD: they wait for upstream slot slack before dispatching, so a human choosing
+# one interactively buys nothing but latency. This is a property of what the route IS, not of
+# how it happens to be configured right now, and that distinction is load-bearing.
+#
+# The gateway reports a route's `priority` from its route-table entry, so a consumer filtering
+# on "priority == background" silently fails open in two real situations: a rolling deploy where
+# an older gateway does not send the field at all, and a route absent from
+# LLM_GATEWAY_ROUTE_TABLE_JSON (reported `not_configured`, priority null). In both, a background
+# lane would be offered to a human as an ordinary one. Consumers therefore treat a route as
+# background if EITHER the payload says so or it appears here -- fail-safe, never fail-open.
+BACKGROUND_LLM_ROUTES: FrozenSet[str] = frozenset({"quick_background"})
+
+if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
+    raise RuntimeError(
+        "BACKGROUND_LLM_ROUTES names routes that are not accepted: "
+        f"{sorted(BACKGROUND_LLM_ROUTES - ACCEPTED_LLM_ROUTES)}"
     )
 
 

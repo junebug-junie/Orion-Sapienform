@@ -17,7 +17,16 @@ DEFAULT_ROUTE_SERVERS = {
     "agent": "atlas-worker-1",
     "metacog": "atlas-worker-2",
     "quick": "atlas-worker-fast-1",
+    # Same llama.cpp process as `quick` under a background admission policy -- one worker, two
+    # routes. Without this entry, widening the dispatch loop below to the full route set raised
+    # a bare KeyError in `_expected_served_by`.
+    "quick_background": "atlas-worker-fast-1",
 }
+
+# NOT fixed here, but do not trust the two entries above: `chat` and `agent` actually run on
+# CIRCE (`circe-worker-1` / `circe-worker-agent-1`), not atlas. These defaults only apply when
+# LLM_ROUTE_<ROUTE>_SERVED_BY is unset AND the live route table omits served_by, which is not
+# the current deployment -- see the "latent trap" note in the scarcity roadmap's A2 section.
 
 
 def _load_route_urls() -> Dict[str, str]:
@@ -46,7 +55,17 @@ def _load_route_urls() -> Dict[str, str]:
 
 def _expected_served_by(route: str) -> str:
     override = os.getenv(f"LLM_ROUTE_{route.upper()}_SERVED_BY")
-    return override or DEFAULT_ROUTE_SERVERS[route]
+    if override:
+        return override
+    try:
+        return DEFAULT_ROUTE_SERVERS[route]
+    except KeyError:
+        # A bare KeyError here reads as a smoke crash; it is actually "a route exists that this
+        # file has never heard of", which is the drift this whole patch is about.
+        raise AssertionError(
+            f"route {route!r} has no expected served_by: add it to DEFAULT_ROUTE_SERVERS "
+            f"or set LLM_ROUTE_{route.upper()}_SERVED_BY"
+        ) from None
 
 
 async def _rpc_chat(
@@ -127,10 +146,14 @@ async def _verify_routes_http(gateway_url: str, timeout_sec: float) -> None:
             raise AssertionError(
                 f"quick_background priority={bg.get('priority')!r} expected 'background'"
             )
-        if not isinstance(bg.get("reserved_free_slots"), int):
+        # `reserved_free_slots` is genuinely OPTIONAL: priority_admission falls back to
+        # _DEFAULT_RESERVED_FREE_SLOTS when it is unset, so a route table entry carrying only
+        # `"priority": "background"` is a correctly-working background lane. Assert the type
+        # only when a value is present -- and exclude bool, which isinstance(x, int) accepts.
+        reserved = bg.get("reserved_free_slots")
+        if reserved is not None and (isinstance(reserved, bool) or not isinstance(reserved, int)):
             raise AssertionError(
-                f"quick_background reserved_free_slots={bg.get('reserved_free_slots')!r} "
-                "expected an int"
+                f"quick_background reserved_free_slots={reserved!r} expected an int or absent"
             )
     for entry in routes:
         if not isinstance(entry, dict):
@@ -153,7 +176,10 @@ async def _main_async(args: argparse.Namespace) -> None:
         if not route_urls.get(route):
             raise RuntimeError(f"Route '{route}' is not configured (missing URL)")
 
-    routes_to_test = ["chat", "agent", "metacog", "quick"]
+    # Every route, not a hardcoded four. The GET /routes check above proves a route is
+    # CATALOGUED; only this loop proves it actually SERVES traffic, and `quick_background` --
+    # the lane Orion's own journalling runs on -- was exercised by neither.
+    routes_to_test = list(LLM_ROUTE_DISPLAY_ORDER)
 
     for route in routes_to_test:
         await _rpc_chat(

@@ -90,3 +90,51 @@ def test_default_route_is_normalized_not_name_matched(raw, expected):
     payload = _gateway_payload()
     payload["default_route"] = raw
     assert _normalize(payload)["default_route"] == expected
+
+
+class TestPriorityIsFailSafe:
+    """A background lane must never be presented as pickable because a field was missing.
+
+    Two real paths deliver `quick_background` with no priority: a rolling deploy where the Hub
+    ships before the gateway (old gateway sends 4 routes, no `priority` key at all), and the
+    route being absent from LLM_GATEWAY_ROUTE_TABLE_JSON. In both, filtering on
+    `priority == 'background'` fails OPEN and the composer offers the yielding lane to a human.
+    """
+
+    def test_old_gateway_omitting_the_route_entirely(self):
+        """Rolling deploy: gateway still returns the pre-patch four routes."""
+        payload = {
+            "default_route": "quick",
+            "routes": [
+                {"id": "chat", "status": "up"}, {"id": "quick", "status": "up"},
+                {"id": "agent", "status": "up"}, {"id": "metacog", "status": "up"},
+            ],
+        }
+        out = _normalize(payload)
+        bg = next(r for r in out["routes"] if r["id"] == "quick_background")
+        assert bg["priority"] == "background", "backfilled row must not claim to be interactive"
+
+    def test_gateway_reporting_the_route_without_a_priority_field(self):
+        payload = _gateway_payload()
+        for r in payload["routes"]:
+            r.pop("priority", None)
+        out = _normalize(payload)
+        bg = next(r for r in out["routes"] if r["id"] == "quick_background")
+        assert bg["priority"] == "background"
+        assert next(r for r in out["routes"] if r["id"] == "quick")["priority"] is None
+
+    def test_a_reported_background_priority_is_honoured_for_any_route(self):
+        """The definitional set is a floor, not a ceiling: if the gateway says a route yields,
+        believe it even for a route not named in BACKGROUND_LLM_ROUTES."""
+        payload = _gateway_payload()
+        next(r for r in payload["routes"] if r["id"] == "metacog")["priority"] = "background"
+        out = _normalize(payload)
+        assert next(r for r in out["routes"] if r["id"] == "metacog")["priority"] == "background"
+
+    def test_the_picker_filter_excludes_it_in_every_case(self):
+        """Mirrors pickableComputeRouteIds() in app.js, which filters on this exact field."""
+        for payload in (_gateway_payload(), {"default_route": "quick", "routes": []}):
+            out = _normalize(payload)
+            pickable = [r["id"] for r in out["routes"]
+                        if str(r.get("priority") or "").lower() != "background"]
+            assert "quick_background" not in pickable

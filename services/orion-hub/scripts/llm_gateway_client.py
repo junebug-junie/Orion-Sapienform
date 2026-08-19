@@ -7,7 +7,12 @@ from typing import Any
 
 import aiohttp
 
-from orion.llm.routes import ACCEPTED_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, normalize_llm_route
+from orion.llm.routes import (
+    ACCEPTED_LLM_ROUTES,
+    BACKGROUND_LLM_ROUTES,
+    LLM_ROUTE_DISPLAY_ORDER,
+    normalize_llm_route,
+)
 
 from scripts.settings import settings
 
@@ -53,6 +58,19 @@ async def fetch_routes() -> dict[str, Any]:
     return _normalize_routes_payload(payload)
 
 
+def _priority_for(route_id: str, reported: Any) -> str | None:
+    """Reported priority, or the route's definitional one -- whichever says 'background'.
+
+    Fail-safe rather than fail-open: `priority` is what the composer filters its picker on, and
+    a background lane that arrives without it (older gateway, route absent from the route
+    table) would otherwise be offered as an ordinary interactive lane.
+    """
+    value = str(reported or "").strip().lower() or None
+    if value == "background" or route_id in BACKGROUND_LLM_ROUTES:
+        return "background"
+    return value
+
+
 def _normalize_routes_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """The pure half of `fetch_routes`: gateway payload in, Hub payload out.
 
@@ -83,7 +101,7 @@ def _normalize_routes_payload(payload: dict[str, Any]) -> dict[str, Any]:
                     # Passed through so the composer can filter its picker on what a route IS
                     # rather than on a name list that drifts. "background" means the lane
                     # yields, so a human choosing it would just get worse latency.
-                    "priority": item.get("priority"),
+                    "priority": _priority_for(route_id, item.get("priority")),
                     "reserved_free_slots": item.get("reserved_free_slots"),
                     # True/False from the worker's own /props; None means the
                     # probe could not answer. The composer greys out its attach
@@ -108,7 +126,11 @@ def _normalize_routes_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "latency_ms": None,
                 "last_checked_at": None,
                 "vision": None,
-                "priority": None,
+                # NOT None. This backfill runs when the gateway did not report the route at
+                # all -- an older gateway mid-rolling-deploy, or a route dropped from the route
+                # table. Asserting "no priority" there is what makes the composer offer a
+                # yielding lane to a human, so the definitional answer is used instead.
+                "priority": _priority_for(route_id, None),
                 "reserved_free_slots": None,
             },
         )

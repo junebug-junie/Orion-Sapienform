@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from orion.llm.routes import LLM_ROUTE_DISPLAY_ORDER
+from orion.llm.routes import BACKGROUND_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER
 
 from .llm_backend import RouteTarget, get_route_targets
 from .settings import settings
@@ -137,10 +137,15 @@ async def _probe_health(target: RouteTarget) -> tuple[str, Optional[int]]:
     return status, latency_ms
 
 
+def _probe_key(target: RouteTarget) -> str:
+    """Dedup key for one upstream. Matches the normalisation the probe helpers apply."""
+    return str(target.url or "").rstrip("/")
+
+
 async def _probe_backend(target: RouteTarget) -> tuple[str, Optional[int], Optional[str], Optional[bool]]:
     """Health + model + vision for ONE upstream URL, concurrently.
 
-    Split out from `_probe_one` because routes are not one-to-one with workers: `quick` and
+    Routes are not one-to-one with workers: `quick` and
     `quick_background` are the same llama.cpp process under two admission policies, so probing
     per *route* would send three identical HTTP calls to `atlas-worker-fast-1` every refresh
     for no new information. `refresh_route_health_cache` probes each distinct URL once and
@@ -155,16 +160,14 @@ async def _probe_backend(target: RouteTarget) -> tuple[str, Optional[int], Optio
     return status, latency_ms, model, vision
 
 
-async def _probe_one(route_id: str, target: RouteTarget) -> RouteHealthEntry:
-    # Health and model are two independent HTTP calls to the same backend --
-    # run them concurrently rather than sequentially (review finding,
-    # 2026-08-14: sequential could ~double worst-case refresh latency across
-    # 4 routes). The model result is only trusted when health reports "up";
-    # firing it unconditionally costs one (fail-open, cheap) extra request
-    # when a route is down, in exchange for a bounded refresh in the common
-    # case where routes are healthy.
-    status, latency_ms, model, vision = await _probe_backend(target)
-    return _entry_from_probe(route_id, target, status, latency_ms, model, vision)
+def _definitional_priority(route_id: str) -> Optional[str]:
+    """What this route IS, independent of whether the route table configures it.
+
+    A background lane missing from LLM_GATEWAY_ROUTE_TABLE_JSON has no RouteTarget and so no
+    configured priority -- but it is still a background lane, and a consumer filtering on
+    `priority` would otherwise offer it to a human as an ordinary one. Fail-safe, not fail-open.
+    """
+    return "background" if route_id in BACKGROUND_LLM_ROUTES else None
 
 
 def _entry_from_probe(
@@ -184,7 +187,7 @@ def _entry_from_probe(
         last_checked_at=_utc_now_iso(),
         model=model,
         vision=vision,
-        priority=getattr(target, "priority", None),
+        priority=getattr(target, "priority", None) or _definitional_priority(route_id),
         reserved_free_slots=getattr(target, "reserved_free_slots", None),
     )
 
@@ -199,11 +202,15 @@ async def refresh_route_health_cache(*, force: bool = False) -> None:
         # One probe per distinct upstream URL, all URLs concurrently. Previously this awaited
         # each route in sequence, so refresh latency grew linearly with the catalog -- and the
         # catalog just grew, with a route that shares a URL with one already in it.
+        # Key on the rstripped URL: the three probe helpers all normalise trailing slashes, so
+        # keying on the raw string would treat "http://atlas:8013" and "http://atlas:8013/" as
+        # two workers and send six calls where three would do -- reintroducing the exact
+        # duplicate-probe cost this dedup exists to remove.
         by_url: Dict[str, RouteTarget] = {}
         for route_id in CATALOG_ROUTE_IDS:
             target = targets.get(route_id)
             if target is not None and target.url:
-                by_url.setdefault(target.url, target)
+                by_url.setdefault(_probe_key(target), target)
         urls = list(by_url)
         results = await asyncio.gather(*(_probe_backend(by_url[u]) for u in urls))
         probes = dict(zip(urls, results))
@@ -211,8 +218,7 @@ async def refresh_route_health_cache(*, force: bool = False) -> None:
         entries: Dict[str, RouteHealthEntry] = {}
         for route_id in CATALOG_ROUTE_IDS:
             target = targets.get(route_id)
-            probe = probes.get(target.url) if target is not None else None
-            if target is None or probe is None:
+            if target is None:
                 entries[route_id] = RouteHealthEntry(
                     route_id=route_id,
                     served_by=None,
@@ -220,7 +226,16 @@ async def refresh_route_health_cache(*, force: bool = False) -> None:
                     status="not_configured",
                     latency_ms=None,
                     last_checked_at=_utc_now_iso(),
+                    priority=_definitional_priority(route_id),
                 )
+                continue
+            probe = probes.get(_probe_key(target))
+            if probe is None:
+                # Configured but unprobeable -- an empty or malformed URL. That is `down` with
+                # its identity intact, NOT `not_configured`: a misconfigured route and a route
+                # that was never in the table are different problems, and before the URL dedup
+                # this case was probed, failed, and correctly reported `down`.
+                entries[route_id] = _entry_from_probe(route_id, target, "down", None, None, None)
             else:
                 entries[route_id] = _entry_from_probe(route_id, target, *probe)
         _cache.clear()
@@ -263,7 +278,7 @@ def build_routes_response() -> Dict[str, Any]:
                     "last_checked_at": None,
                     "model": None,
                     "vision": None,
-                    "priority": None,
+                    "priority": _definitional_priority(route_id),
                     "reserved_free_slots": None,
                 }
             )
@@ -282,7 +297,7 @@ def build_routes_response() -> Dict[str, Any]:
                     # health refresh. Reporting None here would make a background lane look
                     # pickable to the Hub (which filters on `priority`) for the first 15s of
                     # gateway uptime, which is exactly when someone is most likely looking.
-                    "priority": getattr(target, "priority", None),
+                    "priority": getattr(target, "priority", None) or _definitional_priority(route_id),
                     "reserved_free_slots": getattr(target, "reserved_free_slots", None),
                 }
             )

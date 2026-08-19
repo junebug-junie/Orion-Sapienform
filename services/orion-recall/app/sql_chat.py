@@ -97,17 +97,31 @@ async def fetch_chat_turn_timestamps(
     time_clause = f"AND {created_at_col} >= NOW() - INTERVAL '{int(since_minutes)} minutes'"
     try:
         conn = await asyncpg.connect(settings.RECALL_PG_DSN)
+    except Exception:
+        logger.warning("fetch_chat_turn_timestamps_connect_failed", exc_info=True)
+        return {}
+    try:
+        # Each table query gets its own try/except -- code review finding
+        # 2026-08-19: a single try/except around both calls meant a mirror-
+        # table failure (missing table, permission error, transient fault)
+        # discarded an already-successful primary_rows result too, silently
+        # emptying the whole window instead of degrading to "primary only".
         try:
             primary_rows = await _fetch_rows_from_table(
                 conn, settings.RECALL_SQL_CHAT_TABLE, select_cols, id_col, ids, time_clause
             )
+        except Exception:
+            logger.warning("fetch_chat_turn_timestamps_primary_query_failed", exc_info=True)
+            primary_rows = []
+        try:
             mirror_rows = await _fetch_rows_from_table(
                 conn, settings.RECALL_SQL_AITOWN_CHAT_TABLE, select_cols, id_col, ids, time_clause
             )
-        finally:
-            await conn.close()
-    except Exception:
-        return {}
+        except Exception:
+            logger.warning("fetch_chat_turn_timestamps_mirror_query_failed", exc_info=True)
+            mirror_rows = []
+    finally:
+        await conn.close()
 
     out: Dict[str, float] = {}
     for row in (*primary_rows, *mirror_rows):  # mirror processed last -> wins on conflict
@@ -152,17 +166,29 @@ async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, st
     )
     try:
         conn = await asyncpg.connect(settings.RECALL_PG_DSN)
+    except Exception:
+        logger.warning("fetch_chat_turns_by_id_connect_failed", exc_info=True)
+        return {}
+    try:
+        # Same isolation as fetch_chat_turn_timestamps above and for the
+        # same reason -- a mirror-table failure must not discard an
+        # already-successful primary_rows result.
         try:
             primary_rows = await _fetch_rows_from_table(
                 conn, settings.RECALL_SQL_CHAT_TABLE, select_cols, id_col, ids
             )
+        except Exception:
+            logger.warning("fetch_chat_turns_by_id_primary_query_failed", exc_info=True)
+            primary_rows = []
+        try:
             mirror_rows = await _fetch_rows_from_table(
                 conn, settings.RECALL_SQL_AITOWN_CHAT_TABLE, select_cols, id_col, ids
             )
-        finally:
-            await conn.close()
-    except Exception:
-        return {}
+        except Exception:
+            logger.warning("fetch_chat_turns_by_id_mirror_query_failed", exc_info=True)
+            mirror_rows = []
+    finally:
+        await conn.close()
 
     out: Dict[str, tuple[str, str, Any]] = {}
     for row in (*primary_rows, *mirror_rows):  # mirror processed last -> wins on conflict

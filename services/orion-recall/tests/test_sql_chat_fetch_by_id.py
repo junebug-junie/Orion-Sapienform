@@ -125,6 +125,89 @@ def test_mirror_table_wins_on_id_conflict(monkeypatch) -> None:
     assert out["turn-1"][0] == "mirror version"
 
 
+def test_mirror_query_failure_preserves_primary_results(monkeypatch) -> None:
+    """Regression (code review, 2026-08-19): the two queries used to share
+    one try/except around both calls, so a mirror-table failure (missing
+    table, permission error, transient fault) discarded an
+    already-successful primary_rows result too, silently emptying the whole
+    response instead of degrading to primary-only."""
+
+    class _FakeConn:
+        def __init__(self):
+            self._call = 0
+
+        async def fetch(self, query, ids):
+            self._call += 1
+            if self._call == 1:
+                return [{"id": "turn-1", "prompt": "primary version", "response": "ok", "client_meta": None}]
+            raise RuntimeError("aitown_chat_history_log unavailable")
+
+        async def close(self):
+            pass
+
+    class _FakeAsyncpg:
+        @staticmethod
+        async def connect(dsn):
+            return _FakeConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
+    out = _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
+    assert out == {"turn-1": ("primary version", "ok", None)}
+
+
+def test_primary_query_failure_still_returns_mirror_results(monkeypatch) -> None:
+    """Symmetric case: a primary-table failure must not discard an
+    already-successful mirror result either."""
+
+    class _FakeConn:
+        def __init__(self):
+            self._call = 0
+
+        async def fetch(self, query, ids):
+            self._call += 1
+            if self._call == 1:
+                raise RuntimeError("chat_history_log unavailable")
+            return [{"id": "turn-1", "prompt": "mirror version", "response": "ok", "client_meta": None}]
+
+        async def close(self):
+            pass
+
+    class _FakeAsyncpg:
+        @staticmethod
+        async def connect(dsn):
+            return _FakeConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
+    out = _run(sql_chat.fetch_chat_turns_by_id(["turn-1"]))
+    assert out == {"turn-1": ("mirror version", "ok", None)}
+
+
+def test_timestamps_mirror_query_failure_preserves_primary_results(monkeypatch) -> None:
+    """Same regression, same fix, for fetch_chat_turn_timestamps."""
+
+    class _FakeConn:
+        def __init__(self):
+            self._call = 0
+
+        async def fetch(self, query, ids):
+            self._call += 1
+            if self._call == 1:
+                return [{"id": "turn-1", "created_at": "2026-08-19T00:00:00+00:00"}]
+            raise RuntimeError("aitown_chat_history_log unavailable")
+
+        async def close(self):
+            pass
+
+    class _FakeAsyncpg:
+        @staticmethod
+        async def connect(dsn):
+            return _FakeConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
+    out = _run(sql_chat.fetch_chat_turn_timestamps(["turn-1"], 60))
+    assert "turn-1" in out
+
+
 def test_timestamps_queries_both_tables_separately(monkeypatch) -> None:
     captured: list = []
 

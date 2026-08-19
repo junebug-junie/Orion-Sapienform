@@ -112,6 +112,44 @@ def summarize_logprob_content(content: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _legacy_completion_entry_to_logprob_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize llama.cpp's older per-token /completion shape into this module's
+    canonical {"token", "logprob", "top_logprobs"} entry.
+
+    That older shape is `{"content": tok_str, "probs": [{"tok_str": ..., "prob": ...}, ...]}`
+    per generated token -- a real, historical llama.cpp response format, distinct from
+    both the live-verified 2026-08-19 shape (see below) and the wrapper shape a prior
+    version of this function speculatively supported (which never matched any real
+    server response and, worse, silently absorbed *this* real shape by mistaking its
+    per-token `probs` alternative list for an all-tokens wrapper -- see PR history).
+    `prob` here is a plain probability, not a logprob; convert via math.log.
+    """
+    token = entry.get("content")
+    alts = entry.get("probs")
+    if not isinstance(token, str) or not isinstance(alts, list):
+        return None
+    tops: list[dict[str, Any]] = []
+    own_logprob: float | None = None
+    for alt in alts:
+        if not isinstance(alt, dict):
+            continue
+        prob = alt.get("prob")
+        if not isinstance(prob, (int, float)) or prob <= 0:
+            continue
+        lp = math.log(prob)
+        tops.append({"token": alt.get("tok_str"), "logprob": lp})
+        if alt.get("tok_str") == token:
+            own_logprob = lp
+    if own_logprob is None and tops:
+        # The sampled token wasn't among its own listed alternatives (can happen
+        # under aggressive top-k truncation) -- use the best alternative rather
+        # than dropping a real generated token entirely.
+        own_logprob = max(t["logprob"] for t in tops)
+    if own_logprob is None:
+        return None
+    return {"token": token, "logprob": own_logprob, "top_logprobs": tops}
+
+
 def native_completion_probs_to_logprob_content(raw: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalize llama.cpp /completion prob shapes into OpenAI logprobs.content entries."""
     if not isinstance(raw, dict):
@@ -121,9 +159,20 @@ def native_completion_probs_to_logprob_content(raw: dict[str, Any]) -> list[dict
     if isinstance(raw.get("probs"), list):
         probs = raw["probs"]
     elif isinstance(raw.get("completion_probabilities"), list) and raw["completion_probabilities"]:
-        first = raw["completion_probabilities"][0]
-        if isinstance(first, dict) and isinstance(first.get("probs"), list):
-            probs = first["probs"]
+        items = raw["completion_probabilities"]
+        first = items[0]
+        if isinstance(first, dict) and "token" in first:
+            # Live-verified 2026-08-19 (atlas-worker-fast-1): a flat list of
+            # per-token entries, each already carrying logprob/top_logprobs directly.
+            probs = items
+        elif isinstance(first, dict) and "content" in first and isinstance(first.get("probs"), list):
+            # Older llama.cpp per-token shape (content/probs with tok_str/prob).
+            probs = [
+                normalized
+                for e in items
+                if isinstance(e, dict)
+                and (normalized := _legacy_completion_entry_to_logprob_entry(e)) is not None
+            ]
 
     content: list[dict[str, Any]] = []
     for entry in probs:

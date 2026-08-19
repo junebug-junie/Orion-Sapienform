@@ -291,6 +291,13 @@ if (typeof document !== "undefined") {
       NETWORK_CY_HOST.textContent = "No concept nodes match the current filters.";
       return;
     }
+    // God-nodes-only labels are meant to declutter a dense, mostly-default
+    // view -- they're useless as a default on a filtered/sparse subgraph
+    // that happens to have zero god nodes (e.g. every node degree-0 after an
+    // anchor_scope filter), where hiding every label leaves unlabeled dots
+    // with nothing to orient on. Fall back to showing everything in that
+    // case; the checkbox still overrides either way.
+    const hasGodNodes = elements.some((el) => el.data && el.data.godNode);
     cy = window.cytoscape({
       container: NETWORK_CY_HOST,
       elements,
@@ -301,7 +308,8 @@ if (typeof document !== "undefined") {
             // God-nodes-only by default (see showAllLabels above); the
             // checkbox flips this without needing a full remount, since
             // cy.style().update() re-evaluates mapper functions in place.
-            label: (ele) => (showAllLabels || ele.data("godNode") ? ele.data("label") : ""),
+            label: (ele) =>
+              showAllLabels || !hasGodNodes || ele.data("godNode") ? ele.data("label") : "",
             "font-size": 9,
             color: "#e2e8f0",
             "text-valign": "bottom",
@@ -391,7 +399,13 @@ if (typeof document !== "undefined") {
         // nodes (a component could technically fragment further) -- treated
         // as good enough for an informational status line, not re-derived
         // client-side with a second union-find pass.
-        const shownComponents = new Set(filtered.nodes.map((n) => n.component_id));
+        // Filter out missing ids (e.g. a stale cached bundle/backend response
+        // predating this field) instead of letting a Set of all-undefined
+        // collapse to size 1 -- a specific, confidently wrong number is
+        // worse than an honest 0 here.
+        const shownComponents = new Set(
+          filtered.nodes.map((n) => n.component_id).filter((id) => id !== undefined && id !== null)
+        );
         const base = `${filtered.nodes.length} node(s), ${filtered.edges.length} edge(s), ${payload.god_node_count || 0} god node(s), ${shownComponents.size} component(s)`;
         // Surfaced when a non-default store backend (e.g. graphdb) fell back
         // to a stale snapshot after an upstream query failure -- see

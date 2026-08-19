@@ -3,6 +3,7 @@ from .collapse_mirror import CollapseMirror
 from .metacog_entry import MetacogEntry
 from .repair_pressure_appraisal import RepairPressureAppraisalLog
 from .chat_history_log import ChatHistoryLogSQL
+from .aitown_chat_history_log import AitownChatHistoryLogSQL
 from .chat_gpt_log import ChatGptLogSQL
 from .chat_gpt_message import ChatGptMessageSQL
 from .chat_gpt_import_run import ChatGptImportRunSQL
@@ -85,6 +86,7 @@ __all__ = [
     "MetacogEntry",
     "RepairPressureAppraisalLog",
     "ChatHistoryLogSQL",
+    "AitownChatHistoryLogSQL",
     "ChatGptLogSQL",
     "ChatGptMessageSQL",
     "ChatGptImportRunSQL",

@@ -115,11 +115,20 @@ def _fetch_recent_winners(limit_minutes: float) -> list[tuple[str | None, float]
                 SELECT field_json->>'tension_borda_winner_target_id' AS winner,
                        field_json->>'tension_deviation_pressure' AS deviation
                 FROM substrate_field_state
-                WHERE generated_at > now() - make_interval(mins => :mins)
+                -- secs, not mins: make_interval's mins arg is int, so a
+                -- float LOOKBACK_MINUTES raises UndefinedFunction -- secs is
+                -- double precision and takes it directly. Confirmed LIVE,
+                -- 2026-08-18: this call had been silently failing on every
+                -- invocation since deploy, swallowed by this module's own
+                -- "never raise, degrade to None" contract -- the trigger has
+                -- never actually been able to fire. Same convention
+                -- services/orion-hub/scripts/chat_history_rehydrate.py's own
+                -- comment already documents for this exact pitfall.
+                WHERE generated_at > now() - make_interval(secs => :secs)
                 ORDER BY generated_at ASC
                 """
             ),
-            {"mins": limit_minutes},
+            {"secs": limit_minutes * 60.0},
         ).fetchall()
     out: list[tuple[str | None, float]] = []
     for winner, deviation in rows:

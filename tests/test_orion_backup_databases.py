@@ -12,6 +12,7 @@ from scripts.backup.orion_backup_databases import (
     DEFAULT_SUBPROCESS_TIMEOUT_SEC,
     POSTGRES_DUMP_TIMEOUT_SEC,
     Target,
+    _terminate_stale_pg_dump_backends,
     capture_postgres,
     capture_stopped_container_tree,
     run_backup,
@@ -50,6 +51,80 @@ def test_capture_postgres_uses_dedicated_timeout(tmp_path: Path, monkeypatch: py
     capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
 
     assert captured_kwargs["timeout"] == POSTGRES_DUMP_TIMEOUT_SEC
+
+
+def test_capture_postgres_clears_stale_backend_before_dumping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    dest = tmp_path / "postgres_snapshot"
+    capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
+
+    assert calls[0][:4] == ["docker", "exec", "orion-athena-sql-db", "psql"]
+    cleanup_sql = " ".join(calls[0])
+    assert "pg_terminate_backend" in cleanup_sql
+    # Pinned deliberately: pg_dumpall's actual per-database lock-holding
+    # connections show as application_name=pg_dump, not pg_dumpall (confirmed
+    # live) -- a future edit that silently dropped 'pg_dump' from this IN list
+    # would regress straight back to the incident this test guards against.
+    assert "application_name IN ('pg_dump', 'pg_dumpall')" in cleanup_sql
+    assert "pid <> pg_backend_pid()" in cleanup_sql
+    assert calls[1][:4] == ["docker", "exec", "orion-athena-sql-db", "pg_dumpall"]
+
+
+def test_capture_postgres_terminates_orphaned_backend_on_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression test for the confirmed live bug (2026-08-16/17/18): a timed-out
+    # `docker exec ... pg_dumpall` only kills the local client, leaving the
+    # server-side backend orphaned and holding locks across every table. The
+    # timeout must now trigger a cleanup call in addition to still propagating.
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[3] == "pg_dumpall":
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    dest = tmp_path / "postgres_snapshot"
+    with pytest.raises(subprocess.TimeoutExpired):
+        capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
+
+    terminate_calls = [c for c in calls if "pg_terminate_backend" in " ".join(c)]
+    # pre-flight cleanup (before the dump attempt) + post-timeout cleanup
+    assert len(terminate_calls) == 2
+
+
+def test_terminate_stale_pg_dump_backends_is_best_effort_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"connection refused")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    log: list[str] = []
+    _terminate_stale_pg_dump_backends(container="c", pg_user="postgres", log=log)
+    assert any("WARNING" in line for line in log)
+
+
+def test_terminate_stale_pg_dump_backends_swallows_its_own_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    log: list[str] = []
+    _terminate_stale_pg_dump_backends(container="c", pg_user="postgres", log=log)  # must not raise
+    assert any("timed out" in line for line in log)
 
 
 def test_run_target_backup_success_updates_latest_and_prunes(tmp_path: Path) -> None:

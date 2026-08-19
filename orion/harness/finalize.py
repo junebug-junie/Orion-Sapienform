@@ -96,6 +96,25 @@ def _perception_intent_detected(user_message: str) -> bool:
         return False
     return bool(_PERCEPTION_INTENT_RE.search(user_message))
 
+
+# Deterministic backstop for world_contact_opportunity (see
+# maybe_run_finalize_tool_retry): the reflect prompt instructs 5b not to set
+# world_contact_opportunity=true when the user declined tool use, but that is
+# prompt-only trust for a live tool dispatch (e.g. a camera) -- confirmed live
+# 2026-08-18 (corr=d350c572-0b21-453c-868e-6677cfd4c954, user said "Don't use
+# any tools"). This regex is checked in code regardless of what the LLM
+# concluded, so a misjudged borderline phrasing cannot still dispatch.
+_TOOL_DECLINE_RE = re.compile(
+    r"\b(don'?t use (?:any )?tools?|without (?:using )?(?:any )?tools?|no tools?)\b",
+    re.IGNORECASE,
+)
+
+
+def _tool_use_declined(user_message: str) -> bool:
+    if not user_message:
+        return False
+    return bool(_TOOL_DECLINE_RE.search(user_message))
+
 DEFAULT_GRAMMAR_EVENT_CHANNEL = "orion:grammar:event"
 
 VERDICT_CHANNEL = "orion:harness:verdict:artifact"
@@ -540,15 +559,21 @@ async def maybe_run_finalize_tool_retry(
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
 
-    When 5b's reflection is misaligned specifically because a known,
-    already-reviewed tool would fix it, call that tool once, fold its result
-    into grammar_receipts, and re-run 5b so 5c's voice-finalize step (which
-    already reads grammar_receipts/tool_execution) can incorporate it. The
-    caller (run_harness_finalize_chain) loops this up to
-    MAX_FINALIZE_LOOP_RETRIES times; within a single call, a tool already
-    called this turn (motor stage or an earlier retry) is never called again,
-    so a given tool cannot fire twice regardless of what a later reflection
-    verdict says.
+    Fires when EITHER: 5b's reflection is misaligned specifically because a
+    known, already-reviewed tool would fix it, OR 5b set
+    world_contact_opportunity=true (an honest draft that never checked,
+    independent of alignment_verdict -- see FinalizeReflectionV1 and
+    harness_finalize_reflect.j2's WORLD-CONTACT OPPORTUNITY section; added
+    2026-08-18 after live testing showed a genuinely honest "I can't see"
+    draft is always judged aligned, which left the misaligned-only gate
+    structurally unreachable for a benign "what do you see" ask). Either way,
+    call that tool once, fold its result into grammar_receipts, and re-run 5b
+    so 5c's voice-finalize step (which already reads
+    grammar_receipts/tool_execution) can incorporate it. The caller
+    (run_harness_finalize_chain) loops this up to MAX_FINALIZE_LOOP_RETRIES
+    times; within a single call, a tool already called this turn (motor stage
+    or an earlier retry) is never called again, so a given tool cannot fire
+    twice regardless of what a later reflection verdict says.
 
     Returns (reflection, grammar_receipts, retried, tool_name, cortex_trace_id).
     `retried` is True only when a tool call was actually attempted (whether or
@@ -577,11 +602,34 @@ async def maybe_run_finalize_tool_retry(
     receipts = list(grammar_receipts or [])
     if not _finalize_tool_loop_enabled():
         return reflection, receipts, False, None, None
-    if reflection.alignment_verdict != "misaligned":
+
+    if reflection.world_contact_opportunity and _tool_use_declined(user_message):
+        # Code-level backstop, not just prompt trust -- the prompt already
+        # instructs 5b not to set this when the user declined, but a live
+        # tool dispatch (e.g. a camera) must not depend solely on the LLM
+        # having honored that instruction correctly. Live case that motivated
+        # this: corr=d350c572-0b21-453c-868e-6677cfd4c954.
+        logger.info(
+            "harness_finalize_tool_loop_declined_by_user corr=%s",
+            correlation_id,
+        )
+        reflection = reflection.model_copy(update={"world_contact_opportunity": False})
+
+    if reflection.alignment_verdict != "misaligned" and not reflection.world_contact_opportunity:
         return reflection, receipts, False, None, None
 
     tool = str(reflection.recommended_tool or "").strip()
     if not tool:
+        if reflection.world_contact_opportunity:
+            # The prompt asks 5b to set world_contact_opportunity and
+            # recommended_tool together, but nothing in the schema enforces
+            # that -- log this so a model that flags the opportunity without
+            # naming a tool is visible, not a silent no-op indistinguishable
+            # from world_contact_opportunity being false all along.
+            logger.warning(
+                "harness_finalize_tool_loop_opportunity_without_tool corr=%s",
+                correlation_id,
+            )
         return reflection, receipts, False, None, None
     if tool not in FINALIZE_LOOP_TOOL_ALLOWLIST:
         logger.warning(
@@ -593,9 +641,16 @@ async def maybe_run_finalize_tool_retry(
         # the verdict molecule (published + persisted to harness_turn_trace)
         # or 5c's voice-finalize prompt context looking like a legitimate,
         # actionable recommendation -- the allowlist is enforced on the data,
-        # not only at this one dispatch site.
+        # not only at this one dispatch site. world_contact_opportunity is
+        # cleared too: leaving it true here would assert a live opportunity
+        # backed by nothing, since the only tool that could have satisfied it
+        # was just discarded as unrecognized.
         scrubbed = reflection.model_copy(
-            update={"recommended_tool": None, "recommended_tool_reason": None}
+            update={
+                "recommended_tool": None,
+                "recommended_tool_reason": None,
+                "world_contact_opportunity": False,
+            }
         )
         return scrubbed, receipts, False, None, None
     if any(r.tool_name == tool for r in receipts):
@@ -1187,8 +1242,9 @@ async def run_harness_finalize_chain(
     Orchestrates finalize beats 5a → 5b → 5b-prime → 5c → 6b: substrate
     appraisal (5a), integrative reflection or its deterministic quick lane
     (5b), an optional bounded tool-recall retry when 5b is misaligned for a
-    fixable reason (5b-prime, see maybe_run_finalize_tool_retry -- default-off
-    via HARNESS_FINALIZE_TOOL_LOOP_ENABLED), verdict emission, Orion voice
+    fixable reason OR flagged a world_contact_opportunity (5b-prime, see
+    maybe_run_finalize_tool_retry -- default-off via
+    HARNESS_FINALIZE_TOOL_LOOP_ENABLED), verdict emission, Orion voice
     finalization (5c), turn-outcome emission (6b), and the optional embodiment
     intent. The motor draft is not the final Hub response; this chain is what
     may change it.
@@ -1251,7 +1307,7 @@ async def run_harness_finalize_chain(
             # one -- a failed re-reflection (attempt_trace_id=None) must not
             # make the verdict molecule point at the wrong (pre-retry) trace.
             cortex_trace_id = attempt_trace_id
-        if reflection.alignment_verdict != "misaligned":
+        if reflection.alignment_verdict != "misaligned" and not reflection.world_contact_opportunity:
             break
 
     verdict_molecule = await emit_verdict_molecule(

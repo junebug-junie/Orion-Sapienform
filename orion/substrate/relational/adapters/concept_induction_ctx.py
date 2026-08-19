@@ -34,7 +34,7 @@ import logging
 from typing import Any
 
 from orion.core.schemas.cognitive_substrate import SubstrateGraphRecordV1
-from orion.substrate import build_substrate_store_from_env
+from orion.substrate import build_substrate_store_from_env, select_concept_nodes_by_anchor_scope
 from orion.substrate.store import SubstrateGraphStore
 
 logger = logging.getLogger("orion.substrate.relational.adapters.concept_induction_ctx")
@@ -96,27 +96,24 @@ def map_concept_induction_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGrap
     if not raw_nodes:
         return None
 
+    by_subject = select_concept_nodes_by_anchor_scope(raw_nodes, list(_SUBJECTS))
+
     all_nodes: list[Any] = []
-    for node in raw_nodes:
-        try:
-            if getattr(node, "node_kind", None) != "concept":
-                continue
-            anchor = getattr(node, "anchor_scope", None)
-            if anchor not in _SUBJECTS:
-                continue
+    for anchor, nodes_for_anchor in by_subject.items():
+        for node in nodes_for_anchor:
+            try:
+                metadata = dict(node.metadata or {})
+                if not str(metadata.get("concept_type") or "").strip():
+                    metadata["concept_type"] = _ANCHOR_TO_CONCEPT_TYPE.get(anchor, "self")
 
-            metadata = dict(node.metadata or {})
-            if not str(metadata.get("concept_type") or "").strip():
-                metadata["concept_type"] = _ANCHOR_TO_CONCEPT_TYPE.get(anchor, "self")
-
-            patched_prov = node.provenance.model_copy(update={"tier_rank": _TIER_RANK})
-            all_nodes.append(node.model_copy(update={"provenance": patched_prov, "metadata": metadata}))
-        except Exception as exc:
-            logger.debug(
-                "concept_induction_ctx_node_map_failed node_id=%s error=%s",
-                getattr(node, "node_id", "?"),
-                exc,
-            )
-            continue
+                patched_prov = node.provenance.model_copy(update={"tier_rank": _TIER_RANK})
+                all_nodes.append(node.model_copy(update={"provenance": patched_prov, "metadata": metadata}))
+            except Exception as exc:
+                logger.debug(
+                    "concept_induction_ctx_node_map_failed node_id=%s error=%s",
+                    getattr(node, "node_id", "?"),
+                    exc,
+                )
+                continue
 
     return SubstrateGraphRecordV1(anchor_scope="orion", nodes=all_nodes) if all_nodes else None

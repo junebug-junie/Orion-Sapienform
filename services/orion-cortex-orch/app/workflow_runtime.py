@@ -65,7 +65,7 @@ logger = logging.getLogger("orion.cortex.orch.workflow_runtime")
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 ACTIONS_WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
 ACTIONS_WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
-ConceptProfileBackendKind = Literal["local", "graph", "shadow"]
+ConceptProfileBackendKind = Literal["local", "graph", "shadow", "substrate"]
 CutoverFallbackPolicyKind = Literal["fail_open_local", "fail_closed"]
 
 
@@ -1106,11 +1106,11 @@ def _state_summary(snapshot: SparkStateSnapshotV1 | dict[str, Any] | None) -> st
 
 def _resolve_concept_profile_backend_for_consumer(settings: Any, *, consumer: str) -> ConceptProfileBackendKind:
     global_backend = str(getattr(settings, "concept_profile_repository_backend", "local") or "local").strip().lower()
-    if global_backend not in {"local", "graph", "shadow"}:
+    if global_backend not in {"local", "graph", "shadow", "substrate"}:
         global_backend = "local"
     if consumer == "concept_induction_pass":
         override = str(getattr(settings, "concept_profile_backend_concept_induction_pass", "") or "").strip().lower()
-        if override in {"local", "graph", "shadow"}:
+        if override in {"local", "graph", "shadow", "substrate"}:
             return override  # type: ignore[return-value]
     return global_backend  # type: ignore[return-value]
 
@@ -1520,7 +1520,12 @@ async def _execute_concept_induction_pass(
         subjects,
         observer=observer,
     )
-    graph_unavailable = requested_backend == "graph" and any(lookup.availability == "unavailable" for lookup in lookups)
+    # "substrate" shares the same fail-open/fail-closed cutover semantics as
+    # "graph" here: both are live remote-read backends that can legitimately
+    # be down, unlike "local" (a file read that just returns empty/missing).
+    graph_unavailable = requested_backend in {"graph", "substrate"} and any(
+        lookup.availability == "unavailable" for lookup in lookups
+    )
     if graph_unavailable:
         fallback_reason = next((lookup.unavailable_reason for lookup in lookups if lookup.availability == "unavailable"), None)
         if fallback_policy == "fail_open_local":

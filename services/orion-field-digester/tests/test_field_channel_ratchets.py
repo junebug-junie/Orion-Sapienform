@@ -34,6 +34,18 @@ def _state(node_vectors: dict[str, dict[str, float]] | None = None) -> FieldStat
     )
 
 
+class _NoHistoryStore:
+    """Minimal `run_digestion_tick(store=...)` stand-in for tests that don't
+    care about significance -- this suite is about the ratchet-channel
+    suppression/decay bugs, not the level-aware significance producer.
+    Returns no history, so `update_significance_pressure` sees an empty
+    window and leaves `sustained_load_pressure` at its 0.0 default, same as
+    any tick with nothing loaded_steady."""
+
+    def load_recent_field_json(self, *, window_seconds: float) -> list[dict]:
+        return []
+
+
 def _node_biometrics_delta(
     *,
     node_id: str = "circe",
@@ -255,6 +267,9 @@ def test_same_tick_clear_beats_suppress_via_real_delta_to_perturbations() -> Non
         decay_rate=1.0,
         diffusion_rate=0.0,
         staleness_threshold_sec=90.0,
+        store=_NoHistoryStore(),
+        significance_window_seconds=900.0,
+        significance_check_interval_sec=30.0,
     )
     assert state.node_vectors["node:circe"]["expected_offline_suppression"] == 0.0
 
@@ -354,6 +369,9 @@ def test_full_tick_no_longer_permanently_floors_once_cleared() -> None:
         decay_rate=0.92,
         diffusion_rate=0.0,
         staleness_threshold_sec=90.0,
+        store=_NoHistoryStore(),
+        significance_window_seconds=900.0,
+        significance_check_interval_sec=30.0,
     )
     assert state.node_vectors["node:circe"]["availability"] == 0.2
 

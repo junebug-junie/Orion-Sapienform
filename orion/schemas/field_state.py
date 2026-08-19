@@ -187,6 +187,36 @@ class FieldStateV1(BaseModel):
     # honestly claim "I noticed X changing" rather than a content-free "I'm
     # reaching out" wrapped around an unrelated number.
     tension_borda_winner_target_id: str | None = None
+    # Level-aware significance (2026-08-18, docs/superpowers/specs/2026-08-16-
+    # level-aware-significance-design.md): the axis `tension_deviation_pressure`
+    # structurally cannot see. DeviationGate is a change-detector -- a channel
+    # steadily overloaded for hours re-centers its own EWMA baseline and reads
+    # calm, by design. `orion.field.significance.sustained_load_pressure`
+    # instead reads `orion.field.regime.channel_regime()` (level + dispersion
+    # as SEPARATE axes, no adaptive baseline at all) over a real window, and
+    # only counts a channel that is currently BOTH high level AND low
+    # dispersion (`loaded_steady`) -- not `loaded_volatile`, which a
+    # change-detector or the reconstruction-loss anomaly scorer
+    # (app/anomaly_scorer.py) can plausibly already catch; voting on that too
+    # would blur this metric back into redundancy with what already exists
+    # (see significance.py's own module docstring for the full independence
+    # argument). 0.0 is a real "nothing loaded_steady right now" reading,
+    # never a fabricated absence -- same convention `tension_deviation_
+    # pressure` uses for its own quiet-tick 0.0. Consumed by orion.field.
+    # pressure.field_pressures() as the "sustained_load_pressure"
+    # PRESSURE_DIMENSIONS entry. Written by services/orion-field-digester/
+    # app/digestion/significance.py, throttled (not every hot tick -- the
+    # window read is a real Postgres query, not an O(1) EWMA update) via
+    # `sustained_load_computed_at` below.
+    sustained_load_pressure: float = 0.0
+    # When `sustained_load_pressure` was last actually RECOMPUTED (not just
+    # carried forward unchanged from the prior tick). Compared against `now`
+    # each hot tick to decide whether this tick's real window-read is due yet
+    # -- persisted here (round-tripped through Postgres every tick like
+    # `tension_baseline_mu` above) rather than held on the worker process
+    # instance, so the throttle survives a restart instead of firing on every
+    # tick for the first `check_interval_sec` after one.
+    sustained_load_computed_at: datetime | None = None
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

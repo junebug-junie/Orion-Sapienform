@@ -104,7 +104,7 @@ class OrchConceptProfileSettings(BaseSettings):
     @classmethod
     def _parse_repository_backend(cls, value: Any) -> str:
         raw = str(value or "local").strip().lower()
-        if raw not in {"local", "graph", "shadow"}:
+        if raw not in {"local", "graph", "shadow", "substrate"}:
             return "local"
         return raw
 
@@ -114,7 +114,7 @@ class OrchConceptProfileSettings(BaseSettings):
         raw = str(value or "").strip().lower()
         if not raw:
             return ""
-        if raw not in {"local", "graph", "shadow"}:
+        if raw not in {"local", "graph", "shadow", "substrate"}:
             return ""
         return raw
 

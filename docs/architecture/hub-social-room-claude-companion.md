@@ -222,6 +222,22 @@ visible to `docker inspect` while a `:ro` file bind is not. Revisit if
 independent revocation becomes worth the divergence — the mount mechanics stay
 identical, only the file's contents change.
 
+**SUPERSEDED 2026-08-18 — this rejection is no longer current.** The predicted
+inode-rename staleness (below) was confirmed live the same day this section was
+written, and it forced the question this paragraph deferred: a credential that
+structurally cannot stay fresh doesn't get to keep the tested-pattern argument.
+`claude setup-token` shipped in `services/orion-room-companion` — see that
+service's README ("Credential isolation" / "FIXED 2026-08-18"). The "an env-var
+secret is visible to `docker inspect` while a file bind is not" reasoning above
+does not survive scrutiny either: `docker inspect <container> --format
+'{{json .Config.Env}}'` reads a container's configured environment directly, no
+`exec` required — if anything an *easier* read than `docker exec ... cat` was
+for the file. Both routes were already covered by the "Risk 3 is REDUCED, not
+eliminated" note above; the credential's storage form was never what closed
+that gap. `orion-self-study-enrichment` still runs the file-mount pattern
+described in this section and still has the staleness bug — this doc's
+rejection stands only for that service until it receives the same fix.
+
 **Residual on Risks 1 and 2, inherited from the self-study pattern.** Because
 the mount is `:ro` the container cannot write credentials, so it cannot rotate
 or invalidate the host's token — Risk 2 is neutralised. But it also cannot

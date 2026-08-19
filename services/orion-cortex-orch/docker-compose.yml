@@ -75,6 +75,13 @@ services:
       CONCEPT_PROFILE_PARITY_CRITICAL_MISMATCH_CLASSES: ${CONCEPT_PROFILE_PARITY_CRITICAL_MISMATCH_CLASSES:-profile_missing_on_graph,profile_missing_on_local,query_error}
       CONCEPT_PROFILE_PARITY_SUMMARY_INTERVAL: ${CONCEPT_PROFILE_PARITY_SUMMARY_INTERVAL:-25}
 
+      # Required for CONCEPT_PROFILE_BACKEND_CONCEPT_INDUCTION_PASS=substrate to read the
+      # real live FalkorDB substrate concept region instead of falling back to an empty
+      # in-memory store scoped to this process.
+      SUBSTRATE_STORE_BACKEND: ${SUBSTRATE_STORE_BACKEND:-}
+      FALKORDB_URI: ${FALKORDB_URI:-}
+      FALKORDB_SUBSTRATE_GRAPH: ${FALKORDB_SUBSTRATE_GRAPH:-orion_substrate}
+
       RECALL_PG_DSN: ${RECALL_PG_DSN:-}
       CHANNEL_RECALL_INTAKE: ${CHANNEL_RECALL_INTAKE:-orion:exec:request:RecallService}
       CHANNEL_RECALL_REPLY_PREFIX: ${CHANNEL_RECALL_REPLY_PREFIX:-orion:exec:result:RecallService}

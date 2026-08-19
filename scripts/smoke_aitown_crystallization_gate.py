@@ -42,10 +42,28 @@ DEFAULT_DSN = os.environ.get(
 )
 
 # One row per proposed crystallization, with its window's turns resolved to
-# their real platform. LEFT JOIN on chat_history_log because a window can
-# reference a correlation_id whose chat row was pruned -- those turns must read
-# as unknown/None (which forces the window to "mixed", i.e. still reviewed),
-# never be silently dropped from the unanimity check.
+# their real platform. LEFT JOIN on chat_history_log AND aitown_chat_history_log
+# because a window can reference a correlation_id whose chat row was pruned --
+# those turns must read as unknown/None (which forces the window to "mixed",
+# i.e. still reviewed), never be silently dropped from the unanimity check.
+#
+# AI Town chat-history table split (docs/superpowers/specs/2026-08-19-aitown-
+# table-split-phase2-recall-migration-design.md). The historical AI-Town
+# rows were moved (not copied) out of chat_history_log into
+# aitown_chat_history_log via a one-off backfill script, run live against
+# this deployment's Postgres on 2026-08-19 -- verified: chat_history_log
+# went from 1,747 to 170 rows, aitown_chat_history_log now holds 1,577. The
+# corresponding orion-sql-writer WRITE-PATH change (routing new rows to one
+# table instead of Phase 1's additive dual-write) is a separate PR, not
+# merged as of this commit -- until it lands, new AI-Town turns can still
+# land in chat_history_log too (Phase 1's dual-write, gated by
+# SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED, default off). Without this second
+# join, every AI-Town turn whose row lives only in aitown_chat_history_log
+# would resolve to NULL here, and every AI-Town-unanimous window would
+# misclassify as "mixed" instead of "external", defeating the exact thing
+# this script exists to verify. COALESCE prefers chat_history_log when a
+# correlation_id matches both -- a real possibility until the write-path
+# cutover merges, not just defensive padding.
 QUERY = """
 WITH prop AS (
     SELECT crystallization_id,
@@ -67,12 +85,13 @@ SELECT p.crystallization_id,
        p.created_at,
        p.kind,
        w.correlation_id,
-       h.prompt,
-       h.response,
-       h.client_meta->'external_room'->>'platform' AS platform
+       COALESCE(h.prompt, a.prompt) AS prompt,
+       COALESCE(h.response, a.response) AS response,
+       COALESCE(h.client_meta, a.client_meta)->'external_room'->>'platform' AS platform
 FROM prop p
 LEFT JOIN window_turns w ON w.memory_window_id = p.window_id
 LEFT JOIN chat_history_log h ON h.correlation_id = w.correlation_id
+LEFT JOIN aitown_chat_history_log a ON a.correlation_id = w.correlation_id
 ORDER BY p.created_at DESC, w.correlation_id
 """
 

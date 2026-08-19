@@ -97,7 +97,42 @@ let modeVerbOverride = null;
 /** Hub quick lane: 'fast' = light prep; 'stance' = full brain/stance prep (slower, richer). */
 let chatQuickVariant = 'fast';
 const HUB_COMPUTE_DEFAULT = 'quick';
-const HUB_COMPUTE_ROUTE_IDS = ['chat', 'quick', 'agent', 'metacog'];
+// Fallback ONLY, for a cold boot before GET /routes has answered. The pickable set is
+// normally derived from the catalog by `pickableComputeRouteIds()` below, which filters on each
+// route's own `priority` -- so a new route reaches the picker without editing this file, and a
+// background lane is excluded because of what it IS, not because someone remembered to omit it.
+// This was a hardcoded list until 2026-08-19 and was one of four such copies that between them
+// hid `quick_background` from every operator surface.
+const HUB_COMPUTE_ROUTE_FALLBACK_IDS = ['chat', 'quick', 'agent', 'metacog'];
+
+// Fail-safe floor mirroring BACKGROUND_LLM_ROUTES in orion/llm/routes.py. The browser cannot
+// import Python, and the authoritative answer is the `priority` field that
+// llm_gateway_client._priority_for() now guarantees -- this is belt-and-braces for a page held
+// open across a deploy, or pointed straight at the gateway. Drift here degrades GRACEFULLY: a
+// new background route missing from this list is still excluded by its `priority`, so the worst
+// case is losing the second line of defence, never gaining a wrong answer.
+const HUB_KNOWN_BACKGROUND_ROUTE_IDS = ['quick_background'];
+
+/**
+ * Routes a human may select. Background-priority lanes are deliberately excluded: they wait for
+ * slot slack before dispatching, so choosing one interactively buys nothing but latency. They
+ * still appear in the catalog (and in /routes) so their health is visible to an operator.
+ */
+function isBackgroundRouteEntry(entry) {
+  if (!entry) return false;
+  const id = String(entry.id || '').toLowerCase();
+  if (HUB_KNOWN_BACKGROUND_ROUTE_IDS.includes(id)) return true;
+  return String(entry.priority || '').toLowerCase() === 'background';
+}
+
+function pickableComputeRouteIds() {
+  const entries = (llmRouteCatalog && llmRouteCatalog.routes) || [];
+  const ids = entries
+    .filter((entry) => !isBackgroundRouteEntry(entry))
+    .map((entry) => String(entry.id || '').toLowerCase())
+    .filter(Boolean);
+  return ids.length ? ids : HUB_COMPUTE_ROUTE_FALLBACK_IDS;
+}
 let selectedLlmRoute = localStorage.getItem('orion_llm_route') || HUB_COMPUTE_DEFAULT;
 let llmRouteCatalog = { default_route: HUB_COMPUTE_DEFAULT, routes: [] };
 let llmRoutePollTimer = null;
@@ -9490,14 +9525,15 @@ document.addEventListener("DOMContentLoaded", () => {
       byId[String(entry.id || '').toLowerCase()] = entry;
     });
     hubComputeSelect.innerHTML = '';
-    HUB_COMPUTE_ROUTE_IDS.forEach((routeId) => {
+    const pickable = pickableComputeRouteIds();
+    pickable.forEach((routeId) => {
       const entry = byId[routeId] || { id: routeId, status: 'unknown', served_by: null, backend: null };
       const opt = document.createElement('option');
       opt.value = routeId;
       opt.textContent = formatComputeRouteLabel(entry, { selected: routeId === previous });
       hubComputeSelect.appendChild(opt);
     });
-    hubComputeSelect.value = HUB_COMPUTE_ROUTE_IDS.includes(previous) ? previous : HUB_COMPUTE_DEFAULT;
+    hubComputeSelect.value = pickable.includes(previous) ? previous : HUB_COMPUTE_DEFAULT;
     const selectedEntry = byId[hubComputeSelect.value] || { id: hubComputeSelect.value };
     const selectedOpt = hubComputeSelect.selectedOptions[0];
     if (selectedOpt) {
@@ -9507,7 +9543,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function syncComputeSelection(routeId) {
     const rid = String(routeId || HUB_COMPUTE_DEFAULT).toLowerCase();
-    selectedLlmRoute = HUB_COMPUTE_ROUTE_IDS.includes(rid) ? rid : HUB_COMPUTE_DEFAULT;
+    selectedLlmRoute = pickableComputeRouteIds().includes(rid) ? rid : HUB_COMPUTE_DEFAULT;
     localStorage.setItem('orion_llm_route', selectedLlmRoute);
     renderComputeDropdown();
     // Switching lanes can switch between a sighted and a blind model, so the

@@ -225,6 +225,77 @@ async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_threads_continuity_messages_into_recent_turns() -> None:
+    """Regression for the missing-conversation-history gap: continuity_messages
+    was already accepted as a param and fed into the pre-turn appraisal RPC,
+    but never reached the actual HarnessRunRequestV1 sent to the harness
+    governor -- so the compiled `claude -p` prompt never carried prior-turn
+    history regardless of what the caller (WebSocket/HTTP) built. This asserts
+    it now reaches the request object, not just the appraisal call."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    continuity_messages = [
+        {"role": "user", "content": "what's the weather like?"},
+        {"role": "assistant", "content": "I don't have live weather access."},
+    ]
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="ok what about tomorrow?",
+            payload={},
+            continuity_messages=continuity_messages,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    assert [m.model_dump() for m in req.recent_turns] == continuity_messages
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_recent_turns_empty_when_no_continuity_messages() -> None:
+    """A fresh session (continuity_messages=None) must produce an empty
+    recent_turns, not a fabricated single-message fallback (unlike
+    _run_pre_turn_appraisal's turn_window, which does synthesize a fallback
+    for the appraisal RPC only -- that fallback must not leak into the
+    harness prompt's history section)."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            payload={},
+            continuity_messages=None,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    assert req.recent_turns == []
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_publishes_chat_history_on_success() -> None:
     harness_run = HarnessRunV1(
         correlation_id=_CORR_ID,

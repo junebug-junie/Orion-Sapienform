@@ -8,7 +8,8 @@ from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, is_relati
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_grounding_capsule, make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
-from orion.schemas.harness_finalize import HarnessRepairOverlayV1
+from orion.schemas.harness_finalize import HARNESS_RECENT_TURNS_MAX, HarnessRepairOverlayV1
+from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
 from orion.schemas.thought import AutonomySliceV1, StanceHarnessSliceV1
 
 
@@ -316,6 +317,75 @@ def test_compile_harness_prefix_resolves_github_repo_from_workspace(
     )
     assert "owner='junebug-junie'" in prompt
     assert "repo='Orion-Sapienform'" in prompt
+
+
+def test_compile_harness_prefix_includes_recent_conversation_when_present() -> None:
+    """Regression for the missing-conversation-history gap: a multi-turn
+    session's compiled prompt must actually carry the prior turns, not just
+    the current message -- see HarnessRunRequestV1.recent_turns's docstring."""
+    thought = make_thought(imperative="Continue the conversation.", tone="direct")
+    recent_turns = [
+        TurnWindowMessageV1(role="user", content="What's the weather like?"),
+        TurnWindowMessageV1(role="assistant", content="I don't have live weather access."),
+    ]
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="Ok, what about tomorrow?",
+        recent_turns=recent_turns,
+    )
+    assert "RECENT CONVERSATION" in prompt
+    assert "mid-conversation" in prompt
+    assert "- User: What's the weather like?" in prompt
+    assert "- Orion (you, prior turn): I don't have live weather access." in prompt
+    # The current message still renders separately, after the history block.
+    assert "User message: Ok, what about tomorrow?" in prompt
+    assert prompt.index("RECENT CONVERSATION") < prompt.index("User message:")
+
+
+def test_compile_harness_prefix_omits_recent_conversation_when_empty() -> None:
+    """A genuinely fresh session (empty recent_turns) must render no history
+    section at all -- never a fabricated placeholder."""
+    thought = make_thought(imperative="Greet the user.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="Hello!",
+        recent_turns=[],
+    )
+    assert "RECENT CONVERSATION" not in prompt
+
+
+def test_compile_harness_prefix_omits_recent_conversation_when_not_passed() -> None:
+    """Every pre-existing caller that doesn't pass recent_turns at all must
+    stay byte-identical to its pre-history-feature prompt."""
+    thought = make_thought(imperative="Greet the user.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="Hello!",
+    )
+    assert "RECENT CONVERSATION" not in prompt
+
+
+def test_compile_harness_prefix_renders_all_turns_up_to_the_schema_cap() -> None:
+    """HARNESS_RECENT_TURNS_MAX is HarnessRunRequestV1.recent_turns's own cap
+    (enforced by the schema's Field(max_length=...)); the formatter itself
+    must not silently drop or reorder anything within that bound."""
+    recent_turns = [
+        TurnWindowMessageV1(role="user" if i % 2 == 0 else "assistant", content=f"turn {i}")
+        for i in range(HARNESS_RECENT_TURNS_MAX)
+    ]
+    thought = make_thought(imperative="Continue.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="latest",
+        recent_turns=recent_turns,
+    )
+    for i in range(HARNESS_RECENT_TURNS_MAX):
+        assert f"turn {i}" in prompt
+    assert f"{HARNESS_RECENT_TURNS_MAX} prior message(s)" in prompt
 
 
 def test_harness_motor_instruction_relational_discourages_tools() -> None:

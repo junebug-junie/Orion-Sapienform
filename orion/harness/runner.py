@@ -45,6 +45,7 @@ from orion.schemas.harness_finalize import (
     HarnessRepairOverlayV1,
     HarnessRunRequestV1,
 )
+from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
 
 logger = logging.getLogger("orion.harness.runner")
@@ -152,6 +153,7 @@ def build_harness_prompt(
     prior_tool_fetch_names: list[str] | None = None,
     attachments: list[Any] | None = None,
     current_served_model: str | None = None,
+    recent_turns: list[TurnWindowMessageV1] | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -161,6 +163,7 @@ def build_harness_prompt(
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
         prior_tool_fetch_names=prior_tool_fetch_names,
         current_served_model=current_served_model,
+        recent_turns=recent_turns,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -307,6 +310,7 @@ class HarnessRunner:
             prior_tool_fetch_names=prior_tool_fetch_names,
             attachments=list(getattr(request, "attachments", None) or []),
             current_served_model=current_served_model,
+            recent_turns=list(getattr(request, "recent_turns", None) or []),
         )
 
         collector = HarnessGrammarCollector(

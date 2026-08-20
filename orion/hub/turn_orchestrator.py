@@ -11,7 +11,12 @@ from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.harness.attachment_staging import prune_staging, stage_attachments
-from orion.schemas.harness_finalize import HarnessAttachmentV1, HarnessRunRequestV1, HarnessRunV1
+from orion.schemas.harness_finalize import (
+    HARNESS_RECENT_TURNS_MAX,
+    HarnessAttachmentV1,
+    HarnessRunRequestV1,
+    HarnessRunV1,
+)
 from orion.schemas.pre_turn_appraisal import (
     PreTurnAppraisalOptionsV1,
     PreTurnAppraisalRequestV1,
@@ -526,11 +531,22 @@ async def execute_unified_turn(
                 correlation_id,
             )
 
+    # Reuses build_turn_window (already the appraisal call above's normalizer)
+    # rather than passing continuity_messages through raw -- caps to the last
+    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
+    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
+    # future caller forgets to cap. No synthetic single-message fallback here
+    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
+    # continuity_messages should render as a genuinely empty recent_turns, not
+    # a fabricated one-line "history".
+    recent_turns = build_turn_window(continuity_messages or [], max_turns=HARNESS_RECENT_TURNS_MAX)
+
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,
         thought_event=thought,
         user_message=user_message,
         attachments=staged_attachments,
+        recent_turns=recent_turns,
         permissions=ContextExecPermissionV1(
             read_memory=True,
             read_graph=True,

@@ -335,3 +335,48 @@ def test_baseline_from_json_dict_tolerates_malformed_payload() -> None:
     assert PerceptionEmbeddingBaseline.from_json_dict(
         {"surprise": "not-a-dict"}
     ) == PerceptionEmbeddingBaseline()
+
+
+def test_raw_surprise_is_none_when_no_comparison_happens() -> None:
+    """Cold start, degenerate input, and dimension mismatch never compute a
+    real cosine comparison -- raw_surprise stays None alongside score,
+    same convention."""
+    cold = PerceptionEmbeddingBaseline()
+    assert perception_prediction_error([1.0, 0.0], cold).raw_surprise is None
+    assert perception_prediction_error([], cold).raw_surprise is None
+    assert perception_prediction_error([0.0, 0.0], cold).raw_surprise is None
+
+    warm = PerceptionEmbeddingBaseline(embedding_ewma=(1.0, 0.0, 0.0), n=3)
+    assert perception_prediction_error([1.0, 0.0], warm).raw_surprise is None
+    assert perception_prediction_error([0.0, 0.0], warm).raw_surprise is None
+
+
+def test_raw_surprise_populated_even_while_score_still_warming() -> None:
+    """A stream's very first real cosine comparison has a warm embedding
+    baseline but a cold scalar surprise baseline -- score is None (no
+    z-score baseline yet) but raw_surprise is a real, already-computed
+    number. This is exactly the distinction the field exists to expose:
+    without it, this case was indistinguishable from cold-start/degenerate
+    (both reported score=None with nothing else to inspect)."""
+    warm = PerceptionEmbeddingBaseline(embedding_ewma=(1.0, 0.0), n=1)
+    result = perception_prediction_error([0.0, 1.0], warm)
+    assert result.score is None
+    assert result.raw_surprise == 1.0
+
+
+def test_raw_surprise_matches_score_times_saturation_when_unsaturated() -> None:
+    """Live-data cross-check: for any unsaturated tick, raw_surprise is
+    independently recoverable as
+    surprise.ewma + (score * SATURATION) * sqrt(surprise.variance) against
+    the *prior* scalar baseline -- confirming the new field and the
+    existing score math agree on the same underlying magnitude, not two
+    independently-drifting numbers."""
+    baseline = PerceptionEmbeddingBaseline(
+        embedding_ewma=(1.0, 0.0), n=5, surprise=_DomainEwmaBaseline(ewma=0.1, variance=0.0025, n=4)
+    )
+    cos = 0.825
+    embedding = (cos, math.sqrt(1.0 - cos * cos))
+    result = perception_prediction_error(embedding, baseline)
+    assert result.score is not None and result.score < 1.0
+    reconstructed = 0.1 + (result.score * 3.0) * math.sqrt(0.0025)
+    assert abs(reconstructed - result.raw_surprise) < 1e-9

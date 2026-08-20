@@ -1173,10 +1173,28 @@ class PerceptionPredictionErrorResult:
     "measured, not anomalous" (this repo's "no empty-shell cognition" rule,
     same convention every EWMA domain above follows via
     ``compute_ewma_update``'s own ``zscore=None`` first-observation case).
+
+    ``raw_surprise`` is the pre-z-score ``1 - cos(...)`` magnitude. Populated
+    whenever a real cosine comparison against a warm embedding baseline
+    happened -- including the stream's first such comparison, where
+    ``score`` is still ``None`` because the *second* (scalar surprise) EWMA
+    baseline hasn't seen enough observations yet to produce a z-score. Only
+    ``None`` when no comparison was possible at all this tick (empty/
+    zero-norm input, or the embedding baseline itself is cold/dimension-
+    mismatched). Added 2026-08-20 after the z-score migration shipped and
+    went live: the caller only ever had the final saturated ``score`` to log,
+    which made it impossible to tell "the raw magnitude genuinely moved" from
+    "the z-score stage is mis-calibrated" without re-deriving the raw value
+    by hand from ``score * _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION``
+    (which only works for *unsaturated* ticks -- every tick that pinned at
+    1.0 was a dead end). A real debug surface for a metric this repo's own
+    metric quality gate requires live-data sanity-checking, not a throwaway
+    field.
     """
 
     score: float | None
     baseline: PerceptionEmbeddingBaseline
+    raw_surprise: float | None = None
 
 
 def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float | None:
@@ -1316,6 +1334,10 @@ def perception_prediction_error(
         surprise=new_surprise_baseline,
     )
     if surprise_zscore is None:
-        return PerceptionPredictionErrorResult(score=None, baseline=new_baseline)
+        return PerceptionPredictionErrorResult(
+            score=None, baseline=new_baseline, raw_surprise=raw_surprise
+        )
     score = min(1.0, surprise_zscore / _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION)
-    return PerceptionPredictionErrorResult(score=score, baseline=new_baseline)
+    return PerceptionPredictionErrorResult(
+        score=score, baseline=new_baseline, raw_surprise=raw_surprise
+    )

@@ -42,6 +42,21 @@ def test_parse_tolerates_surrounding_prose() -> None:
     assert parsed == [{"phrase": "Sarah", "type": "person"}]
 
 
+def test_parse_ignores_stray_bracket_before_the_real_array() -> None:
+    # A naive greedy regex (first "[" to last "]" in the whole string) would
+    # span from the footnote's "[1]" through the real array's closing "]",
+    # producing invalid JSON. Bracket-depth scanning finds the real array.
+    raw = 'See item [1] for details.\n[{"phrase": "Sarah", "type": "person"}]'
+    parsed = parse_current_turn_llm_signals(raw)
+    assert parsed == [{"phrase": "Sarah", "type": "person"}]
+
+
+def test_parse_ignores_stray_bracket_after_the_real_array() -> None:
+    raw = '[{"phrase": "Sarah", "type": "person"}]\nHope that helps! [end]'
+    parsed = parse_current_turn_llm_signals(raw)
+    assert parsed == [{"phrase": "Sarah", "type": "person"}]
+
+
 def test_parse_unrecognized_type_falls_back_to_other() -> None:
     raw = '[{"phrase": "Something", "type": "not_a_real_type"}]'
     parsed = parse_current_turn_llm_signals(raw)

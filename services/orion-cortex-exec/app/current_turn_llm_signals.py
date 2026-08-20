@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -69,7 +68,58 @@ _MAX_PHRASE_LEN = 80
 _MAX_CANDIDATES = 8
 _ALLOWED_TYPES = {"person", "place", "plan", "belief", "concept", "activity", "other"}
 
-_JSON_ARRAY_RE = re.compile(r"\[.*\]", flags=re.DOTALL)
+def _balanced_json_array_spans(text: str) -> list[str]:
+    """Find every *balanced* top-level `[...]` span in `text`, in order.
+
+    A naive greedy regex (`r"\[.*\]"`) spans from the FIRST `[` to the LAST
+    `]` anywhere in the response -- any stray bracket before or after the
+    real array (a footnote like "see item [1]", trailing commentary with a
+    bracketed aside, or two separate arrays) makes the match invalid JSON
+    and the whole response gets discarded as malformed, even though a
+    clean array was actually present. This walks bracket depth (skipping
+    bracket characters inside quoted strings) to find every genuinely
+    balanced span instead of just the outermost first-to-last one -- the
+    caller tries each in order and uses the first that actually parses into
+    the expected shape (a stray "[1]"-style footnote parses as valid JSON
+    too, just not as a list of candidate objects, so scanning must not stop
+    at the first syntactically-valid-but-wrong-shaped span).
+    """
+    spans: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "[":
+            i += 1
+            continue
+        start = i
+        depth = 0
+        in_string = False
+        escape = False
+        end = None
+        for j in range(start, n):
+            ch = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        if end is None:
+            break
+        spans.append(text[start : end + 1])
+        i = end + 1
+    return spans
 
 
 def _source() -> ServiceRef:
@@ -110,14 +160,23 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
     text = (raw_text or "").strip()
     if not text:
         return None
-    match = _JSON_ARRAY_RE.search(text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return None
-    if not isinstance(data, list):
+
+    data: list | None = None
+    for span in _balanced_json_array_spans(text):
+        try:
+            candidate = json.loads(span)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if not isinstance(candidate, list):
+            continue
+        # Empty list ([]) is a genuine "found nothing" result -- accept it.
+        # A non-empty list must contain at least one dict to be plausibly
+        # our expected {"phrase", "type"} shape (skips stray syntactically-
+        # valid-but-wrong spans like a footnote's "[1]").
+        if not candidate or any(isinstance(item, dict) for item in candidate):
+            data = candidate
+            break
+    if data is None:
         return None
 
     out: list[dict[str, str]] = []

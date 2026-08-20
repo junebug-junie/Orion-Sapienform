@@ -161,29 +161,180 @@ by `test_the_parent_is_pruned_after_its_children`.
 ## Tests run
 
 ```text
-(placeholder — filled in below)
+$ pytest services/orion-sql-writer/tests -q
+11 failed, 390 passed, 3 skipped, 34 warnings in 12.72s
 ```
+
+The same 11 failures reproduce on `main` at the merge base (377 passed there), so this
+branch adds 13 passing tests and no new breakage. Pre-existing failures, unrelated to
+retention: `test_biometrics_summary_sql_shape`, `test_chat_history_response_identity_merge`
+(4), `test_journal_entry_payload_boundary`, `test_notify_attention_ack` (3),
+`test_notify_attention_escalate` (2).
+
+New tests, all in `services/orion-sql-writer/tests/`:
+
+- `test_grammar_retention_periodic.py::TestTheParentTraceRowIsPrunedToo` — 6 tests: the table
+  is in the retention cycle, the parent is pruned after its children, the delete keys on
+  `trace_id`, the loop passes a real window, a stalled lane holds the parent back, and both
+  the Atlas listing and the delete probe have an index.
+- `test_grammar_retention_periodic.py::test_exactly_the_cursor_coupled_tables_opt_in` —
+  parametrized over all five managed tables; asserts the real `respect_cursor_floor` kwarg
+  reaching `_apply_bounded_table_retention`, not its source text.
+- `test_every_managed_table_has_a_real_settings_window` — asserts against real
+  `Settings.model_fields`, so a `MagicMock` fixture cannot hide config drift.
+- `test_a_missing_window_degrades_health_instead_of_500ing_it`.
+- `test_startup_only_covers_the_pre_periodic_tables_on_purpose` — pins the deliberate
+  `periodic_only = {"grammar_traces"}` exemption against `main.py`.
+
+## Evals run
+
+`services/orion-sql-writer/` has no `evals/` directory. No eval harness exists for this
+service; the live runtime evidence below stands in its place. Follow-up worth filing:
+the service has retention, cursor, and truth-block behavior that would suit a small eval
+harness, and today has none.
 
 ## Docker/build/smoke checks
 
 ```text
-(placeholder — filled in below)
+$ ./scripts/safe_docker_build.sh orion-sql-writer up -d --build
+Container orion-athena-sql-writer  Recreated
+Container orion-athena-sql-writer  Started
 ```
+
+Live runtime evidence, `docker logs orion-athena-sql-writer`:
+
+```text
+grammar_traces_retention_batch batch=1 deleted=18 cutoff=2026-08-17T16:13:20.563369+00:00
+grammar_traces_retention_complete cutoff=2026-08-17T16:13:20.563369+00:00 rows_pruned=18 \
+  batches=1 elapsed_sec=0.02 remaining_debt=0 capped_batches=False capped_elapsed=False
+grammar_retention_cycle pruned=6273 remaining_debt={'grammar_events': 4577962, \
+  'grammar_edges': 266085} floored=[] skipped=[]
+```
+
+Table state, before the branch was deployed and after it reached steady state:
+
+```text
+                    before            after
+rows                488,742           81,478
+oldest created_at   2026-07-23        2026-08-17 16:13:23   (exactly the 3-day window)
+hollow traces       219,702           1
+total relation size ~1.1 GB           219 MB
+```
+
+"Hollow" = a trace row with zero surviving `grammar_atoms` children. The 219,702 hollow
+rows were the accumulated pruning artifact this patch exists to stop; the single remaining
+one is a trace whose atoms were pruned moments before the parent's own cycle ran, and it
+clears on the next pass. Steady state is now ~18-20 rows per 60s cycle with
+`remaining_debt=0` — the table tracks its window instead of growing without bound.
+
+Index evidence (`EXPLAIN (ANALYZE, BUFFERS)`), captured before and after the manual
+migration was applied live:
+
+```text
+Atlas listing  (ORDER BY started_at DESC LIMIT 50)
+  before: Parallel Seq Scan  11,523 blocks   58.8 ms
+  after:  Index Scan             47 blocks    0.35 ms
+
+Retention delete probe (created_at < cutoff)
+  after:  Index Only Scan        13 blocks    0.85 ms   Heap Fetches: 0
+```
+
+Both indexes confirmed `indisvalid = t` in `pg_index`.
 
 ## Review findings fixed
 
-(placeholder — filled in below)
+- Finding: **My cursor-floor rationale was exactly inverted.** The docstring claimed a
+  trace's `created_at` is `<=` the `created_at` of every event under it, so one floor keeps
+  parent and children together. That is false in both directions: the two columns are on
+  different clocks (`grammar_traces.created_at` is wall-clock *write* time,
+  `orion/grammar/ledger.py:71`; `grammar_events.created_at` is *occurrence* time,
+  `ledger.py:117`), and even if it held, a *smaller* `created_at` deletes *sooner*, so the
+  parent would die first. 3,627 of 3,627 sampled traces violated the claimed inequality.
+  - Fix: rewrote the docstring and the "cursor floor" section of this report to state the
+    true, narrower property — a trace outlives its *earliest* event by construction, but
+    not its later unconsumed siblings.
+  - Evidence: measured residual — 4 events were briefly parentless, for 8.6 seconds,
+    self-healing on the next cycle. That is the real bound, and it is now written down.
+
+- Finding: **One of my new tests could not fail.**
+  `assert "respect_cursor_floor=True" in inspect.getsource(fn)` was satisfied by the new
+  function's own docstring.
+  - Fix: replaced with the parametrized behavioral test that monkeypatches
+    `_apply_bounded_table_retention` and asserts the kwarg actually received.
+  - Evidence: mutation-tested both ways. Flipping the real kwarg to `False` left the old
+    test green (29 passing); against the new test it fails exactly one parametrization.
+
+- Finding: `_other_retention_truth_blocks` hand-listed its tables and raised `KeyError`
+  (then, after my first fix, `AttributeError`) on an unknown one — which 500s `/health`,
+  the same blast radius as the bug it replaced.
+  - Fix: derive the window map from `_EXTRA_RETENTION_TABLES` and *degrade* rather than
+    raise — log an error, record the table in `_retention_window_config_missing`, and emit a
+    `{table}_retention_window_unconfigured` degraded reason.
+  - Evidence: `test_a_missing_window_degrades_health_instead_of_500ing_it`.
+
+- Finding: the `_mock_settings` fixture returns a `MagicMock`, which answers `hasattr()` for
+  any attribute name, so a missing real settings field would never be caught.
+  - Fix: the fixture now derives its retention-days attrs from `_EXTRA_RETENTION_TABLES`,
+    and a new test asserts against real `Settings.model_fields`.
+  - Evidence: `test_every_managed_table_has_a_real_settings_window`.
+
+- Finding: `main.py` still hand-lists four startup retention tables; `grammar_traces` is not
+  among them.
+  - Fix: this is deliberate — the startup pass already blocks the event loop for ~260s and
+    should not grow. Pinned the exemption in a test instead of adding a fifth blocking
+    block, so the omission is now an asserted decision rather than an oversight.
+  - Evidence: `test_startup_only_covers_the_pre_periodic_tables_on_purpose`.
+
+- Finding: the ordering comment claimed a microsecond-scale safety margin against a window
+  that is really ~1.8 days.
+  - Fix: replaced with the measured convergence table (traces ~2.4h, atoms ~0.45d,
+    edges ~0.5d, events ~1.8d).
+  - Evidence: in `grammar_truth.py`, alongside `GRAMMAR_RETENTION_TABLES`.
+
+- Finding: two `known_risks` entries and the service README both asserted that
+  `grammar_traces` has no retention. The README was additionally stale from PR #1759 (said
+  four tables, "startup-run", default 15).
+  - Fix: both corrected; README rewritten to five tables, default 3, 60s timer, cursor
+    floor, and `grammar_traces`' deliberate periodic-only status.
 
 ## Restart required
 
+Already applied on athena — the branch is deployed and verified live. To reproduce
+elsewhere, from a worktree:
+
 ```bash
-(placeholder — filled in below)
+./scripts/safe_docker_build.sh orion-sql-writer up -d --build
 ```
+
+The SQL migration is already applied live and is idempotent
+(`create index concurrently if not exists`). On a fresh database:
+
+```bash
+psql -h localhost -p 55432 -U postgres -d conjourney \
+  -f services/orion-sql-db/manual_migration_grammar_traces_retention.sql
+```
+
+Note it cannot run inside a transaction block — `CREATE INDEX CONCURRENTLY` forbids it, and
+an interrupted build leaves an `INVALID` index that must be dropped and rebuilt.
 
 ## Risks / concerns
 
-(placeholder — filled in below)
+- Severity: low. Concern: a trace can briefly outlive nothing — that is, its atoms are
+  pruned in the same cycle a moment before the parent's own pass, leaving it hollow for up
+  to one 60s cycle. Mitigation: measured at 4 rows / 8.6s, self-healing; the ordering in
+  `GRAMMAR_RETENTION_TABLES` puts `grammar_traces` last precisely to minimize it.
+- Severity: low. Concern: three days is short for forensic work on old traces. Mitigation:
+  `GRAMMAR_TRACES_RETENTION_DAYS` is a plain env knob; raising it costs ~70 MB/day.
+- Severity: low. Concern: the delete reclaims space *inside* the table, not to the OS, so
+  the 219 MB figure will not shrink further without `VACUUM FULL`. Mitigation: not worth
+  it — the volume has 619 GB free, and the table is now bounded rather than growing.
+- Severity: informational. Concern: `orion/memory/crystallization/sources.py:27-38`, the
+  only non-Atlas reader of this table, queries
+  `WHERE trace_id = $1 OR event_id = $1` — but `grammar_traces` has no `event_id` column, so
+  every call throws into a bare `except Exception: pass`, and its fallback table
+  `substrate_grammar_events` does not exist. Dead since written, unrelated to this patch,
+  not fixed here. Worth its own issue.
 
 ## PR link
 
-(placeholder)
+<link>

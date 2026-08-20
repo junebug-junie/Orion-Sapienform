@@ -273,57 +273,119 @@ def _verify_delete_safe(conn, *, table: str) -> tuple[bool, str]:
 # once fresh work keeps the fast path busy. Retention must not re-introduce the exact bound that
 # migration removed.
 #
-# So the floor asks the markers, not the clock: what is the oldest row any stage still owes work
-# on? Everything at or above that timestamp stays, no matter how old it is.
+# So the floor asks the markers, not the clock: what is the oldest PROPOSAL row any stage still
+# owes work on? Everything at or above that timestamp stays, no matter how old it is.
+#
+# EACH PROBE RESOLVES BACK TO THE PROPOSAL ROW, NOT TO THE PENDING ROW'S OWN TIMESTAMP.
+# This is the part the first version of this code got wrong, and code review caught it with
+# live data before merge. The delete below removes substrate_proposal_frames rows by their own
+# created_at. A pending row in a DOWNSTREAM table is always NEWER than the proposal it needs --
+# it is a child, written later -- so flooring at the child's timestamp leaves the parent below
+# the floor and deletable, which is precisely backwards from the safety being claimed. Measured
+# live 2026-08-20 over 3 days: dispatch rows are created a mean 123.2s and max 920.2s AFTER
+# their parent proposal, and 0 of 55,573 were created before it. The join through
+# source_proposal_frame_id is what makes "a row still owed work survives" actually true.
+# (This is the same parent/child clock trap that produced an inverted docstring on the
+# grammar_traces patch one day earlier. Second occurrence; check the direction, every time.)
+#
+# THE `OFFSET 0` IS LOAD-BEARING, NOT NOISE.
+# Written plainly as `SELECT MIN(created_at) ... WHERE dispatch_pending`, Postgres rewrites the
+# min-aggregate into `ORDER BY created_at LIMIT 1` over the FULL created_at index and applies
+# the marker as a filter. Because pending rows are always the NEWEST rows, the ascending scan
+# discards the entire table first. Measured live: 490 ms, 102,343 buffers, "Rows Removed by
+# Filter: 474,708" -- every 60 seconds, on a host with a known I/O ceiling. Worse, that cost is
+# highest when the pipeline is CAUGHT UP and falls as a backlog develops, so it would never have
+# looked like a backlog problem. `OFFSET 0` is an optimisation fence: it forces the pending set
+# to be materialised through the partial index first, then aggregates over those few rows.
+# Same three probes with the fence: 0.18 ms / 5.4 ms / 1.6 ms.
 #
 # WHY A PENDING MARKER IS SAFE TO FLOOR ON, WHERE A REDUCTION CURSOR WAS NOT.
 # The grammar cursor floor above deliberately does NOT ask "where is the oldest cursor", because
 # a cursor stops moving when its SOURCE goes quiet, which is indistinguishable from a stall. A
-# pending marker has no such ambiguity: it is set at insert and cleared in the same transaction
-# as the downstream write, so a pending row is unconsumed work by construction, and a quiet
-# source produces no pending rows at all rather than a stuck floor. The failure mode that does
-# remain is a leaked marker -- a row stuck pending forever would pin retention forever -- which
-# is why a binding floor logs at WARNING with the stage name and how far back it reaches, the
-# same way the cursor floor does. Live 2026-08-20, all three stages were current: oldest pending
-# was 1 / 96 / 15 rows, all under four minutes old.
-_SUBSTRATE_CHAIN_PENDING: tuple[tuple[str, str, str], ...] = (
-    ("proposal->policy", "substrate_proposal_frames", "policy_pending"),
-    ("policy->dispatch", "substrate_policy_decision_frames", "dispatch_pending"),
-    ("dispatch->feedback", "substrate_execution_dispatch_frames", "feedback_pending"),
+# pending marker has much less ambiguity: it is set at insert and cleared in the same
+# transaction as the downstream write, so a pending row is unconsumed work by construction, and
+# a quiet source produces no pending rows at all rather than a stuck floor.
+#
+# Two residual hazards, both real:
+#   1. A LEAKED MARKER pins retention forever. That is why a binding floor logs at WARNING with
+#      how far back it reaches.
+#   2. There is a THIRD writer of policy_pending, not just insert-and-clear:
+#      services/orion-policy-runtime/app/store.py's reconcile_policy_pending() re-sets the
+#      marker to TRUE, on a 900s timer, for any proposal with no matching policy decision frame,
+#      with NO time bound. It can only ADD work. Today that is harmless. It becomes a trap the
+#      moment substrate_policy_decision_frames itself gets retention: pruning a decision frame
+#      makes its proposal look unprocessed, reconcile re-flags it, this floor pins at the oldest
+#      re-flagged row, and proposal retention stops permanently while policy-runtime reprocesses
+#      hundreds of thousands of ancient proposals. Anyone extending retention to that table must
+#      bound reconcile's anti-join first. See the README's known-gap section.
+#
+# Live 2026-08-20, all three stages were current: 1 / 96 / 15 pending rows, all under four
+# minutes old.
+_SUBSTRATE_CHAIN_PENDING: tuple[tuple[str, str], ...] = (
+    (
+        "proposal->policy",
+        """
+        SELECT MIN(s.created_at)
+          FROM (
+                SELECT created_at
+                  FROM substrate_proposal_frames
+                 WHERE policy_pending
+                OFFSET 0
+               ) s
+        """,
+    ),
+    (
+        "policy->dispatch",
+        """
+        SELECT MIN(p.created_at)
+          FROM (
+                SELECT source_proposal_frame_id
+                  FROM substrate_policy_decision_frames
+                 WHERE dispatch_pending
+                OFFSET 0
+               ) d
+          JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id
+        """,
+    ),
+    (
+        "dispatch->feedback",
+        """
+        SELECT MIN(p.created_at)
+          FROM (
+                SELECT source_proposal_frame_id
+                  FROM substrate_execution_dispatch_frames
+                 WHERE feedback_pending
+                OFFSET 0
+               ) d
+          JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id
+        """,
+    ),
 )
 
 
 def _substrate_chain_floor(conn: Any, time_cutoff: datetime) -> tuple[datetime | None, bool]:
-    """Oldest row any downstream substrate stage still owes work on, as (floor, resolved).
+    """Oldest PROPOSAL row any downstream substrate stage still owes work on, as (floor, resolved).
 
     Same two-value contract as _grammar_events_cursor_floor: (None, True) means every stage is
     caught up and the time cutoff governs; (None, False) means the question could not be
     answered and the caller must refuse to prune.
 
-    Each probe rides the stage's partial index (idx_*_pending, 32 kB live), so this is three
-    tiny index-only scans, not three scans of a 1.7 GB table.
+    Every probe returns a substrate_proposal_frames.created_at -- the same table and the same
+    column the delete predicate keys on. Not the pending row's own timestamp (it is a child,
+    written later), and not generated_at (a different clock: measured live, the two diverge by
+    up to 724s, and 24 policy rows have created_at strictly BEFORE generated_at). Comparing a
+    floor from one clock or one table against a cutoff on another is how you delete the rows you
+    meant to keep.
+
+    Verified live 2026-08-20 with EXPLAIN (ANALYZE, BUFFERS): 0.18 ms / 5.4 ms / 1.6 ms.
     """
     floor: datetime | None = None
-    for stage, table, marker in _SUBSTRATE_CHAIN_PENDING:
+    for stage, sql in _SUBSTRATE_CHAIN_PENDING:
         try:
-            # Table/column names are module constants above, never caller input.
-            oldest = conn.execute(
-                # created_at, NOT generated_at, even though the partial index is on
-                # generated_at. The delete predicate below keys on created_at, and the two
-                # columns are on different clocks: generated_at is when the stage produced the
-                # frame, created_at is when this row was written. Measured live 2026-08-20 they
-                # diverge by up to 724s on substrate_execution_dispatch_frames, and 24 policy
-                # rows have created_at strictly BEFORE generated_at. Comparing a floor from one
-                # clock against a cutoff on the other is how you delete rows you meant to keep.
-                # The pending set is tiny (1/96/15 rows live), so the index still does the
-                # narrowing and the heap fetch for created_at is negligible.
-                text(f"SELECT MIN(created_at) FROM {table} WHERE {marker}")  # noqa: S608
-            ).scalar()
+            oldest = conn.execute(text(sql)).scalar()
         except Exception:  # noqa: BLE001 - unresolved is a distinct outcome from "no floor"
             logger.exception(
-                "substrate_chain_floor_probe_failed stage=%s table=%s -- refusing to prune",
-                stage,
-                table,
+                "substrate_chain_floor_probe_failed stage=%s -- refusing to prune", stage
             )
             return None, False
         if oldest is None:
@@ -670,7 +732,17 @@ def apply_substrate_proposal_frames_retention(
 
     No new index needed: idx_substrate_proposal_frames_created_at (created_at DESC) already
     exists from manual_migration_substrate_frames_created_at_index.sql, and a DESC btree
-    serves a `created_at < :cutoff` range scan fine. Confirmed live before shipping.
+    serves a `created_at < :cutoff` range scan fine. Confirmed live with EXPLAIN (ANALYZE,
+    BUFFERS): Incremental Sort over a backward index scan, 4.97 ms for a 2000-row batch.
+
+    CAVEAT ON _verify_delete_safe FOR THIS TABLE. It will report
+    "substrate_proposal_frames_delete_is_child_safe; no incoming FK constraints found", and
+    that is literally true -- pg_constraint has zero rows with confrelid pointing here. But
+    that check was written for the grammar tables, which genuinely have no children. This
+    table has THREE referencing tables; they store source_proposal_frame_id as a plain text
+    column with no FK declared. So "no incoming FK" means the database will not TELL you when
+    you orphan something, not that nothing can be orphaned. The chain floor above is the
+    actual safety here. Do not read the FK note as a second, independent confirmation.
     """
     settings = get_settings()
     state = _apply_bounded_table_retention(
@@ -693,7 +765,6 @@ def apply_substrate_proposal_frames_retention(
     )
     _extra_retention_state["substrate_proposal_frames"] = state
     return state
-
 
 
 def apply_grammar_traces_retention(

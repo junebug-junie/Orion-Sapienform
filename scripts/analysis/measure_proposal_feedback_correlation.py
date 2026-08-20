@@ -402,11 +402,24 @@ def open_readonly_connection(dsn: str):
     return conn
 
 
-def fetch_chain_completeness(conn) -> dict[str, int]:
+def fetch_chain_completeness(conn, window_hours: float) -> dict[str, int]:
     """Real join, not assumed from schema alone: for each feedback frame,
     do its source_proposal_frame_id / source_policy_frame_id /
     source_execution_dispatch_frame_id actually resolve to real rows in the
-    upstream tables?"""
+    upstream tables?
+
+    BOUNDED TO `window_hours` ON PURPOSE (2026-08-20). This query used to have no WHERE
+    clause at all -- it joined every feedback frame ever written against the upstream
+    tables. That was correct only while the upstream tables were unbounded. Now that
+    substrate_proposal_frames has retention (SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS,
+    default 10 days), an unbounded version reports "INCOMPLETE" forever, for the entirely
+    expected reason that pruned rows do not resolve -- which is noise, not a finding, and it
+    would drown the real signal this check exists to catch.
+
+    substrate_feedback_frames itself has no retention, so `rows_outside_window` is reported
+    alongside rather than silently dropped: the caller says how many rows were excluded, so
+    a shrinking denominator can never be mistaken for a clean bill of health.
+    """
     if conn is None:
         return {}
     try:
@@ -414,17 +427,24 @@ def fetch_chain_completeness(conn) -> dict[str, int]:
             cur.execute(
                 """
                 SELECT
-                  count(*) AS total_feedback,
-                  count(*) FILTER (WHERE f.source_proposal_frame_id IS NOT NULL) AS has_proposal_ref,
-                  count(*) FILTER (WHERE p.frame_id IS NOT NULL) AS proposal_ref_resolves,
-                  count(*) FILTER (WHERE f.source_policy_frame_id IS NOT NULL) AS has_policy_ref,
-                  count(*) FILTER (WHERE pol.frame_id IS NOT NULL) AS policy_ref_resolves,
-                  count(*) FILTER (WHERE d.frame_id IS NOT NULL) AS dispatch_ref_resolves
+                  count(*) FILTER (WHERE f.created_at >= %(cutoff)s) AS total_feedback,
+                  count(*) FILTER (WHERE f.created_at >= %(cutoff)s
+                                     AND f.source_proposal_frame_id IS NOT NULL) AS has_proposal_ref,
+                  count(*) FILTER (WHERE f.created_at >= %(cutoff)s
+                                     AND p.frame_id IS NOT NULL) AS proposal_ref_resolves,
+                  count(*) FILTER (WHERE f.created_at >= %(cutoff)s
+                                     AND f.source_policy_frame_id IS NOT NULL) AS has_policy_ref,
+                  count(*) FILTER (WHERE f.created_at >= %(cutoff)s
+                                     AND pol.frame_id IS NOT NULL) AS policy_ref_resolves,
+                  count(*) FILTER (WHERE f.created_at >= %(cutoff)s
+                                     AND d.frame_id IS NOT NULL) AS dispatch_ref_resolves,
+                  count(*) FILTER (WHERE f.created_at < %(cutoff)s) AS rows_outside_window
                 FROM substrate_feedback_frames f
                 LEFT JOIN substrate_proposal_frames p ON p.frame_id = f.source_proposal_frame_id
                 LEFT JOIN substrate_policy_decision_frames pol ON pol.frame_id = f.source_policy_frame_id
                 LEFT JOIN substrate_execution_dispatch_frames d ON d.frame_id = f.source_execution_dispatch_frame_id
-                """
+                """,
+                {"cutoff": datetime.now(timezone.utc) - timedelta(hours=window_hours)},
             )
             row = cur.fetchone()
     except Exception:
@@ -439,6 +459,7 @@ def fetch_chain_completeness(conn) -> dict[str, int]:
         "has_policy_ref",
         "policy_ref_resolves",
         "dispatch_ref_resolves",
+        "rows_outside_window",
     ]
     return dict(zip(cols, (int(v or 0) for v in row)))
 
@@ -683,6 +704,15 @@ def render_report(
         lines.append(
             f"- **Chain completeness: {'100% -- every reference resolves' if complete else 'INCOMPLETE, see counts above'}.**"
         )
+        outside = chain.get("rows_outside_window", 0)
+        if outside:
+            lines.append(
+                f"- {outside} older feedback frames were excluded from the completeness "
+                f"check. `substrate_feedback_frames` has no retention, but "
+                f"`substrate_proposal_frames` does (default 10 days), so references from "
+                f"rows older than the window resolve to pruned parents by design. Excluding "
+                f"them is what keeps this check able to detect a REAL broken reference."
+            )
     else:
         lines.append("- Could not compute (query failed, see log).")
     lines.extend(
@@ -819,7 +849,7 @@ def run(window_hours: float, policy_path: Path) -> int:
         print("ERROR: could not open a read-only postgres connection; see log")
         return 2
 
-    chain = fetch_chain_completeness(conn)
+    chain = fetch_chain_completeness(conn, window_hours)
     min_ts, max_ts, total_rows = fetch_feedback_summary(conn)
     progress.emit("summary fetched", percent=5.0, processed=total_rows, total=total_rows)
 

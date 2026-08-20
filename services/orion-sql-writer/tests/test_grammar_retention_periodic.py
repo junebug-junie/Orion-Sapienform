@@ -721,13 +721,52 @@ class TestTheSubstrateChainFloor:
     p50 34.6 hours and max 11.3 days behind. Retention must not put that bound back.
     """
 
+    @staticmethod
+    def _probes():
+        seen = []
+
+        class _Conn:
+            def execute(self, stmt, *a, **kw):
+                seen.append(" ".join(str(stmt).split()))
+                return SimpleNamespace(scalar=lambda: None)
+
+        grammar_truth._substrate_chain_floor(_Conn(), datetime.now(timezone.utc))
+        assert seen, "floor made no probes at all"
+        return seen
+
     def test_it_covers_every_stage_that_can_reach_back_into_the_table(self):
-        stages = {t for _, t, _ in grammar_truth._SUBSTRATE_CHAIN_PENDING}
-        assert stages == {
+        stages = {name for name, _ in grammar_truth._SUBSTRATE_CHAIN_PENDING}
+        assert stages == {"proposal->policy", "policy->dispatch", "dispatch->feedback"}
+        sql = " ".join(self._probes())
+        for table in (
             "substrate_proposal_frames",
             "substrate_policy_decision_frames",
             "substrate_execution_dispatch_frames",
-        }
+        ):
+            assert table in sql, table
+
+    def test_every_probe_returns_a_proposal_timestamp_not_the_pending_rows_own(self):
+        """THE bug code review caught on the first version of this floor.
+
+        The delete removes substrate_proposal_frames rows by their own created_at. A pending
+        row in a DOWNSTREAM table is always NEWER than the proposal it needs -- it is a
+        child, written later -- so flooring at the child's timestamp leaves the parent below
+        the floor and deletable, which is backwards from the safety being claimed. Measured
+        live 2026-08-20 over 3 days: dispatch rows are created a mean 123.2s and max 920.2s
+        AFTER their parent proposal; 0 of 55,573 were created before it.
+
+        The two downstream probes must therefore JOIN back to substrate_proposal_frames
+        through source_proposal_frame_id and take MIN of the PARENT's created_at.
+        """
+        for stage, sql in grammar_truth._SUBSTRATE_CHAIN_PENDING:
+            flat = " ".join(sql.split())
+            if stage == "proposal->policy":
+                # The proposal row IS the parent here; no join needed.
+                assert "MIN(s.created_at)" in flat, flat
+                continue
+            assert "MIN(p.created_at)" in flat, stage
+            assert "JOIN substrate_proposal_frames p" in flat, stage
+            assert "p.frame_id = d.source_proposal_frame_id" in flat, stage
 
     def test_it_probes_created_at_not_generated_at(self):
         """Same clock as the delete predicate.
@@ -738,18 +777,26 @@ class TestTheSubstrateChainFloor:
         read off one clock and compared to a cutoff on the other deletes rows it meant to
         keep.
         """
-        seen = []
-
-        class _Conn:
-            def execute(self, stmt, *a, **kw):
-                seen.append(str(stmt))
-                return SimpleNamespace(scalar=lambda: None)
-
-        grammar_truth._substrate_chain_floor(_Conn(), datetime.now(timezone.utc))
-        assert seen, "floor made no probes at all"
-        for sql in seen:
-            assert "MIN(created_at)" in sql, sql
+        for sql in self._probes():
+            assert "MIN(" in sql and "created_at)" in sql, sql
             assert "generated_at" not in sql, sql
+
+    def test_every_probe_fences_the_min_aggregate_with_offset_0(self):
+        """Without the fence this is a ~490ms near-full-table scan every 60 seconds.
+
+        Postgres rewrites a bare `SELECT MIN(created_at) ... WHERE dispatch_pending` into
+        `ORDER BY created_at LIMIT 1` over the FULL created_at index with the marker as a
+        filter. Pending rows are always the NEWEST rows, so the ascending scan discards the
+        entire table first -- measured live: 490 ms, 102,343 buffers, "Rows Removed by
+        Filter: 474,708". `OFFSET 0` is an optimisation fence that forces the tiny pending
+        set to be materialised through the partial index first. With it: 0.18/5.4/1.6 ms.
+
+        The cost of getting this wrong is invisible in the obvious place: it is HIGHEST when
+        the pipeline is caught up and falls as a backlog develops, so it would never look
+        like a backlog problem.
+        """
+        for sql in self._probes():
+            assert "OFFSET 0" in sql, sql
 
     def test_the_oldest_pending_row_across_all_stages_wins(self):
         oldest = datetime(2026, 8, 1, tzinfo=timezone.utc)
@@ -818,7 +865,7 @@ class TestTheSubstrateChainFloor:
         assert floor is None
         assert resolved is False
 
-    def test_an_unresolved_floor_refuses_to_prune(self, monkeypatch):
+    def test_an_unresolved_floor_refuses_to_prune(self):
         """End to end through the real _apply_bounded_table_retention: an unresolved floor
         must skip the cycle, not fall through to the time cutoff."""
         deleted = []
@@ -841,9 +888,6 @@ class TestTheSubstrateChainFloor:
             def begin(self):
                 return _Conn()
 
-        monkeypatch.setattr(
-            grammar_truth, "_substrate_chain_floor", lambda conn, cutoff: (None, False)
-        )
         state = grammar_truth._apply_bounded_table_retention(
             engine=_Engine(),
             table="substrate_proposal_frames",
@@ -852,10 +896,15 @@ class TestTheSubstrateChainFloor:
             batch_size=100,
             max_batches=5,
             max_elapsed_sec=10.0,
-            floor_resolver=grammar_truth._substrate_chain_floor,
+            floor_resolver=lambda conn, cutoff: (None, False),
         )
         assert state.failure_reason == "cursor_floor_unresolved"
-        assert not any("DELETE" in sql.upper() for sql in deleted), deleted
+        # NOT `assert no DELETE was issued` -- when the floor is unresolved the function
+        # returns before touching the connection at all, so that assertion is trivially true
+        # and proves nothing. The load-bearing checks are the failure_reason above and the
+        # fact that no cutoff was ever established.
+        assert state.cutoff_at is None
+        assert deleted == [], deleted
 
     def test_a_binding_floor_clamps_the_cutoff_back(self, monkeypatch):
         """A stage genuinely behind the retention window pulls the cutoff back to it."""

@@ -318,13 +318,26 @@ class Settings(BaseSettings):
     grammar_traces_retention_days: int = Field(3, alias="GRAMMAR_TRACES_RETENTION_DAYS")
 
     # substrate_proposal_frames had NO bound at all until 2026-08-20: 474,230 rows / 1,758 MB,
-    # growing ~27k rows and ~105 MB a day. 7 days keeps roughly 190k rows (~650 MB) and is a
-    # history/inspection choice, not a correctness one -- correctness is held by
-    # _substrate_chain_floor, which refuses to delete any row a later pipeline stage still owes
-    # work on regardless of how old it is. Raise this if deep proposal/feedback correlation
-    # analysis needs more than a week; it costs ~105 MB per extra day.
+    # growing ~27k rows and ~105 MB a day.
+    #
+    # 10 days, not 7, and the reason is consumer windows rather than disk. Two live readers
+    # reach back further than a week:
+    #   * orion/autonomy/evals/run_attention_bound_proposal_eval.py:39 WINDOW_DAYS = 7
+    #   * scripts/analysis/measure_proposal_feedback_correlation.py:100
+    #     DEFAULT_WINDOW_HOURS = 200.0, i.e. 8.33 days
+    # A 7-day window ties exactly to the first and sits INSIDE the second, so retention would
+    # be racing both at their oldest edge, and both degrade to "insufficient data" rather than
+    # failing loudly. 10 days clears the longer of the two with a ~1.7-day margin.
+    #
+    # Correctness does not depend on this number at all -- that is held by
+    # _substrate_chain_floor, which refuses to delete any proposal a later pipeline stage still
+    # owes work on regardless of age. This is purely how much history stays inspectable.
+    #
+    # Measured live 2026-08-20 (474,861 rows): 10 days keeps 202,276 rows, 7 days would have
+    # kept 113,060. Costs roughly 105 MB per extra day. NOTE that ~84% of this table's bytes
+    # are TOAST (1,471 MB of 1,760 MB), so pruning frees TOAST chunks, not heap pages.
     substrate_proposal_frames_retention_days: int = Field(
-        7, alias="SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS"
+        10, alias="SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS"
     )
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).

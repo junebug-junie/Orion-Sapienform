@@ -273,7 +273,7 @@ class Settings(BaseSettings):
     # (missing index -> full-table scan -> statement timeout, see
     # idx_grammar_events_created_at below) -- so this is a real policy change, not
     # just re-enabling what was already the intended live behavior.
-    grammar_events_retention_days: int = Field(15, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
+    grammar_events_retention_days: int = Field(3, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
     # batch_size 5000->1000, max_batches 20->100 (2026-08-19, live-verified): with the
     # new created_at index, the SELECT half of the batched DELETE is fast (~13ms for
     # 5000 rows), but the DELETE itself still needs one primary-key-index lookup per
@@ -304,10 +304,60 @@ class Settings(BaseSettings):
     # grammar_events batch/cap knobs above rather than adding a near-duplicate set
     # per table -- same scale, same startup-bounded-batch shape, nothing about these
     # three tables needs independently tunable batching.
-    grammar_edges_retention_days: int = Field(15, alias="GRAMMAR_EDGES_RETENTION_DAYS")
-    grammar_atoms_retention_days: int = Field(15, alias="GRAMMAR_ATOMS_RETENTION_DAYS")
+    grammar_edges_retention_days: int = Field(3, alias="GRAMMAR_EDGES_RETENTION_DAYS")
+    grammar_atoms_retention_days: int = Field(3, alias="GRAMMAR_ATOMS_RETENTION_DAYS")
     substrate_organ_emissions_retention_days: int = Field(
-        15, alias="SUBSTRATE_ORGAN_EMISSIONS_RETENTION_DAYS"
+        3, alias="SUBSTRATE_ORGAN_EMISSIONS_RETENTION_DAYS"
+    )
+
+    # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
+    #
+    # The window was never the reason these tables were 36 GB -- retention could not run
+    # often enough to enforce ANY window (see grammar_truth.GRAMMAR_RETENTION_TABLES). But
+    # once it does run, 15 days is not a fix either: at the measured 2.42 GB/day arrival,
+    # a 15-day window settles at ~36 GB, which is exactly where the tables already were.
+    # Retention working perfectly would have changed nothing about footprint.
+    #
+    #   window   steady-state footprint (at 2.42 GB/day, measured)
+    #   15 days  ~36 GB   <- previous default; equals the status quo
+    #    7 days  ~17 GB
+    #    3 days   ~7 GB   <- chosen
+    #
+    # Safety of the shorter window was checked, not assumed. grammar_events is consumed by
+    # five cursors in substrate_reduction_cursor; all five were within 13 SECONDS of live
+    # when this was set, against a 3-day window. The margin is ~20,000x. For the case where
+    # that stops being true, retention now takes the oldest cursor as a hard floor rather
+    # than trusting the margin -- see _grammar_events_cursor_floor.
+    #
+    # Reclaiming the ~29 GB this frees is a SEPARATE step: DELETE returns space for reuse
+    # inside the table, not to the OS. Deferred by Juniper until retention is converging.
+    grammar_retention_interval_sec: float = Field(
+        60.0, alias="GRAMMAR_RETENTION_INTERVAL_SEC"
+    )
+    # Per-cycle caps, deliberately much smaller than the startup caps above. Sized from the
+    # measured cost of a delete on these tables (~4.1 ms/row on grammar_events: one
+    # primary-key lookup per row across 8 indexes, poorly cached at this scale).
+    #
+    #   12,000 rows/cycle (3 batches x 1000 x 4 tables)
+    #   effective period ~109s, NOT 60s: the loop sleeps `interval` and THEN works, so the
+    #     interval is a gap between cycles, not a fixed period. 12,000 rows x ~4.1 ms/row
+    #     is ~49s of work on top of the 60s sleep.
+    #   => ~9.5M rows/day of capacity, against 1.1M/day arrival and a ~13.8M one-time drain
+    #   => drain completes in ~1.65 days, then the loop idles
+    #
+    # (An earlier version of this comment claimed 17.3M rows/day and "about a day" by
+    # treating the interval as a fixed period. Code review caught it; the corrected figure
+    # is ~1.8x slower and still comfortably ahead of arrival.)
+    #
+    # A batch that deletes fewer rows than batch_size ends that table's cycle early, so the
+    # steady state costs a handful of empty probes. Keeping each cycle small is the point:
+    # the startup job's full-speed pass was measured driving host I/O stall to ~21%, and
+    # this service shares a disk with everything else on athena.
+    grammar_retention_periodic_max_batches: int = Field(
+        3, alias="GRAMMAR_RETENTION_PERIODIC_MAX_BATCHES"
+    )
+    grammar_retention_periodic_max_elapsed_sec: float = Field(
+        20.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_ELAPSED_SEC"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,

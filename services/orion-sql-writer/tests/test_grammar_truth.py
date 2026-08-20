@@ -109,6 +109,18 @@ def _patch_truth_deps(monkeypatch, settings) -> None:
     )
 
 
+
+def _live_cursor_floor():
+    """A reduction cursor that is caught up, so it never binds the retention cutoff.
+
+    Added 2026-08-20: grammar_events retention now reads substrate_reduction_cursor FIRST
+    and refuses to prune if it cannot resolve a floor (a cursor-consumed table must not be
+    pruned past what its reducers have actually consumed). Every grammar_events retention
+    test therefore has to supply this call. Tests that want the floor to actually BIND live
+    in test_grammar_retention_periodic.py.
+    """
+    return MagicMock(scalar=lambda: datetime.now(timezone.utc))
+
 def test_build_grammar_truth_snapshot_flags_degraded_when_grammar_disabled(monkeypatch) -> None:
     settings = _mock_settings(sql_writer_enable_grammar_channel=False)
     _patch_truth_deps(monkeypatch, settings)
@@ -168,6 +180,7 @@ def test_retention_uses_bounded_batches_not_single_unbounded_delete(monkeypatch)
 
     conn = MagicMock()
     conn.execute.side_effect = [
+        _live_cursor_floor(),
         MagicMock(scalar_one=lambda: 0),
         MagicMock(scalar_one=lambda: 0),
     ]
@@ -203,6 +216,7 @@ def test_retention_stops_at_max_batch_cap_and_reports_debt(monkeypatch) -> None:
 
     conn = MagicMock()
     conn.execute.side_effect = [
+        _live_cursor_floor(),
         MagicMock(scalar_one=lambda: 0),
         MagicMock(scalar_one=lambda: 5),
     ]

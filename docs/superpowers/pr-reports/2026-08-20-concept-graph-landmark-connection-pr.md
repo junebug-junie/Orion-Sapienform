@@ -102,7 +102,6 @@ No restart required for this branch alone -- it's a pure code/schema/data change
 
 ## PR link
 
-<paste-ready — `gh` not authenticated in this session; branch pushed, open a PR from `docs/concept-graph-landmark-connection-design` into `main` at:
-https://github.com/junebug-junie/Orion-Sapienform/compare/main...docs/concept-graph-landmark-connection-design?expand=1>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1766
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

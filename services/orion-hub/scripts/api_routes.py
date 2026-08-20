@@ -249,6 +249,52 @@ SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
 SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
 
 
+def _build_aitown_substrate_store_from_env() -> Any:
+    """AI Town's own organically-clustered concept graph -- a second,
+    independently-named FalkorDB graph (docs/superpowers/specs/2026-08-18-
+    aitown-concept-graph-split-and-atlas-readability-design.md, "AI Town's
+    own concept graph"). Interpretability-only, per that spec's Non-goals --
+    never fed into concept_induced/chat_stance or any other Orion cognition
+    consumer, only read by concept_atlas_routes.py's AI Town ingestion/query
+    path.
+
+    Deliberately falkor-only, NOT routed through the full multi-backend
+    build_substrate_store_from_env() dispatcher above -- unlike that
+    dispatcher, this does NOT build a real store for "routed"/"sparql"/
+    "graphdb" backends; every one of those degrades to in-memory here, same
+    as an unset/unrecognized backend (review finding 2026-08-20: an earlier
+    draft's docstring falsely claimed full parity with the primary
+    dispatcher for "every other backend" -- it does not, and the live
+    deployment's own SUBSTRATE_STORE_BACKEND=falkor never exercises this
+    gap, but a future non-falkor deployment silently losing every AI Town
+    write on restart is a real risk worth being loud about instead of
+    silent about).
+    """
+    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
+    if backend in {"falkor", "falkordb"}:
+        from orion.substrate.falkor_store import build_aitown_falkor_substrate_store_from_env
+
+        return build_aitown_falkor_substrate_store_from_env()
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    if backend and backend not in {"in_memory", "memory", "mem", "local"}:
+        # Loud, not silent: the primary store builds a REAL durable store
+        # for "routed"/"sparql"/"graphdb" via build_substrate_store_from_env()
+        # above -- this function does not, so an operator on one of those
+        # backends needs to see that the AI Town graph specifically degraded
+        # to in-memory (durable for the primary store, ephemeral for this
+        # one), not assume both stores behave identically.
+        logger.warning(
+            "aitown_substrate_store_backend_unsupported backend=%s -- falling back to in-memory "
+            "(AI Town's concept graph is falkor-only today; every write is lost on restart)",
+            backend,
+        )
+    return InMemorySubstrateGraphStore()
+
+
+SUBSTRATE_SEMANTIC_STORE_AITOWN = _build_aitown_substrate_store_from_env()
+
+
 def seed_golden_concepts_at_startup() -> int:
     """Load the 3 golden concepts (Orion, Juniper, relationship) into
     SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on

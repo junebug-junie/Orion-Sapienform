@@ -24,6 +24,7 @@ _spec.loader.exec_module(mod)
 from orion.schemas.attention_frame import (  # noqa: E402
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
+    OpenLoopV1,
     VoluntaryOverrideV1,
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1  # noqa: E402
@@ -62,11 +63,19 @@ def _field_state_payload(ts: datetime, **prediction_errors: float) -> dict:
     return {"generated_at": ts.isoformat(), "node_vectors": node_vectors}
 
 
-def _broadcast_payload(ts: datetime, *, override: VoluntaryOverrideV1 | None = None) -> dict:
-    frame = AttentionFrameV1(generated_at=ts, voluntary_override=override)
+def _broadcast_payload(
+    ts: datetime,
+    *,
+    override: VoluntaryOverrideV1 | None = None,
+    open_loops: list | None = None,
+    selected_open_loop_id: str = "loop-1",
+) -> dict:
+    frame = AttentionFrameV1(
+        generated_at=ts, voluntary_override=override, open_loops=open_loops or [],
+    )
     projection = AttentionBroadcastProjectionV1(
         generated_at=ts, frame=frame, selected_action_type="watch",
-        selected_open_loop_id="loop-1", coalition_stability_score=0.7,
+        selected_open_loop_id=selected_open_loop_id, coalition_stability_score=0.7,
     )
     return projection.model_dump(mode="json")
 
@@ -281,3 +290,133 @@ def test_find_override_examples_empty_when_no_override_present() -> None:
         mod.ReplayTick(BASE, "field_salience_only", None, None, False, True, None, True, None, False, "a"),
     ]
     assert mod.find_override_examples(ticks) == []
+
+
+class TestArgmaxOpenLoopSalience:
+    """2026-08-20 metric-quality-gate correction: the correctness cross-check
+    on the bottom_up_salience branch (the one that actually fires in
+    production -- see the program README's item-2 entry), replacing "did
+    voluntary_override ever fire" as this item's real Phase 1 metric.
+
+    **Corrected same-day after code review**: the first version had no
+    eligibility floor and an ascending-loop-id tie-break that doesn't match
+    production's real `select_actions()` (`orion/substrate/attention/
+    policy.py`, called with `max_asks=0` for the substrate-broadcast lane).
+    These tests exercise the corrected semantics directly against that real
+    function's documented behavior, not a re-guessed approximation."""
+
+    def test_picks_highest_salience_loop_above_floor(self) -> None:
+        loops = [
+            OpenLoopV1(id="loop-a", description="a", salience=0.4),
+            OpenLoopV1(id="loop-b", description="b", salience=0.9),
+            OpenLoopV1(id="loop-c", description="c", salience=0.5),
+        ]
+        assert mod._argmax_open_loop_salience(loops) == "loop-b"
+
+    def test_loops_below_floor_and_not_already_known_are_ineligible(self) -> None:
+        """Mirrors select_actions()'s real "none" branch (score < 0.35 and
+        not already_known): production's selected_open_loop_id is None in
+        this case, so the independent recompute must also be None -- not
+        "the least-bad loser," which was the first version's bug."""
+        loops = [
+            OpenLoopV1(id="loop-a", description="a", salience=0.10),
+            OpenLoopV1(id="loop-b", description="b", salience=0.20),
+        ]
+        assert mod._argmax_open_loop_salience(loops) is None
+
+    def test_already_known_loop_is_eligible_even_below_floor(self) -> None:
+        """select_actions() classifies already_known loops as "suppress"
+        regardless of score, and "suppress" is still in the winner pool
+        (action_type in {"watch", "defer", "suppress"}) -- an already_known
+        loop below 0.35 can still win if nothing else is eligible."""
+        loops = [
+            OpenLoopV1(id="loop-a", description="a", salience=0.05, already_known=True),
+            OpenLoopV1(id="loop-b", description="b", salience=0.10, already_known=False),
+        ]
+        assert mod._argmax_open_loop_salience(loops) == "loop-a"
+
+    def test_ties_at_max_break_by_original_list_order_not_id(self) -> None:
+        """Production's stable sort keeps ties in open_loops' own build
+        order -- Pydantic round-trips that order through JSON byte-for-byte,
+        so `max()`'s first-encountered-wins behavior matches it directly.
+        Deliberately ordered so ascending-id (the old, wrong tie-break)
+        would pick the opposite loop from this test's expected answer."""
+        loops = [
+            OpenLoopV1(id="loop-z", description="z", salience=0.5),
+            OpenLoopV1(id="loop-a", description="a", salience=0.5),
+        ]
+        assert mod._argmax_open_loop_salience(loops) == "loop-z"
+
+    def test_empty_list_yields_none(self) -> None:
+        assert mod._argmax_open_loop_salience([]) is None
+
+
+def test_replay_reducer_populates_correctness_cross_check_fields_on_agreement() -> None:
+    """The common real-world case: broadcast's selected_open_loop_id already
+    equals the independently-recomputed argmax (no override, pure bottom-up
+    dispatch) -- the reducer's own field and this script's independent
+    recomputation from the same row's raw salience values must agree."""
+    open_loops = [
+        OpenLoopV1(id="loop-1", description="a", salience=0.8),
+        OpenLoopV1(id="loop-2", description="b", salience=0.3),
+    ]
+    broadcast_rows = [(BASE, _broadcast_payload(BASE, open_loops=open_loops, selected_open_loop_id="loop-1"))]
+    field_rows = [(BASE + timedelta(seconds=1), _field_payload(BASE + timedelta(seconds=1)))]
+
+    ticks, _, _, _ = mod.replay_reducer(field_rows, broadcast_rows, [])
+
+    assert len(ticks) == 1
+    t = ticks[0]
+    assert t.attention_reason == "bottom_up_salience"
+    assert t.broadcast_open_loop_count == 2
+    assert t.broadcast_selected_open_loop_id == "loop-1"
+    assert t.broadcast_argmax_open_loop_id == "loop-1"
+
+
+def test_replay_reducer_surfaces_a_real_disagreement_when_present() -> None:
+    """If a real historical row ever has selected_open_loop_id disagree with
+    the raw salience argmax, this must surface as a real, visible
+    disagreement -- not get silently averaged away. This is what the new
+    report section's "0 disagreements" claim would actually be checking."""
+    open_loops = [
+        OpenLoopV1(id="loop-1", description="a", salience=0.2),
+        OpenLoopV1(id="loop-2", description="b", salience=0.9),
+    ]
+    broadcast_rows = [(BASE, _broadcast_payload(BASE, open_loops=open_loops, selected_open_loop_id="loop-1"))]
+    field_rows = [(BASE + timedelta(seconds=1), _field_payload(BASE + timedelta(seconds=1)))]
+
+    ticks, _, _, _ = mod.replay_reducer(field_rows, broadcast_rows, [])
+
+    t = ticks[0]
+    assert t.broadcast_selected_open_loop_id == "loop-1"
+    assert t.broadcast_argmax_open_loop_id == "loop-2"
+    assert t.broadcast_selected_open_loop_id != t.broadcast_argmax_open_loop_id
+
+
+def test_replay_reducer_zero_open_loops_leaves_argmax_none() -> None:
+    broadcast_rows = [(BASE, _broadcast_payload(BASE, open_loops=[]))]
+    field_rows = [(BASE + timedelta(seconds=1), _field_payload(BASE + timedelta(seconds=1)))]
+
+    ticks, _, _, _ = mod.replay_reducer(field_rows, broadcast_rows, [])
+
+    t = ticks[0]
+    assert t.broadcast_open_loop_count == 0
+    assert t.broadcast_argmax_open_loop_id is None
+
+
+def test_render_report_correctness_cross_check_section_reports_agreement() -> None:
+    open_loops = [OpenLoopV1(id="loop-1", description="a", salience=0.8)]
+    broadcast_rows = [(BASE, _broadcast_payload(BASE, open_loops=open_loops, selected_open_loop_id="loop-1"))]
+    field_rows = [(BASE + timedelta(seconds=1), _field_payload(BASE + timedelta(seconds=1)))]
+    ticks, _, _, _ = mod.replay_reducer(field_rows, broadcast_rows, [])
+
+    report = mod.render_report(
+        window_label="1h", window_start=BASE, window_end=BASE + timedelta(hours=1),
+        ticks=ticks, field_rows_truncated=False, field_rows_skipped=0,
+        field_state_rows_skipped=0, field_state_rows_replayed=0,
+        broadcast_rows_replayed=1, broadcast_rows_skipped=0,
+        broadcast_row_count=1, broadcast_row=None, override_examples=[], caveats=[],
+    )
+    assert "Correctness cross-check: bottom_up_salience branch" in report
+    assert "Winner-agreement rate: **1 / 1 (100.00%)**" in report
+    assert "Zero disagreements." in report

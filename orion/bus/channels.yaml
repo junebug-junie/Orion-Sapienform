@@ -517,6 +517,50 @@ channels:
     stability: "experimental"
     since: "2026-05-03"
 
+  # orion-world-model (2026-08-20 scaffold, docs/superpowers/specs/
+  # 2026-08-20-reverie-visual-chain-design.md §3/§8 deferred "whatever
+  # 'world model' turns out to mean" -- this is that follow-up: port/schema/
+  # channel scaffolding only, untrained inference-capable weights, no real
+  # downstream cognition consumer yet. See services/orion-world-model/README.md.
+  - name: "orion:exec:request:WorldModelService"
+    kind: "request"
+    schema_id: "WorldModelTaskRequestPayload"
+    # No real producer service yet -- same honesty as orion:worldmodel:
+    # predictions below (code review, 2026-08-20: an earlier version of this
+    # entry incorrectly self-listed orion-world-model as its own producer).
+    # services/orion-world-model/scripts/publish_test_task.py is the only
+    # current publisher (a documented smoke/tap script, not a registered
+    # service).
+    producer_services: []
+    consumer_services: ["orion-world-model"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-20"
+
+  - name: "orion:worldmodel:reply:*"
+    kind: "result"
+    schema_id: "WorldModelPredictionPayload"
+    message_kind: "world_model.prediction"
+    producer_services: ["orion-world-model"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-08-20"
+
+  - name: "orion:worldmodel:predictions"
+    kind: "event"
+    schema_id: "WorldModelPredictionPayload"
+    message_kind: "world_model.prediction"
+    producer_services: ["orion-world-model"]
+    # No real downstream cognition consumer yet -- flagged honestly per
+    # CLAUDE.md (known repo anti-pattern to avoid hiding, not a reason to
+    # skip registering the channel a real producer already writes to).
+    # services/orion-world-model/scripts/tap_predictions.py is the only
+    # current consumer (a documented smoke/tap script, mirrored on
+    # orion-vision-host's scripts/tap_artifacts.py).
+    consumer_services: ["orion-world-model"]
+    stability: "experimental"
+    since: "2026-08-20"
+
   - name: "orion:collapse:intake"
     kind: "event"
     schema_id: "CollapseMirrorEntryV2"

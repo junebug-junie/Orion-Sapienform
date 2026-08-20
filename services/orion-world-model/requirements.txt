@@ -1,0 +1,17 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+redis[hiredis]==5.0.7
+pydantic==2.9.2
+pydantic-settings==2.5.2
+loguru==0.7.2
+# orion.core.bus.catalog_loader (imported unconditionally via
+# orion.core.bus.async_service -> orion.core.bus.enforce) does a hard
+# `import yaml` at module import time, not gated by
+# ORION_BUS_ENFORCE_CATALOG. Only worked without this line because
+# uvicorn[standard]'s extras transitively pull in pyyaml -- explicit per
+# services/orion-vision-host/requirements.txt's same convention.
+pyyaml==6.0.2
+
+# VRAM-aware GPU selection
+nvidia-ml-py==12.535.161

@@ -69,7 +69,7 @@ _MAX_CANDIDATES = 8
 _ALLOWED_TYPES = {"person", "place", "plan", "belief", "concept", "activity", "other"}
 
 def _balanced_json_array_spans(text: str) -> list[str]:
-    """Find every *balanced* top-level `[...]` span in `text`, in order.
+    r"""Find every *balanced* top-level `[...]` span in `text`, in order.
 
     A naive greedy regex (`r"\[.*\]"`) spans from the FIRST `[` to the LAST
     `]` anywhere in the response -- any stray bracket before or after the

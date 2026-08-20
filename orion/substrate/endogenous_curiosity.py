@@ -60,6 +60,54 @@ HARD_BUDGET_CEILING = 8
 # with zero code change here. This staleness-decay guard remains load-bearing
 # for every other node this function reads, not specifically for transport.
 #
+# `node:substrate.perception` (P2 camera-surprise, PR #1746, shipped
+# 2026-08-19) is the newest domain to join this same generic scan -- checked
+# deliberately, not accidentally inherited: the P2 PR itself only claimed
+# shadow-only status for the field-digester receipt path and did not audit
+# this consumer.
+#
+# **First review, same day, found a real problem and it has since been
+# fixed, not just left alone.** `perception_prediction_error()` originally
+# returned a raw `1 - cos(...)` cosine-distance magnitude directly (0.55
+# calibrated for `execution_trajectory`'s real 0-1 z-score range, see that
+# domain's own comment above) -- against 60 real ticks including a real
+# induced stimulus (the camera physically knocked over), the raw magnitude
+# peaked at 0.1219, ~4.5x below `min_error`. That was not "safely bounded,"
+# it was a scale mismatch: this domain could never have contributed a
+# curiosity candidate under any real event, silently, regardless of what
+# this function's generic-by-design architecture intended. Migrated
+# `orion/substrate/prediction_error.py::perception_prediction_error()` the
+# same day to z-score that raw magnitude against its own EWMA baseline
+# before returning it -- same mechanism `execution_prediction_error`/
+# `codebase_prediction_error` already use, see that function's own comment
+# for the full numbers and reasoning. `node:substrate.perception` is now on
+# the same numeric footing as every other z-scored domain reaching this
+# scan, not a scale-mismatched permanent exclusion dressed up as a live gate.
+#
+# Left in this generic scan on purpose, same reasoning as bus_synaptic
+# above: this function's own architecture treats "any node with a real,
+# non-degenerate `prediction_error`" as fair game by design, and the budget
+# cap / staleness decay / signals-only-into-rung-6-governance chain gates
+# what a crossed threshold can actually do.
+#
+# **This is live now, not a future opt-in** (review finding, 2026-08-19:
+# the prior version of this note said "not yet re-verified... before
+# trusting a real min_error crossing," phrased as a future gate -- both
+# `ORION_ENDOGENOUS_CURIOSITY_ENABLED` and `SUBSTRATE_PERCEPTION_
+# PREDICTION_ERROR_TICK_ENABLED` are already `true` in this host's live
+# `.env`, so this scan is grading real, not-yet-recalibration-checked
+# perception scores against `min_error` starting on the next restart, not
+# at some later point someone chooses). `perception_prediction_error()`'s
+# own comment names exactly what to check post-restart (calm ticks clamp
+# near 0 across ordinary room activity, not just the one knocked-over-
+# camera event already observed) before treating a real `min_error`
+# crossing from this domain as meaningful rather than a mis-set saturation
+# constant. Until that check runs, a saturating perception candidate could
+# already be consuming a real slot of `HARD_BUDGET_CEILING`, silently
+# crowding out another domain's genuine candidate on ordinary room
+# activity -- not hypothetical, this is what the constant being borrowed
+# rather than derived (see that comment) would actually cause in practice.
+#
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):
 # `dynamic_pressure` is a composite of drive/prediction-error/contradiction pressure

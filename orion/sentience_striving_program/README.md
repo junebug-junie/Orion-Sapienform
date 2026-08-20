@@ -278,7 +278,10 @@ first place. Full reasoning and phased detail:
    **Re-checked, 2026-08-19 (punch-list item 3, full re-run of `measure_ast_hot_reducer.py
    --window-hours 170`, 98,785 real field-lane ticks, 19,428 real `substrate_attention_
    broadcast_log` rows, 2026-08-12 → 2026-08-19): Phase 1's acceptance check still reads
-   NOT MET.** Zero ticks across the entire available post-rebuild history (170h, not just
+   NOT MET as originally scoped** (superseded the next day -- see the 2026-08-20
+   metric-quality-gate correction below, which splits this into a MET reducer-correctness
+   half and a separate non-blocking research question; read that entry for the current
+   status). Zero ticks across the entire available post-rebuild history (170h, not just
    the ~16.7h window checked 2026-07-24) carry a real `voluntary_override`. This is a
    materially stronger negative result than the prior check, not just "still waiting" —
    the same finding held over 10x the ticks and 10x the wall-clock. Attention_reason
@@ -314,6 +317,35 @@ first place. Full reasoning and phased detail:
    a patience question) — this connects directly to item 4 below (`drive_origin`/goal-
    provenance retirement) and should be investigated together with it, not treated as
    "just needs more time" without checking.
+   **Metric-quality-gate correction, 2026-08-20 (Juniper: "is this the right metric to
+   define before we go into deep dive diagnosis"): Phase 1's acceptance check was bundling
+   two independent questions into one pass/fail gate, and only one of them is what this
+   item was actually built to verify.** Question A: does `reduce_attention_self_model()`
+   correctly narrate a real `top_down_override` when one is present? Question B: does a
+   real `top_down_override` ever occur in production at all? The check as originally
+   written required a real Postgres-replay sighting of a live override before it could
+   read MET, which conflates A (a reducer-correctness question, this item's actual scope)
+   with B (a question about a different system: goal production and `relevance()` matching
+   in `orion/substrate/attention/top_down.py` and `orion-attention-runtime`).
+   **A is now MET, decided independently of B:** `TestVoluntaryOverridePresent`
+   (`orion/substrate/tests/test_attention_self_model.py`) already proves the reducer's
+   why-branching and narrative are correct against the real production `VoluntaryOverrideV1`
+   schema, and this same 2026-08-20 replay independently proved the replay script's own
+   real-data mechanics (parsing `substrate_attention_frames`/`substrate_field_state`/
+   `substrate_attention_broadcast_log`, nearest-preceding-timestamp joins, calling the real
+   production reducer function) are sound across 98,785 real ticks on the two branches that
+   do occur live. One narrow thing is still genuinely unverified: whether the replay
+   script's own JSON deserialization of a real `voluntary_override` blob from
+   `projection_json` round-trips cleanly (datetime formatting, key casing) -- low risk given
+   the other two branches parse cleanly from the same column, but disclosed rather than
+   silently assumed away.
+   **B is reframed as its own standalone open question, not a blocker for this item's
+   completion:** whether a real `top_down_override` ever fires live is a real, worthwhile
+   question about the goal-provenance/top-down-bias mechanism itself -- the saturated
+   `node:substrate.route` streak noted above is exactly that thread -- but it belongs with
+   item 4's goal-provenance investigation, not gating item 2's Phase 1 sign-off.
+   **Phase 1 status: MET** (reducer-correctness scope), with B tracked as a separate,
+   ongoing, non-blocking research thread under item 4.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

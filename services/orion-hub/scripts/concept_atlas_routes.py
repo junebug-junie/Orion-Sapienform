@@ -279,25 +279,37 @@ def _ensure_topic_foundry_dataset_and_model(
                     "where_sql": where_sql,
                 },
             )
-        elif dataset.get("where_sql") != where_sql:
+        else:
             # Get-or-create matches purely by name -- topic-foundry's
             # dataset routes are create/list/preview only, no update
-            # endpoint, so a where_sql edited here without also bumping
-            # the dataset name silently keeps training on the OLD filter
-            # forever (this is the exact bug the "-v2" rename in this
-            # file's constants comment exists to fix once already; code
-            # review 2026-08-18 flagged that nothing stops the same mistake
-            # next time). Loud, not silent: log so a future change here
-            # that forgets to rename shows up in the scheduler's own logs
-            # on the very next tick, instead of only being discoverable by
-            # noticing stale concepts months later.
-            logger.warning(
-                "topic_foundry_dataset_where_sql_drift dataset_name=%s expected=%r actual=%r "
-                "-- rename the dataset constant to force a fresh dataset with the new filter",
-                dataset_name,
-                where_sql,
-                dataset.get("where_sql"),
-            )
+            # endpoint, so where_sql/source_table edited here without also
+            # bumping the dataset name silently keeps training against the
+            # OLD filter/table forever (this is the exact bug the "-v2"
+            # rename in this file's constants comment exists to fix once
+            # already; code review 2026-08-18 flagged that nothing stops the
+            # same mistake next time -- and code review 2026-08-20 found
+            # this parameterization added source_table as a second drifting
+            # field with no analogous check). Loud, not silent: log so a
+            # future change here that forgets to rename shows up in the
+            # scheduler's own logs on the very next tick, instead of only
+            # being discoverable by noticing stale/wrong-corpus concepts
+            # months later.
+            if dataset.get("where_sql") != where_sql:
+                logger.warning(
+                    "topic_foundry_dataset_where_sql_drift dataset_name=%s expected=%r actual=%r "
+                    "-- rename the dataset constant to force a fresh dataset with the new filter",
+                    dataset_name,
+                    where_sql,
+                    dataset.get("where_sql"),
+                )
+            if dataset.get("source_table") != source_table:
+                logger.warning(
+                    "topic_foundry_dataset_source_table_drift dataset_name=%s expected=%r actual=%r "
+                    "-- rename the dataset constant to force a fresh dataset against the new table",
+                    dataset_name,
+                    source_table,
+                    dataset.get("source_table"),
+                )
         dataset_id = str(dataset["dataset_id"])
 
         models = list_models(base_url)
@@ -542,8 +554,11 @@ def trigger_topic_foundry_aitown_enrichment() -> dict[str, Any]:
     )
 
 
-def _get_substrate_store() -> Any:
-    """Best-effort resolution of the shared Orion substrate store, never raises.
+def _get_named_substrate_store(attr_name: str, *, log_prefix: str) -> Any:
+    """Best-effort resolution of a store singleton off ``scripts.api_routes``,
+    never raises. Shared by ``_get_substrate_store``/``_get_aitown_substrate_store``
+    below (review finding 2026-08-20: these were a hand-duplicated copy of
+    each other, differing only in attribute name and log prefix).
 
     Deferred import mirrors ``memory_graph_routes.py``'s established pattern
     (``import scripts.api_routes as api_mod`` inside route functions) so this
@@ -554,26 +569,30 @@ def _get_substrate_store() -> Any:
     try:
         import scripts.api_routes as api_mod
     except Exception as exc:  # pragma: no cover - defensive, mirrors route-level degrade
-        logger.warning("concept_atlas_store_import_failed error=%s", exc)
+        logger.warning("%s_import_failed error=%s", log_prefix, exc)
         return None
-    store = getattr(api_mod, "SUBSTRATE_SEMANTIC_STORE", None)
+    store = getattr(api_mod, attr_name, None)
     if store is None:
-        logger.info("concept_atlas_store_not_attached")
+        logger.info("%s_not_attached", log_prefix)
     return store
+
+
+def _get_substrate_store() -> Any:
+    """Resolve the shared Orion substrate store (``api_routes.py``'s
+    ``SUBSTRATE_SEMANTIC_STORE`` singleton). Kept as its own top-level
+    function (not inlined at call sites) so tests can monkeypatch it
+    directly, same as before this was factored through
+    ``_get_named_substrate_store``.
+    """
+    return _get_named_substrate_store("SUBSTRATE_SEMANTIC_STORE", log_prefix="concept_atlas_store")
 
 
 def _get_aitown_substrate_store() -> Any:
     """Same as ``_get_substrate_store`` above, for AI Town's own concept
     graph (``api_routes.py``'s ``SUBSTRATE_SEMANTIC_STORE_AITOWN`` singleton)."""
-    try:
-        import scripts.api_routes as api_mod
-    except Exception as exc:  # pragma: no cover - defensive, mirrors route-level degrade
-        logger.warning("concept_atlas_aitown_store_import_failed error=%s", exc)
-        return None
-    store = getattr(api_mod, "SUBSTRATE_SEMANTIC_STORE_AITOWN", None)
-    if store is None:
-        logger.info("concept_atlas_aitown_store_not_attached")
-    return store
+    return _get_named_substrate_store(
+        "SUBSTRATE_SEMANTIC_STORE_AITOWN", log_prefix="concept_atlas_aitown_store"
+    )
 
 
 def _unavailable(reason: str, error: Optional[str] = None, **extra: Any) -> dict[str, Any]:
@@ -803,9 +822,40 @@ def _at_risk_concepts(
     return at_risk[:20], note
 
 
+_VALID_GRAPH_PARAM_VALUES = {"orion", "aitown"}
+
+
+def _resolve_store_for_graph_param(graph: Optional[str]) -> tuple[Any, str]:
+    """Resolve which store a request wants via the ``graph`` query param.
+
+    Review finding 2026-08-20: before this, AI Town's own concept graph
+    (``SUBSTRATE_SEMANTIC_STORE_AITOWN``) was written to every scheduler
+    tick but reachable by zero GET route -- data written, structurally
+    unreachable. This is the "first cut" the design spec's own "Missing
+    questions" section named as sufficient before a dedicated AI Town
+    Concept Atlas page is worth building: a reused
+    ``?graph=aitown``-style parameter on the existing routes.
+
+    Defaults to Orion's store for any unset/unrecognized value (never
+    raises, matching this file's existing malformed-query-param handling
+    for ``scope``/``min_activation`` in ``concept_atlas_network()`` below)
+    -- an unrecognized ``graph`` value degrades to the default rather than
+    500ing or silently returning nothing.
+
+    Returns ``(store, resolved_graph_label)`` so callers can echo which
+    graph actually served the response.
+    """
+    graph_norm = graph.strip().lower() if isinstance(graph, str) else ""
+    if graph_norm == "aitown":
+        return _get_aitown_substrate_store(), "aitown"
+    if graph_norm and graph_norm not in _VALID_GRAPH_PARAM_VALUES:
+        logger.info("concept_atlas_ignored_bad_graph_param value=%s", graph_norm)
+    return _get_substrate_store(), "orion"
+
+
 @router.get("/api/substrate/concepts/summary")
-async def concept_atlas_summary() -> dict[str, Any]:
-    store = _get_substrate_store()
+async def concept_atlas_summary(graph: Optional[str] = Query(None)) -> dict[str, Any]:
+    store, graph_label = _resolve_store_for_graph_param(graph)
     if store is None:
         return _unavailable(
             "substrate_store_unavailable",
@@ -814,6 +864,7 @@ async def concept_atlas_summary() -> dict[str, Any]:
             by_anchor_scope={},
             edge_counts_by_predicate={},
             at_risk=[],
+            graph=graph_label,
         )
 
     concept_nodes = _concept_nodes(store)
@@ -844,6 +895,7 @@ async def concept_atlas_summary() -> dict[str, Any]:
         "edge_counts_by_predicate": edge_counts_by_predicate,
         "at_risk": at_risk,
         "at_risk_note": at_risk_note,
+        "graph": graph_label,
     }
 
 
@@ -897,11 +949,17 @@ async def concept_atlas_network(
     scope: Optional[str] = Query(None),
     min_activation: Optional[str] = Query(None),
     focus: Optional[str] = Query(None),
+    graph: Optional[str] = Query(None),
 ) -> dict[str, Any]:
-    store = _get_substrate_store()
+    store, graph_label = _resolve_store_for_graph_param(graph)
     if store is None:
         return _unavailable(
-            "substrate_store_unavailable", nodes=[], edges=[], god_node_count=0, component_count=0
+            "substrate_store_unavailable",
+            nodes=[],
+            edges=[],
+            god_node_count=0,
+            component_count=0,
+            graph=graph_label,
         )
 
     try:
@@ -909,7 +967,13 @@ async def concept_atlas_network(
     except Exception as exc:
         logger.warning("concept_atlas_network_query_failed error=%s", exc)
         return _unavailable(
-            "substrate_store_error", str(exc), nodes=[], edges=[], god_node_count=0, component_count=0
+            "substrate_store_error",
+            str(exc),
+            nodes=[],
+            edges=[],
+            god_node_count=0,
+            component_count=0,
+            graph=graph_label,
         )
 
     nodes = list(result.slice.nodes)
@@ -1029,6 +1093,7 @@ async def concept_atlas_network(
         "truncated": bool(result.truncated),
         "degraded": degraded,
         "degraded_error": getattr(result, "error", None) if degraded else None,
+        "graph": graph_label,
     }
 
 

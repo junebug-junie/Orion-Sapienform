@@ -657,6 +657,37 @@ iterates the full substrate node set (e.g. `orion/substrate/endogenous_curiosity
 they will not appear in the Concept Atlas Hub UI's network/god-node views until those routes
 are widened to include entity nodes — a separate follow-up, not done here.
 
+**AI Town's own concept graph (added 2026-08-20):** a second, fully parallel
+instance of the same pipeline above, reading `aitown_chat_history_log` (the
+AI-Town-only table post-cutover, PR #1734) instead of `chat_history_log`,
+writing into a second FalkorDB graph (`FALKORDB_AITOWN_SUBSTRATE_GRAPH`,
+default `orion_substrate_aitown`, same instance) instead of `orion_substrate`.
+Interpretability-only — never feeds `orion-cortex-exec`'s chat-stance producer
+or any other Orion cognition consumer
+(`docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-
+readability-design.md`, "AI Town's own concept graph" / Non-goals).
+
+- **Scheduler**: same tick as the Orion pipeline above (`main.py`'s
+  `substrate_topic_foundry_scheduler_task`, same
+  `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED`/`_INTERVAL_SEC`), gains a second
+  trigger/enrich/ingest step-group gated by its own
+  `SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED` (default `true`) — set
+  `false` to pause AI Town ingestion without touching Orion's own pipeline.
+- **Manual ingestion**: `POST /api/substrate/concepts/ingest-topic-foundry-aitown`
+  (`concept_atlas_ingest_topic_foundry_aitown()`), same operator-triggered,
+  no-flag shape as the Orion route above.
+- **Reading it**: `GET /api/substrate/concepts/summary` and `.../network`
+  both take an optional `?graph=aitown` query param (default/unrecognized
+  values resolve to Orion's graph) — the "first cut" read path the design
+  spec's own "Missing questions" named as sufficient before a dedicated AI
+  Town Concept Atlas UI page is worth building. No such page exists yet;
+  the Hub tab's Cytoscape view still only ever renders Orion's graph.
+- **Dataset/model**: `orion-hub-aitown-dataset-v1`/`orion-hub-aitown-v1-<fingerprint>`
+  in topic-foundry, distinct from Orion's `orion-hub-autonomous-dataset-v2`/
+  `orion-hub-autonomous-v4-<fingerprint>` — no `where_sql` filter (the source
+  table is already AI-Town-only by construction, unlike Orion's dataset which
+  excludes AI Town rows via `where_sql`).
+
 **Surfaced into live cognition two ways**, not as permanent context bloat — only when
 salient:
 

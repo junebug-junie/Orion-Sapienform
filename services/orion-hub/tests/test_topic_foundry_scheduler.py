@@ -298,6 +298,7 @@ def test_ensure_dataset_and_model_warns_on_where_sql_drift(
                             "dataset_id": FAKE_DATASET_ID,
                             "name": car._TOPIC_FOUNDRY_DATASET_NAME,
                             "where_sql": "some stale filter that no longer matches",
+                            "source_table": car._TOPIC_FOUNDRY_SOURCE_TABLE,
                         }
                     ]
                 },
@@ -315,6 +316,55 @@ def test_ensure_dataset_and_model_warns_on_where_sql_drift(
 
     assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
     assert "topic_foundry_dataset_where_sql_drift" in caplog.text
+    assert "topic_foundry_dataset_source_table_drift" not in caplog.text
+
+
+def test_ensure_dataset_and_model_warns_on_source_table_drift(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Code review 2026-08-20: this function's source_table parameterization
+    (added for AI Town's own dataset) introduced a second drifting field
+    with no analogous drift check -- an edit to source_table under an
+    already-used dataset name would silently keep training against the OLD
+    table forever, same failure shape as the where_sql case above."""
+    from scripts import concept_atlas_routes as car
+    from scripts import topic_foundry_client as tfc
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/datasets"):
+            return _FakeResponse(
+                200,
+                {
+                    "datasets": [
+                        {
+                            "dataset_id": FAKE_DATASET_ID,
+                            "name": car._TOPIC_FOUNDRY_AITOWN_DATASET_NAME,
+                            "where_sql": None,
+                            "source_table": "some_stale_table_no_longer_correct",
+                        }
+                    ]
+                },
+            )
+        if url.endswith("/models"):
+            return _FakeResponse(
+                200, {"models": [{"model_id": FAKE_MODEL_ID, "name": car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME}]}
+            )
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    caplog.set_level("WARNING")
+
+    result = car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL,
+        dataset_name=car._TOPIC_FOUNDRY_AITOWN_DATASET_NAME,
+        model_name=car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
+        source_table=car._TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE,
+        where_sql=None,
+    )
+
+    assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
+    assert "topic_foundry_dataset_source_table_drift" in caplog.text
+    assert "topic_foundry_dataset_where_sql_drift" not in caplog.text
 
 
 def test_ensure_dataset_and_model_creates_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:

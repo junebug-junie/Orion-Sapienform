@@ -582,15 +582,17 @@ class Settings(BaseSettings):
     FALKORDB_SUBSTRATE_GRAPH: str = Field(
         default="orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"
     )
-    # Graph name for AI Town's own organically-clustered concept graph --
-    # a second, independently-named graph on the same FalkorDB instance,
-    # interpretability-only (docs/superpowers/specs/2026-08-18-aitown-
-    # concept-graph-split-and-atlas-readability-design.md). Same env key
-    # orion/substrate/falkor_store.py::build_aitown_falkor_substrate_store_from_env()
-    # already uses.
-    FALKORDB_AITOWN_SUBSTRATE_GRAPH: str = Field(
-        default="orion_substrate_aitown", alias="FALKORDB_AITOWN_SUBSTRATE_GRAPH"
-    )
+    # NOTE: no Settings field for FALKORDB_AITOWN_SUBSTRATE_GRAPH (AI Town's
+    # own concept graph name) on purpose -- unlike FALKORDB_SUBSTRATE_GRAPH
+    # above, nothing in this codebase reads that value off the Settings
+    # object today (no operator-tab-style consumer exists for the AI Town
+    # graph yet, the way attention_organ_routes.py reads this field). The
+    # real, load-bearing resolution is the direct os.getenv() read inside
+    # orion/substrate/falkor_store.py::build_aitown_falkor_substrate_store_from_env().
+    # A settings-level mirror with no reader is dead config -- review
+    # finding 2026-08-20, removed rather than left in place. Add it back
+    # here (with a real consumer in the same patch) if/when one exists,
+    # per CLAUDE.md's "no keyword cathedral" gate.
 
     # --- Attention organ operator tab (read-only) ---
     # orion-heartbeat's debug HTTP surface. Hub runs on the host network in
@@ -820,6 +822,22 @@ class Settings(BaseSettings):
     # concurrent runs on topic-foundry's side.
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED: bool = Field(
         default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED"
+    )
+    # Own kill switch for AI Town's own concept-graph step-group, separate
+    # from the flag above -- review finding 2026-08-20: without this, an
+    # operator who wants to pause the experimental, interpretability-only
+    # AI Town pipeline (bad clustering, unwanted LLM enrichment spend,
+    # hammering topic-foundry) could not do so without also disabling
+    # Orion's own production concept-graph pipeline. Rides on the same tick
+    # interval/timing as the flag above (still ships inside the same
+    # SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED loop, just skips the AI Town
+    # step-group when this is false) -- independent CADENCE was raised as a
+    # real open question by the design spec's own "Missing questions" and
+    # deliberately deferred (no real AI-Town cluster-quality data yet to
+    # tune a second interval against); independent ENABLE is a simpler,
+    # already-justified need (a kill switch) and is not deferred.
+    SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED: bool = Field(
+        default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED"
     )
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
         default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"

@@ -725,62 +725,65 @@ async def startup_event():
                 # AI Town's own concept graph (docs/superpowers/specs/2026-08-18-
                 # aitown-concept-graph-split-and-atlas-readability-design.md,
                 # "AI Town's own concept graph") -- same three-step shape as
-                # Orion's above, riding on the same
-                # SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED/interval rather than
-                # a separate flag/cadence (that spec's own "Missing questions"
-                # raised independent cadence as an open question; deferred
-                # rather than guessed at without real AI-Town cluster-quality
-                # data to tune against -- see the PR report for this patch).
-                # Writes into a different FalkorDB graph
-                # (FALKORDB_AITOWN_SUBSTRATE_GRAPH) and a different topic-
-                # foundry dataset/model (source_table=aitown_chat_history_log)
-                # -- interpretability-only, never feeds Orion's own cognition.
-                try:
-                    aitown_trigger_summary = await asyncio.to_thread(
-                        concept_atlas_routes_runtime.trigger_topic_foundry_aitown_training_run
-                    )
-                    logger.info(
-                        "substrate_topic_foundry_aitown_scheduler_trigger_tick triggered=%s run_id=%s status=%s reason=%s",
-                        aitown_trigger_summary.get("triggered"),
-                        aitown_trigger_summary.get("run_id"),
-                        aitown_trigger_summary.get("status"),
-                        aitown_trigger_summary.get("reason"),
-                    )
-                except Exception as exc:  # advisory runtime loop; never crash service startup
-                    logger.warning("substrate_topic_foundry_aitown_scheduler_trigger_error error=%s", exc)
+                # Orion's above, riding on the same tick interval (independent
+                # CADENCE was raised as a real open question by that spec's own
+                # "Missing questions" and deliberately deferred -- no real
+                # AI-Town cluster-quality data yet to tune a second interval
+                # against). Independent ENABLE, unlike cadence, is a real,
+                # already-justified need (an operator kill switch that doesn't
+                # also disable Orion's own production pipeline) -- review
+                # finding 2026-08-20, not deferred. Writes into a different
+                # FalkorDB graph (FALKORDB_AITOWN_SUBSTRATE_GRAPH) and a
+                # different topic-foundry dataset/model
+                # (source_table=aitown_chat_history_log) -- interpretability-
+                # only, never feeds Orion's own cognition.
+                if settings.SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED:
+                    try:
+                        aitown_trigger_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.trigger_topic_foundry_aitown_training_run
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_aitown_scheduler_trigger_tick triggered=%s run_id=%s status=%s reason=%s",
+                            aitown_trigger_summary.get("triggered"),
+                            aitown_trigger_summary.get("run_id"),
+                            aitown_trigger_summary.get("status"),
+                            aitown_trigger_summary.get("reason"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_aitown_scheduler_trigger_error error=%s", exc)
 
-                try:
-                    aitown_enrich_summary = await asyncio.to_thread(
-                        concept_atlas_routes_runtime.trigger_topic_foundry_aitown_enrichment
-                    )
-                    logger.info(
-                        "substrate_topic_foundry_aitown_scheduler_enrich_tick triggered=%s run_id=%s status=%s reason=%s "
-                        "enriched_count=%s failed_count=%s",
-                        aitown_enrich_summary.get("triggered"),
-                        aitown_enrich_summary.get("run_id"),
-                        aitown_enrich_summary.get("status"),
-                        aitown_enrich_summary.get("reason"),
-                        aitown_enrich_summary.get("enriched_count"),
-                        aitown_enrich_summary.get("failed_count"),
-                    )
-                except Exception as exc:  # advisory runtime loop; never crash service startup
-                    logger.warning("substrate_topic_foundry_aitown_scheduler_enrich_error error=%s", exc)
+                    try:
+                        aitown_enrich_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.trigger_topic_foundry_aitown_enrichment
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_aitown_scheduler_enrich_tick triggered=%s run_id=%s status=%s reason=%s "
+                            "enriched_count=%s failed_count=%s",
+                            aitown_enrich_summary.get("triggered"),
+                            aitown_enrich_summary.get("run_id"),
+                            aitown_enrich_summary.get("status"),
+                            aitown_enrich_summary.get("reason"),
+                            aitown_enrich_summary.get("enriched_count"),
+                            aitown_enrich_summary.get("failed_count"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_aitown_scheduler_enrich_error error=%s", exc)
 
-                try:
-                    aitown_ingest_summary = await asyncio.to_thread(
-                        concept_atlas_routes_runtime.concept_atlas_ingest_topic_foundry_aitown
-                    )
-                    logger.info(
-                        "substrate_topic_foundry_aitown_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s entities_written=%s edges_written=%s typed_edges_written=%s",
-                        aitown_ingest_summary.get("available"),
-                        aitown_ingest_summary.get("run_id"),
-                        aitown_ingest_summary.get("concepts_written"),
-                        aitown_ingest_summary.get("entities_written"),
-                        aitown_ingest_summary.get("edges_written"),
-                        aitown_ingest_summary.get("typed_edges_written"),
-                    )
-                except Exception as exc:  # advisory runtime loop; never crash service startup
-                    logger.warning("substrate_topic_foundry_aitown_scheduler_ingest_error error=%s", exc)
+                    try:
+                        aitown_ingest_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.concept_atlas_ingest_topic_foundry_aitown
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_aitown_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s entities_written=%s edges_written=%s typed_edges_written=%s",
+                            aitown_ingest_summary.get("available"),
+                            aitown_ingest_summary.get("run_id"),
+                            aitown_ingest_summary.get("concepts_written"),
+                            aitown_ingest_summary.get("entities_written"),
+                            aitown_ingest_summary.get("edges_written"),
+                            aitown_ingest_summary.get("typed_edges_written"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_aitown_scheduler_ingest_error error=%s", exc)
 
         substrate_topic_foundry_scheduler_task = asyncio.create_task(
             _run_substrate_topic_foundry_scheduler(),

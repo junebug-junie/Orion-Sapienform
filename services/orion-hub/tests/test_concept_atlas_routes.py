@@ -236,6 +236,88 @@ def test_summary_at_risk_excludes_freshly_born_low_salience_node(
     assert body["at_risk"] == []
 
 
+# --- graph=aitown query param (2026-08-20) -----------------------------------
+# AI Town's own concept graph (SUBSTRATE_SEMANTIC_STORE_AITOWN) was written
+# by the scheduler but reachable by zero GET route before this -- these
+# tests confirm ?graph=aitown actually switches which store is read, per the
+# design spec's own "first cut" suggestion, rather than always resolving to
+# Orion's store regardless of the param.
+
+
+def test_summary_graph_param_defaults_to_orion_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+
+    orion_store = _build_store()
+    aitown_store = _build_store()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+
+    r = client.get("/api/substrate/concepts/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "orion"
+
+
+def test_summary_graph_param_aitown_switches_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    orion_store = _build_store()  # 3 seeded nodes
+    aitown_store = InMemorySubstrateGraphStore()  # empty
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+
+    r = client.get("/api/substrate/concepts/summary", params={"graph": "aitown"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "aitown"
+    assert body["total_concepts"] == 0  # aitown_store is empty, orion_store is not
+
+
+def test_summary_graph_param_unrecognized_value_degrades_to_orion(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import concept_atlas_routes
+
+    orion_store = _build_store()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+
+    r = client.get("/api/substrate/concepts/summary", params={"graph": "not-a-real-graph"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "orion"
+    assert body["total_concepts"] == 3
+
+
+def test_network_graph_param_aitown_switches_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    orion_store = _build_store()
+    aitown_store = InMemorySubstrateGraphStore()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+
+    r = client.get("/api/substrate/concepts/network", params={"graph": "aitown"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "aitown"
+    assert body["nodes"] == []
+
+
+def test_network_graph_param_defaults_to_orion_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+
+    orion_store = _build_store()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "orion"
+    assert len(body["nodes"]) == 3
+
+
 # --- network -----------------------------------------------------------------
 
 

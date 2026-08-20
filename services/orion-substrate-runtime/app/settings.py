@@ -339,25 +339,39 @@ class Settings(BaseSettings):
     )
 
     # Perceptual prediction error (P2, docs/superpowers/specs/2026-08-12-
-    # perception-frontier-design.md): surprise = 1 - cos(frame_embedding,
-    # EWMA_embedding) per camera stream. Own explicit flag, not piggybacked on
-    # SUBSTRATE_VISION_CHANNEL_TICK_ENABLED or SUBSTRATE_WRITE_PREDICTION_
-    # ERROR_NODES -- same domain-independence convention every tick in this
-    # file follows (bus_synaptic vs vision_channel vs codebase all have their
-    # own flags despite structural similarity). Distinct from
-    # node:substrate.vision's P3 channels: perception_staleness measures
-    # ARRIVAL TIMING, perception_yield measures the detector's OBJECT COUNT;
-    # this measures the embedding model's own CONTENT ENCODING of the frame
-    # (see orion/substrate/prediction_error.py's P2 section for the full
+    # perception-frontier-design.md): a two-stage 0-1 surprise score per
+    # camera stream (updated 2026-08-19, review finding -- this comment
+    # used to describe only stage 1 and was stale the moment stage 2
+    # shipped the same day). Stage 1: raw magnitude
+    # `1 - cos(frame_embedding, EWMA_embedding)`. Stage 2: that magnitude
+    # z-scored against a second EWMA baseline of the magnitude itself,
+    # saturating at 3-sigma -- see orion/substrate/prediction_error.py::
+    # perception_prediction_error()'s own docstring for why stage 1 alone
+    # (the value this flag published for its first day live) was found
+    # numerically incomparable to every other prediction_error domain's
+    # min_error threshold and migrated to include stage 2. Own explicit
+    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED or
+    # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES -- same domain-independence
+    # convention every tick in this file follows (bus_synaptic vs
+    # vision_channel vs codebase all have their own flags despite
+    # structural similarity). Distinct from node:substrate.vision's P3
+    # channels: perception_staleness measures ARRIVAL TIMING,
+    # perception_yield measures the detector's OBJECT COUNT; this measures
+    # the embedding model's own CONTENT ENCODING of the frame (see
+    # orion/substrate/prediction_error.py's P2 section for the full
     # independence check).
     #
-    # Ships shadow-only, default OFF -- unlike bus_synaptic/vision_channel/
-    # codebase above, this has NOT been given Juniper's explicit go-ahead to
-    # flip on yet (contrast their .env_example comments, each dated to a real
-    # authorization). Do not flip this true and do not wire any consumer to
-    # node:substrate.perception until the live-data sanity check documented in
-    # perception_prediction_error()'s own docstring has run against real
-    # accumulated history in substrate_perception_embedding_baseline.
+    # This Field's own default stays False (an operator with no .env
+    # override gets the conservative default); Juniper's explicit
+    # go-ahead to flip the live .env to true landed as a separate commit
+    # the same day as the original shadow-only PR (chore(substrate-
+    # runtime): enable P2 shadow tick by default) -- SUBSTRATE_PERCEPTION_
+    # PREDICTION_ERROR_TICK_ENABLED=true is live on this host now, so the
+    # live-data sanity check documented in perception_prediction_error()'s
+    # own docstring is not a future gate, it already ran once (against
+    # stage 1) and needs re-running against stage 2's real output before
+    # a min_error crossing here should be trusted for any consumer
+    # decision.
     enable_perception_prediction_error_tick: bool = Field(
         False, alias="SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED"
     )

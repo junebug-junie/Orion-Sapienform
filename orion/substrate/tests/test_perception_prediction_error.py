@@ -8,13 +8,17 @@ other domain's z-scored ``prediction_error`` and migrated the same day).
 
 Every non-trivial expected value below is hand-computed from simple
 orthonormal-ish vectors (not just "does it run") -- see each test's own
-comment for the arithmetic. Tests are split into two groups: the raw
+comment for the arithmetic. Tests are split into three groups: the raw
 cosine-distance magnitude (embedding-vector EWMA only, scalar surprise
 baseline left cold on purpose so ``score`` stays ``None`` and the raw value
-is inspected directly off ``baseline.surprise_ewma``), and the z-score stage
+is inspected directly off ``baseline.surprise.ewma``), the z-score stage
 (scalar surprise baseline pre-seeded so the arithmetic is legible without
 chaining multiple real calls through tiny, numerically extreme first-tick
-variance floors).
+variance floors), and a genuine end-to-end multi-tick chain from a real
+cold start (review finding, 2026-08-19: no test previously exercised the
+real wiring between stage 1's output and stage 2's input across consecutive
+real calls -- every z-score test synthetically pre-seeded the baseline
+instead).
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import math
 
 from orion.substrate.prediction_error import (
     PerceptionEmbeddingBaseline,
+    _DomainEwmaBaseline,
     perception_prediction_error,
 )
 
@@ -47,7 +52,7 @@ def test_empty_embedding_reports_no_score_and_leaves_baseline_untouched() -> Non
 
 # --- raw cosine-distance magnitude (scalar surprise baseline left cold, so
 # --- ``score`` is None -- the raw value is inspected via
-# --- ``baseline.surprise_ewma``, which a cold z-score seed always sets to
+# --- ``baseline.surprise.ewma``, which a cold z-score seed always sets to
 # --- exactly the fed-in magnitude; see ``_domain_zscore``) -----------------
 
 
@@ -55,7 +60,7 @@ def test_identical_embedding_is_zero_raw_surprise_and_ewma_holds_steady() -> Non
     """cos([1,0], [1,0]) = dot(1)/  (norm_a=1 * norm_b=1) = 1 -> surprise
     1 - 1 = 0. EWMA of a constant input stays exactly that constant:
     alpha*1 + (1-alpha)*1 == 1, alpha*0 + (1-alpha)*0 == 0. Scalar surprise
-    baseline is cold (surprise_n=0 by default), so this stream's first real
+    baseline is cold (surprise.n=0 by default), so this stream's first real
     comparison reports no score yet -- the raw magnitude is still visible
     directly off the seeded scalar baseline."""
     baseline = PerceptionEmbeddingBaseline(embedding_ewma=(1.0, 0.0), n=1)
@@ -63,8 +68,8 @@ def test_identical_embedding_is_zero_raw_surprise_and_ewma_holds_steady() -> Non
     assert result.score is None
     assert result.baseline.embedding_ewma == (1.0, 0.0)
     assert result.baseline.n == 2
-    assert result.baseline.surprise_ewma == 0.0
-    assert result.baseline.surprise_n == 1
+    assert result.baseline.surprise.ewma == 0.0
+    assert result.baseline.surprise.n == 1
 
 
 # --- orthogonal vectors: cosine 0, raw surprise 1 ---------------------------
@@ -80,8 +85,8 @@ def test_orthogonal_embedding_is_maximal_raw_surprise_and_updates_both_ewmas() -
     assert result.score is None
     assert result.baseline.embedding_ewma == (0.8, 0.2)
     assert result.baseline.n == 2
-    assert result.baseline.surprise_ewma == 1.0
-    assert result.baseline.surprise_n == 1
+    assert result.baseline.surprise.ewma == 1.0
+    assert result.baseline.surprise.n == 1
 
 
 def test_45_degree_embedding_gives_hand_computed_partial_raw_surprise() -> None:
@@ -92,7 +97,7 @@ def test_45_degree_embedding_gives_hand_computed_partial_raw_surprise() -> None:
     result = perception_prediction_error([1.0, 0.0], baseline)
     expected_raw = 1.0 - (1.0 / math.sqrt(2.0))
     assert result.score is None
-    assert result.baseline.surprise_ewma == expected_raw
+    assert result.baseline.surprise.ewma == expected_raw
 
 
 # --- z-score stage: scalar surprise baseline pre-seeded, so the arithmetic
@@ -106,11 +111,11 @@ def test_second_real_comparison_z_scores_against_seeded_scalar_baseline() -> Non
     second comparison feeds the same raw_surprise=0.0 again.
     zscore = (0.0 - 0.0) / sqrt(max(0.0, min_variance)) = 0.0 -> score 0.0."""
     warm = PerceptionEmbeddingBaseline(
-        embedding_ewma=(1.0, 0.0), n=2, surprise_ewma=0.0, surprise_variance=0.0, surprise_n=1
+        embedding_ewma=(1.0, 0.0), n=2, surprise=_DomainEwmaBaseline(ewma=0.0, variance=0.0, n=1)
     )
     result = perception_prediction_error([1.0, 0.0], warm)
     assert result.score == 0.0
-    assert result.baseline.surprise_n == 2
+    assert result.baseline.surprise.n == 2
 
 
 def test_mid_range_zscore_hand_computed_against_seeded_baseline() -> None:
@@ -126,7 +131,7 @@ def test_mid_range_zscore_hand_computed_against_seeded_baseline() -> None:
     cos = 0.825
     embedding = (cos, math.sqrt(1.0 - cos * cos))
     baseline = PerceptionEmbeddingBaseline(
-        embedding_ewma=(1.0, 0.0), n=6, surprise_ewma=prev_ewma, surprise_variance=prev_var, surprise_n=5
+        embedding_ewma=(1.0, 0.0), n=6, surprise=_DomainEwmaBaseline(ewma=prev_ewma, variance=prev_var, n=5)
     )
     result = perception_prediction_error(list(embedding), baseline)
     raw_surprise = 1.0 - cos
@@ -145,7 +150,7 @@ def test_extreme_deviation_saturates_score_at_one() -> None:
     far above the saturation constant and must clamp to 1.0, not overflow
     past it."""
     baseline = PerceptionEmbeddingBaseline(
-        embedding_ewma=(1.0, 0.0), n=11, surprise_ewma=0.005, surprise_variance=0.00002, surprise_n=10
+        embedding_ewma=(1.0, 0.0), n=11, surprise=_DomainEwmaBaseline(ewma=0.005, variance=0.00002, n=10)
     )
     result = perception_prediction_error([0.0, 1.0], baseline)
     assert result.score == 1.0
@@ -159,10 +164,59 @@ def test_below_baseline_dip_clamps_to_zero_not_negative() -> None:
     cos = 0.9  # raw_surprise = 0.1, below the seeded mean of 0.5
     embedding = (cos, math.sqrt(1.0 - cos * cos))
     baseline = PerceptionEmbeddingBaseline(
-        embedding_ewma=(1.0, 0.0), n=6, surprise_ewma=0.5, surprise_variance=0.01, surprise_n=5
+        embedding_ewma=(1.0, 0.0), n=6, surprise=_DomainEwmaBaseline(ewma=0.5, variance=0.01, n=5)
     )
     result = perception_prediction_error(list(embedding), baseline)
     assert result.score == 0.0
+
+
+# --- genuine end-to-end multi-tick chain, from a real cold start (review
+# --- finding, 2026-08-19: every z-score test above pre-seeds the scalar
+# --- baseline synthetically -- this one threads three real consecutive
+# --- calls, each baseline coming only from the prior call's own return
+# --- value, to prove stage 1's output actually wires into stage 2's input
+# --- correctly, not just that each stage is independently correct) --------
+
+
+def test_three_real_ticks_from_cold_start_hand_computed_end_to_end() -> None:
+    """Tick 1: cold start, seeds embedding_ewma=(1,0), n=1, surprise still
+    cold (n=0) -- no score.
+    Tick 2: embedding=(0,1) -> cos=0, raw_surprise=1.0. Embedding EWMA
+    updates to (0.8, 0.2). Scalar surprise baseline cold (n=0) -> seeds to
+    ewma=1.0, still no score (this stream's first real comparison).
+    Tick 3: embedding=(0,1) again. cos([0,1],[0.8,0.2]) = 0.2/sqrt(0.68) --
+    hand-computed below via the same cosine formula the implementation
+    uses, not re-derived independently, so this is a wiring test (does
+    stage 2 receive tick 2's real surprise.ewma=1.0/variance=0.0/n=1
+    correctly), not a second correctness test of the cosine math itself
+    (already covered by the raw-surprise tests above).
+    """
+    baseline = PerceptionEmbeddingBaseline()
+
+    tick1 = perception_prediction_error([1.0, 0.0], baseline)
+    assert tick1.score is None
+    assert tick1.baseline.embedding_ewma == (1.0, 0.0)
+    assert tick1.baseline.n == 1
+    assert tick1.baseline.surprise == _DomainEwmaBaseline()
+
+    tick2 = perception_prediction_error([0.0, 1.0], tick1.baseline)
+    assert tick2.score is None
+    assert tick2.baseline.embedding_ewma == (0.8, 0.2)
+    assert tick2.baseline.n == 2
+    assert tick2.baseline.surprise.ewma == 1.0
+    assert tick2.baseline.surprise.variance == 0.0
+    assert tick2.baseline.surprise.n == 1
+
+    tick3 = perception_prediction_error([0.0, 1.0], tick2.baseline)
+    norm_b = math.sqrt(0.8 * 0.8 + 0.2 * 0.2)
+    cos3 = (0.0 * 0.8 + 1.0 * 0.2) / (1.0 * norm_b)
+    raw_surprise3 = max(0.0, min(1.0, 1.0 - cos3))
+    min_variance = 1e-8
+    variance_floor = max(tick2.baseline.surprise.variance, min_variance)
+    expected_zscore3 = (raw_surprise3 - tick2.baseline.surprise.ewma) / math.sqrt(variance_floor)
+    expected_score3 = min(1.0, max(0.0, expected_zscore3) / 3.0)
+    assert tick3.score == expected_score3
+    assert tick3.baseline.surprise.n == 2
 
 
 # --- dimension mismatch: honest reseed, not a crash or a fabricated score --
@@ -174,6 +228,24 @@ def test_dimension_mismatch_reseeds_baseline_and_reports_no_score() -> None:
     assert result.score is None
     assert result.baseline.embedding_ewma == (1.0, 0.0, 0.0)
     assert result.baseline.n == 1  # a real reseed, not baseline.n + 1
+
+
+def test_dimension_mismatch_reseeds_scalar_surprise_baseline_too() -> None:
+    """Review finding, 2026-08-19: the raw [0,1] surprise magnitude doesn't
+    itself depend on embedding dimensionality, so an argument exists for
+    carrying the scalar calibration forward across a dimension change --
+    deliberately NOT done (see perception_prediction_error()'s own
+    docstring for the full reasoning: a dimension change means the
+    embedding *model* changed, and a different model's calm-state surprise
+    distribution isn't assumed to match the old one's just because both
+    happen to land in [0,1]). A warm, well-calibrated scalar baseline must
+    reset to cold on a dimension-mismatch reseed, same as the vector one."""
+    warm_baseline = PerceptionEmbeddingBaseline(
+        embedding_ewma=(1.0, 0.0), n=500, surprise=_DomainEwmaBaseline(ewma=0.1, variance=0.002, n=499)
+    )
+    result = perception_prediction_error([1.0, 0.0, 0.0], warm_baseline)
+    assert result.score is None
+    assert result.baseline.surprise == _DomainEwmaBaseline()
 
 
 # --- degenerate zero-norm input: no score, no baseline mutation ------------
@@ -217,7 +289,7 @@ def test_raw_surprise_never_exceeds_one_or_drops_below_zero() -> None:
     baseline = PerceptionEmbeddingBaseline(embedding_ewma=(1.0, 0.0), n=1)
     result = perception_prediction_error([-1.0, 0.0], baseline)
     assert result.score is None
-    assert result.baseline.surprise_ewma == 1.0
+    assert result.baseline.surprise.ewma == 1.0
 
 
 # --- (de)serialization round-trip + tolerant parsing ------------------------
@@ -234,15 +306,15 @@ def test_baseline_json_round_trip_includes_scalar_surprise_fields() -> None:
     exercised the all-default (0.0/0.0/0) scalar fields would pass even if
     to_json_dict/from_json_dict silently dropped them."""
     baseline = PerceptionEmbeddingBaseline(
-        embedding_ewma=(0.8, 0.2, -0.1), n=7, surprise_ewma=0.042, surprise_variance=0.0013, surprise_n=6
+        embedding_ewma=(0.8, 0.2, -0.1), n=7, surprise=_DomainEwmaBaseline(ewma=0.042, variance=0.0013, n=6)
     )
     restored = PerceptionEmbeddingBaseline.from_json_dict(baseline.to_json_dict())
     assert restored == baseline
 
 
-def test_baseline_from_json_dict_tolerates_missing_scalar_surprise_keys() -> None:
-    """A row persisted before this migration has no surprise_* keys at all --
-    must default to a cold scalar baseline (0.0/0.0/0), not raise."""
+def test_baseline_from_json_dict_tolerates_missing_scalar_surprise_key() -> None:
+    """A row persisted before this migration has no `surprise` key at all --
+    must default to a cold scalar baseline, not raise."""
     restored = PerceptionEmbeddingBaseline.from_json_dict(
         {"embedding_ewma": [1.0, 0.0], "n": 3}
     )
@@ -258,5 +330,8 @@ def test_baseline_from_json_dict_tolerates_malformed_payload() -> None:
         {"embedding_ewma": [1.0, "bad", 3.0], "n": 2}
     ) == PerceptionEmbeddingBaseline(embedding_ewma=(), n=2)
     assert PerceptionEmbeddingBaseline.from_json_dict(
-        {"surprise_ewma": "not-a-float", "surprise_variance": "also-bad", "surprise_n": "nope"}
+        {"surprise": {"ewma": "not-a-float", "variance": "also-bad", "n": "nope"}}
+    ) == PerceptionEmbeddingBaseline()
+    assert PerceptionEmbeddingBaseline.from_json_dict(
+        {"surprise": "not-a-dict"}
     ) == PerceptionEmbeddingBaseline()

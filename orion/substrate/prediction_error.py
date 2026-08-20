@@ -159,6 +159,45 @@ class _DomainEwmaBaseline:
     n: int = 0
 
 
+def _domain_ewma_baseline_to_json_dict(baseline: _DomainEwmaBaseline) -> dict:
+    return {"ewma": baseline.ewma, "variance": baseline.variance, "n": baseline.n}
+
+
+def _domain_ewma_baseline_from_json_dict(data: Any) -> _DomainEwmaBaseline:
+    """Tolerant parse of one ``_DomainEwmaBaseline``-shaped dict -- missing
+    keys or a missing/non-dict ``data`` default to a cold baseline (no
+    history yet is a real, honest state, not an error); a malformed
+    individual value (e.g. a string where a float belongs) defaults just
+    that field rather than discarding the whole baseline, mirroring every
+    other tolerant-parsing convention in this module.
+
+    Shared by every caller that persists a ``_DomainEwmaBaseline`` inside a
+    larger JSONB blob (review finding, 2026-08-19: ``CodebaseMassBaseline``
+    and ``PerceptionEmbeddingBaseline`` had each hand-rolled their own
+    version of this same parse -- this used to be ``CodebaseMassBaseline.
+    from_json_dict``'s inline ``_sub()`` closure, extracted here once a
+    second caller needed the identical shape. Also closes a real gap in
+    that original version: ``_sub()`` called ``float()``/``int()`` directly
+    with no per-field try/except, so a malformed value (not just a missing
+    key) would raise instead of degrading gracefully -- untested and
+    unnoticed until this extraction).
+    """
+    raw = data if isinstance(data, dict) else {}
+    try:
+        ewma = float(raw.get("ewma", 0.0))
+    except (TypeError, ValueError):
+        ewma = 0.0
+    try:
+        variance = float(raw.get("variance", 0.0))
+    except (TypeError, ValueError):
+        variance = 0.0
+    try:
+        n = int(raw.get("n", 0))
+    except (TypeError, ValueError):
+        n = 0
+    return _DomainEwmaBaseline(ewma=ewma, variance=variance, n=max(0, n))
+
+
 @dataclass(frozen=True)
 class CodebaseMassBaseline:
     """EWMA baseline state for ``codebase_prediction_error``, threaded explicitly by
@@ -182,22 +221,19 @@ class CodebaseMassBaseline:
         ``orion/structural_mass/snapshot_history.py::GraphSnapshotStats`` already
         uses, not a new pattern invented here."""
         return {
-            "git": {"ewma": self.git.ewma, "variance": self.git.variance, "n": self.git.n},
-            "pr": {"ewma": self.pr.ewma, "variance": self.pr.variance, "n": self.pr.n},
-            "graph": {"ewma": self.graph.ewma, "variance": self.graph.variance, "n": self.graph.n},
+            "git": _domain_ewma_baseline_to_json_dict(self.git),
+            "pr": _domain_ewma_baseline_to_json_dict(self.pr),
+            "graph": _domain_ewma_baseline_to_json_dict(self.graph),
         }
 
     @classmethod
     def from_json_dict(cls, data: dict) -> "CodebaseMassBaseline":
-        def _sub(key: str) -> _DomainEwmaBaseline:
-            raw = data.get(key) or {}
-            return _DomainEwmaBaseline(
-                ewma=float(raw.get("ewma", 0.0)),
-                variance=float(raw.get("variance", 0.0)),
-                n=int(raw.get("n", 0)),
-            )
-
-        return cls(git=_sub("git"), pr=_sub("pr"), graph=_sub("graph"))
+        data = data if isinstance(data, dict) else {}
+        return cls(
+            git=_domain_ewma_baseline_from_json_dict(data.get("git")),
+            pr=_domain_ewma_baseline_from_json_dict(data.get("pr")),
+            graph=_domain_ewma_baseline_from_json_dict(data.get("graph")),
+        )
 
 
 @dataclass(frozen=True)
@@ -1080,25 +1116,25 @@ class PerceptionEmbeddingBaseline:
     n: int = 0
 
     # Second, independent scalar EWMA -- of the raw `1 - cos(...)` surprise
-    # *magnitude* itself, not the embedding vector above. Deliberately its
-    # own counter (`surprise_n`, not `n`): `n` advances on every real
-    # non-degenerate observation including the very first cold-start seed
-    # (which produces no raw surprise value at all, nothing to fold in
-    # here), so `surprise_n` always lags `n` by exactly one real comparison.
-    # Reuses `_DomainEwmaBaseline`/`_domain_zscore` (this module's existing,
-    # validated per-domain z-score mechanism -- see `codebase_prediction_
-    # error` above) rather than inventing a second normalization scheme.
-    surprise_ewma: float = 0.0
-    surprise_variance: float = 0.0
-    surprise_n: int = 0
+    # *magnitude* itself, not the embedding vector above. A genuine
+    # `_DomainEwmaBaseline` (this module's existing, validated per-domain
+    # z-score mechanism -- see `codebase_prediction_error` above), not three
+    # flat fields hand-copied from its shape (review finding, 2026-08-19:
+    # composing two independently-reasoned-about baselines, mirroring how
+    # `CodebaseMassBaseline` composes its git/pr/graph sub-baselines, rather
+    # than bolting scalar fields onto a class whose own docstring says it
+    # holds "the embedding vector itself, not a scalar mean/variance").
+    # `surprise.n` deliberately lags `n` by exactly one real comparison: `n`
+    # advances on every real non-degenerate observation including the very
+    # first cold-start seed, which produces no raw surprise value at all --
+    # nothing to fold into `surprise` yet.
+    surprise: "_DomainEwmaBaseline" = field(default_factory=lambda: _DomainEwmaBaseline())
 
     def to_json_dict(self) -> dict:
         return {
             "embedding_ewma": list(self.embedding_ewma),
             "n": self.n,
-            "surprise_ewma": self.surprise_ewma,
-            "surprise_variance": self.surprise_variance,
-            "surprise_n": self.surprise_n,
+            "surprise": _domain_ewma_baseline_to_json_dict(self.surprise),
         }
 
     @classmethod
@@ -1115,28 +1151,17 @@ class PerceptionEmbeddingBaseline:
             n = int(n_raw)
         except (TypeError, ValueError):
             n = 0
-        # Missing keys (rows persisted before this migration) default to a
-        # cold scalar baseline -- same "no history yet is a real, honest
-        # state" convention as the rest of this class, not an error.
-        try:
-            surprise_ewma = float(data.get("surprise_ewma", 0.0)) if isinstance(data, dict) else 0.0
-        except (TypeError, ValueError):
-            surprise_ewma = 0.0
-        try:
-            surprise_variance = float(data.get("surprise_variance", 0.0)) if isinstance(data, dict) else 0.0
-        except (TypeError, ValueError):
-            surprise_variance = 0.0
-        try:
-            surprise_n = int(data.get("surprise_n", 0)) if isinstance(data, dict) else 0
-        except (TypeError, ValueError):
-            surprise_n = 0
-        return cls(
-            embedding_ewma=vec,
-            n=max(0, n),
-            surprise_ewma=surprise_ewma,
-            surprise_variance=surprise_variance,
-            surprise_n=max(0, surprise_n),
-        )
+        # Missing/malformed `surprise` (rows persisted before this
+        # migration, or before the 2026-08-19 z-score migration entirely)
+        # defaults to a cold scalar baseline -- same "no history yet is a
+        # real, honest state" convention as the rest of this class, not an
+        # error. Shared parsing helper (review finding, 2026-08-19): this
+        # used to hand-roll the same three try/except float/int blocks
+        # `CodebaseMassBaseline.from_json_dict`'s own `_sub()` closure
+        # already established for the identical ewma/variance/n shape.
+        surprise_raw = data.get("surprise") if isinstance(data, dict) else None
+        surprise = _domain_ewma_baseline_from_json_dict(surprise_raw)
+        return cls(embedding_ewma=vec, n=max(0, n), surprise=surprise)
 
 
 @dataclass(frozen=True)
@@ -1202,6 +1227,27 @@ def perception_prediction_error(
     cold) also reports no score, for the identical reason one level up --
     see ``_domain_zscore``.
 
+    **The dimension-mismatch reseed resets `surprise` too, not just
+    `embedding_ewma` -- a deliberate choice, not an oversight** (review
+    finding, 2026-08-19: the raw `[0, 1]` surprise magnitude's scale
+    doesn't itself depend on embedding dimensionality, so an argument
+    exists for carrying the scalar calibration forward across a dimension
+    change). Kept coupled anyway: a dimension change means the embedding
+    *model* changed, and this repo already has a named lesson for exactly
+    this shape of assumption --
+    ``feedback_borrowed_calibrated_constants_dont_transfer_across_domains``
+    -- generalized here from "across domains" to "across models for the
+    same domain": a different embedding model can plausibly produce a
+    systematically different calm-state surprise distribution (different
+    training objective, different normalization, different sensitivity to
+    real scene change) even though the output magnitude happens to land in
+    the same `[0, 1]` range. Carrying the old model's calibration forward
+    would silently apply it to the new model's readings with no signal
+    that it might not transfer. Re-qualifying (one more stream-specific
+    warm-up window) is the safer default until there's real evidence two
+    models' calm-state distributions actually match closely enough to
+    share a baseline.
+
     **A zero-norm (all-zero) observation is rejected outright, before the
     cold-start/reseed check runs, not just on the comparison path** (review
     finding): seeding a fresh baseline from a zero vector would make every
@@ -1255,25 +1301,19 @@ def perception_prediction_error(
     # recent normal, same pattern codebase_prediction_error uses per
     # sub-domain -- see _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION's own
     # comment for why the raw magnitude alone was not comparable across
-    # domains. `None` on this stream's first real comparison (surprise_n
+    # domains. `None` on this stream's first real comparison (surprise.n
     # still 0 -- no baseline yet to be surprised against), same "no
     # empty-shell cognition" convention as the cold-start case above.
     surprise_zscore, new_surprise_baseline = _domain_zscore(
         raw_surprise,
-        _DomainEwmaBaseline(
-            ewma=baseline.surprise_ewma,
-            variance=baseline.surprise_variance,
-            n=baseline.surprise_n,
-        ),
+        baseline.surprise,
         alpha=alpha,
         min_variance=_PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE,
     )
     new_baseline = PerceptionEmbeddingBaseline(
         embedding_ewma=new_ewma,
         n=baseline.n + 1,
-        surprise_ewma=new_surprise_baseline.ewma,
-        surprise_variance=new_surprise_baseline.variance,
-        surprise_n=new_surprise_baseline.n,
+        surprise=new_surprise_baseline,
     )
     if surprise_zscore is None:
         return PerceptionPredictionErrorResult(score=None, baseline=new_baseline)

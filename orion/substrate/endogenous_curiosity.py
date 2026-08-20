@@ -88,11 +88,25 @@ HARD_BUDGET_CEILING = 8
 # above: this function's own architecture treats "any node with a real,
 # non-degenerate `prediction_error`" as fair game by design, and the budget
 # cap / staleness decay / signals-only-into-rung-6-governance chain gates
-# what a crossed threshold can actually do. **Not yet re-verified against
-# live data post-migration** -- `perception_prediction_error()`'s own
-# comment names exactly what to check (calm ticks clamp near 0, no
-# saturating on ordinary room activity) before trusting a real `min_error`
-# crossing here as meaningful rather than a mis-set saturation constant.
+# what a crossed threshold can actually do.
+#
+# **This is live now, not a future opt-in** (review finding, 2026-08-19:
+# the prior version of this note said "not yet re-verified... before
+# trusting a real min_error crossing," phrased as a future gate -- both
+# `ORION_ENDOGENOUS_CURIOSITY_ENABLED` and `SUBSTRATE_PERCEPTION_
+# PREDICTION_ERROR_TICK_ENABLED` are already `true` in this host's live
+# `.env`, so this scan is grading real, not-yet-recalibration-checked
+# perception scores against `min_error` starting on the next restart, not
+# at some later point someone chooses). `perception_prediction_error()`'s
+# own comment names exactly what to check post-restart (calm ticks clamp
+# near 0 across ordinary room activity, not just the one knocked-over-
+# camera event already observed) before treating a real `min_error`
+# crossing from this domain as meaningful rather than a mis-set saturation
+# constant. Until that check runs, a saturating perception candidate could
+# already be consuming a real slot of `HARD_BUDGET_CEILING`, silently
+# crowding out another domain's genuine candidate on ordinary room
+# activity -- not hypothetical, this is what the constant being borrowed
+# rather than derived (see that comment) would actually cause in practice.
 #
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):

@@ -387,6 +387,15 @@ class BiometricsSubstrateWorker:
         self._last_perception_prediction_error: float | None = None
         self._last_perception_embedding_at: datetime | None = None
         self._last_perception_stream_id: str | None = None
+        # Cached alongside the score above so the tick below can tell "no
+        # real anomaly, confirmed calm" apart from "real embeddings are
+        # arriving but the scalar surprise EWMA (2026-08-19 z-score
+        # migration) hasn't seen enough real magnitudes yet to compute a
+        # z-score" -- review finding, 2026-08-19: without this, the tick's
+        # `self._last_perception_prediction_error or 0.0` fallback silently
+        # treated both cases identically, and the z-score migration widened
+        # the still-warming window from one real observation to two.
+        self._last_perception_surprise_n: int = 0
 
     @property
     def bus(self):
@@ -1265,6 +1274,11 @@ class BiometricsSubstrateWorker:
         now = datetime.now(timezone.utc)
         self._last_perception_embedding_at = now
         self._last_perception_stream_id = stream_id
+        # Cached regardless of whether this call produced a score --
+        # the tick below needs to distinguish "confirmed calm" from
+        # "still warming the scalar surprise EWMA" even on ticks that
+        # return score=None (see this attribute's own comment in __init__).
+        self._last_perception_surprise_n = result.baseline.surprise.n
         if result.score is not None:
             self._last_perception_prediction_error = result.score
             logger.info(
@@ -1322,7 +1336,34 @@ class BiometricsSubstrateWorker:
             # happening now. Same "must not outlive its own evidence" rule
             # _vision_channel_tick applies to perceptual_yield, applied here
             # to prediction_error itself.
-            score = 0.0 if staleness >= 1.0 else (self._last_perception_prediction_error or 0.0)
+            #
+            # `self._last_perception_prediction_error or 0.0` used to
+            # conflate two different states (review finding, 2026-08-19):
+            # "confirmed calm" (a real z-score was computed and it was
+            # exactly/near 0.0) and "no score yet" (real embeddings are
+            # arriving, not stale, but the scalar surprise EWMA -- the
+            # z-score migration's second stage -- hasn't seen a second real
+            # magnitude yet). The z-score migration widened that still-
+            # warming window from one real observation to two, so this
+            # collision now matters more than it used to. Both branches
+            # below still publish 0.0 -- the tick's own "write every tick,
+            # unconditionally" contract (this function's docstring) forbids
+            # skipping the write even during warm-up, the same way it
+            # forbids skipping it on genuine silence -- but now deliberately
+            # and distinguishably in the logs, not by accident.
+            still_warming = staleness < 1.0 and self._last_perception_surprise_n < 1
+            if staleness >= 1.0:
+                score = 0.0
+            elif still_warming:
+                score = 0.0
+                logger.info(
+                    "substrate_perception_prediction_error_tick_still_warming stream_id=%s "
+                    "surprise_n=%d",
+                    self._last_perception_stream_id or "none",
+                    self._last_perception_surprise_n,
+                )
+            else:
+                score = self._last_perception_prediction_error or 0.0
 
             # Receipt on EVERY tick, unconditionally -- NOT gated on
             # score > 0.0 the way _bus_synaptic_tick's is. This mirrors

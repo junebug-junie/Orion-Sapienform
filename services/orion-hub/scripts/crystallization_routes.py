@@ -232,6 +232,11 @@ async def crystallization_validate_proposal(
     return {
         "valid": valid,
         "errors": all_errors,
+        # Grammar refs whose events retention has since deleted. Surfaced, not swallowed:
+        # they do not make a proposal invalid, but an operator looking at a proposal with
+        # thin-looking evidence needs to be able to tell "the evidence aged out" from "there
+        # never was any". Live 2026-08-20, 876 of 1,167 refs are in this state.
+        "pruned_sources": list(source_result.pruned),
         "detection": {
             "duplicates": detection.duplicates,
             "contradictions": detection.contradictions,

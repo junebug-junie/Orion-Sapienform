@@ -1,14 +1,15 @@
 # Phase 5 — signal semantics: provenance, window, commensurability
 
-**Mode:** Was design/scoping. **R1–R5b are all shipped and merged.** The one
-open item is the fourth-axis question (R6, "can this metric express rest") —
-see "Open decisions". Kept as the arc's record rather than closed, because
-most of what it now says was learned by building it.
+**Mode:** Was design/scoping. **R1–R5b are all shipped and merged. The
+fourth-axis question (R6) is resolved: investigated, no live victim found,
+no rung, no code.** See "Open decisions". Kept as the arc's record rather
+than closed, because most of what it now says was learned by building it.
 
 **Date:** 2026-08-13, revised same day, 2026-08-15 with shipped status and
-measured outcomes, 2026-08-16 once R5a's watch shipped, and again 2026-08-19
-once R5b (the actual guard) shipped and was live-verified — see "What this
-revision retracts" and "What building it changed".
+measured outcomes, 2026-08-16 once R5a's watch shipped, 2026-08-19 once R5b
+(the actual guard) shipped and was live-verified, and again 2026-08-19 once
+the R6 investigation closed — see "What this revision retracts" and "What
+building it changed".
 
 ## Status
 
@@ -407,13 +408,61 @@ critical path.
 
 1. ~~**R5 scope.**~~ **RESOLVED 2026-08-16, see above.** R5a shipped without
    waiting on `expected_offline_suppression`.
-2. **The fourth axis.** Is "can this metric reach rest" worth its own rung
-   (R6), or does it fold into R5b's guard? It has three measured instances and
-   no detector. **Still open as a decision** -- R5b shipped as its own patch
-   and did not fold this in, so it did not get decided by default. Investigation
-   started 2026-08-19: current state of the three known instances, whether
-   others exist, and what a detector would actually need to check, before any
-   scope decision or code.
+2. ~~**The fourth axis.**~~ **RESOLVED 2026-08-19 -- no rung, no code, park it.**
+   Investigated properly (`scripts/check_metric_lineage.py` blast radius +
+   direct Postgres history, then a full adversarial pass after the first
+   pass's headline instance turned out to be wrong) before deciding, per this
+   doc's own "measure before building" discipline.
+
+   **The mechanism is real.** `apply_decay()`
+   (`services/orion-field-digester/app/digestion/decay.py`) has no floor on
+   any of its 28 `NODE_DECAY_CHANNELS` entries -- `vec[ch] = vec[ch] *
+   decay_rate` forever, and float64 repeatedly multiplied by 0.92 hits a
+   fixed point in the subnormal range before reaching true 0.0. Proved this
+   is the only way `field_coherence_warning` reaches `3e-323`: its one write
+   site (`worker.py:275`) can only ever write `round(hits/applicable, 4)`, a
+   ratio of small integers rounded to 4dp -- never a subnormal float directly
+   -- confirmed with a whole-repo grep for any other writer, not just the two
+   modules already in view.
+
+   **The instance that motivated it was wrong.** The first pass presented
+   `node:circe`'s frozen `field_coherence_warning` as a live, currently-active
+   defect. It wasn't checked whether circe was actually up. It is not: every
+   real channel on `node:circe` (`thermal_pressure`, `cpu_pressure`,
+   `gpu_pressure`, `staleness`, seven others) stopped writing within the same
+   ~2-minute window, 10+ hours before the check, while `node:athena` /
+   `node:atlas` / the `substrate.*` nodes all had writes within the prior
+   1-2 minutes -- confirmed with a corrected *per-node* query after the first
+   version of that query wrongly merged timestamps across all nodes and
+   couldn't actually distinguish "circe specifically is down" from "the whole
+   pipeline stalled". Circe going offline is already-documented expected
+   behavior for that node (see R5 timing section above, direct quote:
+   "circe is up sometimes, not always... live with it"), not an anomaly.
+
+   **No live consumer was found to actually be fooled.** Checked the 5
+   magnitude-sensitive sites out of the channel's 17 discovered generic
+   whole-vector consumers (`check_metric_lineage.py --generic-consumers`):
+   `pressure_delta()` (feeds R5b) treats a subnormal `before` the same as an
+   exact-zero one (`after - before` is insensitive to the difference, plus
+   its own `1e-6` deadband); `commensurability.py`'s existing
+   `DECAY_RATIO_EPSILON` carve-out is unaffected either way; the
+   `capability_vectors` decay branch is architecturally exempt in practice
+   (its own 2026-07-12 comment: `apply_diffusion()` overwrites every live
+   entry the same tick, so nothing decays away from a real value there);
+   and Hub's `build_channel_series()` already documents this exact
+   phenomenon by name ("blind in the subnormal range where decay stops
+   producing a 0.92 ratio") as the reason R2's timestamp-based regime path
+   exists -- and every stuck channel checked on circe carries a real
+   `node_vector_updated_at` stamp, so all of them ride that already-fixed
+   path, not the blind ratio-inference fallback it replaced.
+
+   **What's still genuinely open, not chased:** R2's own docstring states
+   only 22-25 of 38 channels get the timestamp fix; the remaining 13-16 still
+   use blind ratio-inference and theoretically could misread a subnormal
+   freeze as live data. No specific channel has been shown to hit this live.
+   If this doc's thesis (a known defect with no mechanism behind it does not
+   stay known) applies to itself: this paragraph is that mechanism for this
+   one.
 
 ## Risk note — tooling, not code
 
@@ -436,10 +485,45 @@ identifier corruption. The earlier version of this note assumed it was the
 same mechanism; it is not. A **third** occurrence, same session that wrote
 this revision: a plain `grep -h "^POSTGRES_URI="` call was silently
 intercepted and returned RTK's own help/usage text instead of running.
-Different symptom (a swallowed command instead of a substituted identifier),
-same root cause -- RTK's wrapper doing something other than what was asked,
-unpredictably, on ordinary shell commands.
 
-**Still ungated as of 2026-08-16.** Recorded three times now, acted on zero,
-across the entire arc above. Noted here as the standing example of this doc's
-own thesis: a known defect with no mechanism behind it does not stay known.
+**2026-08-19: root-caused for real, not just observed, and both symptoms
+turned out deterministic, not "unpredictable" as this note previously
+guessed.** Two distinct bugs, not one:
+
+1. **The `-h` swallow, reproduced live on demand.** RTK's clap-based arg
+   parser globally reserves `-h`/`--help` (and `-V`/`--version`) for
+   *itself* before the wrapped tool ever sees them. `grep -h`
+   (`--no-filename`, an ordinary flag) never reaches real grep -- RTK's own
+   help text comes back instead, silently, exit 0. 100% reproducible, not
+   intermittent.
+2. **The identifier corruption, root-caused via RTK's own public issue
+   tracker, not reproduced locally.** [rtk-ai/rtk#1613](https://github.com/rtk-ai/rtk/issues/1613)
+   (filed by someone else, open since April, still unfixed as of the
+   latest release checked, v0.45.0): RTK's output parser assumes
+   ripgrep/grep output is always `path:line:content`, via a naive
+   `splitn(3, ':')`. Ripgrep omits the path prefix for a single-file
+   search, so real output is `line:content`; when the matched content
+   itself contains a colon (a YAML key like `channel_map:` is exactly this
+   shape), the parser misassigns fields. Matches the originally recorded
+   symptom precisely.
+
+**Gated 2026-08-19, confirmed installed and live same day.** `~/.claude/hooks/rtk-fcc-gate.sh`
+now blocks (exit 2, explains why, points at `--no-filename`) any grep/rg
+call carrying a bare `-h`-containing short-flag cluster before RTK's parser
+can swallow it, and unconditionally injects `-H`/`--with-filename` into
+every plain grep/rg rewrite so #1613's missing-path-prefix precondition
+can't occur -- purely additive, safe on every existing call. Not this
+repo's code (this hook is global, `~/.claude/`, not version-controlled, not
+part of this arc's usual PR/test discipline), so it's recorded here rather
+than shipped as a normal patch. Built and tested against 9 cases in
+isolation, then installing it required a permission grant the authoring
+session didn't have -- Juniper installed it directly. Re-verified against
+the live installed file, not just the pre-install test suite: `grep -h
+"^POSTGRES_URI="` now blocks with the exit-2 message, and the exact
+originally-recorded corruption case (`grep channel_map biometrics_lattice.yaml`)
+now gets `-H` injected into its rewrite. Original backed up at
+`/tmp/rtk-fcc-gate.sh.orig-backup` if a rollback is ever needed.
+
+Recorded three times before this fix existed, acted on zero, across the
+entire arc above -- the standing example of this doc's own thesis, until
+now: a known defect with no mechanism behind it does not stay known.

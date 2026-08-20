@@ -244,6 +244,48 @@ def test_tick_still_warming_does_not_leak_a_stale_nonzero_cached_score() -> None
     assert kwargs["error"] == 0.0
 
 
+def test_tick_still_warming_at_surprise_n_one_does_not_leak_stale_score() -> None:
+    """The exact off-by-one a second review pass caught, 2026-08-20: the
+    first fix's `still_warming` check used `surprise_n < 1`, which only
+    catches the true-cold `surprise_n == 0` case. But
+    `_domain_zscore`/`compute_ewma_update` (orion/bus/ewma.py) return
+    `zscore=None` (no score) on the FIRST real magnitude fed into a cold
+    scalar baseline, and that call's own output baseline already reads
+    `surprise.n == 1` -- proven directly by
+    orion/substrate/tests/test_perception_prediction_error.py::
+    test_identical_embedding_is_zero_raw_surprise_and_ewma_holds_steady,
+    which asserts exactly `surprise.n == 1` with `score is None` after one
+    real comparison. So `surprise_n == 1` is a second, real 'no score yet'
+    state the original `< 1` check missed entirely -- a stale cached score
+    would have silently leaked through it. Threshold must be `< 2`."""
+    worker, fake_store = _make_worker()
+    worker._last_perception_prediction_error = 0.9  # stale, must not leak through
+    worker._last_perception_embedding_at = datetime.now(timezone.utc)
+    worker._last_perception_stream_id = "cam0"
+    worker._last_perception_surprise_n = 1  # still warming -- the case the first fix missed
+    worker._perception_prediction_error_tick()
+
+    _, kwargs = worker._write_prediction_error_node.call_args
+    assert kwargs["error"] == 0.0
+
+
+def test_tick_at_surprise_n_two_uses_the_real_confirmed_score() -> None:
+    """Boundary case one past the still-warming window: surprise_n == 2 is
+    the first value that can only be reached after a real z-score was
+    actually computed (see the test above's docstring for the n==1 ->
+    n==2 transition), so the tick must use the real cached score here, not
+    the still-warming 0.0 placeholder."""
+    worker, fake_store = _make_worker()
+    worker._last_perception_prediction_error = 0.17
+    worker._last_perception_embedding_at = datetime.now(timezone.utc)
+    worker._last_perception_stream_id = "cam0"
+    worker._last_perception_surprise_n = 2
+    worker._perception_prediction_error_tick()
+
+    _, kwargs = worker._write_prediction_error_node.call_args
+    assert kwargs["error"] == 0.17
+
+
 def test_tick_zeroes_score_once_staleness_faults() -> None:
     """A stale reading must not outlive its own evidence -- same rule
     _vision_channel_tick applies to perceptual_yield, applied here to

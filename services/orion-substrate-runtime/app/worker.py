@@ -1351,7 +1351,22 @@ class BiometricsSubstrateWorker:
             # skipping the write even during warm-up, the same way it
             # forbids skipping it on genuine silence -- but now deliberately
             # and distinguishably in the logs, not by accident.
-            still_warming = staleness < 1.0 and self._last_perception_surprise_n < 1
+            #
+            # Threshold is `< 2`, not `< 1` (second-review finding,
+            # 2026-08-20 -- the first fix shipped this exact off-by-one):
+            # `_domain_zscore`/`compute_ewma_update` (orion/bus/ewma.py)
+            # return `zscore=None` and `n=1` on the FIRST real magnitude
+            # fed into a cold scalar baseline (`prev_count == 0` branch) --
+            # a real z-score, and thus a real score, only appears once
+            # `prev_count >= 1` going in, i.e. once `surprise.n` was
+            # already `>= 1` *before* this tick's own message, which reads
+            # back as `surprise.n >= 2` *after* it. So `surprise_n == 1` is
+            # still a "no score yet" state, exactly like `== 0` -- checking
+            # `< 1` let a stale cached score leak through for exactly the
+            # state this migration's own comment says it widened the
+            # window to include (own test coverage at the time only
+            # exercised `surprise_n == 0`, never the real `== 1` case).
+            still_warming = staleness < 1.0 and self._last_perception_surprise_n < 2
             if staleness >= 1.0:
                 score = 0.0
             elif still_warming:

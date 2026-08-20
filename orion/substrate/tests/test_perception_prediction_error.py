@@ -28,6 +28,7 @@ import math
 from orion.substrate.prediction_error import (
     PerceptionEmbeddingBaseline,
     _DomainEwmaBaseline,
+    _PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE,
     perception_prediction_error,
 )
 
@@ -211,8 +212,13 @@ def test_three_real_ticks_from_cold_start_hand_computed_end_to_end() -> None:
     norm_b = math.sqrt(0.8 * 0.8 + 0.2 * 0.2)
     cos3 = (0.0 * 0.8 + 1.0 * 0.2) / (1.0 * norm_b)
     raw_surprise3 = max(0.0, min(1.0, 1.0 - cos3))
-    min_variance = 1e-8
-    variance_floor = max(tick2.baseline.surprise.variance, min_variance)
+    # Real constant, not a hand-copied literal (bug this session found: a
+    # prior version of this test hardcoded `1e-8` directly, which silently
+    # went stale and would have asserted the *wrong* expected score the
+    # moment the real floor was recalibrated -- see
+    # _PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE's own comment for why 2e-6
+    # replaced 1e-8).
+    variance_floor = max(tick2.baseline.surprise.variance, _PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE)
     expected_zscore3 = (raw_surprise3 - tick2.baseline.surprise.ewma) / math.sqrt(variance_floor)
     expected_score3 = min(1.0, max(0.0, expected_zscore3) / 3.0)
     assert tick3.score == expected_score3
@@ -362,6 +368,90 @@ def test_raw_surprise_populated_even_while_score_still_warming() -> None:
     result = perception_prediction_error([0.0, 1.0], warm)
     assert result.score is None
     assert result.raw_surprise == 1.0
+
+
+# --- variance-whipsaw floor (2026-08-20): a confirmed-static camera still
+# --- crossed min_error=0.55 on 10% of real ticks and saturated to 1.0 on
+# --- ~4% under the old 1e-8 floor, because compute_ewma_update floors only
+# --- the z-score *denominator*, never the *stored* variance it returns --
+# --- a locally-quiet stretch can whipsaw the tracked variance well below
+# --- this domain's true ~2e-6 steady-state variance, and the next
+# --- ordinary-magnitude tick then divides by that artificially small
+# --- number. These tests pin the floor's own value and prove it actually
+# --- suppresses that whipsaw, not just that some floor exists. -------------
+
+
+def test_min_variance_floor_raised_to_true_steady_state_variance() -> None:
+    """Pins the exact constant, not just its behavior -- a regression test
+    for the constant itself catches an accidental revert (e.g. a bad merge
+    restoring the old 1e-8) that a purely behavioral test might not, since
+    plenty of ordinary-magnitude ticks still pass either floor."""
+    assert _PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE == 2e-6
+
+
+def test_whipsawed_low_tracked_variance_no_longer_produces_a_spurious_saturated_score() -> None:
+    """Reproduces the exact failure mode found live 2026-08-20: a scalar
+    surprise baseline whose *tracked* variance has drifted to 5e-7 (the real
+    minimum observed on a confirmed-static camera stream over 240 ticks --
+    alpha=0.2's ~5-tick effective memory is genuinely capable of estimating
+    a variance this low even though the domain's true population variance
+    is ~1.933e-6, ~4x higher) then sees a perfectly ordinary-magnitude tick
+    (raw_surprise=0.006, inside the real measured [0.00197, 0.01003] range
+    for this same confirmed-static stream -- not a real event).
+
+    Under the old 1e-8 floor, max(5e-7, 1e-8) = 5e-7 (the whipsawed value
+    wins) -> zscore = (0.006 - 0.004174) / sqrt(5e-7) = 0.001826 / 7.071e-4
+    ~= 2.58 -> score = min(1.0, 2.58/3.0) ~= 0.86 -- comfortably above
+    min_error=0.55 on a scene that never moved.
+
+    Under the new 2e-6 floor, max(5e-7, 2e-6) = 2e-6 (the floor wins
+    instead) -> zscore = 0.001826 / sqrt(2e-6) ~= 1.29 -> score ~= 0.43 --
+    below min_error=0.55, correctly read as ordinary variation."""
+    cos = 1.0 - 0.006  # raw_surprise = 0.006 exactly
+    embedding = (cos, math.sqrt(1.0 - cos * cos))
+    whipsawed_variance = 5e-7
+    baseline = PerceptionEmbeddingBaseline(
+        embedding_ewma=(1.0, 0.0),
+        n=50,
+        surprise=_DomainEwmaBaseline(ewma=0.004174, variance=whipsawed_variance, n=49),
+    )
+    result = perception_prediction_error(list(embedding), baseline)
+
+    old_floor = 1e-8
+    old_variance_floor = max(whipsawed_variance, old_floor)
+    old_zscore = (0.006 - 0.004174) / math.sqrt(old_variance_floor)
+    old_score = min(1.0, max(0.0, old_zscore) / 3.0)
+    assert old_score > 0.55  # confirms this scenario really was a false positive before
+
+    new_variance_floor = max(whipsawed_variance, _PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE)
+    expected_zscore = (0.006 - 0.004174) / math.sqrt(new_variance_floor)
+    expected_score = min(1.0, max(0.0, expected_zscore) / 3.0)
+    # Tolerance, not exact equality: the literal 0.006 above and the actual
+    # raw_surprise the implementation computes via cos/dot/sqrt agree to
+    # ~1e-15, not bit-for-bit (same reconstruction-tolerance convention
+    # test_raw_surprise_matches_score_times_saturation_when_unsaturated
+    # already uses below).
+    assert abs(result.score - expected_score) < 1e-9
+    assert result.score < 0.55
+
+
+def test_real_camera_knock_event_still_saturates_under_the_raised_floor() -> None:
+    """The raised floor must not blunt sensitivity to a genuine dramatic
+    event -- replays the actual live-confirmed camera-knock magnitude
+    (raw_surprise ~0.12, this domain's own real-event reference point, see
+    _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION's comment) against a
+    calm baseline using the *new* floor and confirms it still saturates
+    at 1.0, exactly like it did under the old floor
+    (test_extreme_deviation_saturates_score_at_one, above)."""
+    cos = 1.0 - 0.12
+    embedding = (cos, math.sqrt(1.0 - cos * cos))
+    baseline = PerceptionEmbeddingBaseline(
+        embedding_ewma=(1.0, 0.0),
+        n=50,
+        surprise=_DomainEwmaBaseline(ewma=0.004174, variance=1.933e-6, n=49),
+    )
+    result = perception_prediction_error(list(embedding), baseline)
+    assert result.score == 1.0
 
 
 def test_raw_surprise_matches_score_times_saturation_when_unsaturated() -> None:

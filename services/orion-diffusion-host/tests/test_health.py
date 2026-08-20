@@ -6,6 +6,11 @@ wires one in (CLAUDE.md §0A "no empty-shell cognition").
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from fastapi.testclient import TestClient
 
 from app.main import app, settings

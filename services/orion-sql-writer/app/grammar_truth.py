@@ -562,6 +562,61 @@ def apply_substrate_organ_emissions_retention(
     return state
 
 
+def apply_grammar_traces_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for grammar_traces older than retention_days.
+
+    THE PARENT ROW, NOT A LEAF. Every other table here is a leaf: pruning it removes
+    exactly its own rows. grammar_traces is the row the Grammar Atlas lists and then
+    expands (orion/grammar/query.py::list_traces -> get_trace), so leaving it out of
+    retention did not just waste disk -- it produced hollow cognition surfaces. Measured
+    live 2026-08-20, before this function existed: 487,970 traces, oldest 2026-07-23,
+    205,465 of them (42%) with zero atoms. That is a UI panel rendered with no real
+    backing artifact, which CLAUDE.md names as an invalid success state outright.
+
+    respect_cursor_floor=True, same as grammar_events, and for a reason that is easy to
+    get backwards. The floor is computed from unconsumed grammar_events, and a trace's
+    created_at is <= the created_at of every event under it. Clamping trace deletion to
+    that same floor therefore keeps a parent AT LEAST as long as its owed children --
+    a reducer can never find events whose trace row was pruned out from under them.
+    Without the floor, a stalled lane would hold its events (correctly) while their
+    parent traces were deleted anyway (incorrectly).
+
+    There are no FK constraints to enforce any of this: the checked-in
+    manual_migration_grammar_atlas.sql declares `references grammar_traces(trace_id)` on
+    six child tables, but the live database has ZERO foreign keys touching any grammar_*
+    table (verified 2026-08-20 against pg_constraint) -- the tables were created by
+    SQLAlchemy metadata first, and the migration's FK clauses never took effect. So
+    _verify_delete_safe passes here, and ordering is a correctness argument this code has
+    to make for itself rather than one the database will make for it.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=grammar_engine,
+        table="grammar_traces",
+        id_column="trace_id",
+        respect_cursor_floor=True,
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["grammar_traces"] = state
+    return state
+
+
 def _fallback_counts() -> dict[str, int]:
     """Count grammar.event.v1 fallbacks using typed created_at_ts when available."""
     with grammar_engine.connect() as conn:
@@ -707,15 +762,29 @@ def _retention_truth_block(settings) -> dict[str, Any]:
     )
 
 
-_EXTRA_RETENTION_TABLES = ("grammar_edges", "grammar_atoms", "substrate_organ_emissions")
+_EXTRA_RETENTION_TABLES = (
+    "grammar_edges",
+    "grammar_atoms",
+    "substrate_organ_emissions",
+    "grammar_traces",
+)
 
 
 def _other_retention_truth_blocks(settings) -> dict[str, dict[str, Any]]:
-    days_by_table = {
-        "grammar_edges": settings.grammar_edges_retention_days,
-        "grammar_atoms": settings.grammar_atoms_retention_days,
-        "substrate_organ_emissions": settings.substrate_organ_emissions_retention_days,
-    }
+    # Derived from _EXTRA_RETENTION_TABLES rather than hand-listed. The hand-written dict
+    # this replaces raised KeyError and took the ENTIRE /health snapshot down the moment a
+    # table was added to _EXTRA_RETENTION_TABLES without also being added here -- caught by
+    # tests when grammar_traces was added, but it is a trap that would fire again.
+    # getattr with a hard failure, not a silent default: a 0 here reads as "retention
+    # disabled for this table", which is exactly the wrong thing to invent from a typo.
+    days_by_table: dict[str, int] = {}
+    for table in _EXTRA_RETENTION_TABLES:
+        attr = f"{table}_retention_days"
+        if not hasattr(settings, attr):
+            raise AttributeError(
+                f"{table} is in _EXTRA_RETENTION_TABLES but Settings has no {attr}"
+            )
+        days_by_table[table] = getattr(settings, attr)
     return {
         table: _retention_block(
             _extra_retention_state.get(table, GrammarRetentionState()),
@@ -789,14 +858,16 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
         "grammar_retention": _retention_truth_block(settings),
         "other_table_retention": other_retention,
         "known_risks": {
-            "retention_prunes_grammar_traces_never": (
-                "grammar_events/grammar_edges/grammar_atoms/substrate_organ_emissions all have "
-                "bounded retention as of this patch; grammar_traces itself (and "
-                "grammar_temporal_hops/grammar_compactions/grammar_projections) still do not -- "
-                "orphan trace rows and other derived storage may remain until a future pruner."
+            "retention_skips_derived_grammar_tables": (
+                "grammar_events/grammar_edges/grammar_atoms/grammar_traces/"
+                "substrate_organ_emissions all have bounded periodic retention. "
+                "grammar_temporal_hops/grammar_compactions/grammar_projections still do "
+                "not -- deliberately: all three are effectively unwritten (16-24 kB each "
+                "live 2026-08-20, versus 143 MB - 18 GB for the managed tables), so a "
+                "pruner for them would be ceremony, not a fix. Revisit if they ever grow."
             ),
             "retention_debt_requires_restarts": (
-                "Retention runs every GRAMMAR_RETENTION_INTERVAL_SEC seconds (app/grammar_retention_loop.py); remaining_debt is measured against the retention window, not the possibly-clamped cutoff. grammar_traces still has NO retention, so the Grammar Atlas can list traces whose events have been pruned."
+                "Retention runs every GRAMMAR_RETENTION_INTERVAL_SEC seconds (app/grammar_retention_loop.py); remaining_debt is measured against the retention window, not the possibly-clamped cutoff. While a table still carries debt, the Grammar Atlas can list traces older than the window whose events/atoms were pruned first -- 42% of traces were already hollow when grammar_traces retention was added."
             ),
             "publish_orion_bus_grammar_default_off": (
                 "PUBLISH_ORION_BUS_GRAMMAR remains false in orion-bus code default; enable in deployed env."
@@ -835,11 +906,18 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
 # A startup-triggered job cannot converge against continuous arrival, no matter how its
 # caps are tuned: it would need roughly three restarts a day just to break even, and about
 # fifteen more on top of that to clear the standing debt. The fix is not a bigger cap.
+#
+# ORDER IS DELIBERATE: grammar_traces runs LAST, after every table that hangs off it.
+# Nothing in the database enforces this (there are no live FK constraints on grammar_*),
+# so within a cycle the parent is only ever removed after this pass has had its chance at
+# the children. The reverse order would widen the window in which a child row points at a
+# trace that no longer exists.
 GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     ("grammar_events", apply_grammar_events_retention),
     ("grammar_edges", apply_grammar_edges_retention),
     ("grammar_atoms", apply_grammar_atoms_retention),
     ("substrate_organ_emissions", apply_substrate_organ_emissions_retention),
+    ("grammar_traces", apply_grammar_traces_retention),
 )
 
 

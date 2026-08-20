@@ -32,6 +32,7 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
         "substrate_organ_emissions": int(
             getattr(settings, "substrate_organ_emissions_retention_days", 0) or 0
         ),
+        "grammar_traces": int(getattr(settings, "grammar_traces_retention_days", 0) or 0),
     }
 
 

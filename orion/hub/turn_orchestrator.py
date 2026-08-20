@@ -239,7 +239,9 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
     return base
 
 
-def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str, Any]]:
+def _success_frames(
+    run: HarnessRunV1, *, correlation_id: str, fcc_model_label: str | None = None
+) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     if run.substrate_appraisal is not None:
         frames.append(
@@ -268,6 +270,24 @@ def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
     }
+    if fcc_model_label:
+        # The identity that actually produced this response -- previously not
+        # exposed on the frame at all, so callers that consume frames
+        # directly instead of relying on _publish_unified_turn_chat_history's
+        # own persistence (e.g. endogenous_outreach.py, which sets
+        # no_write=True and does its own publish from the frame) had no
+        # identity to report at all.
+        #
+        # NOTE this key is dual-purpose by caller intent, not by accident:
+        # callers of _success_frames pass execute_unified_turn's
+        # `resolved_model_label` (run.fcc_served_model when discovery fired,
+        # else harness_req.fcc_model_label as fallback -- see that
+        # computation above), so this value is USUALLY the real backend
+        # model, not the small fixed set of ~/.fcc/.env route aliases
+        # (e.g. "MODEL_SONNET") that HarnessRunRequestV1.fcc_model_label
+        # itself always holds. Any new consumer reading this key off a frame
+        # must not assume it is one of those aliases.
+        final_frame["fcc_model_label"] = fcc_model_label
     if is_context_overflow_text(run.final_text or ""):
         final_frame["context_overflow"] = True
     if run.recall_debug is not None:
@@ -570,6 +590,15 @@ async def execute_unified_turn(
                 "error": "harness_rpc_timeout",
             }
         ]
+    # Prefer the real backend model HarnessRunner discovered from the CLI's own
+    # stream-json events (run.fcc_served_model -- see orion/harness/fcc_motor.py's
+    # _served_model_from_assistant) over the requested ~/.fcc/.env route alias
+    # (harness_req.fcc_model_label, e.g. "MODEL_SONNET"). The alias is the only
+    # thing known before dispatch, but confirmed live 2026-08-19 that MODEL_SONNET
+    # and MODEL_OPUS both point at the identical llamacpp/chat route, so it can't
+    # tell backends apart. Falls back to the alias when discovery never fired
+    # (e.g. the motor failed before any assistant turn).
+    resolved_model_label = run.fcc_served_model or harness_req.fcc_model_label
     if run.finalize_degraded_reason and run.final_text:
         await _publish_unified_turn_chat_history(
             bus=bus,
@@ -580,13 +609,17 @@ async def execute_unified_turn(
             payload=payload,
             run=run,
             source_label=str(payload.get("chat_history_source") or "hub_orion"),
+            fcc_model_label=resolved_model_label,
         )
         degraded_frame = {
             "type": "turn_degraded",
             "correlation_id": correlation_id,
             "reason": run.finalize_degraded_reason,
         }
-        return [degraded_frame, *_success_frames(run, correlation_id=correlation_id)]
+        return [
+            degraded_frame,
+            *_success_frames(run, correlation_id=correlation_id, fcc_model_label=resolved_model_label),
+        ]
     if not run.finalize_ran or not run.final_text:
         return [_harness_error_frame(run, correlation_id=correlation_id)]
     await _publish_unified_turn_chat_history(
@@ -598,8 +631,9 @@ async def execute_unified_turn(
         payload=payload,
         run=run,
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
+        fcc_model_label=resolved_model_label,
     )
-    return _success_frames(run, correlation_id=correlation_id)
+    return _success_frames(run, correlation_id=correlation_id, fcc_model_label=resolved_model_label)
 
 
 async def _publish_unified_turn_chat_history(
@@ -612,6 +646,7 @@ async def _publish_unified_turn_chat_history(
     payload: dict[str, Any],
     run: HarnessRunV1,
     source_label: str = "hub_orion",
+    fcc_model_label: str | None = None,
 ) -> None:
     """Orion capability: unified-turn persistence after successful handoff.
 
@@ -692,6 +727,7 @@ async def _publish_unified_turn_chat_history(
             session_id=session,
             correlation_id=correlation_id,
             speaker=hub_settings.SERVICE_NAME,
+            model=fcc_model_label,
             tags=[mode_tag],
             message_id=f"{correlation_id}:assistant",
             reasoning_trace=reasoning_trace,
@@ -705,6 +741,7 @@ async def _publish_unified_turn_chat_history(
         session_id=session,
         correlation_id=correlation_id,
         user_id=str(user_id) if user_id else None,
+        response_identity=fcc_model_label,
         source_label=source_label,
         spark_meta=spark_meta,
         turn_id=correlation_id,

@@ -1,4 +1,4 @@
-.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
 
 SERVICE ?=
 ARGS ?=
@@ -61,6 +61,16 @@ check-inner-state-registry:
 #   make check-metric-lineage METRIC=cpu_pressure  # one lineage card
 check-metric-lineage:
 	@$(METRIC_PYTHON) scripts/check_metric_lineage.py $(if $(METRIC),--metric $(METRIC),) $(if $(JSON),--json,)
+
+# Phase 3: edit-time PreToolUse nudge (scripts/hooks/metric_lineage_nudge.py,
+# registered in .claude/settings.json). It reads .cache/metric_lineage.json
+# rather than recomputing the ~13-14s repo scan on every Edit/Write -- this
+# target builds that cache by hand. Gitignored (.cache/), not committed. The
+# hook also self-refreshes it in the background (detached, non-blocking) the
+# first time it's missing or once it's over an hour old, so this target is
+# for forcing a fresh one immediately, not a hard prerequisite.
+check-metric-lineage-cache-refresh:
+	@$(METRIC_PYTHON) scripts/refresh_metric_lineage_cache.py
 
 # The two reports that answer "is this metric safe to retire?" -- the question
 # the blast radius alone gets wrong in both directions.

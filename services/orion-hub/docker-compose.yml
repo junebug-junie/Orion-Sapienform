@@ -200,6 +200,11 @@ services:
       # not provision one) -- the exact gap that silently killed the AST/HOT
       # tick for an hour on 2026-07-29.
       - FALKORDB_SUBSTRATE_GRAPH=${FALKORDB_SUBSTRATE_GRAPH:-orion_substrate}
+      # AI Town's own concept graph (docs/superpowers/specs/2026-08-18-
+      # aitown-concept-graph-split-and-atlas-readability-design.md) -- same
+      # inline-default-matters-at-runtime reasoning as FALKORDB_SUBSTRATE_GRAPH
+      # immediately above.
+      - FALKORDB_AITOWN_SUBSTRATE_GRAPH=${FALKORDB_AITOWN_SUBSTRATE_GRAPH:-orion_substrate_aitown}
       - HUB_HEARTBEAT_BASE_URL=${HUB_HEARTBEAT_BASE_URL:-http://localhost:7251}
       - HUB_ATTENTION_ORGAN_TIMEOUT_SEC=${HUB_ATTENTION_ORGAN_TIMEOUT_SEC:-3.0}
       - CRYSTALLIZER_VECTOR_COLLECTION=${CRYSTALLIZER_VECTOR_COLLECTION:-orion_memory_crystallizations}

@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+import httpx
+
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 from orion.fcc.turn_lock import turn_in_progress
 from orion.fcc.context_budget import (
@@ -113,6 +115,63 @@ def _text_blocks_from_assistant(event: Dict[str, Any]) -> str:
         if block.get("type") == "text" and isinstance(block.get("text"), str):
             parts.append(block["text"])
     return "".join(parts)
+
+
+def _weights_file_basename(raw: str) -> str:
+    """Reduce a served-model string to a basename with any weights-file
+    extension stripped. Shared by both served-model paths (post-hoc
+    discovery from a completed turn, and the pre-turn /routes probe below)
+    so a raw server-side filesystem path (e.g.
+    "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf") never reaches a user-facing
+    field or a prompt verbatim.
+    """
+    basename = raw.rsplit("/", 1)[-1]
+    for ext in (".gguf", ".bin", ".safetensors"):
+        if basename.lower().endswith(ext):
+            basename = basename[: -len(ext)]
+            break
+    return basename or raw
+
+
+def _served_model_from_assistant(event: Dict[str, Any]) -> Optional[str]:
+    """Pull the real backend model out of a stream-json "assistant" event.
+
+    `fcc_model_label` (e.g. "MODEL_SONNET") only names the ~/.fcc/.env route
+    alias the turn requested -- confirmed live 2026-08-19 that MODEL_SONNET
+    and MODEL_OPUS both point at the identical `llamacpp/chat` route, so the
+    label alone cannot tell two backends apart. `CLAUDE_CODE_ENABLE_GATEWAY_
+    MODEL_DISCOVERY=1` (already set in `_build_subprocess_env`) is the
+    documented Claude Code CLI flag for trusting a custom gateway's reported
+    model over the one requested, and orion-llm-gateway's anthropic_passthrough
+    is a raw byte passthrough that never rewrites the upstream response body --
+    confirmed live via direct curl to /v1/messages that llama.cpp's own
+    Anthropic-compat endpoint echoes the real served weights file (e.g.
+    "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf") in the response's top-level
+    "model" key regardless of what alias was requested, the same fact
+    `_served_model()` in orion-llm-gateway/llm_backend.py uses for the direct
+    chat_general path. This is the harness-motor equivalent: the CLI's own
+    "assistant" stream-json event nests that same Messages response under
+    "message", so "message.model" should carry the real value through to
+    here. Returns None on any missing/malformed field so a discovery miss
+    never breaks the turn -- callers fall back to `fcc_model_label`.
+
+    Reduced to a basename with any weights-file extension stripped: the raw
+    value echoed above is a full server-side filesystem path, and
+    response_identity (where this ultimately lands, via
+    chat_history_log.response_identity) is a user-facing "who answered"
+    field in Hub chat history, not an infra debug surface -- it should never
+    show an internal path like "/models/gguf/...".
+    """
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return None
+    model = message.get("model")
+    if not isinstance(model, str):
+        return None
+    model = model.strip()
+    if not model:
+        return None
+    return _weights_file_basename(model)
 
 
 def extract_final_from_stream_event(
@@ -340,6 +399,97 @@ def label_to_claude_model_id(label: str, env: Dict[str, str]) -> str:
     if not model_id:
         raise ValueError(f"FCC env missing model for label {key!r}")
     return model_id
+
+
+# Backends orion-llm-gateway's anthropic_passthrough actually routes (see
+# services/orion-llm-gateway/app/anthropic_passthrough.py's
+# _ANTHROPIC_COMPAT_BACKENDS) -- the only ones GET /routes can answer for.
+_ROUTE_PROBE_BACKENDS = frozenset({"llamacpp", "llama-cpp"})
+
+
+def _route_key_from_fcc_env_value(raw_value: str) -> Optional[Tuple[str, str]]:
+    """Split a ~/.fcc/.env MODEL_* value like "llamacpp/chat" into
+    (backend, route_key). None on anything that doesn't have exactly this
+    "<backend>/<route>" shape (e.g. a bare model id with no "/") so callers
+    fail open instead of guessing.
+    """
+    raw_value = str(raw_value or "").strip()
+    if "/" not in raw_value:
+        return None
+    backend, _, route_key = raw_value.partition("/")
+    backend = backend.strip().lower().replace("_", "-")
+    route_key = route_key.strip()
+    if not backend or not route_key:
+        return None
+    return backend, route_key
+
+
+async def probe_current_served_model(
+    fcc_model_label: str | None,
+    *,
+    env: Dict[str, str] | None = None,
+    gateway_url: str | None = None,
+    timeout_sec: float = 2.0,
+) -> Optional[str]:
+    """Orion capability: best-effort "what backend am I about to run on"
+    read, for injecting into the harness system prompt *before* a turn
+    starts.
+
+    `_served_model_from_assistant` above only learns the truth from a
+    turn's own stream-json output -- after the prompt was already sent, too
+    late for self-context. This is the pre-turn equivalent: resolve
+    fcc_model_label (e.g. "MODEL_SONNET") through ~/.fcc/.env to an
+    orion-llm-gateway route key, then read that route's live-probed model
+    off GET /routes. Not a new probe -- route_catalog.py's `_probe_model`
+    already live-probes and caches this exact fact (15s TTL) for the Hub
+    route picker; this just reads it.
+
+    Fails open to None on: no label, missing/malformed env entry, a
+    non-llamacpp backend (MODEL_HAIKU's nvidia_nim route isn't in this
+    route table -- see _ROUTE_PROBE_BACKENDS), an unreachable gateway, a
+    non-2xx response, or a route id with no cached model yet (worker down).
+    A self-context probe must never block or fail a turn over a missing
+    fact about itself.
+    """
+    label = str(fcc_model_label or "").strip()
+    if not label:
+        return None
+    resolved_env = (
+        env
+        if env is not None
+        else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+    )
+    parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    if parsed is None:
+        return None
+    backend, route_key = parsed
+    if backend not in _ROUTE_PROBE_BACKENDS:
+        return None
+
+    url = str(
+        gateway_url or os.environ.get("HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210")
+    ).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=timeout_sec) as client:
+            response = await client.get(f"{url}/routes")
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+    except Exception:
+        logger.warning("probe_current_served_model failed label=%s route=%s", label, route_key, exc_info=True)
+        return None
+
+    routes = payload.get("routes") if isinstance(payload, dict) else None
+    if not isinstance(routes, list):
+        return None
+    for route in routes:
+        if not isinstance(route, dict) or route.get("id") != route_key:
+            continue
+        model = route.get("model")
+        if isinstance(model, str) and model.strip():
+            return _weights_file_basename(model.strip())
+        return None
+    return None
 
 
 def _preflight_fcc_server(url: str, *, timeout_sec: float = 3.0) -> None:
@@ -598,6 +748,7 @@ async def run_fcc_turn(
     proc: Optional[asyncio.subprocess.Process] = None
     accumulated = ""
     claude_session_id: Optional[str] = None
+    served_model: Optional[str] = None
     exit_code = 1
     budget_chars = len(prompt)
     ceiling_chars = max_context_chars()
@@ -650,6 +801,13 @@ async def run_fcc_turn(
                     "error_code": error_code,
                     "steps_seen": steps_seen,
                     "llm_response": accumulated or None,
+                    # Carry forward any served_model already discovered from an
+                    # earlier assistant event this turn -- a stall/timeout after
+                    # partial progress shouldn't lose identity that was already
+                    # known (see the identical carry-forward on the ceiling-
+                    # exceeded and line-limit error yields below, and the
+                    # authoritative one on the "final"/fcc_nonzero_exit yields).
+                    "metadata": {"fcc_served_model": served_model},
                 }
                 return
             except asyncio.LimitOverrunError as exc:
@@ -659,6 +817,7 @@ async def run_fcc_turn(
                     "error": f"fcc stream line exceeded read limit: {exc}",
                     "error_code": "fcc_stream_line_limit",
                     "llm_response": accumulated or None,
+                    "metadata": {"fcc_served_model": served_model},
                 }
                 return
 
@@ -708,6 +867,7 @@ async def run_fcc_turn(
                     "error_code": "fcc_draft_length_ceiling_exceeded",
                     "steps_seen": steps_seen,
                     "llm_response": accumulated or None,
+                    "metadata": {"fcc_served_model": served_model},
                 }
                 return
 
@@ -716,6 +876,10 @@ async def run_fcc_turn(
                 accumulated = text
             if sid:
                 claude_session_id = sid
+            if str(parsed.get("type") or "") == "assistant":
+                seen_model = _served_model_from_assistant(parsed)
+                if seen_model:
+                    served_model = seen_model
 
         exit_code = await proc.wait()
     except FileNotFoundError:
@@ -745,6 +909,12 @@ async def run_fcc_turn(
     duration_ms = int((time.monotonic() - started) * 1000)
     metadata = {
         "fcc_model_label": label,
+        # Real served model, when the CLI's stream-json "assistant" events
+        # echoed one back (see _served_model_from_assistant). None when the
+        # backend never revealed it (e.g. a fast-fail before any assistant
+        # turn, or a non-discovery-aware backend) -- callers fall back to
+        # fcc_model_label.
+        "fcc_served_model": served_model,
         "claude_session_id": claude_session_id,
         "duration_ms": duration_ms,
         "exit_code": exit_code,

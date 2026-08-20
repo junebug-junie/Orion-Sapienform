@@ -259,6 +259,102 @@ async def test_turn_orchestrator_publishes_chat_history_on_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_chat_history_carries_fcc_model_label() -> None:
+    """Regression for a live-confirmed gap (2026-08-19): the response side of a
+    real Hub 'orion'-mode turn (the dominant chat path, not the mode='brain'
+    fallback) had no identity at all in chat_history_log.response_identity --
+    _publish_unified_turn_chat_history built its envelopes without ever
+    forwarding the fcc_model_label already known at request time (the same
+    request object HarnessGovernorClient.run() is called with, asserted by
+    test_turn_orchestrator_defaults_fcc_model_label above). Confirmed live:
+    the actual served identity is available, it just was not threaded the
+    ~15 lines from where the request is built to where the response gets
+    persisted."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="final answer",
+        finalize_ran=True,
+        step_count=2,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    bus.enabled = True
+    publish_history = AsyncMock()
+    publish_turn = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_run)
+    with patches[0], patches[1], patches[2], patch(
+        "scripts.chat_history.publish_chat_history", publish_history
+    ), patch(
+        "scripts.chat_history.publish_chat_turn", publish_turn
+    ):
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="user asks",
+            payload={"fcc_model_label": "MODEL_HAIKU"},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    turn_envelope = publish_turn.await_args.args[1]
+    assert turn_envelope.payload.response_identity == "MODEL_HAIKU"
+
+    history_envelopes = publish_history.await_args.args[1]
+    assistant_envelope = next(e for e in history_envelopes if e.payload.role == "assistant")
+    assert assistant_envelope.payload.model == "MODEL_HAIKU"
+    user_envelope = next(e for e in history_envelopes if e.payload.role == "user")
+    assert user_envelope.payload.model is None
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_prefers_fcc_served_model_over_requested_label() -> None:
+    """Regression for the follow-up gap found live 2026-08-19 testing the fix
+    above: fcc_model_label (e.g. "MODEL_SONNET") only names the ~/.fcc/.env
+    route alias requested, and MODEL_SONNET/MODEL_OPUS both point at the
+    identical llamacpp/chat route -- the label alone can't distinguish real
+    backends. HarnessRunV1.fcc_served_model carries what the CLI's own
+    stream-json events actually echoed back (see orion/harness/fcc_motor.py's
+    _served_model_from_assistant) and must win over the requested label
+    whenever it's present.
+    """
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="final answer",
+        finalize_ran=True,
+        step_count=2,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+        fcc_served_model="/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+    )
+    bus = MagicMock()
+    bus.enabled = True
+    publish_history = AsyncMock()
+    publish_turn = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_run)
+    with patches[0], patches[1], patches[2], patch(
+        "scripts.chat_history.publish_chat_history", publish_history
+    ), patch(
+        "scripts.chat_history.publish_chat_turn", publish_turn
+    ):
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="user asks",
+            payload={"fcc_model_label": "MODEL_SONNET"},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    turn_envelope = publish_turn.await_args.args[1]
+    assert turn_envelope.payload.response_identity == "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+
+    history_envelopes = publish_history.await_args.args[1]
+    assistant_envelope = next(e for e in history_envelopes if e.payload.role == "assistant")
+    assert assistant_envelope.payload.model == "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_skips_chat_history_when_no_write() -> None:
     harness_run = HarnessRunV1(
         correlation_id=_CORR_ID,
@@ -578,6 +674,34 @@ def test_success_frames_final_omits_recall_when_absent() -> None:
     final_frame = next(frame for frame in frames if frame["type"] == "final")
     assert "recall_debug" not in final_frame
     assert "memory_digest" not in final_frame
+
+
+def test_success_frames_final_includes_fcc_model_label_when_provided() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    frames = _success_frames(run, correlation_id="corr-1", fcc_model_label="MODEL_SONNET")
+    final_frame = next(frame for frame in frames if frame["type"] == "final")
+    assert final_frame["fcc_model_label"] == "MODEL_SONNET"
+
+
+def test_success_frames_final_omits_fcc_model_label_when_absent() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    frames = _success_frames(run, correlation_id="corr-1")
+    final_frame = next(frame for frame in frames if frame["type"] == "final")
+    assert "fcc_model_label" not in final_frame
 
 
 @pytest.mark.asyncio

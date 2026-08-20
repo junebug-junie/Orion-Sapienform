@@ -1,0 +1,27 @@
+name: reverie_expectation_judge
+label: Reverie Expectation Judge
+description: >
+  Scores one overdue reverie expectation against a fresh percept: did what
+  Orion predicted about the room turn out to be true? Strict JSON verdict
+  only (confirmed/disconfirmed/unscored) — classification, not narration.
+  Read-only; emits no action by itself. Movement III,
+  docs/superpowers/specs/2026-08-12-perception-frontier-design.md.
+
+category: ExecutiveControl
+priority: normal
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 120000
+
+services:
+  - LLMGatewayService
+
+prompt_template: reverie_expectation_judge.j2
+
+steps:
+  - name: llm_reverie_expectation_judge
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: reverie_expectation_judge.j2
+    requires_gpu: true

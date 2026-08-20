@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from psycopg2.extras import Json
@@ -16,33 +17,45 @@ logger = logging.getLogger("orion.policy_runtime.store")
 
 
 class PolicyRuntimeStore:
-    def __init__(self, postgres_uri: str) -> None:
+    def __init__(
+        self,
+        postgres_uri: str,
+        *,
+        reconcile_interval_sec: float = 900.0,
+    ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
             pool_pre_ping=True,
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
+        # The safety net for the `policy_pending` marker. See reconcile_policy_pending.
+        self._reconcile_interval_sec = float(reconcile_interval_sec)
+        # Seeded to NOW, not None: otherwise the expensive full-table anti-join runs on the
+        # first tick of every process start, and a crash loop (this service has documented
+        # schema-incompat stalls) would re-run it on each restart -- defeating the rate limit
+        # that is the entire reason the reconciler is safe to call every tick.
+        self._last_reconcile_mono: float | None = time.monotonic()
+
+    # ROADMAP D2 follow-through, 2026-08-19. Same fix as the dispatch->feedback stage; see
+    # services/orion-sql-db/manual_migration_substrate_pending_markers.sql for the measurements
+    # and for why a time bound was tried first and reverted (it strands the backlog, and this
+    # pipeline legitimately runs hours to days behind).
+    #
+    # `policy_pending` defaults to TRUE, so anything new -- or anything this code has never seen
+    # -- is work. It is cleared inside the same transaction as the policy decision insert, and
+    # reconcile_policy_pending re-sets it for any row that lost it without a decision frame.
+    _PENDING_SQL = text("""
+        SELECT p.proposal_frame_json, p.generated_at
+        FROM substrate_proposal_frames p
+        WHERE p.policy_pending
+        ORDER BY p.generated_at ASC
+        LIMIT 1
+    """)
 
     def load_next_proposal_without_policy_frame(self) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        """
-                        SELECT p.proposal_frame_json
-                        FROM substrate_proposal_frames p
-                        LEFT JOIN substrate_policy_decision_frames d
-                          ON d.source_proposal_frame_id = p.frame_id
-                        WHERE d.frame_id IS NULL
-                        ORDER BY p.generated_at ASC
-                        LIMIT 1
-                        """
-                    ),
-                )
-                .mappings()
-                .first()
-            )
+            row = conn.execute(self._PENDING_SQL).mappings().first()
         if not row:
             return None
         payload = row["proposal_frame_json"]
@@ -214,3 +227,88 @@ class PolicyRuntimeStore:
                     "created_at": now,
                 },
             )
+            # SAME TRANSACTION as the insert above -- a crash between the two would otherwise
+            # either lose the work (marker cleared, no decision frame) or reprocess it. Only one
+            # of those is recoverable, so this is the direction to be strict in.
+            conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames
+                       SET policy_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": frame.source_proposal_frame_id},
+            )
+
+    def clear_policy_pending(self, proposal_frame_id: str, *, drain_batch: int = 5000) -> int:
+        """Clear this row's marker, and up to `drain_batch` others that are already done.
+
+        The marker defaults to TRUE, so every pre-migration row starts pending. Clearing ONE per
+        poll would drain 423k rows at 1 per POLICY_POLL_INTERVAL_SECs -- about 9.8 days during which the stage
+        produces nothing, with no error and no log line to show it, because
+        `ORDER BY generated_at ASC` puts every stale row ahead of genuinely new work. The batch
+        is the same statement the migration's backfill uses and rides the partial index, so it
+        turns that 9.8 days into a few minutes.
+
+        Returns the number of markers cleared.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames
+                       SET policy_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": proposal_frame_id},
+            )
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames u
+                       SET policy_pending = false
+                     WHERE u.frame_id IN (
+                           SELECT x.frame_id
+                             FROM substrate_proposal_frames x
+                             JOIN substrate_policy_decision_frames y ON y.source_proposal_frame_id = x.frame_id
+                            WHERE x.policy_pending
+                            LIMIT :batch
+                     )
+                """),
+                {"batch": max(0, int(drain_batch))},
+            )
+        drained = 1 + int(result.rowcount or 0)
+        if drained > 1:
+            logger.info("policy_pending_bulk_drained cleared=%s", drained)
+        return drained
+
+    def reconcile_policy_pending(self, *, force: bool = False) -> int:
+        """Re-queue any proposal whose marker was cleared without a policy decision frame.
+
+        Only ever sets the marker back to TRUE -- it can add work, never remove it, so a bug
+        here costs duplicated effort rather than lost effort. This is the expensive anti-join
+        the marker exists to avoid, so it is rate-limited to once per `reconcile_interval_sec`
+        (default 900s) rather than running on the 2s poll. Returns rows re-queued.
+        """
+        now = time.monotonic()
+        if not force and self._last_reconcile_mono is not None:
+            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
+                return 0
+        self._last_reconcile_mono = now
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_proposal_frames p
+                       SET policy_pending = true
+                     WHERE NOT p.policy_pending
+                       AND NOT EXISTS (
+                             SELECT 1 FROM substrate_policy_decision_frames d
+                              WHERE d.source_proposal_frame_id = p.frame_id
+                       )
+                """)
+            )
+        requeued = int(result.rowcount or 0)
+        if requeued:
+            logger.warning(
+                "policy_pending_reconciled requeued=%s -- proposals had their pending marker "
+                "cleared with no policy decision frame present. Work would have been lost.",
+                requeued,
+            )
+        return requeued

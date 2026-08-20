@@ -440,6 +440,19 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_harness_finalize"
 
+    # stance_react (unified-turn stance evaluation, ThoughtEventV1 strict JSON): same
+    # disease as the four verbs above, discovered alongside the 2026-08-20 llm_route
+    # gap fix (this verb was ALSO missing from that mapping, silently defaulting to
+    # `None` -> gateway's "quick" fallback route). Live-confirmed same incident: even
+    # after the route fix, corr=3cafe6db-36b4-476d-9e62-11f88c6c34b8 still hit
+    # finish_reason=length/emitted_chars=0 at the 512-token default -- the strict-JSON
+    # ThoughtEventV1 payload was truncated mid-object before it could close, so
+    # extract_stance_react_payload() (services/orion-thought/app/bus_listener.py) found
+    # nothing usable in any checked field and the turn deferred. Same fix as its four
+    # siblings above, not a bespoke budget.
+    if step.verb_name == "stance_react":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_stance_react"
+
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 
@@ -1935,6 +1948,67 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
     attempted = resolved or None
     accepted = normalize_llm_route(raw)
     return accepted, attempted
+
+
+def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional[str], mode: Optional[str]) -> Optional[str]:
+    """The verb-based `llm_route` default, used only when no caller override
+    (`_resolve_llm_route_override`) was supplied.
+
+    Extracted 2026-08-20 from an inline if/elif chain so this mapping is unit-
+    testable in isolation -- the bug this extraction was made to fix
+    (`stance_react` missing from the chain entirely, silently falling to
+    `None`) went unnoticed precisely because nothing exercised this logic
+    without spinning up the full executor.
+
+    Default lane mapping:
+    - harness_finalize_reflect / orion_voice_finalize: DEEP lane ("chat" /
+      Circe) — fat prompts exceed quick/fast ctx (400). NOTE: this llm_route
+      value is vestigial for both verbs today. Both set an explicit top-level
+      llm_lane in their own context builder (orion/harness/finalize.py's
+      build_finalize_reflect_context -> "agent", build_voice_finalize_context
+      -> "background"), and the gateway's resolve_llm_lane_route ignores
+      body_route entirely for both the "background" and "agent" llm_lane
+      branches -- so this "chat" value never actually reaches the wire for
+      either verb. Do not read "chat-lane contention is not a risk" as true
+      of harness_finalize_reflect anymore: it was, until a live incident
+      2026-08-16 (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd) showed the two
+      verbs actually contend with EACH OTHER on `background`/atlas-worker-2
+      when the governor abandons a timed-out RPC without cancelling it -- see
+      finalize.py for the fix.
+    - stance_react (orion-thought's ThoughtClient.react, the real
+      stance-evaluation step of every unified turn): DEEP lane ("chat" /
+      Circe). Confirmed missing from this chain entirely until 2026-08-20 --
+      fell through to `else: None`, and the gateway's own default-route
+      fallback for an unset route is "quick" (atlas-worker-fast-1, a
+      512-token payload budget). Live-confirmed same-day, corr=
+      8d2d2600-8aec-49d3-a42f-71510a5b86de: a real stance_react prompt is
+      16,416 chars (~4-5k tokens) and the gateway logged "[LLM-GW ctx]
+      overflow on route=quick and no larger lane exists -- returning error",
+      which orion-thought's bus_listener.py then surfaced to the user as a
+      deferred turn ("stance_react exec result missing thought payload") --
+      every real stance_react call failed deterministically, not flakily,
+      until this fix. Exact same "fat prompts exceed quick/fast ctx" failure
+      shape already named above for harness_finalize_reflect/orion_voice_
+      finalize, just never given the same treatment.
+    - chat_general stance brief: FAST lane ("quick")
+    - chat_general final response: DEEP lane ("chat")
+    - chat_quick single-pass: FAST lane ("quick")
+    - introspect_spark internal analysis: FAST lane ("quick")
+    - metacog mode: METACOG lane
+    """
+    if verb_name in {"harness_finalize_reflect", "orion_voice_finalize", "stance_react"}:
+        return "chat"
+    if verb_name == "chat_general" and step_name == "synthesize_chat_stance_brief":
+        return "quick"
+    if verb_name == "chat_general" and step_name == "llm_chat_general":
+        return "chat"
+    if verb_name in FAST_SINGLE_PASS_CHAT_VERBS or verb_name == "introspect_spark":
+        return "quick"
+    if verb_name == "memory_graph_suggest":
+        return "quick"
+    if mode == "metacog":
+        return "metacog"
+    return None
 
 
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
@@ -4004,41 +4078,8 @@ async def call_step_services(
                 if llm_route_override is not None:
                     llm_route = llm_route_override
                 else:
-                    # Default lane mapping:
-                    # - harness_finalize_reflect / orion_voice_finalize: DEEP lane
-                    #   ("chat" / Circe) — fat prompts exceed quick/fast ctx (400).
-                    #   NOTE: this llm_route value is vestigial for both verbs today.
-                    #   Both set an explicit top-level llm_lane in their own context
-                    #   builder (orion/harness/finalize.py's build_finalize_reflect_context
-                    #   -> "agent", build_voice_finalize_context -> "background"), and
-                    #   the gateway's resolve_llm_lane_route ignores body_route entirely
-                    #   for both the "background" and "agent" llm_lane branches -- so
-                    #   this "chat" value never actually reaches the wire for either
-                    #   verb. Do not read "chat-lane contention is not a risk" as true
-                    #   of harness_finalize_reflect anymore: it was, until a live
-                    #   incident 2026-08-16 (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd)
-                    #   showed the two verbs actually contend with EACH OTHER on
-                    #   `background`/atlas-worker-2 when the governor abandons a timed-
-                    #   out RPC without cancelling it -- see finalize.py for the fix.
-                    # - chat_general stance brief: FAST lane ("quick")
-                    # - chat_general final response: DEEP lane ("chat")
-                    # - chat_quick single-pass: FAST lane ("quick")
-                    # - introspect_spark internal analysis: FAST lane ("quick")
-                    # - metacog mode: METACOG lane
-                    llm_route = (
-                        "chat"
-                        if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}
-                        else "quick"
-                        if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
-                        else "chat"
-                        if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
-                        else "quick"
-                        if step.verb_name in FAST_SINGLE_PASS_CHAT_VERBS or step.verb_name == "introspect_spark"
-                        else "quick"
-                        if step.verb_name == "memory_graph_suggest"
-                        else "metacog"
-                        if ctx.get("mode") == "metacog"
-                        else None
+                    llm_route = _default_llm_route_for_step(
+                        verb_name=step.verb_name, step_name=step.step_name, mode=ctx.get("mode")
                     )
                 lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
 

@@ -11,7 +11,11 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import ValidationError
 
-from orion.cognition.cortex_payload_extract import cortex_exec_failure_detail, extract_cortex_payload_text
+from orion.cognition.cortex_payload_extract import (
+    cortex_exec_failure_detail,
+    extract_cortex_payload_text,
+    looks_like_error_text,
+)
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
 from orion.embodiment.intents import build_intent
@@ -414,6 +418,17 @@ def parse_finalize_reflection_payload(raw: dict[str, Any] | str) -> FinalizeRefl
 def extract_finalize_reflection_payload(result: dict[str, Any]) -> dict[str, Any] | str:
     text = extract_cortex_payload_text(result)
     if text:
+        # Error-shaped text (e.g. a real "[Error: llamacpp timed out after
+        # waiting]" from an upstream outage) usually fails the caller's own
+        # JSON-parse step by accident, degrading gracefully -- but that is
+        # incidental, not a real gate: text that happens to parse as JSON
+        # would sail straight through un-degraded. Checked explicitly here
+        # instead of relying on the accident. See cortex_payload_extract.py's
+        # own module comment for the live incident this responds to.
+        if looks_like_error_text(text):
+            raise ValueError(
+                f"harness_finalize_reflect returned error-shaped text: {_excerpt(text, max_len=200)}"
+            )
         return text
 
     detail = cortex_exec_failure_detail(result)
@@ -853,8 +868,32 @@ def build_voice_finalize_plan_request(
 
 
 def extract_voice_finalize_text(result: dict[str, Any]) -> str:
+    """Extracts 5c's user-visible answer text -- the last stage allowed to
+    change what Juniper reads (see `run_orion_voice_finalize`'s own
+    docstring), so this is the last point that can refuse a bad answer
+    before it ships.
+
+    Confirmed live, 2026-08-19: a real circe-worker outage made this exec
+    result's own text field literally `"[Error: llamacpp timed out after
+    waiting]"` -- a genuine upstream failure reported only in the text, no
+    different in shape from `ok=False`. An emptiness check alone (the only
+    gate here before this fix) does not catch it: the string is non-empty.
+    Checked explicitly via `looks_like_error_text()` (same real incident
+    class `services/orion-hub/scripts/endogenous_outreach.py`'s own
+    backstop was built for, on 2026-08-14 -- see cortex_payload_extract.py's
+    module comment for the full account of why this is now the shared,
+    canonical check rather than a second copy). Raising here routes into
+    this file's own existing, already-correct failure path
+    (`run_orion_voice_finalize`'s caller already wraps this in
+    `emit_finalize_failure_artifacts`/`HarnessFinalizeFailedError` on any
+    exception) instead of shipping the error text as Orion's real answer.
+    """
     text = extract_cortex_payload_text(result)
     if text:
+        if looks_like_error_text(text):
+            raise ValueError(
+                f"orion_voice_finalize returned error-shaped text: {_excerpt(text, max_len=200)}"
+            )
         return text
 
     detail = cortex_exec_failure_detail(result)

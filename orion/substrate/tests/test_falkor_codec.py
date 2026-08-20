@@ -137,6 +137,10 @@ def test_encode_concept_node_properties_are_native_scalars_without_payload_json(
         # "no vision reading yet" stays distinguishable from a measured 0.0.
         "perception_staleness": None,
         "perception_yield": None,
+        # topic-foundry's HDBSCAN cluster id -- absent metadata encodes as
+        # None, matching subject_ref/provenance_model_name's convention for
+        # optional scalar fields (see TOPIC_FOUNDRY_METADATA_KEYS).
+        "topic_id": None,
     }
 
 

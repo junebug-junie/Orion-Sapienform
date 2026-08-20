@@ -114,6 +114,12 @@ Claude Code only writes a `stream-json` line once a step fully completes — wit
 
 This does not fix a runaway upstream generation (e.g. a local model that never emits a stop token) — that failure mode lives in the model-serving stack outside this repo. It bounds how long a turn can be stuck waiting on one before the operator gets a diagnosable, fast failure instead of a silent hang.
 
+### Served-model self-context
+
+`HARNESS_LLM_GATEWAY_URL` (default `http://llm-gateway:8210`, the same `app-net` bridge-network hostname `orion-cortex-exec`/`orion-context-exec` already use) points `orion.harness.fcc_motor.probe_current_served_model` at orion-llm-gateway's `GET /routes`. Before every turn's prompt is compiled, this resolves the requested `fcc_model_label` (e.g. `MODEL_SONNET`) through `~/.fcc/.env` to a route key, reads that route's live-probed real model off the (already-existing, 15s-TTL-cached) `/routes` response, and injects it into the harness system prompt as `Backend model currently serving this turn: <model>` — the same fact that lands in `chat_history_log.response_identity` after the turn, but available to Orion *before* it answers, not just to operators after the fact.
+
+Fails open to no line at all (never a placeholder) on: no label, a non-llamacpp backend (`MODEL_HAIKU`'s `nvidia_nim` route isn't in this route table), an unreachable gateway, or a route with no cached model yet (worker down). A self-context probe must never block or fail a turn over a missing fact about itself.
+
 ### Draft length ceiling
 
 `orion/harness/fcc_motor.py::run_fcc_turn` kills the fcc subprocess with `error_code=fcc_draft_length_ceiling_exceeded` if the accumulated draft size reaches the model's context ceiling (`max_context_chars()` in `orion/fcc/context_budget.py` — `HARNESS_FCC_MAX_CONTEXT_TOKENS` tokens times `ORION_FCC_CHARS_PER_TOKEN`, 65536 × 4 chars by default). The ceiling is deliberately generous: it never fires on normal turns, and it explicitly skips the terminal `"result"` stream event (the CLI's own signal that a turn already finished), so a legitimately long-but-completed answer can't get its own already-generated payload double-counted into a false-positive kill. It only fires on true runaway generation.

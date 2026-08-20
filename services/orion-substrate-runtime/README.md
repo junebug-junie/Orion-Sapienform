@@ -213,11 +213,12 @@ brand-new table with exactly one writer.
   a same-day incident found a different worktree's `docker compose up` for this same service
   (its own `.env` never having this key) silently reverted an already-flipped-on container back to
   the stale `false` fallback, killing the tick for over an hour with no error.
-- `SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS` (default `10`): in-process rolling-window size,
-  counted in attention-broadcast ticks (10 × 30s = 5min), a real-world-time-comparable starting
-  anchor to the offline replay's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30` default (sized against
-  the field lane's ~2s cadence, ~60s span). Not independently calibrated — same documented status as
-  that offline constant.
+- `SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS` (default `2`): in-process rolling-window size,
+  counted in attention-broadcast ticks (~30s cadence). 2026-08-19: calibrated via real TRAIN/TEST
+  validation against 7 days of live biometrics `prediction_error` history — window=2 beat both the
+  old default (10) and the offline replay script's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30`
+  default on held-out TEST (61.9% vs 56.4% vs 54.2% reversion accuracy). See `app/settings.py`'s
+  `attention_self_model_trend_window_ticks` docstring for the full numbers and methodology.
 - `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` (default `168.0`): append-only retention,
   matching `ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS`'s own 7-day default.
 
@@ -834,6 +835,81 @@ adding all 5 keys to `docker-compose.yml`'s `environment:` list; confirmed live 
 `substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling
 `ORION_REVERIE_SEMANTIC_LIFT_ENABLED` on orion-thought.
+
+## Perceptual prediction error (P2)
+
+`docs/superpowers/specs/2026-08-12-perception-frontier-design.md`'s P2: `surprise = 1 -
+cos(frame_embedding, EWMA_embedding)` per camera stream, feeding a new node,
+`node:substrate.perception` -- deliberately **separate** from `node:substrate.vision` (P3, the
+section above/below covering `perception_staleness`/`perception_yield`). That node measures
+arrival timing and object count; this one measures the embedding model's own content encoding of
+the frame, and is independent of both it and `node:substrate.bus_synaptic` -- see
+`orion/substrate/prediction_error.py`'s P2 section for the full causal-chain independence check
+(metric quality gate step 2).
+
+**Two hard blockers this patch clears, both named in the design doc's own P2 section.**
+
+1. `config/vision_frame_router.yaml`'s baseline tier had `want_embeddings: false`, so no
+   `frame_embedding` input existed at baseline (every-few-frames) cadence -- only the rare
+   `triggered` tier (a detected person) computed one. Checked before flipping, not assumed cheap:
+   `config/vision_profiles.yaml`'s `embed_image` profile (SigLIP2) has `warm_on_start: true` and is
+   already resident in VRAM regardless of this flag (`triggered` already exercises it live), so
+   flipping it on adds one extra forward pass on an already-warm model per baseline task
+   (`cost.latency_class: low`), not a new model load or new steady-state VRAM footprint.
+2. The embedding vector itself lived only in an on-disk `.npy` inside orion-vision-host's own
+   model-cache volume (`VisionEmbedding.ref`/`.path`/`.dim`, no vector) -- not a documented
+   cross-service seam another service may read (CLAUDE.md section 5). Fixed by a small wire-
+   contract patch: `orion/schemas/vision.py`'s `VisionEmbedding` gained an additive
+   `vector: list[float] | None` field, populated by `orion-vision-host`'s `_run_embedding_siglip`
+   and passed through by `artifacts.py::build_artifact_payload`. `ref`/`path`/`dim` are unchanged.
+
+**Producer.** Two cooperating pieces in `app/worker.py`, both gated by the same
+`SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED` flag (default `false`):
+
+- `_perception_prediction_error_listener_loop` / `_handle_perception_prediction_error_message` --
+  an independent subscription to `orion:vision:artifacts` (own flag, not shared with
+  `_vision_artifact_listener_loop`/`SUBSTRATE_VISION_CHANNEL_TICK_ENABLED` -- same domain-
+  independence convention every tick in this service follows). Scores each real embedding-bearing
+  artifact against its own camera stream's running EWMA (`perception_prediction_error()`,
+  `orion/substrate/prediction_error.py`), keyed by `stream_id`/`camera_id` from the artifact's
+  `inputs`. Persists the per-stream baseline to a new table,
+  `substrate_perception_embedding_baseline` (apply
+  `manual_migration_perception_embedding_baseline_v1.sql` first) -- same "brand-new table, exactly
+  one writer" reasoning as `substrate_codebase_mass_baseline`.
+- `_perception_prediction_error_tick` / `_perception_prediction_error_tick_loop` -- a clock-driven
+  companion (default 30s), writing `node:substrate.perception` on a fixed interval regardless of
+  whether a new embedding arrived. **Not optional**: an event-only write would reproduce the exact
+  `node:substrate.route` decay-to-zero incident CLAUDE.md section 0A names -- silence would mean
+  the node is never rewritten again, and `orion-field-digester`'s generic staleness decay would
+  multiply whatever was last written toward 0.0 forever, indistinguishable from genuine calm.
+  Mirrors `_vision_channel_tick`'s own reasoning for the identical failure mode. Two channels on
+  the node: `prediction_error` (the cosine-surprise score, or 0.0 once staleness has faulted, so a
+  stale reading never outlives its own evidence) and `embedding_staleness` (the separate freshness
+  channel the task requires -- age of the newest embedding-bearing artifact, same
+  `vision_channel_staleness_pressure` genuinely-reachable-rest-point shape `node:substrate.vision`
+  uses).
+
+**Ships shadow-only, default off, no consumer wired.** Deliberately **not** added to
+`ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
+in this patch (that file documents the node's existence in a comment only -- no `edges:` entry).
+Unlike `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED`/`SUBSTRATE_VISION_CHANNEL_TICK_ENABLED`/
+`SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE` above, this flag has **not** been given Juniper's
+explicit go-ahead to flip true yet.
+
+**NOT YET VERIFIED -- required before flipping the flag or wiring any consumer** (metric quality
+gate step 4; same two-phase pattern `bus_synaptic_prediction_error` used -- ship shadow, wait,
+verify by hand later):
+
+(a) does `prediction_error` reach a genuine near-zero rest point on a verified-static camera
+window, confirmed by pulling raw per-tick scores by hand from
+`substrate_perception_embedding_baseline`/the receipt log, not by eyeballing aggregate variance;
+(b) does it fire (score clearly above that rest point) on at least one transition
+`orion-vision-window`'s existing label-habituation gate already called a stable scene -- the design
+doc's own explicit requirement to measure this side-by-side before it earns a place;
+(c) run the successive-value geometric-ratio check on the persisted `embedding_staleness` channel
+specifically to rule out a silent decay-to-zero artifact -- the `node:substrate.route` incident
+CLAUDE.md section 0A names, caught only by pulling raw history and checking the exact ratio
+between successive values by hand, not by eyeballing the aggregate.
 
 ## Downstream of this service: Layers 6-11
 

@@ -71,6 +71,55 @@ building a reducer that scores it). Leave this flag off until a live tick has
 been eyeballed for whether the BLIP-base narratives actually add anything
 worth narrating.
 
+## Reverie expectation scoring (Movement III)
+
+The second half of Movement III: score the falsifiable predictions perception
+context makes possible, instead of only generating them. Requires
+`services/orion-sql-db/manual_migration_substrate_reverie_thought_expectation.sql`
+applied (`expectation`/`expectation_checkable_by`/`expectation_verdict`/
+`expectation_scored_at` columns on `substrate_reverie_thought`).
+
+When `ORION_REVERIE_PERCEPTION_ENABLED=true`, `reverie_narrate.j2` may
+optionally have the LLM state one concrete, falsifiable `expectation` about
+the room in `SpontaneousThoughtV1.expectation` — genuinely optional, never
+forced every tick, capped at 200 chars. That alone is inert: nothing checks it
+unless `ORION_REVERIE_EXPECTATION_SCORING_ENABLED=true` (default `false`).
+
+With the flag on, two things happen:
+
+- A tick that narrates a new expectation stamps `expectation_checkable_by =
+  now() + ORION_REVERIE_EXPECTATION_CHECK_WINDOW_SEC` (default `1800`
+  seconds — loosely paced off the perception-context staleness gate's `900`
+  without being the same number, long enough for a plausible next percept).
+- Every tick also spends **at most one** bounded judge-LLM call
+  (`app/store.py::load_pending_expectations(limit=1)`) resolving the single
+  most-overdue expectation whose window has already closed and that has no
+  verdict yet:
+  - No fresh-enough percept available (same `ORION_REVERIE_PERCEPTION_MAX_AGE_SEC`
+    staleness gate as perception context, not a second constant) → writes
+    `expectation_verdict="unscored"` directly, no LLM call.
+  - A fresh percept is available → one call to the
+    `reverie_expectation_judge` verb (`orion/cognition/prompts/
+    reverie_expectation_judge.j2`), strict `{"verdict": "confirmed" |
+    "disconfirmed" | "unscored"}` JSON, fail-closed to `unscored` on any
+    ambiguity, LLM error, or parse failure. A pending expectation is never
+    left permanently unresolved by a transient failure — it is stamped
+    `unscored` instead of silently retried forever.
+
+Scoring is fully independent of the current tick's own narration: it can
+never block, delay, or fail narration, and narration succeeding or failing
+has no bearing on whether scoring runs.
+
+Query imagination accuracy directly (no dashboard yet — see the design doc's
+explicit non-goal on this):
+
+```sql
+select expectation_verdict, count(*)
+from substrate_reverie_thought
+where expectation_verdict is not null
+group by expectation_verdict;
+```
+
 ## Resonance health monitor (Phase H+)
 
 `ORION_REVERIE_RESONANCE_ALERT_ENABLED` (default `true`) already runs an observation-only

@@ -69,6 +69,11 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/shared_checkout_edit_guard.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/metric_lineage_nudge.py\"",
+            "timeout": 5
           }
         ]
       }

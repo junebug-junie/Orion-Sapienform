@@ -79,6 +79,119 @@ async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
     assert result.compliance_verdict == "completed"
 
 
+@pytest.mark.asyncio
+async def test_harness_runner_surfaces_fcc_served_model_from_final_metadata() -> None:
+    """A "final" event's metadata.fcc_served_model (the real backend model the
+    CLI's stream-json events echoed back, per fcc_motor.py's
+    _served_model_from_assistant) should reach HarnessMotorResult -- distinct
+    from HarnessRunRequestV1.fcc_model_label, which is only the requested
+    ~/.fcc/.env route alias.
+    """
+
+    async def _served_model_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "final",
+            "llm_response": "internal draft answer",
+            "metadata": {
+                "exit_code": 0,
+                "fcc_model_label": "MODEL_SONNET",
+                "fcc_served_model": "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+            },
+        }
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-served-model",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_served_model_runner).run(request)
+
+    assert result.fcc_served_model == "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_fcc_served_model_defaults_none_when_discovery_absent() -> None:
+    """No "fcc_served_model" key in the final event's metadata (e.g. a backend
+    that never echoed a model, or discovery never firing) must not crash and
+    must leave the field None so callers fall back to fcc_model_label.
+    """
+    request = HarnessRunRequestV1(
+        correlation_id="c-no-served-model",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_mock_fcc_runner).run(request)
+
+    assert result.fcc_served_model is None
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_threads_served_model_probe_into_prompt() -> None:
+    """The pre-turn self-context probe (orion.harness.fcc_motor.
+    probe_current_served_model, injectable here as served_model_probe --
+    same pattern as fcc_runner) must be called before the prompt is built,
+    and its result must land in the compiled prefix's self-context line.
+    """
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    probe = AsyncMock(return_value="Qwen3.6-35B-A3B-UD-Q5_K_M12")
+    request = HarnessRunRequestV1(
+        correlation_id="c-served-model-prompt",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        fcc_model_label="MODEL_SONNET",
+    )
+    runner = HarnessRunner(
+        AsyncMock(), fcc_runner=_capturing_fcc_runner, served_model_probe=probe
+    )
+    await runner.run(request)
+
+    probe.assert_awaited_once_with("MODEL_SONNET")
+    assert (
+        "Backend model currently serving this turn: Qwen3.6-35B-A3B-UD-Q5_K_M12"
+        in captured_kwargs["prompt"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_omits_served_model_line_when_probe_fails() -> None:
+    """A probe exception must not break the turn or leak into the prompt --
+    belt-and-suspenders fail-open on top of probe_current_served_model's
+    own internal fail-open."""
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    probe = AsyncMock(side_effect=RuntimeError("gateway unreachable"))
+    request = HarnessRunRequestV1(
+        correlation_id="c-served-model-probe-fail",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        fcc_model_label="MODEL_SONNET",
+    )
+    runner = HarnessRunner(
+        AsyncMock(), fcc_runner=_capturing_fcc_runner, served_model_probe=probe
+    )
+    result = await runner.run(request)
+
+    assert result.compliance_verdict == "completed"
+    assert "Backend model currently serving this turn" not in captured_kwargs["prompt"]
+
+
 def _step_with_tool_result(*, is_error: bool, text: str) -> dict[str, Any]:
     return _step_with_tool_results([(is_error, text)])
 

@@ -49,6 +49,7 @@ from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_subst
 
 from .attention_frame import attention_frame_enabled, build_attention_frame
 from .autonomy_slice import build_autonomy_slice
+from .chat_attention_salience_trace import persist_chat_attention_salience_trace
 
 from .endogenous_runtime import (
     consume_endogenous_runtime_for_reflective_review,
@@ -2380,6 +2381,17 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning("attention_frame_build_failed error=%s", exc)
             ctx.pop("chat_attention_frame", None)
             ctx.pop("chat_attention_frame_debug", None)
+        else:
+            # Own try/except, deliberately separate from the frame-build block
+            # above: persist_chat_attention_salience_trace() is fail-open by
+            # contract and never raises, but keeping this in its own guard
+            # means a future bug in the trace writer can never fall through to
+            # the except above and wrongly pop the (already-successful)
+            # chat_attention_frame/_debug ctx keys.
+            try:
+                await persist_chat_attention_salience_trace(attention_frame)
+            except Exception as exc:
+                logger.warning("chat_attention_salience_trace_call_failed error=%s", exc)
 
     _inject_prior_stance_to_inputs(ctx, inputs)
     continuity_digest = ctx.get("continuity_digest")

@@ -16,6 +16,14 @@ class Settings(BaseSettings):
         alias="FEEDBACK_POLICY_PATH",
     )
     feedback_poll_interval_sec: float = Field(2.0, alias="FEEDBACK_POLL_INTERVAL_SEC")
+    # ROADMAP D2. How often to re-queue rows whose `*_pending` marker was cleared without the
+    # downstream frame actually existing. The marker is cleared transactionally so this should
+    # find nothing -- but the failure it guards is SILENT WORK LOSS, and it can only add work
+    # back, never remove it. It runs the expensive anti-join the marker exists to avoid, hence
+    # once every 15 min rather than on the 2s poll. 0 runs it every poll (do not).
+    feedback_reconcile_interval_sec: float = Field(
+        900.0, alias="FEEDBACK_RECONCILE_INTERVAL_SEC"
+    )
     enable_feedback_runtime: bool = Field(True, alias="ENABLE_FEEDBACK_RUNTIME")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

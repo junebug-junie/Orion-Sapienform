@@ -45,6 +45,27 @@ def test_compile_harness_prefix_omits_prior_tool_fetch_line_when_none() -> None:
     assert "Last turn you fetched content via tool" not in prompt
 
 
+def test_compile_harness_prefix_includes_current_served_model_line() -> None:
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+        current_served_model="Qwen3.6-35B-A3B-UD-Q5_K_M12",
+    )
+    assert "Backend model currently serving this turn: Qwen3.6-35B-A3B-UD-Q5_K_M12" in prompt
+
+
+def test_compile_harness_prefix_omits_served_model_line_when_none() -> None:
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+    )
+    assert "Backend model currently serving this turn" not in prompt
+
+
 def test_compile_harness_prefix_includes_autonomy_slice_recent_actions() -> None:
     """Regression for the stance_react dispatch-evidence patch: the FCC
     motor's own prefix must render recent_actions directly, not just leave

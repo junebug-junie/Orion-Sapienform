@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from orion.llm.routes import ACCEPTED_LLM_ROUTES, normalize_llm_route
+from orion.llm.routes import ACCEPTED_LLM_ROUTES, SYSTEM_LLM_ROUTES, normalize_llm_route
 
 
 # ------------------------------------------------------------ the regression
@@ -30,10 +30,20 @@ def test_agent_is_not_rewritten_to_chat():
 
 
 def test_every_route_the_executor_dispatches_survives_normalization():
-    """A route the executor accepts must round-trip. This is the drift guard: adding a lane to
-    ACCEPTED_LLM_ROUTES without teaching the normalizer would fail here."""
-    for route in ACCEPTED_LLM_ROUTES:
+    """A route the executor accepts must round-trip -- except SYSTEM_LLM_ROUTES. This is the
+    drift guard: adding a lane to ACCEPTED_LLM_ROUTES without teaching the normalizer would
+    still fail here for every ordinary route.
+
+    `harness` (2026-08-20) is the deliberate exception, not a gap in this guard: it is a real,
+    accepted route (for the catalog, `GET /routes`, the Anthropic passthrough), but is never a
+    valid general-caller override -- see normalize_llm_route's docstring. Before this carve-out
+    existed, widening ACCEPTED_LLM_ROUTES to include `harness` silently made it a valid
+    ACTIONS_*_LLM_ROUTE value too, which is exactly the class of bug this file exists to catch.
+    """
+    for route in ACCEPTED_LLM_ROUTES - SYSTEM_LLM_ROUTES:
         assert normalize_llm_route(route) == route
+    for route in SYSTEM_LLM_ROUTES:
+        assert normalize_llm_route(route) is None
 
 
 def test_every_shared_route_survives_this_services_wrapper():
@@ -43,11 +53,16 @@ def test_every_shared_route_survives_this_services_wrapper():
     only checks a re-export, so someone reintroducing a private set and using THAT inside
     `_normalized_llm_route` passes it cleanly. That is precisely the bug this file exists for.
     Drive the real wrapper instead.
+
+    Same SYSTEM_LLM_ROUTES carve-out as the test above: `ACTIONS_*_LLM_ROUTE=harness` must be
+    rejected exactly like a typo, not silently accepted just because `harness` is a real route.
     """
     from app.main import _normalized_llm_route
 
-    for route in sorted(ACCEPTED_LLM_ROUTES):
+    for route in sorted(ACCEPTED_LLM_ROUTES - SYSTEM_LLM_ROUTES):
         assert _normalized_llm_route(route, "metacog") == route, route
+    for route in sorted(SYSTEM_LLM_ROUTES):
+        assert _normalized_llm_route(route, "metacog") is None, route
 
 
 # ------------------------------------------------------------ the fallback

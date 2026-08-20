@@ -16,7 +16,10 @@ logger = logging.getLogger("orion.policy.runtime")
 class PolicyRuntimeWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._store = PolicyRuntimeStore(self._settings.postgres_uri)
+        self._store = PolicyRuntimeStore(
+            self._settings.postgres_uri,
+            reconcile_interval_sec=self._settings.policy_reconcile_interval_sec,
+        )
         self._policy = load_substrate_policy(Path(self._settings.substrate_policy_path))
         self._stop = asyncio.Event()
 
@@ -46,8 +49,20 @@ class PolicyRuntimeWorker:
         if not self._settings.enable_policy_runtime:
             return
 
+        # Rate-limited internally (default once per 15 min); safe to call every tick.
+        self._store.reconcile_policy_pending()
+
         proposal = self._store.load_next_proposal_without_policy_frame()
         if proposal is None:
+            return
+        if self._store.load_policy_frame_for_proposal(proposal.frame_id) is not None:
+            # Marker was stale-true and a decision ALREADY EXISTS. Re-deciding would not be a
+            # harmless repeat: stable_policy_frame_id() is deterministic and the insert is
+            # ON CONFLICT DO UPDATE, so it would overwrite the original decision with a fresh
+            # evaluation under today's policy and today's timestamp -- silently rewriting
+            # history. The old `WHERE d.frame_id IS NULL` anti-join made that structurally
+            # impossible; the marker does not, so the guard has to be explicit.
+            self._store.clear_policy_pending(proposal.frame_id)
             return
 
         # 2026-07-22 (SelfStateV1 burn): build_policy_decision_frame now

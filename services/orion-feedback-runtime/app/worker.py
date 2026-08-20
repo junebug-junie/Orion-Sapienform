@@ -20,7 +20,10 @@ logger = logging.getLogger("orion.feedback.runtime")
 class FeedbackRuntimeWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._store = FeedbackRuntimeStore(self._settings.postgres_uri)
+        self._store = FeedbackRuntimeStore(
+            self._settings.postgres_uri,
+            reconcile_interval_sec=self._settings.feedback_reconcile_interval_sec,
+        )
         self._policy = load_feedback_policy(Path(self._settings.feedback_policy_path))
         self._stop = asyncio.Event()
         self._bus = OrionBusAsync(
@@ -78,10 +81,16 @@ class FeedbackRuntimeWorker:
         if not self._settings.enable_feedback_runtime:
             return None
 
+        # Rate-limited internally (default once per 15 min); safe to call every tick.
+        self._store.reconcile_feedback_pending()
+
         dispatch = self._store.load_latest_dispatch_frame_without_feedback()
         if dispatch is None:
             return None
         if self._store.load_feedback_frame_for_dispatch(dispatch.frame_id) is not None:
+            # Marker was stale-true (e.g. a pre-migration row, or a manual write). Clear it, or
+            # this guard returns early every tick on the same row and the FIFO never advances.
+            self._store.clear_feedback_pending(dispatch.frame_id)
             return None
 
         policy_frame = self._store.load_policy_frame(dispatch.source_policy_frame_id)

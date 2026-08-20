@@ -101,6 +101,31 @@ class ThoughtSettings(BaseSettings):
         3, alias="ORION_REVERIE_PERCEPTION_MAX_EVENTS"
     )
 
+    # --- Reverie expectation scoring (Movement III, default-off) ---
+    # Closes the loop between imagination and reality (docs/superpowers/specs/
+    # 2026-08-12-perception-frontier-design.md, Movement III). reverie's
+    # optional `expectation` field is a falsifiable claim about the room, set
+    # only when the narrate call has recent_percepts (ORION_REVERIE_
+    # PERCEPTION_ENABLED) and the LLM chose to state one. When this flag is
+    # on: (a) a newly-set expectation gets an `expectation_checkable_by`
+    # window opened on it, and (b) every tick spends at most one bounded
+    # judge-LLM call resolving the single most-overdue still-pending
+    # expectation against a fresh percept (confirmed/disconfirmed) -- or, if
+    # no fresh-enough percept exists, writes "unscored" with no LLM call at
+    # all. Never fabricates a confirmed/disconfirmed verdict on stale or
+    # ambiguous evidence -- same honesty discipline as PerceptionContextV1's
+    # staleness gate (P4). Flag off means this is a complete no-op: no pending
+    # scan, no judge call, no checkable window ever opened.
+    reverie_expectation_scoring_enabled: bool = Field(
+        False, alias="ORION_REVERIE_EXPECTATION_SCORING_ENABLED"
+    )
+    # How long an expectation stays open before it becomes eligible for
+    # scoring -- loosely paced off P4's 900s staleness gate (long enough for a
+    # plausible next percept to land) without being the same number.
+    reverie_expectation_check_window_sec: float = Field(
+        1800.0, alias="ORION_REVERIE_EXPECTATION_CHECK_WINDOW_SEC"
+    )
+
     # --- Reverie chain (Phase C, default-off) ---
     reverie_chain_enabled: bool = Field(False, alias="ORION_REVERIE_CHAIN_ENABLED")
     reverie_chain_max_steps: int = Field(4, alias="ORION_REVERIE_CHAIN_MAX_STEPS")

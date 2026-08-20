@@ -422,23 +422,135 @@ Found while measuring A5's gate, not chased. Three facts from the same window:
    samples out of 293, and the host does not ping. So the single-slot `chat` lane where A4 found
    Orion contending 100% of the time does not exist right now.
 
-**RESOLVED same day by Juniper: AI Town is turned off, and AI Town was the load.** Verified
-after the correction: `orion-athena-embodiment` logs `AitownClientError: Convex unreachable:
-[Errno 111] Connection refused`, with zero speech/conversation/npc lines in 30 minutes.
-`quick_background` was built *for* AI Town's NPC dialogue and shares `atlas-worker-fast-1`
-with `quick`.
+The open question is which of these explains the others, and it is a *measurement* question, not
+a design one: a 24 h `record_lane_occupancy.py` run over all four lanes settles whether atlas's
+lane genuinely emptied or whether 4 h of a quiet night is unrepresentative.
 
-~~My first reading was that PR #1708 moved Orion off its ceiling and took the price with it.~~
-That was an unsupported causal claim: I had a before/after and reached for the change I happened
-to have shipped in between. Offered load fell 0.29 -> 0.072 erlangs, and 0.072 is roughly what
-Orion's own ~65 background requests/hour account for unaided. **The contention left; it was not
-routed around.**
+Why it matters beyond bookkeeping: PR #1708 moved Orion's journal composes off circe's contended
+single-slot lane onto atlas's background lane. That was the right engineering call and it may
+have taken Orion's only felt ceiling with it. A5 built the perception path; whether there is
+anything left to perceive is this entry.
 
-**What survives as a real open question**, and it is not this entry's original one: roadmap §2
-fact 3 says 98% of gateway traffic is `cortex-exec`, and §6.7 attributes the 174x burstiness to
-the arena dispatching ~5 proposals per tick. If AI Town was the load on `quick`, those two
-attributions cannot both describe the same 4.01%. Settled by re-running A1 with AI Town back up
--- not by choosing whichever reading is more convenient.
+**Not a defect and not scheduled.** Roadmap A5's own gate wording anticipated it: "a lane that
+defers only harness or arena work, and never Orion's, is a ceiling Orion does not personally
+meet — which would be a genuine finding."
 
-**Lesson, generalisable beyond this entry:** a before/after gap is not evidence for the change
-you happened to ship in between. Ask what *else* moved in that window before attributing it.
+---
+
+## ~~A fourth consumer full-scans `substrate_proposal_frames`~~ RESOLVED 2026-08-19 (from D2)
+
+**Resolved same day, in `chore/pg-stat-statements`.** It was never a fourth *consumer*: it was
+the proposal stage's own per-tick dedup guard,
+`ProposalRuntimeStore.load_proposal_frame_for_field_tick`, filtering
+`WHERE source_field_tick_id = '<a different literal every tick>'` on a column with **no index**,
+while three sibling frame tables have indexed that same column all along. Adding
+`(source_field_tick_id, generated_at desc)` took it from a parallel seq scan of 18,515 blocks
+(144 MB) at 52 ms to an index scan of **4 blocks at 0.104 ms**.
+
+Two corrections to what the entry below asserted, both worth keeping:
+
+1. **"Too fast to catch" was wrong** -- the sampling was broken, not the target. `pg_stat_activity`
+   is a per-transaction cached snapshot: a `DO` loop that samples it 600 times without calling
+   `pg_stat_clear_snapshot()` re-reads the *same frozen instant* 600 times. That is why 14 rounds
+   (and my own first 600-sample run) returned zero rows. With the snapshot cleared each pass, the
+   query was caught within one 30-second window.
+2. **The query text was never the obstacle either.** Each execution embeds a distinct
+   `tick_<hash>` literal, so no two are textually identical -- which is exactly the shape that
+   sampling *and* naive text grouping both handle badly, and exactly the shape
+   `pg_stat_statements` normalises away.
+
+`pg_stat_statements` is still worth having and the compose change is in the same branch, but it
+is no longer blocking: it needs a Postgres restart, and this was answered without one.
+
+A second, larger offender surfaced in the same sweep and was fixed alongside it:
+`load_attention_frame_for_field_tick` filtered `frame_json ->> 'source_field_tick_id'` while the
+table carried an index on the real column -- so the planner walked `idx_..._generated_at` end to
+end de-TOASTing every blob: **553,906 buffers (~4.3 GB) and 4,777 ms** for a single-row lookup,
+now 7 buffers and 0.174 ms. It was invisible to every seq-scan measurement in this arc because it
+is an *index* scan, and `pg_stat_user_tables.seq_scan` does not count it.
+
+<details><summary>Original entry, kept for the reasoning trail</summary>
+
+## A fourth consumer full-scans `substrate_proposal_frames` (2026-08-19, from D2)
+
+All three substrate pipeline stages now use pending markers (PR #1745), and their tables dropped
+to ~2,824 tuples/sec each from 140k-336k. **`substrate_proposal_frames` did not** -- it sits at
+**149,664 tuples/sec**, now 80% of all remaining sequential-scan load in the database.
+
+What is known:
+
+- **82 sequential scans per 90 s**, ~140,809 rows each. That row count is 423k/3, i.e. a
+  *parallel* seq scan across 3 workers -- so roughly **27 real queries per 90 s, one every
+  3.3 seconds**, each scanning the whole table.
+- **Too fast to catch.** 14 consecutive `pg_stat_activity` samples for
+  `query ilike '%proposal_frames%'` returned nothing, so each execution is well under the
+  sampling gap. It is not one of the three pipeline lookups -- those are now index scans.
+- `pg_stat_statements` is **not installed** on this database, which is why this could not simply
+  be looked up. Installing it is probably the cheapest next move.
+
+Why it matters: it is the last large sequential-scan source, and the same class of fix
+(marker + partial index, or just the right index) very likely applies. It is a *different*
+consumer from the pipeline, so it needs identifying before anything is designed.
+
+**Not scheduled.** Start by enabling `pg_stat_statements`, or by logging statements above a
+duration threshold for a few minutes.
+
+</details>
+
+---
+
+## `substrate_proposal_frames` has never been pruned (2026-08-19, from code review of #1751)
+
+```
+relname                     n_live_tup  n_tup_ins  n_tup_del  heap     idx
+substrate_proposal_frames      444,601    444,600          0  1485 MB  133 MB
+substrate_attention_frames      99,840    662,843    563,004  1022 MB   33 MB
+```
+
+`n_tup_del = 0`, and a repo-wide grep for `DELETE FROM substrate_proposal_frames` or `prune_proposal`
+returns nothing. The sibling table *is* pruned (`prune_attention_frames`,
+`services/orion-attention-runtime/app/store.py`). Proposal frames never have been.
+
+Why this is parked rather than fixed: PR #1751 just made this table cheap to query, which removes
+the only pressure that would have surfaced the growth. That is worth saying out loud — a fast
+index scan on an unbounded table raises no alarm at 444k rows and none at 1.5M either. The cost
+shows up later as disk, in whatever the next D2-shaped investigation turns out to be.
+
+Also parked here, same shape: **three of the four `created_at` indexes added by PR #1745 are
+near-unused.** Lifetime `idx_scan`:
+
+```
+substrate_proposal_frames_created_at              1   19 MB
+substrate_policy_decision_frames_created_at      10   19 MB
+substrate_feedback_frames_created_at             13   10 MB
+substrate_execution_dispatch_frames_created_at 98,979 23 MB
+```
+
+~48 MB of index doing almost nothing. Not dropped in #1751 because PR #1745 added all four as a
+set one day earlier; removing three is a decision about *that* patch's intent, and the right move
+is to check what the dispatch one is serving that the other three are not, rather than to prune by
+scan count alone.
+
+**Not scheduled.** A retention policy for proposal frames is the real item; the index question is
+a five-minute check that should happen first.
+
+---
+
+## No gate exists for the 79 hand-applied SQL migrations (2026-08-19, from code review of #1751)
+
+`services/orion-sql-db/manual_migration_*.sql` has no runner and no registry. Every one is applied
+by hand via `docker exec -i ... psql < file`. A database rebuilt from the base migrations gets
+`substrate_proposal_frames` with only its `generated_at` index and **silently** lacks everything
+added since — including the index that PR #1751 exists to add.
+
+This is the failure mode AGENTS.md §"Deterministic gates over repeated yelling" names directly: the
+right fix for a forgotten manual migration is not a comment pointing at the `.sql` file, it is a
+check that fails. PR #1751's tests pin the *query* half of its fix and say so explicitly in their
+own docstring; nothing pins the *index* half.
+
+Cheapest useful version: assert a list of expected index names against `pg_index` on the live
+database, run wherever the other live smokes run. That does not solve migration ordering or
+idempotency, but it converts "silently missing index" into a failing check, which is the actual
+recurring damage.
+
+**Not scheduled.**

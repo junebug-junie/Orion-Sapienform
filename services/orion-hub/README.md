@@ -269,10 +269,43 @@ numbers. `GET .../status` reports both `peak_deviation_pressure` and
 `sustained_load_pressure` on `last_tension_reason` so an operator can see
 which fact(s) actually drove a given outreach.
 
+**Through the real unified turn, not a lookalike (2026-08-19).** Generation
+used to call `CortexGatewayClient.chat()` directly — a bare bus RPC to
+`orion-cortex-gateway` that never reached `orion-harness-governor` at all:
+no fcc motor, no substrate appraisal/reflect/voice finalize beats, no
+post-turn learning closure, no audit artifact, and (root-caused the same
+day) a verb-less default (`chat_general`) whose hidden internal
+`synthesize_chat_stance_brief` pre-step sent a ~15.7k-char system prompt
+while requesting 8000 completion tokens on the `quick` route with no larger
+fallback lane — overflowing context on every single attempt. Juniper's call
+once this was traced: "if orion is going to reach out to me, it needs to be
+real and not bullshit." Generation now calls
+`orion.hub.turn_orchestrator.execute_unified_turn` — the SAME function
+`websocket_handler.py` calls for a real `client_mode == "orion"` turn, not
+a cheaper substitute. This is a bigger change than swapping which client
+generates text: `execute_unified_turn` records the outreach prompt into
+Orion's real observation stream (`emit_observation()`) and runs it through a
+real `ThoughtClient.react()` stance evaluation that can `defer`/`refuse` the
+turn — accepted deliberately, since there is no shallower entry point
+(`HarnessRunRequestV1` requires a `thought_event`), and Thought's own
+defer/refuse is now the honest "something else is happening" signal for an
+unsolicited turn, not just an infrastructure-availability check. Permissions
+are no longer this module's decision either: `execute_unified_turn`
+hard-codes every unified turn's `ContextExecPermissionV1` to read-only
+(every write/mutate/network/shell flag stays `False`), stricter than the
+old direct-call path's own options ever were. `payload={"no_write": True}`
+suppresses only the governor's OWN chat-history persistence — this module's
+three delivery rails below (unchanged) remain the sole persistence path, so
+an outreach turn keeps its `endogenous_outreach` tag instead of landing as
+an untagged duplicate. `HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE` is gone (killed,
+not deprecated) — route selection is the harness governor's call now,
+identically for outreach and real chat.
+
 Pipeline:
 
 ```text
-tick -> gates -> grounding read -> quick/metacog cortex call -> 3 delivery rails
+tick -> gates -> grounding read -> execute_unified_turn (real observation +
+  Thought stance + harness governor + fcc motor + finalize chain) -> 3 delivery rails
 ```
 
 Grounding (a tick with none of this is skipped, never filled with placeholder
@@ -325,7 +358,8 @@ Three details that are easy to get wrong and are enforced by tests:
   `note_busy()`/`note_idle()` are called for every inbound message regardless of
   mode.
 - **The gate is re-checked immediately before delivery.** Generation is a bus
-  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 60s), and a turn
+  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 300s — raised
+  from 60s 2026-08-19, see "Through the real unified turn" above), and a turn
   can start inside that window. A tick that becomes blocked mid-generation is
   dropped with reason `<gate>_after_generation`.
 - **Quiet hours and the daily-cap reset use `HUB_ENDOGENOUS_OUTREACH_TZ`,** not
@@ -336,12 +370,14 @@ Three details that are easy to get wrong and are enforced by tests:
   under the old `UTC` value the same window silenced 17:00–02:00 Mountain — the
   whole evening — while leaving outreach open across the working day.
 
-Generation pins `tool_execution_policy` and `action_execution_policy` to `none`
-and sets `no_write_active`, which are the keys `orion-cortex-exec`'s supervisor
-actually reads — a bare `options["no_write"]` is inert on this path, since only
-`cortex_request_builder` translates it and it reads it as a top-level payload
-key. Recall is disabled via the typed `recall` field (`RecallDirective`), not an
-option; leaving it unset would fire full default recall on every outreach.
+Generation is read-only by construction (2026-08-19), not by an option this
+module sets: `execute_unified_turn` hard-codes every unified turn's
+`ContextExecPermissionV1` with every write/mutate/network/shell flag at its
+safe `False` default — true for real turns too, not a special carve-out for
+outreach. `payload={"no_write": True}` still gets set explicitly, but only to
+suppress the governor's own chat-history persistence step so this module's
+own tagged rails stay the sole persistence path (see "Through the real
+unified turn" above).
 
 Every failure is swallowed and logged; no chat turn, websocket, or bus consumer
 is affected.
@@ -620,6 +656,37 @@ records mention-edge ingestion writes are real and generically visible to any co
 iterates the full substrate node set (e.g. `orion/substrate/endogenous_curiosity.py`), but
 they will not appear in the Concept Atlas Hub UI's network/god-node views until those routes
 are widened to include entity nodes — a separate follow-up, not done here.
+
+**AI Town's own concept graph (added 2026-08-20):** a second, fully parallel
+instance of the same pipeline above, reading `aitown_chat_history_log` (the
+AI-Town-only table post-cutover, PR #1734) instead of `chat_history_log`,
+writing into a second FalkorDB graph (`FALKORDB_AITOWN_SUBSTRATE_GRAPH`,
+default `orion_substrate_aitown`, same instance) instead of `orion_substrate`.
+Interpretability-only — never feeds `orion-cortex-exec`'s chat-stance producer
+or any other Orion cognition consumer
+(`docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-
+readability-design.md`, "AI Town's own concept graph" / Non-goals).
+
+- **Scheduler**: same tick as the Orion pipeline above (`main.py`'s
+  `substrate_topic_foundry_scheduler_task`, same
+  `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED`/`_INTERVAL_SEC`), gains a second
+  trigger/enrich/ingest step-group gated by its own
+  `SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED` (default `true`) — set
+  `false` to pause AI Town ingestion without touching Orion's own pipeline.
+- **Manual ingestion**: `POST /api/substrate/concepts/ingest-topic-foundry-aitown`
+  (`concept_atlas_ingest_topic_foundry_aitown()`), same operator-triggered,
+  no-flag shape as the Orion route above.
+- **Reading it**: `GET /api/substrate/concepts/summary` and `.../network`
+  both take an optional `?graph=aitown` query param (default/unrecognized
+  values resolve to Orion's graph) — the "first cut" read path the design
+  spec's own "Missing questions" named as sufficient before a dedicated AI
+  Town Concept Atlas UI page is worth building. No such page exists yet;
+  the Hub tab's Cytoscape view still only ever renders Orion's graph.
+- **Dataset/model**: `orion-hub-aitown-dataset-v1`/`orion-hub-aitown-v1-<fingerprint>`
+  in topic-foundry, distinct from Orion's `orion-hub-autonomous-dataset-v2`/
+  `orion-hub-autonomous-v4-<fingerprint>` — no `where_sql` filter (the source
+  table is already AI-Town-only by construction, unlike Orion's dataset which
+  excludes AI Town rows via `where_sql`).
 
 **Surfaced into live cognition two ways**, not as permanent context bloat — only when
 salient:

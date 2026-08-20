@@ -277,3 +277,66 @@ def test_advance_node_prediction_error_baseline_degrades_to_cold_start_on_error(
 
     assert baseline.observation_count == 0
     assert baseline.last_value is None
+
+
+class TestReceiptLookupsStayIndexEligible:
+    """The two reduction-receipt reads must filter the real `reducer_name` COLUMN.
+
+    Found by code review of the 2026-08-19 field-tick index patch, not by the metrics sweep that
+    found its siblings -- because this one never showed up as expensive. It is the same defect:
+    filtering `receipt_json -> 'state_deltas' -> 0 ->> 'reducer_id'` returns identical rows to
+    filtering the column (live: 0 disagreeing across 9,345 rows, the 4,138 NULLs coincide, and
+    max(jsonb_array_length(state_deltas)) = 1 so the [0] subscript hides nothing), while making
+    idx_substrate_reduction_receipts_reducer_name unusable.
+
+    Measured at 3,248 of 3,254 buffers served from cache, so this costs CPU rather than disk and
+    is NOT part of the I/O ceiling the rest of that patch addressed. The reason to gate it is
+    growth: substrate_reduction_receipts has no pruner, and a seq scan that is cache-resident at
+    9k rows is not cache-resident at 500k.
+    """
+
+    @staticmethod
+    def _captured_sql(method: str, **kwargs) -> list[str]:
+        seen: list[str] = []
+        store = AttentionRuntimeStore.__new__(AttentionRuntimeStore)
+        fake_engine = MagicMock()
+        conn = MagicMock()
+        fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+        fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+        fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+
+        def execute_side_effect(stmt, params=None):
+            seen.append(" ".join(str(stmt).split()))
+            result = MagicMock()
+            result.mappings.return_value.all.return_value = []
+            result.mappings.return_value.first.return_value = None
+            return result
+
+        conn.execute.side_effect = execute_side_effect
+        store._engine = fake_engine
+        getattr(store, method)(**kwargs)
+        return seen
+
+    def test_history_read_filters_the_column(self) -> None:
+        sql = self._captured_sql("load_prediction_error_history", reducer_key="route", limit=5)
+        receipts = [q for q in sql if "substrate_reduction_receipts" in q]
+        assert receipts, "no receipts query issued"
+        for q in receipts:
+            assert "WHERE reducer_name = :reducer_id" in q
+            assert "'reducer_id'" not in q, "JSON extraction cannot use the reducer_name index"
+
+    def test_baseline_advance_filters_the_column(self) -> None:
+        sql = self._captured_sql(
+            "advance_node_prediction_error_baseline",
+            target_id="node:substrate.route",
+            reducer_key="route",
+            alpha=0.1,
+            min_variance=1e-6,
+            fetch_limit=5,
+        )
+        receipts = [q for q in sql if "substrate_reduction_receipts" in q]
+        assert receipts, "no receipts query issued"
+        for q in receipts:
+            assert "WHERE reducer_name = :reducer_id" in q
+            assert "'reducer_id'" not in q

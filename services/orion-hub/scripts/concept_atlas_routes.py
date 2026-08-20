@@ -188,6 +188,30 @@ _TOPIC_FOUNDRY_WHERE_SQL = (
     f"(client_meta -> 'external_room' ->> 'platform') IS DISTINCT FROM '{_AITOWN_PLATFORM_TAG}'"
 )
 
+# AI Town's own concept graph (docs/superpowers/specs/2026-08-18-aitown-
+# concept-graph-split-and-atlas-readability-design.md, "AI Town's own
+# concept graph"). Separate dataset/model/graph, same topic-foundry
+# instance -- interpretability-only, never fed into concept_induced/
+# chat_stance (that spec's Non-goals).
+#
+# No where_sql filter needed here, unlike the Orion dataset above: this
+# reads from aitown_chat_history_log directly, which is already AI-Town-only
+# by construction (orion-sql-writer routes each row to exactly one table by
+# platform tag -- PR #1734, the table-split cutover -- not a filter on a
+# shared table). If that table split is ever reverted, this dataset would
+# need the mirror-image where_sql (`= 'aitown'` instead of `IS DISTINCT
+# FROM`) -- not needed today.
+_TOPIC_FOUNDRY_AITOWN_DATASET_NAME = "orion-hub-aitown-dataset-v1"
+_TOPIC_FOUNDRY_AITOWN_MODEL_NAME_BASE = "orion-hub-aitown-v1"
+# Same fingerprint fn/HDBSCAN settings as the Orion model above -- no
+# AI-Town-specific tuning yet (real chat-volume difference noted in the
+# design doc's "Missing questions", deliberately deferred rather than
+# guessed at without live cluster-quality data to tune against).
+_TOPIC_FOUNDRY_AITOWN_MODEL_NAME = (
+    f"{_TOPIC_FOUNDRY_AITOWN_MODEL_NAME_BASE}-{_topic_foundry_model_spec_fingerprint()}"
+)
+_TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE = "aitown_chat_history_log"
+
 # HDBSCAN's noise/outlier bucket (topic-foundry side). Never a real topic --
 # same convention as orion/substrate/adapters/topic_foundry.py's own
 # OUTLIER_TOPIC_ID, not imported from there since this module deliberately
@@ -217,8 +241,22 @@ def _day_bucket_from_timestamp(value: Any) -> Optional[str]:
         return None
 
 
-def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str, str]]:
-    """Idempotent get-or-create for the scheduler's dataset+model, by name.
+def _ensure_topic_foundry_dataset_and_model(
+    base_url: str,
+    *,
+    dataset_name: str = _TOPIC_FOUNDRY_DATASET_NAME,
+    model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
+    source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
+    where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
+) -> Optional[tuple[str, str]]:
+    """Idempotent get-or-create for a scheduler dataset+model, by name.
+
+    Parameterized (2026-08-20) so a second dataset/model pair -- AI Town's
+    own concept graph, see the module constants above -- can share this
+    exact logic (idempotent get-or-create, the where_sql-drift warning, the
+    fingerprinted model name) instead of a hand-duplicated copy. Every
+    keyword default matches the pre-parameterization Orion behavior exactly,
+    so the zero-arg call shape callers already use is unchanged.
 
     Returns ``(dataset_id, model_id)``, or ``None`` on any failure -- never
     raises. Safe to call on every scheduler tick: after the first tick
@@ -227,48 +265,60 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
     """
     try:
         datasets = list_datasets(base_url)
-        dataset = next((d for d in datasets if d.get("name") == _TOPIC_FOUNDRY_DATASET_NAME), None)
+        dataset = next((d for d in datasets if d.get("name") == dataset_name), None)
         if dataset is None:
             dataset = create_dataset(
                 base_url,
                 {
-                    "name": _TOPIC_FOUNDRY_DATASET_NAME,
-                    "source_table": _TOPIC_FOUNDRY_SOURCE_TABLE,
+                    "name": dataset_name,
+                    "source_table": source_table,
                     "id_column": _TOPIC_FOUNDRY_ID_COLUMN,
                     "time_column": _TOPIC_FOUNDRY_TIME_COLUMN,
                     "text_columns": _TOPIC_FOUNDRY_TEXT_COLUMNS,
                     "timezone": "UTC",
-                    "where_sql": _TOPIC_FOUNDRY_WHERE_SQL,
+                    "where_sql": where_sql,
                 },
             )
-        elif dataset.get("where_sql") != _TOPIC_FOUNDRY_WHERE_SQL:
+        else:
             # Get-or-create matches purely by name -- topic-foundry's
             # dataset routes are create/list/preview only, no update
-            # endpoint, so a where_sql edited here without also bumping
-            # _TOPIC_FOUNDRY_DATASET_NAME silently keeps training on the
-            # OLD filter forever (this is the exact bug the "-v2" rename in
-            # this file's constants comment exists to fix once already;
-            # code review 2026-08-18 flagged that nothing stops the same
-            # mistake next time). Loud, not silent: log so a future change
-            # here that forgets to rename shows up in the scheduler's own
-            # logs on the very next tick, instead of only being discoverable
-            # by noticing stale concepts months later.
-            logger.warning(
-                "topic_foundry_dataset_where_sql_drift dataset_name=%s expected=%r actual=%r "
-                "-- rename _TOPIC_FOUNDRY_DATASET_NAME to force a fresh dataset with the new filter",
-                _TOPIC_FOUNDRY_DATASET_NAME,
-                _TOPIC_FOUNDRY_WHERE_SQL,
-                dataset.get("where_sql"),
-            )
+            # endpoint, so where_sql/source_table edited here without also
+            # bumping the dataset name silently keeps training against the
+            # OLD filter/table forever (this is the exact bug the "-v2"
+            # rename in this file's constants comment exists to fix once
+            # already; code review 2026-08-18 flagged that nothing stops the
+            # same mistake next time -- and code review 2026-08-20 found
+            # this parameterization added source_table as a second drifting
+            # field with no analogous check). Loud, not silent: log so a
+            # future change here that forgets to rename shows up in the
+            # scheduler's own logs on the very next tick, instead of only
+            # being discoverable by noticing stale/wrong-corpus concepts
+            # months later.
+            if dataset.get("where_sql") != where_sql:
+                logger.warning(
+                    "topic_foundry_dataset_where_sql_drift dataset_name=%s expected=%r actual=%r "
+                    "-- rename the dataset constant to force a fresh dataset with the new filter",
+                    dataset_name,
+                    where_sql,
+                    dataset.get("where_sql"),
+                )
+            if dataset.get("source_table") != source_table:
+                logger.warning(
+                    "topic_foundry_dataset_source_table_drift dataset_name=%s expected=%r actual=%r "
+                    "-- rename the dataset constant to force a fresh dataset against the new table",
+                    dataset_name,
+                    source_table,
+                    dataset.get("source_table"),
+                )
         dataset_id = str(dataset["dataset_id"])
 
         models = list_models(base_url)
-        model = next((m for m in models if m.get("name") == _TOPIC_FOUNDRY_MODEL_NAME), None)
+        model = next((m for m in models if m.get("name") == model_name), None)
         if model is None:
             model = create_model(
                 base_url,
                 {
-                    "name": _TOPIC_FOUNDRY_MODEL_NAME,
+                    "name": model_name,
                     "version": _TOPIC_FOUNDRY_MODEL_VERSION,
                     "stage": "development",
                     "dataset_id": dataset_id,
@@ -297,21 +347,35 @@ def _ensure_topic_foundry_dataset_and_model(base_url: str) -> Optional[tuple[str
         # GET /datasets) carries the field a drift check would need to
         # compare against, so detecting drift after the fact isn't
         # possible here without a GET /models/{model_id} call topic-foundry
-        # doesn't expose. Instead, _TOPIC_FOUNDRY_MODEL_NAME's fingerprint
-        # suffix (see above) closes the failure mode structurally: a real
-        # settings change always produces a new name, so get-or-create can
-        # never find a stale model and silently reuse it.
+        # doesn't expose. Instead, the model name's fingerprint suffix (see
+        # module constants above) closes the failure mode structurally: a
+        # real settings change always produces a new name, so get-or-create
+        # can never find a stale model and silently reuse it.
         model_id = str(model["model_id"])
         return dataset_id, model_id
     except Exception as exc:
-        logger.warning("topic_foundry_dataset_model_ensure_failed error=%s", exc)
+        logger.warning("topic_foundry_dataset_model_ensure_failed dataset_name=%s error=%s", dataset_name, exc)
         return None
 
 
-def trigger_topic_foundry_training_run() -> dict[str, Any]:
+def trigger_topic_foundry_training_run(
+    *,
+    dataset_name: str = _TOPIC_FOUNDRY_DATASET_NAME,
+    model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
+    source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
+    where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
+    log_prefix: str = "topic_foundry",
+) -> dict[str, Any]:
     """Scheduler entry point (Gap 5): ensure the scheduler's dataset/model
     exist, then trigger a training run for a rolling
     ``SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS``-day window ending now.
+
+    Parameterized (2026-08-20) so AI Town's own dataset/model can share this
+    exact trigger logic -- see ``_ensure_topic_foundry_dataset_and_model``'s
+    docstring for why. Every keyword default matches the pre-
+    parameterization Orion behavior, so the zero-arg call this scheduler
+    already uses is unchanged. ``log_prefix`` only affects log message
+    names, so the two dataset's log lines stay distinguishable in practice.
 
     Fire-and-forget from this function's perspective -- training runs as a
     background task on topic-foundry's side (see
@@ -330,7 +394,13 @@ def trigger_topic_foundry_training_run() -> dict[str, Any]:
     if not base_url:
         return {"triggered": False, "reason": "topic_foundry_base_url_not_configured"}
 
-    ids = _ensure_topic_foundry_dataset_and_model(base_url)
+    ids = _ensure_topic_foundry_dataset_and_model(
+        base_url,
+        dataset_name=dataset_name,
+        model_name=model_name,
+        source_table=source_table,
+        where_sql=where_sql,
+    )
     if ids is None:
         return {"triggered": False, "reason": "dataset_or_model_resolution_failed"}
     dataset_id, model_id = ids
@@ -369,14 +439,18 @@ def trigger_topic_foundry_training_run() -> dict[str, Any]:
             "window_days": window_days,
         }
     except TopicFoundryClientError as exc:
-        logger.warning("topic_foundry_train_trigger_failed error=%s", exc)
+        logger.warning("%s_train_trigger_failed error=%s", log_prefix, exc)
         return {"triggered": False, "reason": "train_trigger_failed", "error": str(exc)}
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug crash the scheduler
-        logger.warning("topic_foundry_train_trigger_unexpected_error error=%s", exc)
+        logger.warning("%s_train_trigger_unexpected_error error=%s", log_prefix, exc)
         return {"triggered": False, "reason": "unexpected_error", "error": str(exc)}
 
 
-def trigger_topic_foundry_enrichment() -> dict[str, Any]:
+def trigger_topic_foundry_enrichment(
+    *,
+    model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
+    log_prefix: str = "topic_foundry",
+) -> dict[str, Any]:
     """Scheduler entry point, added 2026-07-28: trigger enrichment for
     whatever the latest COMPLETED run currently is.
 
@@ -415,12 +489,12 @@ def trigger_topic_foundry_enrichment() -> dict[str, Any]:
         # model_name-scoped: without it this can resolve to a *different*
         # model's latest run (e.g. the old, unfiltered "orion-hub-autonomous"
         # model, still live and still ticking) -- code review 2026-08-18.
-        run = fetch_latest_completed_run(base_url, model_name=_TOPIC_FOUNDRY_MODEL_NAME)
+        run = fetch_latest_completed_run(base_url, model_name=model_name)
     except TopicFoundryClientError as exc:
-        logger.info("topic_foundry_enrich_no_completed_run reason=%s", exc)
+        logger.info("%s_enrich_no_completed_run reason=%s", log_prefix, exc)
         return {"triggered": False, "reason": "no_completed_run"}
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug crash the scheduler
-        logger.warning("topic_foundry_enrich_latest_run_lookup_unexpected_error error=%s", exc)
+        logger.warning("%s_enrich_latest_run_lookup_unexpected_error error=%s", log_prefix, exc)
         return {"triggered": False, "reason": "unexpected_error", "error": str(exc)}
 
     run_id = run.get("run_id")
@@ -449,15 +523,42 @@ def trigger_topic_foundry_enrichment() -> dict[str, Any]:
             "failed_count": result.get("failed_count"),
         }
     except TopicFoundryClientError as exc:
-        logger.warning("topic_foundry_enrich_trigger_failed run_id=%s error=%s", run_id, exc)
+        logger.warning("%s_enrich_trigger_failed run_id=%s error=%s", log_prefix, run_id, exc)
         return {"triggered": False, "reason": "enrich_trigger_failed", "error": str(exc)}
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug crash the scheduler
-        logger.warning("topic_foundry_enrich_trigger_unexpected_error run_id=%s error=%s", run_id, exc)
+        logger.warning("%s_enrich_trigger_unexpected_error run_id=%s error=%s", log_prefix, run_id, exc)
         return {"triggered": False, "reason": "unexpected_error", "error": str(exc)}
 
 
-def _get_substrate_store() -> Any:
-    """Best-effort resolution of the shared substrate store, never raises.
+def trigger_topic_foundry_aitown_training_run() -> dict[str, Any]:
+    """AI Town's own concept graph -- zero-arg wrapper binding
+    ``trigger_topic_foundry_training_run`` to the AI Town dataset/model
+    constants above, so ``main.py``'s scheduler can call this exactly like
+    the Orion step (``asyncio.to_thread(fn)``, no cross-module reach into
+    this module's private constants needed at the call site)."""
+    return trigger_topic_foundry_training_run(
+        dataset_name=_TOPIC_FOUNDRY_AITOWN_DATASET_NAME,
+        model_name=_TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
+        source_table=_TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE,
+        where_sql=None,
+        log_prefix="topic_foundry_aitown",
+    )
+
+
+def trigger_topic_foundry_aitown_enrichment() -> dict[str, Any]:
+    """Same as ``trigger_topic_foundry_aitown_training_run`` above, for
+    ``trigger_topic_foundry_enrichment``."""
+    return trigger_topic_foundry_enrichment(
+        model_name=_TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
+        log_prefix="topic_foundry_aitown",
+    )
+
+
+def _get_named_substrate_store(attr_name: str, *, log_prefix: str) -> Any:
+    """Best-effort resolution of a store singleton off ``scripts.api_routes``,
+    never raises. Shared by ``_get_substrate_store``/``_get_aitown_substrate_store``
+    below (review finding 2026-08-20: these were a hand-duplicated copy of
+    each other, differing only in attribute name and log prefix).
 
     Deferred import mirrors ``memory_graph_routes.py``'s established pattern
     (``import scripts.api_routes as api_mod`` inside route functions) so this
@@ -468,12 +569,30 @@ def _get_substrate_store() -> Any:
     try:
         import scripts.api_routes as api_mod
     except Exception as exc:  # pragma: no cover - defensive, mirrors route-level degrade
-        logger.warning("concept_atlas_store_import_failed error=%s", exc)
+        logger.warning("%s_import_failed error=%s", log_prefix, exc)
         return None
-    store = getattr(api_mod, "SUBSTRATE_SEMANTIC_STORE", None)
+    store = getattr(api_mod, attr_name, None)
     if store is None:
-        logger.info("concept_atlas_store_not_attached")
+        logger.info("%s_not_attached", log_prefix)
     return store
+
+
+def _get_substrate_store() -> Any:
+    """Resolve the shared Orion substrate store (``api_routes.py``'s
+    ``SUBSTRATE_SEMANTIC_STORE`` singleton). Kept as its own top-level
+    function (not inlined at call sites) so tests can monkeypatch it
+    directly, same as before this was factored through
+    ``_get_named_substrate_store``.
+    """
+    return _get_named_substrate_store("SUBSTRATE_SEMANTIC_STORE", log_prefix="concept_atlas_store")
+
+
+def _get_aitown_substrate_store() -> Any:
+    """Same as ``_get_substrate_store`` above, for AI Town's own concept
+    graph (``api_routes.py``'s ``SUBSTRATE_SEMANTIC_STORE_AITOWN`` singleton)."""
+    return _get_named_substrate_store(
+        "SUBSTRATE_SEMANTIC_STORE_AITOWN", log_prefix="concept_atlas_aitown_store"
+    )
 
 
 def _unavailable(reason: str, error: Optional[str] = None, **extra: Any) -> dict[str, Any]:
@@ -703,9 +822,40 @@ def _at_risk_concepts(
     return at_risk[:20], note
 
 
+_VALID_GRAPH_PARAM_VALUES = {"orion", "aitown"}
+
+
+def _resolve_store_for_graph_param(graph: Optional[str]) -> tuple[Any, str]:
+    """Resolve which store a request wants via the ``graph`` query param.
+
+    Review finding 2026-08-20: before this, AI Town's own concept graph
+    (``SUBSTRATE_SEMANTIC_STORE_AITOWN``) was written to every scheduler
+    tick but reachable by zero GET route -- data written, structurally
+    unreachable. This is the "first cut" the design spec's own "Missing
+    questions" section named as sufficient before a dedicated AI Town
+    Concept Atlas page is worth building: a reused
+    ``?graph=aitown``-style parameter on the existing routes.
+
+    Defaults to Orion's store for any unset/unrecognized value (never
+    raises, matching this file's existing malformed-query-param handling
+    for ``scope``/``min_activation`` in ``concept_atlas_network()`` below)
+    -- an unrecognized ``graph`` value degrades to the default rather than
+    500ing or silently returning nothing.
+
+    Returns ``(store, resolved_graph_label)`` so callers can echo which
+    graph actually served the response.
+    """
+    graph_norm = graph.strip().lower() if isinstance(graph, str) else ""
+    if graph_norm == "aitown":
+        return _get_aitown_substrate_store(), "aitown"
+    if graph_norm and graph_norm not in _VALID_GRAPH_PARAM_VALUES:
+        logger.info("concept_atlas_ignored_bad_graph_param value=%s", graph_norm)
+    return _get_substrate_store(), "orion"
+
+
 @router.get("/api/substrate/concepts/summary")
-async def concept_atlas_summary() -> dict[str, Any]:
-    store = _get_substrate_store()
+async def concept_atlas_summary(graph: Optional[str] = Query(None)) -> dict[str, Any]:
+    store, graph_label = _resolve_store_for_graph_param(graph)
     if store is None:
         return _unavailable(
             "substrate_store_unavailable",
@@ -714,6 +864,7 @@ async def concept_atlas_summary() -> dict[str, Any]:
             by_anchor_scope={},
             edge_counts_by_predicate={},
             at_risk=[],
+            graph=graph_label,
         )
 
     concept_nodes = _concept_nodes(store)
@@ -744,7 +895,53 @@ async def concept_atlas_summary() -> dict[str, Any]:
         "edge_counts_by_predicate": edge_counts_by_predicate,
         "at_risk": at_risk,
         "at_risk_note": at_risk_note,
+        "graph": graph_label,
     }
+
+
+def _compute_connected_components(nodes: list[Any], edges: list[Any]) -> dict[str, int]:
+    """Assign each node id a 0-indexed connected-component id via plain
+    union-find over the (already filtered) node/edge lists.
+
+    Readability gap named in
+    ``docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md``:
+    cose's force layout pulls disconnected components toward each other with
+    nothing marking where one ends and another begins once the graph gets
+    dense (``componentSpacing`` in concept-atlas.js only makes that less bad,
+    it doesn't label components). This doesn't touch the layout -- it hands
+    the frontend the grouping so it can (e.g. per-component styling, or a
+    plain node count per component in the inspector).
+
+    Component ids are numbered in the order their first member appears in
+    ``nodes`` (not by root node id), so the numbering is deterministic given
+    the same input ordering -- ``query_concept_region()`` already returns a
+    stable order, this just doesn't add its own randomness on top.
+    """
+    parent: dict[str, str] = {n.node_id: n.node_id for n in nodes}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for e in edges:
+        if e.source.node_id in parent and e.target.node_id in parent:
+            union(e.source.node_id, e.target.node_id)
+
+    component_id_by_root: dict[str, int] = {}
+    result: dict[str, int] = {}
+    for n in nodes:
+        root = find(n.node_id)
+        if root not in component_id_by_root:
+            component_id_by_root[root] = len(component_id_by_root)
+        result[n.node_id] = component_id_by_root[root]
+    return result
 
 
 @router.get("/api/substrate/concepts/network")
@@ -752,16 +949,32 @@ async def concept_atlas_network(
     scope: Optional[str] = Query(None),
     min_activation: Optional[str] = Query(None),
     focus: Optional[str] = Query(None),
+    graph: Optional[str] = Query(None),
 ) -> dict[str, Any]:
-    store = _get_substrate_store()
+    store, graph_label = _resolve_store_for_graph_param(graph)
     if store is None:
-        return _unavailable("substrate_store_unavailable", nodes=[], edges=[], god_node_count=0)
+        return _unavailable(
+            "substrate_store_unavailable",
+            nodes=[],
+            edges=[],
+            god_node_count=0,
+            component_count=0,
+            graph=graph_label,
+        )
 
     try:
         result = store.query_concept_region(limit_nodes=300, limit_edges=600)
     except Exception as exc:
         logger.warning("concept_atlas_network_query_failed error=%s", exc)
-        return _unavailable("substrate_store_error", str(exc), nodes=[], edges=[], god_node_count=0)
+        return _unavailable(
+            "substrate_store_error",
+            str(exc),
+            nodes=[],
+            edges=[],
+            god_node_count=0,
+            component_count=0,
+            graph=graph_label,
+        )
 
     nodes = list(result.slice.nodes)
     edges = list(result.slice.edges)
@@ -828,6 +1041,7 @@ async def concept_atlas_network(
 
     ranked = sorted((nid for nid in degree if degree[nid] > 0.0), key=lambda nid: degree[nid], reverse=True)
     god_ids = set(ranked[:_GOD_NODE_TOP_N])
+    component_of = _compute_connected_components(nodes, edges)
 
     node_payload = [
         {
@@ -841,6 +1055,12 @@ async def concept_atlas_network(
             "confidence": float(n.signals.confidence),
             "degree": degree.get(n.node_id, 0.0),
             "god_node": n.node_id in god_ids,
+            "component_id": component_of.get(n.node_id, 0),
+            # topic-foundry's HDBSCAN cluster id, when this node came from an
+            # ingested topic-foundry run (orion/substrate/adapters/topic_foundry.py
+            # writes it into metadata as "topic_id" -- there is no dedicated
+            # schema field for it). None for concepts from any other producer.
+            "topic_id": n.metadata.get("topic_id") if isinstance(n.metadata, dict) else None,
         }
         for n in nodes
     ]
@@ -869,15 +1089,28 @@ async def concept_atlas_network(
         "nodes": node_payload,
         "edges": edge_payload,
         "god_node_count": len(god_ids),
+        "component_count": len(set(component_of.values())),
         "truncated": bool(result.truncated),
         "degraded": degraded,
         "degraded_error": getattr(result, "error", None) if degraded else None,
+        "graph": graph_label,
     }
 
 
-@router.post("/api/substrate/concepts/ingest-topic-foundry")
-def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
-    """Operator-triggered, on-demand ingestion of topic-foundry's latest completed run.
+def _ingest_topic_foundry_run(
+    *,
+    store: Any,
+    model_name: str,
+    log_prefix: str,
+) -> dict[str, Any]:
+    """Core ingestion logic shared by the Orion route/scheduler step and the
+    AI Town route/scheduler step below -- parameterized (2026-08-20) over
+    which store to write into and which topic-foundry model's latest run to
+    pull, rather than duplicated. Every failure mode, the segment/mention
+    fetch degrade-to-empty behavior, and the typed-relation classification
+    pass are identical for both callers; only the destination graph and
+    source model differ. See ``concept_atlas_ingest_topic_foundry`` below
+    for the full original docstring this logic used to carry directly.
 
     Deliberately a sync ``def`` (not ``async def``): the underlying HTTP calls
     use the blocking ``requests`` library (see ``topic_foundry_client.py``),
@@ -888,8 +1121,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     Fetches the latest completed run + its topics + per-topic keywords from
     topic-foundry over HTTP, converts them via
     ``orion.substrate.adapters.topic_foundry.map_topic_foundry_run_to_substrate``,
-    and writes the resulting concept/evidence nodes and edges into the shared
-    ``SUBSTRATE_SEMANTIC_STORE``.
+    and writes the resulting concept/evidence nodes and edges into ``store``.
 
     Reachable two ways: as this HTTP route (an operator-triggered manual
     call, mirroring ``/api/substrate/review-runtime/debug-run``'s shape), and
@@ -931,7 +1163,6 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     entity nodes/edges produced for this call) rather than aborting the
     route, same contract as the segments fetch above.
     """
-    store = _get_substrate_store()
     if store is None:
         return _unavailable("substrate_store_unavailable", concepts_written=0, entities_written=0, edges_written=0)
 
@@ -948,9 +1179,9 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         # model_name-scoped -- see trigger_topic_foundry_enrichment()'s
         # identical comment; without this, ingestion could keep pulling
         # topics from the old, unfiltered model's runs indefinitely.
-        fetched = fetch_run_topics_and_keywords(base_url, model_name=_TOPIC_FOUNDRY_MODEL_NAME)
+        fetched = fetch_run_topics_and_keywords(base_url, model_name=model_name)
     except TopicFoundryClientError as exc:
-        logger.warning("concept_atlas_ingest_topic_foundry_fetch_failed error=%s", exc)
+        logger.warning("%s_ingest_topic_foundry_fetch_failed error=%s", log_prefix, exc)
         return _unavailable(
             "topic_foundry_fetch_failed",
             str(exc),
@@ -959,7 +1190,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             edges_written=0,
         )
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug 500 this route
-        logger.warning("concept_atlas_ingest_topic_foundry_unexpected_fetch_error error=%s", exc)
+        logger.warning("%s_ingest_topic_foundry_unexpected_fetch_error error=%s", log_prefix, exc)
         return _unavailable(
             "topic_foundry_unexpected_error",
             str(exc),
@@ -998,7 +1229,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             segment_topic_map.setdefault(day_bucket, []).append(topic_id_int)
     except TopicFoundryClientError as exc:
         logger.warning(
-            "concept_atlas_ingest_topic_foundry_segments_fetch_failed run_id=%s error=%s", run_id, exc
+            "%s_ingest_topic_foundry_segments_fetch_failed run_id=%s error=%s", log_prefix, run_id, exc
         )
         # Degrade to empty segment_topic_map/segment_topic_id_map --
         # co_occurs_with edges and mention-derived entity edges just won't
@@ -1006,7 +1237,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         # ingestion below proceeds normally regardless.
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug abort the route
         logger.warning(
-            "concept_atlas_ingest_topic_foundry_segments_unexpected_error run_id=%s error=%s", run_id, exc
+            "%s_ingest_topic_foundry_segments_unexpected_error run_id=%s error=%s", log_prefix, run_id, exc
         )
 
     mention_edges: list[dict[str, Any]] = []
@@ -1016,14 +1247,14 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         mentions_fetched = len(mention_edges)
     except TopicFoundryClientError as exc:
         logger.warning(
-            "concept_atlas_ingest_topic_foundry_mentions_fetch_failed run_id=%s error=%s", run_id, exc
+            "%s_ingest_topic_foundry_mentions_fetch_failed run_id=%s error=%s", log_prefix, run_id, exc
         )
         # Degrade to empty mention_edges -- no entity nodes/edges produced
         # for this call; concept/evidence/co_occurs_with ingestion above is
         # independent of it.
     except Exception as exc:  # pragma: no cover - defensive, never let a client bug abort the route
         logger.warning(
-            "concept_atlas_ingest_topic_foundry_mentions_unexpected_error run_id=%s error=%s", run_id, exc
+            "%s_ingest_topic_foundry_mentions_unexpected_error run_id=%s error=%s", log_prefix, run_id, exc
         )
 
     try:
@@ -1038,7 +1269,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
             segment_topic_id_map=segment_topic_id_map,
         )
     except Exception as exc:  # pragma: no cover - the adapter itself never raises, but don't trust across the boundary
-        logger.warning("concept_atlas_ingest_topic_foundry_adapter_failed run_id=%s error=%s", run_id, exc)
+        logger.warning("%s_ingest_topic_foundry_adapter_failed run_id=%s error=%s", log_prefix, run_id, exc)
         return _unavailable(
             "topic_foundry_adapter_failed",
             str(exc),
@@ -1072,7 +1303,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         )
         materializer.apply_record(record)
     except Exception as exc:
-        logger.warning("concept_atlas_ingest_topic_foundry_store_write_failed run_id=%s error=%s", run_id, exc)
+        logger.warning("%s_ingest_topic_foundry_store_write_failed run_id=%s error=%s", log_prefix, run_id, exc)
         return _unavailable(
             "substrate_store_write_failed",
             str(exc),
@@ -1113,6 +1344,52 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         "mentions_fetched": mentions_fetched,
         "typed_edges_written": typed_edges_written,
     }
+
+
+@router.post("/api/substrate/concepts/ingest-topic-foundry")
+def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
+    """Operator-triggered, on-demand ingestion of topic-foundry's latest
+    completed run into the Orion concept graph (``SUBSTRATE_SEMANTIC_STORE``).
+
+    Deliberately a sync ``def`` (not ``async def``): the underlying HTTP calls
+    use the blocking ``requests`` library (see ``topic_foundry_client.py``),
+    and FastAPI runs sync route handlers in a worker thread pool automatically
+    -- an ``async def`` wrapper here would block the event loop for the
+    duration of every topic-foundry round trip instead.
+
+    Reachable two ways: as this HTTP route (an operator-triggered manual
+    call, mirroring ``/api/substrate/review-runtime/debug-run``'s shape), and
+    -- as of Gap 5 -- as a plain function call from ``main.py``'s
+    ``_run_substrate_topic_foundry_scheduler`` background task (gated by
+    ``SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED``, default off), which calls
+    this once per scheduler tick after triggering a training run. Both call
+    paths are safe: this function is a plain zero-argument sync ``def`` with
+    no FastAPI dependency injection, so direct invocation behaves identically
+    to going through the route. See ``_ingest_topic_foundry_run`` above for
+    the full ingestion logic (segment/mention fetch, adapter conversion,
+    materializer write, typed-relation classification) this delegates to.
+    """
+    return _ingest_topic_foundry_run(
+        store=_get_substrate_store(),
+        model_name=_TOPIC_FOUNDRY_MODEL_NAME,
+        log_prefix="concept_atlas",
+    )
+
+
+@router.post("/api/substrate/concepts/ingest-topic-foundry-aitown")
+def concept_atlas_ingest_topic_foundry_aitown() -> dict[str, Any]:
+    """Same as ``concept_atlas_ingest_topic_foundry`` above, for AI Town's
+    own concept graph (``SUBSTRATE_SEMANTIC_STORE_AITOWN``) -- pulls from the
+    AI Town topic-foundry model/dataset instead of the Orion one. See the
+    module constants and ``_get_aitown_substrate_store`` above, and
+    ``docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-
+    atlas-readability-design.md`` ("AI Town's own concept graph").
+    """
+    return _ingest_topic_foundry_run(
+        store=_get_aitown_substrate_store(),
+        model_name=_TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
+        log_prefix="concept_atlas_aitown",
+    )
 
 
 @router.get("/concept-atlas")

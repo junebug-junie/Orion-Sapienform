@@ -101,6 +101,12 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_uncertainty_available BOOLEAN;"
             )
             conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS aitown_chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
+            )
+            conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
             )
             conn.exec_driver_sql(
@@ -791,6 +797,81 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.exception("grammar_events retention startup failed (continuing boot): %s", exc)
 
+    # grammar_edges/grammar_atoms/substrate_organ_emissions had NO retention at all
+    # until this patch -- confirmed live 2026-08-19: unbounded growth, ~13GB combined,
+    # zero deletes ever. Same bounded-startup shape as grammar_events above, each with
+    # its own retention_days knob (settings.py), each independently best-effort (one
+    # table's failure must not skip the others or block boot).
+    #
+    # Deliberately three explicit blocks, not a (label, function-name-string,
+    # settings-attr-string) loop: a typo in a string dispatched via getattr() would
+    # raise AttributeError, get swallowed by this same try/except, and silently skip
+    # that table's retention forever -- exactly the failure class this patch exists to
+    # eliminate, just moved up a layer. Explicit imports/calls are typo-proof at
+    # import time instead.
+    grammar_edges_retention_days = int(getattr(settings, "grammar_edges_retention_days", 0) or 0)
+    if grammar_edges_retention_days > 0:
+        try:
+            from app.grammar_truth import apply_grammar_edges_retention
+
+            retention_result = apply_grammar_edges_retention(grammar_edges_retention_days)
+            logger.info(
+                "🧹 grammar_edges retention cutoff=%s rows_pruned=%s batches=%s "
+                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
+                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
+                retention_result.rows_pruned_last_run,
+                retention_result.batches_attempted,
+                retention_result.remaining_debt,
+                retention_result.elapsed_sec,
+                retention_result.failure_reason,
+            )
+        except Exception as exc:
+            logger.exception("grammar_edges retention startup failed (continuing boot): %s", exc)
+
+    grammar_atoms_retention_days = int(getattr(settings, "grammar_atoms_retention_days", 0) or 0)
+    if grammar_atoms_retention_days > 0:
+        try:
+            from app.grammar_truth import apply_grammar_atoms_retention
+
+            retention_result = apply_grammar_atoms_retention(grammar_atoms_retention_days)
+            logger.info(
+                "🧹 grammar_atoms retention cutoff=%s rows_pruned=%s batches=%s "
+                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
+                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
+                retention_result.rows_pruned_last_run,
+                retention_result.batches_attempted,
+                retention_result.remaining_debt,
+                retention_result.elapsed_sec,
+                retention_result.failure_reason,
+            )
+        except Exception as exc:
+            logger.exception("grammar_atoms retention startup failed (continuing boot): %s", exc)
+
+    substrate_organ_emissions_retention_days = int(
+        getattr(settings, "substrate_organ_emissions_retention_days", 0) or 0
+    )
+    if substrate_organ_emissions_retention_days > 0:
+        try:
+            from app.grammar_truth import apply_substrate_organ_emissions_retention
+
+            retention_result = apply_substrate_organ_emissions_retention(
+                substrate_organ_emissions_retention_days
+            )
+            logger.info(
+                "🧹 substrate_organ_emissions retention cutoff=%s rows_pruned=%s batches=%s "
+                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
+                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
+                retention_result.rows_pruned_last_run,
+                retention_result.batches_attempted,
+                retention_result.remaining_debt,
+                retention_result.elapsed_sec,
+                retention_result.failure_reason,
+            )
+        except Exception as exc:
+            logger.exception(
+                "substrate_organ_emissions retention startup failed (continuing boot): %s", exc
+            )
+
     task: asyncio.Task | None = None
     if settings.orion_bus_enabled:
         svc = build_hunter()
@@ -814,10 +895,24 @@ async def lifespan(app: FastAPI):
             "(SQL_WRITER_FALLBACK_WATCH_ENABLED=false); unrouted events will accumulate silently"
         )
 
+    # Periodic retention. Retention itself already existed and worked per-run; its only
+    # trigger was process start, so it could never converge against continuous arrival.
+    # See app/grammar_retention_loop.py for the measured numbers.
+    retention_task: asyncio.Task | None = None
+    if float(getattr(settings, "grammar_retention_interval_sec", 0.0) or 0.0) > 0:
+        from app.grammar_retention_loop import grammar_retention_loop
+
+        retention_task = asyncio.create_task(grammar_retention_loop(settings))
+    else:
+        logger.warning(
+            "periodic grammar retention DISABLED (GRAMMAR_RETENTION_INTERVAL_SEC=0); "
+            "retention runs only at startup, which cannot keep up with arrival"
+        )
+
     try:
         yield
     finally:
-        pending = [t for t in (task, watch_task) if t is not None]
+        pending = [t for t in (task, watch_task, retention_task) if t is not None]
         for background in pending:
             background.cancel()
         if pending:

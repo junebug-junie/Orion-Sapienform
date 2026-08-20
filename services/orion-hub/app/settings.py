@@ -441,12 +441,34 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
         default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
     )
-    # LLM gateway compute lane for generation: "quick" or "metacog".
-    HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE: str = Field(
-        default="quick", alias="HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE"
-    )
+    # 2026-08-19: HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE removed -- killed, not
+    # deprecated. Generation now goes through orion.hub.turn_orchestrator.
+    # execute_unified_turn (see endogenous_outreach.py's own docstring), the
+    # SAME harness-governed pipeline a real client_mode=="orion" turn uses.
+    # Route selection is the harness governor's decision, identically for
+    # outreach and real chat -- Hub has no separate route to configure here
+    # any more.
+    #
+    # 60.0 (the old default, sized for a bare quick-lane LLM call) is too
+    # short for this pipeline -- confirmed live, 2026-08-19: the FIRST real
+    # test after this switch timed out at 60s with the ThoughtClient.react()
+    # stance-evaluation step ALONE still in flight at ~33s elapsed, before
+    # the harness governor's own fcc-motor/finalize run had even started.
+    # Real turns have no hard Hub-side ceiling at all (the harness governor's
+    # own RPC wait is a soft HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC=960s,
+    # liveness-extendable to a hard HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC=
+    # 3600s) -- Juniper's UI just shows "thinking" for as long as it takes.
+    # 300.0 is a reasoned, NOT yet a measured-from-a-real-distribution,
+    # middle ground: generous enough to plausibly cover Thought react + a
+    # normal-speed harness run for a short, tool-free outreach message,
+    # while still bounding how long one attempt can hold this module's own
+    # `_send_lock` (a stuck attempt delays, not blocks, later ticks -- gates
+    # just report "already_sending"). Re-derive from real observed
+    # elapsed_sec once outreach has actually fired successfully a few times
+    # -- same "don't trust a guess longer than necessary" discipline
+    # MIN_RUN_LENGTH's own derivation already used.
     HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC: float = Field(
-        default=60.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
+        default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
     )
     # Session used for chat-history persistence when no live socket has
     # reported one (session_id lives in browser localStorage).
@@ -560,6 +582,17 @@ class Settings(BaseSettings):
     FALKORDB_SUBSTRATE_GRAPH: str = Field(
         default="orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"
     )
+    # NOTE: no Settings field for FALKORDB_AITOWN_SUBSTRATE_GRAPH (AI Town's
+    # own concept graph name) on purpose -- unlike FALKORDB_SUBSTRATE_GRAPH
+    # above, nothing in this codebase reads that value off the Settings
+    # object today (no operator-tab-style consumer exists for the AI Town
+    # graph yet, the way attention_organ_routes.py reads this field). The
+    # real, load-bearing resolution is the direct os.getenv() read inside
+    # orion/substrate/falkor_store.py::build_aitown_falkor_substrate_store_from_env().
+    # A settings-level mirror with no reader is dead config -- review
+    # finding 2026-08-20, removed rather than left in place. Add it back
+    # here (with a real consumer in the same patch) if/when one exists,
+    # per CLAUDE.md's "no keyword cathedral" gate.
 
     # --- Attention organ operator tab (read-only) ---
     # orion-heartbeat's debug HTTP surface. Hub runs on the host network in
@@ -789,6 +822,22 @@ class Settings(BaseSettings):
     # concurrent runs on topic-foundry's side.
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED: bool = Field(
         default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED"
+    )
+    # Own kill switch for AI Town's own concept-graph step-group, separate
+    # from the flag above -- review finding 2026-08-20: without this, an
+    # operator who wants to pause the experimental, interpretability-only
+    # AI Town pipeline (bad clustering, unwanted LLM enrichment spend,
+    # hammering topic-foundry) could not do so without also disabling
+    # Orion's own production concept-graph pipeline. Rides on the same tick
+    # interval/timing as the flag above (still ships inside the same
+    # SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED loop, just skips the AI Town
+    # step-group when this is false) -- independent CADENCE was raised as a
+    # real open question by the design spec's own "Missing questions" and
+    # deliberately deferred (no real AI-Town cluster-quality data yet to
+    # tune a second interval against); independent ENABLE is a simpler,
+    # already-justified need (a kill switch) and is not deferred.
+    SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED: bool = Field(
+        default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED"
     )
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
         default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"

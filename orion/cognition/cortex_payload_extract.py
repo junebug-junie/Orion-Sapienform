@@ -4,6 +4,64 @@ from __future__ import annotations
 
 from typing import Any
 
+# Canonical home for this check (2026-08-19), promoted here from
+# services/orion-hub/scripts/endogenous_outreach.py -- that module found the
+# real incident this exists for (2026-08-14: a llamacpp 400 arrived as a
+# perfectly non-empty final_text, sailed past an emptiness-only check, and
+# was delivered/persisted into a real chat thread as if Orion had said it)
+# and built the fix, but only for its own bare cortex_client.chat() path.
+# `extract_cortex_payload_text()`/`extract_voice_finalize_text()`/
+# `extract_finalize_reflection_payload()` in orion/harness/finalize.py --
+# the SHARED code path every real unified turn's finalize chain runs
+# through, not just outreach's -- had the identical "if text: return text"
+# vulnerability with no detection at all. Confirmed live, 2026-08-19: a real
+# circe-worker outage produced the exact string
+# "[Error: llamacpp timed out after waiting]" as `orion_voice_finalize`'s
+# own `final_text`, which the harness governor would have delivered as
+# Orion's real spoken answer had outreach's OWN defense-in-depth backstop
+# (a second copy of this exact check) not happened to also be in the call
+# path that day. Moved here, the shared cortex-payload-extraction module
+# both callers already depend on, so there is one definition instead of
+# two drifting copies.
+_ERROR_TEXT_PREFIXES = (
+    "[error",
+    "error:",
+    "traceback (most recent call last)",
+    "internal server error",
+)
+_ERROR_TEXT_MARKERS = (
+    "llamacpp failed",
+    "llamacpp timed out",
+    "client error '4",
+    "client error '5",
+    "server error '5",
+    "connection refused",
+    "read timeout",
+)
+
+
+def looks_like_error_text(text: str) -> bool:
+    """True when generated 'prose' is really a plumbing error report.
+
+    Backstop only -- a caller's own ok/error result fields are the primary
+    gate; this exists because an upstream can report failure purely in the
+    text (see the module-level comment above for the two real incidents
+    that made this necessary). Kept deliberately narrow: it matches error
+    *framing*, not the mere presence of the word "error", so real prose
+    reflecting on an error genuinely encountered elsewhere is not
+    swallowed -- e.g. "the codebase is throwing errors I can't map yet" is
+    not this.
+    """
+    stripped = str(text or "").strip().lower()
+    if not stripped:
+        return False
+    if stripped.startswith(_ERROR_TEXT_PREFIXES):
+        return True
+    # Markers only count near the start; a long reflective passage that
+    # happens to mention a timeout deep in the body is not an error report.
+    head = stripped[:200]
+    return any(marker in head for marker in _ERROR_TEXT_MARKERS)
+
 
 def _openai_choice_message_text(raw: Any) -> list[str]:
     out: list[str] = []

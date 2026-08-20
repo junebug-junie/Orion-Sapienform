@@ -215,7 +215,15 @@ def test_trend_buffer_accumulates_across_ticks(monkeypatch):
     its own `.snapshot()`), so this must patch `build_substrate_store_from_env`
     once and vary `.snapshot()`'s return value per call, not re-patch with a
     fresh store each iteration (which would only ever take effect on the
-    first call, since later calls hit the already-cached store)."""
+    first call, since later calls hit the already-cached store).
+
+    Window explicitly set to 4 (>= the 4 ticks fired below) rather than relying
+    on the real default -- this test asserts the buffer accumulates *up to* its
+    configured size, a property independent of whatever
+    SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS happens to default to
+    (2026-08-19: default changed 10 -> 2, which would otherwise silently make
+    this assert a stale buffer length instead of the real window size)."""
+    monkeypatch.setenv("SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS", "4")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
     assert len(worker._attention_self_model_trend_buffer) == 0
 

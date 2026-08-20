@@ -61,14 +61,30 @@ class ProposalRuntimeStore:
     def load_attention_frame_for_field_tick(self, field_tick_id: str) -> FieldAttentionFrameV1 | None:
         """2026-07-22 (SelfStateV1 burn): looks up by source_field_tick_id
         directly rather than by a self-state-provided frame_id -- attention
-        frames were always keyed to a field tick underneath."""
+        frames were always keyed to a field tick underneath.
+
+        2026-08-19: reads the source_field_tick_id COLUMN, not the same key
+        extracted out of frame_json. The table has carried
+        idx_substrate_attention_frames_source_tick on that column all along, but
+        `frame_json ->> 'source_field_tick_id'` is an expression the index cannot
+        answer, so the planner fell back to walking
+        idx_substrate_attention_frames_generated_at end to end and de-TOASTing
+        every JSON blob to evaluate the filter. Measured live with
+        EXPLAIN (ANALYZE, BUFFERS): 553,906 buffers touched (~4.3 GB) and
+        4,777 ms for a single lookup that returns at most one row.
+
+        Safe to swap: the column and the JSON key agree on all 99,626 rows in
+        the live table (`where source_field_tick_id is distinct from
+        (frame_json ->> 'source_field_tick_id')` returns 0), and the column is
+        NOT NULL-populated for every row.
+        """
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
                     text(
                         """
                         SELECT frame_json FROM substrate_attention_frames
-                        WHERE (frame_json ->> 'source_field_tick_id') = :field_tick_id
+                        WHERE source_field_tick_id = :field_tick_id
                         ORDER BY generated_at DESC
                         LIMIT 1
                         """

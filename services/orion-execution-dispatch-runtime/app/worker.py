@@ -156,7 +156,12 @@ ACTION_OUTCOME_SUBJECT = "orion"
 class ExecutionDispatchRuntimeWorker:
     def __init__(self) -> None:
         self._settings = get_settings()
-        self._store = ExecutionDispatchRuntimeStore(self._settings.postgres_uri)
+        self._store = ExecutionDispatchRuntimeStore(
+            self._settings.postgres_uri,
+            reconcile_interval_sec=getattr(
+                self._settings, "dispatch_reconcile_interval_sec", 900.0
+            ),
+        )
         self._policy = load_execution_dispatch_policy(
             Path(self._settings.execution_dispatch_policy_path)
         )
@@ -254,6 +259,8 @@ class ExecutionDispatchRuntimeWorker:
         already stale -- that means production itself has stalled, not that
         backlog depth is hiding something current.
         """
+        # Rate-limited internally (default once per 15 min); safe to call every tick.
+        self._store.reconcile_dispatch_pending()
         freshest = self._store.load_freshest_policy_frame_without_dispatch()
         if freshest is None:
             return None

@@ -82,11 +82,46 @@ class WindowStore:
             return
 
         turns = json.loads(row["turn_correlation_ids"]) if row["turn_correlation_ids"] else []
-        if isinstance(turns, list):
-            turns.append(turn_entry)
-        else:
-            turns = [turn_entry]
-        corr_ids = [t.get("correlation_id") for t in turns if isinstance(t, dict)]
+        if not isinstance(turns, list):
+            turns = []
+        # orion:memory:turn:persisted can be published more than once for the
+        # same correlation_id -- confirmed against the real producer
+        # (services/orion-sql-writer/app/worker.py): a "chat.history" envelope
+        # write emits it directly, and a separate, independent branch emits it
+        # again for the matching "chat.history.message.v1" (assistant-role)
+        # envelope via _maybe_emit_memory_turn_from_row(). Neither branch
+        # reclassifies anything -- this is a producer-side double-publish, not
+        # a legitimate two-phase classify design. A blind append here built up
+        # two window entries for one real turn, which then made
+        # fetch_grammar_evidence_for_window() query the same grammar trace_id
+        # twice and build_crystallization_from_window() mint two evidence rows
+        # citing the same source_id. Confirmed live 2026-08-20: 571 duplicate
+        # memory_crystallization_sources groups (55 chat_turn + 516
+        # grammar_event), every pair sharing one insert timestamp -- i.e. minted
+        # together from one already-duplicated evidence list, not two separate
+        # writes. This is a consumer-side guard, not a fix for the double
+        # publish itself -- any other future consumer of this channel needs its
+        # own dedup too; see the PR description for the sql-writer follow-up.
+        #
+        # Collapse ALL existing entries for this correlation_id (not just the
+        # first) into the fresh one, keeping the position of the first
+        # occurrence. A window already carrying legacy duplicates from before
+        # this fix shipped must not have a still-stale second entry survive
+        # sitting after the fresh replacement -- build_crystallization_from_window's
+        # own dedup keeps the LAST occurrence it sees, so a leftover stale
+        # entry positioned after the fresh one would silently win instead.
+        new_turns: list[dict[str, Any]] = []
+        replaced = False
+        for existing in turns:
+            if isinstance(existing, dict) and existing.get("correlation_id") == turn.correlation_id:
+                if not replaced:
+                    new_turns.append(turn_entry)
+                    replaced = True
+                continue
+            new_turns.append(existing)
+        if not replaced:
+            new_turns.append(turn_entry)
+        turns = new_turns
         await self._pool.execute(
             """
             UPDATE memory_consolidation_windows

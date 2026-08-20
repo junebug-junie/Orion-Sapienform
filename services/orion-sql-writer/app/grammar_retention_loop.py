@@ -42,15 +42,25 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
 async def grammar_retention_loop(settings: Settings) -> None:
     """Run a bounded retention cycle every `grammar_retention_interval_sec`.
 
-    Sleeps FIRST. The startup retention pass in main.py has just run with the much larger
-    startup caps, and starting a second pass immediately would stack disk load at exactly
-    the moment the service is also replaying its bus backlog.
+    This is now the ONLY retention path. main.py's four synchronous startup blocks were
+    removed 2026-08-20 -- they ran on the event loop ahead of the bus subscription, could
+    not converge against continuous arrival anyway, and had drifted to covering four of the
+    six managed tables.
+
+    Still sleeps FIRST, for the reason that survives that removal: boot is exactly when the
+    service is replaying its bus backlog, and adding disk load there is the wrong trade. One
+    interval of delay costs nothing that matters.
     """
     interval = float(getattr(settings, "grammar_retention_interval_sec", 0.0) or 0.0)
     if interval <= 0:
-        logger.warning(
-            "grammar_retention_loop DISABLED (GRAMMAR_RETENTION_INTERVAL_SEC=%s); "
-            "retention reverts to startup-only, which cannot keep up with arrival",
+        # NOT "reverts to startup-only" any more -- that was true until 2026-08-20 and this
+        # exact log line, the one that fires precisely when it matters, was still saying it.
+        # There is no startup pass to fall back to. This means retention NEVER RUNS, on
+        # tables taking ~1.49M rows/day combined.
+        logger.error(
+            "grammar_retention_loop DISABLED (GRAMMAR_RETENTION_INTERVAL_SEC=%s). This is "
+            "now the ONLY retention path -- the startup pass was removed -- so NOTHING will "
+            "be pruned from any of the six managed tables until this is set back above 0.",
             interval,
         )
         return
@@ -59,13 +69,30 @@ async def grammar_retention_loop(settings: Settings) -> None:
     max_elapsed = float(
         getattr(settings, "grammar_retention_periodic_max_elapsed_sec", 20.0) or 20.0
     )
+    # `or 45.0` would be wrong here in both directions, which is what the first draft did.
+    # `0.0 or 45.0` is 45.0, so an operator setting the documented "disable" value silently
+    # got the default back; and a negative is truthy, so it passed straight through and made
+    # every table skip every cycle forever -- symptom: six WARNING lines a minute that read
+    # like a transient budget squeeze while grammar_events gained ~795k rows/day.
+    _raw_cycle = getattr(settings, "grammar_retention_periodic_max_cycle_sec", 45.0)
+    max_cycle_elapsed: float | None = float(_raw_cycle if _raw_cycle is not None else 45.0)
+    if max_cycle_elapsed <= 0:
+        logger.warning(
+            "grammar_retention_cycle_budget_disabled value=%s -- each table now gets the "
+            "full per-table cap (%.0fs) with nothing bounding the cycle, so a cycle can run "
+            "up to tables x cap. Retention still runs; only the cycle bound is off.",
+            max_cycle_elapsed,
+            max_elapsed,
+        )
+        max_cycle_elapsed = None
     days_for = retention_days_for(settings)
     logger.info(
         "grammar_retention_loop starting interval_sec=%.0f max_batches=%s "
-        "max_elapsed_sec=%.0f days=%s",
+        "max_elapsed_sec=%.0f max_cycle_sec=%s days=%s",
         interval,
         max_batches,
         max_elapsed,
+        "disabled" if max_cycle_elapsed is None else f"{max_cycle_elapsed:.0f}",
         days_for,
     )
 
@@ -90,6 +117,7 @@ async def grammar_retention_loop(settings: Settings) -> None:
                 days_for=days_for,
                 max_batches=max_batches,
                 max_elapsed_sec=max_elapsed,
+                max_cycle_elapsed_sec=max_cycle_elapsed,
                 stop=stop,
             )
         except asyncio.CancelledError:

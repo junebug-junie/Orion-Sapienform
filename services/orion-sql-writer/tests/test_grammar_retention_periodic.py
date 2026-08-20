@@ -614,30 +614,29 @@ class TestTheParentTraceRowIsPrunedToo:
         assert "grammar_traces" in grammar_truth._retention_window_config_missing
         grammar_truth._retention_window_config_missing.clear()
 
-    def test_startup_only_covers_the_pre_periodic_tables_on_purpose(self):
-        """main.py hand-lists its startup retention blocks. grammar_traces is deliberately
-        NOT among them: the periodic loop covers it 60s after boot, and main.py's startup
-        pass already blocks the event loop for ~260s across four tables -- adding a fifth
-        copy makes a known problem worse to save one cycle.
+    def test_no_table_has_a_startup_retention_block_any_more(self):
+        """The periodic loop is the ONLY retention path, as of 2026-08-20.
 
-        This test exists so that stays a DECISION. A sixth table added to
-        GRAMMAR_RETENTION_TABLES will fail here until someone states which side it is on."""
-        import pathlib
+        This replaces a test that pinned WHICH tables were startup-exempt. That framing was
+        wrong: it treated a drift between two hand-maintained lists as a thing to document
+        rather than a thing to delete. main.py hand-listed four tables while
+        GRAMMAR_RETENTION_TABLES had six, so two were exempt purely by omission.
+
+        The four startup blocks ran synchronously on the event loop AHEAD of the bus
+        subscription -- measured at ~260s of not consuming events on every restart -- and
+        could not converge against continuous arrival anyway, which is the entire reason the
+        periodic loop exists. One path, and this test is what keeps it one.
+        """
+        import pathlib as _pathlib
 
         main_src = (
-            pathlib.Path(__file__).resolve().parents[1] / "app" / "main.py"
+            _pathlib.Path(__file__).resolve().parents[1] / "app" / "main.py"
         ).read_text()
-        registered = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
-        # Both of these are deliberately periodic-only. The startup pass already blocks the
-        # event loop for ~260s; every table added to it makes that worse, and the periodic
-        # loop reaches the same steady state within a minute of boot anyway.
-        periodic_only = {"grammar_traces", "substrate_proposal_frames"}
-        for table in registered:
-            covered = f"apply_{table}_retention" in main_src
-            if table in periodic_only:
-                assert not covered, f"{table} gained a startup block; update this test"
-            else:
-                assert covered, f"{table} lost its startup block in main.py"
+        for table, _ in grammar_truth.GRAMMAR_RETENTION_TABLES:
+            assert f"apply_{table}_retention" not in main_src, (
+                f"{table} has a startup retention block in main.py again. Retention belongs "
+                f"in the periodic loop; a startup pass blocks the bus subscription behind it."
+            )
 
     def test_the_atlas_listing_and_the_delete_both_have_an_index(self):
         """Two different queries, two different indexes. Without (started_at desc) the Atlas
@@ -971,3 +970,252 @@ def test_the_grammar_cursor_floor_also_normalises_a_naive_timestamp():
     assert floor is not None, "fixture did not reach the branch under test"
     assert floor.tzinfo is not None
     assert floor < datetime.now(timezone.utc)  # the comparison the caller makes
+
+
+class TestTheCycleBudget:
+    """`max_elapsed_sec` bounds one table. Nothing bounded the whole cycle.
+
+    Six tables x a 20s per-table cap is a 120s cycle on a 60s timer. The gap was invisible
+    because at 3 batches every table finishes in about a second, so the per-table cap never
+    binds and the cycle never approaches its worst case. That is exactly the kind of bound
+    that is missing until the day it matters.
+    """
+
+    @staticmethod
+    def _cycle(monkeypatch, *, costs, **kwargs):
+        """Run a real cycle with fake per-table work of known duration.
+
+        Returns [(table, elapsed_cap_it_was_given), ...] in call order.
+        """
+        calls = []
+        clock = {"t": 0.0}
+        # Rebind grammar_truth's module-local `time` name, NOT `grammar_truth.time.monotonic`
+        # -- the latter mutates the shared `time` module object process-wide for the duration
+        # of the test. monkeypatch does restore it, and no leakage was observed, but a global
+        # mutation is the wrong seam when a local rebind costs the same.
+        monkeypatch.setattr(
+            grammar_truth, "time", SimpleNamespace(monotonic=lambda: clock["t"])
+        )
+
+        def make(table):
+            def fn(days, *, max_batches, max_elapsed_sec):
+                calls.append((table, max_elapsed_sec))
+                clock["t"] += costs.get(table, 0.0)
+                return GrammarRetentionState()
+            return fn
+
+        tables = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        monkeypatch.setattr(
+            grammar_truth, "GRAMMAR_RETENTION_TABLES",
+            tuple((t, make(t)) for t in tables),
+        )
+        grammar_truth.run_one_retention_cycle(
+            days_for={t: 3 for t in tables},
+            max_batches=3,
+            **kwargs,
+        )
+        return calls
+
+    def test_without_a_cycle_budget_every_table_gets_the_full_per_table_cap(self, monkeypatch):
+        """The old behaviour, kept reachable: max_cycle_elapsed_sec=None is opt-out."""
+        calls = self._cycle(monkeypatch, costs={}, max_elapsed_sec=20.0,
+                            max_cycle_elapsed_sec=None)
+        assert calls, "no tables ran"
+        assert {cap for _, cap in calls} == {20.0}
+
+    def test_the_budget_is_split_fairly_not_first_come(self, monkeypatch):
+        """The starvation bug this exists to prevent.
+
+        grammar_events is FIRST in GRAMMAR_RETENTION_TABLES and the only table carrying real
+        debt (4,134,774 rows live 2026-08-20, versus 0 for the rest). Under a first-come
+        budget it takes the whole cycle every cycle and the five behind it never run -- which
+        reads as healthy in the logs, because grammar_events' own numbers look fine.
+        """
+        calls = self._cycle(monkeypatch, costs={}, max_elapsed_sec=20.0,
+                            max_cycle_elapsed_sec=45.0)
+        n = len(calls)
+        assert n == 6, [t for t, _ in calls]
+        # First table may claim at most its fair share, never the whole budget.
+        first_cap = calls[0][1]
+        assert first_cap == pytest.approx(45.0 / n), calls
+        assert first_cap < 20.0, "fair share should bind before the per-table cap here"
+        # Every table got a real, positive slice.
+        assert all(cap > 0 for _, cap in calls), calls
+
+    def test_the_share_is_recomputed_from_what_is_left_not_fixed_up_front(self, monkeypatch):
+        """A slow early table shrinks the NEXT share; shares then grow as the divisor falls.
+
+        The naive reading -- "every later table gets less" -- is wrong, and asserting it was
+        my own first mistake here. remaining_budget/remaining_tables recovers: after a 30s
+        overrun of a 45s budget, 15s is left and the shares run 3.0, 3.75, 5.0, 7.5, 15.0 as
+        the divisor drops 5, 4, 3, 2, 1. That is the correct behaviour -- the budget is a
+        bound on the CYCLE, so an early overrun must not permanently penalise every table
+        behind it, only redistribute what remains.
+        """
+        calls = self._cycle(
+            monkeypatch,
+            costs={"grammar_events": 30.0},
+            max_elapsed_sec=20.0,
+            max_cycle_elapsed_sec=45.0,
+        )
+        assert len(calls) == 6, calls
+        assert calls[0][0] == "grammar_events"
+        assert calls[0][1] == pytest.approx(45.0 / 6)
+        later = [cap for _, cap in calls[1:]]
+        assert later == pytest.approx([3.0, 3.75, 5.0, 7.5, 15.0]), calls
+        # No table is ever handed a zero or negative slice, and none exceeds the per-table cap.
+        assert all(0 < cap <= 20.0 for _, cap in calls), calls
+
+    def test_an_exhausted_budget_skips_loudly_rather_than_silently(self, monkeypatch, caplog):
+        """A table dropped from a cycle with no log line is indistinguishable from a table
+        with no debt. That is the failure mode the whole periodic loop was built to end."""
+        with caplog.at_level("WARNING"):
+            calls = self._cycle(
+                monkeypatch,
+                costs={"grammar_events": 100.0},
+                max_elapsed_sec=20.0,
+                max_cycle_elapsed_sec=45.0,
+            )
+        assert len(calls) == 1, calls
+        assert caplog.text.count("grammar_retention_cycle_budget_exhausted") == 5
+        # Each skipped table must be named. An earlier version of this wrote
+        # `assert f"table={table}" in caplog.text or True`, which is unconditionally true --
+        # so the one thing this test exists to check (that a dropped table is identifiable,
+        # not just counted) was unasserted.
+        skipped = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES
+                   if t != "grammar_events"]
+        assert len(skipped) == 5, skipped
+        for table in skipped:
+            assert f"table={table}" in caplog.text, (table, caplog.text)
+
+    def test_the_per_table_cap_still_wins_when_it_is_the_smaller_one(self, monkeypatch):
+        """The budget adds a bound; it must not RELAX the existing one."""
+        calls = self._cycle(monkeypatch, costs={}, max_elapsed_sec=2.0,
+                            max_cycle_elapsed_sec=600.0)
+        assert {cap for _, cap in calls} == {2.0}
+
+    @pytest.mark.parametrize(
+        "configured,expected",
+        [(45.0, 45.0), (12.5, 12.5), (0.0, None), (-1.0, None)],
+    )
+    def test_the_loop_passes_the_cycle_budget_through(self, monkeypatch, configured, expected):
+        """Asserts the VALUE the loop actually hands to run_one_retention_cycle.
+
+        The first version of this asserted `"max_cycle_elapsed_sec=max_cycle_elapsed" in
+        inspect.getsource(...)` -- the exact source-text idiom this file already documents as
+        defeated once, when a new function's own docstring satisfied the string check. It also
+        could not have caught the real bug here, which was the VALUE: `float(x or 45.0)` turns
+        a configured 0 into 45 (so the documented opt-out silently did nothing) and lets a
+        negative through untouched (so every table skipped every cycle, forever).
+        """
+        import asyncio
+
+        from app import grammar_retention_loop as mod
+
+        assert "grammar_retention_periodic_max_cycle_sec" in Settings.model_fields
+
+        seen = {}
+
+        def fake_cycle(**kw):
+            seen.update(kw)
+            raise asyncio.CancelledError  # one cycle, then unwind
+
+        monkeypatch.setattr(mod, "run_one_retention_cycle", fake_cycle)
+
+        settings = SimpleNamespace(
+            grammar_retention_interval_sec=0.001,
+            grammar_retention_periodic_max_batches=3,
+            grammar_retention_periodic_max_elapsed_sec=20.0,
+            grammar_retention_periodic_max_cycle_sec=configured,
+            **{f"{t}_retention_days": 3 for t in
+               (n for n, _ in grammar_truth.GRAMMAR_RETENTION_TABLES)},
+        )
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(mod.grammar_retention_loop(settings))
+        assert seen.get("max_cycle_elapsed_sec") == expected, seen
+
+    def test_the_divisor_counts_only_tables_with_a_window(self, monkeypatch):
+        """The `eligible` prefilter is what keeps a partially-configured deployment correct.
+
+        If the divisor were len(GRAMMAR_RETENTION_TABLES) instead of the number of tables
+        that actually have a window, a deployment with 2 of 6 tables configured would hand
+        each of them 1/6 of the budget and quietly leave 2/3 of the cycle unused. Every other
+        test here passes days_for for all six, so none of them can see this.
+        """
+        calls = []
+        clock = {"t": 0.0}
+        monkeypatch.setattr(
+            grammar_truth, "time", SimpleNamespace(monotonic=lambda: clock["t"])
+        )
+
+        def make(table):
+            def fn(days, *, max_batches, max_elapsed_sec):
+                calls.append((table, max_elapsed_sec))
+                return GrammarRetentionState()
+            return fn
+
+        names = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        monkeypatch.setattr(
+            grammar_truth, "GRAMMAR_RETENTION_TABLES",
+            tuple((t, make(t)) for t in names),
+        )
+        # Only two of the six have a window. Budget 20 with a per-table cap of 20 so the
+        # SHARE is what binds -- at 45.0 the fair share would be 22.5, the per-table cap of
+        # 20 would win, and a broken divisor of 6 (giving 7.5) would be indistinguishable
+        # from a correct one. Picking a budget where the cap wins is how this test would
+        # have passed while proving nothing; that was its first draft.
+        days = {names[0]: 3, names[-1]: 3}
+        grammar_truth.run_one_retention_cycle(
+            days_for=days, max_batches=3, max_elapsed_sec=20.0, max_cycle_elapsed_sec=20.0
+        )
+        assert [t for t, _ in calls] == [names[0], names[-1]]
+        # Correct divisor (2 eligible): 20/2 = 10.0. A divisor of 6 would give 3.33.
+        assert calls[0][1] == pytest.approx(10.0), calls
+        assert calls[1][1] == pytest.approx(20.0), calls
+
+    @pytest.mark.parametrize("budget", [0.0, -1.0])
+    def test_a_non_positive_budget_means_no_bound_not_skip_everything(self, monkeypatch, budget):
+        """Getting this backwards turns a config typo into silently-disabled retention whose
+        only symptom is a WARNING per table per minute that reads like a transient squeeze."""
+        calls = self._cycle(monkeypatch, costs={}, max_elapsed_sec=20.0,
+                            max_cycle_elapsed_sec=budget)
+        assert len(calls) == 6, calls
+        assert {cap for _, cap in calls} == {20.0}
+
+    def test_each_state_records_the_cap_it_was_actually_handed(self, monkeypatch):
+        """`/grammar/truth` must report the bound that governed, not the one in settings.
+
+        Live before this field existed, the endpoint showed `max_elapsed_sec: 120.0` next to
+        `elapsed_sec: 1.08` for a run whose real cap was 7.5 -- config truth on the endpoint
+        whose entire job is runtime truth. An operator raising the batch cap would see
+        `capped_by_elapsed_limit: true` beside 120.0 and have no way to find the real number.
+        """
+        clock = {"t": 0.0}
+        monkeypatch.setattr(
+            grammar_truth, "time", SimpleNamespace(monotonic=lambda: clock["t"])
+        )
+
+        def make(_table):
+            def fn(days, *, max_batches, max_elapsed_sec):
+                return GrammarRetentionState()
+            return fn
+
+        names = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        monkeypatch.setattr(
+            grammar_truth, "GRAMMAR_RETENTION_TABLES",
+            tuple((t, make(t)) for t in names),
+        )
+        out = grammar_truth.run_one_retention_cycle(
+            days_for={t: 3 for t in names},
+            max_batches=3,
+            max_elapsed_sec=20.0,
+            max_cycle_elapsed_sec=45.0,
+        )
+        assert set(out) == set(names)
+        # Fair share of 45s across 6 tables binds below the 20s per-table cap.
+        assert out[names[0]].effective_max_elapsed_sec == pytest.approx(45.0 / 6)
+        assert all(
+            0 < st.effective_max_elapsed_sec <= 20.0 for st in out.values()
+        ), {k: v.effective_max_elapsed_sec for k, v in out.items()}
+        # And it must differ from the configured per-table cap, or it is reporting nothing.
+        assert out[names[0]].effective_max_elapsed_sec != 20.0

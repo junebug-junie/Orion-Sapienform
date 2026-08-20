@@ -391,6 +391,27 @@ class Settings(BaseSettings):
     grammar_retention_periodic_max_elapsed_sec: float = Field(
         20.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_ELAPSED_SEC"
     )
+
+    # Bounds the WHOLE cycle, where the two settings above bound one table each. That gap
+    # was a real missing bound: six tables x a 20s per-table cap is a 120s cycle on a 60s
+    # timer, with nothing anywhere saying so. 45s leaves headroom inside the interval.
+    #
+    # run_one_retention_cycle splits this as a fair share across the tables that still have a
+    # window configured, so the first table in the tuple (grammar_events, the only one
+    # carrying real debt) cannot starve the five behind it.
+    #
+    # NOTE the batch cap above is deliberately NOT raised alongside this. At 3 batches
+    # grammar_events uses 1.08-3.33s of its per-table budget (three consecutive live cycles)
+    # and drains its 4.13M-row backlog in ~31 hours net of arrival. Raising it to 10 would
+    # cut that at 3.3x the delete I/O, on a host already I/O-stalled ~22% of wall time and
+    # where this same pass was measured driving stall to ~21%. Converging in a day is not a
+    # problem worth buying with that. Raise it only with an I/O measurement in hand -- and
+    # raise the cycle budget with it: at ~1.11s/batch, 10 batches needs ~11.1s, above the
+    # 7.5s fair share a 45s budget gives the first of six tables. `effective_max_elapsed_sec`
+    # on /grammar/truth is what tells you which cap actually bound.
+    grammar_retention_periodic_max_cycle_sec: float = Field(
+        45.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
+    )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,
         alias="SQL_WRITER_ALLOW_ACCEPTED_PRESSURE_INGEST",

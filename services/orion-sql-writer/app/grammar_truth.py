@@ -222,6 +222,10 @@ class GrammarRetentionState:
     debt_count_failed_reason: str | None = None
     batch_size: int = 0
     max_batches_per_startup: int = 0
+    # The elapsed cap this run was actually handed. Differs from the configured
+    # *_MAX_ELAPSED_SEC whenever the cycle budget's fair share is the smaller number, which
+    # is the normal case. None means the table has not run yet this process.
+    effective_max_elapsed_sec: float | None = None
 
 
 _retention_state = GrammarRetentionState()
@@ -950,8 +954,18 @@ def _retention_block(rs: GrammarRetentionState, *, configured_days: int, batch_s
         "enabled": rs.enabled or configured_days > 0,
         "configured_days": configured_days,
         "batch_size": batch_size,
-        "max_batches_per_startup": max_batches,
-        "max_elapsed_sec": max_elapsed_sec,
+        # RENAMED 2026-08-20 to stop advertising a bound that governs nothing. The startup
+        # retention pass was deleted, so *_MAX_BATCHES_PER_STARTUP / *_MAX_ELAPSED_SEC are
+        # now only defaults on functions that production never calls without arguments --
+        # the periodic loop always passes GRAMMAR_RETENTION_PERIODIC_* instead. Reporting
+        # them as the operative caps had /grammar/truth stating config truth on the endpoint
+        # whose entire purpose is runtime truth: live it showed max_elapsed_sec 120.0 next to
+        # elapsed_sec 1.08 against a real cap of 7.5.
+        "configured_max_batches_unused_startup_default": max_batches,
+        "configured_max_elapsed_sec_unused_startup_default": max_elapsed_sec,
+        # What this run was ACTUALLY handed, after the cycle budget's fair share. This is the
+        # number to read alongside capped_by_elapsed_limit.
+        "effective_max_elapsed_sec": rs.effective_max_elapsed_sec,
         "cutoff_at": rs.cutoff_at.isoformat() if rs.cutoff_at else None,
         "last_run_at": rs.last_run_at.isoformat() if rs.last_run_at else None,
         "rows_pruned_last_run": rs.rows_pruned_last_run,
@@ -1190,15 +1204,52 @@ def run_one_retention_cycle(
     days_for: dict[str, int],
     max_batches: int,
     max_elapsed_sec: float,
+    max_cycle_elapsed_sec: float | None = None,
     stop: Any = None,
 ) -> dict[str, GrammarRetentionState]:
     """One bounded pass over every retention-managed table. Synchronous by design.
 
     Callers on an event loop MUST run this in a worker thread -- it uses blocking
     SQLAlchemy connections, and sql-writer's event loop is also draining the bus.
+
+    `max_elapsed_sec` bounds ONE TABLE. `max_cycle_elapsed_sec` bounds the whole cycle, and
+    without it the two are not the same number: six tables x a 20s per-table cap is a 120s
+    cycle on a 60s timer.
+
+    The budget is split as a FAIR SHARE (remaining budget / remaining eligible tables), not
+    first-come, because first-come starves and the order here is FIXED. Whichever table sits
+    earliest in GRAMMAR_RETENTION_TABLES and has debt would consume a first-come budget every
+    cycle, and the tables behind it would silently never run -- which reads as "retention is
+    working" in the logs, because the first table's own numbers look fine.
+
+    That is not hypothetical. Measured live 2026-08-20 during substrate_proposal_frames' own
+    backfill: it carried 109,585 rows of debt and took 8.21s in a cycle where grammar_events
+    took 1.08-3.33s and the other four took 0.01-0.30s. It is LAST in the tuple, so under a
+    first-come budget it is exactly the table that would have been starved -- by a table
+    ahead of it that was itself working perfectly correctly.
+
+    Do NOT restate this as "only table X has debt". Debt is transient, and an earlier version
+    of this docstring said exactly that and was wrong within the hour: grammar_events was the
+    only backlogged table when this was written, substrate_proposal_frames had 109,585 rows
+    an hour later, and both were at 0 by evening. The argument rests on the fixed ORDERING,
+    not on which table happens to be behind today.
+
+    Fair share rather than rotation because the ORDER is a correctness constraint, not a
+    preference: grammar_traces must be pruned after the children that reference it.
+
+    A non-positive `max_cycle_elapsed_sec` means NO CYCLE BUDGET, not "skip every table".
+    Getting that backwards turns a config typo into silently-disabled retention whose only
+    symptom is a WARNING per table per minute that reads like a transient squeeze.
     """
     out: dict[str, GrammarRetentionState] = {}
-    for table, fn in GRAMMAR_RETENTION_TABLES:
+    cycle_started = time.monotonic()
+    eligible = [
+        (table, fn)
+        for table, fn in GRAMMAR_RETENTION_TABLES
+        if int(days_for.get(table, 0) or 0) > 0
+    ]
+    remaining_tables = len(eligible)
+    for table, fn in eligible:
         # Cooperative stop. asyncio.to_thread is NOT cancellable once the callable has
         # started, so without this the event loop reports a clean shutdown while this
         # thread keeps deleting -- and Python joins the executor thread at interpreter
@@ -1208,10 +1259,33 @@ def run_one_retention_cycle(
             logger.info("grammar_retention_cycle_stopping before table=%s", table)
             break
         days = int(days_for.get(table, 0) or 0)
-        if days <= 0:
-            continue
+        table_cap = float(max_elapsed_sec)
+        if max_cycle_elapsed_sec is not None and float(max_cycle_elapsed_sec) > 0:
+            spent = time.monotonic() - cycle_started
+            remaining_budget = float(max_cycle_elapsed_sec) - spent
+            if remaining_budget <= 0:
+                # Never silently skip. A table dropped from a cycle with no log line is
+                # indistinguishable from a table with no debt.
+                logger.warning(
+                    "grammar_retention_cycle_budget_exhausted skipping table=%s "
+                    "spent_sec=%.1f budget_sec=%.1f",
+                    table,
+                    spent,
+                    max_cycle_elapsed_sec,
+                )
+                remaining_tables -= 1
+                continue
+            table_cap = min(table_cap, remaining_budget / remaining_tables)
+        remaining_tables -= 1
         try:
-            out[table] = fn(days, max_batches=max_batches, max_elapsed_sec=max_elapsed_sec)
+            state = fn(days, max_batches=max_batches, max_elapsed_sec=table_cap)
+            # The cap this run ACTUALLY got, which is not necessarily the configured one.
+            # Without it, an operator who raises the batch cap sees capped_by_elapsed_limit
+            # sitting next to the settings value and has no way to discover the real bound
+            # was the fair share -- config truth contradicting runtime truth on the endpoint
+            # whose entire job is runtime truth.
+            state.effective_max_elapsed_sec = table_cap
+            out[table] = state
         except Exception:
             # One table failing must not stop the others -- they are independent tables
             # with independent debt, and the whole point of the loop is that it keeps

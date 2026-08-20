@@ -373,6 +373,14 @@ class Settings(BaseSettings):
         alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",
     )
     repair_pressure_probe_route: str = Field("quick", alias="REPAIR_PRESSURE_PROBE_ROUTE")
+    # Same-turn LLM novelty/salience judgment for the chat-scoped attention/
+    # curiosity pipeline (app/current_turn_llm_signals.py), replacing the
+    # deleted LegacyRegexSignalDetector's "any capitalized word" regex.
+    # Quick-lane classification call, not a generation call -- see that
+    # module's docstring for the full rationale.
+    current_turn_signal_probe_route: str = Field("quick", alias="CURRENT_TURN_SIGNAL_PROBE_ROUTE")
+    current_turn_signal_probe_timeout_sec: float = Field(3.0, alias="CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC")
+    current_turn_signal_probe_max_tokens: int = Field(80, alias="CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS")
     enable_pre_turn_appraisal_handler: bool = Field(
         True,
         alias="ENABLE_PRE_TURN_APPRAISAL_HANDLER",

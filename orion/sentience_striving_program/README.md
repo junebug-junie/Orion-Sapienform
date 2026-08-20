@@ -700,6 +700,47 @@ first place. Full reasoning and phased detail:
    done: calibrating `ORION_GOAL_PROVENANCE_MIN_STREAK` against real accumulated
    data, and generalizing Hub's Substrate Lattice UI to show real goal-provenance
    ticks (Part H).
+   **Part F done (2026-08-11, PR #1553 + review-fix follow-up 335806fae, both merged
+   before this line was next updated):** `dedupe_goal_headlines_by_drive_origin` was
+   confirmed provably unreachable in production (not "close to a no-op" as the design
+   doc above guessed) and deleted along with `AutonomyGoalHeadlineV1.drive_origin`,
+   `AutonomyActiveGoalV1.drive_origin`, `GoalProposalV1.drive_origin`, and
+   `_merge_orion_goals_into_state`'s one call site. The review follow-up caught and
+   fixed two more real consumers the first commit missed: a mandatory (non-`OPTIONAL`)
+   SPARQL triple pattern that would silently break future goal matching, and a real
+   live Hub UI consumer (`drives_analytics_queries.py`/`drives-analytics.js`).
+   **Left deliberately, not zombie debt**: `SubstrateEpisodeIntentV1.drive_origin` /
+   `policy_act.py::resolve_episode_intent` (a real store slot-key convention, not a
+   taxonomy value) and `AutonomyGoalPlannedV1.drive_origin` /
+   `AutonomyGoalExecuteInputV1.drive_origin` (real bus schema fields, disclosed as a
+   separate scope decision in that commit, not overlooked). This item's `drive_origin`
+   retirement is closed.
+   **`ORION_GOAL_PROVENANCE_MIN_STREAK` calibration, run 2026-08-20** against the real
+   `goal_provenance_streak_ticks` telemetry Part H shipped (9.2 days of history,
+   342,078 rows, 5,516 reconstructed dominance runs — `scripts/analysis/
+   measure_goal_provenance_streak_distribution.py`, unchanged from its 2026-08-11
+   build). The live default (`min_streak=3`) clears **93.38%** of real completed runs
+   — it filters almost exactly the momentary single/double-tick flips it exists to
+   debounce (streak lengths 1-2 are 6.62% of all completed runs combined) without
+   meaningfully blocking genuine sustained dominance. Not obviously mis-set in either
+   direction; no change recommended. **Separately disclosed, not this item's scope to
+   fix**: the same run surfaced several real multi-thousand-tick mega-streaks —
+   `node:substrate.chat` reaching max streak lengths of 16,036 / 12,458 / 5,010 /
+   4,611 / 3,454 ticks between 2026-08-13 and 2026-08-19 — unrelated to the
+   `node:substrate.route` variance-floor bug fixed same-day above (different target,
+   different mechanism, and these predate that fix). Not investigated further here;
+   plausibly a genuine quiet period for a domain with real, infrequent activity
+   (`node:substrate.chat` had only ~121 real observations as of the route
+   investigation, far fewer than the other four native domains), the same shape as
+   `node:athena`'s settled-architectural dominance rather than a new bug — but that is
+   an inference, not confirmed against live data the way the route bug was. A real next
+   step if picked up: check whether `node:substrate.chat`'s own variance during those
+   windows was genuinely near-constant (calm, thin data) or itself degenerate/floored.
+   **Still not done, genuinely unbuilt (confirmed live 2026-08-20: zero references to
+   `goal_provenance`/`FieldGoalProvenanceV1`/`substrate_goal_provenance` anywhere under
+   `services/orion-hub/`)**: generalizing Hub's Substrate Lattice UI to show real
+   goal-provenance ticks (Part H's UI half). Real, separate-scope build (a new debug
+   panel), not done in this patch.
 7. **Re-evaluate integration** only after 4 and 5 produce real, comparable data — not before.
 
 ## 7. Processes — how this program actually operates

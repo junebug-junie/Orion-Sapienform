@@ -233,6 +233,29 @@ unreachable, or not-yet-computed (`{"ok": false}`) heartbeat leaves these three 
 honest `None`/`""` defaults and never blocks this tick's own persist. Not yet consumed by anything
 downstream — additive-only, same status as this tick's own siblings before their consumer existed.
 
+**2026-08-20: L6 item 5 (HOT) measured — `prediction_error_confidence` does NOT track
+`predicted_shift`'s own reliability; do not wire it in as one.** Item 5
+(`docs/superpowers/specs/2026-07-23-predicted-shift-reversion-finding.md`'s "Implication for item
+5" section) is the second-order question of whether the self-model's own confidence tracks whether
+its prediction actually came true. Measured directly against 7 days of live, already-persisted
+`substrate_attention_self_model` history (`scripts/analysis/measure_self_model_calibration.py`,
+chronological 70/30 TRAIN/TEST split, TRAIN-only confidence-quantile bins applied to TEST, same
+leakage-avoidance convention as item 4's own TEST validation): **inverted, not calibrated.**
+Top-confidence-quartile TEST predictions were correct 66.4% of the time; bottom-quartile were
+correct 73.2% of the time (z=-3.22, p<0.001). Full numbers and per-bin table:
+`docs/superpowers/specs/2026-08-20-l6-item5-self-model-calibration-finding.md`. Plausible mechanism
+(not independently confirmed further): `prediction_error_confidence` is `1 - mean(error)` across
+domains, so it is HIGH exactly when the system is calm overall — but the reversion formula
+(`orion/substrate/prediction_error_trend.py`) is accurate because of spike-and-settle dynamics, which
+have the least real signal to revert *from* during calm periods. The two scalars answer genuinely
+different questions (overall systemic calm vs. one domain's imminent direction) and happen to be
+anti-correlated on this data, not merely uncorrelated. **No code changed as a result** — nothing
+live today treats `prediction_error_confidence` as a `predicted_shift` trust signal (its two real
+consumers, `orion-equilibrium-service`'s insight/flow metacog gates and this service's own
+`honesty_metrics` brain-frame region, both use it for its own documented meaning, not as a proxy for
+a different field's accuracy) — this finding is a guardrail against a future patch building that
+connection on the assumption it would obviously work.
+
 - `SUBSTRATE_HEARTBEAT_H1_URL` (default `http://orion-athena-heartbeat:7251/h1`, the real
   container-name URL on the same `app-net` docker network both services already share): orion-
   heartbeat's `/h1` URL. Set to empty to disable the fetch entirely on a deployment that doesn't run
@@ -1040,7 +1063,12 @@ durably upserts per Active-Inference domain (`node:substrate.<domain>`,
 `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true`). An earlier version of this wiring passed
 `AttentionBroadcastProjectionV1` (`load_attention_broadcast()`) instead — a real object, but
 one with no `prediction_error_confidence` field at all, so the region silently never emitted
-until this was caught and fixed.
+until this was caught and fixed. **Scope caveat (2026-08-20):** this is an overall-systemic-calm
+reading (`1 - mean(prediction_error)` across domains), live-measured to be *anti*-correlated with
+whether `predicted_shift` (this same tick's own "what's about to change" claim) turns out correct
+— see the item-5 finding above. Displaying it as "honesty" is accurate to what it actually measures
+(is the system's overall predictive state calm) but would be misleading if read as "how much to
+trust the current predicted_shift claim."
 
 **`field_anomaly` / mood-arc encoder:** `_field_channel_anomaly_listener_loop()` subscribes to
 `orion:field_channel:anomaly_score` (producer: `orion-field-digester`'s

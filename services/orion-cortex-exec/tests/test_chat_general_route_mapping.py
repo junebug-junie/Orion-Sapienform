@@ -101,7 +101,11 @@ def test_chat_general_final_step_requests_logprobs_when_enabled(monkeypatch) -> 
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.route == "chat"
     assert sent_req.options["return_logprobs"] is True
-    assert sent_req.options["logprobs_top_k"] == 5
+    # No explicit top_k: the gateway already defaults logprobs_top_k to
+    # settings.llm_logprob_top_k_default when the key is absent (llm_backend.py:914,
+    # :1138) -- setting it here would just duplicate that default and drift silently
+    # if the gateway's own default is ever retuned.
+    assert "logprobs_top_k" not in sent_req.options
     assert "logprob_probe_mode" not in sent_req.options
 
 

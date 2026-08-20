@@ -263,6 +263,65 @@ async def test_turn_orchestrator_threads_continuity_messages_into_recent_turns()
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_recent_turns_strips_trailing_current_message() -> None:
+    """Regression for a live-confirmed review finding (2026-08-20): both real
+    callers of continuity_messages -- services/orion-hub/scripts/api_routes.py's
+    build_continuity_messages(history=user_messages, ...) and
+    websocket_handler.py's `history` list -- include THIS turn's own message
+    as the trailing entry (history.append(...) happens before continuity_
+    messages is built). Without stripping it, recent_turns' last item
+    duplicates user_message and compile_harness_prefix renders the current
+    question twice: once under RECENT CONVERSATION, once as 'User message:'.
+    This asserts the trailing duplicate is dropped and only the real prior
+    turns survive into recent_turns."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    current_message = "ok what about tomorrow?"
+    # Shape exactly matching build_continuity_messages(history=user_messages, ...):
+    # the current turn's own message is the trailing entry.
+    continuity_messages = [
+        {"role": "user", "content": "what's the weather like?"},
+        {"role": "assistant", "content": "I don't have live weather access."},
+        {"role": "user", "content": current_message},
+    ]
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message=current_message,
+            payload={},
+            continuity_messages=continuity_messages,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    assert [m.model_dump() for m in req.recent_turns] == continuity_messages[:-1]
+    assert not any(m.content == current_message for m in req.recent_turns)
+
+    from orion.harness.runner import build_harness_prompt
+    from orion.schemas.harness_finalize import HarnessRepairOverlayV1
+
+    prompt = build_harness_prompt(
+        thought=req.thought_event,
+        user_message=req.user_message,
+        repair_overlay=HarnessRepairOverlayV1(),
+        recent_turns=req.recent_turns,
+    )
+    assert prompt.count(current_message) == 1, "current message must not be duplicated in the compiled prompt"
+    assert "2 prior message(s)" in prompt
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_recent_turns_empty_when_no_continuity_messages() -> None:
     """A fresh session (continuity_messages=None) must produce an empty
     recent_turns, not a fabricated single-message fallback (unlike

@@ -539,7 +539,22 @@ async def execute_unified_turn(
     # (unlike _run_pre_turn_appraisal's turn_window above): an empty
     # continuity_messages should render as a genuinely empty recent_turns, not
     # a fabricated one-line "history".
-    recent_turns = build_turn_window(continuity_messages or [], max_turns=HARNESS_RECENT_TURNS_MAX)
+    #
+    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
+    # messages(history=user_messages, ...) and websocket_handler.py's history
+    # list) both include THIS turn's own message as the trailing entry --
+    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
+    # last item duplicates user_message, so compile_harness_prefix would render
+    # the current question twice (once under RECENT CONVERSATION, once as
+    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
+    # alone -- that RPC may legitimately want the current message included.
+    history_only = list(continuity_messages or [])
+    if history_only:
+        last = history_only[-1]
+        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
+        if last_content is not None and last_content == user_message.strip():
+            history_only = history_only[:-1]
+    recent_turns = build_turn_window(history_only, max_turns=HARNESS_RECENT_TURNS_MAX)
 
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,

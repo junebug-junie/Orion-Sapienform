@@ -85,8 +85,14 @@ Must be run from a worktree on Circe itself (`scripts/safe_docker_build.sh`
 refuses the shared checkout), after syncing `.env` from `.env_example`:
 
 ```bash
-# 1. Stop the llama.cpp agent-lane worker currently on this port/GPU.
-docker compose -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
+# 1. Stop the llama.cpp agent-lane worker currently on this port/GPU --
+#    same --env-file/--profile invocation services/orion-llamacpp-host/README.md
+#    itself uses to bring atlas-agent up, so the stop targets the same
+#    running container.
+docker compose \
+  --env-file services/orion-llamacpp-host/.env.atlas \
+  --profile agent-split \
+  -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
   stop atlas-agent
 
 # 2. Bring up diffusion-host on the now-free port 8014 / GPU index 2.

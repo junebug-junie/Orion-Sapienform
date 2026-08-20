@@ -201,7 +201,15 @@ async def crystallization_validate_proposal(
         raise HTTPException(status_code=404, detail="proposal_not_found")
 
     result = validate_proposal(row)
-    source_result = await resolve_crystallization_sources(pool, row)
+    try:
+        source_result = await resolve_crystallization_sources(pool, row)
+    except Exception as exc:
+        # Mirrors the 503 pattern used for get_crystallization above. resolve_* can now raise
+        # from a probe failure, and an unhandled exception here would 500 the endpoint AND
+        # leave the proposal's status untouched with no signal -- worse than the honest
+        # "cannot validate right now" this returns.
+        logger.warning("crystallization_validate_sources_failed id=%s: %s", crystallization_id, exc)
+        raise HTTPException(status_code=503, detail="source_resolution_unavailable") from exc
     existing = await list_crystallizations(pool, limit=500)
     detection = merge_detection(
         detect_duplicates(row, existing),
@@ -232,11 +240,12 @@ async def crystallization_validate_proposal(
     return {
         "valid": valid,
         "errors": all_errors,
-        # Grammar refs whose events retention has since deleted. Surfaced, not swallowed:
-        # they do not make a proposal invalid, but an operator looking at a proposal with
-        # thin-looking evidence needs to be able to tell "the evidence aged out" from "there
-        # never was any". Live 2026-08-20, 876 of 1,167 refs are in this state.
-        "pruned_sources": list(source_result.pruned),
+        # Grammar refs that did not resolve, and refs that could not be checked at all.
+        # Neither invalidates -- grammar_events is retention-bounded, so absence is expected
+        # -- but an operator looking at a proposal with thin evidence needs to see it. Live
+        # 2026-08-20: 999 of 1,167 refs are absent, across 61 of 124 crystallizations.
+        "absent_grammar_refs": list(source_result.absent_grammar_refs),
+        "unverified_grammar_refs": list(source_result.unverified_grammar_refs),
         "detection": {
             "duplicates": detection.duplicates,
             "contradictions": detection.contradictions,

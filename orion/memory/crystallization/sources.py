@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
+
+from typing import Optional  # noqa: F401 - re-exported for callers
 
 import asyncpg
 
@@ -18,38 +18,20 @@ class SourceResolutionResult:
     valid: bool
     errors: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
-    # Refs that pointed at a real grammar event which retention has since deleted. NOT an
-    # error, and deliberately NOT folded into `unresolved` -- quarantining a proposal because
-    # the substrate did its own housekeeping would be a false positive, and one that grows
-    # every day. Reported so "the evidence aged out" stays distinguishable from "the evidence
-    # was never there", which is the entire distinction this module exists to make.
-    pruned: list[str] = field(default_factory=list)
+    # Grammar refs that do not resolve against `grammar_events` right now. Deliberately NOT
+    # called "pruned": we genuinely cannot tell an aged-out reference from one that never
+    # existed, and an earlier version of this file claimed it could. Reported, never fatal --
+    # see the long note on _classify_grammar_refs for why absence here must not invalidate.
+    absent_grammar_refs: list[str] = field(default_factory=list)
+    # Refs whose existence could not be checked at all (database unreachable mid-validation).
+    # Distinct from `absent`: "I looked and it is gone" and "I could not look" are different
+    # facts, and collapsing them is how an outage turns into mass quarantine.
+    unverified_grammar_refs: list[str] = field(default_factory=list)
 
 
 async def resolve_memory_card_ref(pool: asyncpg.Pool, card_id: str) -> bool:
     row = await mc_dal.get_card(pool, card_id)
     return row is not None
-
-
-async def grammar_retention_horizon(pool: asyncpg.Pool) -> Optional[datetime]:
-    """Oldest grammar event still on disk, or None if unknown.
-
-    This is the line between "this reference is broken" and "this reference is older than
-    what the substrate keeps". `grammar_events` is bounded by GRAMMAR_EVENTS_RETENTION_DAYS
-    (services/orion-sql-writer/app/grammar_truth.py), so a reference minted months ago SHOULD
-    fail to resolve, and treating that as corruption would quarantine an ever-growing share
-    of perfectly good crystallizations.
-
-    Returns None on any failure. Callers must treat None as "cannot classify", never as
-    "no retention" -- guessing in that direction is what turns an outage into mass
-    quarantine.
-    """
-    try:
-        async with pool.acquire() as conn:
-            return await conn.fetchval("SELECT MIN(created_at) FROM grammar_events")
-    except Exception:
-        logger.warning("grammar_retention_horizon_unavailable", exc_info=True)
-        return None
 
 
 async def resolve_grammar_event_ref(pool: asyncpg.Pool, event_id: str) -> bool:
@@ -104,65 +86,112 @@ async def resolve_evidence_ref(pool: asyncpg.Pool, ref: CrystallizationEvidenceR
     return bool((ref.source_id or "").strip())
 
 
+# WHY AN ABSENT GRAMMAR REF IS NEVER FATAL.
+#
+# `grammar_events` is the only source store with RETENTION (3 days,
+# GRAMMAR_EVENTS_RETENTION_DAYS). Every grammar reference is therefore perishable by
+# construction: given enough time, every crystallization's grammar evidence stops resolving.
+# Treating that as a defect quarantines an ever-growing share of perfectly good proposals.
+#
+# THE INFERENCE THAT DOES NOT WORK, AND WHY IT IS NOT WORTH RETRYING. The first version of
+# this classified an absent ref as "pruned" (benign) when the crystallization's own
+# created_at predated the live retention horizon, and "missing" (fatal) otherwise. Code
+# review killed it with live data:
+#
+#   * Crystallizations COPY REFS FORWARD. `65b0662d` inherited seven ids verbatim from
+#     `4b4bd619`, minted 25 hours earlier. The same seven ids got opposite verdicts from the
+#     two carriers -- proof the rule measured the carrier, not the reference.
+#   * Refs are not contemporaneous with their carrier at all: p50 lag 495s, p95 18.3 HOURS,
+#     max 43.6 hours. Against a 3-day window that is a large fraction of the whole budget.
+#   * Every one of the 14 refs the rule called "genuinely missing" was in fact aged-out. A
+#     100% false-positive rate on its own error bucket.
+#
+# Nor does the ref row's own `memory_crystallization_sources.created_at` help: it defaults to
+# now() at INSERT, so for a copied ref it carries the COPYING proposal's timestamp, not the
+# original event's. Checked before relying on it.
+#
+# So there is no timestamp on either side that distinguishes "aged out" from "never existed",
+# and a validator that claims to make that distinction is confabulating. The honest contract:
+# LOOK IT UP FOR REAL, REPORT WHAT WAS FOUND, and never invalidate a proposal because the
+# substrate did its own housekeeping. If the distinction is ever genuinely needed, the sound
+# fix is to persist the resolution outcome when the ref is first recorded, not to re-derive
+# it from clocks afterwards.
+def _grammar_ref_ids(crystallization: MemoryCrystallizationV1) -> list[str]:
+    """Every grammar id this proposal names, from BOTH carriers, de-duplicated, in order.
+
+    `source_grammar_event_ids` and `evidence[kind=grammar_event]` overlap heavily -- live
+    2026-08-20, all 61 affected crystallizations carried the same non-resolving ids in both.
+    The first version of this walked them separately, so refs excused by one loop were
+    re-flagged as fatal by the other and 61 of 61 proposals still quarantined. The feature
+    was inert in production while 12 tests passed, because every test fixture had an empty
+    evidence list.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for gev in crystallization.source_grammar_event_ids:
+        if gev and gev not in seen:
+            seen.add(gev)
+            out.append(gev)
+    for ev in crystallization.evidence:
+        if ev.source_kind != "grammar_event":
+            continue
+        sid = (ev.source_id or "").strip()
+        if sid and sid not in seen:
+            seen.add(sid)
+            out.append(sid)
+    return out
+
+
 async def resolve_crystallization_sources(
     pool: asyncpg.Pool,
     crystallization: MemoryCrystallizationV1,
 ) -> SourceResolutionResult:
     errors: list[str] = []
     unresolved: list[str] = []
+    absent: list[str] = []
+    unverified: list[str] = []
 
     for card_id in crystallization.source_card_ids:
         if not await resolve_memory_card_ref(pool, card_id):
             unresolved.append(f"memory_card:{card_id}")
             errors.append(f"unresolved memory_card source: {card_id}")
 
-    # Grammar refs are the only source kind whose store is BOUNDED, so "absent" has two very
-    # different meanings and they must not be collapsed. The horizon is fetched once, not per
-    # ref, and only if there is anything to classify.
-    pruned: list[str] = []
-    if crystallization.source_grammar_event_ids:
-        horizon = await grammar_retention_horizon(pool)
-        # Was this proposal minted before the oldest surviving grammar event? If so, every
-        # event it referenced has aged out by construction, and a missing ref says nothing
-        # about the proposal's quality. Verified against live data 2026-08-20: this rule
-        # splits 876 aged-out refs from 14 genuinely-missing ones, where the previous code
-        # passed all 1,167 without looking.
-        created_at = getattr(crystallization, "created_at", None)
-        predates_horizon = bool(
-            horizon is not None
-            and isinstance(created_at, datetime)
-            and created_at < horizon
-        )
-        for gev in crystallization.source_grammar_event_ids:
-            try:
-                found = await resolve_grammar_event_ref(pool, gev)
-            except Exception:
-                # The probe could not run. Do not invent an answer in either direction --
-                # False mass-quarantines during an outage, True silently re-creates the bug
-                # this patch exists to fix. Record it as an explicit, visible error.
-                unresolved.append(f"grammar_event:{gev}")
-                errors.append(f"unresolvable grammar_event source (probe failed): {gev}")
-                continue
-            if found:
-                continue
-            if predates_horizon:
-                pruned.append(f"grammar_event:{gev}")
-                continue
-            unresolved.append(f"grammar_event:{gev}")
-            errors.append(f"unresolved grammar_event source: {gev}")
+    # One pass over the union of both carriers, so a ref cannot be excused here and condemned
+    # in the evidence loop below.
+    for gev in _grammar_ref_ids(crystallization):
+        try:
+            found = await resolve_grammar_event_ref(pool, gev)
+        except Exception:
+            # "I could not look" is not "it is gone". Recorded and surfaced, but NOT fatal:
+            # making it fatal quarantines every proposal validated during a database blip,
+            # and persists that quarantine to disk.
+            logger.warning("grammar_event_ref_unverified event_id=%s", gev)
+            unverified.append(f"grammar_event:{gev}")
+            continue
+        if not found:
+            absent.append(f"grammar_event:{gev}")
 
+    # Non-grammar evidence still resolves normally and still invalidates: those stores are
+    # unbounded, so absence there really does mean the reference is broken.
     for ev in crystallization.evidence:
+        if ev.source_kind == "grammar_event":
+            continue  # handled above, against the deduplicated union
         if not await resolve_evidence_ref(pool, ev):
             unresolved.append(f"{ev.source_kind}:{ev.source_id}")
             errors.append(f"unresolved evidence: {ev.source_kind}:{ev.source_id}")
 
-    if pruned:
+    if absent or unverified:
         logger.info(
-            "crystallization_sources_pruned_refs crystallization_id=%s count=%s -- "
-            "these named real grammar events that retention has since deleted; not an error",
+            "crystallization_grammar_refs crystallization_id=%s absent=%s unverified=%s "
+            "-- grammar_events is retention-bounded, so absence is expected and not an error",
             getattr(crystallization, "crystallization_id", None),
-            len(pruned),
+            len(absent),
+            len(unverified),
         )
     return SourceResolutionResult(
-        valid=not errors, errors=errors, unresolved=unresolved, pruned=pruned
+        valid=not errors,
+        errors=errors,
+        unresolved=unresolved,
+        absent_grammar_refs=absent,
+        unverified_grammar_refs=unverified,
     )

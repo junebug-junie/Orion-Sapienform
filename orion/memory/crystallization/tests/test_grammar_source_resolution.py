@@ -71,12 +71,37 @@ class _FakePool:
         return _Ctx()
 
 
+class _FakeEvidence:
+    def __init__(self, source_kind, source_id):
+        self.source_kind = source_kind
+        self.source_id = source_id
+
+
 class _FakeCrystallization:
-    def __init__(self, gevs, created_at):
+    """Carries evidence BY DEFAULT, mirroring live rows.
+
+    The first version of this fixture hardcoded `self.evidence = []`, so all 12 tests ran
+    with an empty evidence list and the evidence loop was never executed once. That is
+    exactly where the feature was defeated: refs excused by the grammar loop were re-flagged
+    as fatal one loop later, and live 61 of 61 affected crystallizations still quarantined.
+    Twelve green tests, zero production effect. A fake wrong in the same direction as the
+    code is worse than no fake.
+
+    Live 2026-08-20 there are 2,586 `grammar_event` rows in memory_crystallization_sources,
+    and every affected crystallization carried the same ids in BOTH carriers -- so mirroring
+    that overlap is the realistic default, not an edge case.
+    """
+
+    def __init__(self, gevs, created_at=None, evidence=None, mirror_evidence=True):
         self.crystallization_id = "test-crys"
         self.source_card_ids = []
         self.source_grammar_event_ids = list(gevs)
-        self.evidence = []
+        if evidence is not None:
+            self.evidence = list(evidence)
+        elif mirror_evidence:
+            self.evidence = [_FakeEvidence("grammar_event", g) for g in gevs]
+        else:
+            self.evidence = []
         self.created_at = created_at
 
 
@@ -121,75 +146,113 @@ class TestTheResolverActuallyQueriesTheRightTable:
             await sources.resolve_grammar_event_ref(_FakePool(conn), "gev_x")
 
 
-class TestPrunedIsNotTheSameAsMissing:
-    """`grammar_events` is the only bounded source store, so "absent" is ambiguous and the
-    two meanings must not collapse. Live 2026-08-20 this rule split 876 aged-out refs from
-    14 genuinely-missing ones."""
+class TestAnAbsentGrammarRefIsReportedNeverFatal:
+    """`grammar_events` is the only source store with retention, so every grammar reference
+    is perishable by construction. Treating absence as a defect quarantines an ever-growing
+    share of good proposals.
+
+    An earlier version tried to split "aged out" from "never existed" by comparing the
+    crystallization's created_at to the live retention horizon. Review killed it with live
+    data: crystallizations COPY REFS FORWARD (one inherited seven ids verbatim from a
+    proposal minted 25h earlier, and the same ids got opposite verdicts from the two
+    carriers), and refs lag their carrier by p95 18.3h / max 43.6h against a 3-day window.
+    All 14 refs that rule called "genuinely missing" were in fact aged out -- a 100%
+    false-positive rate on its own error bucket.
+    """
 
     @pytest.mark.asyncio
-    async def test_a_ref_from_before_the_horizon_is_pruned_not_an_error(self):
+    async def test_an_absent_ref_is_reported_and_does_not_invalidate(self):
         conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
-        crys = _FakeCrystallization(["gev_old"], created_at=HORIZON - timedelta(days=5))
+        crys = _FakeCrystallization(["gev_old"])
         res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
-        assert res.pruned == ["grammar_event:gev_old"]
+        assert res.absent_grammar_refs == ["grammar_event:gev_old"]
         assert res.unresolved == []
         assert res.errors == []
         assert res.valid is True
 
     @pytest.mark.asyncio
-    async def test_a_ref_from_after_the_horizon_is_a_real_error(self):
-        """This proposal was minted while the event should still have been on disk."""
+    async def test_the_evidence_loop_cannot_re_flag_what_the_grammar_loop_excused(self):
+        """THE bug that made the whole feature inert in production.
+
+        The same id appears in `source_grammar_event_ids` AND in `evidence`. The old code
+        walked them in separate loops, so the second loop appended the id to `unresolved` and
+        `errors`, and the route quarantined the proposal anyway -- 61 of 61 live.
+        """
         conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
-        crys = _FakeCrystallization(["gev_gone"], created_at=HORIZON + timedelta(days=1))
+        crys = _FakeCrystallization(["gev_dup"])  # mirrored into evidence by default
+        assert [e.source_id for e in crys.evidence] == ["gev_dup"], "fixture lost its evidence"
         res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
-        assert res.unresolved == ["grammar_event:gev_gone"]
-        assert res.pruned == []
-        assert res.valid is False
+        assert res.valid is True, res.errors
+        assert res.unresolved == []
+        assert res.absent_grammar_refs == ["grammar_event:gev_dup"]
 
     @pytest.mark.asyncio
-    async def test_an_unknown_horizon_never_silently_becomes_pruned(self):
-        """None means "cannot classify", not "no retention". Guessing pruned here would
-        re-create the old bug: every bad ref would be excused as aged-out."""
-        conn = _FakeConn(events=set(), traces=set(), horizon=None)
-        crys = _FakeCrystallization(["gev_gone"], created_at=NOW - timedelta(days=400))
+    async def test_a_grammar_ref_present_only_in_evidence_is_still_checked(self):
+        """Not every grammar ref is in `source_grammar_event_ids`. Skipping the evidence
+        carrier entirely would silently stop resolving those."""
+        conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
+        crys = _FakeCrystallization([], evidence=[_FakeEvidence("grammar_event", "gev_ev")])
         res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
-        assert res.pruned == []
-        assert res.unresolved == ["grammar_event:gev_gone"]
-        assert res.valid is False
+        assert res.absent_grammar_refs == ["grammar_event:gev_ev"]
+        assert res.valid is True
 
     @pytest.mark.asyncio
-    async def test_a_resolving_ref_is_never_classified_as_pruned(self):
-        """Even for a proposal older than the horizon: found is found."""
-        conn = _FakeConn(events={"gev_still_here"}, traces=set(), horizon=HORIZON)
-        crys = _FakeCrystallization(["gev_still_here"],
-                                    created_at=HORIZON - timedelta(days=5))
+    async def test_ids_are_deduplicated_across_both_carriers(self):
+        """Live, ids repeat within one array and across both carriers. Counting them twice
+        inflates whatever number an operator reads off the response."""
+        conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
+        crys = _FakeCrystallization(
+            ["gev_a", "gev_a", "gev_b"],
+            evidence=[_FakeEvidence("grammar_event", "gev_a"),
+                      _FakeEvidence("grammar_event", "gev_b")],
+        )
         res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
-        assert res.pruned == []
+        assert res.absent_grammar_refs == ["grammar_event:gev_a", "grammar_event:gev_b"]
+
+    @pytest.mark.asyncio
+    async def test_a_resolving_ref_is_not_reported_as_absent(self):
+        conn = _FakeConn(events={"gev_here"}, traces=set(), horizon=HORIZON)
+        crys = _FakeCrystallization(["gev_here"])
+        res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
+        assert res.absent_grammar_refs == []
+        assert res.valid is True
+
+    @pytest.mark.asyncio
+    async def test_non_grammar_evidence_still_invalidates(self):
+        """Only the grammar store is bounded. Absence in an unbounded store really does mean
+        the reference is broken, and must still quarantine."""
+        conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
+        crys = _FakeCrystallization([], evidence=[_FakeEvidence("memory_card", "")])
+        res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
+        assert res.valid is False
+        assert res.unresolved == ["memory_card:"]
+
+    @pytest.mark.asyncio
+    async def test_a_probe_failure_is_unverified_not_absent_and_not_fatal(self):
+        """"I could not look" is not "it is gone", and making it fatal quarantines every
+        proposal validated during a database blip -- persisted to disk, on rows that may be
+        `active`."""
+        conn = _FakeConn(events=set(), traces=set(), horizon=None, fail=True)
+        crys = _FakeCrystallization(["gev_x"])
+        res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
+        assert res.unverified_grammar_refs == ["grammar_event:gev_x"]
+        assert res.absent_grammar_refs == []
         assert res.unresolved == []
         assert res.valid is True
 
     @pytest.mark.asyncio
-    async def test_the_horizon_is_fetched_once_not_per_ref(self):
+    async def test_no_grammar_refs_makes_no_grammar_queries_at_all(self):
         conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
-        crys = _FakeCrystallization([f"gev_{i}" for i in range(25)],
-                                    created_at=HORIZON - timedelta(days=5))
-        await sources.resolve_crystallization_sources(_FakePool(conn), crys)
-        assert sum("MIN(created_at)" in q for q in conn.seen) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_grammar_refs_means_no_horizon_query_at_all(self):
-        conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
-        crys = _FakeCrystallization([], created_at=NOW)
+        crys = _FakeCrystallization([], evidence=[])
         res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
         assert conn.seen == []
         assert res.valid is True
 
     @pytest.mark.asyncio
-    async def test_a_probe_failure_is_recorded_as_an_error_not_swallowed(self):
-        """The failure mode that started all of this: an exception that becomes a pass."""
-        conn = _FakeConn(events=set(), traces=set(), horizon=None, fail=True)
-        crys = _FakeCrystallization(["gev_x"], created_at=NOW)
-        res = await sources.resolve_crystallization_sources(_FakePool(conn), crys)
-        assert res.valid is False
-        assert res.unresolved == ["grammar_event:gev_x"]
-        assert any("probe failed" in e for e in res.errors), res.errors
+    async def test_the_retention_horizon_is_never_consulted(self):
+        """Pins the removal of the inference, so it cannot quietly come back."""
+        assert not hasattr(sources, "grammar_retention_horizon")
+        conn = _FakeConn(events=set(), traces=set(), horizon=HORIZON)
+        crys = _FakeCrystallization(["gev_a"])
+        await sources.resolve_crystallization_sources(_FakePool(conn), crys)
+        assert not any("MIN(created_at)" in q for q in conn.seen), conn.seen

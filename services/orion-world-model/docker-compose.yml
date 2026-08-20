@@ -1,0 +1,68 @@
+services:
+  world-model:
+    build:
+      context: ../..
+      dockerfile: services/orion-world-model/Dockerfile
+    container_name: ${PROJECT}-world-model
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - NODE_NAME=${NODE_NAME:-athena}
+
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+      - CHANNEL_WORLDMODEL_INTAKE=${CHANNEL_WORLDMODEL_INTAKE}
+      - CHANNEL_WORLDMODEL_REPLY_PREFIX=${CHANNEL_WORLDMODEL_REPLY_PREFIX}
+      - CHANNEL_WORLDMODEL_PUB=${CHANNEL_WORLDMODEL_PUB}
+
+      - MODEL_CACHE_DIR=${MODEL_CACHE_DIR}
+
+      - WM_DIM_BIOMETRICS=${WM_DIM_BIOMETRICS}
+      - WM_DIM_AFFECT=${WM_DIM_AFFECT}
+      - WM_DIM_EXECUTION_CONTEXT=${WM_DIM_EXECUTION_CONTEXT}
+      - WM_DIM_MEMORY_POINTERS=${WM_DIM_MEMORY_POINTERS}
+      - WM_DIM_TEMPORAL=${WM_DIM_TEMPORAL}
+      - WM_DIM_VISION_EMBEDDING=${WM_DIM_VISION_EMBEDDING}
+
+      - WM_FUSION_DIM=${WM_FUSION_DIM}
+      - WM_DYNAMICS_D_MODEL=${WM_DYNAMICS_D_MODEL}
+      - WM_DYNAMICS_NHEAD=${WM_DYNAMICS_NHEAD}
+      - WM_DYNAMICS_NUM_LAYERS=${WM_DYNAMICS_NUM_LAYERS}
+      - WM_DYNAMICS_DIM_FEEDFORWARD=${WM_DYNAMICS_DIM_FEEDFORWARD}
+      - WM_DYNAMICS_MAX_WINDOW=${WM_DYNAMICS_MAX_WINDOW}
+      - WM_DYNAMICS_DROPOUT=${WM_DYNAMICS_DROPOUT}
+      - WM_STATE_DIM=${WM_STATE_DIM}
+
+      - WM_DEVICE_STRATEGY=${WM_DEVICE_STRATEGY}
+      - WM_DEFAULT_DEVICE=${WM_DEFAULT_DEVICE}
+      - WM_DEVICES=${WM_DEVICES}
+      - WM_PICK_GPU_METRIC=${WM_PICK_GPU_METRIC}
+      - WM_DTYPE=${WM_DTYPE}
+      - WM_TIMEOUT_S=${WM_TIMEOUT_S}
+      - WM_MAX_INFLIGHT=${WM_MAX_INFLIGHT}
+
+      - WM_VRAM_RESERVE_MB=${WM_VRAM_RESERVE_MB}
+      - WM_VRAM_SOFT_FLOOR_MB=${WM_VRAM_SOFT_FLOOR_MB}
+      - WM_VRAM_HARD_FLOOR_MB=${WM_VRAM_HARD_FLOOR_MB}
+
+    volumes:
+      - /mnt/storage-warm/models/world-model:/mnt/storage-warm/models/world-model
+
+    ports:
+      - "${HOST_PORT}:6701"
+
+    gpus: all
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

@@ -1,0 +1,42 @@
+services:
+  diffusion-host:
+    build:
+      context: ../..
+      dockerfile: services/orion-diffusion-host/Dockerfile
+    container_name: ${PROJECT}-diffusion-host
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - NODE_NAME=${NODE_NAME:-athena}
+
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+      - MODEL_CACHE_DIR=${MODEL_CACHE_DIR}
+      - HF_HOME=${HF_HOME}
+      - TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE}
+
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
+
+    volumes:
+      # Path convention only, in this patch -- nothing is downloaded here
+      # yet (README.md "Model cache dir convention"). No GPU reservation
+      # (`gpus: all`) in this patch either -- no model is loaded, so there
+      # is nothing for a GPU to do.
+      - /mnt/storage-warm/models/diffusion:/mnt/storage-warm/models/diffusion
+
+    ports:
+      - "${HOST_PORT}:6700"
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

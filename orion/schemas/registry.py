@@ -557,6 +557,7 @@ from orion.schemas.reverie import (
     ReverieRefractoryEntry,
     SpontaneousThoughtV1,
 )
+from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
     GroundingCapsuleV1,
@@ -1287,6 +1288,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CompactionRequestV1": CompactionRequestV1,
     "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
     "ResonanceAlertV1": ResonanceAlertV1,
+    "ReverieVisualChainV1": ReverieVisualChainV1,
+    "ReverieVisualArtifactV1": ReverieVisualArtifactV1,
     "StanceReactRequestV1": StanceReactRequestV1,
     "GrammarReceiptV1": GrammarReceiptV1,
     "HarnessDraftMoleculeV1": HarnessDraftMoleculeV1,
@@ -1408,6 +1411,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "MemoryCompactionDeltaV1": SchemaRegistration(
         model=MemoryCompactionDeltaV1,
         kind="dream.compaction.delta.v1",
+    ),
+    "ReverieVisualChainV1": SchemaRegistration(
+        model=ReverieVisualChainV1,
+        kind="reverie.visual.chain.v1",
+    ),
+    "ReverieVisualArtifactV1": SchemaRegistration(
+        model=ReverieVisualArtifactV1,
+        kind="reverie.visual.artifact.v1",
     ),
     "ResonanceAlertV1": SchemaRegistration(
         model=ResonanceAlertV1,

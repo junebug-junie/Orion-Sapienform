@@ -369,6 +369,77 @@ first place. Full reasoning and phased detail:
    synthetic stub, untouched by this patch (a different consumer of the old schema, not
    `goal_context`'s) — Objective 6 remains gated on item 2's reducer being *proven*, unaffected
    by this item shipping.
+   **Root cause found and fixed, 2026-08-20 (item 4 of the punch list, spun off item 2's
+   observation that `voluntary_override` structurally never fires in production — every
+   sampled goal targeted `node:substrate.route` with `salience=1.000` pinned).** Confirmed
+   live: `substrate_node_prediction_error_baseline` showed all five native domains had
+   ample real observations (9.4K-121K each, all above the confidence floor), so this was
+   not a thin-data artifact. The real cause: `node:substrate.route`'s prediction-error
+   signal (`route_prediction_error()`, a categorical decision-mismatch rate) is genuinely,
+   organically near-constant — its last 30 real receipts were all exactly `0.0003`, its
+   persisted EWMA `variance` had underflowed to `~2.9e-39`. That is real data, not a decay
+   artifact (CLAUDE.md's metric-quality-gate #4 distinction, checked explicitly). But
+   `precision_weighted_salience_from_baseline()` floors every domain's variance through
+   the same single global constant (`NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE = 1e-5`,
+   `orion/attention/field_attention/candidate_precision_weighted.py`), which is
+   ~1,270x-19,300x smaller than the other four domains' real organic variance
+   (0.0127-0.193, confirmed live same day). Since precision = 1/variance and
+   `normalize_across_targets()` is rank-preserving min-max (not magnitude-correcting —
+   see that function's own docstring), route's raw score was the tick's maximum
+   essentially every tick by construction, not because its current error was genuinely
+   more surprising than its competitors'.
+   **Fix**: `cross_domain_variance_floor()` (new function, same module) replaces the
+   single global floor with one derived live, per tick, per target, from the median real
+   variance of that target's OTHER competing domains this tick (target excluded from its
+   own floor). No new hand-picked constant — matches `normalize_across_targets()`'s own
+   "no free parameter" discipline, cited in that function's docstring, applied one step
+   earlier. Falls back to the original global constant when there is no live sibling data
+   to derive a better floor from (cold start). The global constant itself is not removed,
+   only demoted from "the only floor" to "the floor of last resort." Compresses genuine
+   precision differentiation too, not just the pathological outlier — a domain quieter
+   than its siblings' median loses some of the precision advantage it legitimately
+   earned; accepted as the intended cost of "no domain can claim more precision than its
+   real siblings currently show."
+   **Correlated-degeneracy guard (added in code review, same day):** a plain median over
+   the other siblings would itself degrade back to the original pathology if a *majority*
+   of those siblings are simultaneously degenerate (at/below the global floor) at the same
+   tick — the same near-constant-signal mechanism that flattened route can flatten any
+   domain during a correlated quiet period (e.g. a deploy freeze), and with only 4 possible
+   siblings this is a real, not hypothetical, case. Guarded explicitly: real siblings must
+   form a strict majority of the real competitor set, or the floor falls back to the global
+   constant rather than trust a degenerate-majority median.
+   **Live-data proof, not just synthetic tests** (metric-quality-gate #4): re-ran both the
+   old and new formula against the real, currently-live `substrate_node_prediction_error_
+   baseline` row set. Old floor: route normalized to `0.876` (2nd-highest of 5, structurally
+   guaranteed to win most ticks). New floor: route's raw salience dropped ~10,000x
+   (30.0 → 0.0031) and normalized to `0.0` (lowest of 5) on the same live snapshot — a real
+   domain (`node:substrate.execution`) won instead. 65 unit tests pass in the two directly
+   touched files (`tests/test_attention_candidate_precision_weighted.py`,
+   `tests/test_attention_field_selectors.py`; 8 new, pinning the fix — 5 against the exact
+   live values recovered during this investigation, 3 against the code-review-added
+   correlated-degeneracy guard — not idealized round numbers).
+   **Blast radius, checked directly (grep-verified call graph, not the whole-repo semantic
+   graph query, which false-matched on an unrelated "route" naming collision in
+   `orion-llm-gateway`):** `select_node_targets()` has exactly one caller
+   (`orion/attention/field_attention/builder.py::build_attention_frame()`), which itself
+   has exactly one live caller (`services/orion-attention-runtime/app/worker.py`). Real
+   downstream consumers of the changed salience values: `goal_provenance.py` (this item's
+   intended target), `orion/consolidation/motif.py` (membership-only, unaffected by
+   magnitude), `orion/substrate/attention_self_model.py` — item 2's own AST/HOT reducer —
+   whose `field_salient_target_ids` and `field_salience_only` narrative read
+   `dominant_targets` (branch-classification logic itself is untouched; which targets get
+   *named* in the narrative can shift), and `orion/proposals/builder.py`
+   (`ATTENTION_FIRST_TARGET_BINDING = "attention.dominant_targets[0]"`, a real
+   decision-binding). Whether route was ever winning the frame-level `dominant_targets[0]`
+   slot (versus just the node-only subset this fix targets) is `UNVERIFIED` — goal_
+   provenance.py's own docstring notes host/capability targets already usually win that
+   slot post-Candidate-B, so exposure is believed small but not traced.
+   **Disclosed, not hidden**: this is a single live snapshot, not a multi-day replay —
+   whether route's dominance actually breaks in sustained live operation (rather than one
+   good-looking point-in-time check) is `UNVERIFIED` pending real post-deploy observation
+   of `substrate_goal_provenance_streak` and whether `voluntary_override` ever fires. That
+   observation is the real acceptance check for this fix, not this session's live snapshot
+   alone.
 4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
    — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
    not duplicate them); IIT continues independently via the mood-arc encoder, not gated by

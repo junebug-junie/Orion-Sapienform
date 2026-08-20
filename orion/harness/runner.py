@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -19,6 +20,7 @@ from orion.harness.fcc_motor import (
     expand_env_path,
     extract_result_output_tokens,
     load_fcc_env,
+    probe_current_served_model,
     resolve_auth_token,
     run_fcc_turn,
     summarize_harness_step,
@@ -149,6 +151,7 @@ def build_harness_prompt(
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
     attachments: list[Any] | None = None,
+    current_served_model: str | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -157,6 +160,7 @@ def build_harness_prompt(
         answer_contract=answer_contract,
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
         prior_tool_fetch_names=prior_tool_fetch_names,
+        current_served_model=current_served_model,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -233,12 +237,14 @@ class HarnessRunner:
         fcc_runner: FccRunner | None = None,
         fcc_timeout_sec: float = 120.0,
         node_name: str | None = None,
+        served_model_probe: Callable[..., Awaitable[str | None]] | None = None,
     ) -> None:
         self.bus = bus
         self.grammar_channel = grammar_channel
         self.step_channel = step_channel
         self.fcc_runner = fcc_runner or default_fcc_runner
         self.fcc_timeout_sec = fcc_timeout_sec
+        self.served_model_probe = served_model_probe or probe_current_served_model
         self.node_name = node_name or _default_harness_node_name()
 
     async def run(
@@ -267,7 +273,29 @@ class HarnessRunner:
         overlay = repair_overlay or map_repair_pressure_contract(request.repair_pressure_contract)
         coalition = coalition_snapshot or build_coalition_snapshot(thought)
 
-        prior_tool_fetch = await read_last_tool_fetch(self.bus, session_id=thought.session_id)
+        async def _probe_served_model() -> str | None:
+            # Best-effort self-context: which real backend is about to serve
+            # this turn (see fcc_motor.probe_current_served_model).
+            # Belt-and-suspenders try/except on top of that function's own
+            # internal fail-open -- a self-context probe must never be the
+            # reason a turn doesn't start, regardless of what's injected
+            # here in tests or added later.
+            try:
+                return await self.served_model_probe(request.fcc_model_label)
+            except Exception:
+                logger.warning(
+                    "served_model_probe failed corr=%s", request.correlation_id, exc_info=True
+                )
+                return None
+
+        # Independent reads (bus lookup, gateway probe) -- run concurrently
+        # rather than serially so a slow/unreachable orion-llm-gateway (the
+        # probe has its own timeout, default 2s) doesn't add to the bus
+        # round-trip on top of its own latency.
+        prior_tool_fetch, current_served_model = await asyncio.gather(
+            read_last_tool_fetch(self.bus, session_id=thought.session_id),
+            _probe_served_model(),
+        )
         prior_tool_fetch_names = (prior_tool_fetch or {}).get("tool_names")
 
         prompt = build_harness_prompt(
@@ -278,6 +306,7 @@ class HarnessRunner:
             workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
             prior_tool_fetch_names=prior_tool_fetch_names,
             attachments=list(getattr(request, "attachments", None) or []),
+            current_served_model=current_served_model,
         )
 
         collector = HarnessGrammarCollector(

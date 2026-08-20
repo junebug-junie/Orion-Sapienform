@@ -111,16 +111,17 @@ def compile_harness_prefix(
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
+    current_served_model: str | None = None,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
     Deterministically materializes the stance-conditioned context of the FCC
-    motor prompt: the unified operator brief, grounding self block, Thought
-    imperative and stance slice, autonomy slice, repair overlay, user message,
-    and enabled MCP tool briefs. The full `claude -p` prompt is this prefix
-    plus the harness_motor_instruction that build_harness_prompt (runner.py)
-    appends on user-message turns — check both when chasing unexpected motor
-    context.
+    motor prompt: the unified operator brief, grounding self block, backend
+    self-context, Thought imperative and stance slice, autonomy slice, repair
+    overlay, user message, and enabled MCP tool briefs. The full `claude -p`
+    prompt is this prefix plus the harness_motor_instruction that
+    build_harness_prompt (runner.py) appends on user-message turns — check
+    both when chasing unexpected motor context.
 
     Runtime evidence: the compiled prompt is what run_fcc_turn spawns with.
     Start here when the motor acted without stance or grounding context it
@@ -131,6 +132,22 @@ def compile_harness_prefix(
 
     if thought.grounding_capsule is not None and thought.grounding_capsule.identity_summary:
         parts.extend(_format_grounding_self_block(thought.grounding_capsule))
+
+    if current_served_model:
+        # Answers "which real backend am I running on right now" -- a fact
+        # that exists (chat_history_log.response_identity, see
+        # orion/harness/fcc_motor.py's probe_current_served_model) but was
+        # previously invisible to Orion itself: no consumer read it back
+        # into a prompt, recall digest, or the 5a substrate appraisal.
+        # Resolved by the caller BEFORE this function runs (compile_harness_
+        # prefix stays a pure/deterministic formatter given its inputs, per
+        # its own docstring above -- the live /routes probe is a network
+        # call and does not belong inside a "deterministically materializes"
+        # function) and passed straight through here. Omitted entirely when
+        # None (discovery/probe failed, or a non-llamacpp backend like
+        # MODEL_HAIKU's route) rather than shown as a placeholder -- an
+        # unknown backend is not the same claim as a known one.
+        parts.append(f"Backend model currently serving this turn: {current_served_model}")
 
     parts.extend(
         [

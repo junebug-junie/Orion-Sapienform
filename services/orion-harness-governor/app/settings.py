@@ -78,6 +78,16 @@ class HarnessGovernorSettings(BaseSettings):
         alias="CHANNEL_HARNESS_RUN_CANCEL",
     )
 
+    # orion-llm-gateway base URL, read directly from the environment by
+    # orion.harness.fcc_motor.probe_current_served_model (the pre-turn
+    # "what backend am I about to run on" GET /routes read); mirrored here
+    # so operators see the effective value. Same default as the identical
+    # setting in orion-cortex-exec/.env_example -- both reach the same
+    # gateway on the shared app-net bridge network.
+    harness_llm_gateway_url: str = Field(
+        "http://llm-gateway:8210", alias="HARNESS_LLM_GATEWAY_URL"
+    )
+
     fcc_timeout_sec: float = Field(900.0, alias="HARNESS_FCC_TIMEOUT_SEC")
     # Cap on one stream-json line, read directly from the environment by
     # orion.harness.fcc_motor; mirrored here so operators see the effective

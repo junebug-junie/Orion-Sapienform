@@ -275,6 +275,7 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     INSERT INTO memory_crystallization_sources
                         (crystallization_id, source_kind, source_id, excerpt, strength, note)
                     VALUES ($1::uuid, $2, $3, $4, $5, $6)
+                    ON CONFLICT (crystallization_id, source_kind, source_id) DO NOTHING
                     """,
                     stored_id,
                     ev.source_kind,

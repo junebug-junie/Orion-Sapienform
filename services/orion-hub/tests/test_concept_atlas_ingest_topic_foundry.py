@@ -660,6 +660,63 @@ def test_ingest_topic_foundry_base_url_not_configured_degrades_honestly(
     assert body["reason"] == "topic_foundry_base_url_not_configured"
 
 
+# --- AI Town's own concept graph (2026-08-20) --------------------------------
+# ingest-topic-foundry-aitown is the same _ingest_topic_foundry_run logic as
+# the Orion route above, parameterized over which store/model it reads --
+# these tests confirm it's actually wired to the AI Town store/model, not a
+# copy-pasted duplicate that quietly points at the Orion ones.
+
+
+def test_ingest_aitown_substrate_store_unavailable_degrades_honestly(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: None)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry-aitown")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is False
+    assert body["reason"] == "substrate_store_unavailable"
+    assert body["concepts_written"] == 0
+
+
+def test_ingest_aitown_route_writes_into_aitown_store_not_orion_store(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The load-bearing guarantee this whole feature exists for: AI Town
+    ingestion must land in the AI Town store, not silently fall through to
+    (or also write into) the Orion store -- and must scope its topic-foundry
+    fetch to the AI Town model_name, not Orion's."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    orion_store = InMemorySubstrateGraphStore()
+    aitown_store = InMemorySubstrateGraphStore()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+
+    fake_get, calls = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry-aitown")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["concepts_written"] > 0
+    assert len(orion_store.snapshot().nodes) == 0
+    assert len(aitown_store.snapshot().nodes) > 0
+
+    runs_calls = [params for (url, params) in calls if url.endswith("/runs")]
+    assert runs_calls, "expected at least one GET /runs call"
+    assert all(
+        (params or {}).get("model_name") == concept_atlas_routes._TOPIC_FOUNDRY_AITOWN_MODEL_NAME
+        for params in runs_calls
+    )
+
+
 # --- client-layer unit tests -------------------------------------------------
 
 

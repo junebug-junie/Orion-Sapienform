@@ -249,6 +249,34 @@ SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
 SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
 
 
+def _build_aitown_substrate_store_from_env() -> Any:
+    """AI Town's own organically-clustered concept graph -- a second,
+    independently-named FalkorDB graph (docs/superpowers/specs/2026-08-18-
+    aitown-concept-graph-split-and-atlas-readability-design.md, "AI Town's
+    own concept graph"). Interpretability-only, per that spec's Non-goals --
+    never fed into concept_induced/chat_stance or any other Orion cognition
+    consumer, only read by concept_atlas_routes.py's AI Town ingestion/query
+    path.
+
+    Deliberately falkor-only, not routed through the full multi-backend
+    build_substrate_store_from_env() dispatcher above -- see
+    orion.substrate.falkor_store.build_aitown_falkor_substrate_store_from_env's
+    docstring for why. Same degrade-to-in-memory-never-raise contract as the
+    primary store for every other backend.
+    """
+    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
+    if backend in {"falkor", "falkordb"}:
+        from orion.substrate.falkor_store import build_aitown_falkor_substrate_store_from_env
+
+        return build_aitown_falkor_substrate_store_from_env()
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    return InMemorySubstrateGraphStore()
+
+
+SUBSTRATE_SEMANTIC_STORE_AITOWN = _build_aitown_substrate_store_from_env()
+
+
 def seed_golden_concepts_at_startup() -> int:
     """Load the 3 golden concepts (Orion, Juniper, relationship) into
     SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on

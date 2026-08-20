@@ -582,6 +582,15 @@ class Settings(BaseSettings):
     FALKORDB_SUBSTRATE_GRAPH: str = Field(
         default="orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"
     )
+    # Graph name for AI Town's own organically-clustered concept graph --
+    # a second, independently-named graph on the same FalkorDB instance,
+    # interpretability-only (docs/superpowers/specs/2026-08-18-aitown-
+    # concept-graph-split-and-atlas-readability-design.md). Same env key
+    # orion/substrate/falkor_store.py::build_aitown_falkor_substrate_store_from_env()
+    # already uses.
+    FALKORDB_AITOWN_SUBSTRATE_GRAPH: str = Field(
+        default="orion_substrate_aitown", alias="FALKORDB_AITOWN_SUBSTRATE_GRAPH"
+    )
 
     # --- Attention organ operator tab (read-only) ---
     # orion-heartbeat's debug HTTP surface. Hub runs on the host network in

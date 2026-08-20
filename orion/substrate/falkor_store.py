@@ -831,12 +831,28 @@ def _resolve_falkor_snapshot_force_refresh_ceiling_sec() -> float:
     return value
 
 
-def build_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
+def build_falkor_substrate_store_from_env(
+    *,
+    graph_name_env: str = "FALKORDB_SUBSTRATE_GRAPH",
+    graph_name_default: str = "orion_substrate",
+) -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
+    """Build a FalkorSubstrateStore from env, targeting a single named graph.
+
+    ``graph_name_env``/``graph_name_default`` let a second call site build a
+    second, independently-named graph on the same FalkorDB instance (FalkorDB
+    holds multiple graphs at no extra infra cost -- a graph name is just a
+    string) without duplicating this function's URI-resolution/logging/
+    fallback logic. Both existing zero-arg call sites (graphdb_store.py,
+    routed_store.py) keep resolving ``FALKORDB_SUBSTRATE_GRAPH`` exactly as
+    before -- these are keyword-only with defaults matching prior behavior,
+    not a breaking change. See build_aitown_falkor_substrate_store_from_env()
+    below for the second call site this was added for.
+    """
     uri = str(os.getenv("FALKORDB_URI", "")).strip()
     if not uri:
         logger.warning("SUBSTRATE_STORE_BACKEND=falkor but FALKORDB_URI missing; falling back to in-memory")
         return InMemorySubstrateGraphStore()
-    graph_name = str(os.getenv("FALKORDB_SUBSTRATE_GRAPH", "orion_substrate")).strip() or "orion_substrate"
+    graph_name = str(os.getenv(graph_name_env, graph_name_default)).strip() or graph_name_default
     logger.info(
         "substrate_store_backend_selected backend=falkor uri_host=%s graph=%s",
         urlparse(uri).hostname or "",
@@ -848,4 +864,28 @@ def build_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySu
             graph_name=graph_name,
             snapshot_force_refresh_ceiling_sec=_resolve_falkor_snapshot_force_refresh_ceiling_sec(),
         )
+    )
+
+
+def build_aitown_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
+    """Second, independently-named FalkorDB graph for AI Town's own
+    organically-clustered concept graph (design spec:
+    docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-
+    readability-design.md, "AI Town's own concept graph"). Interpretability-
+    only -- explicitly not fed into concept_induced/chat_stance or any other
+    Orion cognition consumer (same spec's Non-goals).
+
+    Deliberately only wired for the falkor backend (unlike the generic
+    multi-backend build_substrate_store_from_env() dispatcher this doesn't
+    go through) -- the live orion_substrate deployment is Falkor-backed
+    today and there is no real second consumer yet motivating a full
+    graph-name override threaded through every other backend
+    (routed/sparql/graphdb) too. Falls back to in-memory + warning the same
+    way the primary graph does when FALKORDB_URI is unset, same reasoning:
+    never raise, degrade honestly (per CLAUDE.md's "no keyword cathedral"
+    gate -- build only what has a real consumer today).
+    """
+    return build_falkor_substrate_store_from_env(
+        graph_name_env="FALKORDB_AITOWN_SUBSTRATE_GRAPH",
+        graph_name_default="orion_substrate_aitown",
     )

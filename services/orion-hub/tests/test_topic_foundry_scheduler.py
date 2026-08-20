@@ -396,7 +396,7 @@ def test_trigger_topic_foundry_training_run_dataset_model_resolution_failure(
     from scripts import concept_atlas_routes as car
 
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
-    monkeypatch.setattr(car, "_ensure_topic_foundry_dataset_and_model", lambda base_url: None)
+    monkeypatch.setattr(car, "_ensure_topic_foundry_dataset_and_model", lambda base_url, **kwargs: None)
     result = car.trigger_topic_foundry_training_run()
     assert result == {"triggered": False, "reason": "dataset_or_model_resolution_failed"}
 
@@ -407,7 +407,9 @@ def test_trigger_topic_foundry_training_run_success(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
     monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS", 30)
     monkeypatch.setattr(
-        car, "_ensure_topic_foundry_dataset_and_model", lambda base_url: (FAKE_DATASET_ID, FAKE_MODEL_ID)
+        car,
+        "_ensure_topic_foundry_dataset_and_model",
+        lambda base_url, **kwargs: (FAKE_DATASET_ID, FAKE_MODEL_ID),
     )
 
     trigger_calls = []
@@ -447,7 +449,9 @@ def test_trigger_topic_foundry_training_run_windows_are_day_floored_and_repeatab
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
     monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS", 30)
     monkeypatch.setattr(
-        car, "_ensure_topic_foundry_dataset_and_model", lambda base_url: (FAKE_DATASET_ID, FAKE_MODEL_ID)
+        car,
+        "_ensure_topic_foundry_dataset_and_model",
+        lambda base_url, **kwargs: (FAKE_DATASET_ID, FAKE_MODEL_ID),
     )
 
     windows_seen = []
@@ -477,7 +481,9 @@ def test_trigger_topic_foundry_training_run_client_error_degrades(monkeypatch: p
 
     monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
     monkeypatch.setattr(
-        car, "_ensure_topic_foundry_dataset_and_model", lambda base_url: (FAKE_DATASET_ID, FAKE_MODEL_ID)
+        car,
+        "_ensure_topic_foundry_dataset_and_model",
+        lambda base_url, **kwargs: (FAKE_DATASET_ID, FAKE_MODEL_ID),
     )
 
     def fake_trigger_training_run(base_url, *, model_id, dataset_id, start_at, end_at, timeout=None):
@@ -690,6 +696,117 @@ def test_topic_foundry_hdbscan_metric_validator_accepts_euclidean(monkeypatch: p
     monkeypatch.setenv("SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC", "euclidean")
     settings_instance = Settings()
     assert settings_instance.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC == "euclidean"
+
+
+# --- AI Town's own concept graph (2026-08-20) --------------------------------
+
+
+def test_ensure_dataset_and_model_creates_aitown_dataset_with_no_where_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AI Town's dataset reads aitown_chat_history_log directly, which is
+    already AI-Town-only by construction (table-split routing, not a
+    filter) -- unlike Orion's dataset, it needs no where_sql at all."""
+    from scripts import concept_atlas_routes as car
+    from scripts import topic_foundry_client as tfc
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/datasets"):
+            return _FakeResponse(200, {"datasets": []})
+        if url.endswith("/models"):
+            return _FakeResponse(200, {"models": []})
+        raise AssertionError(f"unexpected GET {url}")
+
+    posted = {}
+
+    def fake_post(url, json=None, timeout=None):
+        if url.endswith("/datasets"):
+            posted["dataset"] = json
+            return _FakeResponse(200, {"dataset_id": FAKE_DATASET_ID, "created_at": "2026-08-20T00:00:00Z"})
+        if url.endswith("/models"):
+            posted["model"] = json
+            return _FakeResponse(200, {"model_id": FAKE_MODEL_ID, "created_at": "2026-08-20T00:00:00Z"})
+        raise AssertionError(f"unexpected POST {url}")
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    monkeypatch.setattr(tfc.requests, "post", fake_post)
+
+    result = car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL,
+        dataset_name=car._TOPIC_FOUNDRY_AITOWN_DATASET_NAME,
+        model_name=car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
+        source_table=car._TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE,
+        where_sql=None,
+    )
+
+    assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
+    assert posted["dataset"]["name"] == car._TOPIC_FOUNDRY_AITOWN_DATASET_NAME
+    assert posted["dataset"]["source_table"] == "aitown_chat_history_log"
+    assert posted["dataset"]["where_sql"] is None
+    assert posted["model"]["name"] == car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME
+    # Distinct names from Orion's own dataset/model -- the whole point of a
+    # second dataset is that it never collides with or overwrites Orion's.
+    assert car._TOPIC_FOUNDRY_AITOWN_DATASET_NAME != car._TOPIC_FOUNDRY_DATASET_NAME
+    assert car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME != car._TOPIC_FOUNDRY_MODEL_NAME
+
+
+def test_trigger_topic_foundry_aitown_training_run_uses_aitown_constants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS", 30)
+
+    seen_kwargs = {}
+
+    def fake_ensure(base_url, **kwargs):
+        seen_kwargs.update(kwargs)
+        return (FAKE_DATASET_ID, FAKE_MODEL_ID)
+
+    monkeypatch.setattr(car, "_ensure_topic_foundry_dataset_and_model", fake_ensure)
+    monkeypatch.setattr(
+        car,
+        "trigger_training_run",
+        lambda base_url, **kwargs: {"run_id": FAKE_RUN_ID, "status": "queued"},
+    )
+
+    result = car.trigger_topic_foundry_aitown_training_run()
+
+    assert result["triggered"] is True
+    assert seen_kwargs["dataset_name"] == car._TOPIC_FOUNDRY_AITOWN_DATASET_NAME
+    assert seen_kwargs["model_name"] == car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME
+    assert seen_kwargs["source_table"] == "aitown_chat_history_log"
+    assert seen_kwargs["where_sql"] is None
+
+
+def test_trigger_topic_foundry_aitown_enrichment_uses_aitown_model_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE", True)
+    monkeypatch.setattr(car.settings, "TOPIC_FOUNDRY_BASE_URL", FAKE_BASE_URL)
+    monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT", 150)
+
+    seen = {}
+
+    def fake_fetch_latest_completed_run(base_url, model_name=None, timeout=None):
+        seen["model_name"] = model_name
+        return {"run_id": FAKE_RUN_ID}
+
+    monkeypatch.setattr(car, "fetch_latest_completed_run", fake_fetch_latest_completed_run)
+    monkeypatch.setattr(
+        car,
+        "trigger_enrichment_for_run",
+        lambda base_url, run_id, **kwargs: {"run_id": run_id, "status": "running"},
+    )
+
+    result = car.trigger_topic_foundry_aitown_enrichment()
+
+    assert result["triggered"] is True
+    assert seen["model_name"] == car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME
+    assert seen["model_name"] != car._TOPIC_FOUNDRY_MODEL_NAME
 
 
 def test_topic_foundry_model_spec_fingerprint_changes_with_settings(monkeypatch: pytest.MonkeyPatch) -> None:

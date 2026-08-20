@@ -1,3 +1,9 @@
+-- ORION-MIGRATION-SUPERSEDED-BY: manual_migration_execution_dispatch_frame_v2_drop_self_state.sql
+-- That migration explicitly drops idx_*_source_self_state and the NOT NULL on
+-- source_self_state_id, because nothing populates the column going forward. This file
+-- is correct history; its index is correctly ABSENT from the live database.
+-- Marker read by scripts/check_sql_migrations_applied.py.
+
 create table if not exists substrate_execution_dispatch_frames (
     frame_id text primary key,
     source_policy_frame_id text not null,

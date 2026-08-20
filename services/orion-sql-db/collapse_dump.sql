@@ -1,3 +1,8 @@
+-- ORION-MIGRATION-NOT-A-MIGRATION: pg_dump output, never applied as a migration
+-- Kept as a schema capture. Its objects are not expected to exist as written -- live
+-- collapse_enrichment has only its primary key and 0 rows.
+-- Marker read by scripts/check_sql_migrations_applied.py.
+
 PRAGMA foreign_keys=OFF;
 BEGIN TRANSACTION;
 CREATE TABLE collapse_mirror (

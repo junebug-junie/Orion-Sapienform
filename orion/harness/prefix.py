@@ -10,6 +10,7 @@ from orion.harness.operator_brief import (
 )
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
+from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
 from orion.schemas.thought import (
     AutonomySliceV1,
     GroundingCapsuleV1,
@@ -94,6 +95,36 @@ def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
     return lines
 
 
+_RECENT_TURN_ROLE_LABELS: dict[str, str] = {
+    "user": "User",
+    "assistant": "Orion (you, prior turn)",
+    "system": "System",
+}
+
+
+def _format_recent_turns(recent_turns: list[TurnWindowMessageV1]) -> list[str]:
+    """Bounded recent-history block for the harness prompt.
+
+    Named as a distinct, explicitly-labeled section (not folded into 'DURABLE
+    MEMORY / CONTINUITY', which is a periodic long-term digest, not verbatim
+    recent turns) so the motor has a concrete, checkable reason not to answer
+    each turn in isolation or default to an opening greeting past turn 1. See
+    HarnessRunRequestV1.recent_turns's docstring for the gap this closes.
+    Returns [] (no section at all) when there is no history -- an empty list
+    means a genuinely fresh session, not a fabricated absence.
+    """
+    if not recent_turns:
+        return []
+    lines = [
+        f"RECENT CONVERSATION (this session so far, {len(recent_turns)} prior "
+        "message(s) -- you are mid-conversation, not opening a new one)"
+    ]
+    for msg in recent_turns:
+        label = _RECENT_TURN_ROLE_LABELS.get(msg.role, msg.role)
+        lines.append(f"- {label}: {msg.content}")
+    return lines
+
+
 def harness_motor_instruction(
     *,
     thought: ThoughtEventV1,
@@ -112,16 +143,18 @@ def compile_harness_prefix(
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
     current_served_model: str | None = None,
+    recent_turns: list[TurnWindowMessageV1] | None = None,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
     Deterministically materializes the stance-conditioned context of the FCC
-    motor prompt: the unified operator brief, grounding self block, backend
-    self-context, Thought imperative and stance slice, autonomy slice, repair
-    overlay, user message, and enabled MCP tool briefs. The full `claude -p`
-    prompt is this prefix plus the harness_motor_instruction that
-    build_harness_prompt (runner.py) appends on user-message turns — check
-    both when chasing unexpected motor context.
+    motor prompt, in render order: the unified operator brief, grounding self
+    block, backend self-context, Thought imperative and stance slice, autonomy
+    slice, prior tool-fetch line, recent-turn history, user message, repair
+    overlay, and enabled MCP tool briefs. The full `claude -p` prompt is this
+    prefix plus the harness_motor_instruction that build_harness_prompt
+    (runner.py) appends on user-message turns — check both when chasing
+    unexpected motor context.
 
     Runtime evidence: the compiled prompt is what run_fcc_turn spawns with.
     Start here when the motor acted without stance or grounding context it
@@ -172,6 +205,8 @@ def compile_harness_prefix(
         parts.append(
             "Last turn you fetched content via tool: " + ", ".join(prior_tool_fetch_names)
         )
+
+    parts.extend(_format_recent_turns(recent_turns or []))
 
     if user_message.strip():
         parts.append(f"User message: {user_message.strip()}")

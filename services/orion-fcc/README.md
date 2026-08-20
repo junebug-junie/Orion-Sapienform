@@ -11,7 +11,18 @@ Anthropic-compatible **FCC proxy** (`free-claude-code` `fcc-server`) as a manage
 
 `fcc-server` loads `~/.fcc/.env` from the mounted volume. Compose `environment:` vars (e.g. `FCC_LLAMACPP_BASE_URL` → `LLAMACPP_BASE_URL`) override file values **only inside the container** so bridge-network routing to `llm-gateway` (orion-llm-gateway's compose service key) works without editing your secrets file.
 
-The operator model selection keys now default to the `harness` lane rather than `chat` (as of 2026-08-20). `harness` is its own entry in the gateway's route table, split off `chat` for the same reason `agent` was split off `chat` on 2026-08-14: `chat` carries live Hub chat traffic with zero admission throttling and a single-slot worker, so a long-running FCC turn sharing that route could stall a real chat reply, or vice versa. As shipped, `harness` is an interim alias of the same worker `chat` uses -- a labeling/observability seam, not yet physical isolation. See the gateway README's route-table docs before assuming this buys latency isolation today.
+As of 2026-08-20, the operator model selection keys are MEANT TO move to a new `harness`
+lane rather than `chat` -- but as of this note, `config/fcc.env_example`'s `MODEL`/
+`MODEL_SONNET`/`MODEL_OPUS` still literally say `chat`, and any live `~/.fcc/.env` needs the
+same by-hand edit (`llamacpp/harness` instead of `llamacpp/chat`; leave `MODEL_HAIKU` alone if
+it already points elsewhere). This is not yet done: the `.env`/`.env_example` change is
+config-only and was applied separately from the code in this patch. `harness` is its own entry
+in the gateway's route table, split off `chat` for the same reason `agent` was split off `chat`
+on 2026-08-14: `chat` carries live Hub chat traffic with zero admission throttling and a
+single-slot worker, so a long-running FCC turn sharing that route could stall a real chat
+reply, or vice versa. Even once applied, `harness` is shipped as an interim alias of the same
+worker `chat` uses -- a labeling/observability seam, not yet physical isolation. See the
+gateway README's route-table docs before assuming this buys latency isolation.
 
 ## Topology
 

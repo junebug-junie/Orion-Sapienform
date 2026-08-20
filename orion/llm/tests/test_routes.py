@@ -19,8 +19,21 @@ def test_harness_is_accepted_and_displayed() -> None:
     # `harness` fails a fast, readable test instead of only a RuntimeError at collection time.
     assert "harness" in ACCEPTED_LLM_ROUTES
     assert "harness" in LLM_ROUTE_DISPLAY_ORDER
-    assert normalize_llm_route("harness") == "harness"
-    assert normalize_llm_route("HARNESS") == "harness"
+
+
+def test_harness_is_not_a_valid_general_caller_override() -> None:
+    # Review caught this live 2026-08-20: `harness` being in ACCEPTED_LLM_ROUTES made it a valid
+    # override at normalize_llm_route()'s three real call sites (orion-actions,
+    # orion-cortex-exec, Hub's cortex_request_builder.py) even though SYSTEM_LLM_ROUTES already
+    # said it should never be a general caller's choice -- that exclusion only reached Hub's UI
+    # picker, not the actual server-side acceptance boundary. `harness` must resolve the same
+    # way an unrecognized route does here: None, so callers fall through to their own
+    # verb-based default rather than actually dispatching onto the FCC-reserved lane.
+    assert normalize_llm_route("harness") is None
+    assert normalize_llm_route("HARNESS") is None
+    # This does not affect the real production path: anthropic_passthrough.resolve_anthropic_route
+    # (what ~/.fcc/.env's MODEL=llamacpp/harness actually resolves through) never calls
+    # normalize_llm_route -- it looks the route table up directly.
 
 
 def test_harness_is_not_a_background_route() -> None:

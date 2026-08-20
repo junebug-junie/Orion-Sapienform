@@ -174,16 +174,29 @@ if SYSTEM_LLM_ROUTES & BACKGROUND_LLM_ROUTES:
 
 
 def normalize_llm_route(raw: object) -> Optional[str]:
-    """Canonical route name for `raw`, or None if it is absent or unrecognised.
+    """Canonical route name for `raw`, or None if it is absent, unrecognised, or system-only.
 
     None is deliberately the same answer for "nothing was asked for" and "what was asked for is
     not a route": both mean *do not override*. Callers that need to tell those apart -- to log a
     rejected override rather than silently ignoring it -- should compare against
     `ACCEPTED_LLM_ROUTES` themselves, the way `orion-cortex-exec` keeps `attempted` distinct from
     `accepted`.
+
+    A `SYSTEM_LLM_ROUTES` member (`harness`) is also rejected here, not just accepted-and-hidden
+    from a UI. Review caught this live 2026-08-20: widening `ACCEPTED_LLM_ROUTES` to include
+    `harness` made it a valid override at all three of this function's real call sites --
+    `orion-actions` (`ACTIONS_*_LLM_ROUTE=harness`), `orion-cortex-exec`
+    (`_resolve_llm_route_override`, any caller-supplied `ctx["llm_route"]`), and Hub's
+    `cortex_request_builder.py` (a raw `POST /api/chat` body, not just its own dropdown) -- none
+    of which route through Hub's picker, so `SYSTEM_LLM_ROUTES`' UI-side exclusion never reached
+    them. `harness` is resolved through a completely separate path in production
+    (`anthropic_passthrough.resolve_anthropic_route`, which never calls this function -- it looks
+    the route table up directly), so rejecting it here costs that real usage nothing.
     """
     route = str(raw or "").strip().lower()
     if not route:
         return None
     route = LLM_ROUTE_ALIASES.get(route, route)
-    return route if route in ACCEPTED_LLM_ROUTES else None
+    if route not in ACCEPTED_LLM_ROUTES or route in SYSTEM_LLM_ROUTES:
+        return None
+    return route

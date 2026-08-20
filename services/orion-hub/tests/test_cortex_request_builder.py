@@ -1165,11 +1165,24 @@ def test_quick_background_reaches_the_executor_instead_of_being_dropped() -> Non
 
 
 def test_every_shared_route_survives_the_builder() -> None:
-    """Behavioural drift guard against the shared set, driving the real builder."""
-    from orion.llm.routes import ACCEPTED_LLM_ROUTES
+    """Behavioural drift guard against the shared set, driving the real builder.
 
-    for route in sorted(ACCEPTED_LLM_ROUTES):
+    SYSTEM_LLM_ROUTES (`harness`, 2026-08-20) is excluded on purpose -- see
+    test_harness_route_is_not_settable_via_the_api below for that half.
+    """
+    from orion.llm.routes import ACCEPTED_LLM_ROUTES, SYSTEM_LLM_ROUTES
+
+    for route in sorted(ACCEPTED_LLM_ROUTES - SYSTEM_LLM_ROUTES):
         assert _route_of(route) == route, route
+
+
+def test_harness_route_is_not_settable_via_the_api() -> None:
+    """Review caught this live 2026-08-20: a raw `POST /api/chat` body with
+    `{"llm_route": "harness"}` -- not just Hub's own dropdown, which the picker-side fix in
+    app.js does not gate -- would otherwise have been accepted here and forwarded to
+    cortex-exec, dispatching an ordinary chat turn onto the lane reserved for FCC/Claude Code
+    CLI harness turns. Must leave the key unset, exactly like an unrecognized route."""
+    assert _route_of("harness") is None
 
 
 def test_legacy_aliases_resolve_rather_than_being_dropped() -> None:

@@ -22,7 +22,7 @@ from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.llm_json import parse_json_object
-from orion.llm.routes import ACCEPTED_LLM_ROUTES, normalize_llm_route
+from orion.llm.routes import ACCEPTED_LLM_ROUTES, SYSTEM_LLM_ROUTES, normalize_llm_route
 from orion.journaler import (
     JOURNAL_CREATED_KIND,
     JOURNAL_WRITE_KIND,
@@ -150,10 +150,15 @@ def _normalized_llm_route(preferred: str | None, fallback: str) -> str | None:
     raw = str(preferred or fallback or "").strip()
     route = normalize_llm_route(raw)
     if route is None and raw:
+        # `accepted` here means "a value orion-actions may be configured to override with", not
+        # "a route that exists" -- SYSTEM_LLM_ROUTES members (harness) are excluded even though
+        # ACCEPTED_LLM_ROUTES itself still lists them. Logging the raw ACCEPTED_LLM_ROUTES set
+        # here would have made this warning self-contradictory for `harness` specifically:
+        # "value='harness' accepted=[..., 'harness', ...] -- sending no override".
         logger.warning(
             "actions_llm_route_unrecognized value=%r accepted=%s -- sending no override",
             raw,
-            sorted(ACCEPTED_LLM_ROUTES),
+            sorted(ACCEPTED_LLM_ROUTES - SYSTEM_LLM_ROUTES),
         )
     return route
 

@@ -7025,9 +7025,17 @@ document.addEventListener("DOMContentLoaded", () => {
    *   agent -> neither; nothing threads attachments through that path yet
    */
   const MODES_CARRYING_ATTACHMENTS = new Set(['orion', 'brain']);
-  // Mirrors the LLM gateway's llm_route_default: the lane the Anthropic
-  // passthrough falls back to when the harness does not name one.
-  const HUB_ORION_HARNESS_ROUTE_ID = 'chat';
+  // The route ~/.fcc/.env's MODEL=llamacpp/harness actually names -- not a fallback default.
+  // Was 'chat' until 2026-08-20: `harness` split off `chat` as its own route (see
+  // orion/llm/routes.py's ACCEPTED_LLM_ROUTES 2026-08-20 note) specifically so an FCC/Claude
+  // Code CLI turn is no longer indistinguishable from live chat traffic to the gateway. Left at
+  // 'chat' here, this constant would have kept reading the WRONG catalog entry's vision probe
+  // for real Orion-mode turns the instant `harness` stops being an interim alias of `chat`'s
+  // own worker (its current, temporary configuration) -- silently reintroducing the exact
+  // "vision advertised on a path that carries nothing" bug class the comment above this
+  // function describes fixing, just for the opposite direction (disabled when it should be
+  // enabled, or vice versa, depending which worker ends up with a real mmproj).
+  const HUB_ORION_HARNESS_ROUTE_ID = 'harness';
 
   function modeCarriesAttachments() {
     // currentMode is already the BACKEND mode ('orion' | 'brain' | 'agent'),
@@ -7042,11 +7050,12 @@ document.addEventListener("DOMContentLoaded", () => {
    *
    * Not always the compute dropdown. An Orion-mode turn never uses that lane:
    * it goes to the harness, whose `claude` reaches the gateway through the
-   * Anthropic passthrough, which resolves the route from the model field and
-   * falls back to the gateway's own default (`chat`). Gating Orion mode on
-   * `selectedLlmRoute` meant a fresh page load -- compute dropdown at its
-   * 'quick' default, a lane with no mmproj -- reported vision=false and
-   * DISABLED attach in the exact mode this feature exists for.
+   * Anthropic passthrough, which resolves the route from the model field --
+   * `~/.fcc/.env`'s MODEL=llamacpp/harness names `harness` explicitly, not a
+   * fallback. Gating Orion mode on `selectedLlmRoute` meant a fresh page
+   * load -- compute dropdown at its 'quick' default, a lane with no mmproj --
+   * reported vision=false and DISABLED attach in the exact mode this feature
+   * exists for.
    */
   function effectiveVisionRouteId() {
     if (String(currentMode || '').toLowerCase() === 'orion') return HUB_ORION_HARNESS_ROUTE_ID;

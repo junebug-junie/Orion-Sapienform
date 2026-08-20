@@ -37,6 +37,9 @@ def _gateway_payload():
             {"id": "agent", "served_by": "circe-worker-agent-1", "backend": "llamacpp",
              "status": "down", "latency_ms": 1600, "last_checked_at": "t", "vision": None,
              "priority": None, "reserved_free_slots": None},
+            {"id": "harness", "served_by": "circe-worker-1", "backend": "llamacpp",
+             "status": "down", "latency_ms": 1619, "last_checked_at": "t", "vision": None,
+             "priority": "system", "reserved_free_slots": None},
         ],
     }
 
@@ -132,9 +135,29 @@ class TestPriorityIsFailSafe:
         assert next(r for r in out["routes"] if r["id"] == "metacog")["priority"] == "background"
 
     def test_the_picker_filter_excludes_it_in_every_case(self):
-        """Mirrors pickableComputeRouteIds() in app.js, which filters on this exact field."""
+        """Mirrors pickableComputeRouteIds() in app.js, which filters on this exact field.
+
+        Was `!= "background"` only until 2026-08-19's review caught the gap it left: app.js's
+        real filter excludes BOTH `"background"` (quick_background, yields for slot slack) and
+        `"system"` (harness, never a human's turn but dispatches immediately) via two separate
+        checks (isBackgroundRouteEntry, isSystemRouteEntry) -- a one-value reimplementation here
+        would keep passing even if a future edit to app.js dropped the system-priority check
+        entirely, since this test's own local filter would silently agree with the broken code.
+        """
         for payload in (_gateway_payload(), {"default_route": "quick", "routes": []}):
             out = _normalize(payload)
             pickable = [r["id"] for r in out["routes"]
-                        if str(r.get("priority") or "").lower() != "background"]
+                        if str(r.get("priority") or "").lower() not in ("background", "system")]
             assert "quick_background" not in pickable
+            assert "harness" not in pickable
+
+    def test_gateway_reporting_harness_without_a_priority_field(self):
+        """Same fail-safe as background's version above, mirrored for `system`: a route-table
+        entry carrying no `priority` key at all (easy -- neighbouring `chat`/`agent` entries in
+        the same JSON blob carry none) must not make `harness` look like an ordinary lane."""
+        payload = _gateway_payload()
+        for r in payload["routes"]:
+            r.pop("priority", None)
+        out = _normalize(payload)
+        harness = next(r for r in out["routes"] if r["id"] == "harness")
+        assert harness["priority"] == "system"

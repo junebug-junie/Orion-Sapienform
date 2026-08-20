@@ -6,7 +6,18 @@ from pydantic import BaseModel, Field
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.context_exec import ContextExecPermissionV1
+from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
+
+# Bounded cap for HarnessRunRequestV1.recent_turns -- reused, not invented:
+# matches PreTurnAppraisalOptionsV1.max_turns's existing default (orion/schemas/
+# pre_turn_appraisal.py) and orion.substrate.appraisal.turn_window.build_turn_window's
+# default max_turns, the same normalize+cap helper turn_orchestrator.py already
+# calls one line above where recent_turns is built. Enforced here too (not just
+# at the call site) so the invariant holds regardless of caller -- see
+# CLAUDE.md's evidence_event_ids unbounded-growth precedent for why a turn-scoped
+# list needs its own ceiling instead of trusting every producer to remember one.
+HARNESS_RECENT_TURNS_MAX = 8
 
 
 class GrammarReceiptV1(BaseModel):
@@ -197,6 +208,20 @@ class HarnessRunRequestV1(BaseModel):
             "Images staged into the sandbox for this turn. Empty for every "
             "text-only turn, which keeps the harness prompt byte-identical to "
             "its pre-attachment form."
+        ),
+    )
+    recent_turns: list[TurnWindowMessageV1] = Field(
+        default_factory=list,
+        max_length=HARNESS_RECENT_TURNS_MAX,
+        description=(
+            "Bounded recent user/assistant history for THIS session, oldest "
+            "first, rendered into the harness prompt as a 'RECENT CONVERSATION' "
+            "section (orion/harness/prefix.py::compile_harness_prefix). Empty "
+            "for a genuinely fresh session -- never fabricated. Distinct from "
+            "the single current `user_message` field: before this field "
+            "existed, every unified-turn (mode='orion') `claude -p` prompt "
+            "carried zero prior-turn history, so each turn was answered in "
+            "isolation regardless of how long the conversation had run."
         ),
     )
 

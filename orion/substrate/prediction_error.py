@@ -1094,13 +1094,68 @@ _PERCEPTION_PREDICTION_ERROR_EWMA_ALPHA = 0.2
 # uses via `_domain_zscore`, so `min_error` means the same thing here as
 # it does for every other migrated domain.
 #
-# Floor set three orders of magnitude below the measured real variance
-# (2.10e-5) above, same convention _CHAT_PREDICTION_ERROR_MIN_VARIANCE
-# and _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE use against their own
-# measured floors -- guards early-tick/degenerate division without ever
-# dominating real variance once warmed up.
+# **Correction, 2026-08-20, one day after the floor above was set:** "three
+# orders of magnitude below the measured variance" was the right convention
+# for _CHAT_PREDICTION_ERROR_MIN_VARIANCE/_EXECUTION_PREDICTION_ERROR_MIN_
+# VARIANCE, but wrong for this domain specifically, and shipping it
+# unquestioned here is exactly the mistake
+# ``feedback_borrowed_calibrated_constants_dont_transfer_across_domains``
+# already names -- a convention that held for those domains' own EWMA
+# doesn't automatically transfer to this one's.
+#
+# What's different here: this floor is not just a degenerate/early-tick
+# guard, it is also the only thing standing between a real "calm, no
+# anomaly" tick and a false-positive score, because `compute_ewma_update`
+# only applies `min_variance` to the *z-score denominator* (`max(prev_
+# variance, min_variance)`), never to the *stored* `new_variance` it hands
+# back for next tick -- that stored value is unfloored `alpha * deviation**2
+# + (1 - alpha) * prev_variance`, alpha=0.2 (~5 ticks of effective memory).
+# For a domain whose real variance is already tiny (2e-6, not 2e-5 -- see
+# below), 5 samples is not enough to estimate that variance without a lot of
+# sampling noise: a locally-quieter-than-usual stretch drives the *tracked*
+# variance to whipsaw well below the domain's true steady-state variance,
+# and the next perfectly ordinary-magnitude tick then divides by that
+# artificially small number and reads as a multi-sigma "surprise" that
+# never happened.
+#
+# Confirmed live, not theorized: camera physically static (confirmed by
+# Juniper, not inferred) for an extended window, 2026-08-20, n=240 real
+# ticks, one stream -- raw_surprise mean=0.004174, population variance=
+# 1.933e-6 (note: an order of magnitude *smaller* than the n=57/~30-min
+# estimate the old floor was calibrated against above, itself a case of
+# ``feedback_short_window_distribution_stats_are_artifacts`` -- that
+# earlier sample was too short to trust as a calibration source, exactly
+# the lesson it names). Against the *old* floor (1e-8, ~200x below this
+# true variance), that confirmed-static stream still crossed
+# ``endogenous_curiosity.py``'s ``min_error=0.55`` on 10.0% of ticks and
+# fully saturated the score at 1.0 on 2.9-4.1% of ticks -- a real,
+# confirmed false-positive rate on a scene that never moved, not a
+# hypothetical risk. Replayed the same 240 real raw-magnitude samples
+# through this module's own `compute_ewma_update` (shuffled, various
+# candidate floors) to check the fix before shipping it: raising the floor
+# to sit at (not three orders below) the measured true variance collapses
+# the saturated-score rate from ~4% to ~0.5% -- matching the ~0.3%
+# theoretically expected for a genuine 3-sigma tail -- while leaving
+# real-event sensitivity untouched (the actual camera-knock event this
+# domain was built for, raw_surprise ~0.12-0.19, is still a >80-sigma event
+# against this floor; saturates instantly regardless of which floor in the
+# 1e-8..5e-6 range is chosen). The residual ~7-8% of ticks crossing
+# min_error=0.55 (score > 0.55, i.e. z > 1.65) is the real distribution's
+# own right-skewed tail at that z, not an artifact -- floor changes below
+# the true variance cannot suppress it further without also blunting
+# sensitivity to genuine partial events, so this fix targets the
+# variance-whipsaw floor only, not the saturation constant.
+#
+# 2e-6 chosen: just above the measured 1.933e-6 population variance (not
+# three orders below it, per the correction above), close to the simulated
+# inflection point where the saturated-tick rate drops to its theoretical
+# floor. Guards early-tick/degenerate division exactly as before; the
+# difference is it now also guards every later tick's z-score denominator
+# against a whipsawed-low *tracked* variance, which the old floor never
+# did because it sat far beneath any real value this domain's tracked
+# variance would plausibly take.
 _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
-_PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-8
+_PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE = 2e-6
 
 
 @dataclass(frozen=True)
@@ -1173,10 +1228,28 @@ class PerceptionPredictionErrorResult:
     "measured, not anomalous" (this repo's "no empty-shell cognition" rule,
     same convention every EWMA domain above follows via
     ``compute_ewma_update``'s own ``zscore=None`` first-observation case).
+
+    ``raw_surprise`` is the pre-z-score ``1 - cos(...)`` magnitude. Populated
+    whenever a real cosine comparison against a warm embedding baseline
+    happened -- including the stream's first such comparison, where
+    ``score`` is still ``None`` because the *second* (scalar surprise) EWMA
+    baseline hasn't seen enough observations yet to produce a z-score. Only
+    ``None`` when no comparison was possible at all this tick (empty/
+    zero-norm input, or the embedding baseline itself is cold/dimension-
+    mismatched). Added 2026-08-20 after the z-score migration shipped and
+    went live: the caller only ever had the final saturated ``score`` to log,
+    which made it impossible to tell "the raw magnitude genuinely moved" from
+    "the z-score stage is mis-calibrated" without re-deriving the raw value
+    by hand from ``score * _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION``
+    (which only works for *unsaturated* ticks -- every tick that pinned at
+    1.0 was a dead end). A real debug surface for a metric this repo's own
+    metric quality gate requires live-data sanity-checking, not a throwaway
+    field.
     """
 
     score: float | None
     baseline: PerceptionEmbeddingBaseline
+    raw_surprise: float | None = None
 
 
 def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float | None:
@@ -1316,6 +1389,10 @@ def perception_prediction_error(
         surprise=new_surprise_baseline,
     )
     if surprise_zscore is None:
-        return PerceptionPredictionErrorResult(score=None, baseline=new_baseline)
+        return PerceptionPredictionErrorResult(
+            score=None, baseline=new_baseline, raw_surprise=raw_surprise
+        )
     score = min(1.0, surprise_zscore / _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION)
-    return PerceptionPredictionErrorResult(score=score, baseline=new_baseline)
+    return PerceptionPredictionErrorResult(
+        score=score, baseline=new_baseline, raw_surprise=raw_surprise
+    )

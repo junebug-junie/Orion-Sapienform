@@ -2801,12 +2801,29 @@ async def handle_chat_request(
         from .main import bus, harness_step_relay, rpc_bus
         from orion.hub.turn_orchestrator import execute_unified_turn
 
+        # Parity fix: the sibling (non-orion) branch below builds
+        # continuity_messages from the client-supplied history before
+        # dispatch; this branch previously did not, so execute_unified_turn's
+        # continuity_messages arg was always None for every HTTP orion-mode
+        # turn (the WebSocket path -- the real Hub UI -- already built it
+        # correctly at websocket_handler.py). Was inert either way until
+        # HarnessRunRequestV1.recent_turns existed for the orchestrator to
+        # actually thread it into; now that it does, this parity gap would
+        # silently starve HTTP-driven orion-mode turns of history.
+        context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+        continuity_messages = build_continuity_messages(
+            history=user_messages,
+            latest_user_prompt=user_prompt,
+            turns=context_turns,
+        )
+
         frames = await execute_unified_turn(
             bus=bus,
             correlation_id=corr_id,
             session_id=session_id,
             user_message=user_prompt,
             payload=payload,
+            continuity_messages=continuity_messages,
             harness_rpc_bus=rpc_bus or bus,
             harness_step_relay=harness_step_relay,
         )

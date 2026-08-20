@@ -12,6 +12,55 @@
 #
 # POSIX sh only -- no bashisms (no arrays, no [[ ]]).
 
+# --- Shared: resolve a python3 that has a given set of modules importable ---
+# Used by both the orion-env-settings-gate (needs pydantic_settings) and the
+# metric-dead-wiring gate (needs pydantic + psycopg2) below. Factored out
+# 2026-08-20 after code review found two independent hand-copies of this
+# exact fallback chain -- the same "two independent copies of routing logic
+# silently drift apart" failure class this repo has already hit once in
+# Python code (orion/metrics/liveness.py's _resolve_source_kind() docstring).
+# A bare system python3 usually lacks these.
+#
+# $1 = space-separated module names to probe for (e.g. "pydantic_settings"
+# or "pydantic psycopg2"). $2 = optional precomputed repo root (see
+# _ORION_REPO_ROOT_ONCE below) -- resolved internally via `git rev-parse` if
+# omitted/empty, for callers that don't have it handy. Echoes the
+# interpreter path to use; caller captures it via $(...). Does not itself
+# verify the chosen interpreter actually has the modules -- same "best
+# effort, caller still checks command -v before trusting it" contract both
+# original call sites had.
+_orion_resolve_gate_python() {
+    _probe_modules="$1"
+    _repo_root_arg="$2"
+    _import_expr=""
+    for _m in $_probe_modules; do
+        if [ -z "$_import_expr" ]; then
+            _import_expr="import $_m"
+        else
+            _import_expr="$_import_expr, $_m"
+        fi
+    done
+    _py="python3"
+    if ! command -v "$_py" >/dev/null 2>&1 || ! "$_py" -c "$_import_expr" >/dev/null 2>&1; then
+        _repo_root_probe="$_repo_root_arg"
+        if [ -z "$_repo_root_probe" ]; then
+            _repo_root_probe=$(git rev-parse --show-toplevel 2>/dev/null) || _repo_root_probe=""
+        fi
+        if [ -n "$_repo_root_probe" ] && [ -x "$_repo_root_probe/../.venv/bin/python3" ]; then
+            _py="$_repo_root_probe/../.venv/bin/python3"
+        elif [ -x "/mnt/scripts/Orion-Sapienform/.venv/bin/python3" ]; then
+            _py="/mnt/scripts/Orion-Sapienform/.venv/bin/python3"
+        fi
+    fi
+    echo "$_py"
+}
+
+# Computed once, reused by every gate below instead of each gate (and each
+# call into _orion_resolve_gate_python()) re-running its own `git rev-parse
+# --show-toplevel` -- up to 5 redundant subprocess spawns per commit for the
+# identical value, found by code review 2026-08-20.
+_ORION_REPO_ROOT_ONCE=$(git rev-parse --show-toplevel 2>/dev/null) || _ORION_REPO_ROOT_ONCE=""
+
 # --- Safety: never interfere with an in-progress rebase/merge/cherry-pick ---
 # `git rebase --continue`/`git merge`/`git cherry-pick --continue` create
 # commits internally as part of their own machinery, and this hook still
@@ -106,24 +155,17 @@ fi
 # not habitually), matching this file's existing ORION_ALLOW_SHARED_CHECKOUT_WRITE
 # convention of an explicit, opt-in bypass rather than a silent one.
 if [ "$ORION_SKIP_ENV_SETTINGS_GATE" != "1" ]; then
-    _REPO_ROOT_FOR_GATE=$(git rev-parse --show-toplevel 2>/dev/null) || _REPO_ROOT_FOR_GATE=""
+    _REPO_ROOT_FOR_GATE="$_ORION_REPO_ROOT_ONCE"
     # check_settings_defaults.py needs pydantic/pydantic-settings importable, which a
-    # bare system `python3` usually doesn't have -- same problem and same fallback
-    # chain already used by scripts/smoke_cortex_exec_grammar.sh: prefer a working
-    # `python3 -m pytest`-capable interpreter, then this worktree's sibling .venv,
-    # then this repo's own primary-checkout .venv (hooks are shared across every
-    # worktree, so a per-worktree .venv won't always exist), then fall back to
-    # plain python3 and let the check itself report an import error (exit 2, which
-    # this gate still treats as a failure -- see the docstring for why that's the
-    # conservative/correct default).
-    _GATE_PY="python3"
-    if ! command -v "$_GATE_PY" >/dev/null 2>&1 || ! "$_GATE_PY" -c "import pydantic_settings" >/dev/null 2>&1; then
-        if [ -n "$_REPO_ROOT_FOR_GATE" ] && [ -x "$_REPO_ROOT_FOR_GATE/../.venv/bin/python3" ]; then
-            _GATE_PY="$_REPO_ROOT_FOR_GATE/../.venv/bin/python3"
-        elif [ -x "/mnt/scripts/Orion-Sapienform/.venv/bin/python3" ]; then
-            _GATE_PY="/mnt/scripts/Orion-Sapienform/.venv/bin/python3"
-        fi
-    fi
+    # bare system `python3` usually doesn't have -- see _orion_resolve_gate_python()
+    # above for the fallback chain (prefer a working interpreter, then this
+    # worktree's sibling .venv, then this repo's own primary-checkout .venv --
+    # hooks are shared across every worktree, so a per-worktree .venv won't
+    # always exist), then fall back to plain python3 and let the check itself
+    # report an import error (exit 2, which this gate still treats as a
+    # failure -- see the docstring for why that's the conservative/correct
+    # default).
+    _GATE_PY=$(_orion_resolve_gate_python "pydantic_settings" "$_REPO_ROOT_FOR_GATE")
 
     if [ -n "$_REPO_ROOT_FOR_GATE" ] && command -v "$_GATE_PY" >/dev/null 2>&1; then
         _STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null) || _STAGED_FILES=""
@@ -182,7 +224,7 @@ fi
 #
 # Escape hatch: ORION_ALLOW_GRAPH_SHRINK=1 for a genuine full re-extraction.
 if [ "$ORION_ALLOW_GRAPH_SHRINK" != "1" ]; then
-    _GRAPH_REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || _GRAPH_REPO_ROOT=""
+    _GRAPH_REPO_ROOT="$_ORION_REPO_ROOT_ONCE"
     if [ -n "$_GRAPH_REPO_ROOT" ] && [ -f "$_GRAPH_REPO_ROOT/scripts/check_graph_node_loss.py" ]; then
         if ! python3 "$_GRAPH_REPO_ROOT/scripts/check_graph_node_loss.py"; then
             cat >&2 <<'EOF'
@@ -198,6 +240,54 @@ Do NOT re-run `graphify update .` and commit anyway. Either:
       ORION_ALLOW_GRAPH_SHRINK=1 git commit ...
 EOF
             exit 1
+        fi
+    fi
+fi
+
+# --- Gate 4: refuse a commit that wires new code to a confirmed-unclean metric ---
+#
+# docs/superpowers/specs/2026-08-12-metric-semantic-layer-design.md phase 5:
+# orion/metrics/liveness.py computes real, live-Postgres liveness for a
+# narrow set of metrics (currently the 5 attention_self_model.v1 scalar
+# fields + l7_l11_ladder). scripts/hooks/metric_lineage_nudge.py already
+# surfaces this at edit time -- but only as an informational PreToolUse card,
+# and a real live report from another agent session (2026-08-20) confirmed
+# that kind of nudge is not reliable on its own: it fired the graphify
+# "MANDATORY" reminder on nearly every tool call for a whole session, and the
+# agent acted on it exactly once before falling back to rg and never
+# revisiting it. This gate does not depend on an agent noticing, retrying, or
+# reading a hint -- it mechanically re-checks liveness against live Postgres
+# at commit time and blocks the commit outright if the diff adds a NEW
+# reference to a metric currently reading dead/never_produced/ratchet_suspect.
+#
+# Needs pydantic (orion.metrics.lineage -> orion.inner_state_registry) and
+# psycopg2 -- uses the shared _orion_resolve_gate_python() above (same
+# fallback chain as the orion-env-settings-gate) rather than its own copy,
+# since a bare system python3 usually has neither.
+#
+# Cost: near-zero on a normal commit (one git diff --cached call, a dict
+# lookup, no DB connection opened unless the diff actually names one of the
+# handful of covered tokens). Fails open on any DB/import/internal failure --
+# see the checker's own docstring for the full contract.
+#
+# Escape hatch: ORION_ALLOW_DEAD_METRIC_WIRE=1 for an intentional revival/fix.
+if [ "$ORION_ALLOW_DEAD_METRIC_WIRE" != "1" ]; then
+    _METRIC_REPO_ROOT="$_ORION_REPO_ROOT_ONCE"
+    if [ -n "$_METRIC_REPO_ROOT" ] && [ -f "$_METRIC_REPO_ROOT/scripts/check_metric_dead_wiring.py" ]; then
+        _METRIC_GATE_PY=$(_orion_resolve_gate_python "pydantic psycopg2" "$_METRIC_REPO_ROOT")
+
+        if command -v "$_METRIC_GATE_PY" >/dev/null 2>&1; then
+            if ! "$_METRIC_GATE_PY" "$_METRIC_REPO_ROOT/scripts/check_metric_dead_wiring.py"; then
+                cat >&2 <<'EOF'
+
+[git-safety] COMMIT BLOCKED: see check_metric_dead_wiring output above.
+
+Escape hatch (only if this is genuinely intentional, e.g. you are the one
+reviving/fixing this metric):
+  ORION_ALLOW_DEAD_METRIC_WIRE=1 git commit ...
+EOF
+                exit 1
+            fi
         fi
     fi
 fi

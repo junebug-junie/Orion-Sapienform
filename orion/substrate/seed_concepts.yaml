@@ -47,3 +47,20 @@ concepts:
     related_concept_keys:
       - orion
       - juniper
+
+  - key: claude
+    anchor_scope: claude
+    subject_ref: claude
+    label: "Claude"
+    definition: >-
+      Claude is the third participant in Orion's Hub social room
+      (services/orion-hub/scripts/room_claude_relay.py): an AI companion
+      Orion and Juniper can invite into a live chat, either by an operator
+      click or by Orion's own auto-respond path. Claude's room turns are
+      persisted into chat_history_log alongside Orion's and Juniper's --
+      the same table topic-foundry mines for the entire organic concept
+      graph -- so Claude is a real, distinct originating speaker in that
+      corpus, not merely a mentioned entity.
+    related_concept_keys:
+      - orion
+      - juniper

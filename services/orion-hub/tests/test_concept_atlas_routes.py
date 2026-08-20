@@ -501,6 +501,130 @@ def test_network_surfaces_degraded_backend_result(client: TestClient, monkeypatc
     assert body["degraded_error"] == "sparql_timeout"
 
 
+# --- entity-node hydration, added 2026-08-20 -------------------------------
+# docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md
+# store.query_concept_region() only ever returns concept-kind nodes; an edge
+# to an off-slice non-concept node (most commonly an EntityNodeV1 mention)
+# used to be silently dropped by the route's own AND-based edge filter --
+# these tests cover the hydration pass that fixes it (and, as a side effect,
+# makes the landmark-connection edges from topic_foundry.py actually visible).
+
+
+def _entity_node(node_id, label, *, anchor_scope="world"):
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1, SubstrateSignalBundleV1
+
+    return EntityNodeV1(
+        node_id=node_id,
+        label=label,
+        anchor_scope=anchor_scope,
+        promotion_state="proposed",
+        temporal=_temporal(),
+        provenance=_provenance(),
+        signals=SubstrateSignalBundleV1(confidence=0.6, salience=0.0),
+    )
+
+
+def _entity_edge(edge_id, source_concept_id, target_entity_id, *, predicate="associated_with"):
+    from orion.core.schemas.cognitive_substrate import NodeRefV1, SubstrateEdgeV1
+
+    return SubstrateEdgeV1(
+        edge_id=edge_id,
+        source=NodeRefV1(node_id=source_concept_id, node_kind="concept"),
+        target=NodeRefV1(node_id=target_entity_id, node_kind="entity"),
+        predicate=predicate,
+        temporal=_temporal(),
+        confidence=0.6,
+        salience=0.0,
+        provenance=_provenance(),
+    )
+
+
+def test_network_hydrates_off_slice_entity_node_reached_by_edge(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    concept = _concept_node("concept-orion", "Orion", anchor_scope="orion")
+    entity = _entity_node("entity-mention-orion", "Orion")
+    store.upsert_node(identity_key="concept:orion", node=concept)
+    store.upsert_node(identity_key="entity:orion-mention", node=entity)
+    store.upsert_edge(
+        identity_key="edge:concept-entity",
+        edge=_entity_edge("edge-concept-entity", "concept-orion", "entity-mention-orion"),
+    )
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    nodes_by_id = {n["id"]: n for n in body["nodes"]}
+
+    # Without hydration this node would never appear -- store.query_concept_region()
+    # never returns entity-kind nodes in `nodes` to begin with.
+    assert "entity-mention-orion" in nodes_by_id
+    assert nodes_by_id["entity-mention-orion"]["node_kind"] == "entity"
+
+    edge_pairs = {(e["source"], e["target"]) for e in body["edges"]}
+    assert ("concept-orion", "entity-mention-orion") in edge_pairs
+
+    # The whole point: the concept and its formerly-invisible entity mention
+    # now share one connected component instead of the edge being dropped.
+    assert nodes_by_id["concept-orion"]["component_id"] == nodes_by_id["entity-mention-orion"]["component_id"]
+
+
+def test_network_hydration_never_readmits_a_scope_filtered_concept_node(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concept node the explicit ?scope= filter excluded must stay
+    excluded -- hydration only ever adds non-concept nodes, never smuggles a
+    deliberately-filtered concept node back in via its edge."""
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    orion_scope_concept = _concept_node("concept-orion", "Orion", anchor_scope="orion")
+    world_scope_concept = _concept_node("concept-world-topic", "World Topic", anchor_scope="world")
+    store.upsert_node(identity_key="concept:orion", node=orion_scope_concept)
+    store.upsert_node(identity_key="concept:world-topic", node=world_scope_concept)
+    store.upsert_edge(
+        identity_key="edge:orion-world",
+        edge=_edge("edge-orion-world", "concept-orion", "concept-world-topic"),
+    )
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network", params={"scope": "world"})
+    assert r.status_code == 200
+    body = r.json()
+    node_ids = {n["id"] for n in body["nodes"]}
+    assert node_ids == {"concept-world-topic"}  # concept-orion stays excluded, not hydrated back in
+
+
+def test_network_hydration_bounded_by_cap(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    concept = _concept_node("concept-hub", "Hub")
+    store.upsert_node(identity_key="concept:hub", node=concept)
+    over_cap = concept_atlas_routes._NETWORK_HYDRATION_MAX_EXTRA_NODES + 10
+    for i in range(over_cap):
+        entity = _entity_node(f"entity-{i}", f"Entity {i}")
+        store.upsert_node(identity_key=f"entity:{i}", node=entity)
+        store.upsert_edge(
+            identity_key=f"edge:hub-entity-{i}",
+            edge=_entity_edge(f"edge-hub-entity-{i}", "concept-hub", f"entity-{i}"),
+        )
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    entity_nodes = [n for n in body["nodes"] if n["node_kind"] == "entity"]
+    assert len(entity_nodes) == concept_atlas_routes._NETWORK_HYDRATION_MAX_EXTRA_NODES
+
+
 def test_network_store_error_degrades_gracefully(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts import concept_atlas_routes
 

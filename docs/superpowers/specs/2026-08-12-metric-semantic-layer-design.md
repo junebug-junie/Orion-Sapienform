@@ -5,11 +5,16 @@ cognition change — but any *fix* to a metric this layer classifies as dead is
 proposal-mode territory per CLAUDE.md §0A and needs its own sign-off.
 
 **Date:** 2026-08-12, revised 2026-08-19 once phase 3 (the phase that was
-never built) shipped.
+never built) shipped, revised again 2026-08-19 once a scoped slice of phase 5
+shipped.
 
 **Status:** phases 1, 2, and 4 shipped 2026-08-12/13. **Phase 3 shipped
-2026-08-19** — see its section below for what actually got built. Phase 5
-(liveness beyond field channels) remains deliberately deferred.
+2026-08-19** — see its section below for what actually got built. **Phase 5
+partially shipped 2026-08-19** — two candidates only (`attention_self_model.v1`
+scalar fields, `l7_l11_ladder` throughput); see "Phase 5 (2026-08-19)" below.
+The general "any surface, any URN" version remains deliberately deferred —
+that per-surface data-source question is still bigger than the two cases
+solved here.
 
 ## Arsonist summary
 
@@ -344,10 +349,175 @@ cathedral §0A bans, false-positive noisy, and trivially evaded. Registration is
 enforced by review and by the phase 3 card, not by a heuristic pretending to be
 a gate. Stated so the absence reads as a decision, not an oversight.
 
-**Phase 5 — liveness generalization beyond field channels.**
-Deferred deliberately: it needs a per-surface decision about where the live
-sample comes from (Postgres history, bus window, or a service `/latest`
-endpoint), and that is a bigger question than the first four phases combined.
+**Phase 5 — liveness generalization beyond field channels. PARTIALLY SHIPPED
+2026-08-19** (two candidates only; the general version is still deferred —
+see below).
+
+The general question — "for any URN on any surface, where does the live
+sample come from" — is still bigger than the first four phases combined, and
+is not solved here.
+
+**Correction 2026-08-20** (code review): this section previously credited
+`docs/superpowers/specs/2026-08-13-phase5-liveness-scope.md`'s "R6 section"
+with a systematic 48-URN walk finding "25 of 48 have retired producers".
+Neither claim survived re-verification. That doc's R6 is an unrelated,
+still-open question ("can a metric express rest") and contains no such walk.
+Re-running `check_metric_lineage.py --json` live against current `main`
+(2026-08-20) confirms 48 `inner_state` nodes (15 signals + 33 scalar fields)
+is the real total, but only 3 signals (8 nodes) have a retired producer —
+`self_state.v1`, `drive_state.v1`, `autonomy_state_v2` — not 25. Of the
+remaining 12 signals: 4 were ruled out with a specific documented reason
+(`mood_arc_corpus.v1`/`field_channel_corpus.v1` config-gated,
+`chat_stance_disposition` categorical, `biometrics_cluster.v1` a registry-
+flagged duplicate of `field_state.v1`), 2 were built (below), and 6 —
+`field_state.v1`, `field_attention_frame.v1`,
+`attention_broadcast_projection.v1`, `mood_arc_encoder.v1`,
+`phi_heuristic.valence`, `phi_intrinsic_reward.v1` — were never actually
+investigated in this pass, despite an earlier draft of this doc implying
+full coverage. Named explicitly here rather than left to look covered.
+
+Two had real backing data and a concrete case for building liveness now:
+
+- **`attention_self_model.v1`** — a real live consumer
+  (`orion-equilibrium-service`'s metacog gates), 19,426 rows, ~30s cadence.
+- **`l7_l11_ladder`** — initially dismissed for having "no cognition
+  consumer," which was a category error caught by a direct challenge ("why
+  you sweeping l7 l11 ladder under rug"): it carries a live *mutating* route
+  (`skills.runtime.builder_prune.v1`) that deletes host data, independent of
+  whether anything downstream reads it cognitively. Its own registry notes
+  already flag the `REHEARSAL` classification as stale given that route.
+
+**What got built:** `orion/metrics/liveness.py`. The classifier math is
+never reimplemented — every verdict still comes from the existing
+`channel_glossary.classify_channel_series()`, exactly as designed. Only the
+data source is new, and it's narrow by construction (two hardcoded cases, not
+a generic per-surface resolver):
+
+- `attention_self_model.v1`'s five scalar fields (`confidence`,
+  `prediction_error_confidence`, `field_overall_salience`,
+  `broadcast_lane_age_sec`, `heartbeat_mean_ratio`) are read straight off
+  `substrate_attention_self_model.self_model_json ->> '<field>'`, ordered by
+  `generated_at`, over a 1h window (~120 samples when healthy).
+- `l7_l11_ladder` has no shared scalar — it's a pipeline
+  (`ProposalFrameV1 -> ... -> ConsolidationV1`), not a signal — so it's
+  reframed as **throughput** liveness: rows-per-bucket across each of its 5
+  backing tables, fed into the same classifier. Bucket size is tuned per
+  table's real cadence (measured live 2026-08-19, not assumed): the four
+  ~2.1s-cadence stages use 1-hour windows / 1-minute buckets;
+  `substrate_consolidation_frames` (~96min cadence, confirmed live) uses a
+  48h window / 3h buckets — a 1h bucket would read ~0.6 rows/bucket on a
+  *healthy* table, false "dead" territory. The 5 per-stage verdicts roll up
+  to one via `_worst_of()`, which reuses `channel_glossary.CLEAN_VERDICTS`
+  rather than a hand-invented severity order — **a real bug this caught**:
+  an earlier draft ranked `quiet` above `live`, so 4 live stages + 1
+  expectedly-quiet slow stage rolled up to an overall `QUIET`, which reads as
+  a regression on every healthy tick. Fixed before merge; regression test
+  added (`test_worst_of_live_and_quiet_mix_is_live_not_quiet`).
+
+**Two review rounds found real issues, all fixed before merge** (full
+findings/fixes are in the PR description, not duplicated here). Round 1:
+`open_readonly_connection` had been reimplemented from scratch instead of
+importing the repo's existing `scripts/analysis/_pg_readonly.py` helper —
+moved to `orion/db_readonly.py` so both layers can share it without
+inverting `orion/` -> `scripts/` dependency direction; a query-time DB
+failure (not just a connect-time one) could crash the whole `--metric` CLI
+instead of degrading to UNKNOWN; `LIVE_VARIANCE_THRESHOLD` reused unmodified
+against row-count data trips `ratchet_suspect` on any ordinary busy burst,
+and — caught by a second round of live testing, not assumed fixed —
+normalizing the series to unit scale does NOT actually prevent that (a
+monotonic climb clears the threshold at any scale), so `ratchet_suspect` is
+now explicitly downgraded to `live` for throughput data, since that verdict's
+real meaning has no equivalent for pipeline throughput; and the ladder's
+`sample_count` was counting non-empty buckets (~1 per bucket) instead of real
+rows, understating true volume by ~28x for the fast stages.
+
+Round 2 (against the round-1 fixes) found the single most important issue in
+the whole patch, and it was in this design doc, not the code: a claim that a
+"48-URN systematic walk" was recorded in `2026-08-13-phase5-liveness-scope
+.md`'s R6 section did not check out — that section is about a different,
+unrelated question, and contains no such walk. Re-verified live 2026-08-20;
+see the corrected accounting a few paragraphs up. Also found: the JSON
+`--metric` output couldn't distinguish "DB unreachable" from "no source
+registered" without parsing free text (fixed with a `liveness_status`
+field); `connect_timeout` only bounded the connect phase, not a query
+hanging after connect (fixed with a session-level `statement_timeout`);
+`broadcast_lane_age_sec` — unlike its four `[0,1]`-bounded sibling scalar
+fields — shares the ladder's exact borrowed-threshold exposure and wasn't
+routed through the domain-safe classifier; `has_registered_source()` and
+`liveness_for_node()` independently duplicated the same routing
+conditionals, a silent-drift risk for a future third candidate (fixed with
+one shared `_resolve_source_kind()`); and `ScalarFieldSource`'s row cap
+could silently truncate a window with no visibility into it, unlike the
+existing sibling reader this pattern is modeled on (fixed with a
+`truncated` flag). One finding — `resolve_dsn()`'s env-var priority
+disagreeing with a cited-as-matching precedent — was fixed by correcting the
+docstring's claim rather than the code; the priority order itself
+(`POSTGRES_URI` first) was the right call, matching `.env_example`'s
+canonical key.
+
+Round 3 (against round 2's own fixes) caught a real regression *round 2
+itself introduced*: routing `broadcast_lane_age_sec` through the same
+ratchet-downgrading treatment built for the ladder's row counts. That
+reasoning doesn't transfer — the ladder's counts have no legitimate reason
+to decrease within a window, so a monotonic climb there is a pure
+domain-mismatch false positive. `broadcast_lane_age_sec` is different in
+kind: the schema's own `broadcast_lane_stale` sibling field exists because
+this age is *expected* to reset toward zero on every real broadcast-lane
+refresh (~30s cadence, dozens of resets/hour when healthy). A monotonic
+climb across the whole window means the lane never refreshed once — the
+exact stuck-lane failure this field exists to make legible — and
+downgrading that to `live` was a false-positive-healthy verdict strictly
+worse than the honest `NOT_COMPUTED` this field had before phase 5 shipped
+at all. Reverted: all five `attention_self_model.v1` scalar fields go
+through `classify_channel_series()` unmodified; the unbounded-domain
+treatment (`_classify_unbounded_series()`) stays scoped to the ladder's
+throughput only, where it belongs. Also fixed in round 3: the `truncated`
+flag's `len(rows) >= MAX_ROWS` could not distinguish "exactly MAX_ROWS
+matching rows" from "more than MAX_ROWS" since the fetch itself was capped
+at MAX_ROWS — now fetches one extra row to make the count unambiguous.
+Four more round-3 findings (redundant `has_registered_source` calls in the
+CLI wiring, the ladder's 5 sequential per-stage queries not being batched,
+`_worst_of()`'s severity-rank pattern echoing an unrelated existing one in
+`turn_effect_policy.py`, `ScalarFieldSource`/`ThroughputSource` not sharing
+a base dataclass for their 3 common fields) were judged low-severity —
+acknowledged, not fixed, consistent with the reviewer's own assessment.
+
+Wired into `check_metric_lineage.py --metric <name>` (and `--json`): a node
+with a registered source now prints a real verdict with its sample count and
+provenance string instead of the old blanket "NOT COMPUTED (phase 5)". A
+node without one still prints an honest "NOT COMPUTED — no live data source
+registered", never silently blank. A live-but-unreachable Postgres reports
+`UNKNOWN`, distinct from both — found while testing the failure path itself
+that `psycopg2.connect()` has no default timeout, so a genuinely
+unreachable (not merely refused) host would otherwise hang the whole CLI
+call; fixed with an explicit 5s `connect_timeout`.
+
+Connection contract mirrors this repo's existing precedent
+(`orion/substrate/felt_state_reader.py`,
+`scripts/analysis/measure_attention_self_model_confidence_baseline.py`):
+refuses a session that doesn't confirm `default_transaction_read_only = on`.
+Host default is `postgresql://postgres:postgres@localhost:55432/conjourney`
+(verified live 2026-08-19 — the docker-network hostnames those in-container
+readers use, `orion-athena-sql-db`/`orion-sql-db`, do not resolve from the
+host); `POSTGRES_URI`/`DATABASE_URL`/`ORION_SQL_URL` override, matching
+`scripts/print_recent_turn_effects.py`'s existing fallback chain.
+
+Verified live against real data, not just mocked in tests: `--metric
+confidence` returns `QUIET` for `attention_self_model.v1#confidence` (matches
+the ~0.04%-of-ticks branch-starvation finding already on record for that
+field) and `LIVE` for `broadcast_lane_age_sec`/`heartbeat_mean_ratio`;
+`--metric l7_l11_ladder` returns `LIVE` (4 stages live, consolidation quiet,
+correctly rolled up after the severity-order fix above).
+
+**Still deferred, and not attempted here:** every other surface (field
+channels already have their own live classifier; `organ_signal` and
+`bus_channel` have no liveness source registered at all), the 3 retired-
+producer signals and 4 ruled-out-with-reason signals named above, and the
+**6 signals never investigated in this pass** — `field_state.v1`,
+`field_attention_frame.v1`, `attention_broadcast_projection.v1`,
+`mood_arc_encoder.v1`, `phi_heuristic.valence`, `phi_intrinsic_reward.v1`.
+That last group is a real gap, not a decision — see the 2026-08-20
+correction above.
 
 ### Decisions taken (2026-08-12)
 

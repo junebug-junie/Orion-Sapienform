@@ -37,6 +37,51 @@ from orion.metrics.generic_consumers import (  # noqa: E402
     scan_generic_consumers,
 )
 from orion.metrics.lineage import build_graph, to_dict  # noqa: E402
+from orion.metrics.liveness import (  # noqa: E402
+    LivenessOutcome,
+    has_registered_source,
+    liveness_for_node,
+    open_readonly_connection,
+    resolved_host,
+)
+
+_DB_UNREACHABLE = "db_unreachable"
+
+
+def _liveness_for_nodes(nodes) -> dict:
+    """Returns {node.urn: LivenessOutcome | None | _DB_UNREACHABLE}.
+
+    Opens at most one Postgres connection per `--metric` invocation, and
+    only when at least one node actually has a registered liveness source --
+    a token with no phase-5 coverage (the overwhelming majority, still)
+    costs nothing extra. A connection failure -- or a query failing
+    mid-fetch, e.g. a dropped connection or a renamed/locked table -- is
+    reported as UNKNOWN for the affected node(s), never silently collapsed
+    into "not computed" (that would look identical to "no source
+    registered" and hide a real DB-down condition from the operator) and
+    never left to crash the whole CLI call (review finding 2026-08-19:
+    `liveness_for_node()` deliberately does not catch query-time errors
+    itself -- this is the one place that does, matching where
+    connection-level failures are already handled).
+    """
+    if not any(has_registered_source(n) for n in nodes):
+        return {n.urn: None for n in nodes}
+    conn = open_readonly_connection()
+    if conn is None:
+        return {n.urn: _DB_UNREACHABLE for n in nodes if has_registered_source(n)}
+    try:
+        result: dict = {}
+        for n in nodes:
+            if not has_registered_source(n):
+                result[n.urn] = None
+                continue
+            try:
+                result[n.urn] = liveness_for_node(n, conn)
+            except Exception:
+                result[n.urn] = _DB_UNREACHABLE
+        return result
+    finally:
+        conn.close()
 
 
 def cmd_summary(graph, scan) -> int:
@@ -100,19 +145,44 @@ def cmd_metric(graph, scan, token: str, as_json: bool = False) -> int:
         return 1
 
     sources = graph.registry_sources_for(token)
+    liveness_by_urn = _liveness_for_nodes(nodes)
     if as_json:
+        node_dicts = []
+        for n in nodes:
+            d = to_dict(n)
+            outcome = liveness_by_urn.get(n.urn)
+            # liveness_status is the field a programmatic consumer should
+            # actually branch on -- "liveness: None" alone is ambiguous
+            # between "not registered" and "DB unreachable" (review finding
+            # 2026-08-20): the CLI-text path already had a dedicated UNKNOWN
+            # branch for exactly this reason, but the JSON path collapsed
+            # both into the same null.
+            if isinstance(outcome, LivenessOutcome):
+                d["liveness_status"] = "computed"
+                d["liveness"] = outcome.verdict
+                d["liveness_detail"] = outcome.detail
+                d["liveness_sample_count"] = outcome.sample_count
+            elif outcome == _DB_UNREACHABLE:
+                d["liveness_status"] = "db_unreachable"
+                d["liveness"] = None
+                d["liveness_detail"] = f"DB unreachable (tried {resolved_host()}) -- liveness UNKNOWN, not a verdict"
+                d["liveness_sample_count"] = None
+            else:
+                d["liveness_status"] = "not_registered"
+                d["liveness"] = None
+                d["liveness_detail"] = "NOT COMPUTED -- no live data source registered for this metric"
+                d["liveness_sample_count"] = None
+            node_dicts.append(d)
         print(
             json.dumps(
                 {
                     "token": token,
                     "registered": True,
-                    "nodes": [to_dict(n) for n in nodes],
+                    "nodes": node_dicts,
                     "consumers": [
                         h.to_dict()
                         for h in scan.consumers_for(token, exclude_paths=sources)
                     ],
-                    "liveness": None,
-                    "liveness_note": "NOT COMPUTED (phase 5)",
                 },
                 indent=2,
             )
@@ -194,8 +264,21 @@ def cmd_metric(graph, scan, token: str, as_json: bool = False) -> int:
         print("  Run --generic-consumers to list them. Blast radius above is a")
         print("  FLOOR, not a total -- do not retire this channel on it alone.")
 
-    print("\n  Liveness verdict: NOT COMPUTED (phase 5).")
-    print("  Do not treat absence of a verdict as 'this metric is fine'.")
+    print()
+    for node in nodes:
+        outcome = liveness_by_urn.get(node.urn)
+        label = f"{node.urn}"
+        if isinstance(outcome, LivenessOutcome):
+            print(f"  Liveness verdict [{label}]: {outcome.verdict.upper()}")
+            print(f"      {outcome.detail}")
+        elif outcome == _DB_UNREACHABLE:
+            print(f"  Liveness verdict [{label}]: UNKNOWN -- Postgres unreachable.")
+            print(f"      Tried {resolved_host()}. Not a verdict. Do not treat as 'fine' or as 'dead'.")
+        else:
+            print(f"  Liveness verdict [{label}]: NOT COMPUTED.")
+            print("      No live data source is registered for this metric in")
+            print("      orion/metrics/liveness.py. Do not treat absence of a")
+            print("      verdict as 'this metric is fine'.")
     return 0
 
 

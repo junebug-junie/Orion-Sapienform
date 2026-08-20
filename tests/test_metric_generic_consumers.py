@@ -18,6 +18,7 @@ import ast
 import sys
 import textwrap
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -379,6 +380,12 @@ def test_floor_warning_prints_for_a_multi_surface_token(capsys):
 
     Mutation testing found this fix untested: reverting it to `node.surface`
     left every other test green, because nothing covered cmd_metric at all.
+
+    `confidence` is also covered by a phase-5 liveness source
+    (`AttentionSelfModelV1#confidence`) -- `open_readonly_connection` is
+    mocked to return None (DB unreachable) so this stays the fast, hermetic
+    gate test it always was, with no real network I/O and no dependency on
+    Postgres being reachable in CI/sandboxes.
     """
     import importlib.util
 
@@ -402,6 +409,7 @@ def test_floor_warning_prints_for_a_multi_surface_token(capsys):
         assert graph.by_token(token)[-1].surface != "field_channel", token
 
         capsys.readouterr()
-        mod.cmd_metric(graph, scan, token)
+        with mock.patch.object(mod, "open_readonly_connection", return_value=None):
+            mod.cmd_metric(graph, scan, token)
         out = capsys.readouterr().out
         assert "FLOOR, not a total" in out, f"{token} lost its retirement warning"

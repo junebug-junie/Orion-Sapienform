@@ -21,6 +21,19 @@ DEFAULT_ROUTE_SERVERS = {
     # routes. Without this entry, widening the dispatch loop below to the full route set raised
     # a bare KeyError in `_expected_served_by`.
     "quick_background": "atlas-worker-fast-1",
+    # `harness` (2026-08-20): interim alias of `chat`'s own worker -- same reasoning as
+    # `quick_background` above. Caught by this file's own documented failure mode: adding
+    # `harness` to LLM_ROUTE_DISPLAY_ORDER without an entry here would have raised the exact
+    # bare KeyError `_expected_served_by`'s docstring warns about, the first time this smoke
+    # ran against a route table that actually configures `harness`.
+    #
+    # `circe-worker-1`, NOT the atlas-flavoured default the other entries above use: unlike
+    # `chat`/`agent` (whose "NOT fixed here" note below is deliberately left as pre-existing
+    # debt), `harness` was introduced by this same patch, so there is no excuse for its own
+    # default to repeat that stale placeholder. It aliases `chat`'s real, documented
+    # served_by (services/orion-llm-gateway/README.md's "harness split off chat" section) --
+    # get this wrong and the smoke false-fails against a correctly configured deployment.
+    "harness": "circe-worker-1",
 }
 
 # NOT fixed here, but do not trust the two entries above: `chat` and `agent` actually run on
@@ -154,6 +167,19 @@ async def _verify_routes_http(gateway_url: str, timeout_sec: float) -> None:
         if reserved is not None and (isinstance(reserved, bool) or not isinstance(reserved, int)):
             raise AssertionError(
                 f"quick_background reserved_free_slots={reserved!r} expected an int or absent"
+            )
+    # Same check, `harness` (2026-08-20): it is never a human's Compute choice either, and the
+    # failure mode is the same one this whole block exists to catch -- an operator's route-table
+    # entry carrying no `priority` key at all (easy: neighbouring `chat`/`agent` entries in the
+    # same JSON blob carry none) would report `priority=None` and slip past Hub's picker filter
+    # as an ordinary interactive lane. Unlike `quick_background`, the expected value is
+    # `"system"`, not `"background"` -- `harness` must dispatch immediately, never wait for slot
+    # slack, so the two priority values are deliberately not interchangeable here.
+    harness = next((r for r in routes if isinstance(r, dict) and r.get("id") == "harness"), None)
+    if harness is not None and harness.get("status") != "not_configured":
+        if harness.get("priority") != "system":
+            raise AssertionError(
+                f"harness priority={harness.get('priority')!r} expected 'system'"
             )
     for entry in routes:
         if not isinstance(entry, dict):

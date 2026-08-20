@@ -113,6 +113,15 @@ const HUB_COMPUTE_ROUTE_FALLBACK_IDS = ['chat', 'quick', 'agent', 'metacog'];
 // case is losing the second line of defence, never gaining a wrong answer.
 const HUB_KNOWN_BACKGROUND_ROUTE_IDS = ['quick_background'];
 
+// Same fail-safe floor, mirroring SYSTEM_LLM_ROUTES in orion/llm/routes.py. Caught live
+// 2026-08-20: `harness` (the FCC/Claude Code CLI route) shipped with a comment claiming it was
+// "not human-interactive" and nothing that actually excluded it here -- `isBackgroundRouteEntry`
+// only checks `priority === 'background'`, and harness's priority is `'system'`, a different
+// value on purpose (it must dispatch immediately, never wait for slot slack the way a
+// background lane does). Without this list/check it would have appeared as an ordinary
+// choosable lane in the Compute selector.
+const HUB_KNOWN_SYSTEM_ROUTE_IDS = ['harness'];
+
 /**
  * Routes a human may select. Background-priority lanes are deliberately excluded: they wait for
  * slot slack before dispatching, so choosing one interactively buys nothing but latency. They
@@ -125,10 +134,24 @@ function isBackgroundRouteEntry(entry) {
   return String(entry.priority || '').toLowerCase() === 'background';
 }
 
+/**
+ * Routes reserved for an automated/system caller (FCC/Claude Code CLI harness turns), excluded
+ * from the human picker for a different reason than a background lane: not because choosing one
+ * buys nothing but latency, but because it is not a human's turn at all. Kept as a separate
+ * check from `isBackgroundRouteEntry` so a system route's admission behaviour (immediate
+ * dispatch, no slot-slack wait) is never confused with a background lane's.
+ */
+function isSystemRouteEntry(entry) {
+  if (!entry) return false;
+  const id = String(entry.id || '').toLowerCase();
+  if (HUB_KNOWN_SYSTEM_ROUTE_IDS.includes(id)) return true;
+  return String(entry.priority || '').toLowerCase() === 'system';
+}
+
 function pickableComputeRouteIds() {
   const entries = (llmRouteCatalog && llmRouteCatalog.routes) || [];
   const ids = entries
-    .filter((entry) => !isBackgroundRouteEntry(entry))
+    .filter((entry) => !isBackgroundRouteEntry(entry) && !isSystemRouteEntry(entry))
     .map((entry) => String(entry.id || '').toLowerCase())
     .filter(Boolean);
   return ids.length ? ids : HUB_COMPUTE_ROUTE_FALLBACK_IDS;
@@ -7002,9 +7025,17 @@ document.addEventListener("DOMContentLoaded", () => {
    *   agent -> neither; nothing threads attachments through that path yet
    */
   const MODES_CARRYING_ATTACHMENTS = new Set(['orion', 'brain']);
-  // Mirrors the LLM gateway's llm_route_default: the lane the Anthropic
-  // passthrough falls back to when the harness does not name one.
-  const HUB_ORION_HARNESS_ROUTE_ID = 'chat';
+  // The route ~/.fcc/.env's MODEL=llamacpp/harness actually names -- not a fallback default.
+  // Was 'chat' until 2026-08-20: `harness` split off `chat` as its own route (see
+  // orion/llm/routes.py's ACCEPTED_LLM_ROUTES 2026-08-20 note) specifically so an FCC/Claude
+  // Code CLI turn is no longer indistinguishable from live chat traffic to the gateway. Left at
+  // 'chat' here, this constant would have kept reading the WRONG catalog entry's vision probe
+  // for real Orion-mode turns the instant `harness` stops being an interim alias of `chat`'s
+  // own worker (its current, temporary configuration) -- silently reintroducing the exact
+  // "vision advertised on a path that carries nothing" bug class the comment above this
+  // function describes fixing, just for the opposite direction (disabled when it should be
+  // enabled, or vice versa, depending which worker ends up with a real mmproj).
+  const HUB_ORION_HARNESS_ROUTE_ID = 'harness';
 
   function modeCarriesAttachments() {
     // currentMode is already the BACKEND mode ('orion' | 'brain' | 'agent'),
@@ -7019,11 +7050,12 @@ document.addEventListener("DOMContentLoaded", () => {
    *
    * Not always the compute dropdown. An Orion-mode turn never uses that lane:
    * it goes to the harness, whose `claude` reaches the gateway through the
-   * Anthropic passthrough, which resolves the route from the model field and
-   * falls back to the gateway's own default (`chat`). Gating Orion mode on
-   * `selectedLlmRoute` meant a fresh page load -- compute dropdown at its
-   * 'quick' default, a lane with no mmproj -- reported vision=false and
-   * DISABLED attach in the exact mode this feature exists for.
+   * Anthropic passthrough, which resolves the route from the model field --
+   * `~/.fcc/.env`'s MODEL=llamacpp/harness names `harness` explicitly, not a
+   * fallback. Gating Orion mode on `selectedLlmRoute` meant a fresh page
+   * load -- compute dropdown at its 'quick' default, a lane with no mmproj --
+   * reported vision=false and DISABLED attach in the exact mode this feature
+   * exists for.
    */
   function effectiveVisionRouteId() {
     if (String(currentMode || '').toLowerCase() === 'orion') return HUB_ORION_HARNESS_ROUTE_ID;

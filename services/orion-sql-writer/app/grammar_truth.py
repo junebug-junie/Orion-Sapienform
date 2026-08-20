@@ -39,6 +39,61 @@ def _count_debt_sql(table: str) -> Any:
     return text(f"SELECT COUNT(*)::bigint FROM {table} WHERE created_at < :cutoff")
 
 
+# grammar_events is not an archive -- it is a cursor-driven consumption queue.
+# services/orion-substrate-runtime/app/store.py walks it forward with
+#   WHERE source_service = ANY(...) AND created_at > :cursor_ts ORDER BY created_at ASC
+# so any row deleted AHEAD of a lagging cursor is never consumed by that reducer, with no
+# error and no gap in the cursor's own bookkeeping. CLAUDE.md names exactly this state
+# ("reducers alive but cursors stale") as an invalid success.
+#
+# At the 15-day window that risk was theoretical: a reducer would have to be down for over
+# two weeks. At 3 days it is a real operational failure mode, so retention now takes the
+# oldest reducer cursor as a hard floor and refuses to delete past it.
+#
+# Consequence when a reducer IS stuck: disk grows instead of events disappearing. That is
+# the correct trade -- growing disk is observable and recoverable, silently-skipped events
+# are neither. The floor is logged whenever it binds, so "retention stopped keeping up" and
+# "a reducer is stuck" are distinguishable rather than the same mystery.
+_CURSOR_FLOOR_SQL = text(
+    "SELECT MIN(last_event_created_at) FROM substrate_reduction_cursor"
+)
+
+
+def _grammar_events_cursor_floor(conn: Any) -> tuple[datetime | None, bool]:
+    """Oldest reduction-cursor position, as (floor, resolved).
+
+    The two failure modes must not be conflated:
+
+      (None, True)   the cursor table is reachable and EMPTY -- no reducer has registered,
+                     so there is no consumption to protect and the time cutoff governs.
+      (None, False)  the floor could not be determined at all (unreachable, timed out,
+                     unexpected type). The caller must SKIP the prune, not fall back to
+                     the time cutoff.
+
+    That second case is the whole reason this returns a pair. Falling back to the time
+    cutoff when the floor is unknown would delete rows that may be unconsumed, which is
+    precisely the silent loss the floor exists to prevent. Skipping costs one 60-second
+    cycle; guessing costs events that no reducer will ever see again.
+    """
+    try:
+        floor = conn.execute(_CURSOR_FLOOR_SQL).scalar()
+    except Exception as exc:
+        logger.warning("grammar_events_cursor_floor_unavailable err=%s", exc)
+        return None, False
+    if floor is None:
+        return None, True
+    if not isinstance(floor, datetime):
+        logger.warning(
+            "grammar_events_cursor_floor_unexpected_type type=%s value=%r",
+            type(floor).__name__,
+            floor,
+        )
+        return None, False
+    if floor.tzinfo is None:
+        floor = floor.replace(tzinfo=timezone.utc)
+    return floor, True
+
+
 _VERIFY_INCOMING_FK = text(
     """
     SELECT COUNT(*)::bigint
@@ -67,6 +122,9 @@ class GrammarRetentionState:
     fk_delete_verified: bool = False
     fk_delete_verification_note: str | None = None
     capped_by_startup_limit: bool = False
+    cursor_floor_at: datetime | None = None
+    cursor_floor_applied: bool = False
+    debt_count_failed_reason: str | None = None
     capped_by_elapsed_limit: bool = False
     batch_size: int = 0
     max_batches_per_startup: int = 0
@@ -115,6 +173,7 @@ def _apply_bounded_table_retention(
     batch_size: int,
     max_batches: int,
     max_elapsed_sec: float,
+    respect_cursor_floor: bool = False,
 ) -> GrammarRetentionState:
     """Bounded startup retention for `table`, rows older than retention_days.
 
@@ -138,6 +197,39 @@ def _apply_bounded_table_retention(
 
     started = time.monotonic()
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    if respect_cursor_floor:
+        with engine.connect() as conn:
+            floor, resolved = _grammar_events_cursor_floor(conn)
+        state.cursor_floor_at = floor
+        if not resolved:
+            # Fail safe: no floor, no prune. Retention runs every cycle, so skipping one
+            # is cheap; deleting rows we cannot prove were consumed is not recoverable.
+            state.failure_reason = "cursor_floor_unresolved"
+            state.last_run_at = datetime.now(timezone.utc)
+            state.elapsed_sec = time.monotonic() - started
+            logger.warning(
+                "%s_retention_skipped cursor floor unresolved -- refusing to prune a "
+                "cursor-consumed table without knowing what has been consumed",
+                table,
+            )
+            return state
+        if floor is not None and floor < cutoff:
+            # A reducer is further behind than the retention window. Delete only up to
+            # where it has actually consumed, and say so -- this is the difference between
+            # "retention cannot keep up" and "a reducer is stuck", which look identical
+            # from disk usage alone.
+            state.cursor_floor_applied = True
+            logger.warning(
+                "%s_retention_cursor_floor_binds time_cutoff=%s cursor_floor=%s "
+                "reducer_behind_sec=%.0f -- deleting only up to the cursor",
+                table,
+                cutoff.isoformat(),
+                floor.isoformat(),
+                (cutoff - floor).total_seconds(),
+            )
+            cutoff = floor
+
     state.cutoff_at = cutoff
     total_deleted = 0
     batches = 0
@@ -182,8 +274,25 @@ def _apply_bounded_table_retention(
             if deleted < batch_size:
                 break
 
-        with engine.connect() as conn:
-            state.remaining_debt = int(conn.execute(debt_sql, {"cutoff": cutoff}).scalar_one())
+        # Diagnostics only, and deliberately non-fatal. Live 2026-08-19:
+        # substrate_organ_emissions' debt COUNT exceeded the 10s grammar statement_timeout
+        # (SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS) and raised, which logged the whole run
+        # as `retention_failed` and reported remaining_debt=None -- even though all 100,000
+        # deletes had already committed. A reporting query must not be able to mask a
+        # successful prune as a failure, nor hide the debt number that tells you whether
+        # retention is converging.
+        try:
+            with engine.connect() as conn:
+                state.remaining_debt = int(conn.execute(debt_sql, {"cutoff": cutoff}).scalar_one())
+        except Exception as exc:
+            state.remaining_debt = None
+            state.debt_count_failed_reason = str(exc)
+            logger.warning(
+                "%s_retention_debt_count_failed (prune itself succeeded, rows_pruned=%s) err=%s",
+                table,
+                total_deleted,
+                exc,
+            )
 
         if state.remaining_debt and state.remaining_debt > 0:
             state.capped_by_startup_limit = batches >= max_batches
@@ -222,7 +331,12 @@ def _apply_bounded_table_retention(
     return state
 
 
-def apply_grammar_events_retention(retention_days: int) -> GrammarRetentionState:
+def apply_grammar_events_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
     """Bounded startup retention for grammar_events older than retention_days."""
     global _retention_state
     settings = get_settings()
@@ -230,16 +344,30 @@ def apply_grammar_events_retention(retention_days: int) -> GrammarRetentionState
         engine=grammar_engine,
         table="grammar_events",
         id_column="event_id",
+        respect_cursor_floor=True,
         retention_days=retention_days,
         batch_size=settings.grammar_events_retention_batch_size,
-        max_batches=settings.grammar_events_retention_max_batches_per_startup,
-        max_elapsed_sec=settings.grammar_events_retention_max_elapsed_sec,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
     )
     _retention_state = state
     return state
 
 
-def apply_grammar_edges_retention(retention_days: int) -> GrammarRetentionState:
+def apply_grammar_edges_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
     """Bounded startup retention for grammar_edges older than retention_days.
 
     Reuses the grammar_events batch/cap knobs (settings.py comment explains why) --
@@ -252,14 +380,27 @@ def apply_grammar_edges_retention(retention_days: int) -> GrammarRetentionState:
         id_column="edge_id",
         retention_days=retention_days,
         batch_size=settings.grammar_events_retention_batch_size,
-        max_batches=settings.grammar_events_retention_max_batches_per_startup,
-        max_elapsed_sec=settings.grammar_events_retention_max_elapsed_sec,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
     )
     _extra_retention_state["grammar_edges"] = state
     return state
 
 
-def apply_grammar_atoms_retention(retention_days: int) -> GrammarRetentionState:
+def apply_grammar_atoms_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
     """Bounded startup retention for grammar_atoms older than retention_days."""
     settings = get_settings()
     state = _apply_bounded_table_retention(
@@ -268,14 +409,27 @@ def apply_grammar_atoms_retention(retention_days: int) -> GrammarRetentionState:
         id_column="atom_id",
         retention_days=retention_days,
         batch_size=settings.grammar_events_retention_batch_size,
-        max_batches=settings.grammar_events_retention_max_batches_per_startup,
-        max_elapsed_sec=settings.grammar_events_retention_max_elapsed_sec,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
     )
     _extra_retention_state["grammar_atoms"] = state
     return state
 
 
-def apply_substrate_organ_emissions_retention(retention_days: int) -> GrammarRetentionState:
+def apply_substrate_organ_emissions_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
     """Bounded startup retention for substrate_organ_emissions older than retention_days.
 
     Uses the plain `engine` (not `grammar_engine`) -- this table is biometrics/substrate
@@ -291,8 +445,16 @@ def apply_substrate_organ_emissions_retention(retention_days: int) -> GrammarRet
         id_column="emission_id",
         retention_days=retention_days,
         batch_size=settings.grammar_events_retention_batch_size,
-        max_batches=settings.grammar_events_retention_max_batches_per_startup,
-        max_elapsed_sec=settings.grammar_events_retention_max_elapsed_sec,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
     )
     _extra_retention_state["substrate_organ_emissions"] = state
     return state
@@ -544,3 +706,55 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
             "grammar_events_retention_days": settings.grammar_events_retention_days,
         },
     }
+
+
+# Retention runs on a timer, not only at boot.
+#
+# WHY THIS EXISTS. Measured live 2026-08-19/20, from the service's own logs and
+# pg_stat_user_tables, before this patch:
+#
+#   arrival      1,117,440 rows/day across the four tables (2.42 GB/day)
+#   deletion       365,000 rows per PROCESS START, then exactly 0 until the next one
+#   debt         5,352,878 rows already past the cutoff, and climbing
+#
+# Every startup ran to its cap and stopped: grammar_events and grammar_atoms hit the
+# 100-batch cap, grammar_edges hit the 120s wall at batch 65, substrate_organ_emissions
+# hit both the cap and a statement timeout on its own debt query. The instrumentation was
+# never the problem -- each run logged `remaining_debt` correctly. Nothing ever ran again
+# to act on it, because the only trigger was process start.
+#
+# A startup-triggered job cannot converge against continuous arrival, no matter how its
+# caps are tuned: it would need roughly three restarts a day just to break even, and about
+# fifteen more on top of that to clear the standing debt. The fix is not a bigger cap.
+GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
+    ("grammar_events", apply_grammar_events_retention),
+    ("grammar_edges", apply_grammar_edges_retention),
+    ("grammar_atoms", apply_grammar_atoms_retention),
+    ("substrate_organ_emissions", apply_substrate_organ_emissions_retention),
+)
+
+
+def run_one_retention_cycle(
+    *,
+    days_for: dict[str, int],
+    max_batches: int,
+    max_elapsed_sec: float,
+) -> dict[str, GrammarRetentionState]:
+    """One bounded pass over every retention-managed table. Synchronous by design.
+
+    Callers on an event loop MUST run this in a worker thread -- it uses blocking
+    SQLAlchemy connections, and sql-writer's event loop is also draining the bus.
+    """
+    out: dict[str, GrammarRetentionState] = {}
+    for table, fn in GRAMMAR_RETENTION_TABLES:
+        days = int(days_for.get(table, 0) or 0)
+        if days <= 0:
+            continue
+        try:
+            out[table] = fn(days, max_batches=max_batches, max_elapsed_sec=max_elapsed_sec)
+        except Exception:
+            # One table failing must not stop the others -- they are independent tables
+            # with independent debt, and the whole point of the loop is that it keeps
+            # running. _apply_bounded_table_retention already logs the detail.
+            logger.exception("%s_retention_cycle_failed", table)
+    return out

@@ -895,10 +895,24 @@ async def lifespan(app: FastAPI):
             "(SQL_WRITER_FALLBACK_WATCH_ENABLED=false); unrouted events will accumulate silently"
         )
 
+    # Periodic retention. Retention itself already existed and worked per-run; its only
+    # trigger was process start, so it could never converge against continuous arrival.
+    # See app/grammar_retention_loop.py for the measured numbers.
+    retention_task: asyncio.Task | None = None
+    if float(getattr(settings, "grammar_retention_interval_sec", 0.0) or 0.0) > 0:
+        from app.grammar_retention_loop import grammar_retention_loop
+
+        retention_task = asyncio.create_task(grammar_retention_loop(settings))
+    else:
+        logger.warning(
+            "periodic grammar retention DISABLED (GRAMMAR_RETENTION_INTERVAL_SEC=0); "
+            "retention runs only at startup, which cannot keep up with arrival"
+        )
+
     try:
         yield
     finally:
-        pending = [t for t in (task, watch_task) if t is not None]
+        pending = [t for t in (task, watch_task, retention_task) if t is not None]
         for background in pending:
             background.cancel()
         if pending:

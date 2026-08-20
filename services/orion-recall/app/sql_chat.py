@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -57,6 +58,58 @@ async def _fetch_rows_from_table(
     return await conn.fetch(query, ids)
 
 
+async def _fetch_primary_and_mirror_rows(
+    conn: Any,
+    *,
+    primary_table: str,
+    mirror_table: str,
+    select_cols: str,
+    id_col: str,
+    ids: List[str],
+    extra_where: str = "",
+    log_prefix: str,
+) -> tuple[List[Any], List[Any]]:
+    """Fetch the same query shape from a primary chat table and its AI-Town
+    mirror, isolating each table's failure from the other so one table's
+    outage never discards the other's already-successful rows -- code
+    review finding, 2026-08-19: a single try/except around both sequential
+    calls meant a mirror-table failure (missing table, permission error,
+    transient fault) discarded an already-successful primary result too.
+
+    Concurrent via ``asyncio.gather(..., return_exceptions=True)`` rather
+    than two sequential awaits, matching the existing isolate-independent-
+    lookups pattern already used for the same shape in
+    ``worker.py::_compute_entity_relatedness_boost_map`` -- both tables are
+    genuinely independent queries with no data dependency between them, so
+    there's no reason to pay two round-trip latencies instead of one.
+
+    Shared by both ``fetch_chat_turn_timestamps`` and
+    ``fetch_chat_turns_by_id`` rather than duplicated inline in each --
+    review also flagged the original per-function inline scaffold as a
+    two-site hand-edit hazard, which is exactly what produced the bug this
+    helper fixes in the first place.
+    """
+    primary_result, mirror_result = await asyncio.gather(
+        _fetch_rows_from_table(conn, primary_table, select_cols, id_col, ids, extra_where),
+        _fetch_rows_from_table(conn, mirror_table, select_cols, id_col, ids, extra_where),
+        return_exceptions=True,
+    )
+
+    if isinstance(primary_result, BaseException):
+        logger.warning("%s_primary_query_failed", log_prefix, exc_info=primary_result)
+        primary_rows: List[Any] = []
+    else:
+        primary_rows = primary_result
+
+    if isinstance(mirror_result, BaseException):
+        logger.warning("%s_mirror_query_failed", log_prefix, exc_info=mirror_result)
+        mirror_rows: List[Any] = []
+    else:
+        mirror_rows = mirror_result
+
+    return primary_rows, mirror_rows
+
+
 async def fetch_chat_turn_timestamps(
     turn_ids: List[str],
     since_minutes: int,
@@ -97,17 +150,32 @@ async def fetch_chat_turn_timestamps(
     time_clause = f"AND {created_at_col} >= NOW() - INTERVAL '{int(since_minutes)} minutes'"
     try:
         conn = await asyncpg.connect(settings.RECALL_PG_DSN)
-        try:
-            primary_rows = await _fetch_rows_from_table(
-                conn, settings.RECALL_SQL_CHAT_TABLE, select_cols, id_col, ids, time_clause
-            )
-            mirror_rows = await _fetch_rows_from_table(
-                conn, settings.RECALL_SQL_AITOWN_CHAT_TABLE, select_cols, id_col, ids, time_clause
-            )
-        finally:
-            await conn.close()
     except Exception:
+        logger.warning("fetch_chat_turn_timestamps_connect_failed", exc_info=True)
         return {}
+    try:
+        primary_rows, mirror_rows = await _fetch_primary_and_mirror_rows(
+            conn,
+            primary_table=settings.RECALL_SQL_CHAT_TABLE,
+            mirror_table=settings.RECALL_SQL_AITOWN_CHAT_TABLE,
+            select_cols=select_cols,
+            id_col=id_col,
+            ids=ids,
+            extra_where=time_clause,
+            log_prefix="fetch_chat_turn_timestamps",
+        )
+    finally:
+        # Best-effort close, not "or raise" -- asyncpg's Connection.close()
+        # can itself raise on a failed graceful close (transport reset,
+        # etc.). Left unguarded, that would propagate out of this finally
+        # AFTER both queries already succeeded, discarding the results this
+        # whole function exists to isolate and return -- the same failure
+        # class this patch fixes, just moved to the close() point. Review
+        # finding, 2026-08-19.
+        try:
+            await conn.close()
+        except Exception:
+            logger.warning("fetch_chat_turn_timestamps_connection_close_failed", exc_info=True)
 
     out: Dict[str, float] = {}
     for row in (*primary_rows, *mirror_rows):  # mirror processed last -> wins on conflict
@@ -152,17 +220,26 @@ async def fetch_chat_turns_by_id(turn_ids: List[str]) -> Dict[str, tuple[str, st
     )
     try:
         conn = await asyncpg.connect(settings.RECALL_PG_DSN)
-        try:
-            primary_rows = await _fetch_rows_from_table(
-                conn, settings.RECALL_SQL_CHAT_TABLE, select_cols, id_col, ids
-            )
-            mirror_rows = await _fetch_rows_from_table(
-                conn, settings.RECALL_SQL_AITOWN_CHAT_TABLE, select_cols, id_col, ids
-            )
-        finally:
-            await conn.close()
     except Exception:
+        logger.warning("fetch_chat_turns_by_id_connect_failed", exc_info=True)
         return {}
+    try:
+        primary_rows, mirror_rows = await _fetch_primary_and_mirror_rows(
+            conn,
+            primary_table=settings.RECALL_SQL_CHAT_TABLE,
+            mirror_table=settings.RECALL_SQL_AITOWN_CHAT_TABLE,
+            select_cols=select_cols,
+            id_col=id_col,
+            ids=ids,
+            log_prefix="fetch_chat_turns_by_id",
+        )
+    finally:
+        # Same best-effort close and same reason as fetch_chat_turn_timestamps
+        # above -- see that function's comment.
+        try:
+            await conn.close()
+        except Exception:
+            logger.warning("fetch_chat_turns_by_id_connection_close_failed", exc_info=True)
 
     out: Dict[str, tuple[str, str, Any]] = {}
     for row in (*primary_rows, *mirror_rows):  # mirror processed last -> wins on conflict

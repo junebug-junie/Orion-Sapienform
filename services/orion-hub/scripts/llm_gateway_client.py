@@ -11,6 +11,7 @@ from orion.llm.routes import (
     ACCEPTED_LLM_ROUTES,
     BACKGROUND_LLM_ROUTES,
     LLM_ROUTE_DISPLAY_ORDER,
+    SYSTEM_LLM_ROUTES,
     normalize_llm_route,
 )
 
@@ -59,15 +60,19 @@ async def fetch_routes() -> dict[str, Any]:
 
 
 def _priority_for(route_id: str, reported: Any) -> str | None:
-    """Reported priority, or the route's definitional one -- whichever says 'background'.
+    """Reported priority, or the route's definitional one -- whichever says 'background'/'system'.
 
     Fail-safe rather than fail-open: `priority` is what the composer filters its picker on, and
     a background lane that arrives without it (older gateway, route absent from the route
-    table) would otherwise be offered as an ordinary interactive lane.
+    table) would otherwise be offered as an ordinary interactive lane. `system` (harness,
+    2026-08-20) is the same fail-safe for a route that must dispatch immediately -- not a
+    yielding lane -- but is still never a human's Compute choice.
     """
     value = str(reported or "").strip().lower() or None
     if value == "background" or route_id in BACKGROUND_LLM_ROUTES:
         return "background"
+    if value == "system" or route_id in SYSTEM_LLM_ROUTES:
+        return "system"
     return value
 
 

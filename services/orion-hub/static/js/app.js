@@ -113,6 +113,15 @@ const HUB_COMPUTE_ROUTE_FALLBACK_IDS = ['chat', 'quick', 'agent', 'metacog'];
 // case is losing the second line of defence, never gaining a wrong answer.
 const HUB_KNOWN_BACKGROUND_ROUTE_IDS = ['quick_background'];
 
+// Same fail-safe floor, mirroring SYSTEM_LLM_ROUTES in orion/llm/routes.py. Caught live
+// 2026-08-20: `harness` (the FCC/Claude Code CLI route) shipped with a comment claiming it was
+// "not human-interactive" and nothing that actually excluded it here -- `isBackgroundRouteEntry`
+// only checks `priority === 'background'`, and harness's priority is `'system'`, a different
+// value on purpose (it must dispatch immediately, never wait for slot slack the way a
+// background lane does). Without this list/check it would have appeared as an ordinary
+// choosable lane in the Compute selector.
+const HUB_KNOWN_SYSTEM_ROUTE_IDS = ['harness'];
+
 /**
  * Routes a human may select. Background-priority lanes are deliberately excluded: they wait for
  * slot slack before dispatching, so choosing one interactively buys nothing but latency. They
@@ -125,10 +134,24 @@ function isBackgroundRouteEntry(entry) {
   return String(entry.priority || '').toLowerCase() === 'background';
 }
 
+/**
+ * Routes reserved for an automated/system caller (FCC/Claude Code CLI harness turns), excluded
+ * from the human picker for a different reason than a background lane: not because choosing one
+ * buys nothing but latency, but because it is not a human's turn at all. Kept as a separate
+ * check from `isBackgroundRouteEntry` so a system route's admission behaviour (immediate
+ * dispatch, no slot-slack wait) is never confused with a background lane's.
+ */
+function isSystemRouteEntry(entry) {
+  if (!entry) return false;
+  const id = String(entry.id || '').toLowerCase();
+  if (HUB_KNOWN_SYSTEM_ROUTE_IDS.includes(id)) return true;
+  return String(entry.priority || '').toLowerCase() === 'system';
+}
+
 function pickableComputeRouteIds() {
   const entries = (llmRouteCatalog && llmRouteCatalog.routes) || [];
   const ids = entries
-    .filter((entry) => !isBackgroundRouteEntry(entry))
+    .filter((entry) => !isBackgroundRouteEntry(entry) && !isSystemRouteEntry(entry))
     .map((entry) => String(entry.id || '').toLowerCase())
     .filter(Boolean);
   return ids.length ? ids : HUB_COMPUTE_ROUTE_FALLBACK_IDS;

@@ -236,6 +236,45 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 > update `AITOWN_LLM_CHAT_ROUTE` deliberately -- don't just add a route
 > entry that happens to point at circe.
 
+### Route table example (`harness` split off `chat`, 2026-08-20)
+
+**Updated 2026-08-20**: `harness` is the Anthropic Messages passthrough route the
+FCC/Claude Code CLI harness resolves `MODEL=llamacpp/harness` (`~/.fcc/.env`,
+`config/fcc.env_example`) to. Split off `chat` for the same reason `agent` was
+split off `chat` on 2026-08-14: `chat` carries live Hub chat traffic, has zero
+admission/concurrency throttling (`priority_admission.py` only gates routes
+tagged `"background"`), and its worker is `n_parallel: 1` -- a single FCC
+harness turn (up to `HARNESS_FCC_TIMEOUT_SEC=900s`) can occupy the only slot
+for the whole turn, and `37f4fab9c` (2026-08-16) already fixed this exact
+class of problem for one lighter call (the "5b reflection" background LLM
+call) by moving it off `chat`.
+
+As shipped, `harness` is an interim ALIAS of `chat`'s own worker (identical
+`url`/`served_by`) -- a labeling/observability seam, not yet physical
+isolation. A live FCC turn and live chat traffic still share
+`circe-worker-1`'s one slot until `harness` is pointed at a distinct worker
+or gets its own admission policy. Both `chat` and `harness` remain Juniper's
+own reserved capacity per the 2026-07-30 note above (AI Town is the thing
+kept off circe, not FCC) -- this split exists so the gateway, `GET /routes`,
+and admission policy can tell the two apart, not to gate one against the
+other.
+
+`harness` carries `"priority":"system"` -- a route-table value distinct from
+`"background"`. It is never a human's Compute choice (`orion.llm.routes.SYSTEM_LLM_ROUTES`,
+`services/orion-hub/static/js/app.js`'s `isSystemRouteEntry`), but unlike a background
+lane it must dispatch immediately: `"background"` is what `priority_admission.py` gates
+on to make a request wait for upstream slot slack, and an FCC turn cannot do that.
+
+```bash
+LLM_GATEWAY_ROUTE_TABLE_JSON='{
+  "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
+  "agent":{"url":"http://100.112.254.99:8014","served_by":"circe-worker-agent-1","backend":"llamacpp"},
+  "harness":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp","priority":"system"},
+  "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
+  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
+}'
+```
+
 ### Route table example (legacy: merged mode, `agent` aliases `chat`)
 
 Use this only if no distinct agent-lane model is deployed yet on your box — it
@@ -250,6 +289,13 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
 ```
 
 ### Background-priority routes
+
+`"priority"` has one other recognised value: `"system"` (`harness`, above) -- hidden from
+Hub's human Compute picker the same way a background route is, but with none of the
+slot-slack-wait admission behaviour described below. Only `"background"` triggers that;
+`"system"` is otherwise an ordinary foreground route as far as `priority_admission.py` and
+`llm_backend.py`/`openai_passthrough.py`'s dispatch are concerned. See `SYSTEM_LLM_ROUTES` in
+`orion/llm/routes.py`.
 
 A route entry can carry `"priority":"background"` and an optional
 `"reserved_free_slots"` (default `1` if unset) alongside the normal

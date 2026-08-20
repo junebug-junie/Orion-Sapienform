@@ -67,8 +67,27 @@ from typing import FrozenSet, Optional
 
 #: Route names the executor will actually dispatch on. Anything else is not an override.
 #: Keep in sync with `LLM_GATEWAY_ROUTE_TABLE_JSON` in `services/orion-llm-gateway/.env_example`.
+#:
+#: `harness` (added 2026-08-20): the Anthropic Messages passthrough route the FCC/Claude Code
+#: CLI harness resolves `MODEL=llamacpp/harness` to (see anthropic_passthrough.py). Split off
+#: `chat` for the same reason `agent` was split off `chat` on 2026-08-14: `chat` carries live
+#: Hub chat traffic, has zero admission/concurrency throttling (priority_admission.py only
+#: gates routes tagged "background"), and its worker is `n_parallel: 1` -- a single FCC harness
+#: turn (up to HARNESS_FCC_TIMEOUT_SEC=900s) can occupy the only slot for the whole turn. `37f4fab9c`
+#: (2026-08-16) already fixed this exact class of problem for one lighter call (the "5b
+#: reflection" background LLM call) by moving it off `chat`; this closes the same gap for the
+#: much heavier FCC harness. As of this patch `harness` is configured as an interim alias of
+#: `chat`'s own worker (same pattern `agent` used before Muse Glimmer existed) -- see
+#: services/orion-llm-gateway/README.md's "Route table example" sections. That means today this
+#: is a labeling/observability seam, not yet physical isolation: a live FCC turn and live chat
+#: traffic still share circe-worker-1's one slot until `harness` is pointed at a distinct
+#: worker or gets its own admission policy. Both `chat` and `harness` remain Juniper's own
+#: reserved capacity per the 2026-07-30 note below (AI Town is the thing kept off circe, not
+#: FCC) -- this split exists so the gateway can tell the two apart, not to gate one against the
+#: other. `harness` is also in SYSTEM_LLM_ROUTES below: it is never meant to be a human's
+#: interactive Compute choice, and that is enforced, not just documented -- see that set for why.
 ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
-    {"chat", "quick", "metacog", "quick_background", "agent"}
+    {"chat", "quick", "metacog", "quick_background", "agent", "harness"}
 )
 
 #: Historical spellings of `quick`, kept working because live config still carries them.
@@ -86,13 +105,15 @@ LLM_ROUTE_ALIASES = {
 # smoke. That is the failure mode this whole module exists to stop, one layer up.
 #
 # Order is deliberate and is what operators read: interactive lanes first, then the yielding
-# lane beside the lane it yields on, then the specialist.
+# lane beside the lane it yields on, then the specialist, then the system-only harness lane
+# (see SYSTEM_LLM_ROUTES below for what makes it non-interactive, and why that is enforced).
 LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "chat",
     "quick",
     "quick_background",
     "metacog",
     "agent",
+    "harness",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -121,6 +142,34 @@ if not BACKGROUND_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(
         "BACKGROUND_LLM_ROUTES names routes that are not accepted: "
         f"{sorted(BACKGROUND_LLM_ROUTES - ACCEPTED_LLM_ROUTES)}"
+    )
+
+
+# Routes that exist for an automated/system caller, never for a human's interactive Compute
+# picker -- distinct from BACKGROUND_LLM_ROUTES on purpose. `harness` (FCC/Claude Code CLI
+# turns) must dispatch immediately, not wait for slot slack the way a background lane does, so
+# it cannot carry `priority: "background"` without also picking up that admission-wait
+# behaviour in llm_backend.py/openai_passthrough.py (both gate on `== "background"` exactly).
+# It still needs to be invisible to a human choosing from Hub's Compute selector, the same way a
+# background lane is -- caught live 2026-08-20: an earlier version of this module only left a
+# comment claiming `harness` was "not human-interactive" with nothing that actually enforced it,
+# so Hub's picker (which filters on `priority`, not on this module) would have offered it as an
+# ordinary chooseable lane. `priority: "system"` is the route-table value that signals this; the
+# fail-safe/fail-open reasoning for keeping a *definitional* copy here, not just relying on the
+# route table, mirrors BACKGROUND_LLM_ROUTES above.
+SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness"})
+
+if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
+    raise RuntimeError(
+        "SYSTEM_LLM_ROUTES names routes that are not accepted: "
+        f"{sorted(SYSTEM_LLM_ROUTES - ACCEPTED_LLM_ROUTES)}"
+    )
+
+if SYSTEM_LLM_ROUTES & BACKGROUND_LLM_ROUTES:
+    raise RuntimeError(
+        "A route cannot be both background (yields for slot slack) and system "
+        "(dispatches immediately, just hidden from the human picker): "
+        f"{sorted(SYSTEM_LLM_ROUTES & BACKGROUND_LLM_ROUTES)}"
     )
 
 

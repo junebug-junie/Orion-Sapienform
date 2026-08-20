@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from orion.llm.routes import BACKGROUND_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER
+from orion.llm.routes import BACKGROUND_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, SYSTEM_LLM_ROUTES
 
 from .llm_backend import RouteTarget, get_route_targets
 from .settings import settings
@@ -166,8 +166,17 @@ def _definitional_priority(route_id: str) -> Optional[str]:
     A background lane missing from LLM_GATEWAY_ROUTE_TABLE_JSON has no RouteTarget and so no
     configured priority -- but it is still a background lane, and a consumer filtering on
     `priority` would otherwise offer it to a human as an ordinary one. Fail-safe, not fail-open.
+
+    `system` (harness, 2026-08-20) is the same fail-safe for a different reason: not a yielding
+    lane (it must dispatch immediately, not wait for slot slack), just never a human's Compute
+    choice. Checked after `background` so the two stay mutually exclusive, matching the
+    RuntimeError orion.llm.routes raises if a route is ever placed in both sets.
     """
-    return "background" if route_id in BACKGROUND_LLM_ROUTES else None
+    if route_id in BACKGROUND_LLM_ROUTES:
+        return "background"
+    if route_id in SYSTEM_LLM_ROUTES:
+        return "system"
+    return None
 
 
 def _entry_from_probe(

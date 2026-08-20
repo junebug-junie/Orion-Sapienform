@@ -56,6 +56,12 @@ def test_build_routes_response_defaults_to_chat(monkeypatch: pytest.MonkeyPatch)
     # ...and it still declares itself a background lane even unconfigured, so a consumer
     # filtering on `priority` cannot offer a yielding lane to a human.
     assert by_id["quick_background"]["priority"] == "background"
+    # Same fail-safe, different reason: `harness` is also absent from `table` above, and still
+    # declares itself a `system` lane (not a human's Compute choice) even unconfigured -- unlike
+    # `quick_background` it must NOT report `background`, since that carries slot-slack-wait
+    # admission behaviour a harness turn cannot have.
+    assert by_id["harness"]["status"] == "not_configured"
+    assert by_id["harness"]["priority"] == "system"
     assert all("status" in r for r in payload["routes"])
     assert all("model" in r for r in payload["routes"])
     assert all("priority" in r for r in payload["routes"])

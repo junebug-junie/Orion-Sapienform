@@ -21,6 +21,12 @@ DEFAULT_ROUTE_SERVERS = {
     # routes. Without this entry, widening the dispatch loop below to the full route set raised
     # a bare KeyError in `_expected_served_by`.
     "quick_background": "atlas-worker-fast-1",
+    # `harness` (2026-08-20): interim alias of `chat`'s own worker -- same reasoning as
+    # `quick_background` above. Caught by this file's own documented failure mode: adding
+    # `harness` to LLM_ROUTE_DISPLAY_ORDER without an entry here would have raised the exact
+    # bare KeyError `_expected_served_by`'s docstring warns about, the first time this smoke
+    # ran against a route table that actually configures `harness`.
+    "harness": "atlas-worker-1",
 }
 
 # NOT fixed here, but do not trust the two entries above: `chat` and `agent` actually run on

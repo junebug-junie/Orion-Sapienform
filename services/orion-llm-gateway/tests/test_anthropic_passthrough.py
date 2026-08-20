@@ -31,6 +31,13 @@ def route_table() -> Dict[str, Dict[str, str]]:
             "backend": "llamacpp",
             "model": "qwen-coder-local",
         },
+        # `harness` (2026-08-20): FCC/Claude Code CLI harness's own route, split off `chat` --
+        # ~/.fcc/.env resolves MODEL=llamacpp/harness through exactly this passthrough path.
+        "harness": {
+            "url": "http://harness:8011",
+            "served_by": "circe-worker-1",
+            "backend": "llamacpp",
+        },
         "quick": {"url": "http://quick:8013", "served_by": "atlas-worker-fast-1", "backend": "llamacpp"},
         "metacog": {"url": "http://metacog:8012", "served_by": "atlas-worker-2", "backend": "llamacpp"},
         "ollama_lane": {"url": "http://ollama:11434", "served_by": "ollama-host", "backend": "ollama"},
@@ -48,6 +55,17 @@ def test_normalize_anthropic_model_name() -> None:
     assert anthropic_passthrough.normalize_anthropic_model_name("llamacpp/agent") == "agent"
     assert anthropic_passthrough.normalize_anthropic_model_name("agent") == "agent"
     assert anthropic_passthrough.normalize_anthropic_model_name("quick") == "quick"
+    assert anthropic_passthrough.normalize_anthropic_model_name("llamacpp/harness") == "harness"
+
+
+def test_resolve_anthropic_route_resolves_harness(configured_routes: None) -> None:
+    # This is the literal live path: ~/.fcc/.env sets MODEL=llamacpp/harness, and this is what
+    # a real Claude Code CLI turn's `model` field resolves to via this function.
+    route_key, target, upstream_model, error = anthropic_passthrough.resolve_anthropic_route("llamacpp/harness")
+    assert error is None
+    assert route_key == "harness"
+    assert target is not None
+    assert upstream_model == "harness"
 
 
 def test_resolve_anthropic_route_uses_upstream_model_alias(configured_routes: None) -> None:
@@ -95,7 +113,7 @@ def test_resolve_anthropic_route_falls_back_when_model_missing(
 def test_build_models_list_payload(configured_routes: None) -> None:
     payload = anthropic_passthrough.build_models_list_payload()
     ids = [entry["id"] for entry in payload["data"]]
-    assert ids == ["agent", "chat", "metacog", "quick"]
+    assert ids == ["agent", "chat", "harness", "metacog", "quick"]
     assert "ollama_lane" not in ids
 
 

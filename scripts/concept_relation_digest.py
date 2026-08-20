@@ -24,15 +24,31 @@ Two things happen per run, over every row with digested = false:
 
 2. Belief-revision digest: for every row where relation is contradicts/refines/same AND
    floor_cleared = true (i.e. the ones concept_relation.py actually acted on -- attached
-   a link or reinforced a match), write one new `reflection`-kind crystallization with a
-   deterministic (no LLM) summary of the row's own fields. This is Orion's own trace of
-   revising its beliefs over time -- AGENTS.md's "error correction... coherent action
-   over time" sentence prerequisite, given a real producer.
+   a link or reinforced a match), the report counts it as actionable. Every such row is
+   still marked digested, and the row itself remains the durable, queryable record in
+   `memory_concept_relation_decisions` -- Orion's real trace of revising its beliefs
+   over time. AGENTS.md's "error correction... coherent action over time" prerequisite
+   is served by that table being real and queryable, not by mirroring it into a second
+   store.
+
+   As of 2026-08-20 this digest no longer ALSO writes a `reflection`-kind crystallization
+   per actionable row (removed live 2026-08-20 after the operator reported "seeing dups
+   in the crystallization [browser] pretty frequently": every relation comparison Orion
+   ran against itself was landing in the same list as real remembered content, and had
+   grown to 57% (356/620) of all active crystallizations -- pure duplicated bookkeeping,
+   not new memory. `memory_concept_relation_decisions` already IS that bookkeeping's
+   real, queryable home; auto-writing it a second time as `kind="reflection"` crystallizations
+   (bypassing manual review entirely -- `requires_manual_review=False`, `approval_mode=
+   "auto_policy"`) added no information, just noise in front of a human. The write path
+   (`_build_reflection_crystallization` et al.) was removed rather than left dead; git
+   history has the exact shape if it's ever wanted back. `reflections_created` stays on
+   `DigestReport` and is now always `[]` -- kept for `--json` output-shape stability,
+   not because anything is produced anymore.
 
 No LLM call happens anywhere in this script -- it is pure aggregation over decisions
 `concept_relation.py` already classified. It never auto-supersedes or mutates any
-existing crystallization's status; it only reports and creates new, purely observational
-`reflection` records.
+existing crystallization's status, and as of 2026-08-20 it creates nothing at all --
+it only reports on and marks-digested rows `concept_relation.py` already wrote.
 
 Not a service loop -- a standalone script you run on demand or via cron, same category
 as scripts/check_activation_saturation.py.
@@ -65,7 +81,6 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 _RELATIONS = ("same", "refines", "contradicts", "unrelated")
-_ACTIONABLE_RELATIONS = ("same", "refines", "contradicts")
 
 _SELECT_PENDING_SQL = """
     SELECT decision_id, candidate_crystallization_id, target_crystallization_id,
@@ -80,27 +95,6 @@ _MARK_DIGESTED_SQL = """
     SET digested = true
     WHERE decision_id = ANY($1::uuid[])
 """
-
-
-class _SingleConnPool:
-    """Thin shim so repository.py::insert_crystallization() (which expects an
-    asyncpg.Pool and calls pool.acquire()) can run on the SAME already-open connection
-    and transaction as this script's own read + digested-flag update. That keeps the
-    whole run (reads, reflection-crystallization inserts, digested-flag writes) inside
-    one real transaction, so a crash mid-run rolls everything back and the next run
-    reprocesses cleanly instead of double-creating reflections."""
-
-    def __init__(self, conn: Any) -> None:
-        self._conn = conn
-
-    def acquire(self) -> "_SingleConnPool":
-        return self
-
-    async def __aenter__(self) -> Any:
-        return self._conn
-
-    async def __aexit__(self, *exc_info: Any) -> bool:
-        return False
 
 
 @dataclass
@@ -119,65 +113,8 @@ class DigestReport:
         }
 
 
-def _build_reflection_summary(row: dict[str, Any]) -> str:
-    relation = row["relation"]
-    confidence = float(row["confidence"])
-    candidate_id = row["candidate_crystallization_id"]
-    target_id = row["target_crystallization_id"] or "(no target)"
-    return f"Belief revision: {relation} between {candidate_id} and {target_id} (confidence {confidence:.2f})"
-
-
-def _build_reflection_crystallization(row: dict[str, Any]):
-    # Imports deferred until inside an async context that has already put the repo
-    # root on sys.path (see module-level sys.path handling above).
-    from orion.memory.crystallization.salience import apply_salience
-    from orion.memory.crystallization.schemas import (
-        CrystallizationEvidenceRefV1,
-        CrystallizationGovernanceV1,
-        MemoryCrystallizationV1,
-        _utc_now,
-        new_crystallization_id,
-    )
-
-    now = _utc_now()
-    confidence = float(row["confidence"])
-    subject = f"Concept relation decision: {row['relation']}"
-    summary = _build_reflection_summary(row)
-
-    crystallization = MemoryCrystallizationV1(
-        crystallization_id=new_crystallization_id(),
-        kind="reflection",
-        subject=subject,
-        summary=summary,
-        status="active",
-        scope=["project:orion"],
-        evidence=[
-            CrystallizationEvidenceRefV1(
-                source_kind="concept_relation_decision",
-                source_id=str(row["decision_id"]),
-                strength=max(0.0, min(1.0, confidence)),
-                note=summary,
-            )
-        ],
-        governance=CrystallizationGovernanceV1(
-            proposed_by="system:concept_relation_digest",
-            approved_by="system:concept_relation_digest",
-            approval_mode="auto_policy",
-            validation_status="valid",
-            requires_manual_review=False,
-            sensitivity="private",
-            created_from_policy="concept_relation_digest",
-        ),
-        created_at=now,
-        updated_at=now,
-    )
-    return apply_salience(crystallization)
-
-
 async def _run_digest(postgres_uri: str) -> DigestReport:
     import asyncpg
-
-    from orion.memory.crystallization.repository import insert_crystallization
 
     conn = await asyncpg.connect(postgres_uri)
     try:
@@ -186,9 +123,13 @@ async def _run_digest(postgres_uri: str) -> DigestReport:
 
             relation_counts = {r: 0 for r in _RELATIONS}
             near_miss_counts = {"contradicts": 0, "refines": 0}
+            # Always empty now -- kept on DigestReport/--json for output-shape stability.
+            # See the module docstring, "2026-08-20": this digest no longer writes
+            # reflection-kind crystallizations at all. memory_concept_relation_decisions
+            # (this table, already durable and queryable) is the real record; mirroring
+            # it into memory_crystallizations too was pure duplicated bookkeeping that had
+            # grown to 57% of all active crystallizations.
             reflections_created: list[str] = []
-
-            single_conn_pool = _SingleConnPool(conn)
 
             for row in rows:
                 relation = row["relation"]
@@ -196,11 +137,6 @@ async def _run_digest(postgres_uri: str) -> DigestReport:
 
                 if relation in near_miss_counts and not row["floor_cleared"]:
                     near_miss_counts[relation] += 1
-
-                if relation in _ACTIONABLE_RELATIONS and row["floor_cleared"]:
-                    reflection = _build_reflection_crystallization(row)
-                    cid = await insert_crystallization(single_conn_pool, reflection)
-                    reflections_created.append(cid)
 
             if rows:
                 decision_ids = [r["decision_id"] for r in rows]
@@ -232,10 +168,6 @@ def _print_report(report: DigestReport) -> None:
     print("  near-misses (relation judged, confidence below CONCEPT_RELATION_CONFIDENCE_FLOOR):")
     for relation, count in report.near_miss_counts.items():
         print(f"    {relation}: {count}")
-
-    print(f"  reflection crystallizations created: {len(report.reflections_created)}")
-    for cid in report.reflections_created:
-        print(f"    {cid}")
 
 
 def main(argv: list[str] | None = None) -> int:

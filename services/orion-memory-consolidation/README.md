@@ -22,7 +22,7 @@ Same-window duplicate detection (`orion.memory.crystallization.detection.detect_
 
 Dispatch is deliberately conservative: `same` reinforces the existing target (identical mechanism to the same-window path). `refines` and `contradicts` only attach a typed link to the *new* candidate's own `links` (persisted to `memory_crystallization_links` on insert, same as any other crystallization) — they never mutate or supersede the existing target's status. That stays a human decision via the existing `/api/memory/crystallizations/{id}/links` and supersede endpoints. Every decisive branch (`same`/`refines`/`contradicts`) stamps `provenance.concept_relation` (relation, target id, confidence) on the affected row for audit, independent of which branch acted.
 
-**Decision log + belief-revision digest.** Every real LLM decision — including `unrelated` and sub-floor `contradicts`/`refines` that the dispatch above discards — is written to `memory_concept_relation_decisions` (`orion.memory.crystallization.repository.insert_concept_relation_decision`, guarded to never raise). `scripts/concept_relation_digest.py` (repo root, run on demand or via cron — not a live service loop) reads undigested rows and reports call volume / relation distribution / near-miss counts under `CONCEPT_RELATION_CONFIDENCE_FLOOR`, then creates one `reflection`-kind crystallization per real belief-revision decision (`same`/`refines`/`contradicts` that cleared the floor) — a structured, deterministic trace of Orion revising its own beliefs, not just a link nobody reads back.
+**Decision log + belief-revision digest.** Every real LLM decision — including `unrelated` and sub-floor `contradicts`/`refines` that the dispatch above discards — is written to `memory_concept_relation_decisions` (`orion.memory.crystallization.repository.insert_concept_relation_decision`, guarded to never raise). `scripts/concept_relation_digest.py` (repo root, run on demand or via cron — not a live service loop) reads undigested rows and reports call volume / relation distribution / near-miss counts under `CONCEPT_RELATION_CONFIDENCE_FLOOR`, and marks them digested. **As of 2026-08-20 it no longer also writes a `reflection`-kind crystallization per decision** — that mirrored `memory_concept_relation_decisions` (already the real, durable, queryable trace) into `memory_crystallizations` a second time, auto-approved and bypassing manual review, and had grown to 356/620 (57%) of all active crystallizations before it was removed. `memory_concept_relation_decisions` remains the belief-revision trace; query it directly rather than expecting crystallizations for it.
 
 Ships flag-gated off; flipping the flag alone does not activate anything without also configuring the embed/chroma hosts (both default to empty string):
 
@@ -42,10 +42,10 @@ Ships flag-gated off; flipping the flag alone does not activate anything without
 `scripts/concept_relation_digest.py` is a standalone script, not a live service loop (see above) -- something external has to run it. Install on the host that runs the memory-consolidation stack (`crontab -e` as the operating user):
 
 ```cron
-# Concept-relation decision digest -- turns memory_concept_relation_decisions rows
-# into reflection crystallizations. Idempotent (only acts on digested=false rows),
-# safe to run frequently. Requires POSTGRES_URI in the shell environment or a
-# sourced .env; see services/orion-hub/.env.
+# Concept-relation decision digest -- reports on memory_concept_relation_decisions rows
+# and marks them digested (no longer writes crystallizations, see above). Idempotent
+# (only acts on digested=false rows), safe to run frequently. Requires POSTGRES_URI in
+# the shell environment or a sourced .env; see services/orion-hub/.env.
 */30 * * * * cd /mnt/scripts/Orion-Sapienform && POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' services/orion-hub/.env | cut -d= -f2-) make concept-relation-digest >> /mnt/scripts/Orion-Sapienform/logs/orion-concept-relation-digest.log 2>&1
 ```
 

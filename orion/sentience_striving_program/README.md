@@ -346,6 +346,75 @@ first place. Full reasoning and phased detail:
    item 4's goal-provenance investigation, not gating item 2's Phase 1 sign-off.
    **Phase 1 status: MET** (reducer-correctness scope), with B tracked as a separate,
    ongoing, non-blocking research thread under item 4.
+   **The replacement metric itself, built and run 2026-08-20 (Juniper: "give me a metric
+   that properly addresses #3, not just a narrower scope"):** the split above named A as
+   MET but rested on pre-existing unit tests alone -- real work, not yet done, was
+   building an actual measurable metric for A that runs against real data. Two pieces,
+   both now real and run against the live system:
+   1. **Correctness cross-check on the branch that actually fires**
+      (`scripts/analysis/measure_ast_hot_reducer.py`, new "Correctness cross-check"
+      section): `top_down_override` is structurally rare (item 4's open question), but
+      `bottom_up_salience` fires on effectively 100% of real ticks -- that is the branch
+      a real correctness metric can actually run against, every time, not just when a
+      rare event happens to occur. For each `bottom_up_salience` tick, independently
+      recompute the real `select_actions()` winner from the broadcast row's own
+      `frame.open_loops` and check it against what the reducer reports as
+      `broadcast_selected_open_loop_id` -- two independently-derived values from the
+      same persisted row, not the reducer grading its own homework.
+      **Code review (same day) caught a real bug in the first version of this check
+      before its numbers were trusted:** it had no eligibility floor (production's
+      `select_actions()`, `orion/substrate/attention/policy.py`, only lets a loop win if
+      `already_known` or `salience >= 0.35` -- everything else is real production's
+      `action_type="none"`, `selected_open_loop_id=None`) and used the wrong tie-break
+      (ascending loop id, copied from a different function -- `TopDownBiasCombiner`,
+      which only runs on the top-down path -- instead of production's actual stable-sort/
+      build-order tie-break). That means the first run's "100% agreement" number could
+      have been true by accident (the window happening not to contain a tie or a
+      below-floor tick), not because the check would actually catch a real disagreement.
+      **Fixed same day**: `_argmax_open_loop_salience()` now applies the real floor
+      (`already_known` OR `salience >= 0.35`) and uses `max()` over the row's own list
+      order, which matches Python's stable-sort-first-on-tie behavior exactly -- verified
+      against the real `select_actions()` source, not re-guessed. **Corrected real
+      result, 170h/99,668-tick replay (2026-08-20, re-run after the fix):
+      7,330/7,330 checkable ticks agree (100.00%)**, with 3 distinct real winners and 3
+      distinct narratives across those ticks -- real variation, not stuck fallback text.
+      Disclosed honestly, not smoothed over: only 7,330/99,668 (7.35%) of
+      `bottom_up_salience` ticks had any open loops at all that tick to check against
+      (92,338 had zero -- correctly excluded as "nothing to disagree with" rather than
+      miscounted as agreement) -- this metric's real coverage is 7% of ticks, not 100%,
+      and that 93%-empty-open-loops rate is itself a fact about production worth someone
+      eventually asking about, separately from this item.
+   2. **Live-fire round-trip drill for the branch that doesn't fire**
+      (`scripts/analysis/verify_voluntary_override_pipeline.py`, new script): the one
+      narrow thing the 2026-08-19 entry above flagged as genuinely unverified --
+      whether a real `voluntary_override` blob round-trips cleanly through actual
+      Postgres JSONB persistence (not just the pure-function unit test, which never
+      touches the database) -- doesn't have to wait for a rare live event to check.
+      This script builds one real `VoluntaryOverrideV1`-bearing
+      `AttentionBroadcastProjectionV1`, writes it into the real
+      `substrate_attention_broadcast_log` table with the exact INSERT the production
+      writer uses, reads it back through a fresh connection, deserializes it, and runs
+      it through the real `reduce_attention_self_model()` -- then deletes the row in a
+      `finally` block. **Run live 2026-08-20 (`--yes`, real Postgres): PASS.** Real
+      INSERT -> real SELECT -> real JSON deserialize -> real reducer all correctly
+      narrated `attention_reason=top_down_override` with both loop IDs named; cleanup
+      verified (0 residual rows via direct query immediately after). Safety: fixed
+      sentinel `log_id` (`synthetic-probe-voluntary-override-verify-v1`, not the
+      production hash format, so it can never collide with a real row), gated behind
+      `--yes`, exposure window is the single run's own insert-to-delete span.
+   Both pieces have unit tests (`scripts/analysis/tests/test_measure_ast_hot_reducer.py`,
+   9 new cases for the cross-check, including two added by the same-day fix above
+   specifically to pin the floor/tie-break correction against production's real
+   `select_actions()` semantics, not just re-assert the old behavior; the drill script's
+   builder is exercised by its own `--yes` live run above, which is the actual claim
+   being made -- a mocked-DB unit test would not prove the real round trip). This is the
+   metric item 3 needed: a real, replayable-on-every-run correctness signal on the
+   branch that fires, plus a real (not synthetic-only) proof the rare branch's
+   persistence path works when exercised. **Also disclosed, not hidden**: the first
+   version of this metric shipped with a real bug in the same session it was built --
+   worth remembering next time "we built a real metric" is claimed as done; catching it
+   took a full code review pass, not just running the script once and reading a clean
+   number.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live

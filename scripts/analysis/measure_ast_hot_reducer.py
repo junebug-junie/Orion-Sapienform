@@ -168,6 +168,16 @@ class ReplayTick:
     predicted_shift: Optional[str]
     has_voluntary_override: bool
     reason_narrative: str
+    # 2026-08-20 correctness cross-check (metric-quality-gate correction --
+    # see this script's module docstring "Correctness cross-check" section
+    # and the program README's item-2 entry for why this replaces "did a
+    # real voluntary_override ever fire" as this item's Phase 1 metric on
+    # the branch that actually occurs in production). All three default to
+    # None/0 so every pre-existing positional-arg call site in this
+    # module's own test suite keeps working unchanged.
+    broadcast_selected_open_loop_id: Optional[str] = None
+    broadcast_open_loop_count: int = 0
+    broadcast_argmax_open_loop_id: Optional[str] = None
 
 
 def extract_prediction_error_by_domain(field_state_payload: dict) -> dict[str, float]:
@@ -203,6 +213,57 @@ def extract_prediction_error_by_domain(field_state_payload: dict) -> dict[str, f
 # for the full docstring (backtest methodology, validation numbers, and the
 # window-semantics note added for the live caller).
 from orion.substrate.prediction_error_trend import compute_prediction_error_trend  # noqa: E402
+
+
+# select_actions()'s own "watch"/"defer" floor for the substrate-broadcast
+# lane (orion/substrate/attention/policy.py) -- a loop below this AND not
+# already_known never becomes eligible to be `selected`, full stop. Getting
+# this wrong (as the first version of this function did -- no floor at all)
+# means "argmax over everything" can disagree with real production on a
+# below-floor tick even when production is behaving correctly, which is
+# exactly the false-positive the code-review agent caught 2026-08-20.
+_SELECT_ACTIONS_ELIGIBLE_FLOOR = 0.35
+
+
+def _argmax_open_loop_salience(open_loops: list) -> Optional[str]:
+    """Independently recompute the real `select_actions()` winner for the
+    substrate-broadcast lane (`build_substrate_attention_frame` always calls
+    it with `max_asks=0`) from a real broadcast row's `frame.open_loops`.
+
+    **Corrected 2026-08-20** after code review found the original version
+    was not a faithful reproduction: (1) it had no eligibility floor at all
+    (any loop could "win" regardless of score); (2) its ascending-loop-id
+    tie-break mirrored `TopDownBiasCombiner._argmax_bottom_up` -- a function
+    that only runs on the top-down path, not this one. With `max_asks=0`,
+    `select_actions()` (`orion/substrate/attention/policy.py`) demotes every
+    `ask` candidate to `watch` and then picks the highest-`score_loop()`
+    (== `loop.salience`, unconditionally -- see `scoring.py::score_loop`)
+    loop among `action_type in {"watch", "defer", "suppress"}` via a STABLE
+    sort (`sorted(..., reverse=True)`), i.e. ties keep `open_loops`' own
+    list order, which this function's argument already preserves (Pydantic
+    round-trips list order through `model_dump`/`model_validate`
+    byte-for-byte). `max()` on a list returns the first maximal element it
+    encounters, which is exactly the stable-sort-first-on-tie result --
+    no id-based tie-break needed or correct here.
+
+    A loop is eligible to win regardless of score if `already_known` is
+    True (`action_type="suppress"`, still counted in `select_actions()`'s
+    winner pool) -- OR if `salience >= _SELECT_ACTIONS_ELIGIBLE_FLOOR`
+    (`"watch"`/`"defer"`). If NO loop clears either bar, production's real
+    `selected` becomes the synthetic `action_type="none"` action, whose
+    `open_loop_id` is `None` -- this function returns `None` in that case
+    too, so a real disagreement can only mean an actual algorithmic
+    mismatch, not a threshold this function forgot to apply.
+    """
+    eligible = [
+        loop for loop in open_loops
+        if bool(getattr(loop, "already_known", False))
+        or float(getattr(loop, "salience", 0.0) or 0.0) >= _SELECT_ACTIONS_ELIGIBLE_FLOOR
+    ]
+    if not eligible:
+        return None
+    winner = max(eligible, key=lambda loop: float(getattr(loop, "salience", 0.0) or 0.0))
+    return getattr(winner, "id", None)
 
 
 def replay_reducer(
@@ -272,6 +333,7 @@ def replay_reducer(
             prediction_error_by_domain=current_prediction_error_by_domain or None,
             prediction_error_trend_by_domain=compute_prediction_error_trend(list(trend_window)) or None,
         )
+        open_loops = current_broadcast.frame.open_loops if current_broadcast is not None else []
         ticks.append(
             ReplayTick(
                 generated_at=ts,
@@ -285,6 +347,9 @@ def replay_reducer(
                 predicted_shift=model.predicted_shift,
                 has_voluntary_override=model.voluntary_override is not None,
                 reason_narrative=model.reason_narrative,
+                broadcast_selected_open_loop_id=model.broadcast_selected_open_loop_id,
+                broadcast_open_loop_count=len(open_loops),
+                broadcast_argmax_open_loop_id=_argmax_open_loop_salience(open_loops),
             )
         )
     return ticks, field_skipped, field_state_skipped, broadcast_skipped
@@ -531,6 +596,8 @@ def write_ticks_csv(path: Path, ticks: list[ReplayTick]) -> None:
                 "prediction_error_confidence",
                 "broadcast_lane_present", "broadcast_lane_stale", "broadcast_lane_age_sec",
                 "field_lane_present", "predicted_shift", "has_voluntary_override",
+                "broadcast_selected_open_loop_id", "broadcast_open_loop_count",
+                "broadcast_argmax_open_loop_id",
             ]
         )
         for t in ticks:
@@ -542,6 +609,8 @@ def write_ticks_csv(path: Path, ticks: list[ReplayTick]) -> None:
                     t.broadcast_lane_present, t.broadcast_lane_stale,
                     "" if t.broadcast_lane_age_sec is None else f"{t.broadcast_lane_age_sec:.3f}",
                     t.field_lane_present, t.predicted_shift or "", t.has_voluntary_override,
+                    t.broadcast_selected_open_loop_id or "", t.broadcast_open_loop_count,
+                    t.broadcast_argmax_open_loop_id or "",
                 ]
             )
 
@@ -726,10 +795,83 @@ def render_report(
         "| --- | --- | --- |",
         hist_lines,
         "",
-        "## Acceptance check: does the window contain a real voluntary_override event, "
-        "narrated correctly?",
+        "## Correctness cross-check: bottom_up_salience branch (2026-08-20, corrected "
+        "same-day after code review)",
+        "",
+        "Metric-quality-gate correction: `top_down_override` is a rare event structurally "
+        "gated by a separate upstream mechanism (goal production / `relevance()` "
+        "matching -- see the program README's item-4 thread), so \"has it ever fired\" is "
+        "not a fair Phase 1 correctness metric on its own. `bottom_up_salience` is the "
+        "branch that actually fires on effectively every real tick, so THIS is the "
+        "correctness check that can run against real data on every replay: for each "
+        "`bottom_up_salience` tick, independently recompute the real `select_actions()` "
+        "winner from the broadcast's own `frame.open_loops` (same eligibility floor -- "
+        "already_known OR salience>=0.35 -- and the same stable-sort/list-order tie-break "
+        "production uses, see `_argmax_open_loop_salience`'s docstring) and confirm it "
+        "agrees with what the reducer reports as `broadcast_selected_open_loop_id` -- two "
+        "independently-derived values from the same persisted row, not the reducer "
+        "checking itself. (The first version of this check, same day, had neither the "
+        "floor nor the correct tie-break -- code review caught it before this script's "
+        "numbers were trusted; corrected here, not silently.)",
         "",
     ]
+    bottom_up_ticks = [
+        t for t in ticks
+        if t.attention_reason == "bottom_up_salience" and t.broadcast_open_loop_count > 0
+    ]
+    n_bottom_up = len(bottom_up_ticks)
+    agree = [t for t in bottom_up_ticks if t.broadcast_selected_open_loop_id == t.broadcast_argmax_open_loop_id]
+    disagree = [t for t in bottom_up_ticks if t.broadcast_selected_open_loop_id != t.broadcast_argmax_open_loop_id]
+    n_agree = len(agree)
+    agreement_pct = "n/a" if n_bottom_up == 0 else f"{100.0 * n_agree / n_bottom_up:.2f}%"
+    distinct_selected = {t.broadcast_selected_open_loop_id for t in bottom_up_ticks if t.broadcast_selected_open_loop_id}
+    distinct_narratives = {t.reason_narrative for t in bottom_up_ticks}
+    n_zero_loops = sum(
+        1 for t in ticks if t.attention_reason == "bottom_up_salience" and t.broadcast_open_loop_count == 0
+    )
+    lines.extend(
+        [
+            f"- `bottom_up_salience` ticks with at least one real open loop to cross-check: "
+            f"{n_bottom_up} / {hist.get('bottom_up_salience', 0)} "
+            f"({n_zero_loops} had zero open loops that tick -- nothing to disagree with, "
+            f"excluded rather than counted as agreement)",
+            f"- Winner-agreement rate: **{n_agree} / {n_bottom_up} ({agreement_pct})**",
+            f"- Distinct `broadcast_selected_open_loop_id` values across these ticks: "
+            f"{len(distinct_selected)} (a count of 1 across a large N would be the "
+            "\"fallback text masquerading as generated cognition\" pattern CLAUDE.md's "
+            "no-empty-shell-cognition rule names)",
+            f"- Distinct `reason_narrative` strings across these ticks: {len(distinct_narratives)}",
+        ]
+    )
+    if disagree:
+        shown = disagree[:5]
+        lines.append(
+            f"- **{len(disagree)} disagreement(s) found -- real, load-bearing finding, not "
+            f"expected.** First {len(shown)} (all, if <=5; full set in `ticks.csv`'s "
+            "broadcast_selected_open_loop_id/broadcast_argmax_open_loop_id columns):"
+        )
+        for t0 in shown:
+            lines.append(
+                f"  - `{t0.generated_at.isoformat()}`: reducer reports "
+                f"selected=`{t0.broadcast_selected_open_loop_id}`, independently recomputed "
+                f"argmax=`{t0.broadcast_argmax_open_loop_id}` ({t0.broadcast_open_loop_count} "
+                "open loops that tick)"
+            )
+    else:
+        lines.append(
+            "- **Zero disagreements.** Every bottom_up_salience tick with at least one "
+            "open loop to check agrees with an independent recomputation from the same "
+            "row's raw salience values."
+        )
+    lines.append("")
+
+    lines.extend(
+        [
+            "## Acceptance check: does the window contain a real voluntary_override event, "
+            "narrated correctly?",
+            "",
+        ]
+    )
 
     if override_examples:
         lines.append(

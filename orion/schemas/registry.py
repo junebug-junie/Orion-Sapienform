@@ -478,6 +478,12 @@ from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
+from orion.schemas.world_model import (
+    WorldModelFeatureGroupV1,
+    WorldModelPredictionPayload,
+    WorldModelTaskRequestPayload,
+    WorldModelTrajectoryStepV1,
+)
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionCouncilRequestPayload,
@@ -841,6 +847,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionScribeResultPayload": VisionScribeResultPayload,
     "VisionGuardSignal": VisionGuardSignal,
     "VisionGuardAlert": VisionGuardAlert,
+    "WorldModelFeatureGroupV1": WorldModelFeatureGroupV1,
+    "WorldModelTrajectoryStepV1": WorldModelTrajectoryStepV1,
+    "WorldModelTaskRequestPayload": WorldModelTaskRequestPayload,
+    "WorldModelPredictionPayload": WorldModelPredictionPayload,
     "CortexChatRequest": CortexChatRequest,
     "CortexChatResult": CortexChatResult,
     "RecallDirective": RecallDirective,
@@ -1538,6 +1548,19 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SelfStudyEnrichmentRequestV1": SchemaRegistration(
         model=SelfStudyEnrichmentRequestV1,
         kind="self_study.enrichment.request.v1",
+    ),
+    # orion-world-model (2026-08-20, scaffold patch -- see module docstring in
+    # orion/schemas/world_model.py). Only the request/prediction pair carries
+    # a message kind; WorldModelFeatureGroupV1/WorldModelTrajectoryStepV1 are
+    # nested payload models, so they live in `_REGISTRY` alone by design
+    # (same split as VisionArtifactOutputs/VisionObject etc. in vision.py).
+    "WorldModelTaskRequestPayload": SchemaRegistration(
+        model=WorldModelTaskRequestPayload,
+        kind="world_model.task.request",
+    ),
+    "WorldModelPredictionPayload": SchemaRegistration(
+        model=WorldModelPredictionPayload,
+        kind="world_model.prediction",
     ),
 }
 

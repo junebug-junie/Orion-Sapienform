@@ -1,0 +1,429 @@
+"""Tests for orion/metrics/liveness.py -- phase 5 of the metric semantic layer.
+
+DB access is mocked throughout (a fake conn/cursor) so this stays a fast gate
+test, not a periodic eval. The real path is exercised manually against the
+live Postgres instance (see the module docstring for the live numbers found
+doing that on 2026-08-19/20) and via `scripts/check_metric_lineage.py --metric`.
+"""
+from __future__ import annotations
+
+from unittest import mock
+
+import pytest
+
+from orion.field.channel_glossary import classify_channel_series
+from orion.metrics.liveness import (
+    CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_POSTGRES_URI,
+    STATEMENT_TIMEOUT_MS,
+    LivenessOutcome,
+    ScalarFieldSource,
+    ThroughputSource,
+    _classify_unbounded_series,
+    _normalize_to_unit_scale,
+    _resolve_source_kind,
+    _worst_of,
+    has_registered_source,
+    liveness_for_node,
+    open_readonly_connection,
+    resolve_dsn,
+    resolved_host,
+)
+
+
+class _FakeNode:
+    """Minimal stand-in for orion.metrics.lineage.MetricNode -- only the
+    fields liveness_for_node()/has_registered_source() actually read."""
+
+    def __init__(self, *, name: str, schema_id: str | None = None, metric_field: str | None = None):
+        self.name = name
+        self.schema_id = schema_id
+        self.metric_field = metric_field
+
+
+class _FakeCursor:
+    def __init__(self, fetchall_result=None, fetchone_result=None):
+        self.fetchall_result = fetchall_result or []
+        self.fetchone_result = fetchone_result
+        self.executed: list[tuple] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.executed.append((query, params))
+
+    def fetchall(self):
+        return self.fetchall_result
+
+    def fetchone(self):
+        return self.fetchone_result
+
+
+class _FakeConn:
+    def __init__(self, cursors: list[_FakeCursor]):
+        self._cursors = list(cursors)
+        self.closed = False
+        self.autocommit = False
+
+    def cursor(self):
+        return self._cursors.pop(0)
+
+    def close(self):
+        self.closed = True
+
+
+# --------------------------------------------------------------- resolve_dsn
+
+
+def test_resolve_dsn_prefers_postgres_uri(monkeypatch):
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://a/b")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://c/d")
+    assert resolve_dsn() == "postgresql://a/b"
+
+
+def test_resolve_dsn_falls_back_through_env_keys(monkeypatch):
+    monkeypatch.delenv("POSTGRES_URI", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://c/d")
+    assert resolve_dsn() == "postgresql://c/d"
+
+
+def test_resolve_dsn_default_when_nothing_set(monkeypatch):
+    for key in ("POSTGRES_URI", "DATABASE_URL", "ORION_SQL_URL"):
+        monkeypatch.delenv(key, raising=False)
+    assert resolve_dsn() == DEFAULT_POSTGRES_URI
+
+
+# ----------------------------------------------------------------- resolved_host
+
+
+def test_resolved_host_reports_host_and_port(monkeypatch):
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://user:secret@myhost:5432/db")
+    assert resolved_host() == "myhost:5432"
+
+
+def test_resolved_host_never_leaks_credentials(monkeypatch):
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://user:supersecret@myhost:5432/db")
+    assert "supersecret" not in resolved_host()
+    assert "user" not in resolved_host()
+
+
+def test_resolved_host_default_is_localhost(monkeypatch):
+    for key in ("POSTGRES_URI", "DATABASE_URL", "ORION_SQL_URL"):
+        monkeypatch.delenv(key, raising=False)
+    assert resolved_host() == "localhost:55432"
+
+
+# ------------------------------------------------------- open_readonly_connection
+
+
+def test_open_readonly_connection_returns_none_when_psycopg2_missing(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fail_import(name, *a, **kw):
+        if name == "psycopg2":
+            raise ImportError("no psycopg2 here")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", _fail_import)
+    assert open_readonly_connection("postgresql://x") is None
+
+
+def test_open_readonly_connection_returns_none_on_connect_failure():
+    fake_psycopg2 = mock.Mock()
+    fake_psycopg2.connect.side_effect = Exception("connection refused")
+    with mock.patch.dict("sys.modules", {"psycopg2": fake_psycopg2}):
+        assert open_readonly_connection("postgresql://x") is None
+
+
+def test_open_readonly_connection_closes_and_returns_none_if_not_readonly():
+    cur = _FakeCursor(fetchone_result=("off",))
+    conn = _FakeConn([cur])
+    fake_psycopg2 = mock.Mock()
+    fake_psycopg2.connect.return_value = conn
+    with mock.patch.dict("sys.modules", {"psycopg2": fake_psycopg2}):
+        result = open_readonly_connection("postgresql://x")
+    assert result is None
+    assert conn.closed is True
+
+
+def test_open_readonly_connection_passes_connect_and_statement_timeout():
+    cur = _FakeCursor(fetchone_result=("on",))
+    conn = _FakeConn([cur])
+    fake_psycopg2 = mock.Mock()
+    fake_psycopg2.connect.return_value = conn
+    with mock.patch.dict("sys.modules", {"psycopg2": fake_psycopg2}):
+        result = open_readonly_connection("postgresql://x")
+    assert result is conn
+    fake_psycopg2.connect.assert_called_once_with(
+        "postgresql://x", connect_timeout=CONNECT_TIMEOUT_SECONDS
+    )
+    # SET statement_timeout must actually be issued on the session --
+    # regression for the "connect_timeout alone doesn't bound a hung query"
+    # finding.
+    executed_queries = [q for q, _params in cur.executed]
+    assert any("statement_timeout" in q for q in executed_queries)
+
+
+# ------------------------------------------------------------- ScalarFieldSource
+
+
+def test_scalar_field_source_filters_none_and_builds_query():
+    # Rows come back DESC (most-recent-first, so a LIMIT keeps the newest
+    # rows -- see the class docstring); fetch() reverses to ASC for the
+    # classifier, which expects chronological order.
+    source = ScalarFieldSource(
+        table="t", json_column="j", ts_column="ts", window_hours=1.0
+    )
+    cur = _FakeCursor(fetchall_result=[(0.3,), (None,), (0.1,)])
+    conn = _FakeConn([cur])
+    values, truncated = source.fetch(conn, "myfield")
+    assert values == [0.1, 0.3]
+    assert truncated is False
+    query, params = cur.executed[0]
+    assert "t" in query and "j" in query and "ts" in query and "DESC" in query
+    assert params == ("myfield", 1.0, "myfield", 50_000)
+
+
+def test_scalar_field_source_reports_truncated_at_max_rows():
+    source = ScalarFieldSource(
+        table="t", json_column="j", ts_column="ts", window_hours=1.0
+    )
+    cur = _FakeCursor(fetchall_result=[(1.0,)] * 50_000)
+    conn = _FakeConn([cur])
+    _values, truncated = source.fetch(conn, "myfield")
+    assert truncated is True
+
+
+# ------------------------------------------------------------- ThroughputSource
+
+
+def test_throughput_source_returns_bucket_counts():
+    source = ThroughputSource(
+        table="t", ts_column="ts", window_hours=1.0, bucket_hours=1.0 / 60
+    )
+    cur = _FakeCursor(fetchall_result=[(0.0,), (3.0,), (5.0,)])
+    conn = _FakeConn([cur])
+    values = source.fetch(conn)
+    assert values == [0.0, 3.0, 5.0]
+    query, params = cur.executed[0]
+    assert params == (1.0, 1.0 / 60, 1.0 / 60)
+
+
+# ------------------------------------------------------------------- _worst_of
+
+
+def test_worst_of_all_live_is_live():
+    assert _worst_of(["live", "live", "live"]) == "live"
+
+
+def test_worst_of_live_and_quiet_mix_is_live_not_quiet():
+    """The bug found live 2026-08-19: an earlier severity table ranked quiet
+    above live, so 4 live stages + 1 expectedly-quiet slow stage rolled up to
+    QUIET -- misleadingly making a healthy ladder look concerning."""
+    assert _worst_of(["live", "live", "live", "live", "quiet"]) == "live"
+
+
+def test_worst_of_all_quiet_is_quiet():
+    assert _worst_of(["quiet", "quiet"]) == "quiet"
+
+
+def test_worst_of_dead_beats_live_and_quiet():
+    assert _worst_of(["live", "live", "dead", "quiet"]) == "dead"
+
+
+def test_worst_of_never_produced_beats_dead():
+    assert _worst_of(["dead", "never_produced", "live"]) == "never_produced"
+
+
+def test_worst_of_ratchet_suspect_beats_clean_but_loses_to_dead():
+    assert _worst_of(["live", "ratchet_suspect"]) == "ratchet_suspect"
+    assert _worst_of(["dead", "ratchet_suspect"]) == "dead"
+
+
+# ------------------------------------------------------------- _resolve_source_kind
+
+
+def test_resolve_source_kind_attention_self_model_field():
+    node = _FakeNode(name="confidence", schema_id="AttentionSelfModelV1", metric_field="confidence")
+    assert _resolve_source_kind(node) == "attention_self_model"
+
+
+def test_resolve_source_kind_ladder_signal_node():
+    node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
+    assert _resolve_source_kind(node) == "ladder"
+
+
+def test_resolve_source_kind_none_for_unrelated_node():
+    node = _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None)
+    assert _resolve_source_kind(node) is None
+
+
+def test_has_registered_source_and_liveness_for_node_agree_on_every_kind():
+    """Regression for the routing-drift finding: has_registered_source() and
+    liveness_for_node() both delegate to _resolve_source_kind() now, so they
+    cannot silently disagree the way two independent conditional copies
+    could. Exercises both functions across a representative node set and
+    asserts they always agree on "is this covered"."""
+    nodes = [
+        _FakeNode(name="confidence", schema_id="AttentionSelfModelV1", metric_field="confidence"),
+        _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None),
+        _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None),
+        _FakeNode(name="attention_self_model.v1", schema_id=None, metric_field=None),
+    ]
+    for node in nodes:
+        assert has_registered_source(node) == (_resolve_source_kind(node) is not None)
+
+
+# ------------------------------------------------------------- has_registered_source
+
+
+def test_has_registered_source_true_for_attention_self_model_field():
+    node = _FakeNode(name="confidence", schema_id="AttentionSelfModelV1", metric_field="confidence")
+    assert has_registered_source(node) is True
+
+
+def test_has_registered_source_true_for_ladder_signal_node():
+    node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
+    assert has_registered_source(node) is True
+
+
+def test_has_registered_source_false_for_unrelated_node():
+    node = _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None)
+    assert has_registered_source(node) is False
+
+
+def test_has_registered_source_false_for_attention_self_model_signal_level_node():
+    """The parent signal node itself (metric_field=None) has no scalar to
+    sample -- only its per-field children do."""
+    node = _FakeNode(name="attention_self_model.v1", schema_id=None, metric_field=None)
+    assert has_registered_source(node) is False
+
+
+# ------------------------------------------------------------- liveness_for_node
+
+
+def test_liveness_for_node_computes_attention_self_model_field():
+    node = _FakeNode(name="confidence", schema_id="AttentionSelfModelV1", metric_field="confidence")
+    cur = _FakeCursor(fetchall_result=[(0.1,), (0.5,), (0.9,)])
+    conn = _FakeConn([cur])
+    outcome = liveness_for_node(node, conn)
+    assert isinstance(outcome, LivenessOutcome)
+    assert outcome.verdict == "live"
+    assert outcome.sample_count == 3
+    assert outcome.truncated is False
+    assert "confidence" in outcome.detail
+
+
+def test_liveness_for_node_broadcast_lane_age_uses_unbounded_classifier():
+    """broadcast_lane_age_sec is NOT [0,1]-bounded like its sibling scalar
+    fields -- a monotonic climb (a lane that keeps getting staler) must not
+    read as ratchet_suspect the way the four bounded fields legitimately
+    could."""
+    node = _FakeNode(name="broadcast_lane_age_sec", schema_id="AttentionSelfModelV1", metric_field="broadcast_lane_age_sec")
+    climbing_age = [(5.0,), (12.0,), (18.0,), (25.0,), (30.0,)]
+    cur = _FakeCursor(fetchall_result=climbing_age)
+    conn = _FakeConn([cur])
+    outcome = liveness_for_node(node, conn)
+    assert outcome.verdict == "live"  # not ratchet_suspect
+
+
+def test_liveness_for_node_computes_ladder_throughput_rollup():
+    node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
+    # 5 stages, each its own cursor -- fetch() opens one cursor per stage.
+    cursors = [_FakeCursor(fetchall_result=[(1.0,), (2.0,), (3.0,)]) for _ in range(5)]
+    conn = _FakeConn(cursors)
+    outcome = liveness_for_node(node, conn)
+    assert isinstance(outcome, LivenessOutcome)
+    assert outcome.verdict == "live"
+    assert "substrate_proposal_frames=" in outcome.detail
+
+
+def test_liveness_for_node_returns_none_for_unregistered_node():
+    node = _FakeNode(name="cpu_pressure", schema_id=None, metric_field=None)
+    conn = _FakeConn([])
+    assert liveness_for_node(node, conn) is None
+
+
+def test_liveness_for_node_ladder_sample_count_is_real_row_sum_not_bucket_count():
+    """Regression: an earlier version counted non-empty buckets (~1 per
+    bucket regardless of how many rows it held), not actual rows -- so a
+    ~2s-cadence stage with ~28 rows/bucket understated its real volume by
+    ~28x. sample_count must be a true row total, comparable to the scalar
+    source's `len(values)`."""
+    node = _FakeNode(name="l7_l11_ladder", schema_id=None, metric_field=None)
+    cursors = [_FakeCursor(fetchall_result=[(10.0,), (0.0,), (20.0,)]) for _ in range(5)]
+    conn = _FakeConn(cursors)
+    outcome = liveness_for_node(node, conn)
+    assert outcome.sample_count == 5 * 30  # 10+0+20 per stage, 5 stages
+
+
+def test_liveness_for_node_propagates_query_failure():
+    """liveness_for_node() does NOT swallow a query-time DB error itself --
+    scripts/check_metric_lineage.py's _liveness_for_nodes is the one place
+    that catches it and degrades to UNKNOWN. Verifies the exception is not
+    silently eaten here, which would make that outer catch dead code."""
+    node = _FakeNode(name="confidence", schema_id="AttentionSelfModelV1", metric_field="confidence")
+
+    class _BrokenCursor(_FakeCursor):
+        def execute(self, query, params=None):
+            raise RuntimeError("connection reset by peer")
+
+    conn = _FakeConn([_BrokenCursor()])
+    with pytest.raises(RuntimeError):
+        liveness_for_node(node, conn)
+
+
+# --------------------------------------------------------- _normalize_to_unit_scale
+
+
+def test_normalize_scales_by_own_max():
+    assert _normalize_to_unit_scale([5.0, 10.0, 20.0]) == [0.25, 0.5, 1.0]
+
+
+def test_normalize_leaves_all_zero_series_unchanged():
+    """Dividing by a zero max would raise -- an all-zero series (dead) must
+    pass through unchanged so classify_channel_series still sees it as dead,
+    not crash."""
+    assert _normalize_to_unit_scale([0.0, 0.0, 0.0]) == [0.0, 0.0, 0.0]
+
+
+def test_normalize_leaves_empty_series_unchanged():
+    assert _normalize_to_unit_scale([]) == []
+
+
+def test_normalize_alone_does_not_fix_ratchet_false_positive():
+    """Documents why _classify_unbounded_series() exists instead of just
+    calling classify_channel_series(_normalize_to_unit_scale(series)):
+    rescaling to unit scale does NOT stop a monotonic series from tripping
+    ratchet_suspect, because climbed = last-first is measured against the
+    series' own new max of 1.0 -- almost any monotonic climb clears
+    LIVE_VARIANCE_THRESHOLD=0.05 regardless of the original scale."""
+    raw_counts = [5.0, 12.0, 18.0, 25.0, 30.0]  # non-decreasing, climbs by 25
+    assert classify_channel_series(raw_counts) == "ratchet_suspect"
+    assert classify_channel_series(_normalize_to_unit_scale(raw_counts)) == "ratchet_suspect"
+
+
+def test_classify_unbounded_series_downgrades_ratchet_to_live():
+    """The actual fix: a monotonic climb -- unremarkable for a pipeline
+    throughput count or an unbounded age, unlike a never-decaying [0,1]
+    channel -- reads as LIVE, not as a suspected stuck accumulator."""
+    raw_counts = [5.0, 12.0, 18.0, 25.0, 30.0]
+    assert _classify_unbounded_series(raw_counts) == "live"
+
+
+def test_classify_unbounded_series_still_detects_dead():
+    assert _classify_unbounded_series([0.0, 0.0, 0.0, 0.0]) == "dead"
+
+
+def test_classify_unbounded_series_still_detects_never_produced():
+    assert _classify_unbounded_series([]) == "never_produced"
+
+
+def test_statement_timeout_ms_is_a_positive_bound():
+    assert STATEMENT_TIMEOUT_MS > 0

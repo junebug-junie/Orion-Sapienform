@@ -11,3 +11,11 @@ pyshacl>=0.26.0,<1.0.0
 # orion.cocreation.affective_signals typo_rate scoring + its tests/replay script
 # (docs/superpowers/specs/2026-07-30-juniper-affective-state-signal-proposal.md)
 pyspellchecker==0.9.0
+# orion/metrics/liveness.py (phase 5 of the metric semantic layer) and
+# scripts/analysis/measure_attention_self_model_confidence_baseline.py both
+# import psycopg2 directly for read-only root-level Postgres access outside
+# any service container. Was previously importable only because it leaked in
+# transitively from a service install into the shared dev venv -- undeclared,
+# per CLAUDE.md section 10. Pinned loose to match the per-service convention
+# (services/*/requirements.txt use psycopg2-binary==2.9.*/2.9.9/2.9.10).
+psycopg2-binary>=2.9,<3.0

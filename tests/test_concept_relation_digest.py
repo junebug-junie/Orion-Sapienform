@@ -26,16 +26,22 @@ class _NullAsyncCtx:
 
 class FakeConn:
     """Minimal in-process double for the handful of asyncpg.Connection calls this
-    script + repository.py::insert_crystallization() make. Dispatches on substrings
-    in the SQL text rather than emulating a real query engine -- enough to prove the
-    digest script's read/report/write/mark-digested behavior without a live Postgres,
-    matching this repo's existing convention of mocking at the pool/connection
-    boundary (see tests/test_encode_reinforce_not_duplicate.py)."""
+    script makes. Dispatches on substrings in the SQL text rather than emulating a
+    real query engine -- enough to prove the digest script's read/report/mark-digested
+    behavior without a live Postgres, matching this repo's existing convention of
+    mocking at the pool/connection boundary (see
+    tests/test_encode_reinforce_not_duplicate.py).
+
+    Deliberately does NOT model memory_crystallizations/memory_crystallization_sources
+    inserts: as of 2026-08-20 the digest doesn't write crystallizations at all (see the
+    module docstring -- the reflection-crystallization write path was removed after it
+    grew to 57% of all active crystallizations, pure duplicated bookkeeping over the
+    already-durable memory_concept_relation_decisions table). If _run_digest ever
+    issues an INSERT again, fetchrow/execute below raise on the unexpected query --
+    that failure is the regression test for the no-write contract."""
 
     def __init__(self, decisions: list[dict]) -> None:
         self.decisions = decisions
-        self.crystallizations: dict[str, dict] = {}
-        self.sources: list[dict] = []
         self.closed = False
 
     def transaction(self):
@@ -52,23 +58,16 @@ class FakeConn:
         raise AssertionError(f"FakeConn.fetch: unexpected query: {sql}")
 
     async def fetchrow(self, sql: str, *args):
-        if "INSERT INTO memory_crystallizations" in sql:
-            crystallization_id = args[0] if args and args[0] else str(uuid4())
-            self.crystallizations[crystallization_id] = {"args": args}
-            return {"crystallization_id": crystallization_id}
-        raise AssertionError(f"FakeConn.fetchrow: unexpected query: {sql}")
+        raise AssertionError(f"FakeConn.fetchrow: unexpected query (digest should not INSERT): {sql}")
 
     async def execute(self, sql: str, *args):
-        if "INSERT INTO memory_crystallization_sources" in sql:
-            self.sources.append({"args": args})
-            return "INSERT 0 1"
         if "UPDATE memory_concept_relation_decisions" in sql and "SET digested = true" in sql:
             ids = set(args[0])
             for row in self.decisions:
                 if row["decision_id"] in ids:
                     row["digested"] = True
             return f"UPDATE {len(ids)}"
-        raise AssertionError(f"FakeConn.execute: unexpected query: {sql}")
+        raise AssertionError(f"FakeConn.execute: unexpected query (digest should not INSERT): {sql}")
 
 
 def _row(*, relation: str, floor_cleared: bool, confidence: float, offset_sec: int, target: str | None = "crys_target") -> dict:
@@ -98,7 +97,7 @@ def _seeded_rows() -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_digest_report_counts_and_reflection_creation():
+async def test_digest_report_counts_and_no_crystallization_writes():
     conn = FakeConn(_seeded_rows())
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
@@ -108,40 +107,19 @@ async def test_digest_report_counts_and_reflection_creation():
     assert report.relation_counts == {"same": 1, "refines": 2, "contradicts": 2, "unrelated": 1}
     assert report.near_miss_counts == {"contradicts": 1, "refines": 1}
 
-    # Only the floor_cleared=True same/refines/contradicts rows (3 of them) produce a
-    # reflection crystallization -- near-misses and "unrelated" do not.
-    assert len(report.reflections_created) == 3
-    assert len(conn.crystallizations) == 3
-    assert len(conn.sources) == 3
+    # No crystallizations are written for any row -- floor_cleared same/refines/
+    # contradicts included. That's the whole point of this patch: the digest reports
+    # only, it no longer mirrors memory_concept_relation_decisions into
+    # memory_crystallizations. (FakeConn.fetchrow/execute would raise on an INSERT --
+    # not raising is itself part of the assertion here.)
+    assert report.reflections_created == []
 
-    # Every row seen this run is now marked digested, including the non-actionable ones.
+    # Every row seen this run is still marked digested, including the non-actionable ones.
     assert all(row["digested"] for row in conn.decisions)
 
 
 @pytest.mark.asyncio
-async def test_digest_reflection_crystallization_shape():
-    conn = FakeConn([_row(relation="contradicts", floor_cleared=True, confidence=0.82, offset_sec=1)])
-
-    with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
-        report = await digest._run_digest("postgresql://fake/db")
-
-    assert len(report.reflections_created) == 1
-    stored = next(iter(conn.crystallizations.values()))
-    # args order from repository.py::insert_crystallization's INSERT INTO
-    # memory_crystallizations statement: (crystallization_id, kind, subject, summary, ...)
-    args = stored["args"]
-    assert args[1] == "reflection"
-    assert "contradicts" in args[3]  # summary mentions the relation
-    assert "0.82" in args[3]  # summary embeds the confidence
-
-    assert len(conn.sources) == 1
-    source_args = conn.sources[0]["args"]
-    # (crystallization_id, source_kind, source_id, excerpt, strength, note)
-    assert source_args[1] == "concept_relation_decision"
-
-
-@pytest.mark.asyncio
-async def test_digest_second_run_with_no_new_rows_is_empty_not_duplicated():
+async def test_digest_second_run_with_no_new_rows_is_empty():
     conn = FakeConn(_seeded_rows())
 
     with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
@@ -149,14 +127,11 @@ async def test_digest_second_run_with_no_new_rows_is_empty_not_duplicated():
         second = await digest._run_digest("postgresql://fake/db")
 
     assert first.decisions_seen == 6
-    assert len(first.reflections_created) == 3
+    assert first.reflections_created == []
 
     assert second.decisions_seen == 0
     assert second.relation_counts == {r: 0 for r in digest._RELATIONS}
     assert second.reflections_created == []
-
-    # No duplicate reflections were created on the second, empty run.
-    assert len(conn.crystallizations) == 3
 
 
 @pytest.mark.asyncio

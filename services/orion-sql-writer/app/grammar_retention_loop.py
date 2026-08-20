@@ -14,7 +14,9 @@ No cap tuning reaches that. This runs the same bounded pass on a timer instead.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import threading
 
 from app.grammar_truth import run_one_retention_cycle
 from app.settings import Settings
@@ -63,10 +65,15 @@ async def grammar_retention_loop(settings: Settings) -> None:
         days_for,
     )
 
+    # Handed to the worker thread so a shutdown can stop it between tables. to_thread is
+    # not cancellable once started, so cancelling the task alone leaves the thread running.
+    stop = threading.Event()
+
     while True:
         try:
             await asyncio.sleep(interval)
         except asyncio.CancelledError:
+            stop.set()
             raise
 
         try:
@@ -79,8 +86,15 @@ async def grammar_retention_loop(settings: Settings) -> None:
                 days_for=days_for,
                 max_batches=max_batches,
                 max_elapsed_sec=max_elapsed,
+                stop=stop,
             )
         except asyncio.CancelledError:
+            # Signal the worker, then give it a bounded moment to finish the batch it is
+            # inside. Shielded because we are already being cancelled; without the shield
+            # the await returns instantly and we are back to joining at interpreter exit.
+            stop.set()
+            with contextlib.suppress(asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(asyncio.shield(_settle()), timeout=10.0)
             raise
         except Exception:
             # Never let one bad cycle end the loop -- that would silently restore the
@@ -90,7 +104,28 @@ async def grammar_retention_loop(settings: Settings) -> None:
 
         pruned = sum(int(st.rows_pruned_last_run or 0) for st in states.values())
         debts = {t: st.remaining_debt for t, st in states.items() if st.remaining_debt}
-        if pruned or debts:
-            logger.info(
-                "grammar_retention_cycle pruned=%s remaining_debt=%s", pruned, debts or "{}"
+        floored = [t for t, st in states.items() if st.cursor_floor_applied]
+        skipped = [t for t, st in states.items() if st.failure_reason]
+
+        # Unconditional. An earlier version logged only when pruned or debts were non-zero,
+        # which went silent in exactly the state that needs a voice: floor pinned, nothing
+        # pruned, debt reported against the clamped cutoff as 0. It also made "loop alive
+        # and caught up" indistinguishable from "loop dead". One line per cycle is cheap.
+        logger.info(
+            "grammar_retention_cycle pruned=%s remaining_debt=%s floored=%s skipped=%s",
+            pruned,
+            debts or "{}",
+            floored or "[]",
+            skipped or "[]",
+        )
+        if floored:
+            logger.warning(
+                "grammar_retention_floor_pinned tables=%s -- a reducer lane is behind and "
+                "retention is deliberately holding back; disk will grow until it catches up",
+                floored,
             )
+
+
+async def _settle() -> None:
+    """Yield briefly so a stopping worker thread can observe the stop flag."""
+    await asyncio.sleep(0.1)

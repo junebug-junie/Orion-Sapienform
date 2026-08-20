@@ -338,11 +338,19 @@ class Settings(BaseSettings):
     # measured cost of a delete on these tables (~4.1 ms/row on grammar_events: one
     # primary-key lookup per row across 8 indexes, poorly cached at this scale).
     #
-    #   4 tables x 3,000 rows per 60s = 17.3M rows/day capacity
-    #   against 1.1M rows/day arrival and a ~13M row one-time drain
+    #   12,000 rows/cycle (3 batches x 1000 x 4 tables)
+    #   effective period ~109s, NOT 60s: the loop sleeps `interval` and THEN works, so the
+    #     interval is a gap between cycles, not a fixed period. 12,000 rows x ~4.1 ms/row
+    #     is ~49s of work on top of the 60s sleep.
+    #   => ~9.5M rows/day of capacity, against 1.1M/day arrival and a ~13.8M one-time drain
+    #   => drain completes in ~1.65 days, then the loop idles
     #
-    # That drains the backlog in roughly a day and then idles, because a batch that deletes
-    # fewer rows than batch_size ends the cycle early. Keeping each cycle small is the point:
+    # (An earlier version of this comment claimed 17.3M rows/day and "about a day" by
+    # treating the interval as a fixed period. Code review caught it; the corrected figure
+    # is ~1.8x slower and still comfortably ahead of arrival.)
+    #
+    # A batch that deletes fewer rows than batch_size ends that table's cycle early, so the
+    # steady state costs a handful of empty probes. Keeping each cycle small is the point:
     # the startup job's full-speed pass was measured driving host I/O stall to ~21%, and
     # this service shares a disk with everything else on athena.
     grammar_retention_periodic_max_batches: int = Field(

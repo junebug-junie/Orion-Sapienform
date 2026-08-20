@@ -60,11 +60,14 @@ def _mock_settings(**overrides):
         grammar_events_retention_batch_size=5000,
         grammar_events_retention_max_batches_per_startup=20,
         grammar_events_retention_max_elapsed_sec=120.0,
-        grammar_edges_retention_days=15,
-        grammar_atoms_retention_days=15,
-        substrate_organ_emissions_retention_days=15,
         sql_writer_allow_accepted_pressure_ingest=False,
     )
+    # Derived, not hand-listed. A MagicMock answers hasattr() for ANY name, so a table
+    # added to _EXTRA_RETENTION_TABLES without a matching attribute here does not fail
+    # cleanly -- it hands _retention_block a MagicMock and blows up on `configured_days > 0`
+    # with a TypeError several frames away. Deriving the set removes the drift instead.
+    for table in grammar_truth_module._EXTRA_RETENTION_TABLES:
+        setattr(mock, f"{table}_retention_days", 15)
     for key, value in overrides.items():
         setattr(mock, key, value)
     return mock

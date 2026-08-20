@@ -309,6 +309,13 @@ class Settings(BaseSettings):
     substrate_organ_emissions_retention_days: int = Field(
         3, alias="SUBSTRATE_ORGAN_EMISSIONS_RETENTION_DAYS"
     )
+    # grammar_traces was left out of the patch above and it showed. Its children were
+    # pruned at 3 days while the parent rows lived forever, so the Grammar Atlas listed
+    # traces whose atoms/edges/events no longer existed. Measured live 2026-08-20, BEFORE
+    # this key existed: 487,970 trace rows, and 205,465 of them (42%) already had zero
+    # atoms. Same window as the children on purpose -- a different window here just
+    # re-creates the mismatch in one direction or the other.
+    grammar_traces_retention_days: int = Field(3, alias="GRAMMAR_TRACES_RETENTION_DAYS")
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
@@ -323,11 +330,13 @@ class Settings(BaseSettings):
     #    7 days  ~17 GB
     #    3 days   ~7 GB   <- chosen
     #
-    # Safety of the shorter window was checked, not assumed. grammar_events is consumed by
-    # five cursors in substrate_reduction_cursor; all five were within 13 SECONDS of live
-    # when this was set, against a 3-day window. The margin is ~20,000x. For the case where
-    # that stops being true, retention now takes the oldest cursor as a hard floor rather
-    # than trusting the margin -- see _grammar_events_cursor_floor.
+    # Safety of the shorter window is NOT a margin argument. An earlier version of this
+    # comment justified 3 days with "all five cursors are within 13 seconds, a ~20,000x
+    # margin" -- a point-in-time sample presented as a distribution, and wrong: the chat
+    # lane had measurably gone silent for 1 day 19.6 hours on a healthy system, a 1.65x
+    # margin. What actually makes the window safe is that retention refuses to delete rows
+    # any reducer lane still has unconsumed below the cutoff, checked per lane, every
+    # cycle -- see _grammar_events_cursor_floor.
     #
     # Reclaiming the ~29 GB this frees is a SEPARATE step: DELETE returns space for reuse
     # inside the table, not to the OS. Deferred by Juniper until retention is converging.

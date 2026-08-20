@@ -69,12 +69,31 @@ Legacy spark introspection channels/kinds are disabled by default; you can re-ad
 
 ## Grammar/substrate table retention
 
-`grammar_events`, `grammar_edges`, `grammar_atoms`, and `substrate_organ_emissions` all
-get bounded, startup-run retention (`*_RETENTION_DAYS` env keys, default 15). Each is a
-batched `DELETE ... LIMIT batch_size` loop (`GRAMMAR_EVENTS_RETENTION_BATCH_SIZE`/
-`_MAX_BATCHES_PER_STARTUP`/`_MAX_ELAPSED_SEC`, shared across all four tables), capped so
-a huge backlog can't turn startup into an unbounded operation. See
-`app/grammar_truth.py`'s `_apply_bounded_table_retention()`.
+`grammar_events`, `grammar_edges`, `grammar_atoms`, `substrate_organ_emissions` and
+`grammar_traces` all get bounded retention (`*_RETENTION_DAYS` env keys, **default 3**).
+Each is a batched `DELETE ... LIMIT batch_size` loop
+(`GRAMMAR_EVENTS_RETENTION_BATCH_SIZE`/`_MAX_BATCHES_PER_STARTUP`/`_MAX_ELAPSED_SEC`,
+shared across all five tables), capped so a huge backlog can't turn a pass into an
+unbounded operation. See `app/grammar_truth.py`'s `_apply_bounded_table_retention()`.
+
+Retention runs on a **60-second timer** (`GRAMMAR_RETENTION_INTERVAL_SEC`,
+`app/grammar_retention_loop.py`), not only at startup. It used to be startup-only, which
+deleted ~365,000 rows per process start against 1,117,440 rows/day of arrival -- it could
+not converge against ANY window, and logged a growing `remaining_debt` nobody read.
+Periodic cycles use much smaller caps (`GRAMMAR_RETENTION_PERIODIC_MAX_BATCHES`,
+`_MAX_ELAPSED_SEC`) than the startup pass.
+
+`grammar_events` and `grammar_traces` additionally respect a **cursor floor**: retention
+refuses to delete rows any of the five reducer lanes still has unconsumed below the cutoff
+(`_grammar_events_cursor_floor`). When it binds, `/health` reports
+`cursor_floor_applied` and `remaining_debt` is measured against the retention window
+rather than the clamped cutoff -- so "a reducer is stuck" and "retention is caught up"
+cannot look the same.
+
+`grammar_traces` is the parent row the Grammar Atlas lists, and is deliberately covered by
+the periodic loop only, not by `main.py`'s startup pass. It was added last (2026-08-20):
+until then its children were pruned at 3 days while the trace rows lived forever, so 42%
+of traces expanded into empty graphs.
 
 This depends entirely on each table having a `(created_at, <id>)` index --
 `services/orion-sql-db/manual_migration_grammar_atlas.sql` declares

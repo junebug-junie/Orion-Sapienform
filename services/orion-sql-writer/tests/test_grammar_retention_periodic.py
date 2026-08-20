@@ -238,25 +238,36 @@ class TestTheCursorFloorAsksTheRightQuestion:
         assert state.cursor_floor_applied is False
         assert eng.lane_probes == [], "non-queue tables must not probe lanes at all"
 
-    def test_exactly_the_cursor_coupled_tables_opt_in(self):
-        """grammar_events opts in because reducers consume it directly. grammar_traces opts
-        in because it is the PARENT of those events: a trace's created_at is <= every event
-        under it, so clamping trace deletion to the same floor keeps a parent at least as
-        long as its owed children. The leaf tables no cursor touches must not pay for a
-        probe they cannot use."""
-        import inspect
+    @pytest.mark.parametrize(
+        "fn_name,expected",
+        [
+            ("apply_grammar_events_retention", True),
+            ("apply_grammar_traces_retention", True),
+            ("apply_grammar_edges_retention", False),
+            ("apply_grammar_atoms_retention", False),
+            ("apply_substrate_organ_emissions_retention", False),
+        ],
+    )
+    def test_exactly_the_cursor_coupled_tables_opt_in(self, monkeypatch, fn_name, expected):
+        """grammar_events opts in because reducers consume it directly; grammar_traces
+        because a stalled lane must hold its parent rows back too. The leaf tables no
+        cursor touches must not pay for a probe they cannot use.
 
-        for fn in (
-            grammar_truth.apply_grammar_events_retention,
-            grammar_truth.apply_grammar_traces_retention,
-        ):
-            assert "respect_cursor_floor=True" in inspect.getsource(fn), fn.__name__
-        for fn in (
-            grammar_truth.apply_grammar_edges_retention,
-            grammar_truth.apply_grammar_atoms_retention,
-            grammar_truth.apply_substrate_organ_emissions_retention,
-        ):
-            assert "respect_cursor_floor" not in inspect.getsource(fn), fn.__name__
+        ASSERTS THE VALUE ACTUALLY PASSED, not the function's source text. The source-text
+        version of this test was defeated by the patch that added it: the new function's
+        own DOCSTRING contained the literal `respect_cursor_floor=True`, so flipping the
+        real keyword argument to False left all tests green (mutation-tested, confirmed
+        by review). A gate that a comment can satisfy is not a gate.
+        """
+        seen = {}
+
+        def capture(**kw):
+            seen.update(kw)
+            return GrammarRetentionState()
+
+        monkeypatch.setattr(grammar_truth, "_apply_bounded_table_retention", capture)
+        getattr(grammar_truth, fn_name)(3)
+        assert seen.get("respect_cursor_floor", False) is expected, seen.get("table")
 
     def test_the_delete_boundary_is_strict(self):
         """`<` not `<=`. The consumer reads `created_at > cursor_ts OR (= AND event_id >)`,
@@ -561,6 +572,62 @@ class TestTheParentTraceRowIsPrunedToo:
         state = _run(eng, table="grammar_traces", id_column="trace_id", respect_cursor_floor=True)
         assert state.cursor_floor_applied is True
         assert state.cutoff_at == owed
+
+    def test_every_managed_table_has_a_real_settings_window(self):
+        """THE gate behind _other_retention_truth_blocks. That function reads
+        `<table>_retention_days` off Settings for every _EXTRA_RETENTION_TABLES entry; a
+        table added to one and not the other used to KeyError and take the ENTIRE /health
+        endpoint down with it. It now degrades instead of raising, which means the failure
+        is quiet -- so the loud part has to live here.
+
+        Deliberately against the real Settings CLASS, not a fixture. The MagicMock in
+        test_grammar_truth.py answers hasattr() for any name and now auto-populates these
+        attributes, so it cannot catch this and must not be trusted to."""
+        from app.settings import Settings
+
+        for table in grammar_truth._EXTRA_RETENTION_TABLES:
+            attr = f"{table}_retention_days"
+            assert attr in Settings.model_fields, f"{table} has no {attr} on Settings"
+
+    def test_a_missing_window_degrades_health_instead_of_500ing_it(self):
+        """The runtime backstop for the test above. /health has no try/except around this."""
+
+        class _Settings:
+            grammar_events_retention_batch_size = 1000
+            grammar_events_retention_max_batches_per_startup = 3
+            grammar_events_retention_max_elapsed_sec = 20.0
+
+        for table in grammar_truth._EXTRA_RETENTION_TABLES:
+            setattr(_Settings, f"{table}_retention_days", 3)
+        delattr(_Settings, "grammar_traces_retention_days")
+
+        blocks = grammar_truth._other_retention_truth_blocks(_Settings())
+        assert set(blocks) == set(grammar_truth._EXTRA_RETENTION_TABLES)
+        assert blocks["grammar_traces"]["configured_days"] == 0
+        assert "grammar_traces" in grammar_truth._retention_window_config_missing
+        grammar_truth._retention_window_config_missing.clear()
+
+    def test_startup_only_covers_the_pre_periodic_tables_on_purpose(self):
+        """main.py hand-lists its startup retention blocks. grammar_traces is deliberately
+        NOT among them: the periodic loop covers it 60s after boot, and main.py's startup
+        pass already blocks the event loop for ~260s across four tables -- adding a fifth
+        copy makes a known problem worse to save one cycle.
+
+        This test exists so that stays a DECISION. A sixth table added to
+        GRAMMAR_RETENTION_TABLES will fail here until someone states which side it is on."""
+        import pathlib
+
+        main_src = (
+            pathlib.Path(__file__).resolve().parents[1] / "app" / "main.py"
+        ).read_text()
+        registered = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        periodic_only = {"grammar_traces"}
+        for table in registered:
+            covered = f"apply_{table}_retention" in main_src
+            if table in periodic_only:
+                assert not covered, f"{table} gained a startup block; update this test"
+            else:
+                assert covered, f"{table} lost its startup block in main.py"
 
     def test_the_atlas_listing_and_the_delete_both_have_an_index(self):
         """Two different queries, two different indexes. Without (started_at desc) the Atlas

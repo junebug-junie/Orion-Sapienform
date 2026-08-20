@@ -578,13 +578,29 @@ def apply_grammar_traces_retention(
     205,465 of them (42%) with zero atoms. That is a UI panel rendered with no real
     backing artifact, which CLAUDE.md names as an invalid success state outright.
 
-    respect_cursor_floor=True, same as grammar_events, and for a reason that is easy to
-    get backwards. The floor is computed from unconsumed grammar_events, and a trace's
-    created_at is <= the created_at of every event under it. Clamping trace deletion to
-    that same floor therefore keeps a parent AT LEAST as long as its owed children --
-    a reducer can never find events whose trace row was pruned out from under them.
-    Without the floor, a stalled lane would hold its events (correctly) while their
-    parent traces were deleted anyway (incorrectly).
+    THE CURSOR FLOOR IS ON, AND THE OBVIOUS REASON FOR IT IS WRONG. An earlier version of
+    this docstring said "a trace's created_at is <= the created_at of every event under it,
+    so the same floor keeps the parent alive at least as long as its owed children". Code
+    review falsified that on live data: 3,627 of 3,627 sampled traces (100%) violate it,
+    and the claim is self-contradictory anyway -- a SMALLER created_at is deleted SOONER.
+
+    The two columns are on different clocks. ledger.py:71 stamps grammar_traces.created_at
+    with wall-clock WRITE time; ledger.py:117 stamps grammar_events.created_at with
+    OCCURRENCE time (observed_at or emitted_at). Occurrence precedes write, so a trace row
+    is consistently NEWER than its own earliest event -- measured lag 0.15s to 9.4s.
+
+    What that actually buys, precisely: a trace outlives its EARLIEST event by
+    construction. It does NOT guarantee the trace outlives every LATER unconsumed event,
+    and the floor does not close that gap either -- the floor is MIN(created_at) over
+    unconsumed events, so a trace whose first event was already consumed can sit below the
+    floor and be deleted while a later sibling event survives. Measured at the live 3-day
+    cutoff: 4 such events, 8.6s of lag, gone on the next 60s cycle.
+
+    The floor stays on anyway, for the case it was built for: a genuinely stalled lane,
+    where it holds trace rows back by hours or days rather than seconds. Nothing reads
+    across the seam in the meantime -- reducers key on grammar_events and never join
+    grammar_traces, and the Atlas keys on grammar_traces -- so a briefly parentless event
+    is inert. Do not upgrade this to a correctness guarantee it does not provide.
 
     There are no FK constraints to enforce any of this: the checked-in
     manual_migration_grammar_atlas.sql declares `references grammar_traces(trace_id)` on
@@ -770,6 +786,11 @@ _EXTRA_RETENTION_TABLES = (
 )
 
 
+# Tables whose retention window could not be read from Settings on the last snapshot.
+# Surfaced as a degraded reason rather than an exception -- see the comment inside.
+_retention_window_config_missing: set[str] = set()
+
+
 def _other_retention_truth_blocks(settings) -> dict[str, dict[str, Any]]:
     # Derived from _EXTRA_RETENTION_TABLES rather than hand-listed. The hand-written dict
     # this replaces raised KeyError and took the ENTIRE /health snapshot down the moment a
@@ -777,14 +798,31 @@ def _other_retention_truth_blocks(settings) -> dict[str, dict[str, Any]]:
     # tests when grammar_traces was added, but it is a trap that would fire again.
     # getattr with a hard failure, not a silent default: a 0 here reads as "retention
     # disabled for this table", which is exactly the wrong thing to invent from a typo.
+    # DEGRADE, DO NOT RAISE. build_grammar_truth_snapshot() is called from /health with no
+    # try/except (main.py), so raising here returns 500 for the WHOLE endpoint -- the exact
+    # blast radius of the KeyError this replaced, just with a different exception name. A
+    # missing window is reported as a degraded reason on the table it belongs to instead.
+    # The real gate against this drift is a test that binds _EXTRA_RETENTION_TABLES to the
+    # live Settings class (tests/test_grammar_retention_periodic.py); this branch is the
+    # runtime backstop for when that test is wrong, not the primary defence.
     days_by_table: dict[str, int] = {}
+    missing: list[str] = []
     for table in _EXTRA_RETENTION_TABLES:
         attr = f"{table}_retention_days"
-        if not hasattr(settings, attr):
-            raise AttributeError(
-                f"{table} is in _EXTRA_RETENTION_TABLES but Settings has no {attr}"
+        value = getattr(settings, attr, None)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            missing.append(table)
+            logger.error(
+                "%s is in _EXTRA_RETENTION_TABLES but Settings has no usable %s -- "
+                "reporting it as unconfigured; retention for it is NOT running",
+                table,
+                attr,
             )
-        days_by_table[table] = getattr(settings, attr)
+            days_by_table[table] = 0
+            continue
+        days_by_table[table] = int(value)
+    _retention_window_config_missing.clear()
+    _retention_window_config_missing.update(missing)
     return {
         table: _retention_block(
             _extra_retention_state.get(table, GrammarRetentionState()),
@@ -843,6 +881,8 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
             degraded_reasons.append(f"{table}_retention_debt_remaining")
         if block["configured_days"] > 0 and block["last_run_at"] is None:
             degraded_reasons.append(f"{table}_retention_not_run")
+        if table in _retention_window_config_missing:
+            degraded_reasons.append(f"{table}_retention_window_unconfigured")
 
     return {
         "ok": not degraded_reasons,
@@ -907,11 +947,26 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
 # caps are tuned: it would need roughly three restarts a day just to break even, and about
 # fifteen more on top of that to clear the standing debt. The fix is not a bigger cap.
 #
-# ORDER IS DELIBERATE: grammar_traces runs LAST, after every table that hangs off it.
-# Nothing in the database enforces this (there are no live FK constraints on grammar_*),
-# so within a cycle the parent is only ever removed after this pass has had its chance at
-# the children. The reverse order would widen the window in which a child row points at a
-# trace that no longer exists.
+# ORDER IS DELIBERATE but SMALL: grammar_traces runs LAST, after every table that hangs
+# off it. Nothing in the database enforces this -- there are no live FK constraints on
+# grammar_* -- so it is an argument this list has to make for itself.
+#
+# Do not overstate it. Intra-cycle ordering buys microseconds. What actually governs how
+# long a child row can point at a deleted parent is per-table debt versus drain rate, and
+# on deploy that is DAYS. Measured 2026-08-20, with the periodic caps (3 batches x 1000
+# rows x 1440 cycles/day = 4.32M rows/day of capacity per table):
+#
+#   table                      debt past cutoff   arrival/hr   converges in
+#   grammar_traces                      417,966        1,714   ~2.4 hours
+#   grammar_atoms                     1,768,239       15,337   ~0.45 days
+#   grammar_edges                     2,021,469       15,282   ~0.5 days
+#   grammar_events                    6,227,497       34,135   ~1.8 days
+#
+# grammar_traces reaches its cutoff ~18x faster than grammar_events, so for roughly the
+# first two days after deploy there are millions of events whose parent trace is already
+# gone. That is inert -- reducers key on grammar_events and never join grammar_traces, and
+# the Atlas keys on grammar_traces -- but it is the real shape of the window, not the
+# microsecond one this ordering controls.
 GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     ("grammar_events", apply_grammar_events_retention),
     ("grammar_edges", apply_grammar_edges_retention),

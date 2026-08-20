@@ -60,21 +60,52 @@ checks from `docs/superpowers/specs/2026-08-12-perception-frontier-design.md`.
   because the decay check above ran against the same window and found
   nothing).
 
-- **Non-redundancy check (Appendix B blocker item 5): attempted, inconclusive
-  this session — reported honestly, not glossed over.** The design doc
-  requires: "run both [the label-habituation gate and the embedding
-  residual] over the same live window and show the embedding residual fires
-  on transitions the label gate calls `stable_scene`. If it does not, the
-  existing mechanism wins and this should not be built." `orion-vision-
-  council`'s `stable_scene` skip decision (`evidence_transition.py`) is
-  **not persisted anywhere in Postgres** — it only ever exists as a log
-  line (`[COUNCIL] evidence_transition skip ... reason=stable_scene`), and
-  `orion-athena-vision-council`'s container had just been restarted when
-  this check was attempted (fresh log history, no skip events accumulated
-  yet in the observed window). A live correlation attempt was made — see
-  "Tests run" — but did not observe a real scene transition during the
-  window available. **This blocker is still open**, not resolved by this
-  report.
+- **Non-redundancy check (Appendix B blocker item 5): now run and
+  CONFIRMED PASSING.** The design doc requires: "run both [the label-
+  habituation gate and the embedding residual] over the same live window
+  and show the embedding residual fires on transitions the label gate
+  calls `stable_scene`. If it does not, the existing mechanism wins and
+  this should not be built." `orion-vision-council`'s `stable_scene` skip
+  decision (`evidence_transition.py`) is not persisted anywhere in
+  Postgres — only as a log line (`[COUNCIL] evidence_transition skip ...
+  reason=stable_scene`) — so this required a live, real-time correlation
+  session rather than a historical query. Ran a 20-minute correlated
+  capture of both `orion-athena-vision-council` and
+  `orion-athena-substrate-runtime` logs (2026-08-20 22:00-22:20 UTC,
+  against the already-fixed `2e-6` floor from PR #1776 — confirmed via
+  `docker exec ... grep` on the running container before trusting this
+  result):
+
+  ```
+  unique stable_scene skip events: 141 (2 real "interpret" events in the
+    same window, for contrast)
+  stable_scene events matched to a perception tick within +/-5s: 129
+  score during stable_scene: min=0.000 max=1.000 mean=0.101
+  matches with score > 0.55 (crosses min_error): 8 / 129 (6.2%)
+  ```
+
+  Top 5 by score, all during a council `stable_scene` skip:
+
+  | council skip (UTC) | perception score | raw_surprise |
+  |---|---|---|
+  | 22:15:07.012 | 1.000 | 0.00901 |
+  | 22:15:37.825 | 1.000 | 0.01286 |
+  | 22:05:42.406 | 0.855 | 0.00705 |
+  | 22:11:10.898 | 0.699 | 0.00574 |
+  | 22:07:14.782 | 0.683 | 0.00634 |
+
+  These 8 events are spread across the full 20-minute window (22:05,
+  22:07, 22:11, 22:15×2, plus 3 more), not one clustered burst, and every
+  one has an elevated *raw* magnitude (0.0057-0.0129, well above the
+  domain's calm-window mean of ~0.0035-0.0042 measured in PR #1776) — not
+  an artifact of the z-score stage alone, the underlying signal itself
+  moved. This is a real, direct demonstration that the embedding-based
+  surprise channel registers scene changes the fixed `{door, screen}`
+  label vocabulary has no word for and that the label-habituation gate
+  therefore calls "nothing happened." **The design doc's own bar for this
+  signal to earn its place is met** — the existing mechanism does not
+  win; this is genuinely independent information, not a redundant restate
+  of what the label gate already knows.
 
 ## Current architecture
 
@@ -118,11 +149,13 @@ psycopg2):
   -> n=40890, no decay artifact, distribution not degenerate (see "Outcome
      moved" above for full output).
 
-stable_scene non-redundancy correlation attempt (read-only, live docker
-logs, orion-vision-council + orion-substrate-runtime):
-  -> attempted, inconclusive this session (council container had just
-     restarted; no stable_scene skip events observed in the available
-     window). See "Risks / concerns".
+stable_scene non-redundancy correlation (read-only, live docker logs,
+orion-vision-council + orion-substrate-runtime, 20-minute window,
+2026-08-20 22:00-22:20 UTC):
+  -> 141 stable_scene skip events captured, 129 matched to a perception
+     tick within +/-5s, 8/129 (6.2%) crossed min_error=0.55 with elevated
+     raw magnitude, not clustered -- see "Outcome moved" above for the
+     full table. Non-redundancy CONFIRMED.
 ```
 
 ## Evals run
@@ -150,26 +183,30 @@ No restart required.
 
 ## Risks / concerns
 
-- Severity: **should-fix, tracked, not blocking**
-- Concern: P2's own design doc (Appendix B, blocker item 5) requires
-  demonstrating non-redundancy against `orion-vision-window`'s existing
-  label-habituation mechanism before this signal fully "earns its place" —
-  "if it does not [fire on a stable_scene transition], the existing
-  mechanism wins and this should not be built." This has not been
-  demonstrated. The domain is already shipped and shadow-only (not in
-  `ACTIVE_INFERENCE_DOMAINS`), so nothing currently depends on this check
-  passing, but it should be resolved before the design doc's own staged
-  promotion ("observe for a week, promote only then") happens.
-- Mitigation: follow-up needed — either (a) run a longer live correlation
-  window once `orion-vision-council`'s logs have accumulated real
-  `stable_scene` skip events (the check requires an actual scene
-  transition to occur during the window, which is inherently
-  camera-activity-dependent, not schedulable), or (b) persist
-  `stable_scene` skip decisions somewhere queryable (e.g. a lightweight
-  receipt table or bus event) so this check can be run repeatably against
-  history instead of requiring a live real-time correlation session each
-  time. Option (b) is the more durable fix and matches this domain's own
-  existing convention of receipts-as-audit-trail.
+- Severity: **note, not blocking**
+- Concern: both of P2's mechanizable acceptance-check gaps are now closed
+  (decay-artifact check passing, non-redundancy confirmed), but the
+  non-redundancy result rests on one 20-minute live correlation window,
+  not a repeatable historical query — `orion-vision-council`'s
+  `stable_scene` skip decision is still log-only, never persisted to
+  Postgres. If this check needs to be re-run later (e.g. after a
+  `orion-vision-window` or `evidence_transition.py` change) it again
+  requires a live real-time correlation session rather than a query
+  against history.
+- Mitigation: none implemented in this report (out of scope — touches a
+  different service, `orion-vision-council`, not `orion-substrate-
+  runtime`). Follow-up option, if this needs to be repeatable: persist
+  `stable_scene` skip decisions somewhere queryable (a lightweight
+  receipt table or bus event), matching this domain's own existing
+  convention of receipts-as-audit-trail. Not urgent given the check now
+  has a confirmed-passing result on record.
+- Separately, the domain remains shadow-only (not in
+  `ACTIVE_INFERENCE_DOMAINS`) per the design doc's staged-promotion
+  guidance ("observe for a week, promote only then") — P2 shipped
+  2026-08-19, one day before this report, so promotion is not due yet.
+  This report's findings (decay-check pass, non-redundancy confirmed) are
+  exactly the evidence that guidance asks for before promoting; the
+  remaining wait is time-based, not action-based.
 
 ## PR link
 

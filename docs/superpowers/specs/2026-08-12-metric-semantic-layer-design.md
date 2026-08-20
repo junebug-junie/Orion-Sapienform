@@ -455,6 +455,33 @@ docstring's claim rather than the code; the priority order itself
 (`POSTGRES_URI` first) was the right call, matching `.env_example`'s
 canonical key.
 
+Round 3 (against round 2's own fixes) caught a real regression *round 2
+itself introduced*: routing `broadcast_lane_age_sec` through the same
+ratchet-downgrading treatment built for the ladder's row counts. That
+reasoning doesn't transfer — the ladder's counts have no legitimate reason
+to decrease within a window, so a monotonic climb there is a pure
+domain-mismatch false positive. `broadcast_lane_age_sec` is different in
+kind: the schema's own `broadcast_lane_stale` sibling field exists because
+this age is *expected* to reset toward zero on every real broadcast-lane
+refresh (~30s cadence, dozens of resets/hour when healthy). A monotonic
+climb across the whole window means the lane never refreshed once — the
+exact stuck-lane failure this field exists to make legible — and
+downgrading that to `live` was a false-positive-healthy verdict strictly
+worse than the honest `NOT_COMPUTED` this field had before phase 5 shipped
+at all. Reverted: all five `attention_self_model.v1` scalar fields go
+through `classify_channel_series()` unmodified; the unbounded-domain
+treatment (`_classify_unbounded_series()`) stays scoped to the ladder's
+throughput only, where it belongs. Also fixed in round 3: the `truncated`
+flag's `len(rows) >= MAX_ROWS` could not distinguish "exactly MAX_ROWS
+matching rows" from "more than MAX_ROWS" since the fetch itself was capped
+at MAX_ROWS — now fetches one extra row to make the count unambiguous.
+Four more round-3 findings (redundant `has_registered_source` calls in the
+CLI wiring, the ladder's 5 sequential per-stage queries not being batched,
+`_worst_of()`'s severity-rank pattern echoing an unrelated existing one in
+`turn_effect_policy.py`, `ScalarFieldSource`/`ThroughputSource` not sharing
+a base dataclass for their 3 common fields) were judged low-severity —
+acknowledged, not fixed, consistent with the reviewer's own assessment.
+
 Wired into `check_metric_lineage.py --metric <name>` (and `--json`): a node
 with a registered source now prints a real verdict with its sample count and
 provenance string instead of the old blanket "NOT COMPUTED (phase 5)". A

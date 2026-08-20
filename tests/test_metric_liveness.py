@@ -187,17 +187,33 @@ def test_scalar_field_source_filters_none_and_builds_query():
     assert truncated is False
     query, params = cur.executed[0]
     assert "t" in query and "j" in query and "ts" in query and "DESC" in query
-    assert params == ("myfield", 1.0, "myfield", 50_000)
+    assert params == ("myfield", 1.0, "myfield", 50_001)  # MAX_ROWS + 1, see fetch()'s docstring
 
 
-def test_scalar_field_source_reports_truncated_at_max_rows():
+def test_scalar_field_source_not_truncated_at_exactly_max_rows():
+    """Regression: an earlier version used LIMIT MAX_ROWS with
+    `len(rows) >= MAX_ROWS`, which could not distinguish "exactly MAX_ROWS
+    matching rows (complete)" from "more than MAX_ROWS (truncated)" -- both
+    looked identical since the fetch itself was capped at MAX_ROWS."""
     source = ScalarFieldSource(
         table="t", json_column="j", ts_column="ts", window_hours=1.0
     )
-    cur = _FakeCursor(fetchall_result=[(1.0,)] * 50_000)
+    cur = _FakeCursor(fetchall_result=[(1.0,)] * 50_000)  # exactly MAX_ROWS
     conn = _FakeConn([cur])
-    _values, truncated = source.fetch(conn, "myfield")
+    values, truncated = source.fetch(conn, "myfield")
+    assert truncated is False
+    assert len(values) == 50_000
+
+
+def test_scalar_field_source_reports_truncated_when_over_max_rows():
+    source = ScalarFieldSource(
+        table="t", json_column="j", ts_column="ts", window_hours=1.0
+    )
+    cur = _FakeCursor(fetchall_result=[(1.0,)] * 50_001)  # MAX_ROWS + 1
+    conn = _FakeConn([cur])
+    values, truncated = source.fetch(conn, "myfield")
     assert truncated is True
+    assert len(values) == 50_000  # the extra fetched row is dropped
 
 
 # ------------------------------------------------------------- ThroughputSource
@@ -320,17 +336,39 @@ def test_liveness_for_node_computes_attention_self_model_field():
     assert "confidence" in outcome.detail
 
 
-def test_liveness_for_node_broadcast_lane_age_uses_unbounded_classifier():
-    """broadcast_lane_age_sec is NOT [0,1]-bounded like its sibling scalar
-    fields -- a monotonic climb (a lane that keeps getting staler) must not
-    read as ratchet_suspect the way the four bounded fields legitimately
-    could."""
+def test_liveness_for_node_broadcast_lane_age_reports_ratchet_suspect_for_a_stuck_lane():
+    """CORRECTION 2026-08-20 (a third review round caught a round-2
+    regression): broadcast_lane_age_sec is intentionally NOT routed through
+    the unbounded/ratchet-downgrading classifier the ladder uses. Unlike a
+    row count, this age is EXPECTED to reset toward zero on every real
+    broadcast-lane refresh (schema's own `broadcast_lane_stale` sibling
+    field exists for exactly this). A monotonic climb across the whole
+    window means the lane never refreshed once -- a genuine stuck-lane
+    signal, and downgrading it to `live` would be a false-positive-healthy
+    verdict strictly worse than the honest NOT_COMPUTED this field had
+    before phase 5 shipped."""
     node = _FakeNode(name="broadcast_lane_age_sec", schema_id="AttentionSelfModelV1", metric_field="broadcast_lane_age_sec")
-    climbing_age = [(5.0,), (12.0,), (18.0,), (25.0,), (30.0,)]
-    cur = _FakeCursor(fetchall_result=climbing_age)
+    # fetch() expects DESC (newest-first) rows and reverses to chronological
+    # ASC -- supplying DESC order here so the classified series is really
+    # [5, 12, 18, 25, 30] chronologically: climbing, never resetting.
+    stuck_lane_age_desc = [(30.0,), (25.0,), (18.0,), (12.0,), (5.0,)]
+    cur = _FakeCursor(fetchall_result=stuck_lane_age_desc)
     conn = _FakeConn([cur])
     outcome = liveness_for_node(node, conn)
-    assert outcome.verdict == "live"  # not ratchet_suspect
+    assert outcome.verdict == "ratchet_suspect"
+
+
+def test_liveness_for_node_broadcast_lane_age_with_real_resets_reads_live():
+    """The healthy counterpart: an age series with real resets (sawtooth,
+    matching a lane that actually refreshes) is not monotonic and correctly
+    reads as ordinary live variance, no special-casing needed."""
+    node = _FakeNode(name="broadcast_lane_age_sec", schema_id="AttentionSelfModelV1", metric_field="broadcast_lane_age_sec")
+    # DESC input reversed to chronological ASC [0.5, 2.0, 0.1, 3.5, 0.2, 4.0].
+    healthy_sawtooth_desc = [(4.0,), (0.2,), (3.5,), (0.1,), (2.0,), (0.5,)]
+    cur = _FakeCursor(fetchall_result=healthy_sawtooth_desc)
+    conn = _FakeConn([cur])
+    outcome = liveness_for_node(node, conn)
+    assert outcome.verdict == "live"
 
 
 def test_liveness_for_node_computes_ladder_throughput_rollup():

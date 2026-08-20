@@ -232,18 +232,33 @@ def _classify_unbounded_series(series: list[float]) -> str:
     return "live" if verdict == "ratchet_suspect" else verdict
 
 
-# Fields on AttentionSelfModelV1 that are NOT `[0,1]`-bounded by schema
-# (`orion/schemas/attention_self_model.py`) -- these go through
-# `_classify_unbounded_series` instead of `classify_channel_series` directly.
-# Found by review 2026-08-20: an earlier version fixed this exact borrowed-
-# threshold problem for the ladder's row counts but missed that
-# `broadcast_lane_age_sec` (a plain float age in seconds) has the identical
-# exposure among attention_self_model.v1's five scalar fields -- the other
-# four (`confidence`, `prediction_error_confidence`, `field_overall_salience`,
-# `heartbeat_mean_ratio`) all carry `Field(ge=0.0, le=1.0)`, so
-# `classify_channel_series`'s thresholds are the right, unmodified tool for
-# them and stay that way.
-_UNBOUNDED_ATTENTION_SELF_MODEL_FIELDS = frozenset({"broadcast_lane_age_sec"})
+# All five AttentionSelfModelV1 scalar fields go through classify_channel_
+# series() unmodified -- `_classify_unbounded_series()` is scoped to
+# l7_l11_ladder's throughput only, deliberately NOT applied here.
+#
+# CORRECTION 2026-08-20 (a third review round, catching a regression the
+# second round introduced): an earlier version of this module routed
+# `broadcast_lane_age_sec` through `_classify_unbounded_series()` too, on
+# the theory that it shares the ladder's "not [0,1]-bounded" exposure. That
+# reasoning does not transfer. The ladder's row counts have no legitimate
+# reason to ever decrease within a window -- `ratchet_suspect` there is a
+# pure domain-mismatch false positive, correctly downgraded to `live`.
+# `broadcast_lane_age_sec` is different in kind: the schema's own sibling
+# field `broadcast_lane_stale` exists specifically because this age is
+# EXPECTED to reset toward zero on every real broadcast-lane refresh
+# (`ORION_ATTENTION_BROADCAST_INTERVAL_SEC=30s` -- dozens of resets/hour on
+# a healthy lane). A series that climbs monotonically across the WHOLE
+# sampled window means the lane has not refreshed even once -- that IS the
+# stuck-lane failure this field exists to make legible, and downgrading it
+# to `live` is strictly worse than the honest `NOT_COMPUTED` this field had
+# before phase 5 shipped: it actively asserts "healthy" for a genuinely
+# stalled signal. So this field is intentionally excluded from the
+# unbounded-domain treatment and left on the plain classifier, whose
+# `ratchet_suspect` verdict is the correct, wanted outcome here. (The
+# `[0,1]`-vs-unbounded scale question the second review round raised is
+# real in principle but empirically inert at this field's current
+# magnitudes, ~0.02-0.8s live-checked 2026-08-19 -- comfortably inside
+# where `LIVE_VARIANCE_THRESHOLD=0.05` still discriminates correctly.)
 
 
 def resolve_dsn() -> str:
@@ -335,9 +350,9 @@ class ScalarFieldSource:
 
     def fetch(self, conn, field: str) -> tuple[list[float], bool]:
         """Returns `(values, truncated)`. `truncated=True` means the window
-        had >= MAX_ROWS matching rows and this only covers the most recent
-        MAX_ROWS of them (the DESC+LIMIT below, reversed to ASC) -- see
-        `LivenessOutcome.truncated`'s docstring for why that distinction
+        had MORE than MAX_ROWS matching rows and this only covers the most
+        recent MAX_ROWS of them (the DESC+LIMIT below, reversed to ASC) --
+        see `LivenessOutcome.truncated`'s docstring for why that distinction
         matters and matches the precedent this mirrors
         (`measure_attention_self_model_confidence_baseline.py`'s
         `fetch_self_model_rows`).
@@ -346,6 +361,13 @@ class ScalarFieldSource:
         # yields more than MAX_ROWS, this keeps the MOST RECENT rows (the
         # ones that actually matter for "did this just go dead"), not the
         # oldest. An ASC-ordered LIMIT would silently do the opposite.
+        #
+        # LIMIT MAX_ROWS + 1, not MAX_ROWS: `len(rows) >= MAX_ROWS` cannot
+        # tell "exactly MAX_ROWS matching rows (complete)" apart from "more
+        # than MAX_ROWS (truncated)" when the fetch itself is capped at
+        # MAX_ROWS -- found by review 2026-08-20. Fetching one extra row
+        # makes the count unambiguous; the extra row is dropped before
+        # returning.
         query = f"""
             SELECT ({self.json_column} ->> %s)::float8 AS v
             FROM {self.table}
@@ -355,9 +377,10 @@ class ScalarFieldSource:
             LIMIT %s
         """
         with conn.cursor() as cur:
-            cur.execute(query, (field, self.window_hours, field, MAX_ROWS))
+            cur.execute(query, (field, self.window_hours, field, MAX_ROWS + 1))
             rows = cur.fetchall()
-        truncated = len(rows) >= MAX_ROWS
+        truncated = len(rows) > MAX_ROWS
+        rows = rows[:MAX_ROWS]
         values = [r[0] for r in rows if r[0] is not None]
         values.reverse()
         return values, truncated
@@ -416,10 +439,7 @@ _ATTENTION_SELF_MODEL_SCHEMA_ID = "AttentionSelfModelV1"
 
 def _attention_self_model_liveness(conn, field: str) -> LivenessOutcome:
     values, truncated = _ATTENTION_SELF_MODEL_SOURCE.fetch(conn, field)
-    if field in _UNBOUNDED_ATTENTION_SELF_MODEL_FIELDS:
-        verdict = _classify_unbounded_series(values)
-    else:
-        verdict = classify_channel_series(values)
+    verdict = classify_channel_series(values)
     detail = (
         f"n={len(values)} over "
         f"{_ATTENTION_SELF_MODEL_SOURCE.window_hours:g}h from "

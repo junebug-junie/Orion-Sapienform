@@ -701,6 +701,38 @@ first place. Full reasoning and phased detail:
    data, and generalizing Hub's Substrate Lattice UI to show real goal-provenance
    ticks (Part H).
 7. **Re-evaluate integration** only after 4 and 5 produce real, comparable data — not before.
+   **Design-mode pass, 2026-08-20: not yet — items 4 and 5 have not actually produced the
+   data this gate asks for, so there is no integrate-vs-stay-separate decision to make yet.**
+   Full deliverable:
+   `docs/superpowers/specs/2026-08-20-objective-7-integration-reevaluation-design.md`.
+   Three concrete gaps found, not asserted: (1) item 5's emergent-clustering probe's only
+   real run (2026-07-21) is now stale relative to two salience-formula fixes that postdate
+   it — the 2026-07-28 `recent_perturbations` EWMA z-score fix and the 2026-08-20
+   `cross_domain_variance_floor()` fix (PR #1774) — and its own literal acceptance check
+   already read AMBIGUOUS even before those fixes (one surviving stable pair,
+   `capability:llm_inference` <-> `node:atlas`, out of 21 checkable pairs). (2) item 4 has
+   never produced its own dedicated acceptance evidence — its one-line status only points at
+   items 2/3's existing artifacts. (3) O3 (§5) — "a blind rater... can distinguish [an
+   instrument's output] from noise and describe what it appears to track" — is the literal
+   falsifiable bar this whole objective exists to serve, and has never been run for any
+   instrument in this program, despite being cheap and read-only (confirmed via full-text
+   search of this document). **Recommendation: do not build any fused/shared consumer or
+   cross-theory legibility surface yet, and do not close item 7 as "answered: stay separate"
+   either — both would be deciding without the data §7's own "integration is decided from
+   data, later" rule requires.** Smallest real next patch, per the design doc: re-run
+   `measure_emergent_clustering_probe.py` fresh against current live data, and build one
+   small blind-rater harness against the AST/HOT reducer's real narrative output (the one
+   instrument already MET on reducer-correctness per this item's own 2026-08-20 note above),
+   modeled on the existing "compare, don't fuse" precedent
+   (`scripts/analysis/measure_candidate_a_vs_b_head_to_head.py`). No schema, registry, or new
+   consumer proposed by this pass. Two constraints carried forward for whatever integration
+   discussion eventually does happen: `node:athena` dominating attention/salience data is
+   architectural (the host node), settled, not an open question (§6 item 5's 2026-07-29 entry
+   above, closed for real in the separate `docs/athena-dominance-doc-correction` doc pass);
+   and any future proposal to fuse/weight salience-like signals *across* theory-instruments
+   should assume the same "one domain's organic scale dwarfs another's" failure mode that
+   `cross_domain_variance_floor()` (PR #1774) already fixed once *within* one competition —
+   fusing across theories is strictly more exposed to it, not less.
 
 ## 7. Processes — how this program actually operates
 

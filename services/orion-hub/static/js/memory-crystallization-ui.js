@@ -287,15 +287,31 @@
     detailEl.querySelectorAll("button[data-act]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const act = btn.getAttribute("data-act");
+        let extraStatus = "";
         try {
           if (act === "sync-graphiti") {
             await apiFetch(`/api/memory/graphiti/sync/${row.crystallization_id}`, { method: "POST", body: "{}" });
           } else if (act === "deprecate") {
             await apiFetch(`/api/memory/crystallizations/${row.crystallization_id}/deprecate`, { method: "POST", body: "{}" });
           } else {
-            await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
+            const res = await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
+            if (act === "validate" && res) {
+              // grammar_events is retention-bounded (3 days), so a validated proposal can
+              // legitimately have evidence that no longer resolves. That is NOT an error and
+              // does not block promotion -- but an operator judging a proposal on thin
+              // evidence has to be able to tell "the evidence aged out" from "there never was
+              // any". Without this the field was written by the API and read by nobody.
+              const absent = (res.absent_grammar_refs || []).length;
+              const unver = (res.unverified_grammar_refs || []).length;
+              const bits = [];
+              if (absent) bits.push(`${absent} grammar ref${absent === 1 ? "" : "s"} no longer on disk (retention window is 3 days)`);
+              if (unver) bits.push(`${unver} could not be checked`);
+              // Appended to the status, never an early return: the inbox reload and detail
+              // re-open below still have to run.
+              if (bits.length) extraStatus = ` — ${bits.join("; ")}`;
+            }
           }
-          setStatus(statusEl, `${act} ok`, false);
+          setStatus(statusEl, `${act} ok${extraStatus}`, false);
           // "validate" annotates the proposal in place and leaves it in the
           // queue, so the pane must stay open for it -- only a terminal
           // decision closes.

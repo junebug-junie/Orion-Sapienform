@@ -1,4 +1,4 @@
-.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet
 
 SERVICE ?=
 ARGS ?=
@@ -343,3 +343,18 @@ attention-outcome-coverage:
 		$(if $(SWEEP),--sweep,) \
 		$(if $(HOURS),--min-silence-hours $(HOURS),) \
 		$(if $(JSON),--json,)
+
+# Which hand-applied SQL migrations actually reached the live database?
+#
+# services/orion-sql-db/*.sql is applied BY HAND. There is no migration table, no version
+# stamp, and no ordering guarantee, so a migration that was written, reviewed, merged and
+# never applied looks identical in git to one that is live.
+#
+# Needs a reachable Postgres, so this is an operator/agent command rather than a CI gate.
+# Exit 1 = drift found; exit 2 = could not connect (deliberately distinct, so an infra
+# failure cannot be mistaken for a pass).
+check-sql-migrations-applied:
+	python3 scripts/check_sql_migrations_applied.py
+
+check-sql-migrations-applied-quiet:
+	python3 scripts/check_sql_migrations_applied.py --quiet

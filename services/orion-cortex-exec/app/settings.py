@@ -111,6 +111,19 @@ class Settings(BaseSettings):
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
     atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
+    cortex_chat_return_logprobs: bool = Field(
+        False,
+        alias="CORTEX_CHAT_RETURN_LOGPROBS",
+        description=(
+            "Request per-token logprob/top1-margin telemetry on real chat-turn (route=chat) "
+            "replies. Rides the existing OpenAI-compat gateway call (llm_backend.py's "
+            "_execute_openai_chat) -- no endpoint switch, no response_format set, no separate "
+            "probe request. Feeds chat_history_log.llm_* columns via "
+            "_forward_llm_uncertainty_metadata's existing spark_meta merge. Distinct from "
+            "CORTEX_METACOG_RETURN_LOGPROBS, which gates MetacogDraftService's own separate "
+            "native-completion probe and never touches the user-facing reply."
+        ),
+    )
     cortex_metacog_return_logprobs: bool = Field(False, alias="CORTEX_METACOG_RETURN_LOGPROBS")
     cortex_metacog_logprob_probe_mode: str = Field(
         default="",

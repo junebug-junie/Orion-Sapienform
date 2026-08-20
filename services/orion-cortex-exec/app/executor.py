@@ -1950,6 +1950,55 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
     return accepted, attempted
 
 
+# The exact (verb_name, step_name) pairs whose LLM call output becomes the text Juniper
+# actually reads -- NOT everything that resolves to llm_route == "chat" below. That bucket
+# is a worker/context-budget grouping (DEEP lane, Circe), shared with harness_finalize_reflect
+# and orion_voice_finalize, whose own docstring notes their "chat" llm_route is vestigial:
+# real dispatch for both goes through an explicit llm_lane ("agent"/"background") that
+# ignores body_route entirely, so they never reach Circe via this value -- but options set
+# here (e.g. return_logprobs) still ride along on whatever call they do make. Keyed on
+# identity, not the shared route, so CORTEX_CHAT_RETURN_LOGPROBS below can never leak onto
+# those internal calls.
+_REAL_CHAT_REPLY_STEPS = frozenset(
+    {
+        ("stance_react", "llm_stance_react"),
+        ("chat_general", "llm_chat_general"),
+    }
+)
+
+
+def _should_request_chat_reply_logprobs(step: Any, gateway_options: Dict[str, Any]) -> bool:
+    """Real, user-facing reply telemetry (CORTEX_CHAT_RETURN_LOGPROBS). Keyed on exact
+    (verb, step) identity via _REAL_CHAT_REPLY_STEPS, not the shared llm_route == "chat"
+    bucket -- see that constant's comment for why. Deliberately does NOT set
+    logprob_probe_mode -- that would route the gateway to the native-completion endpoint
+    switch (services/orion-llm-gateway/app/llm_backend.py's
+    _should_use_native_llamacpp_completion), which exists to dodge JSON-grammar entropy
+    collapse for structured calls. This reply is plain text, so the existing OpenAI-compat
+    call already supports return_logprobs natively (llm_backend.py:1135-1140) -- same
+    endpoint, same request, no new round trip.
+
+    Must be called with a fully-built `gateway_options` (i.e. after the structured_output_*
+    forwarding loop, not before -- an earlier version of this patch had it before) and checks
+    every field the gateway can build a response_format from: response_format itself,
+    return_json (llm_backend.py:1116-1117 turns this into response_format too), and
+    structured_output_schema/structured_output_method (structured_output.py). A
+    JSON-constrained reply must never get the near-zero-entropy logprobs mind's synthesis
+    calls avoid by using native completion instead of piggybacking here.
+    """
+    if (step.verb_name, step.step_name) not in _REAL_CHAT_REPLY_STEPS:
+        return False
+    if gateway_options.get("response_format"):
+        return False
+    if gateway_options.get("return_json"):
+        return False
+    if gateway_options.get("structured_output_schema"):
+        return False
+    if gateway_options.get("structured_output_method"):
+        return False
+    return bool(getattr(settings, "cortex_chat_return_logprobs", False))
+
+
 def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional[str], mode: Optional[str]) -> Optional[str]:
     """The verb-based `llm_route` default, used only when no caller override
     (`_resolve_llm_route_override`) was supplied.
@@ -4192,6 +4241,9 @@ async def call_step_services(
                         gateway_options[_fwd_key] = ctx_options[_fwd_key]
                     elif _fwd_key in ctx and ctx.get(_fwd_key) is not None:
                         gateway_options[_fwd_key] = ctx[_fwd_key]
+
+                if _should_request_chat_reply_logprobs(step, gateway_options):
+                    gateway_options["return_logprobs"] = True
 
                 request_object = ChatRequestPayload(
                     model=req_model,

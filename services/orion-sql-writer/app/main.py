@@ -778,100 +778,29 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("goal_provenance_streak_ticks retention startup failed (continuing boot): %s", exc)
 
-    grammar_retention_days = int(getattr(settings, "grammar_events_retention_days", 0) or 0)
-    if grammar_retention_days > 0:
-        try:
-            from app.grammar_truth import apply_grammar_events_retention
-
-            retention_result = apply_grammar_events_retention(grammar_retention_days)
-            logger.info(
-                "🧹 grammar_events retention cutoff=%s rows_pruned=%s batches=%s "
-                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
-                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
-                retention_result.rows_pruned_last_run,
-                retention_result.batches_attempted,
-                retention_result.remaining_debt,
-                retention_result.elapsed_sec,
-                retention_result.failure_reason,
-            )
-        except Exception as exc:
-            logger.exception("grammar_events retention startup failed (continuing boot): %s", exc)
-
-    # grammar_edges/grammar_atoms/substrate_organ_emissions had NO retention at all
-    # until this patch -- confirmed live 2026-08-19: unbounded growth, ~13GB combined,
-    # zero deletes ever. Same bounded-startup shape as grammar_events above, each with
-    # its own retention_days knob (settings.py), each independently best-effort (one
-    # table's failure must not skip the others or block boot).
+    # NO STARTUP RETENTION PASS. Deliberate, 2026-08-20 -- this used to be four synchronous
+    # blocking blocks here (grammar_events, grammar_edges, grammar_atoms,
+    # substrate_organ_emissions), each with 100-batch/120s caps.
     #
-    # Deliberately three explicit blocks, not a (label, function-name-string,
-    # settings-attr-string) loop: a typo in a string dispatched via getattr() would
-    # raise AttributeError, get swallowed by this same try/except, and silently skip
-    # that table's retention forever -- exactly the failure class this patch exists to
-    # eliminate, just moved up a layer. Explicit imports/calls are typo-proof at
-    # import time instead.
-    grammar_edges_retention_days = int(getattr(settings, "grammar_edges_retention_days", 0) or 0)
-    if grammar_edges_retention_days > 0:
-        try:
-            from app.grammar_truth import apply_grammar_edges_retention
-
-            retention_result = apply_grammar_edges_retention(grammar_edges_retention_days)
-            logger.info(
-                "🧹 grammar_edges retention cutoff=%s rows_pruned=%s batches=%s "
-                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
-                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
-                retention_result.rows_pruned_last_run,
-                retention_result.batches_attempted,
-                retention_result.remaining_debt,
-                retention_result.elapsed_sec,
-                retention_result.failure_reason,
-            )
-        except Exception as exc:
-            logger.exception("grammar_edges retention startup failed (continuing boot): %s", exc)
-
-    grammar_atoms_retention_days = int(getattr(settings, "grammar_atoms_retention_days", 0) or 0)
-    if grammar_atoms_retention_days > 0:
-        try:
-            from app.grammar_truth import apply_grammar_atoms_retention
-
-            retention_result = apply_grammar_atoms_retention(grammar_atoms_retention_days)
-            logger.info(
-                "🧹 grammar_atoms retention cutoff=%s rows_pruned=%s batches=%s "
-                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
-                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
-                retention_result.rows_pruned_last_run,
-                retention_result.batches_attempted,
-                retention_result.remaining_debt,
-                retention_result.elapsed_sec,
-                retention_result.failure_reason,
-            )
-        except Exception as exc:
-            logger.exception("grammar_atoms retention startup failed (continuing boot): %s", exc)
-
-    substrate_organ_emissions_retention_days = int(
-        getattr(settings, "substrate_organ_emissions_retention_days", 0) or 0
-    )
-    if substrate_organ_emissions_retention_days > 0:
-        try:
-            from app.grammar_truth import apply_substrate_organ_emissions_retention
-
-            retention_result = apply_substrate_organ_emissions_retention(
-                substrate_organ_emissions_retention_days
-            )
-            logger.info(
-                "🧹 substrate_organ_emissions retention cutoff=%s rows_pruned=%s batches=%s "
-                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
-                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
-                retention_result.rows_pruned_last_run,
-                retention_result.batches_attempted,
-                retention_result.remaining_debt,
-                retention_result.elapsed_sec,
-                retention_result.failure_reason,
-            )
-        except Exception as exc:
-            logger.exception(
-                "substrate_organ_emissions retention startup failed (continuing boot): %s", exc
-            )
-
+    # Three problems, all measured live:
+    #   1. It ran on the event loop, before `svc.start()` below, so it delayed not just
+    #      readiness but the BUS SUBSCRIPTION, which is a far worse failure than retention
+    #      starting a minute late. The ~260s figure is carried forward from
+    #      docs/superpowers/pr-reports/2026-08-20-grammar-retention-periodic-pr.md ("observed
+    #      ~260s across four tables"), not re-measured here -- the old container is gone. What
+    #      IS measured on this branch: boot is now 4.6s (container start 17:34:15.209 ->
+    #      "Application startup complete" 17:34:19.844).
+    #   2. It could not converge anyway. Retention that runs only at process start deletes a
+    #      fixed amount per restart against continuous arrival; that is the entire reason
+    #      app/grammar_retention_loop.py exists.
+    #   3. It was drifting out of step with the periodic path. It hand-listed four tables
+    #      while GRAMMAR_RETENTION_TABLES had six, so grammar_traces and
+    #      substrate_proposal_frames were startup-exempt by omission and the divergence had to
+    #      be pinned by a test rather than being impossible.
+    #
+    # The periodic loop reaches the same steady state within one interval of boot and, with
+    # the cycle budget below, is strictly more capable than the startup pass ever was. One
+    # retention path, not two.
     task: asyncio.Task | None = None
     if settings.orion_bus_enabled:
         svc = build_hunter()

@@ -78,11 +78,58 @@ shared across all six tables), capped so a huge backlog can't turn a pass into a
 unbounded operation. See `app/grammar_truth.py`'s `_apply_bounded_table_retention()`.
 
 Retention runs on a **60-second timer** (`GRAMMAR_RETENTION_INTERVAL_SEC`,
-`app/grammar_retention_loop.py`), not only at startup. It used to be startup-only, which
-deleted ~365,000 rows per process start against 1,117,440 rows/day of arrival -- it could
-not converge against ANY window, and logged a growing `remaining_debt` nobody read.
-Periodic cycles use much smaller caps (`GRAMMAR_RETENTION_PERIODIC_MAX_BATCHES`,
-`_MAX_ELAPSED_SEC`) than the startup pass.
+`app/grammar_retention_loop.py`), and **that is now the only retention path**. It used to be
+startup-only, which deleted ~365,000 rows per process start against 1,117,440 rows/day of
+arrival -- it could not converge against ANY window, and logged a growing `remaining_debt`
+nobody read. The timer was added first and the startup pass left in place alongside it;
+**the startup pass was removed 2026-08-20**, for three measured reasons:
+
+1. It ran synchronously on the event loop, **ahead of `svc.start()`**, so it delayed not just
+   readiness but the bus subscription. Retention starting a minute late is a far cheaper
+   failure. The ~260s figure is carried forward from the 2026-08-20 periodic-retention PR
+   report ("observed ~260s across four tables"), not re-measured. What is measured on this
+   branch: boot is now **4.6s**, container start to "Application startup complete".
+2. It could not converge anyway. That is the whole reason the timer exists.
+3. It had drifted out of step: `main.py` hand-listed four tables while
+   `GRAMMAR_RETENTION_TABLES` had six, so `grammar_traces` and `substrate_proposal_frames`
+   were startup-exempt purely by omission, and the divergence had to be pinned by a test
+   rather than being impossible. A test now asserts **no** table has a startup block.
+
+Three caps bound a cycle. `GRAMMAR_RETENTION_PERIODIC_MAX_BATCHES` (3) and
+`_MAX_ELAPSED_SEC` (20) bound **one table**; `_MAX_CYCLE_SEC` (45) bounds **the whole
+cycle**. That third one was a genuinely missing bound -- six tables x a 20s per-table cap is
+a 120s cycle on a 60s timer, with nothing anywhere saying so.
+
+The cycle budget is split as a **fair share** (remaining budget / remaining eligible tables),
+not first-come, because `GRAMMAR_RETENTION_TABLES` has a fixed order: whichever table is
+earliest **and** has debt would eat a first-come budget every cycle while the ones behind it
+silently never ran -- which reads as healthy in the logs, because the first table's own
+numbers look fine. Not hypothetical: `substrate_proposal_frames` is **last** in the tuple and
+was measured at **8.21s with 109,585 rows of debt** during its own backfill, in a cycle where
+`grammar_events` took 1.08–3.33s and the other four took 0.01–0.30s. (Do not restate this as
+"only table X has debt" -- debt is transient, and an earlier draft of this paragraph said
+exactly that and was wrong within the hour.) Fair share rather than rotation
+because the order is a correctness constraint: `grammar_traces` must be pruned after the
+children that reference it. A table skipped for lack of budget logs at WARNING; a table
+dropped silently is indistinguishable from a table with no debt.
+
+**The batch cap was deliberately not raised.** Measured live 2026-08-20, `grammar_events`
+stops on the *batch* cap, using **1.08–3.33s** of its per-table budget across three
+consecutive cycles, and drains its 4.13M-row backlog in **~31 hours** net of arrival. (A
+naive "4.13M ÷ 3,000 rows ÷ 1,440 cycles" gives ~26h; the loop sleeps 60s *after* each cycle,
+so the real period is ~68s, and ~795k rows/day arrive into that table meanwhile.) Raising the cap to 10 would cut that at 3.3x the delete I/O -- on a
+host already I/O-stalled ~22% of wall time, and where this same pass was measured driving
+stall to ~21%. Converging in a day is not worth buying with that. Raise it only with an I/O
+measurement in hand -- **and raise `_MAX_CYCLE_SEC` with it**: at ~1.11s/batch, 10 batches
+needs ~11.1s, which is above the 7.5s fair share a 45s budget gives the first of six tables,
+so the batch increase would be silently clipped. `effective_max_elapsed_sec` on
+`/grammar/truth` reports the cap a run was actually handed, which is the field to read next
+to `capped_by_elapsed_limit`.
+
+**One boot-time caveat:** for the first cycle interval after a restart (~68s measured) all
+six tables report `*_retention_not_run` and `/health` reads `degraded`. That is expected and
+was widened from two tables to six by removing the startup pass. There is no `healthcheck`
+block in this service's compose file, so nothing restarts on it.
 
 `grammar_events` and `grammar_traces` additionally respect a **cursor floor**: retention
 refuses to delete rows any of the five reducer lanes still has unconsumed below the cutoff
@@ -127,9 +174,9 @@ indistinguishable from a stall, so the grammar floor asks "are there unconsumed 
 the cutoff" instead. A pending marker has much less ambiguity -- it is set at insert and
 cleared in the same transaction as the downstream write. The same migration's header records
 that a *time* bound was tried for this pipeline and reverted: the dispatch->feedback hop
-legitimately ran p50 34.6 hours and max 11.3 days behind. Like `grammar_traces`, this table
-is periodic-only and deliberately not in `main.py`'s startup pass, which already blocks the
-event loop for ~260s.
+legitimately ran p50 34.6 hours and max 11.3 days behind. Like every other managed table, this one is
+pruned only by the periodic loop; `main.py` has no startup retention pass any more (see
+above).
 
 **The window is 10 days, and the reason is consumer windows, not disk.** Two live readers
 reach back further than a week: `orion/autonomy/evals/run_attention_bound_proposal_eval.py`

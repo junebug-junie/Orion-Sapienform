@@ -69,11 +69,12 @@ Legacy spark introspection channels/kinds are disabled by default; you can re-ad
 
 ## Grammar/substrate table retention
 
-`grammar_events`, `grammar_edges`, `grammar_atoms`, `substrate_organ_emissions` and
-`grammar_traces` all get bounded retention (`*_RETENTION_DAYS` env keys, **default 3**).
-Each is a batched `DELETE ... LIMIT batch_size` loop
+`grammar_events`, `grammar_edges`, `grammar_atoms`, `substrate_organ_emissions`,
+`grammar_traces` and `substrate_proposal_frames` all get bounded retention
+(`*_RETENTION_DAYS` env keys, **default 3** for the grammar tables, **7** for
+`substrate_proposal_frames`). Each is a batched `DELETE ... LIMIT batch_size` loop
 (`GRAMMAR_EVENTS_RETENTION_BATCH_SIZE`/`_MAX_BATCHES_PER_STARTUP`/`_MAX_ELAPSED_SEC`,
-shared across all five tables), capped so a huge backlog can't turn a pass into an
+shared across all six tables), capped so a huge backlog can't turn a pass into an
 unbounded operation. See `app/grammar_truth.py`'s `_apply_bounded_table_retention()`.
 
 Retention runs on a **60-second timer** (`GRAMMAR_RETENTION_INTERVAL_SEC`,
@@ -94,6 +95,35 @@ cannot look the same.
 the periodic loop only, not by `main.py`'s startup pass. It was added last (2026-08-20):
 until then its children were pruned at 3 days while the trace rows lived forever, so 42%
 of traces expanded into empty graphs.
+
+`substrate_proposal_frames` (2026-08-20) is the first stage of the substrate pipeline
+(proposal -> policy decision -> execution dispatch -> feedback) and had **no bound at all**:
+474,230 rows / 1,758 MB live, oldest 2026-07-23, growing ~27k rows and ~105 MB a day. It
+uses its own floor, `_substrate_chain_floor`, not the grammar cursor floor -- three later
+stages can reach back into it by `frame_id`, so the floor asks each stage's **pending
+marker** (`policy_pending` / `dispatch_pending` / `feedback_pending`, from
+`manual_migration_substrate_pending_markers.sql`) for the oldest row still owed work.
+Anything at or above that timestamp survives regardless of age.
+
+That distinction is deliberate and is not interchangeable with the cursor floor. A
+reduction cursor stops moving when its *source* goes quiet, which is indistinguishable from
+a stall, so the grammar floor asks "are there unconsumed rows below the cutoff" instead. A
+pending marker has no such ambiguity -- it is set at insert and cleared in the same
+transaction as the downstream write -- so flooring directly on the oldest pending row is
+correct there and wrong for grammar. The same migration's header records that a *time*
+bound was tried for this pipeline and reverted: the dispatch->feedback hop legitimately ran
+p50 34.6 hours and max 11.3 days behind. Like `grammar_traces`, this table is periodic-only
+and deliberately not in `main.py`'s startup pass, which already blocks the event loop for
+~260s.
+
+**Autovacuum:** these tables now carry per-table autovacuum settings
+(`services/orion-sql-db/manual_migration_autovacuum_high_churn_tables.sql`). The cluster
+default `autovacuum_vacuum_scale_factor = 0.2` is a proportional trigger, which on a large
+churning table means an enormous absolute one -- `grammar_events` had to reach ~1.21M dead
+tuples before autovacuum would look at it. Continuous 60-second retention DELETEs make that
+worse, not better. The per-table override (`scale_factor 0.01 + threshold 10000`) trades one
+huge pass for ~17 smaller ones. Cost limits are deliberately left alone; athena has a known
+I/O ceiling and un-throttling vacuum is the wrong move there.
 
 This depends entirely on each table having a `(created_at, <id>)` index --
 `services/orion-sql-db/manual_migration_grammar_atlas.sql` declares
@@ -125,16 +155,33 @@ docker exec -e PGPASSWORD=postgres <sql-db-container> psql -U postgres -d <db> -
 ```
 
 `build_grammar_truth_snapshot()` (`app/grammar_truth.py`) reports live status for all
-four tables' retention under `grammar_retention`/`other_table_retention`, and flags
+six tables' retention under `grammar_retention`/`other_table_retention`, and flags
 `degraded_reasons` if an index is missing or a retention run failed/never ran.
 
-**Known gap:** `grammar_traces` (and its other children -- `grammar_temporal_hops`,
-`grammar_compactions`, `grammar_projections`) still have no retention. Deleting a
-`grammar_events`/`grammar_atoms`/`grammar_edges` row doesn't touch its parent
-`grammar_traces` row or these other children, so they'll keep accumulating
-unbounded. Not addressed by this patch -- would need its own "safe to delete a
-trace" definition (e.g. all children older than the cutoff too) before extending
-retention there.
+**Known gap (updated 2026-08-20):** `grammar_traces` is now covered -- see above. Still
+unbounded: `grammar_temporal_hops`, `grammar_compactions`, `grammar_projections`, and the
+rest of the substrate frame family. Deleting a `grammar_events`/`grammar_atoms`/
+`grammar_edges` row doesn't touch these, so they keep accumulating.
+
+Measured live 2026-08-20, the substrate frame family alone is ~15 GB and only two of its
+tables have any bound at all:
+
+```text
+substrate_organ_emissions              5,248 MB   bounded
+substrate_execution_dispatch_frames    2,126 MB   UNBOUNDED
+substrate_proposal_frames              1,758 MB   bounded (this patch)
+substrate_field_state                  1,745 MB   UNBOUNDED
+substrate_feedback_frames              1,641 MB   UNBOUNDED
+substrate_policy_decision_frames       1,485 MB   UNBOUNDED
+substrate_attention_frames             1,055 MB   UNBOUNDED
+substrate_perception_embedding_baseline  477 MB   UNBOUNDED
+```
+
+Extending retention to the rest is mostly mechanical now that `_substrate_chain_floor`
+exists -- the same pending markers cover the policy and dispatch stages. It is deliberately
+NOT done here: that is ~13 GB of substrate history, which is the cognition substrate's own
+record of what it proposed, decided and did, and deleting it is Juniper's call to make
+explicitly rather than a side effect of a retention patch.
 
 ## Running & Testing
 

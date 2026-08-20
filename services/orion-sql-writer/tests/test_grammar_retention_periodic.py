@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from app import grammar_truth
 from app.grammar_truth import GrammarRetentionState
+from app.settings import Settings, get_settings
 
 
 class _Result:
@@ -528,7 +530,12 @@ class TestTheParentTraceRowIsPrunedToo:
         migration file declares them but SQLAlchemy created the tables first). So order is
         a correctness argument this code has to make for itself."""
         order = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
-        assert order[-1] == "grammar_traces"
+        # RELATIVE order, not "last in the tuple". The first version of this asserted
+        # order[-1] == "grammar_traces", which is a different and weaker claim that happened
+        # to hold when grammar_traces was the newest entry. It broke the moment an unrelated
+        # table (substrate_proposal_frames, different engine, no ordering relationship with
+        # the grammar lane at all) was appended -- a false failure that says nothing about
+        # the invariant this test exists to protect.
         for child in ("grammar_events", "grammar_atoms", "grammar_edges"):
             assert order.index(child) < order.index("grammar_traces"), child
 
@@ -621,7 +628,10 @@ class TestTheParentTraceRowIsPrunedToo:
             pathlib.Path(__file__).resolve().parents[1] / "app" / "main.py"
         ).read_text()
         registered = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
-        periodic_only = {"grammar_traces"}
+        # Both of these are deliberately periodic-only. The startup pass already blocks the
+        # event loop for ~260s; every table added to it makes that worse, and the periodic
+        # loop reaches the same steady state within a minute of boot anyway.
+        periodic_only = {"grammar_traces", "substrate_proposal_frames"}
         for table in registered:
             covered = f"apply_{table}_retention" in main_src
             if table in periodic_only:
@@ -645,3 +655,270 @@ class TestTheParentTraceRowIsPrunedToo:
         assert "idx_grammar_traces_started_at" in sql
         assert "on grammar_traces (started_at desc, trace_id)" in sql
         assert "concurrently" in sql, "a blocking index build on a live 143 MB table"
+
+
+class TestSubstrateProposalFramesIsBounded:
+    """substrate_proposal_frames had no retention at all until 2026-08-20.
+
+    Live at that point: 474,230 rows / 1,758 MB, oldest 2026-07-23, growing ~27k rows and
+    ~105 MB a day with nothing to stop it.
+    """
+
+    def test_it_is_in_the_retention_cycle(self):
+        tables = [name for name, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        assert "substrate_proposal_frames" in tables
+
+    def test_it_is_floored_on_the_pipeline_markers_not_the_grammar_cursor(self, monkeypatch):
+        """The two floors are not interchangeable and must not be swapped by accident.
+
+        The grammar cursor floor probes substrate_reduction_cursor and grammar_events, which
+        say nothing at all about whether a substrate pipeline stage still owes work on a
+        proposal row. Wiring the wrong one here would report "nothing owed" and delete a live
+        backlog.
+        """
+        seen = {}
+
+        def capture(**kw):
+            seen.update(kw)
+            return GrammarRetentionState()
+
+        monkeypatch.setattr(grammar_truth, "_apply_bounded_table_retention", capture)
+        grammar_truth.apply_substrate_proposal_frames_retention(7)
+        assert seen.get("table") == "substrate_proposal_frames"
+        assert seen.get("id_column") == "frame_id"
+        assert seen.get("floor_resolver") is grammar_truth._substrate_chain_floor
+        assert seen.get("respect_cursor_floor", False) is False
+
+    def test_it_uses_the_plain_engine_not_the_grammar_engine(self, monkeypatch):
+        """Substrate data lives on the default engine; the grammar engine is a separate lane
+        with its own 10s statement timeout."""
+        seen = {}
+
+        def capture(**kw):
+            seen.update(kw)
+            return GrammarRetentionState()
+
+        monkeypatch.setattr(grammar_truth, "_apply_bounded_table_retention", capture)
+        grammar_truth.apply_substrate_proposal_frames_retention(7)
+        assert seen.get("engine") is grammar_truth.default_engine
+        assert seen.get("engine") is not grammar_truth.grammar_engine
+
+    def test_the_loop_actually_passes_a_window_for_it(self):
+        from app import grammar_retention_loop
+
+        days = grammar_retention_loop.retention_days_for(get_settings())
+        assert days.get("substrate_proposal_frames", 0) > 0, days
+
+    def test_it_has_a_real_settings_window(self):
+        assert "substrate_proposal_frames_retention_days" in Settings.model_fields
+
+
+class TestTheSubstrateChainFloor:
+    """The floor asks the pipeline's pending markers, not the clock.
+
+    manual_migration_substrate_pending_markers.sql records that a time-bounded version of
+    this idea was tried and REVERTED, because the dispatch->feedback hop legitimately ran
+    p50 34.6 hours and max 11.3 days behind. Retention must not put that bound back.
+    """
+
+    def test_it_covers_every_stage_that_can_reach_back_into_the_table(self):
+        stages = {t for _, t, _ in grammar_truth._SUBSTRATE_CHAIN_PENDING}
+        assert stages == {
+            "substrate_proposal_frames",
+            "substrate_policy_decision_frames",
+            "substrate_execution_dispatch_frames",
+        }
+
+    def test_it_probes_created_at_not_generated_at(self):
+        """Same clock as the delete predicate.
+
+        The delete keys on created_at. generated_at is when the stage produced the frame;
+        created_at is when the row was written. Measured live 2026-08-20 they diverge by up
+        to 724s, and 24 policy rows have created_at strictly BEFORE generated_at. A floor
+        read off one clock and compared to a cutoff on the other deletes rows it meant to
+        keep.
+        """
+        seen = []
+
+        class _Conn:
+            def execute(self, stmt, *a, **kw):
+                seen.append(str(stmt))
+                return SimpleNamespace(scalar=lambda: None)
+
+        grammar_truth._substrate_chain_floor(_Conn(), datetime.now(timezone.utc))
+        assert seen, "floor made no probes at all"
+        for sql in seen:
+            assert "MIN(created_at)" in sql, sql
+            assert "generated_at" not in sql, sql
+
+    def test_the_oldest_pending_row_across_all_stages_wins(self):
+        oldest = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        answers = [
+            datetime(2026, 8, 10, tzinfo=timezone.utc),
+            oldest,
+            datetime(2026, 8, 5, tzinfo=timezone.utc),
+        ]
+
+        class _Conn:
+            def __init__(self):
+                self.i = 0
+
+            def execute(self, stmt, *a, **kw):
+                value = answers[self.i]
+                self.i += 1
+                return SimpleNamespace(scalar=lambda: value)
+
+        floor, resolved = grammar_truth._substrate_chain_floor(
+            _Conn(), datetime.now(timezone.utc)
+        )
+        assert resolved is True
+        assert floor == oldest
+
+    def test_all_stages_caught_up_imposes_no_floor(self):
+        """(None, True) means "nothing owed", which is NOT the same as "unknown"."""
+
+        class _Conn:
+            def execute(self, stmt, *a, **kw):
+                return SimpleNamespace(scalar=lambda: None)
+
+        floor, resolved = grammar_truth._substrate_chain_floor(
+            _Conn(), datetime.now(timezone.utc)
+        )
+        assert floor is None
+        assert resolved is True
+
+    def test_a_naive_timestamp_from_the_driver_is_treated_as_utc(self):
+        """A tz-naive datetime compared against a tz-aware cutoff raises TypeError at the
+        comparison, which would abort the whole retention run rather than floor it."""
+        naive = datetime(2026, 8, 1, 12, 0, 0)
+
+        class _Conn:
+            def execute(self, stmt, *a, **kw):
+                return SimpleNamespace(scalar=lambda: naive)
+
+        floor, resolved = grammar_truth._substrate_chain_floor(
+            _Conn(), datetime.now(timezone.utc)
+        )
+        assert resolved is True
+        assert floor is not None and floor.tzinfo is not None
+        assert floor < datetime.now(timezone.utc)  # the comparison the caller makes
+
+    def test_a_failed_probe_reports_unresolved_and_never_no_floor(self):
+        """The dangerous confusion is (None, False) collapsing into (None, True): "I could
+        not ask" must not read as "nothing is owed", or a database blip deletes the backlog.
+        """
+
+        class _Conn:
+            def execute(self, stmt, *a, **kw):
+                raise RuntimeError("connection reset")
+
+        floor, resolved = grammar_truth._substrate_chain_floor(
+            _Conn(), datetime.now(timezone.utc)
+        )
+        assert floor is None
+        assert resolved is False
+
+    def test_an_unresolved_floor_refuses_to_prune(self, monkeypatch):
+        """End to end through the real _apply_bounded_table_retention: an unresolved floor
+        must skip the cycle, not fall through to the time cutoff."""
+        deleted = []
+
+        class _Conn:
+            def execute(self, stmt, *a, **kw):
+                deleted.append(str(stmt))
+                return SimpleNamespace(rowcount=0, scalar_one=lambda: 0, scalar=lambda: 0)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _Engine:
+            def connect(self):
+                return _Conn()
+
+            def begin(self):
+                return _Conn()
+
+        monkeypatch.setattr(
+            grammar_truth, "_substrate_chain_floor", lambda conn, cutoff: (None, False)
+        )
+        state = grammar_truth._apply_bounded_table_retention(
+            engine=_Engine(),
+            table="substrate_proposal_frames",
+            id_column="frame_id",
+            retention_days=7,
+            batch_size=100,
+            max_batches=5,
+            max_elapsed_sec=10.0,
+            floor_resolver=grammar_truth._substrate_chain_floor,
+        )
+        assert state.failure_reason == "cursor_floor_unresolved"
+        assert not any("DELETE" in sql.upper() for sql in deleted), deleted
+
+    def test_a_binding_floor_clamps_the_cutoff_back(self, monkeypatch):
+        """A stage genuinely behind the retention window pulls the cutoff back to it."""
+        behind = datetime.now(timezone.utc) - timedelta(days=30)
+
+        class _Conn:
+            def execute(self, stmt, *a, **kw):
+                return SimpleNamespace(rowcount=0, scalar_one=lambda: 0, scalar=lambda: 0)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _Engine:
+            def connect(self):
+                return _Conn()
+
+            def begin(self):
+                return _Conn()
+
+        state = grammar_truth._apply_bounded_table_retention(
+            engine=_Engine(),
+            table="substrate_proposal_frames",
+            id_column="frame_id",
+            retention_days=7,
+            batch_size=100,
+            max_batches=1,
+            max_elapsed_sec=10.0,
+            floor_resolver=lambda conn, cutoff: (behind, True),
+        )
+        assert state.cursor_floor_applied is True
+        assert state.cutoff_at == behind
+
+
+def test_the_grammar_cursor_floor_also_normalises_a_naive_timestamp():
+    """Pre-existing gap, found by mutation-testing the NEW floor and hitting this one instead.
+
+    _grammar_events_cursor_floor has the identical `if oldest.tzinfo is None` normalisation,
+    and deleting it left the entire suite green (403 passed, only the 11 unrelated
+    pre-existing failures). Without it the floor returns a naive datetime, and the caller's
+    `floor < cutoff` comparison against a tz-aware cutoff raises TypeError -- which aborts
+    the whole retention run rather than flooring it. Same one-line bug, same blast radius,
+    now pinned in both places.
+    """
+    naive = datetime(2026, 8, 1, 12, 0, 0)
+
+    class _Conn:
+        def execute(self, stmt, *a, **kw):
+            sql = str(stmt)
+            if "substrate_reduction_cursor" in sql:
+                rows = [
+                    {"cursor_name": name, "last_event_created_at": naive}
+                    for name, _, _ in grammar_truth.GRAMMAR_LANES
+                ]
+                return _Result(rows=rows)
+            return _Result(scalar=naive)
+
+    floor, resolved = grammar_truth._grammar_events_cursor_floor(
+        _Conn(), datetime.now(timezone.utc)
+    )
+    assert resolved is True
+    assert floor is not None, "fixture did not reach the branch under test"
+    assert floor.tzinfo is not None
+    assert floor < datetime.now(timezone.utc)  # the comparison the caller makes

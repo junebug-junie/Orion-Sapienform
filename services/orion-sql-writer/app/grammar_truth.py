@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -258,6 +258,83 @@ def _verify_delete_safe(conn, *, table: str) -> tuple[bool, str]:
     return True, f"{table}_delete_is_child_safe; no incoming FK constraints found"
 
 
+# substrate_proposal_frames is not an archive either -- it is the FIRST stage of a four-stage
+# pipeline, and three later stages can still reach back into it by frame_id long after the row
+# was written:
+#
+#   proposal -> policy decision -> execution dispatch -> feedback
+#
+# Each hop has its own pending marker and partial index, added by
+# services/orion-sql-db/manual_migration_substrate_pending_markers.sql (2026-08-19). That
+# migration's own header records why a TIME window is the wrong instrument here, and says so in
+# capitals: a time bound was attempted first and reverted. Measured over 7 days at the time, the
+# dispatch->feedback hop ran p50 34.6 hours and max 11.3 DAYS behind, with 8 of 30 days entirely
+# in that regime. Any "recent rows only" cutoff strands the backlog, and strands it permanently
+# once fresh work keeps the fast path busy. Retention must not re-introduce the exact bound that
+# migration removed.
+#
+# So the floor asks the markers, not the clock: what is the oldest row any stage still owes work
+# on? Everything at or above that timestamp stays, no matter how old it is.
+#
+# WHY A PENDING MARKER IS SAFE TO FLOOR ON, WHERE A REDUCTION CURSOR WAS NOT.
+# The grammar cursor floor above deliberately does NOT ask "where is the oldest cursor", because
+# a cursor stops moving when its SOURCE goes quiet, which is indistinguishable from a stall. A
+# pending marker has no such ambiguity: it is set at insert and cleared in the same transaction
+# as the downstream write, so a pending row is unconsumed work by construction, and a quiet
+# source produces no pending rows at all rather than a stuck floor. The failure mode that does
+# remain is a leaked marker -- a row stuck pending forever would pin retention forever -- which
+# is why a binding floor logs at WARNING with the stage name and how far back it reaches, the
+# same way the cursor floor does. Live 2026-08-20, all three stages were current: oldest pending
+# was 1 / 96 / 15 rows, all under four minutes old.
+_SUBSTRATE_CHAIN_PENDING: tuple[tuple[str, str, str], ...] = (
+    ("proposal->policy", "substrate_proposal_frames", "policy_pending"),
+    ("policy->dispatch", "substrate_policy_decision_frames", "dispatch_pending"),
+    ("dispatch->feedback", "substrate_execution_dispatch_frames", "feedback_pending"),
+)
+
+
+def _substrate_chain_floor(conn: Any, time_cutoff: datetime) -> tuple[datetime | None, bool]:
+    """Oldest row any downstream substrate stage still owes work on, as (floor, resolved).
+
+    Same two-value contract as _grammar_events_cursor_floor: (None, True) means every stage is
+    caught up and the time cutoff governs; (None, False) means the question could not be
+    answered and the caller must refuse to prune.
+
+    Each probe rides the stage's partial index (idx_*_pending, 32 kB live), so this is three
+    tiny index-only scans, not three scans of a 1.7 GB table.
+    """
+    floor: datetime | None = None
+    for stage, table, marker in _SUBSTRATE_CHAIN_PENDING:
+        try:
+            # Table/column names are module constants above, never caller input.
+            oldest = conn.execute(
+                # created_at, NOT generated_at, even though the partial index is on
+                # generated_at. The delete predicate below keys on created_at, and the two
+                # columns are on different clocks: generated_at is when the stage produced the
+                # frame, created_at is when this row was written. Measured live 2026-08-20 they
+                # diverge by up to 724s on substrate_execution_dispatch_frames, and 24 policy
+                # rows have created_at strictly BEFORE generated_at. Comparing a floor from one
+                # clock against a cutoff on the other is how you delete rows you meant to keep.
+                # The pending set is tiny (1/96/15 rows live), so the index still does the
+                # narrowing and the heap fetch for created_at is negligible.
+                text(f"SELECT MIN(created_at) FROM {table} WHERE {marker}")  # noqa: S608
+            ).scalar()
+        except Exception:  # noqa: BLE001 - unresolved is a distinct outcome from "no floor"
+            logger.exception(
+                "substrate_chain_floor_probe_failed stage=%s table=%s -- refusing to prune",
+                stage,
+                table,
+            )
+            return None, False
+        if oldest is None:
+            continue
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        if floor is None or oldest < floor:
+            floor = oldest
+    return floor, True
+
+
 def _apply_bounded_table_retention(
     *,
     engine: Engine,
@@ -268,6 +345,7 @@ def _apply_bounded_table_retention(
     max_batches: int,
     max_elapsed_sec: float,
     respect_cursor_floor: bool = False,
+    floor_resolver: Callable[[Any, datetime], tuple[datetime | None, bool]] | None = None,
 ) -> GrammarRetentionState:
     """Bounded startup retention for `table`, rows older than retention_days.
 
@@ -293,9 +371,15 @@ def _apply_bounded_table_retention(
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
     time_cutoff = cutoff
-    if respect_cursor_floor:
+    # respect_cursor_floor is the grammar lane's spelling of the same idea; keeping it as a
+    # named flag rather than folding it into floor_resolver keeps every existing call site and
+    # its test unchanged.
+    resolve_floor = floor_resolver
+    if respect_cursor_floor and resolve_floor is None:
+        resolve_floor = _grammar_events_cursor_floor
+    if resolve_floor is not None:
         with engine.connect() as conn:
-            floor, resolved = _grammar_events_cursor_floor(conn, time_cutoff)
+            floor, resolved = resolve_floor(conn, time_cutoff)
         state.cursor_floor_at = floor
         if not resolved:
             # Fail safe: no floor, no prune. Retention runs every cycle, so skipping one
@@ -562,6 +646,56 @@ def apply_substrate_organ_emissions_retention(
     return state
 
 
+def apply_substrate_proposal_frames_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for substrate_proposal_frames older than retention_days.
+
+    THE ONLY UNPRUNED TABLE IN THE SUBSTRATE PIPELINE THAT HAD NO BOUND AT ALL. Live
+    2026-08-20: 474,230 rows / 1,758 MB, oldest 2026-07-23, growing ~27k rows and ~105 MB a
+    day with nothing to stop it.
+
+    Uses the plain `engine` (not `grammar_engine`), same as
+    apply_substrate_organ_emissions_retention above -- this is substrate data, not a grammar
+    lane.
+
+    Floored on the pipeline's pending markers via _substrate_chain_floor, NOT on time alone.
+    See the long comment on that function for why: three later stages reach back into this
+    table by frame_id, and the migration that introduced the markers explicitly reverted a
+    time-bounded version of this same idea. A row still owed to any stage survives regardless
+    of age.
+
+    No new index needed: idx_substrate_proposal_frames_created_at (created_at DESC) already
+    exists from manual_migration_substrate_frames_created_at_index.sql, and a DESC btree
+    serves a `created_at < :cutoff` range scan fine. Confirmed live before shipping.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=default_engine,
+        table="substrate_proposal_frames",
+        id_column="frame_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+        floor_resolver=_substrate_chain_floor,
+    )
+    _extra_retention_state["substrate_proposal_frames"] = state
+    return state
+
+
+
 def apply_grammar_traces_retention(
     retention_days: int,
     *,
@@ -783,6 +917,7 @@ _EXTRA_RETENTION_TABLES = (
     "grammar_atoms",
     "substrate_organ_emissions",
     "grammar_traces",
+    "substrate_proposal_frames",
 )
 
 
@@ -973,6 +1108,9 @@ GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     ("grammar_atoms", apply_grammar_atoms_retention),
     ("substrate_organ_emissions", apply_substrate_organ_emissions_retention),
     ("grammar_traces", apply_grammar_traces_retention),
+    # Independent of the grammar tables above -- different engine, different floor, no
+    # ordering relationship with them. Placed last only because it is newest.
+    ("substrate_proposal_frames", apply_substrate_proposal_frames_retention),
 )
 
 

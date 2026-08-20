@@ -317,6 +317,16 @@ class Settings(BaseSettings):
     # re-creates the mismatch in one direction or the other.
     grammar_traces_retention_days: int = Field(3, alias="GRAMMAR_TRACES_RETENTION_DAYS")
 
+    # substrate_proposal_frames had NO bound at all until 2026-08-20: 474,230 rows / 1,758 MB,
+    # growing ~27k rows and ~105 MB a day. 7 days keeps roughly 190k rows (~650 MB) and is a
+    # history/inspection choice, not a correctness one -- correctness is held by
+    # _substrate_chain_floor, which refuses to delete any row a later pipeline stage still owes
+    # work on regardless of how old it is. Raise this if deep proposal/feedback correlation
+    # analysis needs more than a week; it costs ~105 MB per extra day.
+    substrate_proposal_frames_retention_days: int = Field(
+        7, alias="SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS"
+    )
+
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
     # The window was never the reason these tables were 36 GB -- retention could not run

@@ -4181,6 +4181,24 @@ async def call_step_services(
                     "verb": step.verb_name,
                     **lane_opts,
                 }
+                # Real, user-facing reply telemetry. Deliberately narrow to `chat` (Juniper's
+                # actual conversation) and deliberately does NOT set logprob_probe_mode --
+                # that would route the gateway to the native-completion endpoint switch
+                # (services/orion-llm-gateway/app/llm_backend.py's
+                # _should_use_native_llamacpp_completion), which exists to dodge JSON-grammar
+                # entropy collapse for structured calls. This reply is plain text, so the
+                # existing OpenAI-compat call already supports return_logprobs natively
+                # (llm_backend.py:1135-1140) -- same endpoint, same request, no new round trip.
+                # Skipped when response_format is set: a JSON-constrained chat reply would
+                # produce the same near-zero-entropy logprobs mind's synthesis calls avoid by
+                # using native completion, and this path intentionally doesn't take that route.
+                if (
+                    llm_route == "chat"
+                    and not gateway_options.get("response_format")
+                    and getattr(settings, "cortex_chat_return_logprobs", False)
+                ):
+                    gateway_options["return_logprobs"] = True
+                    gateway_options["logprobs_top_k"] = 5
                 for _fwd_key in (
                     "structured_output_schema",
                     "structured_output_schema_name",

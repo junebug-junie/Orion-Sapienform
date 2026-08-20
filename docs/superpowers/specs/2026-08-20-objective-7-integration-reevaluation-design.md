@@ -250,6 +250,28 @@ Only after both of those land with real numbers does Objective 7's actual
 integrate-vs-stay-separate question become answerable from data — which is exactly what
 item 7's own text (`README.md:703`) already says to wait for.
 
+## Addendum, 2026-08-20 (same day): both ran, decision made
+
+1. **Clustering probe re-run**: still AMBIGUOUS, now over 153 checkable pairs (was 21) —
+   correlation-of-correlations dropped to 0.3948 (was 0.9940). Full-history top-1
+   concentration is 36.31%, in the same range as the killed drives system's own
+   documented post-fix concentration (31.65%) — not a clean improvement.
+2. **O3 blind-rater harness**: attempted, found not meaningfully runnable. All 19,417 real
+   `substrate_attention_self_model` rows ever persisted reduce to exactly 5 distinct
+   narrative strings (one fixed fallback template covering 88%, four id-substituted
+   variants of one other template) — a fixed-slot template, not free-form content. A
+   formal rater trial on 5 known templates would trivially "pass" without testing what O3
+   actually asks. Not run, to avoid a misleading result.
+
+**Decision: integration is not warranted by current data.** Concentration isn't
+demonstrably better than what this program replaced, and the one proven-correct
+instrument's narrative layer is too thin to support a real legibility claim. This
+supersedes the "not ripe yet" framing above with a real "no, not now" — a decision made
+from the two measurements this document itself named as missing, not a default. Concrete
+path back open: close the `bus_synaptic` concentration gap, enrich the AST/HOT narrative
+generator beyond a single template slot, then re-run both checks. Full write-up:
+`orion/sentience_striving_program/README.md`, §6 item 7.
+
 ## Source material
 
 - `orion/sentience_striving_program/README.md` — full charter, all sections read in full for

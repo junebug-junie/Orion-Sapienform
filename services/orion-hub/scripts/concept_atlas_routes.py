@@ -52,7 +52,13 @@ router = APIRouter(tags=["concept-atlas"])
 # on every request rather than cached.
 _GOD_NODE_TOP_N = 5
 
-_VALID_ANCHOR_SCOPES = {"orion", "juniper", "relationship", "world", "session"}
+_VALID_ANCHOR_SCOPES = {"orion", "juniper", "claude", "relationship", "world", "session"}
+
+# Extra off-slice nodes concept_atlas_network() will hydrate via
+# store.get_node_by_id() -- see that function's own comment for why. Bounds
+# worst-case work the same "generous but bounded" way as this file's other
+# caps (_GOD_NODE_TOP_N, the 300/600 node/edge limits below).
+_NETWORK_HYDRATION_MAX_EXTRA_NODES = 100
 # promotion_state is not a network-route query param per the design spec's
 # route contract (scope/min_activation/focus only); the Concept Atlas UI
 # applies its promotion_state global filter client-side against this
@@ -1004,6 +1010,42 @@ async def concept_atlas_network(
         nodes = [n for n in nodes if float(n.signals.activation.activation) >= min_act_value]
 
     node_ids = {n.node_id for n in nodes}
+
+    # --- hydrate off-slice non-concept nodes (entities, etc.) reachable via
+    # an edge whose other endpoint is a concept node already in this slice ---
+    # store.query_concept_region() only ever returns concept-kind nodes in
+    # `nodes` (see orion/substrate/store.py's read_concept_region()), so any
+    # edge endpoint not in node_ids at this point is necessarily a
+    # non-concept node -- most commonly an EntityNodeV1 mention. Without
+    # this, the AND-filter two lines below silently drops every such edge:
+    # a pre-existing gap (topic->entity `associated_with` mentions have
+    # always been invisible here -- see
+    # orion/substrate/adapters/topic_foundry.py's module docstring) that
+    # also hid this design's new Orion/Juniper/Claude landmark edges (see
+    # docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md).
+    # Guarded to only add non-concept nodes (`node_kind != "concept"`
+    # below) so this never re-admits a concept node the scope/min_activation
+    # filters above excluded on purpose -- a hydrated node is exempt from
+    # those filters by construction (it was never eligible for them), not
+    # smuggled past them. Bounded by _NETWORK_HYDRATION_MAX_EXTRA_NODES.
+    hydrated_count = 0
+    for e in edges:
+        if hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+            break
+        for candidate_id in (e.source.node_id, e.target.node_id):
+            if candidate_id in node_ids or hydrated_count >= _NETWORK_HYDRATION_MAX_EXTRA_NODES:
+                continue
+            try:
+                candidate_node = store.get_node_by_id(candidate_id)
+            except Exception as exc:  # pragma: no cover - defensive, never let a backend hiccup abort the route
+                logger.info("concept_atlas_network_hydration_lookup_failed node_id=%s error=%s", candidate_id, exc)
+                candidate_node = None
+            if candidate_node is None or getattr(candidate_node, "node_kind", None) == "concept":
+                continue
+            nodes.append(candidate_node)
+            node_ids.add(candidate_id)
+            hydrated_count += 1
+
     edges = [e for e in edges if e.source.node_id in node_ids and e.target.node_id in node_ids]
 
     focus_norm = focus.strip() if isinstance(focus, str) else ""
@@ -1102,6 +1144,7 @@ def _ingest_topic_foundry_run(
     store: Any,
     model_name: str,
     log_prefix: str,
+    landmark_concept_ids: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Core ingestion logic shared by the Orion route/scheduler step and the
     AI Town route/scheduler step below -- parameterized (2026-08-20) over
@@ -1111,6 +1154,14 @@ def _ingest_topic_foundry_run(
     pass are identical for both callers; only the destination graph and
     source model differ. See ``concept_atlas_ingest_topic_foundry`` below
     for the full original docstring this logic used to carry directly.
+
+    ``landmark_concept_ids`` (added 2026-08-20, see
+    ``docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md``)
+    is passed straight through to
+    ``map_topic_foundry_run_to_substrate()`` -- see that function's own
+    docstring. Deliberately left ``None`` by the AI Town caller: there are no
+    golden seed concepts written into the AI Town store to connect to (see
+    the design doc's non-goals).
 
     Deliberately a sync ``def`` (not ``async def``): the underlying HTTP calls
     use the blocking ``requests`` library (see ``topic_foundry_client.py``),
@@ -1267,6 +1318,7 @@ def _ingest_topic_foundry_run(
             segment_topic_map=segment_topic_map,
             mention_edges=mention_edges,
             segment_topic_id_map=segment_topic_id_map,
+            landmark_concept_ids=landmark_concept_ids,
         )
     except Exception as exc:  # pragma: no cover - the adapter itself never raises, but don't trust across the boundary
         logger.warning("%s_ingest_topic_foundry_adapter_failed run_id=%s error=%s", log_prefix, run_id, exc)
@@ -1346,6 +1398,28 @@ def _ingest_topic_foundry_run(
     }
 
 
+def _landmark_concept_ids() -> dict[str, str]:
+    """Build the ``label.lower() -> node_id`` map for the golden seed
+    concepts (Orion/Juniper/Claude), for
+    ``map_topic_foundry_run_to_substrate()``'s ``landmark_concept_ids``
+    param. Reads the seed fixture directly (``load_seed_concept_nodes()`` is
+    pure/read-only -- it does not write to any store); never writes anything.
+    Orion-graph ingestion only -- see ``_ingest_topic_foundry_run``'s
+    docstring for why the AI Town caller does not use this. Degrades to an
+    empty dict (landmark connection becomes a no-op for this call, everything
+    else proceeds normally) on any fixture read/parse problem, matching this
+    module's existing degrade-not-raise convention.
+    """
+    try:
+        from orion.substrate.seed import load_seed_concept_nodes
+
+        nodes, _edges = load_seed_concept_nodes()
+        return {str(node.label).strip().lower(): node.node_id for node in nodes if node.label}
+    except Exception as exc:  # pragma: no cover - defensive, never let a fixture bug abort ingestion
+        logger.warning("concept_atlas_landmark_concept_ids_failed error=%s", exc)
+        return {}
+
+
 @router.post("/api/substrate/concepts/ingest-topic-foundry")
 def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
     """Operator-triggered, on-demand ingestion of topic-foundry's latest
@@ -1373,6 +1447,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         store=_get_substrate_store(),
         model_name=_TOPIC_FOUNDRY_MODEL_NAME,
         log_prefix="concept_atlas",
+        landmark_concept_ids=_landmark_concept_ids(),
     )
 
 

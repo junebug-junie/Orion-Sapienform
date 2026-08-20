@@ -22,12 +22,18 @@ Wiring this adapter into a live producer/consumer/registry is explicitly out of
 scope for this phase — see the spec's Phase 6/7/8 for where that happens.
 
 Known limitation, not fixed here: `services/orion-hub/scripts/concept_atlas_routes.py`'s
-network/god-node/typed-relation-classification views all filter to
-`node_kind == "concept"` explicitly. The `EntityNodeV1` records this module now
-emits are real, written to the store, and generically visible to any consumer
-that iterates the full node set (e.g. `orion/substrate/endogenous_curiosity.py`)
--- but they will not appear in Concept Atlas's existing Hub UI until those
-routes are widened to include entity nodes, a separate follow-up.
+typed-relation-classification view still filters to `node_kind == "concept"`
+explicitly. The network view no longer does -- see the 2026-08-20 landmark
+addition below and that route's own hydration pass.
+
+Landmark connection added 2026-08-20 (see
+`docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md`):
+`landmark_concept_ids` lets a caller pass the golden seed concepts' own
+node_ids (Orion/Juniper/Claude, from `orion.substrate.seed`) so a mention that
+exact-matches one of them gets an extra `associated_with` edge straight to
+that seed node -- connecting the organically-discovered concept graph to the
+three real originating speakers of the chat corpus it's mined from, instead
+of leaving them permanently isolated.
 """
 
 from __future__ import annotations
@@ -103,6 +109,7 @@ def map_topic_foundry_run_to_substrate(
     anchor_scope: str = "world",
     subject_ref: Optional[str] = None,
     min_doc_count: int = DEFAULT_MIN_DOC_COUNT,
+    landmark_concept_ids: Optional[Mapping[str, str]] = None,
 ) -> SubstrateGraphRecordV1:
     """Convert one topic-foundry run's topic/keyword/segment output into substrate records.
 
@@ -155,6 +162,16 @@ def map_topic_foundry_run_to_substrate(
         subject_ref: optional subject reference to attach to all emitted nodes.
         min_doc_count: topics with `count` below this floor are skipped as
             noise (default 3; see `DEFAULT_MIN_DOC_COUNT`).
+        landmark_concept_ids: optional mapping of normalized-lowercase label
+            -> an already-existing seed concept node_id (typically built by a
+            caller from `orion.substrate.seed.load_seed_concept_nodes()`).
+            When a mention's normalized entity label exact-matches a key
+            here, one additional `associated_with` edge is emitted from that
+            mention's `EntityNodeV1` straight to the landmark node_id -- in
+            addition to, not instead of, the normal topic-owned mention edge.
+            Exact match only, no fuzzy/alias matching. `None` (the default)
+            is a complete no-op: zero behavior change for every existing
+            caller that doesn't pass it.
 
     Returns:
         A `SubstrateGraphRecordV1` with one `ConceptNodeV1` (+ backing
@@ -162,8 +179,11 @@ def map_topic_foundry_run_to_substrate(
         `co_occurs_with` `SubstrateEdgeV1` records between topics that share a
         segment/window, and (when `mention_edges` is supplied) one
         `EntityNodeV1` per distinct mentioned entity plus an `associated_with`
-        edge from the owning topic's concept node. Never raises — malformed or
-        empty input degrades to an empty (but valid) record.
+        edge from the owning topic's concept node (plus a second
+        `associated_with` edge to a landmark node_id, when
+        `landmark_concept_ids` is supplied and the entity's label matches).
+        Never raises — malformed or empty input degrades to an empty (but
+        valid) record.
     """
     run_id_str = str(run_id) if run_id is not None else "unknown-run"
     graph_id = f"sub-graph-topicfoundry-{run_id_str}"
@@ -193,6 +213,7 @@ def map_topic_foundry_run_to_substrate(
             anchor_scope=anchor_scope,
             subject_ref=subject_ref,
             min_doc_count=min_doc_count,
+            landmark_concept_ids=landmark_concept_ids or {},
         )
     except Exception:
         # Never raise — malformed topic-foundry data degrades to an empty,
@@ -231,6 +252,7 @@ def _build(
     anchor_scope: str,
     subject_ref: Optional[str],
     min_doc_count: int,
+    landmark_concept_ids: Mapping[str, str],
 ) -> SubstrateGraphRecordV1:
     nodes: list = []
     edges: list = []
@@ -412,6 +434,7 @@ def _build(
     # fabricates a topic link that doesn't exist.
     entity_node_ids: dict[str, str] = {}  # normalized label -> node_id, dedup within this run
     mention_pairs_seen: set[tuple[int, str]] = set()  # (topic_id, normalized label), dedup edges
+    landmark_edges_seen: set[str] = set()  # normalized label, dedup landmark edges (topic-independent)
     mention_items = list(mention_edges)[:MAX_MENTION_EDGES]
     for raw_mention in mention_items:
         segment_id = _get(raw_mention, "segment_id")
@@ -451,6 +474,32 @@ def _build(
                     label=normalized_label,
                     signals=SubstrateSignalBundleV1(confidence=mention_confidence, salience=0.0),
                     metadata={"run_id": run_id_str, "source": "orion-topic-foundry"},
+                )
+            )
+
+        # Landmark connection: if this mention's entity exact-matches a
+        # known golden seed concept (Orion/Juniper/Claude), link the entity
+        # node straight to that seed's real node_id -- topic-independent (one
+        # per distinct entity per run, not one per topic pairing), since the
+        # entity *is* the landmark regardless of which topic mentioned it.
+        landmark_node_id = landmark_concept_ids.get(entity_key)
+        if landmark_node_id and entity_key not in landmark_edges_seen:
+            landmark_edges_seen.add(entity_key)
+            edges.append(
+                SubstrateEdgeV1(
+                    source=NodeRefV1(node_id=entity_node_id, node_kind="entity"),
+                    target=NodeRefV1(node_id=landmark_node_id, node_kind="concept"),
+                    predicate="associated_with",
+                    temporal=temporal,
+                    confidence=mention_confidence,
+                    salience=0.0,
+                    provenance=make_provenance(
+                        source_kind="topic_foundry.mention_landmark",
+                        source_channel=source_channel,
+                        producer="topic_foundry_adapter",
+                        evidence_refs=[str(segment_id)],
+                    ),
+                    metadata={"run_id": run_id_str, "landmark_label": entity_key},
                 )
             )
 

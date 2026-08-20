@@ -10,22 +10,25 @@ from orion.substrate.seed import (
 from orion.substrate.store import InMemorySubstrateGraphStore
 
 
-def test_load_seed_concepts_into_store_writes_three_canonical_concepts() -> None:
+def test_load_seed_concepts_into_store_writes_four_canonical_concepts() -> None:
+    # Claude added 2026-08-20 as the fixture's 4th seed (see
+    # docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md)
+    # alongside Orion/Juniper/their relationship.
     store = InMemorySubstrateGraphStore()
 
     written = load_seed_concepts_into_store(store)
-    assert written == 3
+    assert written == 4
 
     result = store.query_concept_region(limit_nodes=32, limit_edges=64)
     assert result.query_kind == "concept_region"
 
     labels = {node.label for node in result.slice.nodes}
-    assert labels == {"Orion", "Juniper", "Orion-Juniper relationship"}
+    assert labels == {"Orion", "Juniper", "Orion-Juniper relationship", "Claude"}
 
     scopes = {node.anchor_scope for node in result.slice.nodes}
-    assert scopes == {"orion", "juniper", "relationship"}
+    assert scopes == {"orion", "juniper", "claude", "relationship"}
 
-    assert len(result.slice.nodes) == 3
+    assert len(result.slice.nodes) == 4
     for node in result.slice.nodes:
         assert node.promotion_state == "canonical"
         assert node.node_kind == "concept"
@@ -62,6 +65,8 @@ def test_load_seed_concepts_into_store_wires_relationship_edges() -> None:
         "sub-concept-seed-juniper",
         "associated_with",
     ) in edge_pairs
+    assert ("sub-concept-seed-claude", "sub-concept-seed-orion", "associated_with") in edge_pairs
+    assert ("sub-concept-seed-claude", "sub-concept-seed-juniper", "associated_with") in edge_pairs
 
 
 def test_load_seed_concept_nodes_missing_file_degrades_gracefully() -> None:

@@ -11,7 +11,7 @@ services:
 
     environment:
       - LOG_LEVEL=${LOG_LEVEL}
-      - NODE_NAME=${NODE_NAME:-athena}
+      - NODE_NAME=${NODE_NAME:-circe}
 
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
@@ -26,10 +26,14 @@ services:
 
     volumes:
       # Path convention only, in this patch -- nothing is downloaded here
-      # yet (README.md "Model cache dir convention"). No GPU reservation
-      # (`gpus: all`) in this patch either -- no model is loaded, so there
-      # is nothing for a GPU to do.
+      # yet (README.md "Model cache dir convention").
       - /mnt/storage-warm/models/diffusion:/mnt/storage-warm/models/diffusion
+
+    # GPU reservation added with the Circe agent-lane assignment (2026-08-20)
+    # so the card is already visible to this container ahead of Patch 2's
+    # real model load -- CUDA_VISIBLE_DEVICES above still scopes it to one
+    # physical device. No model reads this yet in this patch; see README.md.
+    gpus: all
 
     ports:
       - "${HOST_PORT}:6700"

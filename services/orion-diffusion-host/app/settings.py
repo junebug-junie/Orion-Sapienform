@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     SERVICE_NAME: str = "diffusion-host"
     SERVICE_VERSION: str = "0.1.0"
-    NODE_NAME: str = "athena"
+    NODE_NAME: str = "circe"
     LOG_LEVEL: str = "INFO"
 
     # Bus. Declared but not consumed in this patch -- README.md.

@@ -62,10 +62,14 @@ Ownership and reuse, as decided:
   worker. `orion-vision-host` already does BLIP2 captioning with real VRAM-aware scheduling
   (`VISION_DEVICE_STRATEGY`, per-GPU inflight caps, soft/hard VRAM floors) — existing-mechanism
   check passed, no reason to duplicate it.
-- **GPU**: a new, 4th physical V100 32GB on Circe. Decoupled from Patch 1 — Patch 1's service
-  skeleton doesn't require the new card to exist yet. What that card will eventually share with
-  (a "world model" component, still undefined — no such service exists in this repo today) is out
-  of scope for this document and doesn't block anything below.
+- **GPU**: originally scoped as a new, 4th physical V100 32GB on Circe, decoupled from Patch 1.
+  Superseded 2026-08-20 (per Juniper): instead of waiting on a new card, this service claims
+  Circe's existing `orion-llamacpp-host` "agent lane" slot — port 8014, `CUDA_VISIBLE_DEVICES=2` —
+  vacated by stopping the `atlas-agent` llama.cpp worker there. See
+  `services/orion-diffusion-host/README.md` for the exact assignment and stop/start sequence.
+  What that GPU will eventually share with (a "world model" component, still undefined — no such
+  service exists in this repo today) is out of scope for this document and doesn't block anything
+  below.
 
 ## 4. Trigger and capacity gate
 
@@ -142,8 +146,10 @@ eventually built.
 - Context-seeding logic (which specific recent-activity/chat/dream sources feed a step, and how)
   — Patch 3.
 - Chain orchestration and the `prior_description` continuity wiring — Patch 2.
-- The 4th Circe GPU's physical provisioning, `node_catalog.yaml` entry, and whatever "world model"
-  turns out to mean — separate, later, undefined.
+- A `node_catalog.yaml` entry tracking this specific GPU-lane reassignment (that file only tracks
+  coarse per-node capability flags, not per-service device/port bindings — no existing convention
+  in this repo to extend for that granularity) — and whatever "world model" turns out to mean —
+  separate, later, undefined.
 - Any UI/debug surface for viewing generated images.
 
 ## 9. Acceptance checks

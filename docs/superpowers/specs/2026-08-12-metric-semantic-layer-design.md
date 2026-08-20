@@ -10,11 +10,13 @@ shipped.
 
 **Status:** phases 1, 2, and 4 shipped 2026-08-12/13. **Phase 3 shipped
 2026-08-19** — see its section below for what actually got built. **Phase 5
-partially shipped 2026-08-19** — two candidates only (`attention_self_model.v1`
+partially shipped 2026-08-19/20** — two candidates only (`attention_self_model.v1`
 scalar fields, `l7_l11_ladder` throughput); see "Phase 5 (2026-08-19)" below.
 The general "any surface, any URN" version remains deliberately deferred —
 that per-surface data-source question is still bigger than the two cases
-solved here.
+solved here. **Commit-time enforcement gate shipped 2026-08-20** — see
+"Commit-time enforcement gate" below; requires re-running
+`scripts/install_git_safety_hooks.sh .` after merge to actually take effect.
 
 ## Arsonist summary
 
@@ -518,6 +520,119 @@ producer signals and 4 ruled-out-with-reason signals named above, and the
 `mood_arc_encoder.v1`, `phi_heuristic.valence`, `phi_intrinsic_reward.v1`.
 That last group is a real gap, not a decision — see the 2026-08-20
 correction above.
+
+### Commit-time enforcement gate (2026-08-20)
+
+Phase 3's edit-time nudge (`scripts/hooks/metric_lineage_nudge.py`) is
+informational only, by design — it fails open and never blocks. Real evidence
+that this is not sufficient on its own arrived the same day, from an
+unrelated agent session working item 5 of this same design doc: the
+graphify PreToolUse "MANDATORY" reminder fired on nearly every tool call for
+a whole session, and the agent acted on it exactly once (one `graphify
+query`, an unhelpful result) before falling back to `rg`/`Read` for the rest
+of the investigation and never revisiting `graphify explain`/`graphify path`.
+A reminder that fires constantly becomes noise an agent routes around,
+regardless of how it's worded.
+
+`scripts/check_metric_dead_wiring.py`, wired as Gate 4 in
+`scripts/git_hooks/pre-commit`, does not depend on an agent noticing,
+retrying, or reading a hint. It diffs `git diff --cached`, and if a **new**
+(`+`) line in a non-test file names one of the handful of tokens that
+currently have a registered phase-5 liveness source
+(`orion.metrics.liveness.has_registered_source()`, read live off
+`build_graph()` rather than hand-duplicated), it re-checks that metric's
+liveness against real Postgres right then and **blocks the commit** if the
+verdict isn't clean (`dead` / `never_produced` / `ratchet_suspect` — reusing
+`channel_glossary.CLEAN_VERDICTS`, not a hand-picked subset). Fails open on
+anything it doesn't understand: DB unreachable, no token match (the common
+case — near-zero cost, no DB connection opened), any internal error. Escape
+hatch: `ORION_ALLOW_DEAD_METRIC_WIRE=1`, same convention as this repo's other
+gates. 29 tests in `scripts/test_check_metric_dead_wiring.py`; also
+live-verified end-to-end against real Postgres (token detection, connection
+open/close, block message, escape hatch, and the DB-unreachable fail-open
+path — only the liveness verdict itself was mocked, to force the dead-path
+deterministically without corrupting live data).
+
+**Round 1 review** (before this gate's very first commit) found and fixed:
+raw-text token matching replaced with `orion.metrics.consumers._MetricVisitor`
+(the same AST classifier `scan_repo()` already uses) after review flagged
+that a bare-word regex match on `confidence` — a common attribute name —
+would false-positive on comments, log strings, and docstrings once that
+metric ever actually went unclean; `conn.close()` could itself raise and
+escape uncaught; `--diff-filter=ACM` silently skipped a file that was both
+renamed and modified in the same commit (fixed to `ACMR`, live-verified with
+`git mv`); `--json` printed nothing at all on every early-return path
+instead of valid JSON; two independent hand-copies of the pydantic/psycopg2
+interpreter-fallback chain (one pre-existing in the orion-env-settings-gate,
+one new here) were factored into one shared shell function so a future fix
+can't apply to only one of them.
+
+While live-testing round 1's fixes (not from review — caught by actually
+running the real `sh` hook, not just the Python driver, per the general
+"a crashed check must never block an unrelated commit" contract this whole
+gate exists to uphold), a nested `"""..."""` inside this module's own
+docstring turned out to break the file's parse entirely, and the shell
+wrapper treats any nonzero/crash exit as "the gate found something" — so a
+syntax error in the gate's OWN code was silently blocking every unrelated
+commit. Fixed by removing the nested quoting.
+
+**Round 2 review** found the AST switch from round 1 had accepted every
+`_MetricVisitor` hit kind, including `KIND_LITERAL` (any bare string
+constant) and the `WRITE_KINDS` group (`x["metric"] = ...`,
+`Model(metric=0.5)`, `F(channel="metric")`) — the latter is how you'd
+actually *revive* a dead metric, so blocking on it was backwards, not
+protective; fixed by filtering to
+`orion.metrics.consumers.HIGH_CONFIDENCE_KINDS`, matching this module's own
+docstring claim about what it detects. The hand-rolled `_is_test_path()`
+regex disagreed with `orion.metrics.consumers._is_test_path()` (already
+imported into the same module) on `*_test.py`-suffixed files — removed in
+favor of importing the one `scan_repo()` itself uses. A live drive of the
+real hook also found `build_graph()`'s pydantic import ran on every commit
+with anything staged at all, not just ones touching Python files — fixed
+with a cheap `.py`-file pre-check before the import. And the graph-node/
+token-detection stretch of `main()` had no blanket exception guard (only
+individual known failure points did) — fixed with one wrapping try/except.
+
+**Round 3 review** found the *listing* of staged files itself
+(`_staged_files()`) was still unguarded in `main()` — the one call site the
+round-2 exception wrap didn't reach — fixed the same way. `git rev-parse
+--show-toplevel` was being recomputed up to 5 times per commit across the
+three gates and the shared interpreter-resolver function for the identical
+value; consolidated to one shared variable, computed once. And matching is
+still by bare string value with no type/schema awareness — a genuinely
+unrelated `result.confidence` on some other object still matches — left
+explicitly acknowledged rather than fixed: real type-aware resolution is a
+much larger feature (proper static type inference) than a lightweight
+commit gate should attempt, and the failure direction is the safe one (an
+unnecessary DB round-trip or a wrong block, trivially overridden with the
+escape hatch — never a missed real one).
+
+Three findings across all rounds were judged lower-priority and accepted
+rather than fixed, matching this document's own precedent for the
+underlying liveness module's round-3 review: the
+`ORION_ALLOW_DEAD_METRIC_WIRE=1` escape hatch is all-or-nothing per commit
+rather than scoped to the specific token that triggered it (every other
+gate in this repo's `pre-commit` has the same all-or-nothing shape, so
+scoping just this one would be an inconsistency, not an improvement);
+`build_graph()`'s ~1s cost is not cached per-commit (a correctness-safe
+caching layer would need to track exactly which registry files
+`_resolve_source_kind()` depends on, and is real scope beyond this patch);
+and `find_new_token_references()` spawns 2 git subprocesses per staged
+non-test `.py` file rather than one batched pass (harmless at this repo's
+normal commit size, real only for a mass-rename-style commit).
+
+Deliberately narrow, matching phase 5's own scoping: only the 5
+`attention_self_model.v1` scalar fields and `l7_l11_ladder` can ever trigger
+this today — every other metric name is silently ignored, honestly, not
+asserted clean. Generalizing to all registered metrics is blocked on the same
+"where does the live sample come from" question phase 5 itself deferred.
+
+**Requires an operator action to activate**, not automatic on merge: hooks
+live in git's shared common dir across every worktree of this repo, and only
+get refreshed to a checked-out branch's content when
+`scripts/install_git_safety_hooks.sh .` is re-run. Until that happens after
+this merges, the gate exists in the repo but isn't live for any worktree's
+commits yet.
 
 ### Decisions taken (2026-08-12)
 

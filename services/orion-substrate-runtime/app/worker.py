@@ -1281,16 +1281,31 @@ class BiometricsSubstrateWorker:
         self._last_perception_surprise_n = result.baseline.surprise.n
         if result.score is not None:
             self._last_perception_prediction_error = result.score
+            # raw_surprise + the scalar EWMA baseline it's z-scored against,
+            # logged alongside the final score -- added 2026-08-20 after a
+            # live-data check on a physically static camera showed ~20-25%
+            # of ticks crossing endogenous_curiosity.py's min_error=0.55
+            # threshold with nothing actually changing in frame. Without
+            # this, the only way to tell "the raw magnitude really is that
+            # noisy" from "the z-score stage is mis-calibrated" was to
+            # re-derive raw_surprise by hand from score * SATURATION, which
+            # is a dead end for every tick that pinned at score=1.0.
             logger.info(
-                "substrate_perception_prediction_error_scored stream_id=%s score=%.3f n=%d",
+                "substrate_perception_prediction_error_scored stream_id=%s score=%.3f "
+                "raw=%.5f surprise_mean=%.5f surprise_var=%.7f n=%d",
                 stream_id,
                 result.score,
+                result.raw_surprise,
+                result.baseline.surprise.ewma,
+                result.baseline.surprise.variance,
                 result.baseline.n,
             )
         else:
             logger.info(
-                "substrate_perception_prediction_error_baseline_seeded stream_id=%s n=%d",
+                "substrate_perception_prediction_error_baseline_seeded stream_id=%s "
+                "raw=%s n=%d",
                 stream_id,
+                f"{result.raw_surprise:.5f}" if result.raw_surprise is not None else "none",
                 result.baseline.n,
             )
 

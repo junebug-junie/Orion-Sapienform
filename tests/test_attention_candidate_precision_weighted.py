@@ -14,6 +14,7 @@ from orion.attention.field_attention.candidate_precision_weighted import (
     PRECISION_VARIANCE_FLOOR,
     PrecisionEwmaBaseline,
     advance_precision_baseline,
+    cross_domain_variance_floor,
     normalize_across_targets,
     precision_weighted_salience,
     precision_weighted_salience_from_baseline,
@@ -300,3 +301,153 @@ def test_advance_and_score_synthetic_regime_shift_no_permanent_floor_pinning() -
     assert shifted_result.variance_floored is False
     assert shifted_result.variance > calm_result.variance
     assert baseline.observation_count == 15 + 8  # real cumulative count, not reset
+
+
+class TestCrossDomainVarianceFloor:
+    """2026-08-20 fix, Sentience Striving Program item 4: replaces the single
+    global `NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE` floor with one derived
+    live from a target's real competing siblings this tick -- see
+    `cross_domain_variance_floor`'s own docstring for the live incident
+    (`node:substrate.route` winning goal-provenance dominance by construction)
+    this fixes. Uses real live-observed magnitudes from that investigation
+    (2026-08-20, `substrate_node_prediction_error_baseline`) as fixtures, not
+    synthetic round numbers, so the test pins the actual bug rather than an
+    idealized version of it."""
+
+    def _baseline(self, *, variance: float, observation_count: int = 1000) -> PrecisionEwmaBaseline:
+        return PrecisionEwmaBaseline(
+            ewma=0.1, variance=variance, observation_count=observation_count, last_value=0.1
+        )
+
+    def test_reproduces_the_live_incident_route_no_longer_dwarfs_everyone(self) -> None:
+        """The exact live values pulled 2026-08-20: route's real variance had
+        underflowed to ~2.9e-39 while its four siblings sat at 0.0127-0.193.
+        Under the old fixed 1e-5 floor, route's precision (1/1e-5=100,000) beat
+        every sibling's organic precision (~5-79) by 1,000x+. Under the new
+        floor, route's effective floor should land at the siblings' own median
+        variance instead, bringing its precision back into the same order of
+        magnitude as its real competitors."""
+        baselines = {
+            "node:substrate.route": self._baseline(variance=2.9e-39),
+            "node:substrate.biometrics": self._baseline(variance=0.0135),
+            "node:substrate.bus_synaptic": self._baseline(variance=0.0127),
+            "node:substrate.execution": self._baseline(variance=0.117),
+            "node:substrate.chat": self._baseline(variance=0.193),
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "node:substrate.route", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        # median of the OTHER four (0.0127, 0.0135, 0.117, 0.193) = (0.0135+0.117)/2
+        assert floor == pytest.approx((0.0135 + 0.117) / 2.0)
+        old_precision = 1.0 / NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        new_precision = 1.0 / floor
+        assert new_precision < old_precision / 1000  # the dwarfing is actually gone
+
+    def test_excludes_the_target_itself_from_its_own_floor(self) -> None:
+        """A target's floor must come from its competitors, not partly from
+        itself -- otherwise an unusually-quiet target could marginally suppress
+        its own floor."""
+        baselines = {
+            "a": self._baseline(variance=1e-9),  # would corrupt its own median if included
+            "b": self._baseline(variance=0.02),
+            "c": self._baseline(variance=0.04),
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "a", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        assert floor == pytest.approx(0.03)  # median of {0.02, 0.04}, "a" excluded
+
+    def test_falls_back_to_global_constant_with_no_real_competitors(self) -> None:
+        """Cold start / every sibling at zero observations: no live data to
+        derive a better floor from, so this must fall back to the original
+        global constant rather than inventing a value from nothing."""
+        baselines = {
+            "a": self._baseline(variance=1e-9),
+            "b": PrecisionEwmaBaseline(),  # observation_count=0, cold start
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "a", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        assert floor == NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+
+    def test_never_floors_below_the_global_constant(self) -> None:
+        """If every real competitor is itself unusually quiet (median below the
+        global floor), the global floor still wins -- this function only ever
+        raises the effective floor above the global constant, never lowers it."""
+        baselines = {
+            "a": self._baseline(variance=1e-9),
+            "b": self._baseline(variance=1e-8),
+            "c": self._baseline(variance=1e-7),
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "a", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        assert floor == NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+
+    def test_odd_number_of_competitors_uses_true_median(self) -> None:
+        baselines = {
+            "a": self._baseline(variance=1e-9),
+            "b": self._baseline(variance=0.01),
+            "c": self._baseline(variance=0.05),
+            "d": self._baseline(variance=0.09),
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "a", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        assert floor == pytest.approx(0.05)
+
+    def test_correlated_degeneracy_falls_back_instead_of_reproducing_the_bug(self) -> None:
+        """Code review, 2026-08-20: if a MAJORITY of a target's real siblings are
+        themselves degenerate (at/below min_variance) at the same tick -- a real
+        possibility, not hypothetical: the same near-constant-signal mechanism
+        that flattened `node:substrate.route` can flatten any domain during a
+        correlated quiet period, e.g. a deploy freeze -- a plain median would
+        itself be degenerate, and `max(min_variance, degenerate_median)` would
+        reproduce the exact 100,000-precision pathology this function exists to
+        fix. 3 of 4 siblings degenerate here (the reviewer's exact scenario):
+        without the guard, median of the sorted 4 lands on two degenerate
+        values and stays degenerate. With the guard, this must fall back to the
+        global constant instead."""
+        baselines = {
+            "route": self._baseline(variance=2.9e-39),
+            "sib1": self._baseline(variance=1e-9),
+            "sib2": self._baseline(variance=1e-8),
+            "sib3": self._baseline(variance=1e-7),
+            "healthy": self._baseline(variance=0.1),  # the lone real one
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "route", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        assert floor == NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE  # fallback, not a degenerate median
+
+    def test_exact_tie_of_degenerate_and_real_siblings_also_falls_back(self) -> None:
+        """A 2-of-4 tie is not a trustworthy majority either -- this must not
+        silently trust a coin-flip split between real and degenerate siblings."""
+        baselines = {
+            "route": self._baseline(variance=2.9e-39),
+            "sib1": self._baseline(variance=1e-9),
+            "sib2": self._baseline(variance=1e-8),
+            "healthy1": self._baseline(variance=0.05),
+            "healthy2": self._baseline(variance=0.1),
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "route", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        assert floor == NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+
+    def test_strict_majority_of_real_siblings_still_derives_a_floor(self) -> None:
+        """3 of 4 siblings real (the mirror of the degenerate-majority case) must
+        still derive a live floor, not fall back -- the guard should only trip
+        when degenerate siblings are the majority, not whenever any exist."""
+        baselines = {
+            "route": self._baseline(variance=2.9e-39),
+            "sib1": self._baseline(variance=1e-9),  # the lone degenerate one
+            "healthy1": self._baseline(variance=0.02),
+            "healthy2": self._baseline(variance=0.05),
+            "healthy3": self._baseline(variance=0.1),
+        }
+        floor = cross_domain_variance_floor(
+            baselines, "route", min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+        )
+        # median of {1e-9, 0.02, 0.05, 0.1} = (0.02+0.05)/2
+        assert floor == pytest.approx((0.02 + 0.05) / 2.0)

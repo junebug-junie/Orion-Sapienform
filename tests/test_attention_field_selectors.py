@@ -223,13 +223,22 @@ def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max
         "node:substrate.execution": [0.02, 0.03, 0.02, 0.03, 0.95],
     }
     from orion.attention.field_attention.candidate_precision_weighted import (
+        cross_domain_variance_floor,
         precision_weighted_salience_from_baseline,
     )
 
     baselines = {k: _baseline(v) for k, v in histories.items()}
+    # 2026-08-20: use the same cross-domain floor select_node_targets() itself
+    # now applies (see that function's docstring for why the old flat global
+    # floor was replaced) -- not the old flat NODE_TARGET_PREDICTION_ERROR_MIN_
+    # VARIANCE, which would predict the pre-fix winner and no longer matches
+    # what select_node_targets actually computes.
     raw = {
         k: precision_weighted_salience_from_baseline(
-            b, min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+            b,
+            min_variance=cross_domain_variance_floor(
+                baselines, k, min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+            ),
         ).salience
         for k, b in baselines.items()
     }

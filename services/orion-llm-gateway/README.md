@@ -201,11 +201,12 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > Atlas Tailscale node itself is offline for good). `metacog`/`quick`/`quick_background`
 > below have been repointed from Atlas's old IP (`100.121.214.30`) to Circe -- confirmed
 > live before the fix that every call through those three routes was hanging up to 700s
-> against a dead host instead of failing. `quick`/`quick_background` -> `circe-worker-fast-1`
-> (port 8013) is deployed and confirmed. `metacog` -> `circe-worker-2` (port 8012) is a
-> URL/host placeholder only as of this note -- the replacement model/profile was not yet
-> decided, so nothing may be listening there yet. Check `GET /routes` before assuming
-> `metacog` is live.
+> against a dead host instead of failing. Both replacement workers are now deployed and
+> confirmed live via `GET /routes` (all six routes report `status: "up"`):
+> `quick`/`quick_background` -> `circe-worker-fast-1` (port 8013, GPU 4, Qwen3-8B Q4_K_M,
+> `qwen3-8b-q4km-v100-16gb-balanced`); `metacog` -> `circe-worker-2` (port 8012, GPU 3,
+> Qwen3-8B Q5_K_M, `qwen3-8b-q5km-v100-16gb-atlas-metacog-16k` -- single-GPU, not the
+> 2xGPU qwen3-30b profile that shares the "atlas-metacog" name prefix).
 
 ### Route table example (default: split agent mode)
 ```bash

@@ -46,7 +46,6 @@ from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.biometrics import BiometricsClusterV1
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
-from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 
 
 class Cadence(str, Enum):
@@ -350,25 +349,45 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
     ),
     InnerStateSignal(
         signal_id="phi_intrinsic_reward.v1",
-        schema=PhiIntrinsicRewardV1,
+        schema=None,
         producer_service="orion-spark-introspector",
         cadence=Cadence.OFFLINE_TRAINED,
         composition_status=CompositionStatus.COMPOSED,
         cognition_consumers=(),
         notes=(
-            "RETIRED 2026-08-21: dominant_node/dominant_node_reason removed from "
-            "this schema, from SparkStateSnapshotV1, and from MoodArcCorpusRowV1 -- "
-            "their sole producer, orion-spark-introspector's "
-            "_dominant_hardware_node(), was deleted along with the rest of that "
-            "service (2026-07-28, \"retire orion-spark-introspector\"). Took "
-            "spark_embodiment_narrative (services/orion-cortex-exec/app/"
-            "spark_narrative.py, the last cognition consumer of this signal) and "
-            "the metacog draft prompt's whole EMBODIMENT section with it -- both "
-            "had rendered nothing but a fixed constant string since the "
-            "2026-07-28 retirement, which is why this signal's own producer_service "
-            "no longer exists in services/ at all. This entry is left in the "
-            "registry (not deleted) as a historical record; producer_service is "
-            "now permanently unreachable.\n\n"
+            "RETIRED 2026-08-21, FULLY (schema class deleted, not just its "
+            "dominant_node/dominant_node_reason fields -- see below). The "
+            "metric-lineage orphan gate caught this: removing the "
+            "spark_embodiment_narrative declared-consumer reference below "
+            "exposed that phi/delta_phi/recon_error/delta_recon_error had no "
+            "OTHER consumer either. PhiIntrinsicRewardV1 and its AttributionV1 "
+            "companion class are deleted from orion/schemas/telemetry/"
+            "phi_encoder.py; schema=None here because there is no longer a "
+            "class to point to. Also removed: the SchemaRegistry entries "
+            "(orion/schemas/registry.py), orion-sql-writer's PhiRewardSQL model, "
+            "its MODEL_MAP/DEFAULT_ROUTE_MAP entries, its "
+            "_normalize_phi_reward_payload() write path, and the still-live "
+            "orion:self:phi_reward bus subscription in "
+            "SQL_WRITER_SUBSCRIBE_CHANNELS (nothing had published to it since "
+            "2026-07-28, but the subscription itself was still active -- a "
+            "channel with no incoming traffic is inert, not gone). The "
+            "Postgres phi_rewards TABLE itself (any historical rows) was left "
+            "untouched -- dropping tables needs explicit operator approval, "
+            "not a code-cleanup PR.\n\n"
+            "Prior pass (same day, earlier commit): dominant_node/"
+            "dominant_node_reason removed from this schema, from "
+            "SparkStateSnapshotV1, and from MoodArcCorpusRowV1 -- their sole "
+            "producer, orion-spark-introspector's _dominant_hardware_node(), "
+            "was deleted along with the rest of that service (2026-07-28, "
+            "\"retire orion-spark-introspector\"). Took spark_embodiment_narrative "
+            "(services/orion-cortex-exec/app/spark_narrative.py, the last "
+            "cognition consumer of this signal) and the metacog draft prompt's "
+            "whole EMBODIMENT section with it -- both had rendered nothing but "
+            "a fixed constant string since the 2026-07-28 retirement, which is "
+            "why this signal's own producer_service no longer exists in "
+            "services/ at all. This entry is left in the registry (not "
+            "deleted) as a historical record; producer_service is now "
+            "permanently unreachable.\n\n"
             "History: 2026-07-22, spark_phi_narrative deleted (see "
             "phi_heuristic.valence's note above) -- spark_embodiment_narrative was "
             "the only surviving cognition consumer of this signal's Phase 3 "

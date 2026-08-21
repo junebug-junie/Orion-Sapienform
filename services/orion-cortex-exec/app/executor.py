@@ -85,10 +85,6 @@ from .recall_utils import (
 )
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
-from .spark_narrative import (
-    spark_embodiment_hint,
-    spark_embodiment_narrative,
-)
 from .chat_stance import (
     build_chat_stance_debug_payload,
     build_chat_stance_inputs,
@@ -184,7 +180,6 @@ _SYSTEM_TELEMETRY_KEYS = {
 _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "context_summary",
     "spark_state_json",
-    "spark_embodiment_narrative",
     "turn_effect_json",
     "recent_turn_effect_alerts_json",
     "turn_effect_policy_json",
@@ -1473,8 +1468,6 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
         "trigger_upstream_json": "{}",
         "context_summary": "Context missing.",
         "spark_state_json": "{}",
-        "spark_embodiment_narrative": "",
-        "embodiment_hint": None,
     }
     for k, v in defaults.items():
         if k not in render_ctx:
@@ -3827,8 +3820,6 @@ async def call_step_services(
 
                             if spark_snap:
                                 # Provide prompt-ready vars
-                                ctx["embodiment_hint"] = spark_embodiment_hint(spark_snap)
-                                ctx["spark_embodiment_narrative"] = spark_embodiment_narrative(spark_snap)
                                 ctx["spark_state_json"] = spark_snap.model_dump_json()
 
                                 metadata = spark_snap.metadata if isinstance(spark_snap.metadata, dict) else {}

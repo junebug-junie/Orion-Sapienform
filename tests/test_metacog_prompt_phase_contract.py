@@ -151,7 +151,6 @@ def test_draft_template_renders_trigger_upstream_json_with_jinja():
         "recent_turn_effect_alerts_json": "[]",
         "turn_effect_policy_json": "{}",
         "turn_effect_explanations_json": "{}",
-        "spark_embodiment_narrative": "",
         "metacog_biometrics_cue": "",
         "metacog_substrate_cue": "",
     }

@@ -454,7 +454,7 @@ from orion.schemas.self_study import (
 )
 from orion.schemas.telemetry.inner_state import InnerFeatureV1, InnerStateFeaturesV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
-from orion.schemas.telemetry.phi_encoder import PhiEncoderManifestV1, PhiIntrinsicRewardV1
+from orion.schemas.telemetry.phi_encoder import PhiEncoderManifestV1
 from orion.schemas.telemetry.reasoning import ReasoningActivityV1, ReasoningCallV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
@@ -776,7 +776,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MoodArcCorpusRowV1": MoodArcCorpusRowV1,
     "MoodArcEncoderManifestV1": MoodArcEncoderManifestV1,
     "PhiEncoderManifestV1": PhiEncoderManifestV1,
-    "PhiIntrinsicRewardV1": PhiIntrinsicRewardV1,
     "ReasoningCallV1": ReasoningCallV1,
     "ReasoningActivityV1": ReasoningActivityV1,
     "SparkCandidateV1": SparkCandidateV1,
@@ -1361,10 +1360,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PhiEncoderManifestV1": SchemaRegistration(
         model=PhiEncoderManifestV1,
         kind="self.phi_encoder.manifest.v1",
-    ),
-    "PhiIntrinsicRewardV1": SchemaRegistration(
-        model=PhiIntrinsicRewardV1,
-        kind="self.phi_reward.v1",
     ),
     "ReasoningCallV1": SchemaRegistration(
         model=ReasoningCallV1,

@@ -824,10 +824,13 @@ channels:
   # orion-sql-writer/orion-hub had real reader code (services/orion-sql-
   # writer/app/models/phi_reward.py, worker.py routing) but nothing they
   # read this FOR (spark_embodiment_narrative,
-  # services/orion-cortex-exec/app/spark_narrative.py) survives the sole
-  # producer's deletion either -- not touched here, flagged as a possible
-  # follow-up cleanup, not a live bug (a route with no incoming traffic is
-  # inert, not broken).
+  # services/orion-cortex-exec/app/spark_narrative.py) survived the sole
+  # producer's deletion either. Follow-up done 2026-08-21: dominant_node/
+  # dominant_node_reason removed from PhiIntrinsicRewardV1/SparkStateSnapshotV1/
+  # MoodArcCorpusRowV1, spark_narrative.py deleted, executor.py wiring and the
+  # metacog draft prompt's EMBODIMENT section removed. orion-sql-writer's
+  # worker.py routing for this dead channel is untouched -- a route with no
+  # incoming traffic is inert, not broken, and out of scope for this cleanup.
 
   - name: "orion:cognition:reasoning_call"
     kind: "telemetry"

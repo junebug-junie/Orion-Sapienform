@@ -43,6 +43,11 @@ of four composition statuses:
   (`node:atlas`/`node:circe` alternating as `capability:llm_inference`'s real
   GPU contention winner, 81.7%/18.3% split over a 295-tick window -- see
   `docs/notes/2026-07-12-phase4-attention-provenance-crosscheck.md`).
+  RETIRED 2026-08-21: all of the above -- the two fields, `spark_narrative.py`,
+  and the metacog prompt's EMBODIMENT section -- were removed. `orion-spark-
+  introspector` (the sole producer) was deleted 2026-07-28; `dominant_node`
+  had already been unconditionally null since 2026-07-22, so every render
+  since the retirement was a fixed constant string, not live signal.
 - `SHADOW` -- real, live, deliberately **not** composed, with a required,
   stated reason (`shadow_reason`). **Two entries hold this status as of
   2026-08-13**: `attention_broadcast_projection.v1` and

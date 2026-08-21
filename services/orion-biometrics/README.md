@@ -60,7 +60,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `BIOMETRICS_INDUCTION_CHANNEL` | `orion:biometrics:induction` | Induction publish channel. |
 | `BIOMETRICS_CLUSTER_CHANNEL` | `orion:biometrics:cluster` | Cluster publish channel (hub mode). |
 | `BIOMETRICS_MODE` | `agent` | `agent` (node), `hub` (aggregate), or `both`. |
-| `CLUSTER_ROLE_WEIGHTS` | `{"atlas":0.7,"athena":0.3,"other":0.5}` | Role weighting for cluster aggregate. |
+| `CLUSTER_ROLE_WEIGHTS` | `{"circe":0.7,"athena":0.3,"other":0.5}` | Role weighting for cluster aggregate. circe inherited atlas's weight 2026-08-21 (atlas decommissioned; circe is now the fleet's dominant, always-up GPU node). |
 | `THERMAL_MIN_C` | `50.0` | Temperature floor for normalization. |
 | `THERMAL_MAX_C` | `85.0` | Temperature ceiling for normalization. |
 | `DISK_BW_MBPS` | `200.0` | Disk bandwidth scale (MB/s). |

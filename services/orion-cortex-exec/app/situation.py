@@ -11,6 +11,7 @@ from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from .perception_reader import fetch_latest_percept, percept_age_seconds
+from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.schemas.situation import (
     AgendaContextV1,
     ConversationPhaseContextV1,
@@ -37,8 +38,12 @@ _LOCK = threading.Lock()
 _SITUATION_CACHE: dict[str, tuple[datetime, SituationBriefV1, SituationPromptFragmentV1]] = {}
 _WEATHER_CACHE: dict[str, tuple[datetime, EnvironmentContextV1]] = {}
 _RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
-_SESSION_LAST_USER_TURN: dict[str, datetime] = {}
-_SESSION_LAST_ORION_TURN: dict[str, datetime] = {}
+# NOTE: session turn-timestamp state (_SESSION_LAST_USER_TURN /
+# _SESSION_LAST_ORION_TURN, formerly in-process dicts here) now lives in
+# Redis via session_turn_phase.py -- see that module's docstring for why.
+# _SITUATION_CACHE/_WEATHER_CACHE/_RUNTIME_CACHE above are unaffected: they
+# are legitimate per-process TTL caches for external calls with no
+# cross-process consistency requirement, not the bug this fixes.
 
 
 @dataclass
@@ -127,7 +132,34 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
     )
 
 
-def _presence_cache_fingerprint(ctx: dict[str, Any]) -> str:
+def _presence_cache_fingerprint(ctx: dict[str, Any], cfg: SituationSettings) -> str:
+    """Fingerprint of the presence-relevant fields that should bust the
+    situation cache when they meaningfully change.
+
+    MUST be idempotent under executor.py's own `ctx["presence_context"] =
+    situation_brief.get("presence")` self-mutation (executor.py
+    ~3029, `call_step_services`), which round-trips this function's OWN
+    prior *output* back in as if it were fresh caller *input* on the
+    second+ service iteration of the same step within one turn. That means
+    every default this function applies has to match `_presence_from_ctx`'s
+    defaults byte-for-byte -- fingerprint(raw_caller_input) must equal
+    fingerprint(that_same_input_after_one_round_trip_through_the_defaults),
+    or a same-turn re-entry within the cache's own TTL window "changes"
+    fingerprint purely because a None got filled in with its default value,
+    never actually hitting the cache. Confirmed live: an earlier version of
+    this function used `raw.get(...)` with no defaulting (or a defaulting
+    scheme that didn't match `_presence_from_ctx`), so requestor and
+    privacy_mode alone differed enough to bust the cache on literally every
+    call within a turn. Consequence when the cache never hits:
+    _build_conversation_phase runs again, reads back the
+    last_user_turn_at the FIRST call in this turn just wrote to Redis (now
+    == "a moment ago"), computes delta_user≈0, and silently reclassifies a
+    genuine long_gap/stale_thread as same_breath mid-turn -- exactly the
+    kind of masking this whole patch exists to prevent. submitted_at/
+    expires_at are excluded entirely rather than defaulted-and-matched:
+    they carry microsecond precision and no real caller ever sets them on
+    genuine input, so there is no meaningful signal to preserve there.
+    """
     raw = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
     companions = raw.get("companions") if isinstance(raw.get("companions"), list) else []
     normalized_companions = [
@@ -141,30 +173,30 @@ def _presence_cache_fingerprint(ctx: dict[str, Any]) -> str:
         if isinstance(item, dict) and item.get("display_name")
     ]
     requestor = raw.get("requestor") if isinstance(raw.get("requestor"), dict) else {}
+    # Same default logic as _presence_from_ctx below, field for field.
+    audience_mode = str(raw.get("audience_mode") or ("solo" if not normalized_companions else "mixed_group"))
     fingerprint = {
-        "audience_mode": str(raw.get("audience_mode") or "solo"),
+        "audience_mode": audience_mode,
         "companions": normalized_companions,
         "requestor": {
-            "display_name": requestor.get("display_name"),
-            "relationship_to_orion": requestor.get("relationship_to_orion"),
+            "display_name": str(requestor.get("display_name") or cfg.default_requestor),
+            "relationship_to_orion": str(requestor.get("relationship_to_orion") or "primary_operator"),
         },
-        "privacy_mode": raw.get("privacy_mode"),
-        "submitted_at": raw.get("submitted_at"),
-        "expires_at": raw.get("expires_at"),
+        "privacy_mode": str(raw.get("privacy_mode") or "session_only"),
     }
     return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
 
 
-def _situation_cache_key(ctx: dict[str, Any]) -> str:
+def _situation_cache_key(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     session_key = str(ctx.get("session_id") or "global")
-    return f"{session_key}:{_presence_cache_fingerprint(ctx)}"
+    return f"{session_key}:{_presence_cache_fingerprint(ctx, cfg)}"
 
 
-def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     cfg = settings_from_runtime(runtime_settings)
     if not cfg.enabled:
         return {}, {}
-    cache_key = _situation_cache_key(ctx)
+    cache_key = _situation_cache_key(ctx, cfg)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
         if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.ttl_seconds:
@@ -174,7 +206,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
     diagnostics = SituationDiagnosticsV1()
     presence = _presence_from_ctx(ctx, cfg, now)
     time_ctx = _build_time_context(cfg, diagnostics)
-    phase_ctx = _build_conversation_phase(ctx, time_ctx, now)
+    phase_ctx = await _build_conversation_phase(ctx, time_ctx, now)
     place_ctx = _build_place_context(cfg)
     env_ctx = _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
@@ -322,11 +354,11 @@ def _season_label(month: int) -> str:
     return "autumn"
 
 
-def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
+async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
     session_id = str(ctx.get("session_id") or "global")
-    with _LOCK:
-        last_user = _SESSION_LAST_USER_TURN.get(session_id)
-        last_orion = _SESSION_LAST_ORION_TURN.get(session_id)
+    state = await read_session_turn_state(session_id)
+    last_user = state.last_user_turn_at
+    last_orion = state.last_orion_turn_at
     delta_user = int((now_utc - last_user).total_seconds()) if last_user else None
     phase = "unknown"
     continuity = "continue_directly"
@@ -371,14 +403,38 @@ def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_
         topic_staleness_risk=risk,  # type: ignore[arg-type]
         response_adjustments=adjustments,
     )
-    with _LOCK:
-        _SESSION_LAST_USER_TURN[session_id] = now_utc
+    # Read-modify-write: preserve last_orion_turn_at exactly as read above --
+    # this call only ever advances the user side of the pair. Skip the write
+    # entirely if the read itself failed (state.ok is False): last_orion is
+    # None in that case because it's UNKNOWN, not because it's genuinely
+    # empty, and writing it back would silently clobber a real value on a
+    # field this call never intended to touch. Losing this turn's
+    # last_user_turn_at update is an acceptable, strictly-better-than-before
+    # degradation -- clobbering last_orion_turn_at would not be.
+    if state.ok:
+        await write_session_turn_state(
+            session_id,
+            last_user_turn_at=now_utc,
+            last_orion_turn_at=last_orion,
+        )
     return out
 
 
-def mark_orion_turn(session_id: str | None) -> None:
-    with _LOCK:
-        _SESSION_LAST_ORION_TURN[str(session_id or "global")] = datetime.now(UTC)
+async def mark_orion_turn(session_id: str | None) -> None:
+    sid = str(session_id or "global")
+    state = await read_session_turn_state(sid)
+    if not state.ok:
+        # Same clobber hazard as _build_conversation_phase above, mirrored:
+        # skip the write rather than risk overwriting a real
+        # last_user_turn_at with an unknown-vs-empty None.
+        return
+    # Read-modify-write: preserve last_user_turn_at exactly as read above --
+    # this call only ever advances the Orion side of the pair.
+    await write_session_turn_state(
+        sid,
+        last_user_turn_at=state.last_user_turn_at,
+        last_orion_turn_at=datetime.now(UTC),
+    )
 
 
 def _build_place_context(cfg: SituationSettings) -> PlaceContextV1:

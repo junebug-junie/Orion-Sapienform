@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,8 +17,33 @@ if str(CORTEX_EXEC_ROOT) not in sys.path:
 
 from datetime import UTC, datetime, timedelta
 
-import app.situation as situation_module
+from app.session_turn_phase import bind_session_turn_phase_bus, write_session_turn_state
 from app.situation import build_situation_for_ctx
+
+
+class _InMemoryRedis:
+    """Standalone-script stand-in for `bus.redis` -- this smoke script has
+    no live Redis/bus of its own (it only ever exercised in-process dict
+    state before conversation-phase turn timestamps moved to Redis, see
+    app/session_turn_phase.py), so it gets its own tiny in-memory store
+    rather than requiring real infra just to render sample prompt text."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+
+    async def get(self, key: str):
+        return self.store.get(key)
+
+    async def setex(self, key: str, ttl_seconds: int, payload: str):
+        self.store[key] = payload.encode("utf-8")
+
+
+class _InMemoryBus:
+    def __init__(self) -> None:
+        self.redis = _InMemoryRedis()
+
+
+bind_session_turn_phase_bus(_InMemoryBus())
 
 
 def _settings():
@@ -48,8 +74,8 @@ def _settings():
     )
 
 
-def _print_case(name: str, ctx: dict):
-    brief, fragment = build_situation_for_ctx(ctx, _settings())
+async def _print_case(name: str, ctx: dict):
+    brief, fragment = await build_situation_for_ctx(ctx, _settings())
     compact = fragment.get("compact_text", "")
     print(f"== {name} ==")
     phase = (brief.get("conversation_phase") or {}).get("phase_change")
@@ -60,9 +86,9 @@ def _print_case(name: str, ctx: dict):
     assert brief.get("kind") == "situation.brief.v1"
 
 
-def main() -> None:
-    _print_case("default_solo", {"session_id": "smoke-default", "raw_user_text": "hello"})
-    _print_case(
+async def main() -> None:
+    await _print_case("default_solo", {"session_id": "smoke-default", "raw_user_text": "hello"})
+    await _print_case(
         "child_present",
         {
             "session_id": "smoke-child",
@@ -73,11 +99,18 @@ def main() -> None:
             },
         },
     )
-    _print_case("long_gap_seed", {"session_id": "smoke-gap", "raw_user_text": "first turn"})
-    situation_module._SESSION_LAST_USER_TURN["smoke-gap"] = datetime.now(UTC) - timedelta(hours=10)
-    _print_case("long_gap_resume", {"session_id": "smoke-gap", "raw_user_text": "yeah do that"})
-    _print_case("heading_out", {"session_id": "smoke-out", "raw_user_text": "I am heading out, should I take a jacket?"})
+    await _print_case("long_gap_seed", {"session_id": "smoke-gap", "raw_user_text": "first turn"})
+    # Conversation-phase turn timestamps live in Redis now (see
+    # app/session_turn_phase.py) -- seed the same "10 hours ago" state
+    # there instead of poking a since-removed in-process dict.
+    await write_session_turn_state(
+        "smoke-gap",
+        last_user_turn_at=datetime.now(UTC) - timedelta(hours=10),
+        last_orion_turn_at=None,
+    )
+    await _print_case("long_gap_resume", {"session_id": "smoke-gap", "raw_user_text": "yeah do that"})
+    await _print_case("heading_out", {"session_id": "smoke-out", "raw_user_text": "I am heading out, should I take a jacket?"})
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

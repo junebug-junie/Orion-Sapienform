@@ -908,6 +908,7 @@ svc = Rabbit(
 )
 from .current_turn_llm_signals import bind_current_turn_llm_signals_bus
 from .pre_turn_appraisal import bind_pre_turn_appraisal_bus, handle_pre_turn_appraisal_request
+from .session_turn_phase import bind_session_turn_phase_bus
 
 pre_turn_appraisal_svc = Rabbit(
     _cfg(),
@@ -1018,6 +1019,7 @@ async def main() -> None:
     if settings.enable_pre_turn_appraisal_handler:
         bind_pre_turn_appraisal_bus(_rpc_bus or svc.bus)
     bind_current_turn_llm_signals_bus(_rpc_bus or svc.bus)
+    bind_session_turn_phase_bus(_rpc_bus or svc.bus)
     logger.info("exec_rpc_bus_fork_ready")
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"

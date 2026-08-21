@@ -10,6 +10,7 @@ from time import monotonic as _monotonic
 
 from psycopg2.extras import Json
 from pydantic import ValidationError
+from orion.autonomy.contrast import TreatedCellKey
 from orion.autonomy.prediction import EffectPosterior
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -837,8 +838,8 @@ class ExecutionDispatchRuntimeStore:
             ).mappings().all()
         return [str(row["status"]) for row in rows]
 
-    def load_effect_posteriors(self) -> dict[tuple[str, str, str], EffectPosterior]:
-        """Current per-(kind, target, signal) belief, for stamping predictions.
+    def load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
+        """Current per-(kind, target, signal, baseline_bin) belief.
 
         Full read of a tiny, primary-keyed table (tens of rows). Explicitly
         NOT the newest-row-of-a-big-table pattern used by
@@ -852,7 +853,7 @@ class ExecutionDispatchRuntimeStore:
                 conn.execute(
                     text(
                         """
-                        SELECT dispatch_kind, target_id, signal_id,
+                        SELECT dispatch_kind, target_id, signal_id, baseline_bin,
                                posterior_mean, posterior_variance, posterior_n
                           FROM substrate_action_effect_posterior
                         """
@@ -862,7 +863,12 @@ class ExecutionDispatchRuntimeStore:
                 .all()
             )
         return {
-            (r["dispatch_kind"], r["target_id"], r["signal_id"]): EffectPosterior(
+            (
+                r["dispatch_kind"],
+                r["target_id"],
+                r["signal_id"],
+                int(r["baseline_bin"]),
+            ): EffectPosterior(
                 mean=float(r["posterior_mean"]),
                 variance=float(r["posterior_variance"]),
                 n=int(r["posterior_n"]),

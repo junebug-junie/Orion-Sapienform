@@ -132,8 +132,9 @@ class TestScoringHappensAtAll:
             field_after=_field("a", {"resource_pressure": 0.4}),
             now=NOW,
         )
+        # Cell key now carries the baseline bin: before=0.9 -> bin 9.
         assert set(res.posteriors) == {
-            ("maintain", "host:docker_images", "resource_pressure")
+            ("maintain", "host:docker_images", "resource_pressure", 9)
         }
 
     def test_prior_is_carried_in_and_advances(self):
@@ -143,7 +144,7 @@ class TestScoringHappensAtAll:
             feedback_frame_id="f",
             field_before=_field("b", {"execution_pressure": 0.8}),
             field_after=_field("a", {"execution_pressure": 0.4}),
-            priors={("inspect", "capability:orchestration", "execution_pressure"): prior},
+            priors={("inspect", "capability:orchestration", "execution_pressure", 8): prior},
             now=NOW,
         )
         r = res.records[0]
@@ -277,7 +278,7 @@ class TestScoresTheClaimThatWasActuallyMade:
             feedback_frame_id="f",
             field_before=_field("b", {"execution_pressure": 0.8}),
             field_after=_field("a", {"execution_pressure": 0.3}),
-            priors={("inspect", "capability:orchestration", "execution_pressure"): prior},
+            priors={("inspect", "capability:orchestration", "execution_pressure", 8): prior},
             now=NOW,
         )
         assert [r.predicted_delta for r in res.records] == [-0.10, -0.10]
@@ -375,7 +376,7 @@ class TestPredictionErrorMatchesTheStoredClaim:
             feedback_frame_id="f",
             field_before=_field("b", {"execution_pressure": 0.8}),
             field_after=_field("a", {"execution_pressure": 0.6}),
-            priors={("inspect", "capability:orchestration", "execution_pressure"): prior},
+            priors={("inspect", "capability:orchestration", "execution_pressure", 8): prior},
             now=NOW,
         )
         r = res.records[0]

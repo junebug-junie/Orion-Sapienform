@@ -19,6 +19,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.autonomy.contrast import ActionArm
+
 # The signals an action is allowed to make a claim about. These are exactly
 # the field pressure channels the feedback runtime already snapshots before
 # and after every dispatch (config/feedback/feedback_policy.v1.yaml's
@@ -88,6 +90,25 @@ class ActionOutcomeRecordV1(BaseModel):
     target_id: str
     signal_id: PredictableSignal
     direction: EffectDirection
+
+    # Which arm this observation belongs to. `dispatched` is the treated arm.
+    # `no_action` is the control arm: a tick in which NOTHING claiming this
+    # signal ran, which is the only untreated population that actually
+    # exists (see orion.autonomy.contrast for why capacity-blocked ticks are
+    # not one). `capacity_blocked` is recorded but is not admissible as a
+    # control; `randomized_holdback` is the experimental arm, off by default.
+    arm: ActionArm = "dispatched"
+
+    # Fixed-width decile of `baseline`, stamped by the writer so a reader can
+    # never re-derive it differently. Matching happens within a bin.
+    baseline_bin: int = Field(ge=0, le=9, default=0)
+
+    # How many candidates were dispatched in the source tick at all. The
+    # field delta is measured frame-wide, so a control observation drawn
+    # from a tick where other actions ran is contaminated even when none of
+    # them claimed this signal. Recorded so an analysis can restrict to
+    # clean ticks instead of discovering the contamination is invisible.
+    frame_dispatch_count: int = Field(ge=0, default=0)
 
     observed_at: datetime
 

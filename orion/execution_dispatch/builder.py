@@ -10,6 +10,7 @@ from orion.execution_dispatch.policy import (
     DispatchLimitsV1,
     ExecutionDispatchPolicyV1,
 )
+from orion.autonomy.contrast import TreatedCellKey, pooled_treated_mean
 from orion.autonomy.prediction import EffectPosterior
 from orion.schemas.action_prediction import ExpectedEffectV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
@@ -262,7 +263,7 @@ def _candidate_status_for_mode(dispatch_mode: str) -> tuple[str, str]:
 def build_expected_effect(
     candidate: ProposalCandidateV1,
     dispatch_kind: str,
-    effect_posteriors: dict[tuple[str, str, str], EffectPosterior] | None,
+    effect_posteriors: dict[TreatedCellKey, EffectPosterior] | None,
 ) -> ExpectedEffectV1 | None:
     """Attach the action's claim, with a magnitude taken from real history.
 
@@ -283,8 +284,18 @@ def build_expected_effect(
     if signal is None or direction is None:
         return None
 
-    key = (dispatch_kind, candidate.target_id, signal)
-    posterior = (effect_posteriors or {}).get(key)
+    # Pooled over baseline bins, because `predicted_delta` means "what this
+    # action expects to OBSERVE when it runs" and the bin it will land in is
+    # not known here (this builder is handed a field TICK ID, not the field).
+    # Deliberately not the baseline-matched contrast: `prediction_error` on
+    # the ledger row is `observed_delta - predicted_delta`, and scoring a raw
+    # observed delta against a counterfactual-adjusted contrast would be a
+    # units mismatch wearing a residual's name. The contrast is what a BUDGET
+    # reads (orion.autonomy.contrast.contrast, off the cells directly); the
+    # pooled mean is what a PREDICTION claims.
+    posterior = pooled_treated_mean(
+        effect_posteriors or {}, dispatch_kind, candidate.target_id, signal
+    )
     cold = posterior is None or posterior.n == 0
     if posterior is None:
         posterior = EffectPosterior.cold()
@@ -308,7 +319,7 @@ def build_execution_dispatch_frame(
     now: datetime | None = None,
     override_dispatch_mode: str | None = None,
     prev_starvation_counts: dict[str, int] | None = None,
-    effect_posteriors: dict[tuple[str, str, str], EffectPosterior] | None = None,
+    effect_posteriors: dict[TreatedCellKey, EffectPosterior] | None = None,
 ) -> ExecutionDispatchFrameV1:
     generated_at = now or datetime.now(timezone.utc)
     dispatch_mode = _resolve_dispatch_mode(policy=policy, override_dispatch_mode=override_dispatch_mode)
@@ -341,6 +352,19 @@ def build_execution_dispatch_frame(
         dispatch_kind: str = "noop",
         starvation_ticks: int = 0,
     ) -> ExecutionDispatchCandidateV1:
+        # 2026-08-21 (control arm): a blocked candidate carries its claim too.
+        # Without it the feedback runtime cannot tell WHICH signal a lost
+        # candidate was about, so the entire non-dispatched arm is invisible
+        # to the ledger and every comparison is dispatched-vs-nothing. Only
+        # attached where there is a real proposal and a real route -- a
+        # kind-less block (`noop`) has nothing to claim, and inventing a
+        # claim for it would fabricate exactly the kind of empty-shell record
+        # this ledger exists to make impossible.
+        blocked_effect = (
+            build_expected_effect(candidate, dispatch_kind, effect_posteriors)
+            if candidate is not None and dispatch_kind != "noop"
+            else None
+        )
         return ExecutionDispatchCandidateV1(
             dispatch_id=stable_dispatch_id(proposal_id=decision.proposal_id, policy_id=policy.policy_id),
             source_decision_id=decision.decision_id,
@@ -359,6 +383,7 @@ def build_execution_dispatch_frame(
             dispatch_kind=dispatch_kind,  # type: ignore[arg-type]
             target_id=candidate.target_id if candidate else "unknown",
             target_kind=candidate.target_kind if candidate else "system",
+            expected_effect=blocked_effect,
             reasons=reasons,
             blocked_by=blocked_by,
             risk_score=decision.risk_score,

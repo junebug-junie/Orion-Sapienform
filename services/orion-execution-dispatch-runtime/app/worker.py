@@ -13,6 +13,7 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.autonomy.contrast import TreatedCellKey
 from orion.autonomy.prediction import EffectPosterior
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
@@ -477,7 +478,7 @@ class ExecutionDispatchRuntimeWorker:
             frame.dispatch_count,
         )
 
-    def _load_effect_posteriors(self) -> dict[tuple[str, str, str], "EffectPosterior"]:
+    def _load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
         try:
             return self._store.load_effect_posteriors()
         except Exception:

@@ -31,21 +31,21 @@ def test_owner_node_gets_seeded_with_single_observer_channels() -> None:
 
 
 def test_non_owner_node_never_gets_single_observer_channels_seeded() -> None:
-    vec = _ensure_node_vector({}, "node:atlas")
+    vec = _ensure_node_vector({}, "node:circe")
     for channel in SINGLE_OBSERVER_NODE_CHANNELS:
         assert channel not in vec
 
 
 def test_stale_pre_fix_value_on_non_owner_node_self_heals_on_reconcile() -> None:
-    """The live bug this fix closes: a non-owner node (atlas) already had a
+    """The live bug this fix closes: a non-owner node (circe) already had a
     stale stream_backlog_health=0.0/delivery_confidence=0.0 persisted from before this
     fix existed. reconcile must actively prune it, not just stop adding it
     to new nodes -- the pre-existing "preserve any existing key" behavior
     would otherwise carry it forward forever."""
     node_vectors = {
-        "node:atlas": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0, "cpu_pressure": 0.3},
+        "node:circe": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0, "cpu_pressure": 0.3},
     }
-    vec = _ensure_node_vector(node_vectors, "node:atlas")
+    vec = _ensure_node_vector(node_vectors, "node:circe")
     assert "stream_backlog_health" not in vec
     assert "delivery_confidence" not in vec
     # Unrelated, legitimately-per-node channels are untouched.
@@ -62,21 +62,21 @@ def test_owner_nodes_real_value_is_preserved_across_reconcile() -> None:
 
 
 def test_full_reconcile_prunes_stale_values_across_the_whole_lattice() -> None:
-    """End-to-end: reconcile_field_state_with_lattice() over a 4-node
-    lattice (matching the real athena/atlas/circe/prometheus topology)
-    leaves only node:athena carrying stream_backlog_health/delivery_confidence."""
+    """End-to-end: reconcile_field_state_with_lattice() over the real 3-node
+    lattice (athena/circe/prometheus, atlas decommissioned 2026-08-21 -- see
+    RETIRED_LATTICE_NODES in channels.py) leaves only node:athena carrying
+    stream_backlog_health/delivery_confidence."""
     state = _state(
         node_vectors={
-            "node:atlas": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0},
             "node:circe": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0},
             "node:athena": {"stream_backlog_health": 1.0, "delivery_confidence": 1.0},
             "node:prometheus": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0},
         }
     )
-    lattice = _lattice(["node:atlas", "node:circe", "node:athena", "node:prometheus"])
+    lattice = _lattice(["node:circe", "node:athena", "node:prometheus"])
     updated = reconcile_field_state_with_lattice(state, lattice=lattice)
 
-    for node_id in ["node:atlas", "node:circe", "node:prometheus"]:
+    for node_id in ["node:circe", "node:prometheus"]:
         assert "stream_backlog_health" not in updated.node_vectors[node_id]
         assert "delivery_confidence" not in updated.node_vectors[node_id]
     assert updated.node_vectors["node:athena"]["stream_backlog_health"] == 1.0

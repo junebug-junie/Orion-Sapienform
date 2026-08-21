@@ -196,14 +196,25 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > hardware despite its name). An earlier version of this doc pointed `agent` at
 > Atlas's IP based on that naming alone -- wrong; nothing was listening there, and the
 > gateway correctly reported `agent` as down until this was corrected the same day.
+>
+> **2026-08-21: Atlas is retired for good** (chassis reused for other hardware; the
+> Atlas Tailscale node itself is offline for good). `metacog`/`quick`/`quick_background`
+> below have been repointed from Atlas's old IP (`100.121.214.30`) to Circe -- confirmed
+> live before the fix that every call through those three routes was hanging up to 700s
+> against a dead host instead of failing. Both replacement workers are now deployed and
+> confirmed live via `GET /routes` (all six routes report `status: "up"`):
+> `quick`/`quick_background` -> `circe-worker-fast-1` (port 8013, GPU 4, Qwen3-8B Q4_K_M,
+> `qwen3-8b-q4km-v100-16gb-balanced`); `metacog` -> `circe-worker-2` (port 8012, GPU 3,
+> Qwen3-8B Q5_K_M, `qwen3-8b-q5km-v100-16gb-atlas-metacog-16k` -- single-GPU, not the
+> 2xGPU qwen3-30b profile that shares the "atlas-metacog" name prefix).
 
 ### Route table example (default: split agent mode)
 ```bash
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
   "agent":{"url":"http://100.112.254.99:8014","served_by":"circe-worker-agent-1","backend":"llamacpp"},
-  "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
-  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
+  "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
+  "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}
 }'
 ```
 
@@ -270,8 +281,8 @@ LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
   "agent":{"url":"http://100.112.254.99:8014","served_by":"circe-worker-agent-1","backend":"llamacpp"},
   "harness":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp","priority":"system"},
-  "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
-  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
+  "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
+  "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}
 }'
 ```
 
@@ -283,8 +294,8 @@ re-merges `agent` back into `chat`'s worker, the pre-2026-08-14 default:
 LLM_GATEWAY_ROUTE_TABLE_JSON='{
   "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
   "agent":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "metacog":{"url":"http://100.121.214.30:8012","served_by":"atlas-worker-2","backend":"llamacpp"},
-  "quick":{"url":"http://100.121.214.30:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}
+  "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
+  "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}
 }'
 ```
 
@@ -304,8 +315,8 @@ regular route:
 
 ```json
 "quick_background": {
-  "url": "http://100.121.214.30:8013",
-  "served_by": "atlas-worker-fast-1",
+  "url": "http://100.112.254.99:8013",
+  "served_by": "circe-worker-fast-1",
   "backend": "llamacpp",
   "priority": "background",
   "reserved_free_slots": 2

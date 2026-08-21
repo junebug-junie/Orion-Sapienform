@@ -1,0 +1,44 @@
+name: skills.perception.ask_camera.v1
+label: Skills — Ask Camera
+description: >
+  Ask a real question about what the camera currently shows, against the
+  most recently captured frame -- a direct vision-host RPC, bypassing
+  orion-vision-window/orion-vision-council's passive projection entirely.
+  Answer quality depends on the currently-loaded VLM (a small captioner by
+  default, not an instruction-tuned VQA model) -- a weak or empty answer is
+  a real, honest outcome, not a failure.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 35000
+max_recursion_depth: 0
+services: []
+input_schema:
+  type: object
+  properties:
+    question:
+      type: string
+      description: The specific question to ask about the current camera frame.
+  required: [question]
+  additionalProperties: false
+output_schema:
+  type: object
+  properties:
+    available: {type: boolean}
+    status: {type: string, enum: [ok, no_answer, missing_question, unavailable, error, gpu_hard_floor, profile_disabled]}
+    question: {type: [string, "null"]}
+    answer: {type: [string, "null"]}
+    confidence: {type: [number, "null"]}
+    model_id: {type: [string, "null"]}
+    reason: {type: [string, "null"]}
+    warnings:
+      type: array
+      items: {type: string}
+plan:
+  - name: skills.perception.ask_camera.v1
+    description: Execute the direct Cortex-side ask-camera skill.
+    order: 0
+    services: []

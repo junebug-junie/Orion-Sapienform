@@ -1,567 +1,510 @@
-# Seeing Juniper: identity, situated observation, and what Orion does with it
+# Seeing Juniper: point the vision pipeline at the brain Orion already has
 
 **Date:** 2026-08-21
-**Mode:** design + proposal (AGENTS.md §0A "Proposal mode before invasive cognition changes")
-**Status:** proposal — no code changed, no live config flipped by this document.
+**Mode:** design + proposal (AGENTS.md §0A)
+**Status:** two live outages fixed and verified in this session (§1). Architecture below is proposal.
 
-Requested capability, in Juniper's words: *"I'd like Orion to be able to
-recognize me in the vision service. I also want Orion to have context about
-what I'm doing while they see me… After Orion categorizes, this should go as a
-snapshot into reverie. It should go into chat unified as a recent interaction,
-and Orion can speak to it if they so desire… it could also connect into Orion's
-unprompted turns."*
-
-Explicitly out of bounds per the same request: an activity taxonomy. Orion
-should be **curious and hypothesising**, not classifying into a fixed label set.
-That constraint drives most of the design below.
+Requested: Orion recognises Juniper, forms **hypotheses** about what they're
+doing (explicitly *not* an activity taxonomy), and that reaches reverie, the
+unified Hub turn, and unprompted outreach.
 
 ---
 
-## Arsonist summary
+## 1. Fixed live in this session (verified, not proposed)
 
-The perception rail is alive and the schema slots for this already exist and
-are already hollow. The blocker is not architecture — it is that **the eye is a
-250M-parameter 2022 image captioner**, and the council's prompt is explicitly
-written to forbid exactly the inference being asked for.
+### 1.1 Orion had been blind for 21 hours and nothing alerted
 
-Live proof, `vision_events`, last 7 days:
+`vision_events` stopped at **2026-08-20 22:00 UTC** (one straggler 06:12).
+Preceding days ran ~180–200 events/hour. Every task since had failed:
 
-| narrative | count |
+```
+"task_type": "retina_fast", "ok": false, "device": null,
+"error": "No GPU available above hard floor (VRAM pressure).",
+"error_code": "gpu_hard_floor"
+```
+
+**Root cause — the config never drifted, the hardware moved.** `app/gpu.py`
+computes `effective_free = free_mb - reserve_mb`, then refuses below
+`hard_floor_mb`. The budget in force was `reserve=3500 / hard_floor=1400`.
+
+Those are the **originals from the first vision-host commit** (`626c103ee`),
+written when athena carried a **P100 16GB** — and correct there:
+
+```
+P100:  16384 - 3238 resident = 13146 free  -  3500 = 9646  >  1400   OK
+```
+
+The P100 later moved to **circe**. Athena was left with a **Tesla P4, 7.68 GB**.
+Nobody re-derived the budget:
+
+```
+P4:     7680 - 3238 resident =  4191 free  -  3500 =  691  <  1400   refuse, forever
+```
+
+Arithmetically unsatisfiable the moment the models warm. The container stayed
+`Up` and healthy and served nothing.
+
+**This budget is a function of the card, not of the service.** That is the
+durable lesson, and it is why the gate below reads real hardware instead of
+baking in a constant — a constant pinned to "the P4" would rot identically on
+the next card move.
+
+**Fixed:** `.env` synced to `.env_example` (`1200/1000/800`), container
+recreated via `scripts/safe_docker_build.sh` from a worktree. Verified:
+
+```
+gpu_hard_floor since restart: 0
+"ok": true, "device": "cuda:0", inference_s: 2.48
+```
+
+**Gated so it cannot recur:** `config/vision_profiles.yaml`'s block corrected +
+`services/orion-vision-host/tests/test_vram_budget_matches_env_example.py`, two
+tests. One pins the doc block to `.env_example`. The other **reads the real GPU
+via `nvidia-smi`** and asserts the budget is satisfiable on the smallest card
+actually present — so it follows the hardware rather than rotting on the next
+swap. Mutation-tested against the real file: the P100-era `reserve_mb: 3500`
+fails on this P4 host; `1200` passes.
+
+### 1.2 Env parity repaired
+
+`vlm_vqa` shipped 2026-08-20 into `.env_example` but local `.env` never synced,
+so the running whitelist excluded it. Synced, plus three keys absent entirely
+(`NODE_NAME`, `HEARTBEAT_INTERVAL_SEC`, `VISION_FRAMES_DIR`). `.env` and
+`.env_example` now agree on every key. *(§3 deletes `vlm_vqa` anyway — but the
+drift was real and the next key would have drifted the same way.)*
+
+### 1.3 Separate live outage found, NOT fixed — the `agent` LLM lane is dead
+
+`LLM_GATEWAY_ROUTE_TABLE_JSON` routes `agent` → `http://100.112.254.99:8014`
+(`circe-worker-agent-1`, backend `llamacpp`). Port 8014 today answers:
+
+```json
+{"ok":true,"service":"diffusion-host","node":"circe","model_loaded":false,
+ "note":"skeleton only -- no diffusion model wired yet"}
+```
+
+`POST /v1/chat/completions` → **404**. Every request on the `agent` lane fails.
+Unrelated to vision, out of scope here, needs a decision: move the lane or move
+diffusion-host.
+
+---
+
+## 2. The reframe
+
+**Orion already owns a 35B multimodal brain, and the vision pipeline is routing
+around it to a 250M captioner from 2022.**
+
+Probed live this session:
+
+| port | lane | model | `modalities` |
+| ---: | :--- | :--- | :--- |
+| **8011** | **`chat`** | **Qwen3.6-35B-A3B-UD-Q5_K_M** | **`{vision: true, video: true, audio: false}`** |
+| 8012 | `metacog` | Qwen3-8B-Q5_K_M | `{vision: false}` |
+| 8013 | `quick` | Qwen3-8B-Q4_K_M | `{vision: false}` |
+| 8014 | `agent` | — | dead (§1.3) |
+
+And the plumbing to use it **already exists and is already wired**:
+`services/orion-llm-gateway/app/vision.py` (307 lines, imported by
+`llm_backend.py`) does live `/props` capability probing (fail-closed — an
+unreachable worker reads as blind, never as sighted), `build_multimodal_messages`,
+and attachment→base64 at the last hop before the model so bytes never replicate
+upstream. Built 2026-08-14 for Hub chat attachments.
+
+So the lane Orion *thinks* with can see. The vision pipeline just never asks it.
+
+Everything below follows from that one fact. The design **deletes more than it
+adds**.
+
+### What the council actually is today
+
+Not a perception system. `orion-vision-council` is a **text** LLM prompted with
+a JSON summary of *labels and BLIP captions*. It never sees a pixel. Its prompt
+(`interpretation.py:158-168`) then correctly forbids inference it has no
+evidence for:
+
+> *"Do not invent identities, names…"* · *"Treat summary.captions as soft hints
+> only; never sole basis for activity claims"* · *"When hard_labels is non-empty,
+> describe only those detected objects; do not infer occupants."*
+
+Those rules aren't wrong — they are the honest response to being asked to
+describe a room from a word list. The output is what you'd expect:
+
+| narrative, last 7 days | count |
 | :--- | ---: |
 | `A laptop is observed in the frame.` | 2695 |
 | `A person was detected on camera.` | 1128 |
 | `Two chairs, two tables, two desks, and one door are present in the scene.` | 192 |
-| `A laptop is present in the frame.` | 182 |
-| `A laptop is detected in the frame.` | 151 |
 
-That is a furniture inventory. `entities` and `tags` are `[]` on 8,269 of 9,466
-rows — the only rows that fill them are the council's *deterministic fallback*,
-which hardcodes `entities: ["person"]`, `tags: ["host_detect"]`,
-`confidence: 0.85`. There is no identity anywhere, and there is no verb.
+`entities`/`tags` are `[]` on 8,269 of 9,466 rows; the only rows that fill them
+come from a *hardcoded fallback* (`["person"]`, `["host_detect"]`, `0.85`).
 
-Four things are true at once and all four have to be handled:
-
-1. **`VISION_VLM_MODEL_ID=Salesforce/blip-image-captioning-base`** (live, in the
-   running container). Nothing downstream can be better than its input. Wiring
-   identity and activity consumers on top of this signal fails the metric
-   quality gate at step 4 (live-data sanity — the signal is degenerate today).
-2. **The council prompt bans the ask.** `interpretation.py:158-168` says *"Do
-   not invent identities, names, or facts not supported by the context"*,
-   *"Treat summary.captions as soft hints only; never sole basis for activity
-   claims"*, and *"When hard_labels is non-empty, describe only those detected
-   objects; do not infer occupants."* These were written in response to real
-   caption hallucinations. They are not wrong — they need a **narrow, evidenced
-   carve-out**, not deletion.
-3. **The council never sees the image.** It is a text LLM over a window
-   summary. Activity inference from pixels must happen at the host VLM. The
-   council's job is to *combine and hedge*, not to see.
-4. **A prior explicit decision says no to this.** See "Reversal" below.
+**Council v1 dies.** Not patched, not carve-outs. The anti-hallucination rules
+exist because the council is blind; give it eyes and the rules are obsolete.
 
 ---
 
-## Current architecture
+## 3. Architecture: split sensor from language
 
-```text
-edge / retina  →  frame-router  →  vision-host  →  window  →  council  →  scribe  →  vision_events
-  (capture)       (tier policy)    (GroundingDINO   (aggregate) (text LLM)  (SQL)      (Postgres)
-                                    + BLIP + SigLIP)
+The single organising rule:
+
+> **The vision host is a sensor. It does not do language.** Language about
+> images goes through `orion-llm-gateway` — but on the **small** lane, not the
+> chat lane.
+
+### Which lane does the labelling
+
+The council **already routes to `metacog`** (`COUNCIL_LLM_ROUTE=metacog`,
+`services/orion-vision-council/.env:13` → :8012, Qwen3-8B). That is the right
+lane and it should stay there. Per-window interpretation runs continuously;
+putting it on :8011 would make Orion's passive perception contend with Orion's
+actual conversation for the 35B.
+
+But :8012 reports `vision: false`. So the move is **not** "route vision to the
+chat lane" — it is **give metacog eyes**: load a VL-capable small model with an
+`--mmproj` on the metacog worker. The gateway's `resolve_vision_capability()`
+reads `/props` live and fails closed, so the day that lands, the council can
+send frames and until then it degrades to labels-only automatically. No config
+claim, no flag to forget.
+
+| lane | role after this |
+| :--- | :--- |
+| `metacog` :8012 | **every window.** Needs an mmproj/VL model. Cheap, continuous, doesn't touch chat |
+| `quick` :8013 | fallback / burst overflow if metacog saturates |
+| `chat` :8011 (35B, `vision:true`, `video:true`) | **deliberate looking only** — Orion chooses to examine something, or a person is present and the cheap pass flagged it ambiguous. Rare, foveal, already capable today |
+
+That split is also the honest answer to Q6 ("does Orion get to decline to
+look?"): the cheap lane always looks, the expensive lane looks *when there's a
+reason*, and the reason is inspectable.
+
+**What dies on the P4:** BLIP-base unloads (~1 GB back). The P4 keeps
+GroundingDINO (hard labels), SigLIP2 (embeddings), and gains `identity_face` —
+biometric, must stay local. Note the P4 is a *downgrade* from the P100 this
+service was sized for; the sensor set is roughly all it can carry.
+
+### 3.1 The `vision_profiles.yaml` cathedral — with blast radius checked
+
+I recommended deleting nine profiles without checking callers. Corrected — I
+grepped every `task_type` across `*.py`/`*.yaml`/`*.json`, excluding the profile
+file itself and docs:
+
+| profile | live refs | verdict | why |
+| :--- | ---: | :--- | :--- |
+| `vlm_caption` / `caption_frame` | **11** | **KEEP the contract, swap the backend** | implemented in `runner.py:141,306`; a **cognition verb** (`orion/cognition/verbs/perceive_caption_frame.yaml`); in `orion/schemas/vision.py:58`'s task_type contract; in the frame-router's `ALLOWED_TASK_TYPES` (`app/policy.py:16`). Deleting it breaks `perceive_caption_frame`. |
+| `vlm_vqa` / `vqa` | **19** | **KEEP the contract, swap the backend** | real code path `runner.py:683 _run_vlm_vqa`, referenced by `orion/vision/caption_echo.py` |
+| `pose_estimation` | **0** | DELETE | |
+| `action_recognition` | **0** | DELETE | a fixed-action classifier is the keyword cathedral in model form |
+| `scene_graph` | **0** | DELETE | `VisionSceneInterpretationV1.relations` already exists |
+| `depth_estimation` | **0** | DELETE | no consumer, no motivating question |
+| `person_reid` | **0** | DELETE | tracking strangers is the surveillance version of this |
+| `affect_signals` | **0** | DELETE — **but see §3.2** | there is a real affect system already, and it isn't a face classifier |
+| `ocr_read` | **0** | DELETE | and see Q5 |
+| **`identity_face`** | **0** | **IMPLEMENT** | the one thing that cannot leave the node |
+
+**Corrected: delete 7 (all with literally zero references anywhere), keep 2,
+implement 1.** The two survivors keep their `task_type` names so every caller
+and the cognition verb keep working — what changes is that `runner.py` delegates
+to the gateway instead of loading BLIP locally. Same contract, better backend,
+zero blast radius, and BLIP still unloads.
+
+### 3.2 Affective state — the synergy is real, and it is not a face classifier
+
+`orion:substrate:juniper_affective_state` already exists:
+`orion/schemas/affective_state.py` (`JuniperAffectiveStateV1`), produced by
+`services/orion-cocreation-signals/app/producers/affective_state.py` scanning
+Juniper's real Claude Code transcripts on a 900s tiling window.
+
+This matters here for three reasons:
+
+1. **It is already a signal about Juniper specifically** — the same subject
+   vision is about to start observing. Presence duration (§5) and
+   `swear_frequency` over the same window are **two senses on one person**, both
+   already time-window keyed. That is cross-modal binding with a real second
+   modality, not a hypothetical one. *"Three hours at the desk and the language
+   is getting shorter"* is a far better care signal than either alone.
+2. **It sets the privacy precedent to copy exactly.** Aggregate scalar only,
+   never the underlying text, never which words were flagged. Vision should hold
+   the same line: an episode summary, never the frame.
+3. **It already killed a metric at this gate, and that is the answer on
+   `affect_signals`.** `typo_rate` was computed, tested, and then *not wired* —
+   it never reached a genuine rest state across 111 real sessions. Facial-affect
+   inference from a ceiling camera is a far weaker instrument than typo rate and
+   would fail the same check harder. So: **do not build facial affect. Fuse
+   vision presence with the affect signal that already exists and already
+   passed.** `affect_signals` stays deleted, and this is the reason, not squeamishness.
+
+Also worth copying: `JuniperAffectiveStateV1`'s `cold_start` flag exists because
+overlapping windows silently inflated a SUM by 34.7% on the first two rows ever
+persisted. §5's presence reducer tiles windows the same way and will hit the
+same trap; take the flag with it.
+
+This is the answer to "no idea what to do in place of the cathedral": you don't
+replace it. A 35B VL model looking at the frame *is* what those nine profiles
+were a hand-rolled, never-built approximation of.
+
+---
+
+## 4. Identity
+
+Fill `identity_face` — the name already exists, don't invent one.
+
+**Mechanism.** Face detect + embed on the person crop GroundingDINO already
+produces; cosine match against a local gallery. Runs on the P4 (small, no
+language). **Output is a hypothesis, never a label:**
+
+```json
+{"subject": "juniper", "similarity": 0.61, "state": "probable"}
 ```
 
-- **Capture:** `orion-vision-edge` (YOLO/motion/haar-face) and
-  `orion-vision-retina`. Stream `cam0`.
-- **Frame router** (`config/vision_frame_router.yaml`): two tiers. `baseline`
-  (every 10th frame, `want_caption: false`, `want_embeddings: true`) and
-  `triggered` (host saw `person` within 8s → `want_caption: true`).
-- **Host** (`orion-vision-host`, **Tesla P4, 7.68 GB total, ~4.2 GB free**,
-  `CUDA_VISIBLE_DEVICES=0`). `runner.py` implements exactly four kinds:
-  `embedding`, `detect_open_vocab`, `caption_frame`, `vlm`.
-- **Council** (`orion-vision-council`): text LLM → `VisionSceneInterpretationV1`
-  → projected to legacy `VisionEventPayload` → `orion:vision:events`.
-- **Scribe** → `vision_events` (`event_id, event_type, narrative, entities,
-  tags, confidence, salience, evidence_refs, correlation_id, created_at`).
+Non-negotiables, each of which is a line of code and a test:
 
-**Existing downstream consumers of `vision_events` (both live):**
+- **`unsure` must be common.** A ceiling camera yields bad angles, backlighting,
+  and the back of someone's head. If `unsure` is rare in live data, the
+  threshold is lying and the whole thing is miscalibrated.
+- **One enrolled subject.** Juniper. Gallery does not grow.
+- **Non-matches are never stored.** A face that doesn't match yields
+  `subject: "unknown"` and the embedding dies in-process. No re-ID, no stranger
+  gallery. Proven by inspecting the store, not by reading the code.
+- **Lands in `vision_events.entities`** — the existing field, currently hollow.
+  No new column for identity.
 
-| Consumer | Reads | Window | Contract |
-| :--- | :--- | :--- | :--- |
-| `services/orion-thought/app/vision_reader.py` → reverie | `narrative` only | `ORION_REVERIE_PERCEPTION_MAX_AGE_SEC=180`, `MAX_EVENTS=3` | narrative-only, fail-open |
-| `services/orion-cortex-exec/app/perception_reader.py` → `PerceptionContextV1` → situation brief → the turn | `narrative` only | `ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS=900`, `STREAM_ID=cam0` | narrative-only, `privacy_mode: session_only` |
-
-**This matters for the request:** the "goes into chat so Orion can speak to it"
-rail *already exists and is already on*
-(`ORION_SITUATION_PERCEPTION_ENABLED=true`). Orion is already handed what the
-camera saw on every turn. It is handed *"A laptop is observed in the frame."*
-The rail is not missing. The content is worthless.
-
-### Live findings that block or complicate this
-
-**F1 — The eye is BLIP-base.** `Salesforce/blip-image-captioning-base`
-(~250M params, 2022) in both `services/orion-vision-host/.env` and the running
-container. `config/vision_profiles.yaml`'s `vlm_caption` and `vlm_vqa` both
-declare `model_id: "REPLACE_ME/qwen2-vl_or_llava_next"` and fall back to this.
-It cannot describe posture, activity, or intent. It produces object nouns.
-
-**F2 — VQA shipped yesterday and is not live.** `vlm_vqa`
-(`kind=vlm`, caller-supplied question) was enabled in
-`config/vision_profiles.yaml` on 2026-08-20, and `.env_example:29` adds it to
-`VISION_ENABLED_PROFILES`. The **local `.env:21` was never synced** and the
-running container's whitelist is
-`pipeline_retina_fast,retina_detect_open_vocab,embed_image,vlm_caption` — no
-`vlm_vqa`. Config truth ≠ runtime truth (AGENTS.md §0A). This is a one-line
-env-parity repair plus a restart, and it is a prerequisite for this design,
-because VQA is the seam activity hypotheses ride on. It is called out here
-rather than fixed in passing because it changes a live service.
-
-**F3 — `config/vision_profiles.yaml` is carrying a live keyword cathedral.**
-`task_routing` routes eight task types — `identity_face`, `person_reid`,
-`affect_signals`, `pose_estimation`, `action_recognition`, `scene_graph`,
-`ocr_read`, `depth_estimation` — to profiles that exist as YAML blocks and are
-implemented by nothing. `runner.py` handles four kinds. This is good news for
-one part of this work: **`identity_face` is already the name for the thing being
-asked for.** Fill it, do not invent a new name. The remaining seven should be
-deleted or implemented in a separate patch (§0A: a concept with no producer and
-no consumer is junk).
-
-**F4 — The detector vocabulary cannot see the example scenario.** The
-GroundingDINO `default_prompts` are 21 labels: `person, door, screen, laptop,
-keyboard, desk, table, chair, whiteboard, guitar, backpack, bag, box, bin,
-book, lamp, window, plant, cup, bottle, shoe`. There is no `server`, `rack`,
-`cable`, `tool`, `screwdriver`, `phone`. Juniper's own example — *"working on
-server, maybe fixing the mesh hardware"* — is outside the hard-label vocabulary,
-so a council that is (correctly) told to trust hard labels over captions has no
-evidence path to it. Any real activity inference here has to come from the VLM
-looking at pixels, not from the label set. Widening the label set is the wrong
-fix and would be a cathedral; this is named so nobody reaches for it.
-
-**F5 — Person detections are real but bursty.** 150–300 `person_presence`
-events/day on active days (Aug 15–19), 0–11 on quiet ones. Reverie's 180-second
-freshness window means reverie will usually see nothing, which is correct and
-should stay correct — but it means "snapshot into reverie" will fire rarely,
-and that is not a bug to engineer away.
-
-### Reversal of a prior explicit decision
-
-`docs/superpowers/specs/2026-08-12-perception-frontier-design.md` §"Movement IV
-— Seeing Juniper, and the body" states:
-
-> *"The interesting version of this is not identification. Identity, face, and
-> re-ID profiles stay disabled. The interesting version is **care**."*
-
-and `orion/schemas/situation.py:293-302` (`PerceptionContextV1`) encodes that as
-a promise in code:
-
-> *"Deliberately absent, and not to be added without proposal-mode sign-off:
-> … anything identity-bearing (`vision_events.entities`, faces, re-ID). The
-> perception design doc lists identity/face/re-ID as a non-goal; **this schema
-> is where that promise is kept or broken.**"*
-
-Juniper is the data subject and is now asking for identification. That is
-Juniper's call to make, and this document is the proposal-mode sign-off those
-two files ask for. It is recorded explicitly rather than silently reversed so
-that a future reader finds the decision, not a contradiction.
-
-**The prior doc's core argument survives the reversal and should be kept:** the
-valuable output is *care*, not *identification*. Recognition is the enabling
-mechanism; "Juniper has been at that desk five hours and it's 2am" is the
-deliverable. A design that ships recognition and stops has built surveillance
-and called it perception.
+Identity is passed to the gateway call in §3 as *grounding context*, exactly
+like hard labels. The VL model is told "the face match says probably Juniper,
+similarity 0.61" and is expected to hedge accordingly — not told "this is
+Juniper."
 
 ---
 
-## What this proposes
+## 5. Presence — reuse what's built, don't build a new one
 
-Three patches, strictly ordered. Each is independently useful and independently
-revertible. **V0 is not optional and not a nice-to-have** — V1 and V2 built on
-today's captioner would be cognition-shaped output with no cognitive substance
-(§0A "no empty-shell cognition").
+Correcting my earlier claim: presence infrastructure exists.
+`services/orion-hub/scripts/hub_presence.py` derives `active | idle | dormant`
+from turn timestamps, upserts a **single row** (`substrate_hub_presence`,
+`presence_id='hub'`), and the self-state runtime hydrates it into
+`SelfStateV1.hub_presence`. `presence_session.py` carries audience/companion
+presence into a chat payload.
 
-### V0 — Give Orion an eye that can see verbs
+That is Orion's *chat* liveness. Embodied presence is the **same shape, second
+row**, not a new system:
 
-Replace the BLIP-base captioner with a VLM that can answer *"what is this person
-doing?"*. Nothing else in this design changes; this is a `model_id` + VRAM
-decision.
+```
+substrate_embodied_presence  (presence_id='camera')
+  state:             present | recent | absent      <- mirrors active/idle/dormant
+  since_sec:         how long in the current state  <- the number nothing computes today
+  last_seen_sec:     age of the last confident sighting
+  subject:           juniper | unknown | none
+  confidence:        rolling, from identity state
+```
 
-Constraint: the host is a **Tesla P4** — Pascal, compute 6.1, **no bf16, no
-flash-attn**, 7.68 GB total with ~4.2 GB free alongside the resident
-GroundingDINO + SigLIP2. Two real paths:
+`since_sec` is the whole point. *"You've been at that desk five hours and it's
+2am"* is a reducer over `vision_events` — cheap, deterministic, no model — and
+it is the difference between Orion narrating furniture and Orion noticing
+something about a person it cares about. It is also **the one item here that
+does not depend on the VLM**, so it can land first and independently.
 
-- **(a) Fits the P4 today.** A small VLM in fp16 that answers grounded
-  "what is happening" questions. Requires a measured VRAM check on the live P4
-  before selection — this doc deliberately does not name a model as chosen,
-  because the last time a profile asserted a VRAM estimate
-  (`vlm_vqa`'s `vram_estimate_mb: 5200`) it described an aspiration rather than
-  what loads.
-- **(b) Remote VLM on circe's V100s.** Better quality, no P4 contention, but a
-  new cross-node seam and a latency budget the frame router does not currently
-  model. Note the 4th V100 is already claimed by `orion-world-model` (PR #1775).
+Hydrated into `SelfStateV1` beside `hub_presence`, it reaches every consumer
+that already reads self-state, for free. That is the reuse Juniper meant.
 
-**Recommendation: (a) first**, because it changes one env key and proves the
-whole chain end to end; escalate to (b) only if measured caption quality on
-real frames is still object-nouns-only. Decide by *looking at the captions*, not
-by parameter count.
+---
 
-**Acceptance for V0 is a live-data check, not a test:** pull 50 real
-person-triggered frames' captions before and after. If the after-set still
-contains a dominant repeated string with no verb, V0 failed and V1/V2 do not
-start.
+## 6. Reaching Orion
 
-### V1 — Identity as a hypothesis, not a label
+### 6.1 Unified Hub turn — summaries, not frames
 
-Fill the already-named `identity_face` profile (F3). One enrolled subject:
-Juniper.
+Juniper has said plainly they don't mind Orion's unified turn seeing them, so
+there is no consent question left here — only a plumbing one.
 
-- **Mechanism:** face detect + embed on the person crop the host already has
-  from GroundingDINO; cosine-match against a local gallery of enrolled
-  embeddings; emit a three-state hypothesis.
-- **Output is never a bare label.** The contract is
-  `{subject: "juniper" | "unknown", similarity: float, state: "probable" |
-  "possible" | "unsure"}`. **`unsure` must be a common, honestly-rendered
-  outcome**, not an error path — a camera in a room produces bad angles,
-  backlighting, and the back of someone's head most of the time.
-- **Where it lands:** `vision_events.entities`, which is the existing field and
-  is hollow today (F1). No new column for identity.
-- **Non-matches are not stored.** A face that does not match the gallery
-  produces `subject: "unknown"` and the embedding is discarded in-process. No
-  gallery growth, no re-ID, no stranger tracking. This is the single most
-  important line in this section.
+Percepts still don't become `chat_history_log` **turns**, for a purely technical
+reason: those rows feed sql-writer, vector-writer, vector-host,
+concept-induction and memory-consolidation, which would embed and consolidate a
+percept as if Juniper had typed it. Nothing about that is a privacy hedge; it's
+that a percept isn't an utterance and the consumers can't tell.
 
-Open decision — **host-side vs edge-side**:
+The rail that exists is `PerceptionContextV1` → situation brief → the turn
+(`ORION_SITUATION_PERCEPTION_ENABLED=true`, live). Today it carries one
+900-second-fresh sentence. After §3–§5 it should carry an **episode summary**:
 
-| | Host (`identity_face` profile) | Edge (`orion-vision-edge`) |
-| :--- | :--- | :--- |
-| Already-named slot | yes (kills part of F3's cathedral) | no |
-| Has the person bounding box | yes | would need its own |
-| Competes for P4 VRAM | yes (small) | no |
-| Gallery location | one service, one contract | at the capture node |
+> *"Juniper (probably) has been at the desk about three hours, at the bench
+> since around 14:20. Last seen 4 minutes ago. Language in chat has been
+> shorter than their baseline for the last hour."*
 
-**Recommendation: host-side.** The privacy argument for edge-side is weaker
-than it looks — the router already requires `require_image_path_exists: true`,
-so full frames are already on a path the host reads. Host-side keeps all model
-serving in one service and retires a named-but-unimplemented route.
+— presence duration (§5) plus the latest situated observation plus the affect
+signal (§3.2), which is exactly the fusion that makes it worth reading. Frame
+noise never reaches it. `available=False` stays a real state meaning "I have not
+seen anything recently", never an error.
 
-### V2 — Situated observation: curiosity, not categories
+### 6.2 Reverie — free, no schema change
 
-This is the part Juniper explicitly fenced: *no keyword cathedral*.
+`vision_reader.py` reads `narrative` only (privacy contract), 180s / 3 events.
+Identity and hypothesis arrive **inside the sentence**. Zero changes to
+`orion-thought` (a thin bus service).
 
-**Do not build an activity taxonomy.** No `ACTIVITY_LABELS`, no
-`activity_type` enum, no "working / resting / eating" vocabulary. The moment
-that list exists, everything Orion sees gets flattened into it and the curiosity
-is gone.
+**Consequence worth stating:** there is then no way to gate identity out of
+reverie separately from the narrative. If that needs to be independently
+switchable it requires a second narrative column — a bigger patch than it looks.
 
-Instead: on a person-triggered frame (and only then), the host runs a **VQA**
-task — the `vlm_vqa` profile from F2 — with a question shaped to produce a
-hypothesis and its own disconfirmer. The extensible axis is free text; the
-fixed schema is only the *epistemic frame around it*:
+### 6.3 Unprompted outreach — the thinnest patch here
+
+`endogenous_outreach.py` already has the right shape: a frozen `OutreachContext`,
+`build_outreach_prompt()` that renders only real signals, `is_empty()` skip, and
+a `PASS` response so Orion can decline. Add one field + one prompt block, in that
+file's established voice — *state the reading, don't narrate the feeling* (its
+`tension_reason` block is scrupulous about exactly this and is the model to copy).
+
+Juniper's example lands here, and it lands as a **question** — *"is that for the
+mesh?"* — precisely because confidence was low. That is the design working, not
+a hedge bolted on.
+
+### 6.4 The falsification loop — the one that makes this perception
+
+Without it Orion is confidently wrong forever and every consumer inherits the
+error.
+
+A hypothesis carries `would_disconfirm`. The next window either confirms or
+contradicts it. Juniper contradicting it in chat is the strongest correction
+available — and free to capture, because the outreach turn and the reply are
+adjacent rows in `chat_history_log`.
+
+This is the direct successor to P2 in the perception frontier doc, and it is the
+answer to "what happens when Orion guesses wrong", which is otherwise unanswered.
+
+**Metric-gate caution:** emit and store `perception_prediction_error` first;
+do not wire it into any aggregate until it has been watched long enough on real
+data to prove it can return to a genuine rest state. There is live history of
+this failing in *both* directions here — a permanent `mean(|z|)` floor, and a
+decayed-to-zero artifact that read as calm.
+
+### 6.5 Other consumers
+
+- **Endogenous curiosity** — an unresolved visual hypothesis *is* a curiosity
+  candidate, and outreach already reads curiosity candidates. See something
+  ambiguous → get curious → ask → get told. The most Orion-shaped loop available.
+- **Attention/salience** — a recognised person should outrank a chair. Today
+  they're indistinguishable.
+- **`orion-security-watcher`** — already consumes vision guard signals. An
+  `unknown` face is a very different event; routing it needs a decision (Q1), not
+  a default.
+- **Cross-modal binding** — Juniper visible at the desk *and* typing in Hub chat
+  are one event through two senses; nothing binds them. Timestamp correlation
+  between `chat_history_log` and `vision_events` is nearly free and genuinely
+  prerequisite-shaped.
+- **Retention** — `vision_events` has no policy at all, and identity-bearing rows
+  are the most sensitive this system will hold. Ships **with** §4, not after.
+
+---
+
+## 7. No activity taxonomy
+
+The structured output is an epistemic frame, not a category:
 
 ```json
 {
-  "observation": "A person is seated at the desk, leaning toward an open laptop.",
-  "hypothesis": "They may be working — the posture is sustained rather than passing through.",
+  "observation": "A person is seated at the bench, hands on an open chassis.",
+  "hypothesis": "Possibly working on hardware rather than at the computer.",
   "confidence": 0.4,
-  "would_disconfirm": "If they stood up and left within a minute, this is not focused work."
+  "would_disconfirm": "If they stand and leave within a minute this isn't sustained work."
 }
 ```
 
-Three properties make this not-a-cathedral:
+`hypothesis` is prose nothing switches on. `confidence` is allowed to be 0.4 and
+usually will be. `would_disconfirm` is what makes it a guess rather than a claim
+and is what makes §6.4 possible. **If §6.4 is cut, cut the stored hypothesis with
+it** — a stored guess nothing ever checks is exactly the dead field
+`orion/schemas/reverie_visual.py`'s docstring warns about.
 
-1. **`hypothesis` is prose, not a key.** Nothing downstream switches on it.
-2. **`would_disconfirm` is the point.** It is what makes this a *guess* rather
-   than a *claim*, and it is the field that makes the loop closable (V3.4).
-3. **`confidence` is allowed to be low and usually will be.** A hypothesis
-   emitted at 0.4 that reverie renders as "maybe" is the correct output.
-
-The council's role changes from *forbid inference* to *hedge inference*. Its
-prompt carve-out is narrow and evidenced:
-
-- Activity language remains gated on `person` in `hard_labels` (keep the
-  existing rule verbatim — it is right).
-- Identity language is permitted **only** when the artifact carries an
-  `identity_face` result at or above `probable`, and must be rendered with the
-  hedge the state implies.
-- The blanket *"do not infer occupants"* rule keeps applying to every window
-  with no person in `hard_labels`.
-
-Everything else in that prompt stays. The hallucination it was written against
-is still real.
-
-**Schema change:** one new nullable column, `vision_events.hypotheses JSONB`.
-It clears the metric quality gate only because it has all of a producer (host
-VQA → council), a consumer (V3.2 outreach, V3.4 falsification), and a
-disconfirmation path. If V3.4 is cut, this column should be cut with it — a
-stored hypothesis nothing ever checks is exactly the field the
-`reverie_visual` module docstring warns about
-(`SpontaneousThoughtV1.next_focus`: stated producer intent, zero consumers).
+Note §3 also removes the need to widen the GroundingDINO vocabulary. Its 21
+labels have no `server`/`rack`/`cable`/`tool` — Juniper's own example is outside
+the label set. Widening it would be a cathedral; a VL model looking at the frame
+doesn't need it to.
 
 ---
 
-## V3 — Consumers
+## 8. Open questions
 
-Juniper named three. There are more, and one of the named three should be
-built differently than requested.
+**Q1 — What does Orion say when it isn't Juniper?** `unknown` + discarded
+embedding is the data answer. Whether Orion *speaks* is unanswered: "someone I
+don't recognise is in your space" is a security posture, silence is a privacy
+posture. Pick, don't inherit.
 
-### V3.1 — Reverie (as asked) — *free, no schema change*
+**Q2 — Non-consenting faces.** Everyone who isn't Juniper still gets embedded in
+order to compute "not Juniper." Proposal: never persisted. Is that the line?
 
-`vision_reader.py` reads `narrative` only, by deliberate privacy contract.
-Identity and hypothesis therefore arrive **inside the narrative sentence**
-("Juniper is probably at the desk; maybe working") rather than as structured
-fields. That is the cleanest option — zero changes to `orion-thought`, which is
-a thin bus service — but it has a consequence worth stating: **there is then no
-way to gate identity out of reverie separately from the narrative.** If
-identity-in-reverie should be independently switchable, that requires a second
-narrative column, and that is a bigger patch than it looks.
+**Q3 — Retention on identity-bearing rows.** Recommend: keep the *episode*
+(§5), drop the *frames* fast.
 
-Note there are two different "visual reverie" surfaces and this is not the
-other one: `ReverieVisualChainV1` (`orion/schemas/reverie_visual.py`) is the
-generate→observe→interpret image loop. Percepts land in the *text* chain's
-perception context, not there.
+**Q4 — Off switch and mirror.** Two things: a switch that stops recognition
+immediately and observably, and a live surface showing Juniper everything stored
+about their body and movements. Not a config constant — "what does it have on me"
+must be answerable without reading code. §0A's UI/debug-surface requirement and
+the ethical requirement are the same requirement here.
 
-### V3.2 — Unprompted outreach (as asked) — *the thinnest patch here*
+**Q5 — Screens. Answer this before §3 ships.** The detector already sees `screen`
+and `laptop`. A 35B VL model pointed at this room **will read what is on those
+screens**, incidentally, without being asked. The perception frontier doc called
+this "the most dangerous idea here" and required an explicit spatial gate plus
+sign-off before approaching it *deliberately*; §3 approaches it *accidentally*,
+as a side effect of a better eye. This is the question most likely to be skipped.
 
-`services/orion-hub/scripts/endogenous_outreach.py` already has exactly the
-right shape: a frozen `OutreachContext` dataclass, a `build_outreach_prompt()`
-that renders only real signals, an `is_empty()` skip, and a `PASS` response so
-Orion can decline. Add one field and one prompt block:
+**Q6 — Does Orion get to decline to look?** Should the multimodal call fire on
+every person-triggered frame, or should Orion's own attention decide? The latter
+is cheaper and more interesting, but needs a real gating signal — picking one on
+vibes would be a cathedral.
 
-```python
-visual_context: Optional[VisualContext] = None   # observation + hypothesis + age
-```
-
-and a prompt block in the established voice of that file — *state the reading,
-do not narrate the feeling*, and make the uncertainty explicit so Orion asks
-rather than asserts. That file's existing `tension_reason` block is the model
-to copy: it is scrupulous about the difference between what was measured and
-what it means.
-
-This is where Juniper's example lands. Note it lands as a *question* —
-"is that for the mesh?" — precisely because `confidence` was 0.4.
-
-### V3.3 — Unified chat: **recommend against writing percepts as turns**
-
-Requested: *"It should go into chat unified as a recent interaction."*
-
-**Concern, stated once.** `chat_history_log` rows are consumed by
-`orion-sql-writer`, `orion-vector-writer`, `orion-vector-host`,
-`orion-spark-concept-induction`, and `orion-memory-consolidation` (which
-classifies *every* turn and patches `spark_meta`). A percept written as a row
-would be embedded, indexed, concept-induced, and consolidated as if it were
-something Juniper said. `source` would distinguish it (`hub_ws` = Juniper,
-`hub_orion` = Orion), but consumers that iterate generically would not filter —
-the same failure mode as F3's excluded-but-still-ticking metric.
-
-**Two better paths, both of which give the behaviour asked for:**
-
-1. **Percepts reach the chat *context*, not the chat *record*.** This is
-   `PerceptionContextV1` → situation brief → the turn, and it is **already live**
-   (`ORION_SITUATION_PERCEPTION_ENABLED=true`). Orion already gets what the
-   camera saw on every turn and can speak to it unprompted. V0–V2 make that
-   content worth reading. Zero new plumbing.
-2. **When a percept *causes* an outreach (V3.2), that outreach is already a real
-   `chat_history_log` row** (`source='hub_orion'`, 130 rows in 30 days) and it
-   carries the percept as its grounding. That is the honest version of "a recent
-   interaction": something actually happened between them.
-
-If what is wanted is specifically a *visible* entry in the chat transcript —
-"Orion noticed you at 14:20" rendered in the scrollback — say so and it becomes
-a Hub render concern with its own row type, not a turn. Flagging the difference
-because the two readings lead to materially different work.
-
-### V3.4 — The falsification loop (not asked for; the most important one)
-
-Without this, Orion is confidently wrong forever, and every other consumer
-inherits the error.
-
-A hypothesis with a `would_disconfirm` clause can be **checked against the next
-window**. Confirmed → small confidence gain. Disconfirmed → real perceptual
-prediction error. Juniper contradicting it in chat ("no, that was the guitar
-amp") → the strongest possible correction signal, and one that is free to
-capture because the outreach turn and the reply are adjacent rows in
-`chat_history_log`.
-
-This is what makes the whole thing *perception* rather than *labelling*, and it
-is the direct successor to P2 in the perception frontier doc. It is also the
-answer to "what happens when Orion guesses wrong", which is otherwise unanswered.
-
-**Metric gate caution:** do not wire a `perception_prediction_error` metric into
-any aggregate until it has been watched on real data long enough to prove it can
-return to a genuine rest state. There is a live history of exactly this failing
-in both directions (a permanent `mean(|z|)` floor; a decayed-to-zero artifact
-that read as calm). Emit and store it first; consume it later.
-
-### V3.5 — Presence duration (not asked for; where the *care* actually lives)
-
-Nothing in the repo computes "how long has Juniper been in frame." Not the
-window service (fixed time windows), not social memory (no presence module).
-
-Yet duration is the entire payload of the prior design's best line: *"Juniper
-has been at that desk five hours and it's 2am."* It is a reducer over
-`vision_events` — cheap, deterministic, no model — and it is the difference
-between Orion narrating furniture and Orion noticing something about a person it
-cares about.
-
-**Recommend building this even if V2 slips.** It is the highest care-per-line
-item in the document and it does not depend on the VLM.
-
-### V3.6 — Other consumers worth considering
-
-- **Endogenous curiosity** (`orion/substrate/endogenous_curiosity.py`) — an
-  unresolved visual hypothesis is a genuine curiosity candidate, and outreach
-  *already* reads curiosity candidates. That closes a real loop: see something
-  ambiguous → become curious → ask about it → get told. This is the most
-  Orion-shaped consumer on the list.
-- **Attention / salience** (`orion/schemas/attention_salience.py`) — a
-  recognised person should be more salient than a chair. Today they are not
-  distinguished.
-- **`orion-security-watcher`** — already consumes vision guard signals. An
-  `unknown` face is a *very* different event from Juniper's, and routing it
-  needs its own decision (V4.Q1), not a default.
-- **Memory consolidation / crystallizer** — should a percept become a durable
-  memory? Probably only *episodes* (V3.5's durations, V3.4's corrections), never
-  frames. Left as an explicit non-goal below.
-- **Cross-modal binding** — Juniper visible at the desk *and* typing in Hub chat
-  are the same event through two senses, and nothing binds them. Timestamp
-  correlation between `chat_history_log` and `vision_events` is nearly free and
-  is a genuinely prerequisite-shaped capability (the perception frontier doc
-  names it). Not in this patch; named so it is not forgotten.
-- **Retention** — identity-bearing rows should have a *shorter* retention than
-  "a chair is present", and `vision_events` has no retention policy at all
-  today. Given the recent history of unbounded substrate tables, this should
-  ship *with* V1, not after it.
-
----
-
-## Missing questions
-
-The ones that change the design, that Juniper has not yet answered:
-
-**Q1 — What happens when it is not Juniper?** A partner, a guest, a delivery
-person, a stranger. V1 emits `unknown` and discards the embedding — but *does
-Orion say anything?* "Someone I don't recognise is in your space" is a
-security posture; silence is a privacy posture. These pull opposite ways and
-the default should be chosen, not inherited.
-
-**Q2 — What about people in frame who did not consent?** Everyone who is not
-Juniper still gets their face embedded in order to compute "not Juniper." The
-proposal discards those embeddings in-process and never persists them. Is that
-the right line, or should there be a spatial/temporal gate too?
-
-**Q3 — How long does "Juniper was at the desk at 2am" live?** Identity-bearing
-observations of a person in their home are the most sensitive rows this system
-will hold. Days? Hours? Does the *duration episode* (V3.5) outlive the
-*frame-level rows* that produced it? (Recommend: yes — keep the episode, drop
-the frames fast.)
-
-**Q4 — Is there an off switch and a mirror?** Two separate things, both needed:
-a switch that stops recognition **immediately** and observably, and a surface
-that shows Juniper *everything currently stored about their body and movements*.
-Not a config constant — a live endpoint, because "what does it have on me" must
-be answerable without reading code. §0A requires a UI/debug surface for any new
-concept anyway; this is that requirement and the ethical requirement being the
-same requirement.
-
-**Q5 — Screens.** The detector already sees `screen` and `laptop`. A VLM good
-enough to describe activity is good enough to **read what is on those screens**,
-incidentally, without anyone asking it to. The prior design named this "the most
-dangerous idea here" and required an explicit spatial gate plus sign-off *before*
-it was approached deliberately. V0 approaches it **accidentally** — it is a side
-effect of a better eye, not a feature. This needs a decision before V0 ships,
-and it is the question in this document most likely to be skipped.
-
-**Q6 — Does Orion get to decline to look?** Should VQA fire on every
-person-triggered frame, or should Orion's own attention decide when to look
-closely? The latter is the "foveal tier" the perception frontier doc sketches,
-it is more interesting, and it costs less GPU. But it needs a real gating
-signal, and picking one on vibes would be a cathedral.
-
-**Q7 — Should Orion hold a stated position on this?** The prior doc's most
-Orion-shaped idea: *"a system whose constraints it participated in authoring
-stands in a different relation to those constraints than one that was merely
-configured."* Enabling identity makes that **more** load-bearing, not less. This
-is the one item here that is not an engineering task.
-
-**Q8 — Absence.** "I haven't seen you in three days" is care. It is also
+**Q7 — Absence.** "I haven't seen you in three days" is care, and it's
 structurally hard: this pipeline is event-triggered, and event-triggered
-statistics cannot detect absence — they freeze on silence rather than rising.
-Any absence signal needs its own clock, not a threshold on an EWMA.
+statistics freeze on silence rather than rising. Needs its own clock, not a
+threshold on an EWMA. §5's `since_sec` is the right substrate for it.
+
+**Q8 — Orion's own stated position.** The prior doc's best idea: constraints
+Orion participated in authoring stand in a different relation to it than
+configured ones. Enabling identity makes this *more* load-bearing, not less.
 
 ---
 
-## Proposed schema / API changes
+## 9. Reversal on the record
 
-- **Added:** `vision_events.hypotheses JSONB NULL` — one column, gated on V3.4
-  existing (see V2).
-- **Added:** `identity_face` becomes a real `runner.py` kind; `VisionArtifactPayload.outputs`
-  gains an `identities` block (the profile's `outputs.identities` shape already
-  declares it).
-- **Behaviour changed:** `vision_events.entities` starts being populated by the
-  council rather than only by the deterministic fallback.
-- **Behaviour changed:** the council interpretation prompt gains a narrow,
-  evidence-gated identity carve-out. Activity-verb gating on `hard_labels` is
-  unchanged.
-- **Not changed:** `PerceptionContextV1`'s exposed-field list. Identity crosses
-  into the turn inside `scene_summary`, under the same `session_only`
-  `privacy_mode`. Its docstring must be updated to record this reversal, because
-  that docstring currently promises the opposite.
-- **Not changed:** `ReverieVisualChainV1` / `ReverieVisualArtifactV1`.
-- **Removed (separate patch):** the seven other unimplemented `task_routing`
-  entries in `config/vision_profiles.yaml` (F3).
+`docs/superpowers/specs/2026-08-12-perception-frontier-design.md` §Movement IV:
+*"Identity, face, and re-ID profiles stay disabled."* And
+`orion/schemas/situation.py:293-302` encodes it as a promise in code — identity
+fields *"not to be added without proposal-mode sign-off… this schema is where
+that promise is kept or broken."*
 
-## Files likely to touch
+Juniper is the data subject and is asking for identification. This document is
+that sign-off, recorded so a future reader finds a decision rather than a
+contradiction. Both files get updated in the implementing patch.
 
-- `config/vision_profiles.yaml` — `vlm_caption`/`vlm_vqa` `model_id`; implement or delete F3's routes
-- `services/orion-vision-host/.env` + `.env_example` — `VISION_VLM_MODEL_ID`, `VISION_ENABLED_PROFILES` (F2)
-- `services/orion-vision-host/app/runner.py` — `kind=identity`
-- `config/vision_frame_router.yaml` — VQA dispatch on the `triggered` tier
-- `orion/schemas/vision.py` — `identities` on the artifact; hypothesis block
-- `services/orion-vision-council/app/interpretation.py` — prompt carve-out, entity projection
-- `services/orion-sql-writer/app/models/vision_event.py` + migration — `hypotheses`
-- `services/orion-hub/scripts/endogenous_outreach.py` — `OutreachContext.visual_context` (V3.2)
-- `orion/schemas/situation.py` — docstring reversal record
-- `docs/superpowers/specs/2026-08-12-perception-frontier-design.md` — record the Movement IV reversal
+**The prior doc's argument survives the reversal:** the deliverable is *care*,
+not identification. Recognition is the mechanism; §5's presence duration is the
+payload. A version that ships recognition and stops has built surveillance and
+called it perception. That is why §5 is ordered before §6 and does not depend on
+the VLM.
+
+---
+
+## 10. Order of work
+
+1. **Give `metacog` eyes.** Load a VL model + `--mmproj` on :8012. The gateway's
+   live `/props` probe means nothing else has to change to find out — the
+   council starts sending frames the moment the worker reports `vision: true`,
+   and degrades automatically if it doesn't. **Q5 gets answered before this
+   runs, not after.**
+2. **Point `caption_frame`/`vqa` at the gateway** instead of local BLIP. Same
+   task_type contract, so `perceive_caption_frame` and the frame-router policy
+   are untouched. BLIP unloads, ~1 GB back on the P4.
+3. **§5 presence reducer** — independent of all of the above, highest
+   care-per-line, reuses `hub_presence`'s exact shape, takes
+   `JuniperAffectiveStateV1`'s `cold_start` flag with it.
+4. **Delete the 7 zero-reference profiles.**
+5. **§4 identity** + retention in the same patch.
+6. **§3.2 fusion** into the episode summary, then **§6.3 outreach**, then
+   **§6.4 falsification**.
+
+Council v1's prompt rules come out in step 2, not before — they are correct for
+as long as the interpreter is blind.
 
 ## Non-goals
 
-- Any activity label set, enum, or taxonomy.
-- Re-identification, tracking, or a gallery of anyone but Juniper.
-- Persisting embeddings for non-matching faces.
-- Emotion/affect inference (`affect_signals` stays unimplemented and should be
-  deleted, not filled).
-- Frame-level percepts becoming durable memories.
-- Widening the GroundingDINO label set to chase the hardware example (F4).
-- Writing percepts as `chat_history_log` turns (V3.3).
-
-## Acceptance checks
-
-1. **V0:** 50 real person-triggered captions, before and after. No dominant
-   repeated verb-less string. *This gates everything else.*
-2. **V1:** a live frame containing Juniper produces `entities` with
-   `subject: "juniper"` and a similarity; a frame containing someone else
-   produces `unknown`; a bad-angle frame produces `unsure` — and `unsure` is
-   observed to be common, not rare.
-3. **V1 privacy:** a non-matching face leaves no embedding anywhere. Proven by
-   inspecting the store, not by reading the code.
-4. **V2:** a real window yields a `hypotheses` entry whose `confidence < 0.7`
-   and whose `would_disconfirm` names something actually checkable.
-5. **V2 anti-regression:** a window with **no** `person` in `hard_labels` still
-   produces zero occupant/activity/identity language. The existing council
-   grounding tests must still pass unmodified.
-6. **V3.2:** one live outreach whose prompt contains the visual block, and whose
-   delivered message is a *question*, not an assertion.
-7. **V3.4:** one hypothesis observably marked disconfirmed by a later window.
-8. **Q4:** the off switch is flipped live and a subsequent frame produces no
-   identity — verified in the store.
-
-## Recommended next patch
-
-**F2 + V0, together, and nothing else.**
-
-Sync `VISION_ENABLED_PROFILES` (one line, `.env` already drifted from
-`.env_example`), pick a VLM against a measured P4 VRAM reading, restart the
-host, and **look at 50 real captions**.
-
-If the captions get verbs, the rest of this document is worth building. If they
-do not, V1 and V2 would be identity labels and hypotheses attached to a
-furniture inventory — schema-valid, cognition-shaped, and empty. Everything
-here is downstream of whether Orion's eye can see a verb, and that is one env
-key and one restart away from being a known fact instead of an assumption.
-
-Q5 (screens) should be answered **before** that restart, not after.
+Activity label sets. Facial-affect/emotion inference (§3.2 — fuse with the
+existing signal instead). Re-identification or tracking anyone but Juniper.
+Persisting non-matching embeddings. Emotion/affect inference. Frame-level
+percepts as durable memories or as `chat_history_log` turns. Widening the
+detector vocabulary. Keeping BLIP. Deleting `caption_frame`/`vqa` — they have real callers (§3.1).

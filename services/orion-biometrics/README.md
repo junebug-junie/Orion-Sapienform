@@ -261,12 +261,18 @@ atlas   PDU_OUTLETS=34,35      2 PSUs   ~266 W
 athena  PDU_OUTLETS=           not on this PDU; empty disables the poller
 ```
 
-STALE as of 2026-08-21: atlas is decommissioned (see `config/biometrics/node_catalog.yaml`).
+RE-CABLED 2026-08-21: atlas is decommissioned (see `config/biometrics/node_catalog.yaml`).
 athena's disks now run from that chassis, so athena's own `PDU_OUTLETS` is 34,35 (self-polled,
-no longer empty). circe was separately relocated in the same rack work; its real outlets are
-**unverified** — SNMP to this PDU was fully timing out (even to the previously-good 34/35) as
-of this note, so the 19,25,31 value above could not be re-checked. Confirm live before trusting
-it.
+no longer empty) — confirmed live at 238 W chassis vs 235 W PDU. circe was separately relocated
+to this PDU's bank B1, now outlets 1,7,13 (~669 W) — also confirmed live via `snmpget` and the
+fleet cluster event's `measurements_proxied`.
+
+That confirmation was blocked for a while by something unrelated to outlet numbers: this PDU's
+SNMP Manager allow-list only had a stale athena address (an old DHCP lease from 2026-08-14, see
+`app/metrics.py`'s `_carrying_interfaces` docstring), not athena's current one. An unauthorized
+source IP is silently dropped by this device rather than refused — indistinguishable from the
+PDU being down, since it answered ICMP and HTTPS the whole time. Fixed in the PDU's own admin
+panel by adding athena's current address to the Manager list.
 
 A mismatch is detectable: on atlas, `pdu_watts` and `chassis_watts` should agree at steady state.
 They read 291 W and 291 W when this was validated.

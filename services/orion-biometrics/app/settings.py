@@ -112,12 +112,13 @@ class Settings(BaseSettings):
     #     atlas   PDU_OUTLETS=34,35      (2 PSUs)
     # athena is not on this PDU and leaves it empty, which disables the poller entirely.
     #
-    # STALE as of 2026-08-21. atlas is decommissioned (see node_catalog.yaml); its old
-    # outlets 34,35 are now athena's own reading -- athena's disks moved into that chassis
-    # and it inherited the iLO/PDU position. circe was separately relocated in the same rack
-    # work and its real outlet numbers are UNVERIFIED (SNMP to this PDU was fully timing out,
-    # even to the previously-good 34/35, when this was written) -- do not trust the 19,25,31
-    # value above until it's re-checked live.
+    # RE-CABLED 2026-08-21. atlas is decommissioned (see node_catalog.yaml); its old outlets
+    # 34,35 are now athena's own reading (238 W chassis vs 235 W PDU, confirmed live). circe
+    # was separately relocated to this PDU's bank B1, now outlets 1,7,13 (~669 W, confirmed
+    # live via snmpget and the fleet cluster event's measurements_proxied). The SNMP outage
+    # blocking that confirmation was unrelated to outlet numbers: this PDU's SNMP Manager
+    # allow-list only had a stale athena address (an old DHCP lease), so athena's real queries
+    # were silently dropped -- fixed in the PDU's own admin panel, not in this repo.
     #
     # This is the only source of chassis power for a node with no BMC, which is the whole
     # reason it exists: circe has never reported watts, and every fleet total to date has

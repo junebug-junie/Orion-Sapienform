@@ -261,6 +261,13 @@ atlas   PDU_OUTLETS=34,35      2 PSUs   ~266 W
 athena  PDU_OUTLETS=           not on this PDU; empty disables the poller
 ```
 
+STALE as of 2026-08-21: atlas is decommissioned (see `config/biometrics/node_catalog.yaml`).
+athena's disks now run from that chassis, so athena's own `PDU_OUTLETS` is 34,35 (self-polled,
+no longer empty). circe was separately relocated in the same rack work; its real outlets are
+**unverified** — SNMP to this PDU was fully timing out (even to the previously-good 34/35) as
+of this note, so the 19,25,31 value above could not be re-checked. Confirm live before trusting
+it.
+
 A mismatch is detectable: on atlas, `pdu_watts` and `chassis_watts` should agree at steady state.
 They read 291 W and 291 W when this was validated.
 

@@ -26,6 +26,13 @@ editable on this firmware, so the map cannot be read from the device and lives i
 `PDU_OUTLETS` instead. If anything is ever re-cabled, that env value is what must change --
 nothing detects it automatically.
 
+STALE as of 2026-08-21 -- re-cabling happened. atlas is decommissioned (its disks now run
+athena; see config/biometrics/node_catalog.yaml); outlets 34,35 are athena's own reading now,
+not atlas's. circe was physically relocated in the same rack work and its real outlets are
+UNVERIFIED -- SNMP to this PDU was timing out entirely (even to the previously-good 34/35)
+when this was written, so the 19,25,31 value above could not be re-checked. Do not trust it
+until it's confirmed live.
+
 CONTAINMENT
 -----------
 For a node that has BOTH an iLO and PDU outlets (atlas), these are two independent meters on

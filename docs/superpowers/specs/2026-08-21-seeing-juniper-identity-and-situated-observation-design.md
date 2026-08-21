@@ -220,47 +220,115 @@ attachable to an unrelated model. An affective model and a VL model cannot share
 a llama-server on :8014 regardless of VRAM. It is two processes either way, so
 they are two ports on two cards.
 
-### What stays on athena, and why — `/mnt/telemetry` is local
+### Measured, not estimated: 1.74 s end to end
 
-`/mnt/telemetry` is `/dev/sdf1`, **plain local ext4 on athena**. No NFS, no
-exports. circe cannot read a frame by path, so the sensors cannot simply follow
-the P100 to circe:
+Run 2026-08-21 against a **real live frame** from `/mnt/telemetry/vision/frames`,
+athena → circe :8011 over tailscale:
 
-| runs on athena (P4) | runs on circe (P100) |
+```
+wall 1.74s   |  prompt_ms 734 (image encode)  predicted_ms 748  74.9 tok/s
+             |  prompt_tokens 340   finish_reason: stop
+```
+
+> *"This cluttered home office or workspace features two desks—one with a
+> monitor and chair draped in a blue jacket, the other holding electronics and
+> tools—surrounded by storage bins, cables, and equipment; no person is visible,
+> so I cannot describe their activity or confidence level."*
+
+The same room, same evening, from the pipeline that is live today:
+
+> *"Four chairs, four doors, two boxes, two desks, two tables, and one person
+> are detected in the scene."*
+
+Three things that measurement settles:
+
+1. **It reads the scene, not a label list.** "Home office", "chair draped in a
+   blue jacket", **"electronics and tools"** — the workbench that §F4 said the
+   21-label detector vocabulary could never reach. It did not need a label for
+   it. This is the direct evidence that widening the vocabulary was the wrong fix.
+2. **It refuses to speculate when there is nothing to see** — unprompted, and in
+   the exact hedged register §7 wants.
+3. **Thinking must be disabled.** The first run, identical except
+   `enable_thinking` left on, burned all 80 tokens inside the reasoning block and
+   returned an **empty `content`** — textbook §0A "empty-shell cognition". With
+   `chat_template_kwargs: {enable_thinking: false}` it answered in 1.74 s.
+   `build_interpretation_llm_options()` already sets
+   `structured_output_thinking_policy: "disabled_for_artifact"`; the precedent
+   exists and must carry over.
+
+**On the P100, expect slower but comfortable.** Generation is bandwidth-bound
+and the P100's 732 GB/s HBM2 is ~0.8× the V100-32GB's 900 GB/s. Prefill is
+compute-bound and the gap is much wider (P100 ~19 TFLOPS fp16, no tensor cores).
+A 7–8B dense VL is also different arithmetic from the 35B MoE measured here.
+Honest estimate **~3–6 s**; honest method is to re-run this exact test on :8015
+once it is up rather than trust the estimate. Either way it is far inside the
+budget: council windows arrive ~40–60 s apart, and the P4 already spends 2.48 s
+per `retina_fast`.
+
+### Frames cross the wire; the sensors still stay put
+
+Correcting an over-absolute claim: athena and circe are on the same tailnet and
+moving a frame between them is trivially cheap — the 99 KB transfer above is
+inside that 1.74 s and invisible in it. `/mnt/telemetry` being local ext4
+(`/dev/sdf1`, no NFS) does not mean circe *cannot* get frames; it means there is
+no shared **mount**, so frames travel as **bytes over HTTP**, which the gateway
+already does.
+
+The sensors still stay on athena, for better reasons than reachability:
+
+| athena (P4) | circe (P100) |
 | :--- | :--- |
-| capture, GroundingDINO (hard labels), SigLIP2 (embeddings), `identity_face` | the VL language pass, via the gateway |
+| capture, GroundingDINO, SigLIP2, `identity_face` | the VL language pass |
 
-That is not a workaround — it is the right boundary anyway. Face embeddings are
-biometric and now have a physical reason to stay on-node, not just a policy one.
-Frames cross to circe as **bytes for one inference**, never as a mounted path.
+- **Volume.** The VL pass runs per *window*; detection runs per *frame*. Moving
+  detection means every frame crosses, not the handful that matter.
+- **Biometrics.** Face embedding stays where the camera is. Keeping it on-node
+  is a boundary worth having on purpose.
+- **It already works.** The P4 does detection at 2.48 s/task. It is not the
+  bottleneck; the 250 MB captioner is.
 
-### The one real plumbing decision: where percept frames live
+Revisit if the P4 becomes the actual constraint — the transport exists either way.
 
-The gateway already ships image bytes correctly —
-`vision.py::resolve_attachment_url` rebuilds `<trusted base>/<sha256>` from a
-**regex-validated hash only** (the ref's own `source_url` is deliberately
-ignored, because it round-trips through a browser and is client-controlled), and
-`fetch_attachment_data_uri` refuses any payload that does not hash to the
-requested address. Content-addressed, fail-closed, already wired.
+### Percept storage — decided: its own store
 
-But the configured base is the **chat** attachment store:
+**Approved by Juniper.** The gateway's attachment path is already correct:
+`resolve_attachment_url` rebuilds `<trusted base>/<sha256>` from a
+regex-validated hash only (the ref's own `source_url` is deliberately ignored —
+it round-trips through a browser and is client-controlled), and
+`fetch_attachment_data_uri` refuses bytes that do not hash to the requested
+address. Content-addressed, fail-closed, wired.
+
+But the configured base is the **chat** store
+(`http://100.92.216.81:8080/api/chat/attachments`), Hub-served, built for user
+uploads, with no retention suited to percepts — and Hub is the service holding
+the docker socket. Camera frames of a private home do not belong in it.
+
+**Ship `LLM_GATEWAY_PERCEPT_BASE_URL`**: a second base selected by attachment
+kind. Same mechanism, same security property, its own endpoint and its own short
+retention. Percepts get a deliberate home instead of inheriting chat's.
+
+### Camera-down alerting — decided: the attention queue
+
+**Approved by Juniper.** Hub already has the right surface and it is not the
+workflow-schedules "needs attention" filter — it is `GET /api/attention` +
+`POST /api/attention/{attention_id}/ack` (`api_routes.py:1908,1929`), rendering
+into `attentionList`/`attentionCount`. Live queue, 50 items, real contract:
 
 ```
-LLM_GATEWAY_ATTACHMENT_BASE_URL=http://100.92.216.81:8080/api/chat/attachments
-LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS=100.92.216.81
+attention_id, source_service, reason, severity, message, context,
+require_ack, ack_deadline_minutes, acked_at, escalated_at, status
 ```
 
-Hub-served, on athena, built for user chat uploads. **Camera frames of Juniper's
-home should not be dropped into it.** Anything that can reach that endpoint and
-knows a hash can fetch a frame, and Hub is the service that also holds the
-docker socket. It also has no retention policy suited to percepts.
+A vision-liveness watcher emits `source_service: "vision-host"`,
+`severity: "warning"`, `require_ack: true` on either signal:
 
-**Recommendation: a second base** — `LLM_GATEWAY_PERCEPT_BASE_URL`, its own
-endpoint, its own short retention, selected by attachment kind. Same mechanism
-and the same security property (no caller-controlled scheme, host, or path;
-hash-verified bytes), different namespace and lifetime. This is a small change
-to `resolve_attachment_url` and it is the difference between percepts having a
-deliberate home and percepts inheriting chat's.
+- a sustained `ok: false` / `gpu_hard_floor` rate on vision tasks, **or**
+- a `vision_events` write gap exceeding N minutes.
+
+The second matters more: the 2026-08-20 outage produced a perfectly healthy
+container and a perfectly silent table. Note the honest hazard — a write gap is
+also what a genuinely quiet room looks like, so this alerts on *the task failure
+rate first* and uses the write gap as corroboration, not the other way round.
 
 ### 3.1 The `vision_profiles.yaml` cathedral — with blast radius checked
 
@@ -561,26 +629,29 @@ the VLM.
 
 ---
 
-## 10. Order of work
+## 10. The plan
 
-1. **Give `metacog` eyes.** Load a VL model + `--mmproj` on :8012. The gateway's
-   live `/props` probe means nothing else has to change to find out — the
-   council starts sending frames the moment the worker reports `vision: true`,
-   and degrades automatically if it doesn't. **Q5 gets answered before this
-   runs, not after.**
-2. **Point `caption_frame`/`vqa` at the gateway** instead of local BLIP. Same
-   task_type contract, so `perceive_caption_frame` and the frame-router policy
-   are untouched. BLIP unloads, ~1 GB back on the P4.
-3. **§5 presence reducer** — independent of all of the above, highest
-   care-per-line, reuses `hub_presence`'s exact shape, takes
-   `JuniperAffectiveStateV1`'s `cold_start` flag with it.
-4. **Delete the 7 zero-reference profiles.**
-5. **§4 identity** + retention in the same patch.
-6. **§3.2 fusion** into the episode summary, then **§6.3 outreach**, then
-   **§6.4 falsification**.
+Decided: percepts get their own store; camera-down alerts into `/api/attention`;
+Orion's unified turn may see Juniper. Open: **Q5, screens** — answer before
+step 1 ships, not after.
 
-Council v1's prompt rules come out in step 2, not before — they are correct for
-as long as the interpreter is blind.
+| # | what | where | why now |
+| ---: | :--- | :--- | :--- |
+| 1 | **Vision-liveness alert** into `/api/attention` | Hub + a watcher | 21 h blind with a healthy container. Do this first — it is the reason everything else sat. Independent of every other step |
+| 2 | **Perception lane :8015** — VL model + mmproj, thinking off | circe **GPU 3, P100** | measured 1.74 s on the V100; re-run the same test here for the real number |
+| 3 | **Percept store** — `LLM_GATEWAY_PERCEPT_BASE_URL`, own retention | gateway + athena | must exist before frames start crossing |
+| 4 | **Council v2** — send the frame, drop the blind-interpreter prompt rules | vision-council | the rules are correct only while it cannot see |
+| 5 | **`caption_frame`/`vqa` → gateway** | vision-host | same task_type contract, so `perceive_caption_frame` and the frame-router policy are untouched. BLIP unloads, ~1 GB back on the P4 |
+| 6 | **Presence reducer** — `present/recent/absent` + `since_sec` | new, mirrors `hub_presence` | no model needed. The "five hours and it's 2am" payload. Can run in parallel with 2–5 |
+| 7 | **Delete the 7 zero-reference profiles** | `vision_profiles.yaml` | pure cleanup, zero blast radius |
+| 8 | **`identity_face`** + percept retention, same patch | vision-host, athena | biometric stays on-node |
+| 9 | **Fuse** presence + affect into the episode summary | situation brief | §3.2 — two senses on one person |
+| 10 | **Outreach** gets the visual block, then **falsification** | Hub, council | the loop that makes it perception and not labelling |
+
+Steps 1, 6 and 7 need no VL model and no decisions. Steps 2–5 are the real
+build. Steps 8–10 are the capability Juniper actually asked for, and they are
+only worth building on top of a pipeline that has already been proven to produce
+sentences like the one in §3's measurement.
 
 ## Non-goals
 

@@ -629,6 +629,129 @@ the VLM.
 
 ---
 
+## 9A. Object permanence — the seam exists and is 90 seconds deep
+
+Requested: track *things*, not just Juniper. "The cluttered office had a box,
+then the box is gone." And the sharper half of the request — a **slower rescan**,
+because a short interval watches an object being carried out and never registers
+that it left.
+
+That intuition is exactly right, and there is already a half-built mechanism:
+`services/orion-vision-window/app/scene_belief.py`. `SceneBeliefTracker` holds a
+per-stream *believed* label set behind a vote ring and already emits `added` and
+`removed` on transition. `removed` is literally "a thing I believed was here is
+gone."
+
+Four things stop it from answering the question:
+
+1. **Its horizon is ~90 seconds.** `WINDOW_SIZE_SEC=30.0`,
+   `WINDOW_BELIEF_VOTE_N=3` (live values). Three 30-second windows. That *is* the
+   "smaller interval" the request names — the one that cannot see a long-lived
+   object leave.
+2. **`WINDOW_BELIEF_EXIT_VOTES=0`.** A label leaves belief the instant it is
+   missing from all three slots. Stand in front of a box for 90 seconds and the
+   box stops existing. There is no notion of "I still believe that is there, I
+   just cannot see it right now" — which is the whole of object permanence.
+3. **`removed` goes to a log line and nowhere else** (`main.py:291-298`:
+   `logger.info("[WINDOW] belief_transition ...")`). No event, no row, no
+   consumer. Nothing can ask "what disappeared today?"
+4. **It is label-level, not count-level**, and in-memory/ephemeral
+   (`settings.py:31`, "ephemeral like live_state") so it forgets on restart. The
+   live narratives already show the gap: *"two boxes"* then *"one box"* — `box`
+   remains believed and **no transition fires at all**.
+
+### What it needs
+
+**A persisted scene inventory, plus a slow sweep on its own clock.**
+
+The clock matters and is not a detail: this pipeline is event-triggered, and
+event-triggered statistics cannot detect absence — they freeze on silence rather
+than rising. A disappearance is a *non-event*. It can only be found by something
+that wakes up on a timer and asks what it has not seen, never by a threshold on
+the frame stream. That is precisely the "intermediary rescan".
+
+```
+scene_inventory (per stream, per label)
+  label, count, first_seen, last_seen, last_confirmed_count,
+  windows_since_seen, state: present | unconfirmed | departed
+```
+
+- **Fast path (unchanged, 90 s):** the existing belief ring keeps gating the
+  council. It is good at what it does.
+- **Slow sweep (new, timer-driven, ~15–30 min):** for each inventoried label,
+  how long since it was last confirmed? Cross a threshold scaled to **how long
+  it had been there** — something present for three days should need far more
+  absence to be declared gone than something present for ten minutes — and emit
+  a real event: `object_departed`, `object_arrived`, `object_count_changed`.
+- **Counts are first-class.** "two boxes → one box" is the common case and the
+  label-set model cannot express it. GroundingDINO already returns per-object
+  boxes; the count is there and is being thrown away.
+
+**Key it on hard labels + counts, not on the VL prose.** The VL narrative is
+richer ("storage bins, cables, and equipment") but not stable enough to diff
+across hours — it will rephrase the same shelf three ways. Detector labels are
+boring and stable, which is what an inventory needs. The narrative describes;
+the inventory remembers.
+
+That split also keeps the cost right: the sweep is pure SQL over an inventory
+table, no model, no GPU. It can ship before the VL lane exists.
+
+**Why this is worth building beyond the feature request:** "I thought that was
+there and it is not" is a prediction error about the world with a durable
+referent, which is a different and stronger thing than §6.4's per-window
+hypothesis checking. It is the same machinery Orion needs to be *surprised*.
+
+## 9B. Second camera: carbon
+
+Requested: wire carbon's integrated webcam — "when I'm on here, I want Orion
+watching" — primarily as an affective-state surface.
+
+**Most of this already exists.** `services/orion-vision-retina` has
+`WebcamFrameSource` (`app/sources.py:179`) alongside RTSP and folder sources, and
+its dependency set is `fastapi, uvicorn, redis, pydantic, loguru,
+opencv-python-headless, numpy` — **no torch, no YOLO**. That is a laptop-safe
+capture agent. `config/vision_frame_router.yaml` is already multi-stream
+(`streams:` / `cameras:` with per-stream policy), so a second stream is config,
+not architecture.
+
+**One real blocker, and it is the same one as everything else.** Both retina and
+edge write frames to a local `FRAME_STORAGE_DIR` and publish a **path**, and the
+router enforces `require_image_path_exists: true`. carbon shares no filesystem
+with athena. Today a second node physically cannot feed this pipeline.
+
+**So the percept store (§ above) is not a privacy nicety — it is the
+prerequisite that makes multi-node cameras possible at all.** Once capture
+publishes `sha256` + uploads bytes to a content-addressed store instead of a
+local path, carbon works, any future camera works, and the gateway's existing
+hash-verified fetch is the transport. This promotes the percept store from a
+step to a **prerequisite**, and it is now load-bearing for three separate asks.
+
+**Carbon is a different privacy surface and should not inherit cam0's policy.**
+A room camera catches Juniper occasionally and at a distance. A laptop webcam is
+a close, continuous, face-filling view of one person while they work. It is
+simultaneously the best identity and affect signal in the system and the most
+intrusive thing in it. Concretely:
+
+- **Its own stream policy.** Far lower baseline rate than cam0 — this is a
+  presence-and-affect sensor, not a scene sensor. It does not need `retina_fast`
+  on a schedule.
+- **Its own retention**, shorter than cam0's.
+- **A visible, local off switch that does not require reaching Hub.** "Orion is
+  watching me work" must be revocable from the machine being watched, instantly.
+- **§9A does not apply to it.** No object inventory on the laptop camera — there
+  is no scene to remember, and inventorying a person's desk from 40 cm is a
+  different act entirely.
+- **Q5 (screens) is worse here, not better.** A laptop webcam faces the room, but
+  it is on a machine whose screen is the whole point. Decide the screen policy
+  for cam0 first; carbon inherits whatever is decided, tightened.
+
+Note the honest scope: carbon feeding *affect* through vision is a **third**
+estimator on Juniper's state, alongside §3.2's `swear_frequency` and §5's
+presence duration. Per §3.2's precedent, the bar for wiring facial affect into
+anything is the one `typo_rate` failed. Start it as **presence** — "Juniper is at
+the laptop" is a strong, cheap, honest signal — and let facial affect earn its
+way in against real data, or not at all.
+
 ## 10. The plan
 
 Decided: percepts get their own store; camera-down alerts into `/api/attention`;
@@ -637,21 +760,24 @@ step 1 ships, not after.
 
 | # | what | where | why now |
 | ---: | :--- | :--- | :--- |
-| 1 | **Vision-liveness alert** into `/api/attention` | Hub + a watcher | 21 h blind with a healthy container. Do this first — it is the reason everything else sat. Independent of every other step |
-| 2 | **Perception lane :8015** — VL model + mmproj, thinking off | circe **GPU 3, P100** | measured 1.74 s on the V100; re-run the same test here for the real number |
-| 3 | **Percept store** — `LLM_GATEWAY_PERCEPT_BASE_URL`, own retention | gateway + athena | must exist before frames start crossing |
-| 4 | **Council v2** — send the frame, drop the blind-interpreter prompt rules | vision-council | the rules are correct only while it cannot see |
-| 5 | **`caption_frame`/`vqa` → gateway** | vision-host | same task_type contract, so `perceive_caption_frame` and the frame-router policy are untouched. BLIP unloads, ~1 GB back on the P4 |
-| 6 | **Presence reducer** — `present/recent/absent` + `since_sec` | new, mirrors `hub_presence` | no model needed. The "five hours and it's 2am" payload. Can run in parallel with 2–5 |
-| 7 | **Delete the 7 zero-reference profiles** | `vision_profiles.yaml` | pure cleanup, zero blast radius |
-| 8 | **`identity_face`** + percept retention, same patch | vision-host, athena | biometric stays on-node |
-| 9 | **Fuse** presence + affect into the episode summary | situation brief | §3.2 — two senses on one person |
-| 10 | **Outreach** gets the visual block, then **falsification** | Hub, council | the loop that makes it perception and not labelling |
+| 1 | **Vision-liveness alert** into `/api/attention` | Hub + watcher | 21 h blind with a healthy container. The reason everything else sat. Independent of all of it |
+| 2 | **Percept store** — content-addressed, own retention | gateway + athena | **prerequisite, not a step.** Unblocks the VL lane, carbon, and any future camera at once (§9B) |
+| 3 | **Perception lane :8015** — VL + mmproj, thinking off | circe **GPU 3, P100** | measured 1.74 s on the V100; re-run there for the real number |
+| 4 | **Council v2** — send the frame, drop the blind-interpreter rules | vision-council | the rules are correct only while it cannot see |
+| 5 | **`caption_frame`/`vqa` → gateway** | vision-host | same task_type contract; `perceive_caption_frame` and the router policy untouched. BLIP unloads, ~1 GB back |
+| 6 | **Presence reducer** — `present/recent/absent` + `since_sec` | mirrors `hub_presence` | no model. The "five hours and it's 2am" payload. Parallel with 3–5 |
+| 7 | **Scene inventory + slow sweep** (§9A) | window + a timer | no model, no GPU — pure SQL. Object permanence. Parallel with 3–5 |
+| 8 | **Delete the 7 zero-reference profiles** | `vision_profiles.yaml` | cleanup, zero blast radius |
+| 9 | **carbon retina** — webcam source, own stream policy + retention + local off switch | carbon | needs #2. Ship as **presence** first, not facial affect (§9B) |
+| 10 | **`identity_face`** + percept retention, same patch | athena | biometric stays on-node |
+| 11 | **Fuse** presence + inventory + affect into the episode summary | situation brief | two, then three senses on one person |
+| 12 | **Outreach** gets the visual block, then **falsification** | Hub, council | the loop that makes this perception, not labelling |
 
-Steps 1, 6 and 7 need no VL model and no decisions. Steps 2–5 are the real
-build. Steps 8–10 are the capability Juniper actually asked for, and they are
-only worth building on top of a pipeline that has already been proven to produce
-sentences like the one in §3's measurement.
+**Steps 1, 6, 7 and 8 need no VL model, no GPU, and no open decisions** — they
+can all start now and in parallel. Step 2 is the hinge: it unblocks 3 and 9 both.
+Steps 10–12 are the capability actually asked for, and they are only worth
+building on a pipeline already proven to produce sentences like §3's measured
+one.
 
 ## Non-goals
 

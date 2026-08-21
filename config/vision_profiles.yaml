@@ -23,10 +23,24 @@ runtime:
     max_queue: 200
     pick_gpu_metric: free_vram_mb         # free_vram_mb | free_fraction
 
+  # These MUST stay in sync with services/orion-vision-host/.env_example's
+  # VISION_VRAM_{RESERVE,SOFT_FLOOR,HARD_FLOOR}_MB -- the env keys are what
+  # scheduler.py actually enforces (app/main.py:64); this block is read by
+  # nothing and exists only as documentation. Gated by
+  # services/orion-vision-host/tests/test_vram_budget_matches_env_example.py.
+  #
+  # The old values here (3500/2200/1400) were copied into a live .env and took
+  # orion-vision-host down for ~21h on 2026-08-20/21: gpu.py computes
+  # `effective_free = free_mb - reserve_mb` and refuses below hard_floor, so on
+  # the 7.68GB Tesla P4 with ~3.2GB of warm resident models
+  # (4191 - 3500 = 691 < 1400) the scheduler could never pick the GPU again once
+  # the models loaded. Every task failed `gpu_hard_floor` and Orion went blind.
+  # Any future raise here has to be checked against the RESIDENT footprint, not
+  # against total VRAM.
   vram_budget:
-    reserve_mb: 3500                      # keep this much free for cohabiting llama-cpp spikes
-    soft_floor_mb: 2200                   # degrade when free below this
-    hard_floor_mb: 1400                   # refuse heavy tasks when free below this
+    reserve_mb: 1200                      # headroom kept free for cohabiting spikes
+    soft_floor_mb: 1000                   # degrade when free below this
+    hard_floor_mb: 800                    # refuse heavy tasks when free below this
 
   # -----------------------------------------------------------------
   # NOT ENFORCED by services/orion-vision-host today (documentation-only).

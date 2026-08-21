@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI):
                     target_turn_id TEXT NULL,
                     target_message_id TEXT NULL,
                     target_correlation_id TEXT NULL,
+                    target_artifact_ref TEXT NULL,
                     target_key TEXT NULL,
                     session_id TEXT NULL,
                     user_id TEXT NULL,
@@ -159,6 +160,12 @@ async def lifespan(app: FastAPI):
             )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_corr_id ON chat_response_feedback (target_correlation_id);"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_response_feedback ADD COLUMN IF NOT EXISTS target_artifact_ref TEXT NULL;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_artifact_ref ON chat_response_feedback (target_artifact_ref);"
             )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_target_key ON chat_response_feedback (target_key);"

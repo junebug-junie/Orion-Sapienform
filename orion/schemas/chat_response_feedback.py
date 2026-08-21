@@ -10,21 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from orion.core.bus.bus_schemas import Envelope
 
-class ChatResponseFeedbackV1(BaseModel):
-    """Operator/user feedback event for a chat response."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    feedback_id: str = Field(default_factory=lambda: f"chat-response-feedback-{uuid4()}")
-    correlation_id: str | None = None
-    session_id: str | None = None
-    user_id: str | None = None
-    response_id: str | None = None
-    rating: str = Field(default="neutral")
-    feedback_text: str | None = None
-    tags: list[str] = Field(default_factory=list, max_length=16)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+# 2026-08-21: a SECOND `class ChatResponseFeedbackV1` used to sit here, with
+# `rating`/`feedback_text`/`tags`/`metadata` fields. It was shadowed by the
+# real one below -- same name, later definition wins -- so nothing could ever
+# construct it and nothing ever did. Removed. Note for anyone verifying this:
+# `inspect.getsourcelines()` reported the FIRST definition's line number even
+# while the live class was the second, because it matches by name in the
+# source; `model_fields` is the ground truth, not the reported line.
 
 
 CHAT_RESPONSE_FEEDBACK_KIND = "chat.response.feedback.v1"
@@ -93,6 +85,14 @@ class ChatResponseFeedbackV1(BaseModel):
     target_turn_id: Optional[str] = None
     target_message_id: Optional[str] = None
     target_correlation_id: Optional[str] = None
+    # 2026-08-21: the fourth target, and the first that is not chat-shaped.
+    # An Orion-produced artifact -- a self-study journal entry, an affect or
+    # co-creation report, a vision description, a pull request. Carries the
+    # dispatch_id of the action that produced it, so a rating can be scored
+    # back onto that action (orion/autonomy/rating.py). Without it this
+    # channel can only ever grade conversation, which is why the only
+    # non-biometric outcome Orion could have was unreachable.
+    target_artifact_ref: Optional[str] = None
     target_key: Optional[str] = None
     session_id: Optional[str] = None
     user_id: Optional[str] = None
@@ -109,6 +109,7 @@ class ChatResponseFeedbackV1(BaseModel):
         "target_turn_id",
         "target_message_id",
         "target_correlation_id",
+        "target_artifact_ref",
         "target_key",
         "session_id",
         "user_id",
@@ -150,7 +151,12 @@ class ChatResponseFeedbackV1(BaseModel):
         if not self.feedback_id:
             raise ValueError("feedback_id is required")
 
-        if not (self.target_turn_id or self.target_message_id or self.target_correlation_id):
+        if not (
+            self.target_turn_id
+            or self.target_message_id
+            or self.target_correlation_id
+            or self.target_artifact_ref
+        ):
             raise ValueError("At least one target identifier is required")
 
         allowed = THUMBS_UP_CATEGORIES if self.feedback_value == "up" else THUMBS_DOWN_CATEGORIES
@@ -165,15 +171,24 @@ class ChatResponseFeedbackV1(BaseModel):
         if self.free_text and len(self.free_text) > MAX_FREE_TEXT_CHARS:
             raise ValueError(f"free_text exceeds max length {MAX_FREE_TEXT_CHARS}")
 
-        self.target_key = self.target_key or "|".join(
-            [
-                self.target_turn_id or "",
-                self.target_message_id or "",
-                self.target_correlation_id or "",
-                self.session_id or "",
-                self.user_id or "",
-            ]
-        )
+        # The artifact component is appended ONLY when an artifact is the
+        # target, so a chat-shaped key stays byte-identical to every key
+        # already stored. That is not cosmetic: `submission_fingerprint`
+        # below is a hash OF this string, and it is what stops the same
+        # submission landing twice. Adding a component unconditionally would
+        # have re-shaped every chat key from 5 parts to 6, changed its
+        # fingerprint, and silently un-deduplicated resubmissions across the
+        # deploy boundary.
+        key_parts = [
+            self.target_turn_id or "",
+            self.target_message_id or "",
+            self.target_correlation_id or "",
+            self.session_id or "",
+            self.user_id or "",
+        ]
+        if self.target_artifact_ref:
+            key_parts.append(self.target_artifact_ref)
+        self.target_key = self.target_key or "|".join(key_parts)
 
         fingerprint_material = {
             "target_key": self.target_key,

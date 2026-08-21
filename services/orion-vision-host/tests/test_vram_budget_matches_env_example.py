@@ -3,20 +3,30 @@ env keys scheduler.py actually enforces.
 
 Why this exists. On 2026-08-20 orion-vision-host stopped serving every task
 with `gpu_hard_floor` and stayed down ~21 hours; Orion was blind and nothing
-alerted. Root cause was not a code bug -- it was that the *documentation-only*
-`runtime.vram_budget` block in config/vision_profiles.yaml carried
-3500/2200/1400, someone copied those into a live
-services/orion-vision-host/.env, and app/gpu.py's
+alerted. app/gpu.py computes
 
     effective_free = g.free_mb - reserve_mb        # then compared to hard_floor
 
-is unsatisfiable at those numbers on the 7.68GB Tesla P4 once the ~3.2GB of
-warm resident models load: 4191 - 3500 = 691 < 1400, forever.
+and the budget in force was reserve=3500 / hard_floor=1400.
 
-The yaml block is read by nothing (app/main.py:64 takes the value from
-settings/env), so it is pure prose -- which is exactly why it drifted and
-exactly why it was trusted. This test makes the prose load-bearing instead of
-decorative: the doc and the enforced contract cannot diverge again silently.
+**The config never drifted. The hardware moved.** Those values are the
+originals from the first vision-host commit (626c103ee), written when athena
+carried a **P100 16GB**, and they were correct there: 16384 - ~3238MB resident
+= ~13.1GB free, minus 3500 reserve = ~9.6GB, comfortably above the 1400 floor.
+The P100 later moved to circe and athena was left with a **Tesla P4, 7.68GB**.
+Nobody re-derived the budget, and on the smaller card the same numbers are
+arithmetically unsatisfiable the moment the models warm: 4191 - 3500 = 691 <
+1400, forever. The service stayed `Up` and healthy and served nothing.
+
+That is why this file does NOT hardcode a card. A constant baked in against
+today's GPU is the exact failure being guarded: it would go stale the next time
+a card moves, silently, in the same way. `test_budget_is_satisfiable_on_this_
+host` reads the REAL GPU and asserts the budget works on the smallest card
+actually present.
+
+The yaml block is separately read by nothing (app/main.py:64 takes the value
+from settings/env), so it is pure prose that operators copy. The equality test
+makes that prose load-bearing instead of decorative.
 
 It deliberately does NOT assert against the local .env (gitignored, and a
 host-specific override is legitimate) -- only against .env_example, which is
@@ -69,28 +79,56 @@ def test_vram_budget_block_matches_env_example() -> None:
         )
 
 
-def test_reserve_leaves_room_for_resident_models_on_the_smallest_card() -> None:
-    """The floors must be satisfiable on the card this service actually runs on.
+def _smallest_gpu_total_mb() -> int | None:
+    """Total VRAM of the smallest GPU actually present, or None if unreadable."""
+    import shutil
+    import subprocess
 
-    Live-measured, not assumed: the Tesla P4 is 7680MB total and the warm
-    resident set (GroundingDINO + SigLIP2 + the VLM) measured 3238MB on
-    2026-08-21. A config that cannot pick the GPU with the models already
-    loaded is a config that bricks the service the moment it warms up, which
-    is precisely the failure this file exists to prevent -- and it is not
-    caught by the equality test above, since .env_example could drift to bad
-    values in lockstep with the yaml.
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=15, check=True,
+        ).stdout
+    except Exception:
+        return None
+    totals = [int(x.strip()) for x in out.splitlines() if x.strip().isdigit()]
+    return min(totals) if totals else None
+
+
+def test_budget_is_satisfiable_on_this_host() -> None:
+    """The floors must be satisfiable on the card this host ACTUALLY has.
+
+    Reads real hardware rather than a baked-in constant, because a baked-in
+    constant is precisely what failed: the budget was written for a P100 16GB,
+    the card was swapped for a P4 7.68GB, and nothing re-derived it. A test
+    pinned to "the P4" would rot the same way on the next swap.
+
+    RESIDENT_MB is the measured warm footprint (GroundingDINO fp32 + SigLIP2 +
+    the caption VLM), 3238MB on 2026-08-21. It is a floor on what the service
+    holds once warm, not a guess -- but it is the one number here that still
+    has to be re-measured when the model set changes, which is why it is named
+    and dated rather than inlined.
     """
+    import pytest
+
+    total_mb = _smallest_gpu_total_mb()
+    if total_mb is None:
+        pytest.skip("no readable GPU on this host; nothing to check the budget against")
+
     budget = yaml.safe_load(_PROFILES.read_text())["runtime"]["vram_budget"]
 
-    P4_TOTAL_MB = 7680
-    MEASURED_RESIDENT_MB = 3238
-    free_when_warm = P4_TOTAL_MB - MEASURED_RESIDENT_MB
-
+    RESIDENT_MB = 3238  # measured 2026-08-21, athena/P4
+    free_when_warm = total_mb - RESIDENT_MB
     effective_free = free_when_warm - int(budget["reserve_mb"])
+
     assert effective_free > int(budget["hard_floor_mb"]), (
-        f"With models warm the P4 has ~{free_when_warm}MB free; "
+        f"Smallest GPU on this host is {total_mb}MB. With the warm model set "
+        f"resident (~{RESIDENT_MB}MB) that leaves ~{free_when_warm}MB free; "
         f"reserve_mb={budget['reserve_mb']} leaves {effective_free}MB effective, "
-        f"which is at or below hard_floor_mb={budget['hard_floor_mb']}. "
-        "app/gpu.py would refuse every task with gpu_hard_floor and the service "
-        "would serve nothing while looking healthy."
+        f"at or below hard_floor_mb={budget['hard_floor_mb']}. app/gpu.py would "
+        f"refuse every task with gpu_hard_floor while the container reports "
+        f"healthy -- the 2026-08-20 outage, exactly. Re-derive the budget for "
+        f"this card (see this module's docstring)."
     )

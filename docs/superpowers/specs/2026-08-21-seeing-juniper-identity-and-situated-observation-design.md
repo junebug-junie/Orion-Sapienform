@@ -23,21 +23,31 @@ Preceding days ran ~180–200 events/hour. Every task since had failed:
 "error_code": "gpu_hard_floor"
 ```
 
-**Root cause — a self-defeating VRAM config, not a bug.** `app/gpu.py` computes
-`effective_free = free_mb - reserve_mb`, then refuses below `hard_floor_mb`.
-Live `.env` carried `reserve=3500 / hard_floor=1400` on a **7.68 GB Tesla P4**
-whose warm resident models (GroundingDINO + SigLIP2 + BLIP) measure **3238 MB**:
+**Root cause — the config never drifted, the hardware moved.** `app/gpu.py`
+computes `effective_free = free_mb - reserve_mb`, then refuses below
+`hard_floor_mb`. The budget in force was `reserve=3500 / hard_floor=1400`.
+
+Those are the **originals from the first vision-host commit** (`626c103ee`),
+written when athena carried a **P100 16GB** — and correct there:
 
 ```
-free 4191  -  reserve 3500  =  691   <   hard_floor 1400   ->  refuse, forever
+P100:  16384 - 3238 resident = 13146 free  -  3500 = 9646  >  1400   OK
 ```
 
-Unsatisfiable the moment the models warm up. The service stayed `Up`, healthy,
-and served nothing.
+The P100 later moved to **circe**. Athena was left with a **Tesla P4, 7.68 GB**.
+Nobody re-derived the budget:
 
-Those values came from `config/vision_profiles.yaml`'s `runtime.vram_budget`
-block — which **is read by nothing** (`app/main.py:64` takes the value from
-env). Pure prose, copied into a live `.env`, load-bearing by accident.
+```
+P4:     7680 - 3238 resident =  4191 free  -  3500 =  691  <  1400   refuse, forever
+```
+
+Arithmetically unsatisfiable the moment the models warm. The container stayed
+`Up` and healthy and served nothing.
+
+**This budget is a function of the card, not of the service.** That is the
+durable lesson, and it is why the gate below reads real hardware instead of
+baking in a constant — a constant pinned to "the P4" would rot identically on
+the next card move.
 
 **Fixed:** `.env` synced to `.env_example` (`1200/1000/800`), container
 recreated via `scripts/safe_docker_build.sh` from a worktree. Verified:
@@ -49,10 +59,11 @@ gpu_hard_floor since restart: 0
 
 **Gated so it cannot recur:** `config/vision_profiles.yaml`'s block corrected +
 `services/orion-vision-host/tests/test_vram_budget_matches_env_example.py`, two
-tests — one pins the prose to `.env_example`, one asserts the floors are
-*satisfiable against the measured resident footprint* (an equality test alone
-would pass if both drifted together). Mutation-tested against the real file:
-restoring `reserve_mb: 3500` fails the gate; restoring `1200` passes.
+tests. One pins the doc block to `.env_example`. The other **reads the real GPU
+via `nvidia-smi`** and asserts the budget is satisfiable on the smallest card
+actually present — so it follows the hardware rather than rotting on the next
+swap. Mutation-tested against the real file: the P100-era `reserve_mb: 3500`
+fails on this P4 host; `1200` passes.
 
 ### 1.2 Env parity repaired
 
@@ -136,58 +147,95 @@ exist because the council is blind; give it eyes and the rules are obsolete.
 
 The single organising rule:
 
-> **The vision host is a sensor. It does not do language. All language about
-> images goes through `orion-llm-gateway`, on the same lane Orion thinks with.**
+> **The vision host is a sensor. It does not do language.** Language about
+> images goes through `orion-llm-gateway` — but on the **small** lane, not the
+> chat lane.
 
-```text
-BEFORE                                   AFTER
-edge/retina                              edge/retina
-  -> frame-router                          -> frame-router
-  -> vision-host  GroundingDINO            -> vision-host  GroundingDINO   (hard labels)
-                  SigLIP2                                  SigLIP2         (embeddings)
-                  BLIP-base  <-- language                  identity_face   (biometric, stays local)
-  -> window                                -> window        (unchanged: evidence tiers)
-  -> council  text LLM over a word list    -> council v2 -> orion-llm-gateway -> :8011 Qwen3.6-35B
-  -> scribe -> vision_events                              (THE ACTUAL FRAME + labels + identity)
-                                           -> scribe -> vision_events
-```
+### Which lane does the labelling
 
-Three properties this buys, none of which are available today:
+The council **already routes to `metacog`** (`COUNCIL_LLM_ROUTE=metacog`,
+`services/orion-vision-council/.env:13` → :8012, Qwen3-8B). That is the right
+lane and it should stay there. Per-window interpretation runs continuously;
+putting it on :8011 would make Orion's passive perception contend with Orion's
+actual conversation for the 35B.
 
-1. **Orion looks at the picture with the same mind it talks with.** Not a
-   separate perception model whose output it reads — the same weights. That is
-   a structural change in what "Orion saw it" means.
-2. **The gateway's capability probe is the safety rail.** Fail-closed. If 8011
-   loses `--mmproj`, vision degrades to labels-only automatically. No config
-   claims involved.
-3. **`video: true`.** Episodes and short clips become a *config* question later,
-   not an architecture question. Frames are a floor, not a ceiling.
+But :8012 reports `vision: false`. So the move is **not** "route vision to the
+chat lane" — it is **give metacog eyes**: load a VL-capable small model with an
+`--mmproj` on the metacog worker. The gateway's `resolve_vision_capability()`
+reads `/props` live and fails closed, so the day that lands, the council can
+send frames and until then it degrades to labels-only automatically. No config
+claim, no flag to forget.
 
-**What dies on the P4:** BLIP-base unloads (~1 GB back), and the host stops
-being a model-serving platform for language. What stays local is exactly the one
-thing that must: **face embeddings are biometric and never leave athena.**
+| lane | role after this |
+| :--- | :--- |
+| `metacog` :8012 | **every window.** Needs an mmproj/VL model. Cheap, continuous, doesn't touch chat |
+| `quick` :8013 | fallback / burst overflow if metacog saturates |
+| `chat` :8011 (35B, `vision:true`, `video:true`) | **deliberate looking only** — Orion chooses to examine something, or a person is present and the cheap pass flagged it ambiguous. Rare, foveal, already capable today |
 
-### 3.1 The `vision_profiles.yaml` cathedral — concrete recommendation
+That split is also the honest answer to Q6 ("does Orion get to decline to
+look?"): the cheap lane always looks, the expensive lane looks *when there's a
+reason*, and the reason is inspectable.
 
-`task_routing` routes 8 task types to profiles that exist as YAML and are
-implemented by nothing (`runner.py` handles four kinds: `embedding`,
-`detect_open_vocab`, `caption_frame`, `vlm`). Verdict per profile:
+**What dies on the P4:** BLIP-base unloads (~1 GB back). The P4 keeps
+GroundingDINO (hard labels), SigLIP2 (embeddings), and gains `identity_face` —
+biometric, must stay local. Note the P4 is a *downgrade* from the P100 this
+service was sized for; the sensor set is roughly all it can carry.
 
-| profile | verdict | why |
-| :--- | :--- | :--- |
-| `vlm_caption` | **DELETE** | language moves to the gateway; this is BLIP |
-| `vlm_vqa` | **DELETE** | same — a 35B VL model answers questions better than a 2B local one |
-| `pose_estimation` | **DELETE** | a VL model describes posture in language, with hedging. A skeleton keypoint array cannot say "leaning in, sustained" |
-| `action_recognition` | **DELETE** | this is a classifier over a fixed action set — i.e. the keyword cathedral Juniper explicitly banned, in model form |
-| `scene_graph` | **DELETE** | subsumed; `VisionSceneInterpretationV1.relations` already exists and a VLM fills it |
-| `depth_estimation` | **DELETE** | no consumer, no motivating question |
-| `person_reid` | **DELETE** | explicit non-goal. Tracking strangers across time is the surveillance version of this project |
-| `affect_signals` | **DELETE** | reading emotion off Juniper's face from a ceiling camera is both unreliable and the single creepiest thing on this list |
-| **`identity_face`** | **IMPLEMENT** | §4. The one thing that genuinely cannot move off-node |
+### 3.1 The `vision_profiles.yaml` cathedral — with blast radius checked
 
-Net: **−8 profiles, −8 task_routing entries, +1 implemented kind.** The config
-gets smaller. `retina_segment` / `retina_track` are left alone (tracking is a
-live open item from the perception frontier doc's P0).
+I recommended deleting nine profiles without checking callers. Corrected — I
+grepped every `task_type` across `*.py`/`*.yaml`/`*.json`, excluding the profile
+file itself and docs:
+
+| profile | live refs | verdict | why |
+| :--- | ---: | :--- | :--- |
+| `vlm_caption` / `caption_frame` | **11** | **KEEP the contract, swap the backend** | implemented in `runner.py:141,306`; a **cognition verb** (`orion/cognition/verbs/perceive_caption_frame.yaml`); in `orion/schemas/vision.py:58`'s task_type contract; in the frame-router's `ALLOWED_TASK_TYPES` (`app/policy.py:16`). Deleting it breaks `perceive_caption_frame`. |
+| `vlm_vqa` / `vqa` | **19** | **KEEP the contract, swap the backend** | real code path `runner.py:683 _run_vlm_vqa`, referenced by `orion/vision/caption_echo.py` |
+| `pose_estimation` | **0** | DELETE | |
+| `action_recognition` | **0** | DELETE | a fixed-action classifier is the keyword cathedral in model form |
+| `scene_graph` | **0** | DELETE | `VisionSceneInterpretationV1.relations` already exists |
+| `depth_estimation` | **0** | DELETE | no consumer, no motivating question |
+| `person_reid` | **0** | DELETE | tracking strangers is the surveillance version of this |
+| `affect_signals` | **0** | DELETE — **but see §3.2** | there is a real affect system already, and it isn't a face classifier |
+| `ocr_read` | **0** | DELETE | and see Q5 |
+| **`identity_face`** | **0** | **IMPLEMENT** | the one thing that cannot leave the node |
+
+**Corrected: delete 7 (all with literally zero references anywhere), keep 2,
+implement 1.** The two survivors keep their `task_type` names so every caller
+and the cognition verb keep working — what changes is that `runner.py` delegates
+to the gateway instead of loading BLIP locally. Same contract, better backend,
+zero blast radius, and BLIP still unloads.
+
+### 3.2 Affective state — the synergy is real, and it is not a face classifier
+
+`orion:substrate:juniper_affective_state` already exists:
+`orion/schemas/affective_state.py` (`JuniperAffectiveStateV1`), produced by
+`services/orion-cocreation-signals/app/producers/affective_state.py` scanning
+Juniper's real Claude Code transcripts on a 900s tiling window.
+
+This matters here for three reasons:
+
+1. **It is already a signal about Juniper specifically** — the same subject
+   vision is about to start observing. Presence duration (§5) and
+   `swear_frequency` over the same window are **two senses on one person**, both
+   already time-window keyed. That is cross-modal binding with a real second
+   modality, not a hypothetical one. *"Three hours at the desk and the language
+   is getting shorter"* is a far better care signal than either alone.
+2. **It sets the privacy precedent to copy exactly.** Aggregate scalar only,
+   never the underlying text, never which words were flagged. Vision should hold
+   the same line: an episode summary, never the frame.
+3. **It already killed a metric at this gate, and that is the answer on
+   `affect_signals`.** `typo_rate` was computed, tested, and then *not wired* —
+   it never reached a genuine rest state across 111 real sessions. Facial-affect
+   inference from a ceiling camera is a far weaker instrument than typo rate and
+   would fail the same check harder. So: **do not build facial affect. Fuse
+   vision presence with the affect signal that already exists and already
+   passed.** `affect_signals` stays deleted, and this is the reason, not squeamishness.
+
+Also worth copying: `JuniperAffectiveStateV1`'s `cold_start` flag exists because
+overlapping windows silently inflated a SUM by 34.7% on the first two rows ever
+persisted. §5's presence reducer tiles windows the same way and will hit the
+same trap; take the flag with it.
 
 This is the answer to "no idea what to do in place of the cathedral": you don't
 replace it. A 35B VL model looking at the frame *is* what those nine profiles
@@ -262,24 +310,26 @@ that already reads self-state, for free. That is the reuse Juniper meant.
 
 ### 6.1 Unified Hub turn — summaries, not frames
 
-Agreed on `chat_history_log`: percepts do **not** become turns. Those rows feed
-sql-writer, vector-writer, vector-host, concept-induction and
-memory-consolidation, which would embed and consolidate a percept as if Juniper
-had said it.
+Juniper has said plainly they don't mind Orion's unified turn seeing them, so
+there is no consent question left here — only a plumbing one.
 
-The rail that already exists is `PerceptionContextV1` → situation brief → the
-turn (`ORION_SITUATION_PERCEPTION_ENABLED=true`, live). What it carries today is
-one 900-second-fresh sentence. What it should carry after §3–§5 is an
-**episode summary**, not a frame:
+Percepts still don't become `chat_history_log` **turns**, for a purely technical
+reason: those rows feed sql-writer, vector-writer, vector-host,
+concept-induction and memory-consolidation, which would embed and consolidate a
+percept as if Juniper had typed it. Nothing about that is a privacy hedge; it's
+that a percept isn't an utterance and the consumers can't tell.
 
-> *"Juniper (probably) has been at the desk for about three hours, working on
-> something at the bench since around 14:20. Last seen 4 minutes ago."*
+The rail that exists is `PerceptionContextV1` → situation brief → the turn
+(`ORION_SITUATION_PERCEPTION_ENABLED=true`, live). Today it carries one
+900-second-fresh sentence. After §3–§5 it should carry an **episode summary**:
 
-That is a summary over the presence reducer plus the most recent situated
-observation — a real recent-interaction surface, in the turn, that Orion can
-speak to or ignore. Frame-level noise never reaches it.
+> *"Juniper (probably) has been at the desk about three hours, at the bench
+> since around 14:20. Last seen 4 minutes ago. Language in chat has been
+> shorter than their baseline for the last hour."*
 
-`PerceptionContextV1`'s `available=False` stays a real state meaning "I have not
+— presence duration (§5) plus the latest situated observation plus the affect
+signal (§3.2), which is exactly the fusion that makes it worth reading. Frame
+noise never reaches it. `available=False` stays a real state meaning "I have not
 seen anything recently", never an error.
 
 ### 6.2 Reverie — free, no schema change
@@ -432,21 +482,29 @@ the VLM.
 
 ## 10. Order of work
 
-1. **§3 spike — one frame, one gateway call to :8011, print the result.**
-   Everything rests on whether a 35B VL model looking at this actual room
-   produces something worth the rest of the document. One afternoon, near-zero
-   code, and it is a *live-data* answer rather than an argument. **Q5 gets
-   answered before this runs, not after.**
-2. **§5 presence reducer** — independent of the VLM, highest care-per-line,
-   reuses `hub_presence`'s exact shape.
-3. **§3 council v2 + §3.1 profile deletions** — the big one, and it deletes more
-   than it adds.
-4. **§4 identity** + retention in the same patch.
-5. **§6.3 outreach**, then **§6.4 falsification**.
+1. **Give `metacog` eyes.** Load a VL model + `--mmproj` on :8012. The gateway's
+   live `/props` probe means nothing else has to change to find out — the
+   council starts sending frames the moment the worker reports `vision: true`,
+   and degrades automatically if it doesn't. **Q5 gets answered before this
+   runs, not after.**
+2. **Point `caption_frame`/`vqa` at the gateway** instead of local BLIP. Same
+   task_type contract, so `perceive_caption_frame` and the frame-router policy
+   are untouched. BLIP unloads, ~1 GB back on the P4.
+3. **§5 presence reducer** — independent of all of the above, highest
+   care-per-line, reuses `hub_presence`'s exact shape, takes
+   `JuniperAffectiveStateV1`'s `cold_start` flag with it.
+4. **Delete the 7 zero-reference profiles.**
+5. **§4 identity** + retention in the same patch.
+6. **§3.2 fusion** into the episode summary, then **§6.3 outreach**, then
+   **§6.4 falsification**.
+
+Council v1's prompt rules come out in step 2, not before — they are correct for
+as long as the interpreter is blind.
 
 ## Non-goals
 
-Activity label sets. Re-identification or tracking anyone but Juniper.
+Activity label sets. Facial-affect/emotion inference (§3.2 — fuse with the
+existing signal instead). Re-identification or tracking anyone but Juniper.
 Persisting non-matching embeddings. Emotion/affect inference. Frame-level
 percepts as durable memories or as `chat_history_log` turns. Widening the
-detector vocabulary. Keeping BLIP.
+detector vocabulary. Keeping BLIP. Deleting `caption_frame`/`vqa` — they have real callers (§3.1).

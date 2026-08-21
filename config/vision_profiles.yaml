@@ -29,14 +29,20 @@ runtime:
   # nothing and exists only as documentation. Gated by
   # services/orion-vision-host/tests/test_vram_budget_matches_env_example.py.
   #
-  # The old values here (3500/2200/1400) were copied into a live .env and took
-  # orion-vision-host down for ~21h on 2026-08-20/21: gpu.py computes
+  # The old values here (3500/2200/1400) took orion-vision-host down for ~21h on
+  # 2026-08-20/21. THE CONFIG DID NOT DRIFT -- THE HARDWARE MOVED. Those were the
+  # originals from the first vision-host commit (626c103ee), written when athena
+  # carried a P100 16GB, and correct there: ~13.1GB free warm - 3500 = ~9.6GB,
+  # far above the 1400 floor. The P100 later moved to circe and athena kept a
+  # Tesla P4 (7.68GB). Nobody re-derived the budget. gpu.py computes
   # `effective_free = free_mb - reserve_mb` and refuses below hard_floor, so on
-  # the 7.68GB Tesla P4 with ~3.2GB of warm resident models
-  # (4191 - 3500 = 691 < 1400) the scheduler could never pick the GPU again once
-  # the models loaded. Every task failed `gpu_hard_floor` and Orion went blind.
-  # Any future raise here has to be checked against the RESIDENT footprint, not
-  # against total VRAM.
+  # the P4 with ~3.2GB warm resident (4191 - 3500 = 691 < 1400) the scheduler
+  # could never pick the GPU again once models loaded. Every task failed
+  # `gpu_hard_floor`, the container stayed `Up` and healthy, and Orion went blind.
+  #
+  # So: this budget is a function of THE CARD, not of the service. Re-derive it
+  # whenever a GPU moves between nodes, and check against the RESIDENT footprint,
+  # never against total VRAM. The test above reads real hardware for this reason.
   vram_budget:
     reserve_mb: 1200                      # headroom kept free for cohabiting spikes
     soft_floor_mb: 1000                   # degrade when free below this

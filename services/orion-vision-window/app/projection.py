@@ -108,26 +108,76 @@ def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
 
 
 def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[str, Any]:
-    counts: Dict[str, int] = {}
+    """Aggregate a window's artifacts.
+
+    **`object_counts` is a per-frame MAX, not a sum across frames.** This used
+    to sum every detection in the window, which made it a detection tally that
+    scaled with how many frames the window happened to contain -- not a count
+    of what is in the room.
+
+    Confirmed live 2026-08-21 on cam0, 20 consecutive windows of a static room:
+    windows with `item_count=1` reported `chair: 2` and ~6.4 total detections;
+    windows with `item_count=2` reported `chair: 4` and ~13.6. Exactly 2x, with
+    no exceptions. The room has two chairs.
+
+    That error reached Orion, because the council prompt is handed these counts
+    and faithfully narrates them. Real consecutive `vision_events` narratives of
+    the same untouched room:
+
+        23:09  Two chairs, two doors, a desk, a table, and a box
+        23:06  Four chairs, two doors, two desks, two tables, two boxes
+        22:59  Two chairs, two doors, one desk, one table, and one box
+        22:49  Four chairs, three desks, two doors, two boxes, and two tables
+
+    Orion was watching the furniture double and halve every few minutes. Any
+    object-permanence or inventory work built on the old value would have
+    measured the frame rate and called it the world.
+
+    Max-per-frame is the right estimator here: a label seen 2x in one frame is
+    two objects, while the same label seen once in each of two frames is one
+    object seen twice. Max is also robust to the detector missing an object in
+    a single frame, where a mean would drag the estimate below the truth.
+
+    The raw sum is still available and still honest under names that say what
+    it is: `label_detections` and `detection_count`.
+    """
+    per_frame: List[Dict[str, int]] = []
     captions: List[str] = []
     for art, _ts in items:
         if _skip_edge_artifact(art):
             continue
+        frame_counts: Dict[str, int] = {}
         if art.outputs.objects:
             for obj in art.outputs.objects:
-                counts[obj.label] = counts.get(obj.label, 0) + 1
+                frame_counts[obj.label] = frame_counts.get(obj.label, 0) + 1
+        per_frame.append(frame_counts)
         if art.outputs.caption and art.outputs.caption.text:
             cap = art.outputs.caption.text
             if not is_caption_prompt_echo(cap):
                 captions.append(cap)
+
+    counts: Dict[str, int] = {}
+    detections: Dict[str, int] = {}
+    for frame_counts in per_frame:
+        for label, n in frame_counts.items():
+            counts[label] = max(counts.get(label, 0), n)
+            detections[label] = detections.get(label, 0) + n
+
     top_labels = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
     return {
+        # How many are believed to be THERE (per-frame max).
         "object_counts": counts,
         "top_labels": top_labels,
         "item_count": len(items),
         "captions": captions,
+        # How many detections FIRED across the whole window. Frame-rate
+        # dependent by definition, which is fine under this name.
+        "label_detections": detections,
+        # Retained under its old name for one release so nothing that still
+        # reads `label_counts` breaks silently; it now carries the same
+        # per-frame-max value as `object_counts`, not the raw sum.
         "label_counts": counts,
-        "detection_count": sum(counts.values()) if counts else 0,
+        "detection_count": sum(detections.values()) if detections else 0,
         "evidence": _build_evidence(items),
     }
 

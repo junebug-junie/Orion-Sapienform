@@ -41,8 +41,25 @@ class TestTheCostIsMeasuredAtTheSend:
 
         sig = inspect.signature(store.ExecutionDispatchRuntimeStore.save_dispatch_result)
         assert "latency_ms" in sig.parameters
-        src = inspect.getsource(store)
+        src = inspect.getsource(store.ExecutionDispatchRuntimeStore.save_dispatch_result)
         assert ":latency_ms" in src, "measured, accepted, and then not inserted"
+
+    def test_every_bind_parameter_in_the_insert_is_actually_supplied(self):
+        """Caught live, the hard way. `:latency_ms` was added to the INSERT and
+        not to the params dict, so SQLAlchemy raised `A value is required for
+        bind parameter 'latency_ms'` and dispatch-result writes started
+        FAILING -- a regression shipped to a running service, found only by
+        checking whether the number actually landed rather than trusting that
+        the deploy succeeded."""
+        import re
+
+        import app.store as store  # type: ignore
+
+        src = inspect.getsource(store.ExecutionDispatchRuntimeStore.save_dispatch_result)
+        binds = set(re.findall(r"(?<!:):(\w+)(?![\w:])", src.split('"""')[1]))
+        supplied = set(re.findall(r'"(\w+)":', src))
+        missing = binds - supplied
+        assert not missing, f"bind parameters with no supplied value: {sorted(missing)}"
 
 
 class TestTheCostSurvivesToTheLedger:

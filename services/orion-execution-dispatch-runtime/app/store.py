@@ -502,7 +502,8 @@ class ExecutionDispatchRuntimeStore:
                     ON CONFLICT (result_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         result_json = EXCLUDED.result_json,
-                        raw_len = EXCLUDED.raw_len
+                        raw_len = EXCLUDED.raw_len,
+                        latency_ms = EXCLUDED.latency_ms
                     """
                 ),
                 {
@@ -512,6 +513,7 @@ class ExecutionDispatchRuntimeStore:
                     "status": status,
                     "result_json": Json(result_json),
                     "raw_len": raw_len,
+                    "latency_ms": latency_ms,
                     "created_at": now,
                 },
             )

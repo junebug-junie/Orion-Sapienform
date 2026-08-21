@@ -926,6 +926,22 @@ named smallest probe.
    reverie/dream substrate instead of a cron job.
 2. **Society-of-Mind competition** — multiple independent salience scorers bidding, not one
    formula.
+   **Design-mode pass, 2026-08-20 (supersedes two same-day intermediate attempts, both
+   real progress but at the wrong layer — a habituation-only design, and a first cut of
+   a multi-item `concern_state.py` that code review caught mixing two non-cross-normalized
+   scales before it was committed).** The actual pattern, named directly: the killed
+   drives system's 96% monoculture, `compute_salience()`'s hand-tuned weights,
+   `node:substrate.route`'s variance-floor bug (PR #1774), a `node:substrate.chat`
+   mega-streak found the same day, and `concern_state.py`'s own scale-mixing mistake are
+   the same root cause in five costumes: comparing raw cardinal numbers across domains
+   never guaranteed to share a scale. The fix already half-exists and has sat unused a
+   month: `orion.attention.rank_aggregation` (Borda count) compares by rank, not
+   magnitude — scale-invariant by construction, closing the whole bug class at once
+   instead of patching each instance. Proposes making rank-aggregation the mandatory
+   substrate for any cross-domain comparison, finally closing Candidate B's own
+   never-validated three-scorer gap as the first real acceptance check. Design mode only;
+   no code committed. Full deliverable:
+   `docs/superpowers/specs/2026-08-20-rank-native-comparability-substrate-design.md`.
 3. **Free-energy/active-inference reframing** — `capability_policy` as literal expected-
    free-energy action selection.
 4. **φ-gated meta-competition** — use the orphaned Causal Geometry v1 φ metric to widen or

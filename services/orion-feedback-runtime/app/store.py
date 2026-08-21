@@ -794,9 +794,18 @@ class FeedbackRuntimeStore:
         corrupts only the control side is worse than one that corrupts both.
 
         `dispatch_frame_id=None` disables the dedup rather than silently
-        matching everything: a NULL stored token is DISTINCT FROM anything,
-        so the write proceeds, which is the right failure direction for a
-        caller that genuinely has no frame identity.
+        matching everything: a caller with no frame identity should still be
+        able to advance a cell.
+
+        That required an explicit NULL branch, which the first version did not
+        have and got exactly backwards. `IS DISTINCT FROM` is **FALSE** when
+        both sides are NULL (`SELECT NULL::text IS DISTINCT FROM NULL::text`
+        -> `f`), so with the `control_frame_id=None` default a cell took its
+        first INSERT and then had every subsequent update refused forever --
+        the control arm silently frozen at one observation, with no error. The
+        live worker always passes `dispatch.frame_id`, so this never fired in
+        production, but the parameter default was a trap and the reasoning
+        recorded beside it was wrong.
         """
         for (signal_id, arm, bin_index), cell in cells.items():
             conn.execute(
@@ -821,8 +830,11 @@ class FeedbackRuntimeStore:
                         updated_at = now()
                      WHERE substrate_signal_control_cells.posterior_n
                            < EXCLUDED.posterior_n
-                       AND substrate_signal_control_cells.last_dispatch_frame_id
-                           IS DISTINCT FROM EXCLUDED.last_dispatch_frame_id
+                       AND (
+                             EXCLUDED.last_dispatch_frame_id IS NULL
+                             OR substrate_signal_control_cells.last_dispatch_frame_id
+                                IS DISTINCT FROM EXCLUDED.last_dispatch_frame_id
+                           )
                     """
                 ),
                 {

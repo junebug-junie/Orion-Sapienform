@@ -610,13 +610,27 @@ python3 scripts/check_sql_migrations_applied.py \
 psql -h localhost -p 55432 -U postgres -d conjourney -c \
   "SELECT arm, count(*) FROM substrate_action_outcomes GROUP BY 1;"
 psql -h localhost -p 55432 -U postgres -d conjourney -c \
-  "SELECT signal_id, arm, baseline_bin, posterior_n, moved_n
-     FROM substrate_signal_control_cells ORDER BY posterior_n DESC LIMIT 20;"
+  "SELECT signal_id, arm, baseline_bin, posterior_n, moved_n, move_rate
+     FROM substrate_signal_control_cells ORDER BY move_rate ASC LIMIT 20;"
 ```
 
-The last query is the one that matters. If `moved_n` is 0 on a cell with a
-large `posterior_n`, the instrument is frozen and the contrast is correctly
-refusing to use it -- that is the guard working, not a bug.
+The last query is the one that matters. **Read `move_rate`, not `moved_n`.**
+A cell is frozen when `posterior_n >= 200` and `move_rate < 0.25`
+(`FROZEN_CONTROL_MIN_N` / `FROZEN_CONTROL_MAX_MOVE_RATE`), and `is_frozen`
+reads *only* `move_rate`.
+
+Corrected 2026-08-21: this section originally said to check whether `moved_n`
+is 0, which walks straight past the case the EWMA was added for. `moved_n` is
+a monotone lifetime counter, so it can only ever catch a channel that was born
+dead -- a channel healthy for a month and pinned for an hour is invisible to
+it. Live at the time of the correction, `reliability_pressure` bin 0 read
+`moved_n=87` (non-zero, looks healthy) with `move_rate=0.1307` (frozen).
+
+The same release also shipped `scripts/analysis/report_action_value.py` with
+`move_rate` missing from its `SELECT`, so the `FROZEN CONTROL CELLS` warning
+block could never print either. Both are fixed; if you are on an older
+checkout, trust neither the report nor this paragraph and run the query above
+by hand.
 
 The migration is guarded against a destructive re-run: every other statement
 in it is idempotent, including the primary-key swap (Postgres re-auto-names

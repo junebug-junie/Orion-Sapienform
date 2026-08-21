@@ -44,6 +44,14 @@ DEFAULT_DSN = os.environ.get(
     "ORION_PG_DSN", "postgresql://postgres:postgres@localhost:55432/conjourney"
 )
 
+# Raters whose verdicts must never reach a belief. A deploy smoke test is a
+# real row in chat_response_feedback -- correctly stored, correctly attested --
+# and it is not an opinion about whether the artifact was any good. Before this
+# filter the only thing standing between it and a permanent posterior was a
+# paragraph in a commit message, which a cron entry, a make target, or the next
+# person reading this file's own "RUN IT PERIODICALLY" instruction all defeat.
+QUARANTINED_RATERS = ("deploy-smoke",)
+
 UNSCORED = """
 SELECT f.feedback_id, f.target_artifact_ref, f.feedback_value, f.categories,
        f.free_text, f.user_id, f.source, f.created_at
@@ -51,6 +59,7 @@ SELECT f.feedback_id, f.target_artifact_ref, f.feedback_value, f.categories,
   LEFT JOIN substrate_action_ratings r ON r.feedback_id = f.feedback_id
  WHERE f.target_artifact_ref IS NOT NULL
    AND r.feedback_id IS NULL
+   AND coalesce(f.user_id, '') <> ALL(:quarantined)
  ORDER BY f.created_at
 """
 
@@ -88,7 +97,17 @@ def main() -> int:
     parser.add_argument("--dsn", default=DEFAULT_DSN)
     parser.add_argument("--report", action="store_true", help="read-only")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--include-rater",
+        action="append",
+        default=[],
+        help=(
+            "un-quarantine a rater (repeatable). Deliberately opt-IN: the "
+            f"default exclusions are {QUARANTINED_RATERS}."
+        ),
+    )
     args = parser.parse_args()
+    quarantined = tuple(r for r in QUARANTINED_RATERS if r not in args.include_rater)
 
     from sqlalchemy import create_engine, text
 
@@ -101,7 +120,7 @@ def main() -> int:
                     """
                     SELECT p.dispatch_kind, p.target_id, p.posterior_mean,
                            p.posterior_variance, p.posterior_n, p.unrated_count,
-                           (SELECT string_agg(DISTINCT r.rated_by, ',')
+                           (SELECT string_agg(DISTINCT coalesce(r.rated_by, '(unattested)'), ',')
                               FROM substrate_action_ratings r
                              WHERE r.dispatch_kind = p.dispatch_kind
                                AND r.target_id = p.target_id) AS raters
@@ -133,7 +152,9 @@ def main() -> int:
     scored = 0
 
     with engine.begin() as conn:
-        pending = conn.execute(text(UNSCORED)).mappings().all()
+        pending = conn.execute(
+            text(UNSCORED), {"quarantined": list(quarantined)}
+        ).mappings().all()
         for row in pending:
             try:
                 _kind, dispatch_id = parse_artifact_ref(row["target_artifact_ref"])

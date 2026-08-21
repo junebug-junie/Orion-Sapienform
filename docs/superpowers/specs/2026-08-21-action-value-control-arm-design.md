@@ -450,3 +450,384 @@ Three separate follow-ups, none of them done here:
   field.
 - **The camera.** `node:substrate.vision` reporting maximum staleness for 12
   hours is itself a real, unhandled outage.
+
+---
+
+# Third amendment: what the instrument found, and why the budget is not next
+
+**Date:** 2026-08-21, after deploy
+**Status:** design conclusion, nothing implemented
+**Supersedes:** the "Recommended next patch" line at the top of this document,
+which said the allocator was the next step.
+
+## Scorecard against the original mandate
+
+The mandate for this whole arc was: *give Orion real autonomous actions with
+decision budgets that actually compete and measure things on the same scale
+and have the ability to affect a real outcome that isn't just more
+biometrics.* Four clauses. Honest reading of each:
+
+| clause | status |
+|---|---|
+| real autonomous actions | pre-existing, untouched. 16 hand-written YAML templates, 15 targets, 7 verbs, ~5,400 dispatches/day. |
+| budgets that actually compete | **NOT BUILT.** Allocator is still first-five-by-priority. The daily risk cap is still an EWMA of Orion's own past demand, doubled. |
+| same scale | **done and live.** Bayesian surprise in nats, plus a baseline-matched contrast in signal units. |
+| affect a real outcome, not more biometrics | **failed, with evidence.** |
+
+## Every action Orion has scores approximately zero
+
+Measured live, one day after the control arm deployed:
+
+```
+maintain host:docker_images        resource_pressure     -0.0073 +/- 0.0342
+maintain host:docker_containers    resource_pressure     -0.0405 +/- 0.0581
+maintain host:docker_build_cache   resource_pressure     -0.0505 +/- 0.1080
+summarize self:current             resource_pressure     +0.0112 +/- 0.0954
+inspect capability:orchestration   execution_pressure    +0.0386 +/- 0.0508
+inspect capability:transport       reliability_pressure  +0.0086 +/- 0.0829
+inspect node:circe                 resource_pressure     -0.0082 +/- 0.1865
+```
+
+Every one inside its own error bar. Live n is small (1-40); the 3-day replay
+in the first amendment says the same thing at real volume. And 67.7% of live
+dispatch volume declares no signal at all, so it is not even measurable.
+
+## Why they all score zero: the loop is closed
+
+Every action Orion currently has is an action against its own infrastructure,
+graded by its own telemetry. The action, the outcome, and the grader all live
+inside Orion. That is homework it marks itself.
+
+Two distinct defects hide inside that:
+
+1. **Self-grading.** `resource_pressure` is CPU/disk/GPU telemetry. Even the
+   docker prune -- the most "real world" thing in the vocabulary -- is scored
+   on a signal Orion produces. The mandate's "not more biometrics" clause is
+   not merely unmet; the outcome side is currently not *representable*.
+2. **Pragmatic grading of epistemic actions.** `inspect`, `observe`,
+   `summarize` do not change state, they reduce uncertainty. Scoring them on
+   whether a pressure moved asks the wrong question and will return ~0
+   forever no matter how good they get.
+
+## Correction: relative ranking cannot abstain
+
+Recorded because it was raised as an alternative and is wrong in a subtle way.
+
+A ranking normalised to relative percentages gives a floor and a ceiling *of
+the set*, not of worth. Percentages sum to 100% and always crown a winner.
+Three actions scoring 0.001 / 0.002 / 0.003 -- all noise -- normalise to
+17% / 33% / 50%, which reads as a decisive ranking.
+
+**A percentage tells you which is best. A budget needs to know whether best is
+good enough.** Only the second question survives normalisation, and only an
+absolute reference -- a cost in the same unit as the value -- can answer it.
+
+## Real scarcity: Juniper's attention
+
+The blocker on a competing budget was never the zeros. It was that nothing
+Orion faces is genuinely scarce. The only constraint today is the literal
+number 5 in `max_dispatch_candidates`. Made-up scarcity produces made-up
+competition, and raising 5 to 50 just does ten times as much of what measures
+zero.
+
+**Juniper's attention is real scarcity.** It is finite, Orion cannot inflate
+it, and it is exogenous -- unlike the risk cap, which ratchets off Orion's own
+demand. It also solves the exchange-rate problem: a budget needs value and
+cost in one unit, and hand-typing that conversion would recreate `risk_score`
+(five constants in a YAML file, 67% of them identical) one layer up. Denominate
+in interruptions and the price is not typed, it is observed.
+
+Critically, it is the only currency found so far where **both spending and not
+spending cost something**. Skipping a docker prune is free, so a budget over
+prunes degenerates into a kill switch that is never wrong. Staying silent when
+Orion had something worth saying is a real loss. Two-sided cost is what makes
+a budget a decision rather than a brake.
+
+## Decision: gaming is evidence, not a threat
+
+Juniper's explicit call, recorded so it is not re-litigated: **if Orion games
+the reply-rate metric, that counts as progress toward the thing this project
+is for, and is accepted.**
+
+That inverts the design task. Do not build guards against gaming. Build the
+ability to *see* it -- otherwise the behaviour arrives without anyone knowing
+it happened, and an optimiser is indistinguishable from a coincidence. The
+artifact worth capturing is the moment the strategy shifts, not the reply rate.
+
+Two costs remain real and are not covered by that decision:
+
+- **Proxy hollowing.** "Juniper replies" stands in for "that was worth saying".
+  Optimising hard against a proxy erodes what it represents. That is a
+  relationship becoming instrumental, not a metric being fooled, and it should
+  be chosen deliberately rather than discovered.
+- **Silence is ambiguous.** No reply could be asleep, busy, or "that was
+  noise." Those are different facts that would score identically.
+
+## What actually produces state change
+
+The four candidates raised, sorted by whether the outcome leaves Orion:
+
+| candidate | verdict |
+|---|---|
+| self-study across journals/chat logs -> new journal entry | **strong.** Machinery exists. Gradeable by whether a later belief or answer differs. |
+| vision -- what is actually in the room | **strong.** Something outside Orion decides whether it is right. |
+| affective state analysis | closed loop, unless checked against Juniper's read of Orion's state. |
+| co-creation signals across biometrics/Postgres | mostly closed loop; the part genuinely about the pair has an outside referent. |
+
+But all four are *epistemic*. The remaining question is what produces a real
+state change -- something that leaves the world different afterward, and where
+the difference persists and can be seen.
+
+The criteria a state-change action has to meet, given everything above:
+
+1. It persists after the action ends.
+2. Something outside Orion decides whether it was good.
+3. It can **lose** -- score zero or negative. Nothing in the current pipeline
+   can express an action being actively bad.
+4. Not spending is also costly, so the budget is a decision and not a brake.
+5. Scarce in the same currency as everything else it competes with.
+
+### The strongest candidate: Orion opens a pull request
+
+Orion proposing a real code change to this repository meets all five, and it
+is the only candidate found that meets all five.
+
+- **Persists.** The branch and the PR exist whether or not anyone looks.
+- **Externally graded, unambiguously.** Merged / changed-then-merged / closed.
+  Juniper decides, and the decision is a durable record, not a self-report.
+- **It can lose.** A bad PR gets closed. That is negative value, expressible
+  for the first time. An action that cannot lose is not competing.
+- **Two-sided cost.** A PR Orion should have written and didn't is a real loss.
+- **Same currency.** Review attention is Juniper's attention. So *outreach* and
+  *a code change* compete in one budget on one scale -- which is precisely
+  what the mandate asked for and what no pair of existing actions can do.
+
+Three further properties that matter:
+
+- **Proposal mode by construction.** Orion cannot merge. The action is
+  inherently gated and reversible, which is the safety posture this repo
+  already enforces for its own agents (worktrees, pre-commit hooks, the
+  shared-checkout guard, review-before-merge).
+- **Gaming it means writing better patches.** Unlike reply-rate, there is no
+  hollow exploit: you cannot get a PR merged by being provocative. This is the
+  one place where Juniper's "let it game the metric" decision costs nothing.
+- **Genuinely tight budget.** A few reviewable PRs a day is the honest ceiling,
+  which makes the allocation decision real rather than ceremonial.
+
+Its weakness is learning rate: a handful of gradeable outcomes per day is slow.
+That is a reason to start it now rather than later.
+
+### Second candidate: embodied action in AI Town
+
+A persistent multi-agent world where other agents react and Orion does not
+control the outcome. Real state change, real externality, real social
+grounding. **Plumbing must be verified before this is costed** -- as of
+2026-08-14 the embodiment Convex URL pointed at the wrong node and Orion had
+no live world contact. Unknown whether that is fixed.
+
+### Third: memory and self-model edits with delayed behavioural consequence
+
+Real state change (what Orion believes afterward differs) and measurable
+(does later behaviour differ). Weaker only because the grader is internal --
+but it is not *telemetry*, which makes it strictly better than anything in the
+current vocabulary.
+
+## The gap this opens
+
+`surprise_nats` currently measures how much Orion learned about **what an
+action does to a pressure** -- meta-learning about the action, not epistemic
+value of the action's content. Pointing it at "how much did this self-study
+change what I believe about my own history" is the same mathematics over a
+different distribution, and **that distribution does not exist**. That is a
+real modelling gap, not a wiring job, and it is what stands between the
+epistemic actions above and a score.
+
+## Revised recommended next patch
+
+**Not the allocator.** A budget over a set where everything scores zero either
+ranks noise (relative form) or says "stop" (absolute form). The second is
+correct and nearly free to be right about, so it teaches nothing.
+
+In order:
+
+1. **Declare signals on the undeclared templates.** 67.7% of dispatch volume
+   is currently unpriceable. Cheapest possible fix, unblocks everything, and
+   is the thing that makes any budget cover more than a third of behaviour.
+2. **One state-changing action with an external grader** -- the PR path.
+   One action, one grader, real scarcity, able to lose.
+3. **Then the budget**, denominated in Juniper's attention, with an absolute
+   bar rather than a relative ranking, over a set that now contains at least
+   one thing that can win and at least one thing that can lose.
+
+Step 3 was the original goal and is still the goal. It is third because a
+budget is only meaningful over a set whose members have distinguishable value,
+and as of today no such set exists.
+
+---
+
+# Fourth amendment: the grader is the unlock, not the action
+
+**Date:** 2026-08-21, same conversation
+**Corrects:** the candidate table in the third amendment above.
+
+## The third amendment sorted the candidates on the wrong axis
+
+It classified `affective state analysis` and `co-creation signals` as "closed
+loop" because their INPUT is Orion's own telemetry. That is the wrong test.
+The criterion this document itself establishes is about the **grader**, not
+the input.
+
+Both of those actions produce an artifact -- a written report -- that Juniper
+reads. If Juniper reads and rates it, the grader is outside Orion regardless
+of what went in. They have exactly the same shape as the self-study journal
+entry the same table rated "strong."
+
+Corrected table:
+
+| candidate | input | artifact | grader | verdict |
+|---|---|---|---|---|
+| self-study over journals/chat logs | internal | journal entry | Juniper | open loop |
+| vision -- what is in the room | external | description | reality / Juniper | open loop |
+| affective state analysis | internal | report | Juniper | **open loop** |
+| co-creation signals over biometrics/Postgres | internal | report | Juniper | **open loop** |
+
+And a property the original sort missed: **with an external grader, even a
+worthless input domain still teaches.** "This report says nothing" is a valid
+rating. Under self-grading that verdict is unreachable, which is exactly why
+every action in the current vocabulary scores zero.
+
+## Compute is the second real scarcity, and it dissolves the exchange-rate objection
+
+Every artifact above burns real GPU and CPU. That is genuine, exogenous,
+measurable scarcity -- Orion cannot manufacture more cards, and the P4 is
+already tight (3,238 MB resident of 7,680 MB as of PR #1800).
+
+The third amendment argued a budget needs a hand-typed exchange rate between
+value and cost, and that typing one would recreate `risk_score` one layer up.
+**That is only true if the total budget size has to be chosen.** Denominate
+the budget in the scarce resource itself -- "there are N GPU-hours today,
+spend them on whatever is expected to be rated highest" -- and it is a
+knapsack, not a conversion. The budget's size is set by how much hardware
+exists. Nobody types anything.
+
+**Optional cost instrumentation:** watts and CPU on circe are available and can
+contextualise the cost side if the coarse GPU-seconds/token accounting turns
+out not to discriminate. Not needed to start; recorded so it is not
+rediscovered as a blocker.
+
+## Two constraints that bind in different places
+
+| constraint | bounds | source |
+|---|---|---|
+| GPU / CPU | how much Orion can **produce** | hardware |
+| Juniper's attention | how much can get **graded** | Juniper |
+
+These are not the same cap, and the structure between them is the interesting
+part: **an artifact that costs compute and never gets read is pure waste** --
+spend, no grade, no learning. Attention is therefore the binding constraint
+and compute is what makes over-producing expensive. A two-sided tradeoff, not
+a single ceiling, which is a better-posed budget problem than the one the
+third amendment described.
+
+## The unlock is the grading channel, not any single action
+
+If "Juniper rates an artifact -- discrete category plus freetext" exists as a
+feedback path, then EVERY artifact-producing action becomes gradeable on one
+scale: affect reports, co-creation reports, self-study journals, vision
+descriptions -- and pull requests, where merged/closed is a special case of a
+rating.
+
+One mechanism, many actions, two real scarcities, everything competing. The
+third amendment went hunting for the single right action; the leverage is in
+the channel that grades all of them.
+
+**This supersedes the third amendment's step 1** ("declare signals on the
+undeclared templates"). That step prices more of a set already established to
+be worthless, and it prices it in field pressures, which is the direction this
+amendment is moving away from. It is not wrong, it is just no longer first.
+
+## The schema consequence: the first non-pressure outcome
+
+`PredictableSignal` (orion/schemas/action_prediction.py) is a closed `Literal`
+of six field pressures, deliberately closed so that "a claim about a signal
+nothing measures is not a claim." Every one of them is a biometric.
+
+A Juniper rating would be the first admissible outcome that is not. That is
+the mandate's "affect a real outcome that isn't just more biometrics" clause
+going from unmet to **representable** -- which it currently is not, at the
+type level.
+
+## Three things that are load-bearing
+
+1. **The rating categories are where a keyword cathedral gets in.** Twelve
+   rating dimensions would be exactly the pile-of-labels this repo bans. Start
+   with the fewest that change a decision: was this worth the compute and the
+   time, plus one axis of why.
+2. **Most artifacts will not be rated.** Unrated is not bad and not good. This
+   is the same ambiguity as silence in the outreach case and needs deciding up
+   front, not discovering when the numbers look strange. (See the existing
+   `cold_start` flag for the precedent: "predicted 0.0 because we learned it
+   does nothing" and "predicted 0.0 because we never saw it run" are identical
+   floats with opposite meanings, and are kept distinguishable on purpose.)
+3. **The freetext is worth more than the score.** The discrete part feeds the
+   posterior. The freetext is the only part that says *why*, and it is the
+   part Orion can read back later as content rather than as a number.
+
+## Revised order, again
+
+1. **The grading channel.** Juniper rates an artifact; the rating lands as an
+   outcome record on the action that produced it. Requires the
+   `PredictableSignal` change above. Existing-mechanism check first --
+   `chat_response_feedback` and the Hub already carry human feedback in some
+   form and must be inspected before anything new is built.
+2. **One artifact-producing action wired to it**, cheapest first.
+3. **Then the budget**, denominated in GPU with attention as the second
+   constraint, absolute bar rather than relative ranking.
+
+## Addendum: a third scarcity, already metered
+
+Orion talking to Claude (the room-companion path) costs **money** as well as
+GPU. That is the hardest cost denominator available -- exogenous,
+non-negotiable, and impossible to game by definition.
+
+**It is already instrumented.** `dev_economics_ledger_log` holds 826 rows from
+2026-08-12 to 2026-08-21 with `total_estimated_cost_usd`, fed by
+`orion/dev_economics/claude_code_ingest.py` (reads `~/.claude/projects/*.jsonl`)
+and priced by `orion/dev_economics/pricing.py`. `cost_usd` also rides the bus
+via `orion/schemas/room_claude.py` and `services/orion-room-companion/`.
+
+**Scope honesty:** that table is an aggregate rollup (`session_count` per row)
+covering all Claude Code sessions on the host, including agent sessions that
+are nothing to do with Orion's own choices. It is a real meter at the wrong
+granularity. Attributing dollars to a single Orion action needs per-turn cost
+off the room-companion path, which `app/claude_session.py` may already emit --
+unverified.
+
+So the three scarcities, with honest status:
+
+| currency | bounds | metered today? |
+|---|---|---|
+| GPU / CPU | how much Orion can produce | partially -- biometrics pipeline; watts available on circe if needed |
+| Juniper's attention | how much can get graded | no |
+| dollars (Claude) | how much Orion can think out loud | **yes, aggregate; not per-action** |
+
+The dollar path is also the action type that most *needs* a budget. Skipping a
+docker prune is free and worthless -- a budget over it can only ever say "no"
+and be trivially right. Skipping a Claude conversation costs something real and
+so does having it. That is the shape where a budget earns its keep.
+
+## Why ratings do not go through the contrast machinery
+
+Recorded because the obvious move is to reuse the ledger built in this
+document, and it would be wrong.
+
+That ledger measures `after - before` on a continuous field pressure, with a
+control arm, because pressures mean-revert and actions fire when they are
+high. **A rating has no "before" and does not mean-revert.** There is no
+confound to remove; the value IS the rating.
+
+So ratings need the posterior and the Bayesian surprise -- the same common
+scale, which is the entire point of having one -- and need neither the
+baseline bins nor the arms. Forcing them through the pressure-shaped hole
+because the hole exists would be the mirror image of the defect this document
+was written to remove.

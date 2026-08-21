@@ -697,3 +697,70 @@ class TestThinControlCoverage:
         est = contrast(self.TREATED, control, "maintain", "t", "resource_pressure")
         assert est.frozen_bins == (4,)
         assert est.thin_bins == ()
+
+
+# =========================================================================
+# Regression tests for the review findings on PR #1802, found after merge.
+# =========================================================================
+
+
+def test_report_loads_move_rate_so_the_frozen_guard_can_actually_fire() -> None:
+    """HIGH: the report SELECTed moved_n but not move_rate, killing is_frozen.
+
+    `ControlCell.move_rate` defaults to 1.0 ("presumed alive"), and `is_frozen`
+    reads ONLY move_rate. Building cells without it made every cell in the
+    human-facing report read healthy: `contrast()` accepted pinned control
+    cells as coverage, `est.frozen_bins` was always empty, and the
+    "FROZEN CONTROL CELLS -- refused as coverage" block could never print.
+
+    Live at the time of the fix, three cells satisfied the freeze condition and
+    none were reported -- including `reliability_pressure`, which IS a
+    PredictableSignal, so an action claiming it in bin 0 would have had its raw
+    delta returned wearing the contrast's name and confidence.
+
+    Asserts against the real script source rather than a copy of the query, so
+    dropping the column again re-breaks this test.
+    """
+    import pathlib
+    import re
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "scripts" / "analysis" / "report_action_value.py"
+    ).read_text()
+
+    m = re.search(r"CONTROL_CELLS_QUERY\s*=\s*\"\"\"(.*?)\"\"\"", src, re.DOTALL)
+    assert m, "CONTROL_CELLS_QUERY not found"
+    assert "move_rate" in m.group(1), (
+        "CONTROL_CELLS_QUERY must select move_rate -- ControlCell.is_frozen "
+        "reads only move_rate and defaults it to 1.0, so omitting it silently "
+        "reports every frozen cell as alive"
+    )
+    assert re.search(r"move_rate\s*=\s*float\(r\[.move_rate.\]\)", src), (
+        "the loaded move_rate must actually be passed to ControlCell(...)"
+    )
+
+
+def test_is_frozen_reads_move_rate_not_moved_n() -> None:
+    """The property the report has to feed. Hand-picked from live values.
+
+    reliability_pressure bin 0 as measured 2026-08-21: n=2221, moved_n=87,
+    move_rate=0.1204. A lifetime counter of 87 looks healthy; the EWMA says
+    frozen. That divergence is the whole reason move_rate exists.
+    """
+    live = ControlCell(
+        posterior=EffectPosterior(mean=0.0, variance=0.01, n=2221),
+        moved_n=87,
+        move_rate=0.1204,
+    )
+    assert live.is_frozen, "a pinned channel with a healthy-looking moved_n must read frozen"
+
+    # The default that made the bug invisible.
+    defaulted = ControlCell(
+        posterior=EffectPosterior(mean=0.0, variance=0.01, n=2221),
+        moved_n=87,
+    )
+    assert not defaulted.is_frozen, (
+        "sanity: an unspecified move_rate defaults to 1.0 and reads alive -- "
+        "this is exactly what the report was doing to every row"
+    )

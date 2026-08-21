@@ -33,7 +33,10 @@ from orion.autonomy.contrast import (
 from orion.autonomy.prediction import EffectPosterior, score_observation
 from orion.feedback.extractors import PRESSURE_DELTA_EPSILON
 from orion.field.pressure import field_pressures
-from orion.schemas.action_prediction import ActionOutcomeRecordV1
+from orion.schemas.action_prediction import (
+    ActionOutcomeRecordV1,
+    PredictableSignal,
+)
 from orion.schemas.execution_dispatch_frame import (
     ExecutionDispatchCandidateV1,
     ExecutionDispatchFrameV1,
@@ -75,6 +78,23 @@ def claim_upheld(direction: str, observed_delta: float) -> bool | None:
     if not moved:
         return None
     return observed_delta > 0 if direction == "increase" else observed_delta < 0
+
+
+# The closed set of signals an action can actually claim
+# (orion.schemas.action_prediction.PredictableSignal). The control arm must
+# write cells only for these.
+#
+# The loop below used to iterate every key in `_present_pressures(...)`, i.e.
+# all of `field_pressures()`, which is a wider set. Live consequence found
+# 2026-08-21: `substrate_signal_control_cells` accumulated
+# `continuity_pressure`, `introspection_pressure` and `social_pressure` rows
+# that `contrast()` can never look up, because no `ExpectedEffectV1` can name
+# them. Unowned data, and it made `load_control_posteriors`'s documented bound
+# of `len(PredictableSignal) * arms * 10` false.
+#
+# Pre-existing rows for non-predictable signals are left alone rather than
+# deleted -- they are inert, and removing live data is not this patch's call.
+_PREDICTABLE_SIGNALS = frozenset(PredictableSignal.__args__)
 
 
 @dataclass(frozen=True)
@@ -181,6 +201,9 @@ def resolve_action_outcomes(
     if have_window and frame_dispatch_count == 0:
         for signal, baseline in before.items():
             if signal not in after:
+                continue
+            if signal not in _PREDICTABLE_SIGNALS:
+                # No action can claim it, so contrast() will never read it.
                 continue
             observed_after = float(after[signal])
             baseline = float(baseline)

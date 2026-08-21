@@ -94,9 +94,23 @@ SELECT dispatch_kind, target_id, signal_id, baseline_bin,
   FROM substrate_action_effect_posterior
 """
 
+# move_rate is NOT optional here. `ControlCell.is_frozen` reads ONLY move_rate
+# (orion/autonomy/contrast.py), and the dataclass defaults it to 1.0 = presumed
+# alive. Omitting it from this SELECT -- as this query did until 2026-08-21 --
+# silently made every cell read healthy, so `contrast()` accepted pinned control
+# cells as coverage, `est.frozen_bins` was always empty, and the
+# "FROZEN CONTROL CELLS -- refused as coverage" block below could never print.
+#
+# Live at the time of the fix, three cells satisfied the freeze condition
+# (n >= 200, move_rate < 0.25) and none were reported: continuity_pressure
+# 0.099, introspection_pressure 0.109, and reliability_pressure 0.120 --
+# the last of which IS a PredictableSignal, so an action claiming it while the
+# signal sat in bin 0 would have had its raw delta handed back wearing the
+# contrast's name and confidence. That is precisely what contrast.py exists to
+# refuse.
 CONTROL_CELLS_QUERY = """
 SELECT signal_id, arm, baseline_bin,
-       posterior_mean, posterior_variance, posterior_n, moved_n
+       posterior_mean, posterior_variance, posterior_n, moved_n, move_rate
   FROM substrate_signal_control_cells
 """
 
@@ -134,6 +148,7 @@ def main() -> int:
                     n=int(r["posterior_n"]),
                 ),
                 moved_n=int(r["moved_n"]),
+                move_rate=float(r["move_rate"]),
             )
             for r in conn.execute(text(CONTROL_CELLS_QUERY)).mappings().all()
         }

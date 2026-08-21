@@ -402,3 +402,58 @@ class TestPredictionErrorMatchesTheStoredClaim:
         )
         for r in res.records:
             assert r.prediction_error == pytest.approx(r.observed_delta - r.predicted_delta)
+
+
+def test_control_cells_only_written_for_predictable_signals() -> None:
+    """LOW: the control arm wrote cells for signals no action can ever claim.
+
+    The loop iterated every key in `_present_pressures(...)` -- all of
+    `field_pressures()` -- rather than the closed `PredictableSignal`
+    vocabulary. Live consequence: `substrate_signal_control_cells` accumulated
+    continuity_pressure / introspection_pressure / social_pressure rows that
+    `contrast()` can never look up, because no `ExpectedEffectV1` can name
+    them. It also made `load_control_posteriors`'s documented bound of
+    `len(PredictableSignal) * arms * 10` false.
+    """
+    from orion.feedback.outcome_resolution import _PREDICTABLE_SIGNALS
+    from orion.schemas.action_prediction import PredictableSignal
+
+    assert _PREDICTABLE_SIGNALS == frozenset(PredictableSignal.__args__)
+    for leaked in ("continuity_pressure", "introspection_pressure", "social_pressure"):
+        assert leaked not in _PREDICTABLE_SIGNALS, (
+            f"{leaked} is not claimable by any action and must not get a control cell"
+        )
+    assert "reliability_pressure" in _PREDICTABLE_SIGNALS
+
+
+def test_control_cell_upsert_lets_a_null_frame_id_through() -> None:
+    """MEDIUM: `IS DISTINCT FROM` is FALSE when both sides are NULL.
+
+    The docstring claimed "a NULL stored token is DISTINCT FROM anything, so
+    the write proceeds". Postgres disagrees: `SELECT NULL::text IS DISTINCT
+    FROM NULL::text` -> `f`. So a caller using the `control_frame_id=None`
+    default got its first INSERT and then had every later update refused
+    forever -- the control arm silently frozen at one observation, no error.
+
+    Asserts on the real SQL text: the guard must have an explicit NULL branch.
+    """
+    import pathlib
+    import re
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "services" / "orion-feedback-runtime" / "app" / "store.py"
+    ).read_text()
+
+    i = src.index("INSERT INTO substrate_signal_control_cells")
+    guard = src[i:i + 2000]
+    assert "EXCLUDED.last_dispatch_frame_id IS NULL" in guard, (
+        "the dedup guard needs an explicit `EXCLUDED.last_dispatch_frame_id IS "
+        "NULL OR ...` branch; a bare IS DISTINCT FROM wedges NULL-frame callers "
+        "after their first write"
+    )
+    assert not re.search(
+        r"AND\s+substrate_signal_control_cells\.last_dispatch_frame_id\s*\n\s*"
+        r"IS DISTINCT FROM EXCLUDED\.last_dispatch_frame_id",
+        guard,
+    ), "the unguarded IS DISTINCT FROM form is back"

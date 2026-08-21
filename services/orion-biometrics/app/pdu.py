@@ -26,6 +26,21 @@ editable on this firmware, so the map cannot be read from the device and lives i
 `PDU_OUTLETS` instead. If anything is ever re-cabled, that env value is what must change --
 nothing detects it automatically.
 
+RE-CABLED 2026-08-21. atlas is decommissioned (its disks now run athena; see
+config/biometrics/node_catalog.yaml) and inherited its PDU spot -- outlets 34,35 are now
+athena's own reading (238 W chassis / 235 W PDU, same cross-check agreement as the original
+atlas validation above). circe was separately relocated to bank B1 of the same PDU; its new
+outlets are 1, 7, 13 (~669 W, 3 PSUs), confirmed live via direct `snmpget` and cross-checked
+against the fleet cluster event's `measurements_proxied`.
+
+That confirmation was blocked for a while by something with nothing to do with outlet
+numbers: this PDU's SNMP V1/2c access is gated by a "Manager" IP allow-list, and the only
+entry in it was a stale athena address (192.168.1.193 -- an old DHCP lease from 2026-08-14,
+see metrics.py's `_carrying_interfaces` docstring) rather than athena's current one. An
+unauthorized source IP gets silently dropped by this device, indistinguishable from the PDU
+itself being down -- it answered ICMP and HTTPS the whole time. Fixed by adding athena's
+current address to the Manager list in the PDU's own admin panel.
+
 CONTAINMENT
 -----------
 For a node that has BOTH an iLO and PDU outlets (atlas), these are two independent meters on

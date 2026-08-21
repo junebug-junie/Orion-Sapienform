@@ -2,16 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 600,
   "_last_change": {
-    "base": "merge base 76ab7d2bd (origin/main)",
-    "change_count": 6,
-    "high_severity_count": 6,
+    "base": "merge base 4ae678633 (origin/main)",
+    "change_count": 0,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#delta_phi",
-      "high   removed metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#delta_recon_error",
-      "high   removed metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#phi",
-      "high   removed metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#recon_error",
-      "high   routing_changed metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1 (declared_consumers: ['services.orion-cortex-exec.app.spark_narrative:spark_embo\u2026 -> -)",
-      "high   semantics_changed metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1 (schema_id: PhiIntrinsicRewardV1 -> -)"
+      "no definition changes relative to the merge base"
     ]
   },
   "definitions": {

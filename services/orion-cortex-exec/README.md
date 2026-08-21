@@ -57,6 +57,28 @@ pytest tests/test_paradigm_registry.py tests/test_repair_pressure_v2_paradigm.py
 
 **Related:** Hub `ENABLE_REPAIR_PRESSURE_SPEECH_WIRING` + executor `compile_speech_contract()` merge `repair_pressure_contract` into TURN CONTRACT text on the same turn.
 
+### Chat-scoped attention/curiosity frame — current-turn LLM signal probe
+
+`app/chat_stance.py::build_chat_stance_inputs` runs `orion.substrate.attention_frame.build_attention_frame` on every real chat turn when `ORION_CURIOSITY_FRAME_ENABLED=true`. One of its detectors, `CurrentTurnSignalDetector` (`orion/substrate/attention/detectors/current_turn.py`), is a pure, synchronous reader of `ctx["current_turn_llm_signals"]` — a list of `{"phrase", "type"}` candidates populated BEFORE the frame build by a same-turn LLM RPC call (`app/current_turn_llm_signals.py::populate_current_turn_llm_signals`).
+
+This replaces a deleted regex-based detector (`LegacyRegexSignalDetector`) whose "any capitalized word" pattern matched sentence-initial interjections ("Heck" in "Heck yeah!") as fake candidates, with no real filter beyond a 9-word allowlist. The LLM call is a quick-lane classification call (short JSON-array output, tight timeout, small `max_tokens`), fail-open by contract: an unbound bus, RPC failure/timeout, or malformed output all degrade to zero candidates and a distinguishable WARNING log — never a raised exception, never a delayed chat turn beyond the configured timeout.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `CURRENT_TURN_SIGNAL_PROBE_ROUTE` | `quick` | LLM Gateway route for the current-turn signal probe. |
+| `CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC` | `3.0` | Bus RPC wait bound; a slow/dead gateway fails open to zero candidates. |
+| `CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS` | `80` | Completion budget — a few short phrase+type JSON pairs, not a generation call. |
+
+**Tests**
+
+```bash
+cd services/orion-cortex-exec
+pytest tests/test_current_turn_llm_signals.py tests/test_attention_frame.py tests/test_attention_frame_integration.py -q
+
+# Detector unit tests (repo root)
+pytest orion/substrate/tests/test_current_turn_signal_detector.py -q
+```
+
 ### Grammar substrate (shadow observability)
 
 | Channel | Env Var | Kind | Description |

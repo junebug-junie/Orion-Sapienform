@@ -10,6 +10,15 @@ from app.chat_stance import build_chat_stance_debug_payload, build_chat_stance_i
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+async def _fake_populate_zephyr_bridge_signal(ctx) -> None:
+    """Stand-in for populate_current_turn_llm_signals(): the real function
+    makes a bus RPC call (no bus is bound in these unit tests, so it would
+    fail-open to []). Injects the same "Zephyr Bridge" candidate the deleted
+    LegacyRegexSignalDetector used to extract via regex, so these tests keep
+    exercising a populated attention frame rather than an empty one."""
+    ctx["current_turn_llm_signals"] = [{"phrase": "Zephyr Bridge", "type": "concept"}]
+
+
 @pytest.mark.asyncio
 async def test_feature_flag_off_preserves_chat_stance_input_shape(monkeypatch) -> None:
     monkeypatch.delenv("ORION_CURIOSITY_FRAME_ENABLED", raising=False)
@@ -21,7 +30,12 @@ async def test_feature_flag_off_preserves_chat_stance_input_shape(monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_feature_flag_on_adds_attention_frame(monkeypatch) -> None:
+    import app.chat_stance as chat_stance_module
+
     monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
+    monkeypatch.setattr(
+        chat_stance_module, "populate_current_turn_llm_signals", _fake_populate_zephyr_bridge_signal
+    )
     ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
     built = await build_chat_stance_inputs(ctx)
     assert "attention_frame" in built
@@ -41,6 +55,9 @@ async def test_frame_build_persists_salience_trace_when_enabled(monkeypatch) -> 
 
     monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
     monkeypatch.setattr(chat_stance_module, "persist_chat_attention_salience_trace", _fake_persist)
+    monkeypatch.setattr(
+        chat_stance_module, "populate_current_turn_llm_signals", _fake_populate_zephyr_bridge_signal
+    )
     ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
     await build_chat_stance_inputs(ctx)
     assert len(calls) == 1
@@ -73,6 +90,9 @@ async def test_persist_failure_does_not_clear_attention_frame_ctx(monkeypatch) -
 
     monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
     monkeypatch.setattr(chat_stance_module, "persist_chat_attention_salience_trace", _boom)
+    monkeypatch.setattr(
+        chat_stance_module, "populate_current_turn_llm_signals", _fake_populate_zephyr_bridge_signal
+    )
     ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
     built = await build_chat_stance_inputs(ctx)
     # A trace-writer exception must not undo an already-successful frame build --
@@ -80,6 +100,26 @@ async def test_persist_failure_does_not_clear_attention_frame_ctx(monkeypatch) -
     assert "attention_frame" in built
     assert "chat_attention_frame" in ctx
     assert ctx["chat_attention_frame"]["schema_version"] == "attention.frame.v1"
+
+
+@pytest.mark.asyncio
+async def test_llm_signal_populate_failure_does_not_break_turn(monkeypatch) -> None:
+    """populate_current_turn_llm_signals() is fail-open by contract and
+    should never raise, but chat_stance.py wraps the call in its own
+    try/except as defense-in-depth -- a bug there must not prevent the
+    frame build from running at all (it degrades to zero LLM-sourced
+    signals, same as a real RPC failure)."""
+    import app.chat_stance as chat_stance_module
+
+    async def _boom(ctx) -> None:
+        raise RuntimeError("unexpected populate bug")
+
+    monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
+    monkeypatch.setattr(chat_stance_module, "populate_current_turn_llm_signals", _boom)
+    ctx = {"user_message": "I am planning around Zephyr Bridge.", "skip_unified_beliefs": True}
+    built = await build_chat_stance_inputs(ctx)
+    assert "attention_frame" in built
+    assert ctx["current_turn_llm_signals"] == []
 
 
 def test_debug_payload_exposes_attention_frame() -> None:

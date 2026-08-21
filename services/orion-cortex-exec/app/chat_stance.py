@@ -50,6 +50,7 @@ from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_subst
 from .attention_frame import attention_frame_enabled, build_attention_frame
 from .autonomy_slice import build_autonomy_slice
 from .chat_attention_salience_trace import persist_chat_attention_salience_trace
+from .current_turn_llm_signals import populate_current_turn_llm_signals
 
 from .endogenous_runtime import (
     consume_endogenous_runtime_for_reflective_review,
@@ -2363,6 +2364,17 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning("autonomy_slice_build_failed error=%s", exc)
 
     if attention_frame_enabled():
+        # Same-turn LLM novelty/salience judgment, stashed into
+        # ctx["current_turn_llm_signals"] for CurrentTurnSignalDetector to
+        # read synchronously inside build_attention_frame() below. Own
+        # try/except: populate_current_turn_llm_signals() is fail-open by
+        # contract and never raises, but this call happens before the frame
+        # build itself, so a bug here must not skip the frame build outright.
+        try:
+            await populate_current_turn_llm_signals(ctx)
+        except Exception as exc:
+            logger.warning("current_turn_llm_signals_populate_call_failed error=%s", exc)
+            ctx["current_turn_llm_signals"] = []
         try:
             attention_frame = build_attention_frame(
                 ctx=ctx,

@@ -176,53 +176,91 @@ But metacog is already carrying a lot, and it should not absorb vision either.
 | 4 | V100-PCIE-16GB | 16384 | 7340 | 7340 | **100%** | **2026-08-21 06:02** |
 | 5 | V100-PCIE-16GB | 16384 | **0** | **0** | **5%** | **2026-08-21 06:02** |
 
-Six cards, 147 GB. **GPU 5 has been literally 0 MB used across 1,143 samples
-since it was installed.** GPU 2 is bursty — idle at any given glance but peaking
-to 21 GB, so a single-sample read would have called it free and been wrong.
+Six cards, 147 GB. **The table above is the pre-redeploy state and its
+placement was wrong** — metacog and fast were not where they were meant to be,
+which is why GPU 5 read as never-used. Juniper redeployed at `20:08` and the
+intended assignment is now live:
 
-**This table also independently dates §1.1's root cause.** GPUs 3/4/5 first
-appear at `2026-08-21T06:02:25`, and GPU 3 is the P100. athena's vision died
-`2026-08-20 22:00` with a final straggler at `06:12`. The card was physically
-pulled from athena and installed in circe that morning; the P100-era VRAM budget
-became unsatisfiable on the P4 the moment it left. Two independent sources, same
-hour.
+| idx | card | assignment | state after redeploy |
+| ---: | :--- | :--- | :--- |
+| 0 | V100-32GB | **reserved — Orion's chat** | 8528 MB |
+| 1 | V100-SXM2-32GB | **reserved — Orion's chat** (:8011, the 35B) | 23213 MB |
+| 2 | V100-32GB | **agent / affect / testing lane** (:8014) | 0 MB — free |
+| 3 | **P100-16GB** | **vision — historically, and still** | 0 MB — free |
+| 4 | V100-16GB | metacog (:8012) | 8050 MB — busy |
+| 5 | V100-16GB | fast/quick (:8013) | 7258 MB — busy |
 
-### Why "add an mmproj to the affective worker" cannot work
+So the corrected plan is **not** "put perception on the idle GPU 5" — 5 is
+fast's card and it stays busy. **Perception goes on GPU 3, the P100**, which is
+where vision work has always run. The card came off athena; the workload should
+follow it.
 
-llama.cpp serves **one model per server process**, and an `--mmproj` is the
-vision projector belonging to *one specific VL model* — not a generic capability
-that can be attached to an unrelated model. An affective model and a VL model
-therefore cannot share a llama-server on :8014 no matter how much VRAM the card
-has. It is two processes either way.
-
-Once it is two processes, the only question is which cards they sit on — and
-there is an untouched V100 for exactly this.
+The P100 is also the better host than it looks: GP100 has **full-rate FP16**
+(2× FP32), unlike the P4's GP104 (1/64 rate). 16 GB HBM2. A 7–8B VL model
+(Q5 ~5.5 GB + mmproj ~1.4 GB) leaves ~9 GB for KV and slots — metacog already
+runs `total_slots: 4` on an 8B, so **multi-camera is a slot-count and
+frame-router policy question, not another card.** One caveat on record:
+`config/vision_profiles.yaml:171` notes `GroundingDINO matmul fails fp16 on
+P100` — a specific op in that detector, not a llama.cpp constraint, and the
+detector is not what moves.
 
 | lane | port | card | why |
 | :--- | :--- | :--- | :--- |
-| affective | 8014 | **GPU 2** (32 GB, avg 4.4 GB) | episodic — `JuniperAffectiveStateV1` ticks on a 900 s window, so it tolerates the bursty neighbour |
-| **perception** | **8015 (new)** | **GPU 5** (16 GB, never used) | continuous — every window. Needs a card that is actually free |
-| metacog | 8012 | GPU 0 | **untouched.** Stops absorbing vision work it was never sized for |
-| chat | 8011 | GPU 1 | deliberate looking only; already `vision:true`, `video:true` |
+| **perception** | **8015 (new)** | **GPU 3, P100 16 GB** | the vision card, free, full-rate fp16 |
+| affective | 8014 | GPU 2, 32 GB | Juniper's agent/affect/testing lane |
+| metacog | 8012 | GPU 4 | **untouched.** Stays busy; stops absorbing vision |
+| fast | 8013 | GPU 5 | untouched |
+| chat | 8011 | GPU 0+1 | reserved; deliberate looking only |
 
-A 7–8B VL model (Q5 weights ~5.5 GB + mmproj ~1.4 GB) leaves ~9 GB on GPU 5 for
-KV and slots. **That headroom is the webcam answer:** metacog runs
-`total_slots: 4` on an 8B today, so multi-camera becomes a slot-count and
-frame-router policy question rather than a "does it fit" question. Adding
-cameras does not require another card.
+### Why an mmproj cannot be added to the affective worker
 
-Worth noting the V100 is Volta (sm_70) with real fp16 tensor cores — a
-materially better VLM host than either the P4 (Pascal, crippled fp16) or the
-P100 that used to do this work.
+llama.cpp serves **one model per server process**, and `--mmproj` is the vision
+projector belonging to *one specific VL model* — not a generic capability
+attachable to an unrelated model. An affective model and a VL model cannot share
+a llama-server on :8014 regardless of VRAM. It is two processes either way, so
+they are two ports on two cards.
 
-**What dies on the P4:** BLIP-base unloads (~1 GB back). athena keeps
-GroundingDINO (hard labels), SigLIP2 (embeddings), and gains `identity_face` —
-biometric, must stay on-node. That sensor set is roughly all the P4 can carry,
-and it does not need to carry more.
+### What stays on athena, and why — `/mnt/telemetry` is local
 
-**Also worth checking on circe:** GPU 3 (the ex-athena P100) sits at 100% peak
-utilisation with a flat 7,979 MB — the busiest card in the fleet, arrived today,
-and nothing in this repo's config accounts for it.
+`/mnt/telemetry` is `/dev/sdf1`, **plain local ext4 on athena**. No NFS, no
+exports. circe cannot read a frame by path, so the sensors cannot simply follow
+the P100 to circe:
+
+| runs on athena (P4) | runs on circe (P100) |
+| :--- | :--- |
+| capture, GroundingDINO (hard labels), SigLIP2 (embeddings), `identity_face` | the VL language pass, via the gateway |
+
+That is not a workaround — it is the right boundary anyway. Face embeddings are
+biometric and now have a physical reason to stay on-node, not just a policy one.
+Frames cross to circe as **bytes for one inference**, never as a mounted path.
+
+### The one real plumbing decision: where percept frames live
+
+The gateway already ships image bytes correctly —
+`vision.py::resolve_attachment_url` rebuilds `<trusted base>/<sha256>` from a
+**regex-validated hash only** (the ref's own `source_url` is deliberately
+ignored, because it round-trips through a browser and is client-controlled), and
+`fetch_attachment_data_uri` refuses any payload that does not hash to the
+requested address. Content-addressed, fail-closed, already wired.
+
+But the configured base is the **chat** attachment store:
+
+```
+LLM_GATEWAY_ATTACHMENT_BASE_URL=http://100.92.216.81:8080/api/chat/attachments
+LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS=100.92.216.81
+```
+
+Hub-served, on athena, built for user chat uploads. **Camera frames of Juniper's
+home should not be dropped into it.** Anything that can reach that endpoint and
+knows a hash can fetch a frame, and Hub is the service that also holds the
+docker socket. It also has no retention policy suited to percepts.
+
+**Recommendation: a second base** — `LLM_GATEWAY_PERCEPT_BASE_URL`, its own
+endpoint, its own short retention, selected by attachment kind. Same mechanism
+and the same security property (no caller-controlled scheme, host, or path;
+hash-verified bytes), different namespace and lifetime. This is a small change
+to `resolve_attachment_url` and it is the difference between percepts having a
+deliberate home and percepts inheriting chat's.
 
 ### 3.1 The `vision_profiles.yaml` cathedral — with blast radius checked
 

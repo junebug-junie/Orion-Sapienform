@@ -705,6 +705,77 @@ first place. Full reasoning and phased detail:
    data, and generalizing Hub's Substrate Lattice UI to show real goal-provenance
    ticks (Part H).
 7. **Re-evaluate integration** only after 4 and 5 produce real, comparable data — not before.
+   **Design-mode pass, 2026-08-20: not yet — items 4 and 5 have not actually produced the
+   data this gate asks for, so there is no integrate-vs-stay-separate decision to make yet.**
+   Full deliverable:
+   `docs/superpowers/specs/2026-08-20-objective-7-integration-reevaluation-design.md`.
+   Three concrete gaps found, not asserted: (1) item 5's emergent-clustering probe's only
+   real run (2026-07-21) is now stale relative to two salience-formula fixes that postdate
+   it — the 2026-07-28 `recent_perturbations` EWMA z-score fix and the 2026-08-20
+   `cross_domain_variance_floor()` fix (PR #1774) — and its own literal acceptance check
+   already read AMBIGUOUS even before those fixes (one surviving stable pair,
+   `capability:llm_inference` <-> `node:atlas`, out of 21 checkable pairs). (2) item 4 has
+   never produced its own dedicated acceptance evidence — its one-line status only points at
+   items 2/3's existing artifacts. (3) O3 (§5) — "a blind rater... can distinguish [an
+   instrument's output] from noise and describe what it appears to track" — is the literal
+   falsifiable bar this whole objective exists to serve, and has never been run for any
+   instrument in this program, despite being cheap and read-only (confirmed via full-text
+   search of this document). **Recommendation: do not build any fused/shared consumer or
+   cross-theory legibility surface yet, and do not close item 7 as "answered: stay separate"
+   either — both would be deciding without the data §7's own "integration is decided from
+   data, later" rule requires.** Smallest real next patch, per the design doc: re-run
+   `measure_emergent_clustering_probe.py` fresh against current live data, and build one
+   small blind-rater harness against the AST/HOT reducer's real narrative output (the one
+   instrument already MET on reducer-correctness per this item's own 2026-08-20 note above),
+   modeled on the existing "compare, don't fuse" precedent
+   (`scripts/analysis/measure_candidate_a_vs_b_head_to_head.py`). No schema, registry, or new
+   consumer proposed by this pass. Two constraints carried forward for whatever integration
+   discussion eventually does happen: `node:athena` dominating attention/salience data is
+   architectural (the host node), settled, not an open question (§6 item 5's 2026-07-29 entry
+   above, closed for real in the separate `docs/athena-dominance-doc-correction` doc pass);
+   and any future proposal to fuse/weight salience-like signals *across* theory-instruments
+   should assume the same "one domain's organic scale dwarfs another's" failure mode that
+   `cross_domain_variance_floor()` (PR #1774) already fixed once *within* one competition —
+   fusing across theories is strictly more exposed to it, not less.
+   **The recommended next patch was run, same day, 2026-08-20 — real decision follows.**
+   1. **`measure_emergent_clustering_probe.py` re-run** (`--window-hours 24 --gap-hours 12`,
+      post both salience fixes): still **AMBIGUOUS** on the literal clustering bar (same
+      classification as 2026-07-21, now over a much richer 18-target universe — up from 9 —
+      with 153 checkable pairs instead of 21). One pair still clears `corr >= 0.5` in both
+      windows (`capability:vision` <-> `node:substrate.vision`, Jaccard 1.0), but
+      correlation-of-correlations across all 153 pairs dropped to **0.3948** (was 0.9940 on
+      the earlier, sparser 21-pair check) — a wider universe finds real structure less
+      stable, not more. Full-history (104,778 real ticks) top-1-winner concentration is
+      **36.31%** (`node:substrate.bus_synaptic`) — in the same range as the killed drives
+      system's own documented *post-fix* concentration (31.65%), not clearly better than
+      what this program already replaced.
+   2. **O3 blind-rater check attempted, and found not meaningfully runnable as scoped.**
+      Pulled every real `reason_narrative` ever persisted to `substrate_attention_self_model`
+      (19,417 rows, full history): **only 5 distinct strings exist in the entire table**, and
+      `attention_reason` has only ever been `bottom_up_salience` (0 real `top_down_override`
+      or `field_salience_only` rows — consistent with everything else found this session).
+      88% of ticks are the single fixed fallback string ("Pure bottom-up dispatch: 'None'
+      selected..."); the remainder cycle through 4 template variants differing only by a
+      substituted, non-descriptive `open-loop-<hex>` id. This is real, not fabricated — item
+      3 already proved the id substitution is correct — but it is a fixed template with one
+      slot, not free-form content. Running a formal blind-rater trial on 5 known template
+      shapes would trivially "pass" (any rater can separate 5 templates from noise) without
+      testing what O3 actually asks — whether a rater can find *meaning* in the content.
+      Not run, to avoid reporting a misleading PASS. Real, disclosed gap: the reducer's
+      underlying selection logic is proven correct, but its narrative layer is currently too
+      impoverished to support a real legibility claim.
+   **Decision: do not integrate further. Real reasons, not caution for its own sake:**
+   monoculture concentration is not demonstrably better than what was killed, and the one
+   instrument (AST/HOT) that's actually proven correct produces output too template-thin for
+   the legibility bar this whole re-evaluation was gated on. Building a fused consumer or
+   wider `capability_policy.py` gate on top of this now would repeat the exact mistake this
+   program exists to correct — formalizing before validating. This is a real "no," backed by
+   two real measurements, not the earlier "not ripe yet" (missing data). **Objective 7 is
+   closed as: integration not warranted by current data.** Named, concrete path back open if
+   this is ever revisited: (a) close the concentration gap (`bus_synaptic`'s 36.31% share
+   itself, not yet root-caused the way `route`'s was), (b) enrich the AST/HOT reducer's
+   narrative generation beyond a single-slot template before re-attempting O3, (c) only then
+   re-run both checks.
 
 ## 7. Processes — how this program actually operates
 

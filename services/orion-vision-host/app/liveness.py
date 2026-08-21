@@ -168,8 +168,14 @@ class VisionLivenessWatcher:
                 # single failed task would read as 100%. Consequence, worth
                 # knowing when reading the tests: time-to-alert is
                 # (time to accumulate min_samples) + sustain_sec, not
-                # sustain_sec. At the observed 5s task cadence with
-                # min_samples=10 and sustain_sec=180 that is 45 + 180 = 225s.
+                # sustain_sec, and it therefore scales with task cadence.
+                # Measured live 2026-08-21: 13 samples per 300s window in
+                # healthy operation (~23s apart, since a real task spends
+                # ~2.5s on the GPU) -> ~410s to alert. During the actual
+                # outage tasks arrived every ~5s, because a refused task
+                # returns instantly without doing any work -> ~225s. The
+                # cadence speeds up exactly when things break, so the worst
+                # case for detection is the healthy case, not the broken one.
                 self._failing_since = ts
             failing_for = ts - self._failing_since
 

@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     VISION_VLM_MAX_TOKENS: int = 128
     VISION_VLM_TEMPERATURE: float = 0.4
 
+    # Fresh-capture resolution (P1's "on-demand capture, bypassing window/
+    # council" work -- docs/superpowers/specs/2026-08-12-perception-frontier-
+    # design.md). orion-vision-edge writes every captured frame here
+    # (services/orion-vision-edge's own FRAME_STORAGE_DIR default matches);
+    # mounted read-only into this container (see docker-compose.yml). A
+    # caller opts in per-request via `request.use_latest_frame: true`
+    # instead of supplying `image_path` -- see _resolve_latest_frame_path.
+    VISION_FRAMES_DIR: str = "/mnt/telemetry/vision/frames"
+
     # Multi-GPU scheduling
     VISION_DEVICE_STRATEGY: str = Field(default="best_free_vram", description="best_free_vram|fixed|round_robin")
     VISION_DEFAULT_DEVICE: str = "cuda:0"

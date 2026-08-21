@@ -420,6 +420,170 @@ def test_look_at_camera_registered_in_manifest_with_correct_family():
     assert entry.requires_execute_opt_in is False
 
 
+def test_ask_camera_posts_vqa_task_with_use_latest_frame(monkeypatch):
+    """Confirms the real request shape reaches vision-host: task_type=vqa,
+    request.use_latest_frame=true (the on-demand-capture opt-in, not a
+    caller-supplied image_path), request.question passed through."""
+    seen = {}
+
+    def _fake_post(url, *, body, timeout_sec):
+        seen["url"] = url
+        seen["body"] = body
+        return {
+            "ok": True,
+            "artifacts": {
+                "model_id": "Salesforce/blip-image-captioning-base",
+                "vqa": {"question": "is the door open?", "answer": "yes", "confidence": 1.0},
+            },
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "is the door open?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is True
+    assert seen["url"] == "http://orion-athena-vision-host:6600/v1/vision/task"
+    assert seen["body"] == {
+        "task_type": "vqa",
+        "request": {"use_latest_frame": True, "question": "is the door open?"},
+    }
+    data = json.loads(out.final_text)
+    assert data["available"] is True
+    assert data["status"] == "ok"
+    assert data["answer"] == "yes"
+
+
+def test_ask_camera_requires_a_question(monkeypatch):
+    """Never even calls vision-host without a real question -- validation
+    happens before any HTTP call, same convention runner.py's own
+    _run_vlm_vqa uses on the vision-host side."""
+    called = {"hit": False}
+
+    def _fake_post(url, *, body, timeout_sec):
+        called["hit"] = True
+        return {}
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert called["hit"] is False
+    assert effects == []
+    assert out.ok is False
+    assert out.error is not None
+
+
+def test_ask_camera_no_answer_is_ok_not_error(monkeypatch):
+    """A weak/empty VQA answer is a real, honest outcome (the model just
+    didn't have a real answer), not a call failure -- must not be
+    surfaced as ok=False."""
+    def _fake_post(url, *, body, timeout_sec):
+        return {
+            "ok": True,
+            "artifacts": {"model_id": "Salesforce/blip-image-captioning-base", "vqa": {"question": "?", "answer": "", "confidence": 1.0}},
+            "warnings": ["answer_rejected:empty"],
+        }
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "how many chairs?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is True
+    data = json.loads(out.final_text)
+    assert data["status"] == "no_answer"
+    assert data["answer"] == ""
+    assert data["warnings"] == ["answer_rejected:empty"]
+
+
+def test_ask_camera_surfaces_vision_host_task_failure_honestly(monkeypatch):
+    """A real vision-host rejection (e.g. gpu_hard_floor) must be a real
+    ok=False failure with the actual error code, not swallowed into a
+    generic success or a fabricated answer."""
+    def _fake_post(url, *, body, timeout_sec):
+        return {
+            "ok": False,
+            "error": "No GPU available above hard floor (VRAM pressure).",
+            "meta": {"error_code": "gpu_hard_floor"},
+        }
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "is the door open?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is False
+    data = json.loads(out.final_text)
+    assert data["status"] == "gpu_hard_floor"
+    assert data["available"] is False
+
+
+def test_ask_camera_never_raises_on_http_failure(monkeypatch):
+    def _boom(url, *, body, timeout_sec):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _boom)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "is the door open?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is False
+    assert out.error is not None
+
+
+def test_ask_camera_semantic_verb_resolves_via_capability_bridge():
+    """End-to-end: the ask_camera semantic verb resolves to
+    skills.perception.ask_camera.v1 specifically -- not just "some
+    perception-family skill" (the exact ordering bug this same patch found
+    and fixed in _SEMANTIC_VERB_TO_SKILL for look_at_camera)."""
+    registry = actions_skill_registry.ActionsSkillRegistry(verbs_dir=verb_adapters.VERBS_DIR)
+
+    decision = capability_bridge.resolve_capability_decision(
+        verb="ask_camera",
+        preferred_skill_families=["perception"],
+        registry=registry,
+    )
+
+    assert decision.selected_skill == "skills.perception.ask_camera.v1"
+    assert decision.skill_family == "perception"
+    assert decision.observational is True
+
+
+def test_ask_camera_skill_family_and_risk_class():
+    assert actions_skill_registry._family_for_skill("skills.perception.ask_camera.v1") == "perception"
+    risk_class, read_only, idempotent = actions_skill_registry._risk_for_skill(
+        "skills.perception.ask_camera.v1"
+    )
+    assert risk_class == "read_only"
+    assert read_only is True
+    assert idempotent is True
+
+
+def test_ask_camera_registered_in_manifest_with_correct_family():
+    registry = actions_skill_registry.ActionsSkillRegistry(verbs_dir=verb_adapters.VERBS_DIR)
+    entry = next(
+        (e for e in registry.list() if e.skill_id == "skills.perception.ask_camera.v1"), None
+    )
+    assert entry is not None
+    assert entry.family == "perception"
+    assert entry.read_only is True
+    assert entry.observational is True
+    assert entry.requires_confirmation is False
+    assert entry.requires_execute_opt_in is False
+
+
 def test_tailscale_json_parsing_and_active_nodes():
     parsed = verb_adapters._parse_tailscale_status_json(
         {

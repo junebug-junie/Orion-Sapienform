@@ -1,4 +1,11 @@
-"""Phi encoder manifest + intrinsic reward schemas (Plan 2)."""
+"""Phi encoder manifest schemas (Plan 2).
+
+PhiIntrinsicRewardV1 and AttributionV1 (the intrinsic-reward telemetry half of
+Plan 2) were removed 2026-08-21: orion-spark-introspector, their sole
+producer, was retired outright 2026-07-28, and nothing else in the repo ever
+constructed either class. See orion/inner_state_registry.py's
+phi_intrinsic_reward.v1 entry for the full history.
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -45,39 +52,3 @@ class PhiEncoderManifestV1(BaseModel):
     git_sha: str
     trained_at: datetime
     promoted_at: Optional[datetime] = None
-
-
-class AttributionV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    feature: str
-    raw_value: float
-    scaled_value: float
-    attribution: float
-
-
-class PhiIntrinsicRewardV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    generated_at: datetime
-    self_state_id: Optional[str] = None
-    encoder_version: str
-    features_version: str
-    phi: float
-    delta_phi: float
-    recon_error: float
-    delta_recon_error: float
-    latent: Dict[str, float] = Field(default_factory=dict)
-    tick_metadata_window_sec: int = 2
-    phi_health: str = "ok"
-    grammar_truth_degraded: bool = False
-    attribution_top: List[AttributionV1] = Field(default_factory=list)
-    # 2026-07-12, inner-state unification Phase 2: node-attributed embodiment.
-    # Sourced from SelfStateV1.dominant_attention_target_details, filtered to
-    # real hardware nodes only (excludes synthetic pseudo-nodes and non-node
-    # target kinds like "field:recent_perturbations" -- see
-    # services/orion-spark-introspector/app/worker.py's
-    # _dominant_hardware_node()). None when no qualifying node is present
-    # this tick.
-    dominant_node: Optional[str] = None
-    dominant_node_reason: Optional[str] = None

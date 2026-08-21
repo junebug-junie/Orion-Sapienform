@@ -33,7 +33,6 @@ LIVE_CTX_KEY_SNAPSHOT = frozenset(
         "situation_affordances", "situation_prompt_fragment", "world_context_capsule_loaded",
         "capsule_age_hours", "capsule_filtered_reason", "stance_world_context_items_used",
         "politics_context_suppressed", "message_history", "biometrics", "biometrics_json",
-        "embodiment_hint", "spark_embodiment_narrative",
         "spark_state_json", "turn_effect", "turn_effect_json", "turn_effect_evidence",
         "turn_effect_evidence_json", "recent_turn_effect_alerts_json", "system_alert_tags",
         "turn_effect_policy", "turn_effect_policy_json", "turn_effect_explanations",

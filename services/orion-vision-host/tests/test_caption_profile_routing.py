@@ -25,8 +25,18 @@ def test_vlm_caption_kind_is_caption_frame() -> None:
     assert p.get_profile("vlm_caption").kind == "caption_frame"
 
 
-def test_vlm_vqa_untouched() -> None:
+def test_vqa_routes_to_vlm_vqa() -> None:
+    p = _load_profiles()
+    assert p.resolve_target("vqa") == "vlm_vqa"
+
+
+def test_vlm_vqa_enabled_2026_08_20() -> None:
+    """Was disabled + kind unimplemented (see test_run_vlm_vqa.py for the
+    execution-side coverage) until this same-day patch. Live VRAM headroom
+    was checked (not assumed) before flipping this -- see the profile's own
+    comment in config/vision_profiles.yaml."""
     p = _load_profiles()
     vqa = p.get_profile("vlm_vqa")
     assert vqa.kind == "vlm"
-    assert vqa.enabled is False
+    assert vqa.enabled is True
+    assert vqa.warm_on_start is False  # lazy-load only, deliberately not eager

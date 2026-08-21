@@ -84,7 +84,6 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "substrate.dev_economics_ledger.v1": "DevEconomicsLedgerSQL",
     "substrate.doc_semantic_drift.v1": "DocSemanticDriftSQL",
     "juniper.affective_state.v1": "JuniperAffectiveStateSQL",
-    "self.phi_reward.v1": "PhiRewardSQL",
     "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
 }
 
@@ -177,7 +176,6 @@ class Settings(BaseSettings):
             "orion:equilibrium:transition",
             "orion:chat:history:spark_meta:patch",
             "orion:autonomy:action:outcome",
-            "orion:self:phi_reward",
             "orion:causal_geometry:snapshot",
             "orion:debug:attention:streak_tick",
             "orion:substrate:dev_economics_ledger",

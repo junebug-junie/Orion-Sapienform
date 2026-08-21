@@ -290,8 +290,13 @@ class Settings(BaseSettings):
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")
     BIOMETRICS_NO_SIGNAL_AFTER_SEC: float = Field(default=600.0, alias="BIOMETRICS_NO_SIGNAL_AFTER_SEC")
+    # circe inherited atlas's weight 2026-08-21: atlas is decommissioned
+    # (config/biometrics/node_catalog.yaml), circe is now the fleet's
+    # dominant GPU node. Exact-match lookup (biometrics_cache.py's
+    # role_weights.get(node, 1.0)), not substring -- a node missing from
+    # this dict silently gets the 1.0 fallback, not 0.0.
     BIOMETRICS_ROLE_WEIGHTS_JSON: str = Field(
-        default='{"atlas":0.6,"athena":0.4}',
+        default='{"circe":0.6,"athena":0.4}',
         alias="BIOMETRICS_ROLE_WEIGHTS_JSON",
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")

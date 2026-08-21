@@ -306,9 +306,12 @@ def default_targets() -> list[Target]:
         # This tool assumes every target's container lives on the same host
         # it runs on (systemd timer on athena) -- with the backend gone from
         # athena, the old hardcoded container name/volume path would just
-        # fail every night rather than silently backing up stale data, but
-        # either way convex backup coverage needs a follow-up on atlas, not
-        # a same-host fix here. See "Known gaps" in scripts/backup/README.md.
+        # fail every night rather than silently backing up stale data.
+        # UPDATE 2026-08-21: atlas itself is now decommissioned; ai-town's
+        # actual current host (if any) is unconfirmed -- see
+        # services/orion-ai-town/README.md. Follow-up needs a real host
+        # target, not a re-point at atlas. See "Known gaps" in
+        # scripts/backup/README.md.
     ]
 
 

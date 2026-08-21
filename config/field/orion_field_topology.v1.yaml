@@ -2,7 +2,10 @@
 schema_version: field_lattice.v1
 
 nodes:
-  - node_id: atlas
+  # atlas removed 2026-08-21 (decommissioned -- see
+  # config/biometrics/node_catalog.yaml). Its GPUs/llm_inference role moved
+  # to circe, which already has its own node:circe -> capability:llm_inference
+  # edge below.
   - node_id: athena
   - node_id: circe
   - node_id: prometheus
@@ -49,14 +52,8 @@ capability_channels:
   - contract_pressure
 
 edges:
-  - source_id: node:atlas
-    target_id: capability:llm_inference
-    edge_type: node_capability
-    weight: 0.85
-    channel_map:
-      gpu_pressure: pressure
-      memory_pressure: pressure
-      reasoning_load: reasoning_pressure
+  # node:atlas -> capability:llm_inference (weight 0.85) removed 2026-08-21:
+  # atlas decommissioned, node no longer exists. See node list comment above.
 
   # 2026-07-26: stream_backlog_pressure/delivery_confidence/stream_backlog_health
   # removed from this edge -- confirmed live degenerate (confidence/
@@ -77,7 +74,8 @@ edges:
 
   # 2026-07-26: real mesh-wide transport signal, replacing the removed
   # world_pulse-derived pressure above. node:substrate.bus_synaptic is not a
-  # physical host (unlike node:athena/atlas/circe/prometheus above) -- it's
+  # physical host (unlike node:athena/circe/prometheus above -- atlas was a
+  # fourth physical host here too until its 2026-08-21 decommission) -- it's
   # the Active-Inference domain node written by services/orion-substrate-
   # runtime/app/worker.py::_bus_synaptic_tick via a receipt into
   # substrate_reduction_receipts, consumed into this service's own
@@ -212,9 +210,21 @@ edges:
   - source_id: node:circe
     target_id: capability:llm_inference
     edge_type: node_capability
-    weight: 0.50
+    # weight bumped 0.50 -> 0.85 and channel_map extended 2026-08-21: this
+    # was circe's own pre-existing burst-capacity edge; it now also carries
+    # the full weight/channel_map atlas's now-deleted edge had (memory_pressure,
+    # reasoning_load), since circe absorbed atlas's full llm_inference role,
+    # not just a supplementary one. Without this, capability:llm_inference's
+    # reasoning_pressure channel would have no diffusion target at all and
+    # freeze at its reconcile-seeded 0.0 forever (see
+    # services/orion-field-digester/app/digestion/decay.py's comment on
+    # CAPABILITY_DECAY_CHANNELS not being a diffusion target) -- caught by
+    # code review, not by a gate.
+    weight: 0.85
     channel_map:
       gpu_pressure: pressure
+      memory_pressure: pressure
+      reasoning_load: reasoning_pressure
 
   # capability→capability: transport degradation bleeds into orchestration
   - source_id: capability:transport

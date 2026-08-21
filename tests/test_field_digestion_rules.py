@@ -12,8 +12,8 @@ def test_empty_field_state_has_all_lattice_nodes() -> None:
     lattice = load_lattice(lattice_path)
     now = datetime(2026, 5, 24, tzinfo=timezone.utc)
     state = empty_field_state(lattice=lattice, now=now, tick_id="tick_test")
-    assert "node:atlas" in state.node_vectors
-    assert state.node_vectors["node:atlas"]["availability"] == 1.0
+    assert "node:circe" in state.node_vectors
+    assert state.node_vectors["node:circe"]["availability"] == 1.0
     assert "capability:llm_inference" in state.capability_vectors
     assert len(state.edges) == len(lattice.edges)
 

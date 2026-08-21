@@ -83,7 +83,7 @@ The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Co
 Topology:
 
 ```text
-Claude Code / FCC -> http://athena:8210/v1/messages -> route table -> Atlas llama.cpp /v1/messages
+Claude Code / FCC -> http://athena:8210/v1/messages -> route table -> Circe llama.cpp /v1/messages
 ```
 
 Optional per-route upstream model alias in the route table:
@@ -146,12 +146,15 @@ Mind (`MIND_LLM_RETURN_LOGPROBS_SEMANTIC` + `MIND_LLM_LOGPROB_PROBE_MODE`) and c
 
 Important routing note:
 
-- `LLM_GATEWAY_ROUTE_TABLE_JSON` is the primary mechanism for Atlas.
+- `LLM_GATEWAY_ROUTE_TABLE_JSON` is the primary routing mechanism (workers are
+  physically on Circe as of 2026-08-21 -- Atlas is decommissioned, see
+  `config/biometrics/node_catalog.yaml`; route/env names below still say
+  "atlas" as a legacy naming convention, not a live-hardware claim).
 - `served_by` is metadata returned for observability and smoke checks; it does
   not drive routing.
 - The legacy per-route env aliases only cover `chat`, `metacog`, `latents`,
   and `specialist`.
-- The current Atlas `agent` lane therefore requires `LLM_GATEWAY_ROUTE_TABLE_JSON`.
+- The `agent` lane therefore requires `LLM_GATEWAY_ROUTE_TABLE_JSON`.
 
 ### Background admission, and who it now protects (ROADMAP A3)
 

@@ -37,7 +37,7 @@ def test_inspect_node_resource_pressure_template_targets_node() -> None:
     tmpl = policy.proposal_templates["inspect_node_resource_pressure"]
     assert tmpl.kind == "inspect"
     assert tmpl.target_kind == "node"
-    assert tmpl.target_id == "node:atlas"
+    assert tmpl.target_id == "node:circe"
     assert "resource_pressure" in tmpl.dimensions
 
 

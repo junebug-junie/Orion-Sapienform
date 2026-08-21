@@ -1,5 +1,11 @@
 # ───────────────────────────────────────────────────────────────
-# 🚌 Orion Bus — Cold Standby (Atlas node)
+# 🚌 Orion Bus — Cold Standby (Atlas node) — BROKEN/UNSET as of 2026-08-21
+# Atlas was decommissioned 2026-08-21 and no longer exists as a physical
+# host (config/biometrics/node_catalog.yaml) -- this compose file has no
+# valid deployment target right now. Left as-is, not rewritten: it's still
+# a correct pattern to redeploy once a new target node is chosen. See
+# services/orion-bus/README.md's cold-standby section for the full status.
+#
 # Passive Redis replica-target. NOT wired into ORION_BUS_URL.
 # NOT auto-failover. NOT leader-elected. Manual cutover only —
 # see services/orion-bus/docs/2026-07-16-bus-core-standby-cutover-runbook.md.

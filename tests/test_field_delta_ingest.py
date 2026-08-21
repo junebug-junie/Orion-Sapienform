@@ -10,11 +10,11 @@ def test_active_node_pressure_strain_maps_to_gpu_pressure() -> None:
         delta_id="delta_test1",
         target_projection="active_node_pressure_projection",
         target_kind="active_node_pressure",
-        target_id="atlas",
+        target_id="circe",
         operation="reinforce",
         before=None,
         after={
-            "node_id": "atlas",
+            "node_id": "circe",
             "active_pressures": ["strain"],
             "pressure_score": 0.72,
             "availability_status": "online",
@@ -28,7 +28,7 @@ def test_active_node_pressure_strain_maps_to_gpu_pressure() -> None:
     )
     perturbations = delta_to_perturbations(delta)
     assert len(perturbations) == 1
-    assert perturbations[0].node_id == "node:atlas"
+    assert perturbations[0].node_id == "node:circe"
     assert perturbations[0].channel == "gpu_pressure"
     assert perturbations[0].intensity == 0.72
     assert perturbations[0].label == "delta_test1"

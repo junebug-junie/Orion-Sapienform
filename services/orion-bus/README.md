@@ -257,13 +257,23 @@ Layer 3 `bus_transport_reducer` is deferred — see `LAYER_PIPELINE_PLAN.md`.
 
 ---
 
-## 🧊 Cold standby (`bus-core-standby`)
+## 🧊 Cold standby (`bus-core-standby`) — BROKEN/UNSET as of 2026-08-21
+
+**This design has no valid deployment target right now.** Atlas was chosen
+specifically because `config/biometrics/node_catalog.yaml` marked it the only
+physically-separate node that was reliably `expected_online: true` (circe was
+`expected_online: false` at the time and was ruled out for that reason). Atlas
+is now decommissioned outright — it isn't just offline, the physical node no
+longer exists. Nothing below has been redeployed anywhere else; treat this
+whole section as describing a design that needs a new target node chosen
+before it can be used again, not a live standby. The instructions are left
+as-is (not deleted) since they're still accurate for *how* to stand one up
+once a target is picked — only *where* is unresolved.
 
 `bus-core` is a single `redis:7-alpine` instance — a real single point of failure. A
 passive, cold-standby target lives in a separate, node-scoped compose file:
-`docker-compose.atlas-standby.yml`, deployed on the `atlas` mesh node (see
-`config/biometrics/node_catalog.yaml` — `atlas` is `expected_online: true`; `circe`
-is `expected_online: false` and was ruled out for that reason).
+`docker-compose.atlas-standby.yml`, previously deployed on the (now decommissioned)
+`atlas` mesh node.
 
 This is **not** automatic failover, **not** leader election, and **not** wired into
 `ORION_BUS_URL` or any client. It exists so a human has a real place to restore AOF

@@ -9,13 +9,15 @@ It exists to keep GGUF serving deterministic:
 - `config/llm_profiles.yaml` is the source of truth for model path / download spec / llama.cpp runtime knobs / GPU hints
 - `.env` should mostly contain **selection and safe overrides**, not model definitions
 
-If you are standing up Atlas workers for the current `chat` / `agent` (merged physical lane), `metacog`, and `quick` (Hub-facing) layout, start with the Atlas quickstart below and then use the repo-root [`postflight.md`](../../postflight.md) as the shareable operator runbook.
+**"Atlas" here is a naming convention, not live hardware.** The compose services, env var prefixes (`ATLAS_CHAT_*`, `ATLAS_METACOG_*`, etc.), and container names below all say "atlas" because that's the physical node this layout was originally built for. Atlas (an HP ProLiant DL380 Gen10) was decommissioned 2026-08-21 -- its disks were pulled and replaced with Athena's, and its GPUs moved into Circe (see `config/biometrics/node_catalog.yaml` and the root `README.md`'s Hardware Placement section). Every worker described below now runs on **Circe**, not a physical box named Atlas. Nothing in this doc's routes/commands is stale as *config* -- the route table (`orion-llm-gateway`) already points at Circe -- but if you're standing up new hardware from scratch, provision Circe, not a separate "Atlas" machine.
+
+If you are standing up these llama.cpp workers for the current `chat` / `agent` (merged physical lane), `metacog`, and `quick` (Hub-facing) layout, start with the quickstart below and then use the repo-root [`postflight.md`](../../postflight.md) as the shareable operator runbook.
 
 ---
 
-## TL;DR for Atlas operators
+## TL;DR for Circe operators (compose/env names still say "Atlas")
 
-For the default merged gateway route layout, Atlas should run **3 always-on `orion-llamacpp-host` containers** plus an optional split-agent worker (serving 4 logical routes in merged mode):
+For the default merged gateway route layout, Circe should run **3 always-on `orion-llamacpp-host` containers** plus an optional split-agent worker (serving 4 logical routes in merged mode):
 
 | Route | Compose service | Worker `SERVICE_NAME` | Host port | Profile source | GPU binding env |
 | --- | --- | --- | --- | --- | --- |

@@ -292,8 +292,10 @@ PYTHONPATH=. ./venv/bin/python -m pytest tests/test_orion_backup_databases.py -q
 - **convex (orion-ai-town)**: removed 2026-07-29 when ai-town moved from
   athena to atlas -- this tool's targets all assume the container lives on
   the same host the nightly timer runs on (athena), which no longer holds
-  for ai-town. Needs a dedicated atlas-side backup mechanism (this tool
-  running there too, or a standalone script) as a follow-up; in the
-  meantime `services/orion-ai-town/scripts/compact_convex_data.sh` still
+  for ai-town. UPDATE 2026-08-21: atlas itself is now decommissioned, and
+  ai-town's actual current host (if any) is unconfirmed -- see
+  `services/orion-ai-town/README.md`. The "dedicated backup mechanism"
+  follow-up needs a real host target before it can be scoped, not just
+  re-pointed at atlas. In the meantime `services/orion-ai-town/scripts/compact_convex_data.sh` still
   captures a pre-compaction `db.sqlite3` snapshot on every compaction run,
   which is partial coverage, not a substitute.

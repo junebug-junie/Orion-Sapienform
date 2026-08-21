@@ -252,7 +252,10 @@ proposal_templates:
     expected_signal: resource_pressure
     expected_direction: no_change
     target_kind: node
-    target_id: node:atlas
+    # atlas decommissioned 2026-08-21 (config/biometrics/node_catalog.yaml);
+    # circe is now the fleet's dominant GPU node and inherits this target,
+    # same reasoning as orion-biometrics' CLUSTER_ROLE_WEIGHTS fix.
+    target_id: node:circe
     proposed_effect: increase_observability
     required_policy_gate: read_only
     base_priority: 0.34

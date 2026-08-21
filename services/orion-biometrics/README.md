@@ -236,8 +236,7 @@ Three instruments, and which one answers for a node depends on what that node ha
 
 | node | `chassis_watts` from | also reports | why |
 | :--- | :--- | :--- | :--- |
-| athena | **iLO** (RedFish, BMC) | `cpu_watts_total` (RAPL) | has a BMC, not on the metered PDU |
-| atlas | **iLO** | `pdu_watts`, `cpu_watts_total` | has both — the PDU cross-checks the BMC |
+| athena | **iLO** (RedFish, BMC) | `pdu_watts`, `cpu_watts_total` (RAPL) | has both, as of 2026-08-21 — inherited atlas's old chassis/PDU spot when atlas was decommissioned; the PDU cross-checks the BMC |
 | circe | **PDU** (SNMP, per-outlet) | `pdu_watts` | **no reachable BMC** — the PDU is the only source |
 
 **`chassis_watts` holds exactly one value per node.** iLO wins wherever it exists; the PDU fills

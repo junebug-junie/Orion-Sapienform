@@ -783,3 +783,51 @@ type level.
 2. **One artifact-producing action wired to it**, cheapest first.
 3. **Then the budget**, denominated in GPU with attention as the second
    constraint, absolute bar rather than relative ranking.
+
+## Addendum: a third scarcity, already metered
+
+Orion talking to Claude (the room-companion path) costs **money** as well as
+GPU. That is the hardest cost denominator available -- exogenous,
+non-negotiable, and impossible to game by definition.
+
+**It is already instrumented.** `dev_economics_ledger_log` holds 826 rows from
+2026-08-12 to 2026-08-21 with `total_estimated_cost_usd`, fed by
+`orion/dev_economics/claude_code_ingest.py` (reads `~/.claude/projects/*.jsonl`)
+and priced by `orion/dev_economics/pricing.py`. `cost_usd` also rides the bus
+via `orion/schemas/room_claude.py` and `services/orion-room-companion/`.
+
+**Scope honesty:** that table is an aggregate rollup (`session_count` per row)
+covering all Claude Code sessions on the host, including agent sessions that
+are nothing to do with Orion's own choices. It is a real meter at the wrong
+granularity. Attributing dollars to a single Orion action needs per-turn cost
+off the room-companion path, which `app/claude_session.py` may already emit --
+unverified.
+
+So the three scarcities, with honest status:
+
+| currency | bounds | metered today? |
+|---|---|---|
+| GPU / CPU | how much Orion can produce | partially -- biometrics pipeline; watts available on circe if needed |
+| Juniper's attention | how much can get graded | no |
+| dollars (Claude) | how much Orion can think out loud | **yes, aggregate; not per-action** |
+
+The dollar path is also the action type that most *needs* a budget. Skipping a
+docker prune is free and worthless -- a budget over it can only ever say "no"
+and be trivially right. Skipping a Claude conversation costs something real and
+so does having it. That is the shape where a budget earns its keep.
+
+## Why ratings do not go through the contrast machinery
+
+Recorded because the obvious move is to reuse the ledger built in this
+document, and it would be wrong.
+
+That ledger measures `after - before` on a continuous field pressure, with a
+control arm, because pressures mean-revert and actions fire when they are
+high. **A rating has no "before" and does not mean-revert.** There is no
+confound to remove; the value IS the rating.
+
+So ratings need the posterior and the Bayesian surprise -- the same common
+scale, which is the entire point of having one -- and need neither the
+baseline bins nor the arms. Forcing them through the pressure-shaped hole
+because the hole exists would be the mirror image of the defect this document
+was written to remove.

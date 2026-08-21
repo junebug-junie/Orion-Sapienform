@@ -42,6 +42,8 @@ def _score(feedback_value="up", categories=("helpful_actionable",), prior=None, 
         categories=list(categories),
         free_text=free_text,
         rated_at=NOW,
+        rated_by="juniper",
+        rating_source="rate_artifact_cli",
         prior=prior,
     )
 
@@ -321,3 +323,37 @@ class TestTheScaleIsSharedAndTheNumbersAreNot:
         from orion.autonomy.rating import cold_start_surprise_nats
 
         assert _score().surprise_nats == pytest.approx(cold_start_surprise_nats())
+
+
+class TestAttestationSurvivesScoring:
+    """The schema checks who rated. The scored row has to KEEP it.
+
+    A belief whose entire justification is "the grader is not Orion" cannot
+    show that unless it records whose opinions it is made of. Found the moment
+    the resolver ran: the first row through it was a deploy smoke test tagged
+    `deploy-smoke`, and nothing downstream could have told it from a human.
+    """
+
+    def test_rater_and_source_are_carried_onto_the_scored_row(self):
+        s = _score()
+        assert s.rated_by == "juniper"
+        assert s.rating_source == "rate_artifact_cli"
+
+    def test_an_unattested_rating_is_still_representable_but_visibly_so(self):
+        """The scorer reads historical rows too, and chat feedback has always
+        allowed a NULL user_id. None must stay None -- never backfilled to a
+        plausible name, which would fabricate exactly the attestation the
+        column exists to carry."""
+        s = score_rating(
+            artifact_ref=REF,
+            dispatch_id=DISPATCH,
+            dispatch_kind="summarize",
+            target_id="self:current",
+            feedback_value="up",
+            categories=[],
+            free_text=None,
+            rated_at=NOW,
+            prior=None,
+        )
+        assert s.rated_by is None
+        assert s.rating_source is None

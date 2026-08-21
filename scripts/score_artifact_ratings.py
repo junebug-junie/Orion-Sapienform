@@ -54,16 +54,31 @@ SELECT f.feedback_id, f.target_artifact_ref, f.feedback_value, f.categories,
  ORDER BY f.created_at
 """
 
-# Resolves an action id to what the action actually was. Only actions that
-# declared a signal appear here, which as of 2026-08-21 is 32.3% of dispatch
-# volume -- so a rating of an undeclared action's artifact cannot be resolved
-# and is reported, never guessed. Widening that means indexing dispatch frames
-# by dispatch_id, which is a separate patch.
+# Fast path: actions that declared a signal already have a ledger row.
 RESOLVE = """
 SELECT dispatch_kind, target_id
   FROM substrate_action_outcomes
  WHERE dispatch_id = :dispatch_id
  ORDER BY observed_at DESC
+ LIMIT 1
+"""
+
+# Fallback, and it matters: only 32.3% of dispatch volume declares a signal, so
+# the fast path alone would refuse to score two thirds of the artifacts Orion
+# actually produces -- and those are exactly the ones a human rating is the
+# ONLY available grade for, since they have no pressure claim to be scored
+# against. substrate_dispatch_results carries the frame_id, and frame_id is the
+# dispatch-frame table's primary key, so this is a PK lookup plus a scan of one
+# frame's candidate array. Not a table scan.
+RESOLVE_VIA_FRAME = """
+SELECT c->>'dispatch_kind' AS dispatch_kind, c->>'target_id' AS target_id
+  FROM substrate_dispatch_results r
+  JOIN substrate_execution_dispatch_frames f ON f.frame_id = r.frame_id
+  CROSS JOIN LATERAL jsonb_array_elements(
+      coalesce(f.dispatch_frame_json->'dispatched_candidates', '[]'::jsonb)
+  ) AS c
+ WHERE r.dispatch_id = :dispatch_id
+   AND c->>'dispatch_id' = :dispatch_id
  LIMIT 1
 """
 
@@ -84,22 +99,29 @@ def main() -> int:
             rows = conn.execute(
                 text(
                     """
-                    SELECT dispatch_kind, target_id, posterior_mean,
-                           posterior_variance, posterior_n, unrated_count
-                      FROM substrate_action_rating_posterior
-                     ORDER BY posterior_n DESC
+                    SELECT p.dispatch_kind, p.target_id, p.posterior_mean,
+                           p.posterior_variance, p.posterior_n, p.unrated_count,
+                           (SELECT string_agg(DISTINCT r.rated_by, ',')
+                              FROM substrate_action_ratings r
+                             WHERE r.dispatch_kind = p.dispatch_kind
+                               AND r.target_id = p.target_id) AS raters
+                      FROM substrate_action_rating_posterior p
+                     ORDER BY p.posterior_n DESC
                     """
                 )
             ).all()
         if not rows:
             print("No rated actions yet.")
             return 0
-        print(f"{'kind':<12} {'target':<30} {'mean':>8} {'+/-':>7} {'n':>4} {'unrated':>8}")
-        print("-" * 74)
-        for kind, target, mean, var, n, unrated in rows:
+        print(
+            f"{'kind':<12} {'target':<26} {'mean':>8} {'+/-':>7} {'n':>4} "
+            f"{'unrated':>8}  raters"
+        )
+        print("-" * 88)
+        for kind, target, mean, var, n, unrated, raters in rows:
             print(
-                f"{kind:<12} {target:<30.30} {mean:>8.3f} {var ** 0.5:>7.3f} "
-                f"{n:>4} {unrated:>8}"
+                f"{kind:<12} {target:<26.26} {mean:>8.3f} {var ** 0.5:>7.3f} "
+                f"{n:>4} {unrated:>8}  {raters or '?'}"
             )
         print(
             f"\nmean is on [-1, +1]. Divide surprise by {cold_start_surprise_nats():.4f} "
@@ -125,6 +147,10 @@ def main() -> int:
             resolved = conn.execute(
                 text(RESOLVE), {"dispatch_id": dispatch_id}
             ).first()
+            if resolved is None:
+                resolved = conn.execute(
+                    text(RESOLVE_VIA_FRAME), {"dispatch_id": dispatch_id}
+                ).first()
             if resolved is None:
                 # Reported, never guessed. Attributing a human rating to the
                 # wrong action is worse than not attributing it.
@@ -157,6 +183,8 @@ def main() -> int:
                 categories=list(row["categories"] or []),
                 free_text=row["free_text"],
                 rated_at=row["created_at"],
+                rated_by=row["user_id"],
+                rating_source=row["source"],
                 prior=prior,
             )
 
@@ -175,11 +203,13 @@ def main() -> int:
                     INSERT INTO substrate_action_ratings (
                         feedback_id, artifact_ref, dispatch_id, dispatch_kind,
                         target_id, feedback_value, rating, categories, free_text,
+                        rated_by, rating_source,
                         predicted_rating, prediction_error, surprise_nats,
                         posterior_mean, posterior_variance, posterior_n, rated_at
                     ) VALUES (
                         :feedback_id, :artifact_ref, :dispatch_id, :dispatch_kind,
                         :target_id, :feedback_value, :rating, :categories, :free_text,
+                        :rated_by, :rating_source,
                         :predicted_rating, :prediction_error, :surprise_nats,
                         :posterior_mean, :posterior_variance, :posterior_n, :rated_at
                     )
@@ -197,6 +227,8 @@ def main() -> int:
                     "rating": result.rating,
                     "categories": list(result.categories),
                     "free_text": result.free_text,
+                    "rated_by": result.rated_by,
+                    "rating_source": result.rating_source,
                     "predicted_rating": result.predicted_rating,
                     "prediction_error": result.prediction_error,
                     "surprise_nats": result.surprise_nats,
@@ -242,9 +274,9 @@ def main() -> int:
         print(f"  skipped {count}: {reason}")
     if skipped["unresolvable_dispatch"]:
         print(
-            "  (unresolvable = the action declared no signal, so it has no "
-            "ledger row to resolve against. 67.7% of dispatch volume is in "
-            "that state.)"
+            "  (unresolvable = neither the outcome ledger nor the source "
+            "dispatch frame still carries this dispatch_id -- most likely the "
+            "frame aged out of retention.)"
         )
     return 0
 

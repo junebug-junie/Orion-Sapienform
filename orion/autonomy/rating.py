@@ -129,6 +129,13 @@ class ScoredRating:
     categories: tuple[str, ...]
     free_text: str | None
 
+    # WHO said so. Carried onto the scored row, not just checked at the
+    # schema boundary and discarded -- a belief whose whole justification is
+    # "the grader is not Orion" has to be able to show whose opinions it is
+    # made of. Attestation, not authentication: see the schema validator.
+    rated_by: str | None
+    rating_source: str | None
+
     predicted_rating: float
     prediction_error: float
     surprise_nats: float
@@ -150,6 +157,8 @@ def score_rating(
     categories: list[str] | tuple[str, ...] | None,
     free_text: str | None,
     rated_at: datetime,
+    rated_by: str | None = None,
+    rating_source: str | None = None,
     prior: EffectPosterior | None = None,
 ) -> ScoredRating:
     """Fold one rating into the belief about what this action produces.
@@ -170,6 +179,8 @@ def score_rating(
         rating=observed,
         categories=tuple(categories or ()),
         free_text=free_text,
+        rated_by=rated_by,
+        rating_source=rating_source,
         # What we expected before seeing it. Unlike the pressure ledger --
         # where the claim is stamped on the candidate at dispatch time and the
         # residual must be measured against THAT, not against the belief at

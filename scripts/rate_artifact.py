@@ -66,25 +66,51 @@ DEFAULT_DSN = os.environ.get(
 )
 
 
-def _recent_dispatches(dsn: str, limit: int) -> list[tuple[str, str, str]]:
+# Orion has been writing these all along and nobody has ever read one.
+# `substrate_dispatch_results` holds the actual prose a summarize/inspect/
+# observe verb produced -- ~200 an hour, ~161 characters each, status=success.
+# The artifact this whole rating path exists to grade was already there; what
+# was missing was any surface that shows it to a human.
+RECENT_ARTIFACTS = """
+SELECT r.dispatch_id, r.result_json->>'observation' AS observation,
+       r.raw_len, r.created_at
+  FROM substrate_dispatch_results r
+ WHERE r.status = 'success'
+   AND coalesce(r.result_json->>'observation', '') <> ''
+   AND NOT EXISTS (
+       SELECT 1 FROM chat_response_feedback f
+        WHERE f.target_artifact_ref LIKE '%' || r.dispatch_id
+   )
+ ORDER BY r.created_at DESC
+ LIMIT :limit
+"""
+
+ONE_ARTIFACT = """
+SELECT dispatch_id, result_json->>'observation' AS observation,
+       result_json->>'salient_facts' AS salient_facts,
+       result_json->>'confidence' AS confidence, created_at
+  FROM substrate_dispatch_results
+ WHERE dispatch_id = :dispatch_id AND status = 'success'
+ ORDER BY created_at DESC LIMIT 1
+"""
+
+
+def _recent_artifacts(dsn: str, limit: int):
     from sqlalchemy import create_engine, text
 
     engine = create_engine(dsn)
     with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT DISTINCT ON (dispatch_id)
-                       dispatch_id, dispatch_kind, target_id, observed_at
-                  FROM substrate_action_outcomes
-                 WHERE arm = 'dispatched'
-                 ORDER BY dispatch_id, observed_at DESC
-                 LIMIT :limit
-                """
-            ),
-            {"limit": limit},
-        ).all()
-    return [(r[0], r[1], r[2]) for r in rows]
+        return conn.execute(text(RECENT_ARTIFACTS), {"limit": limit}).mappings().all()
+
+
+def _one_artifact(dsn: str, dispatch_id: str):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(dsn)
+    with engine.connect() as conn:
+        return conn.execute(
+            text(ONE_ARTIFACT), {"dispatch_id": dispatch_id}
+        ).mappings().first()
 
 
 def _verify_landed(dsn: str, feedback_id: str) -> bool:
@@ -120,7 +146,8 @@ def main() -> int:
     parser.add_argument("--as", dest="rater", default=None, help="recorded as user_id")
     parser.add_argument("--hub", default=DEFAULT_HUB)
     parser.add_argument("--dsn", default=DEFAULT_DSN)
-    parser.add_argument("--list", action="store_true", help="recent rateable actions")
+    parser.add_argument("--list", action="store_true", help="unrated artifacts, newest first")
+    parser.add_argument("--show", metavar="DISPATCH_ID", help="read one in full")
     parser.add_argument("--limit", type=int, default=15)
     parser.add_argument("--list-categories", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -145,17 +172,36 @@ def main() -> int:
         )
         return 0
 
+    if args.show:
+        row = _one_artifact(args.dsn, args.show)
+        if row is None:
+            print(f"no successful result stored for {args.show}", file=sys.stderr)
+            return 1
+        print(f"{row['created_at']}  ({row['dispatch_id']})\n")
+        print(row["observation"])
+        if row["salient_facts"]:
+            print(f"\nsalient facts: {row['salient_facts']}")
+        if row["confidence"]:
+            print(f"confidence (Orion's own): {row['confidence']}")
+        print(f"\nrate it:  {sys.argv[0]} -d {row['dispatch_id']} -k observation up|down")
+        return 0
+
     if args.list:
-        rows = _recent_dispatches(args.dsn, args.limit)
+        rows = _recent_artifacts(args.dsn, args.limit)
         if not rows:
-            print("no dispatched actions on record yet.")
+            print("nothing unrated with real content. (--show <dispatch-id> to reread one)")
             return 0
-        for dispatch_id, kind, target in rows:
-            print(f"{kind:<10} {target:<28.28} -d {dispatch_id}")
+        for row in rows:
+            text_preview = " ".join(str(row["observation"]).split())
+            print(f"\n{row['created_at']:%H:%M}  {row['raw_len']:>4}ch  {row['dispatch_id']}")
+            print(f"  {text_preview[:160]}{'...' if len(text_preview) > 160 else ''}")
+        print(
+            f"\nrate one:  {sys.argv[0]} -d <dispatch-id> -k observation up --why '...'"
+        )
         return 0
 
     if not args.verdict:
-        parser.error("a verdict (up|down) is required unless --list/--list-categories")
+        parser.error("a verdict (up|down) is required unless --list/--show/--list-categories")
     if not args.dispatch_id:
         parser.error("--dispatch-id is required; find one with --list")
 

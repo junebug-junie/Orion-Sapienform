@@ -304,6 +304,21 @@ class Settings(BaseSettings):
         "http://orion-athena-vision-window:8000", alias="VISION_WINDOW_SERVICE_URL"
     )
     vision_window_http_timeout_sec: float = Field(5.0, alias="VISION_WINDOW_HTTP_TIMEOUT_SEC")
+    # skills.perception.ask_camera.v1 -- the "direct vision-host RPC" the
+    # comment above named as out of scope for look_at_camera's first cut.
+    # Posts task_type=vqa straight to vision-host's own HTTP endpoint,
+    # bypassing orion-vision-window/orion-vision-council entirely (real
+    # on-demand VQA, not a read of the passive pipeline's last projection).
+    # Internal container port (6600, per orion-vision-host's own Dockerfile
+    # EXPOSE), not any host-mapped port.
+    vision_host_service_url: str = Field(
+        "http://orion-athena-vision-host:6600", alias="VISION_HOST_SERVICE_URL"
+    )
+    # Generous relative to vision_window's 5s default -- a cold vlm_vqa
+    # profile lazy-loads its own model on first real request (see
+    # services/orion-vision-host/app/runner.py::_run_vlm_vqa), which is
+    # meaningfully slower than reading an already-warm projection.
+    vision_host_http_timeout_sec: float = Field(30.0, alias="VISION_HOST_HTTP_TIMEOUT_SEC")
     endogenous_runtime_enabled: bool = Field(False, alias="ENDOGENOUS_RUNTIME_ENABLED")
     endogenous_runtime_surface_chat_reflective_enabled: bool = Field(
         False,

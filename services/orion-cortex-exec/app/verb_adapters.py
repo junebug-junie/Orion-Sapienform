@@ -769,6 +769,26 @@ def _http_json_get(url: str, *, timeout_sec: float) -> Dict[str, Any]:
     return payload
 
 
+def _http_json_post(url: str, *, body: Dict[str, Any], timeout_sec: float) -> Dict[str, Any]:
+    """POST counterpart to ``_http_json_get`` -- no existing skill needed one
+    until AskCameraVerb, which must send ``{task_type, request}`` to
+    orion-vision-host's ``/v1/vision/task`` rather than merely GET a
+    pre-computed projection."""
+    encoded = json.dumps(body).encode("utf-8")
+    request = Request(
+        url,
+        data=encoded,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=timeout_sec) as response:  # noqa: S310
+        data = response.read().decode("utf-8")
+    payload = json.loads(data)
+    if not isinstance(payload, dict):
+        raise ValueError("http_json_not_object")
+    return payload
+
+
 def _parse_nvidia_smi_csv(text: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for raw_line in (text or "").splitlines():
@@ -1544,10 +1564,11 @@ class LookAtCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
     First cut of the `look()` primitive from Movement III / P1 in
     docs/superpowers/specs/2026-08-12-perception-frontier-design.md. Does NOT
     trigger a fresh capture -- reads whatever the passive windowed pipeline
-    already produced, on that pipeline's own cadence. Triggering an on-demand
-    capture (bypassing the window/council chain entirely, e.g. via a direct
-    vision-host RPC) is a separate, larger patch, deliberately out of scope
-    here -- named as the actual "break the paraphrase chain" P1 work.
+    already produced, on that pipeline's own cadence. The on-demand,
+    direct-vision-host-RPC version this docstring used to name as future
+    work now exists: see AskCameraVerb (skills.perception.ask_camera.v1,
+    added 2026-08-21) for a real question against the most recent captured
+    frame, bypassing window/council entirely.
     """
 
     input_model = PlanExecutionRequest
@@ -1587,6 +1608,94 @@ class LookAtCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
                 error={"message": f"no_current_window:{result['status']}"},
             ), []
         return _skill_result_output(skill_name="skills.perception.look_at_camera.v1", result=result), []
+
+
+@verb("skills.perception.ask_camera.v1")
+class AskCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    """Ask a real question about what the camera currently sees -- the
+    on-demand "look() as a verb" primitive from
+    docs/superpowers/specs/2026-08-12-perception-frontier-design.md,
+    completing what LookAtCameraVerb's own docstring names as separate,
+    larger work: a direct vision-host RPC (bypassing orion-vision-window/
+    orion-vision-council entirely) with a real, caller-supplied question,
+    not a read of the passive pipeline's last projection.
+
+    Posts task_type=vqa to orion-vision-host's /v1/vision/task with
+    request.use_latest_frame=true (see runner.py::_resolve_latest_frame_path)
+    -- resolves to whatever orion-vision-edge captured most recently, not a
+    capture freshly triggered by this call (vision-edge already captures
+    continuously at ~5s cadence regardless of any downstream consumer; for a
+    slow-moving room this is the practical equivalent of "look now" without
+    inventing a second capture path).
+
+    A weak/empty answer is a real, honest outcome, not a failure -- the
+    currently-loaded VLM (BLIP-base, a captioner, not an instruction-tuned
+    VQA model) genuinely cannot answer every question well. Surfaced as
+    ok=True with status="no_answer" and the sanitizer's own rejection
+    reason carried through in `warnings`, not as an error -- the call
+    itself succeeded, the model just didn't produce a usable answer.
+    """
+
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        question = str(skill_args.get("question") or "").strip()
+        if not question:
+            result = {"available": False, "status": "missing_question", "question": None}
+            return _skill_result_output(
+                skill_name="skills.perception.ask_camera.v1",
+                result=result,
+                ok=False,
+                status="missing_question",
+                error={"message": "skill_args.question is required"},
+            ), []
+
+        base_url = str(settings.vision_host_service_url).rstrip("/")
+        body = {"task_type": "vqa", "request": {"use_latest_frame": True, "question": question}}
+        try:
+            raw = await asyncio.to_thread(
+                _http_json_post,
+                f"{base_url}/v1/vision/task",
+                body=body,
+                timeout_sec=float(settings.vision_host_http_timeout_sec),
+            )
+        except Exception as exc:
+            result = {"available": False, "status": "unavailable", "question": question, "reason": str(exc)}
+            return _skill_result_output(
+                skill_name="skills.perception.ask_camera.v1",
+                result=result,
+                ok=False,
+                status="unavailable",
+                error={"message": str(exc)},
+            ), []
+
+        if not raw.get("ok"):
+            error_msg = raw.get("error") or "vision_task_failed"
+            status = str((raw.get("meta") or {}).get("error_code") or "error")
+            result = {"available": False, "status": status, "question": question, "reason": str(error_msg)}
+            return _skill_result_output(
+                skill_name="skills.perception.ask_camera.v1",
+                result=result,
+                ok=False,
+                status=status,
+                error={"message": str(error_msg)},
+            ), []
+
+        artifacts = raw.get("artifacts") or {}
+        vqa = artifacts.get("vqa") or {}
+        answer = vqa.get("answer") or ""
+        result = {
+            "available": True,
+            "status": "ok" if answer else "no_answer",
+            "question": vqa.get("question") or question,
+            "answer": answer,
+            "confidence": vqa.get("confidence"),
+            "model_id": artifacts.get("model_id"),
+            "warnings": raw.get("warnings") or [],
+        }
+        return _skill_result_output(skill_name="skills.perception.ask_camera.v1", result=result), []
 
 
 @verb("skills.mesh.tailscale_mesh_status.v1")

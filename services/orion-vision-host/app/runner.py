@@ -28,16 +28,48 @@ settings = Settings()
 _safe_when = safe_when
 
 
+def _resolve_latest_frame_path() -> Path:
+    """The "on-demand capture" primitive P1's design doc calls for --
+    docs/superpowers/specs/2026-08-12-perception-frontier-design.md names
+    this explicitly as separate, larger work from the passive window/
+    council pipeline ("bypassing window/council... a direct vision-host
+    RPC"). Doesn't trigger a NEW capture (vision-edge already captures
+    continuously regardless of any downstream consumer, confirmed live at
+    ~5s cadence) -- resolves to whatever it captured most recently, which
+    for a slow-moving room is the practical equivalent of "look now" without
+    inventing a second capture path. Raises (not a fabricated/empty result)
+    if the frames directory is empty or unreadable -- an honest "nothing to
+    look at" is the caller's problem to handle, not this function's to hide.
+    """
+    frames_dir = Path(settings.VISION_FRAMES_DIR)
+    if not frames_dir.is_dir():
+        raise FileNotFoundError(f"frames directory not found: {frames_dir}")
+    candidates = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise FileNotFoundError(f"no frames found in: {frames_dir}")
+    return candidates[0]
+
+
 def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
     """
     We do NOT ship frames over Redis. We take a pointer.
-    Required:
+    Required (one of):
       request.image_path (preferred)
-    Optional aliases:
-      request.frame_path
+      request.frame_path (alias)
+      request.use_latest_frame: true -- resolves to the most recently
+        captured frame instead of a caller-supplied path (see
+        _resolve_latest_frame_path). Opt-in, not a silent fallback when
+        image_path is merely absent -- every existing caller that relies on
+        the prior "image_path is required" error for a genuinely missing
+        pointer keeps that exact behavior unless it explicitly asks for the
+        latest-frame resolution instead.
     """
     path = request.get("image_path") or request.get("frame_path")
     if not path:
+        if request.get("use_latest_frame"):
+            p = _resolve_latest_frame_path()
+            img = Image.open(p).convert("RGB")
+            return img
         raise ValueError("request.image_path is required (do not send raw frames over bus)")
     p = Path(path)
     if not p.exists():

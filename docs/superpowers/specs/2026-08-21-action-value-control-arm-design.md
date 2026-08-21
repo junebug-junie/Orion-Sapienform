@@ -49,27 +49,55 @@ reading is real evidence) and are **not admissible as a control arm**;
 
 ```
 target                      n        raw   contrast       +/-   cover
-host:docker_images       3674    -0.1369    +0.0172    0.0036   100%
-host:docker_containers    933    +0.0477    +0.0530    0.0066   100%
-host:docker_build_cache  2349    -0.0207    +0.0268    0.0042   100%
+host:docker_images       3385    -0.1350    +0.0371    0.0037    90%
+host:docker_containers    741    +0.0477    +0.0646    0.0074    78%
+host:docker_build_cache  1261    -0.0205    +0.0468    0.0057    53%
 ```
 
 The headline number does not merely shrink, it **changes sign**: phase 1
 would have reported "pruning dangling images reduces resource_pressure by
-0.14"; the matched contrast says it very slightly raises it. The whole
--0.1369 was mean reversion.
+0.14"; the matched contrast says it slightly raises it. The whole -0.1350
+was mean reversion.
+
+`cover` is below 100% because the frozen-cell guard is refusing the bins
+whose control arm was pinned during this window -- see the second amendment.
+An earlier run of this eval reported 100% coverage and a contrast of +0.0172;
+that run folded its EWMA over an unordered result set, which is not a rate of
+anything, and so failed to notice a bin whose instrument had been dead for
+twelve hours. Both the ordering and the numbers were corrected before this
+document was finalised.
 
 **Second amendment -- a guard the design did not anticipate.** A control cell
-that has never seen its signal move is not a calm baseline, it is a frozen
+that has stopped seeing its signal move is not a calm baseline, it is a frozen
 instrument, and contrasting against it hands the treated arm's entire raw
 delta back wearing the contrast's name and confidence. This is not
 hypothetical: see "Live instrument failure found during implementation"
-at the end of this document. `ControlCell.moved_n` counts observations that
-left the dead band, and `contrast()` refuses a cell with `moved_n == 0` and
-`n >= 200` as coverage. A Normal-Normal posterior with a fixed observation
-variance cannot detect this on its own -- its variance shrinks as 1/n whether
+at the end of this document. A Normal-Normal posterior with a fixed
+observation variance cannot detect it -- its variance shrinks as 1/n whether
 the data varies or is one constant repeated, so a frozen channel produces the
 most confident-looking cell in the table.
+
+`ControlCell` therefore carries movement explicitly. **The first version of
+this guard tested a lifetime counter (`moved_n == 0`) and was wrong in a way
+worth recording:** a monotone lifetime counter can only ever catch a channel
+that was *born* dead. Once a cell has seen a single movement it can never be
+frozen again, so the scenario the guard exists for -- a healthy channel that
+freezes later, which is exactly what happened on 2026-08-21 -- was
+structurally undetectable. It survived the live replay only because the
+replay built its cells from scratch inside the pinned window. Caught in
+review. `is_frozen` now reads `move_rate`, an EWMA (alpha = 1/1000, ~50 min
+at the live untreated rate) against a threshold of 0.25, read off the live
+per-bin movement fractions: healthy bins run 0.73-0.92, the pinned bin ran
+0.024.
+
+**What the guard does and does not do.** It refuses a cell *while* the
+instrument is pinned. It does not retroactively clean contamination a cell
+absorbed before recovering. Live, `resource_pressure` bin 8's control cell
+holds 19,695 observations of which only 462 moved, and its mean of -0.0117 is
+diluted by ~19,200 fabricated zeros; the guard refuses that bin, which is why
+`cover` reads 90% rather than 100%. `eval_action_value_contrast.py` now
+prints an instrument-sensitivity band for exactly this reason -- if the
+conclusion is not robust across it, there is no conclusion.
 
 **Binning also changed:** fixed-width deciles of [0,1], not trailing-window
 quantiles. Quantile edges make bin identity mean something different at

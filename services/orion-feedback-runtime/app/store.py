@@ -523,7 +523,7 @@ class FeedbackRuntimeStore:
                         """
                         SELECT signal_id, arm, baseline_bin,
                                posterior_mean, posterior_variance, posterior_n,
-                               moved_n
+                               moved_n, move_rate
                           FROM substrate_signal_control_cells
                         """
                     )
@@ -539,6 +539,7 @@ class FeedbackRuntimeStore:
                     n=int(r["posterior_n"]),
                 ),
                 moved_n=int(r["moved_n"]),
+                move_rate=float(r["move_rate"]),
             )
             for r in rows
         }
@@ -548,6 +549,7 @@ class FeedbackRuntimeStore:
         frame: FeedbackFrameV1,
         outcome_records: list[ActionOutcomeRecordV1] | None = None,
         control_cells: dict[ControlCellKey, ControlCell] | None = None,
+        control_frame_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -630,14 +632,28 @@ class FeedbackRuntimeStore:
             # moving, and the lost observation is one row rather than the
             # whole loop.
             try:
+                # TWO savepoints, not one (review finding 12). The arms are
+                # independent data from different populations; a constraint
+                # violation on one scored action must not also discard that
+                # tick's untreated observations, which is what a shared
+                # savepoint did.
                 with conn.begin_nested():
                     self._write_action_outcomes(conn, outcome_records or [])
-                    self._write_control_cells(conn, control_cells or {})
             except Exception:
                 logger.exception(
-                    "action_outcome_ledger_write_failed frame_id=%s records=%d cells=%d",
+                    "action_outcome_ledger_write_failed frame_id=%s records=%d",
                     frame.frame_id,
                     len(outcome_records or []),
+                )
+            try:
+                with conn.begin_nested():
+                    self._write_control_cells(
+                        conn, control_cells or {}, dispatch_frame_id=control_frame_id
+                    )
+            except Exception:
+                logger.exception(
+                    "action_control_cell_write_failed frame_id=%s cells=%d",
+                    frame.frame_id,
                     len(control_cells or {}),
                 )
 
@@ -756,15 +772,31 @@ class FeedbackRuntimeStore:
 
     @staticmethod
     def _write_control_cells(
-        conn, cells: dict[ControlCellKey, ControlCell]
+        conn,
+        cells: dict[ControlCellKey, ControlCell],
+        *,
+        dispatch_frame_id: str | None = None,
     ) -> None:
-        """Advance the untreated arm.
+        """Advance the untreated arm, once per dispatch frame.
 
-        Monotone in `posterior_n`, same guard the treated cells use: a
-        replayed or out-of-order feedback pass cannot walk the control belief
-        backwards. There is no per-observation ledger row to dedup against
-        here, so this guard is the ONLY thing standing between a reprocessed
-        tick and a double-counted control observation.
+        TWO guards, because the first one alone is not what it was documented
+        to be (review finding 2). The monotone `posterior_n <` comparison
+        stops the belief moving BACKWARDS; it does nothing against
+        double-counting, since a replayed tick reads n=N+k, recomputes
+        n=N+2k, and lands again quite happily. `last_dispatch_frame_id` is
+        the actual dedup: the same dispatch frame folded twice is refused.
+
+        Not triggerable today -- nothing prunes `substrate_feedback_frames`,
+        so `reconcile_feedback_pending` never finds an aged frame to re-queue
+        -- but that reconciler is a live, deliberate replay mechanism, and
+        adding retention to that table would otherwise recount the entire
+        backlog into ONE arm of the contrast and not the other. A replay that
+        corrupts only the control side is worse than one that corrupts both.
+
+        `dispatch_frame_id=None` disables the dedup rather than silently
+        matching everything: a NULL stored token is DISTINCT FROM anything,
+        so the write proceeds, which is the right failure direction for a
+        caller that genuinely has no frame identity.
         """
         for (signal_id, arm, bin_index), cell in cells.items():
             conn.execute(
@@ -773,20 +805,24 @@ class FeedbackRuntimeStore:
                     INSERT INTO substrate_signal_control_cells (
                         signal_id, arm, baseline_bin,
                         posterior_mean, posterior_variance, posterior_n,
-                        moved_n, updated_at
+                        moved_n, move_rate, last_dispatch_frame_id, updated_at
                     ) VALUES (
                         :signal_id, :arm, :baseline_bin,
                         :posterior_mean, :posterior_variance, :posterior_n,
-                        :moved_n, now()
+                        :moved_n, :move_rate, :dispatch_frame_id, now()
                     )
                     ON CONFLICT (signal_id, arm, baseline_bin) DO UPDATE SET
                         posterior_mean = EXCLUDED.posterior_mean,
                         posterior_variance = EXCLUDED.posterior_variance,
                         posterior_n = EXCLUDED.posterior_n,
                         moved_n = EXCLUDED.moved_n,
+                        move_rate = EXCLUDED.move_rate,
+                        last_dispatch_frame_id = EXCLUDED.last_dispatch_frame_id,
                         updated_at = now()
                      WHERE substrate_signal_control_cells.posterior_n
                            < EXCLUDED.posterior_n
+                       AND substrate_signal_control_cells.last_dispatch_frame_id
+                           IS DISTINCT FROM EXCLUDED.last_dispatch_frame_id
                     """
                 ),
                 {
@@ -797,5 +833,7 @@ class FeedbackRuntimeStore:
                     "posterior_variance": cell.posterior.variance,
                     "posterior_n": cell.posterior.n,
                     "moved_n": cell.moved_n,
+                    "move_rate": cell.move_rate,
+                    "dispatch_frame_id": dispatch_frame_id,
                 },
             )

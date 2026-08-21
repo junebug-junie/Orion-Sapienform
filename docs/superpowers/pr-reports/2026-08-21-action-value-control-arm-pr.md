@@ -31,16 +31,25 @@ sign:
 
 ```
 target                      n        raw   contrast       +/-   cover  verdict
-host:docker_images       3676    -0.1368    +0.0172    0.0036   100%   OK
-host:docker_containers    934    +0.0477    +0.0530    0.0066   100%   raw~0
-host:docker_build_cache  2352    -0.0207    +0.0267    0.0042   100%   raw~0
+host:docker_images       3385    -0.1350    +0.0371    0.0037    90%   OK
+host:docker_containers    741    +0.0477    +0.0646    0.0074    78%   raw~0
+host:docker_build_cache  1261    -0.0205    +0.0468    0.0057    53%   raw~0
 ```
 
 Phase 1 would have converged on *"pruning dangling images reduces
 resource_pressure by 0.14"*, with shrinking variance and a Bayesian surprise
 term decaying to ~0 precisely because the wrong estimate was stable. The
-matched contrast says pruning very slightly **raises** it. The entire -0.1368
-was regression to the mean.
+matched contrast says pruning slightly **raises** it. The entire -0.1350 was
+regression to the mean.
+
+`cover` is below 100% because the frozen-cell guard is refusing the baseline
+bins whose control arm was pinned during this window. That is the guard
+working. An earlier run of this eval reported 100% coverage and +0.0172; it
+folded its EWMA over an **unordered** result set, which is not a rate of
+anything, and therefore failed to notice a bin whose instrument had been dead
+for twelve hours. Fixed with an `ORDER BY created_at` before these numbers
+were taken. The independent per-bin SQL reconstruction below, and the
+reviewer's own arithmetic, both put the bin-8-excluded answer at +0.038.
 
 ### The same result, per bin, computed independently in SQL
 
@@ -60,29 +69,36 @@ bin  treated_n  treated_mean   control_n  control_mean      diff
  8         363       -0.1890       19695       -0.0117   -0.1773
 ```
 
-Volume-weighted: **+0.0170**, against the estimator's +0.0172 (the small gap
-is posterior shrinkage toward the cold prior). The raw treated mean recomputes
-to -0.1362 against the estimator's -0.1368. The estimator is doing the
-arithmetic it claims to.
+Volume-weighted over all nine bins: **+0.0170**, and the estimator agreed
+(+0.0172) back when it was still accepting bin 8. Excluding bin 8, which the
+fixed guard now refuses: **+0.0381**, against the shipped estimator's
++0.0371. The raw treated mean recomputes to -0.1362 against the estimator's
+-0.1350 on a slightly later window. The estimator is doing the arithmetic it
+claims to.
 
 Bin 7 is the whole story: 1,135 of 3,698 prunes happen when resource_pressure
 is between 0.7 and 0.8, and it then falls by -0.376. On untreated ticks
 starting in the same band it falls by **-0.382**. The prune is not what moved
 it.
 
-**A limit of the frozen-cell guard, visible right here.** Bin 8's control mean
-is -0.0117 across 19,695 ticks -- far calmer than bins 6 and 7 either side of
-it, which is not physical. That is the frozen block: ~12,000 of those ticks
-are the pinned-at-0.85 window described below, contributing exactly 0.0 and
-dragging the bin's control mean toward zero. `moved_n` for that cell is well
-above zero (the bin also contains real, moving ticks), so
-`ControlCell.is_frozen` does **not** fire. The guard catches a wholly frozen
-cell, not a partially poisoned one.
+**Bin 8 is a poisoned cell, and finding it is what fixed the guard.** Its
+control mean is -0.0117 across 19,695 ticks -- far calmer than bins 6 and 7
+either side of it, which is not physical. That is the frozen block: 19,233 of
+those 19,695 ticks contributed exactly 0.0 (only 462, or 2.3%, moved at all),
+dragging the bin's control mean toward zero. Bin 8 carries ~10% of the
+treated weight and contributed -0.0174 of the original result -- one
+degenerate bin moving the answer by more than the entire estimate, and in the
+opposite direction.
 
-Bin 8 carries 10% of the treated weight and contributes -0.0174 of the
-result, so dropping it entirely moves the contrast from +0.017 to +0.038.
-Both are small, both positive, and both are nowhere near -0.136 -- the
-conclusion is robust to the contamination, and the estimate is not.
+The shipped guard refuses it (`move_rate` 0.023 against a 0.25 threshold), so
+the reported contrast is +0.0371 with 90% coverage rather than +0.0170 with a
+fabricated 100%. `eval_action_value_contrast.py` now prints an
+instrument-sensitivity band on every run, so this is a standing check rather
+than a one-time hand analysis.
+
+**What the guard still does not do:** it refuses a cell *while* the
+instrument is pinned; it does not retroactively remove contamination a cell
+absorbed before recovering. Recorded as a MEDIUM risk below.
 
 That is the whole point of the patch: the confounded estimator does not fail
 loudly like a zero-filled metric does. It converges on a plausible,
@@ -332,12 +348,17 @@ cd /mnt/scripts/Orion-Sapienform-action-value-control-arm && \
     tests/test_feedback_extractors.py tests/test_feedback_runtime_store.py \
     tests/test_feedback_scoring.py tests/test_execution_dispatch_runtime_store.py -q
 
-195 passed in 2.73s
+205 passed in 2.75s
 ```
 
-25 of those are new (`tests/test_action_value_contrast.py`). Every arithmetic
+35 of those are new (`tests/test_action_value_contrast.py`). Every arithmetic
 fixture in the contrast tests is hand-computed in a comment next to its
-assertion.
+assertion; the review recomputed all of them independently and they hold.
+
+**Not smoke-tested:** `scripts/analysis/report_action_value.py` cannot run
+against the live database until the migration is applied -- its query selects
+`arm` and `frame_dispatch_count`, which do not exist yet. Verified to parse
+and import; its output shape is unverified. Run it as step 4 of the deploy.
 
 Deterministic gates:
 
@@ -358,17 +379,34 @@ scripts/check_service_env_compose_parity.py orion-execution-dispatch-runtime
 cd /mnt/scripts/Orion-Sapienform-action-value-control-arm && \
   PYTHONPATH=. .venv/bin/python orion/autonomy/evals/eval_action_value_contrast.py --days 3
 
-replayed 86938 feedback frames over 3 days
-  idle (untreated) ticks: 80438
+replayed 87642 feedback frames over 3 days
+  idle (untreated) ticks: 81018
+  FROZEN control bins refused as coverage: [8]
 
 target                            n        raw   contrast       +/-   cover verdict
-host:docker_images             3676    -0.1368     0.0172    0.0036   100% OK
-host:docker_containers          934     0.0477     0.0530    0.0066   100% raw~0
-host:docker_build_cache        2352    -0.0207     0.0267    0.0042   100% raw~0
+host:docker_images             3385    -0.1350     0.0371    0.0037    90% OK
+host:docker_containers          741     0.0477     0.0646    0.0074    78% raw~0
+host:docker_build_cache        1261    -0.0205     0.0468    0.0057    53% raw~0
+
+positive control on host:docker_images: injected +0.2500, recovered +0.2500
+
+instrument-sensitivity band (bins whose control arm is mostly frozen):
+  resource_pressure bin 8: 462/19695 moved (2.3%), control mean -0.0117
+  host:docker_images       as-computed +0.0371   suspect-bins-dropped +0.0371
+  host:docker_containers   as-computed +0.0646   suspect-bins-dropped +0.0646
+  host:docker_build_cache  as-computed +0.0468   suspect-bins-dropped +0.0468
 
 PASS: 1 of 3 measured target(s) had a materially large raw delta, and every
 one of them shrank to within 50% of it.
 ```
+
+Three gates, not one. The shrink test is the headline; the **positive
+control** (inject a known +0.25, require it back) is what separates "the
+confound was removed" from "the estimator is dead", since a hardwired 0.0
+would pass every shrink test with the maximum possible margin; and the
+**sensitivity band** shows what the answer depends on. The band reads
+identical on both sides here because the frozen guard has already refused the
+suspect bin -- that is the guard and the band agreeing, not a no-op.
 
 This is acceptance check 3 of the design spec, and the only one that matters.
 The first version of this eval gated **every** target on
@@ -387,7 +425,141 @@ existing savepoint, but pointlessly) until the new code is up.
 
 ## Review findings fixed
 
-See the review section appended below at commit time.
+Adversarial review (subagent, CLAUDE.md section 12) returned 21 findings, 3
+of them blocking. It also independently replayed the same 3-day corpus and
+reproduced +0.01697 against the then-reported +0.0172, so its numbers are
+computed against the real thing rather than a model of it.
+
+**Finding 1 (HIGH) -- `is_frozen` was a cold-start-only guard.**
+  - Fix: `moved_n == 0` on a monotone LIFETIME counter can only ever catch a
+    channel that was *born* dead; once a cell has seen one movement it can
+    never be frozen again. The scenario the guard exists for -- a healthy
+    channel that freezes later, i.e. exactly what happened on 2026-08-21 --
+    was structurally undetectable. It passed the live replay only because the
+    replay built its cells from scratch inside the pinned window.
+    `is_frozen` now reads `move_rate`, an EWMA (alpha 1/1000, ~50 min at the
+    live untreated rate) against 0.25, a threshold read off the live per-bin
+    movement fractions (healthy 0.73-0.92, pinned 0.024).
+  - Evidence: `test_a_cell_that_was_healthy_and_then_froze_is_caught` folds
+    2,000 real pinned observations into a cell with `moved_n = 40,000` and
+    asserts it is caught; `test_the_freeze_is_detected_inside_a_bounded_
+    number_of_ticks` pins the horizon at exactly 1,386 observations
+    (`ln(0.25)/ln(1-alpha)`, hand-derived then confirmed by the loop);
+    `test_a_recovering_channel_stops_being_frozen` proves it does not latch.
+    Live: the guard now refuses bin 8 and the headline moves from +0.0170 to
+    +0.0371, matching the reviewer's independent +0.0381.
+
+**Finding 1b (HIGH, found while fixing 1) -- the eval fed its EWMA an
+unordered result set.**
+  - Fix: `ORDER BY f.created_at` in the replay query. A windowed statistic
+    computed over an arbitrary permutation is not a rate of anything, and it
+    is why the first run reported a fabricated 100% coverage.
+  - Evidence: same eval, 90%/78%/53% coverage after the fix, with bin 8
+    named in the `FROZEN control bins refused as coverage` line.
+
+**Finding 2 (HIGH) -- control cells had no idempotency guard, and the
+docstring asserted one that did not exist.**
+  - Fix: the monotone `posterior_n <` comparison stops the belief moving
+    backwards and does nothing against double-counting (a replayed tick reads
+    n=N+k, recomputes n=N+2k, lands again). Added
+    `last_dispatch_frame_id` to the cell and
+    `AND ... IS DISTINCT FROM EXCLUDED.last_dispatch_frame_id` to the upsert.
+    Docstring rewritten to say what each guard actually does.
+  - Evidence: not triggerable today (nothing prunes
+    `substrate_feedback_frames`, so `reconcile_feedback_pending` finds no
+    aged frame to re-queue) -- but that reconciler exists precisely to replay,
+    and this repo has ~8.3 GB of unbounded substrate tables being worked
+    through. A replay would have corrupted ONE arm of the contrast and not
+    the other.
+
+**Finding 3 (HIGH) -- the migration broke running phase-1 code two ways.**
+  - Fix: `baseline_bin` now carries `DEFAULT 0`. Without it, `ADD COLUMN`
+    (nullable) + `SET NOT NULL` made every phase-1 INSERT fail a not-null
+    violation, swallowed by the savepoint into a silent ledger stall with a
+    healthy-looking pipeline. The backfill is now unconditional so the
+    existing rows still get exact bins.
+  - Evidence: the index drop remains an unavoidable brief gap (phase-1's
+    `ON CONFLICT (dispatch_id, signal_id)` cannot survive it), which is why
+    the deploy order below says to apply the migration immediately before the
+    deploy rather than ahead of time.
+
+**Finding 4 (MEDIUM) -- `frame_dispatch_count` was write-only with a
+self-contradictory rationale.**
+  - Fix: the comment claimed it let an analysis filter contaminated CONTROL
+    observations -- impossible, since control observations are emitted only
+    when the count is 0 and get no ledger row at all. Rewritten to say what
+    it is (treated-arm contamination) and wired into
+    `report_action_value.py` as the `alone%` column
+    (`frame_dispatch_count == 1` = sole actor).
+
+**Finding 5 (MEDIUM) -- the report printed windowed and lifetime quantities
+in the same row.**
+  - Fix: columns renamed `n(life)` and `raw(win)`, the docstring states that
+    `--days` does not touch the contrast, and a closing line repeats it.
+
+**Finding 6 (MEDIUM) -- the eval could not fail for an estimator hardwired to
+return 0.0.**
+  - Fix: added a positive control. Every treated cell is shifted by a known
+    +0.25 and the estimator must return the shift.
+  - Evidence: `positive control on host:docker_images: injected +0.2500,
+    recovered +0.2500`.
+
+**Finding 7 (MEDIUM) -- the eval replays the zero-filled pressure snapshot,
+not the production read path.** Disclosed in the eval docstring alongside the
+existing limitation blocks, with the concrete follow-up (re-run against
+`substrate_action_outcomes.baseline/observed_delta` once phase 2 has run a
+day). Not silently fixed, because it cannot be until there are rows.
+
+**Finding 8 (MEDIUM) -- `min_control_n = 1`.**
+  - Fix: `MIN_CONTROL_CELL_N = 30`, justified from live bin populations
+    (3 to 21,483). Bins refused for thin coverage are now reported as
+    `thin_bins`, separately from `frozen_bins` and from "no control at all" --
+    three different facts that were collapsing into one.
+
+**Finding 10/11/13 (MEDIUM) -- specced, not silently fixed.** The
+`prediction_error`/`surprise_nats` inconsistency is now documented on the
+schema field itself with the reason the obvious fix is deferred (bin-matching
+`predicted_delta` needs a field read on the dispatch tick path, where the
+existing daily-risk-cap read is already 49.8% of this database's buffer
+traffic). The model-interval and autocorrelation caveats are printed by both
+the eval and the report. Within-bin baseline imbalance (reviewer's estimate:
+~±0.002 on a +0.037 estimate) is recorded as a risk.
+
+**Finding 12 (MEDIUM) -- one savepoint covered both arms.**
+  - Fix: two adjacent savepoints, so a constraint violation on one scored
+    action no longer discards that tick's untreated observations.
+
+**Findings 14-21 (LOW).** Dead `if False` branch removed from a test; the
+frozen-cell report line now prints bins and rates instead of bare signal
+names; unused `mean_abs_err` dropped from the query; CHECK constraints added
+for both `arm` vocabularies, both bin ranges and `moved_n <= posterior_n`;
+`claim_upheld`'s docstring corrected (it described a comparison the
+`no_action` arm structurally cannot support); `ControlObservation` trimmed
+from seven write-only fields to four and given a real consumer
+(`summarize_control_observations`, logged per tick as
+`signal@bin:moved/total`, so an operator can tell four healthy channels from
+one pinned one); the duplicate `1e-6` unified into
+`orion.feedback.extractors.PRESSURE_DELTA_EPSILON`; tests added for
+`pooled_treated_mean`'s variance and for multi-bin `build_expected_effect`,
+which was the actual behaviour change in the builder and had no coverage.
+
+**Not changed, on purpose:**
+- **Finding 9 (unlocked read-modify-write on control cells).** Real. Two
+  concurrent feedback runtimes would interleave and undercount rather than
+  inflate. One runs today. Doing the fold in SQL is the right fix and is a
+  separate patch; recorded as a risk rather than half-done.
+- **`pooled_treated_mean` double-counts the prior across cells.** The
+  reviewer confirmed the effect and worked the magnitude: with K bins the
+  extra precision is `0.16 * (K-1)` observation-equivalents, so for the live
+  cell shape the pooled sd is 0.008940 against a correct 0.008943. Immaterial
+  above n of order 10. Not worth a fix; worth the comment it now has.
+
+**Explicitly confirmed correct by the review, recorded so it is not
+re-litigated:** migration idempotency and the first-run `DO $$` guard; every
+hand-computed test fixture (all recomputed independently); `baseline_bin`
+float boundaries at all eleven decile edges; `contrast()`'s weighted
+difference and variance propagation; the refusal to pool `randomized_holdback`
+with `no_action`; and `_present_pressures` genuinely not zero-filling.
 
 ## Restart required
 
@@ -464,16 +636,25 @@ delete block is wrapped in a `DO $$ ... $$` guarded on the absence of the
   **Mitigation:** `moved_n` guard; the failure is now visible in
   `report_action_value.py` rather than silent.
 
-- **Severity: MEDIUM.** `ControlCell.is_frozen` catches a *wholly* frozen
-  control cell and not a *partially poisoned* one. Live proof, in this
-  patch's own numbers: bin 8's control mean is -0.0117 across 19,695 ticks,
-  implausibly calm next to its neighbours, because ~12,000 of those ticks are
-  the pinned-at-0.85 window. `moved_n` is well above zero there, so the guard
-  does not fire. The contrast's *conclusion* survives it (+0.017 with bin 8,
-  +0.038 without, against a raw -0.136); the *estimate* does not.
-  **Mitigation:** none in this patch. The right fix is a per-cell movement
-  RATE with a history to compare against, which is a real design question,
-  not a constant.
+- **Severity: MEDIUM.** `ControlCell.is_frozen` refuses a cell *while* its
+  instrument is pinned; it does not retroactively remove contamination the
+  cell absorbed before recovering. Bin 8 is currently refused, so it does not
+  reach the number -- but if that instrument recovers and the cell's rate
+  climbs back above 0.25, its posterior mean (-0.0117, diluted by 19,233
+  fabricated zeros out of 19,695) becomes coverage again.
+  **Mitigation:** `eval_action_value_contrast.py` prints an
+  instrument-sensitivity band on every run, so the dependence is a standing
+  output rather than a one-time hand analysis. A real fix means decaying the
+  posterior itself, not just the movement rate -- a separate design question.
+
+- **Severity: MEDIUM.** Control cells are advanced by an unlocked
+  read-modify-write: `load_control_posteriors()` reads on its own connection
+  at tick start, the write happens later with no row lock. Two concurrent
+  feedback runtimes would interleave and the belief would advance by fewer
+  than the true number of observations.
+  **Mitigation:** one instance runs today, and the failure direction is
+  undercounting rather than inflation. Doing the fold atomically in SQL is
+  the right fix and is a separate patch.
 
 - **Severity: MEDIUM.** The `no_action` arm is **quasi-experimental**, not
   causal. Ticks where nothing ran are systematically calmer ticks. Binning on
@@ -510,6 +691,15 @@ delete block is wrapped in a `DO $$ ... $$` guarded on the absence of the
   a control arm. That is a deliberate record of the contamination, not a
   write-only field -- `frame_dispatch_count` is what a later analysis needs
   to quantify it -- but neither has a consumer inside this patch.
+
+## Note for concurrent agents
+
+Merging this turns `scripts/check_sql_migrations_applied.py` red repo-wide
+until an operator hand-applies the migration -- it currently reports
+`1 migration file(s) are NOT fully applied` with 8 named missing objects.
+That is the gate working correctly, but if it runs inside anyone's
+`agent-check`, every concurrent branch goes red for reasons unrelated to
+their work. Apply the migration promptly after merge, or expect the noise.
 
 ## PR link
 

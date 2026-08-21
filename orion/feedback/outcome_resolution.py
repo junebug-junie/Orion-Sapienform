@@ -25,13 +25,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from orion.autonomy.contrast import (
-    MOVEMENT_EPSILON,
     ControlCell,
     ControlCellKey,
     TreatedCellKey,
     baseline_bin,
 )
 from orion.autonomy.prediction import EffectPosterior, score_observation
+from orion.feedback.extractors import PRESSURE_DELTA_EPSILON
 from orion.field.pressure import field_pressures
 from orion.schemas.action_prediction import ActionOutcomeRecordV1
 from orion.schemas.execution_dispatch_frame import (
@@ -40,11 +40,11 @@ from orion.schemas.execution_dispatch_frame import (
 )
 from orion.schemas.field_state import FieldStateV1
 
-# Below this, a delta is not a movement. Same 1e-6 dead band
-# orion.feedback.extractors.classify_pressure_deltas already applies to these
-# exact channels -- reused rather than invented so "moved" means one thing
-# across the feedback path, not two.
-NO_CHANGE_EPSILON = 1e-6
+# Below this, a delta is not a movement. Imported, not restated: this used to
+# be a second 1e-6 literal alongside the one in extractors (review finding
+# 19), and two copies of a dead band is how "moved" quietly comes to mean two
+# different things in one pipeline.
+NO_CHANGE_EPSILON = PRESSURE_DELTA_EPSILON
 
 # A blocked candidate counts as a lost capacity race only for this reason.
 # `requires_operator_review` and deferral blocks are excluded on purpose:
@@ -60,9 +60,14 @@ def claim_upheld(direction: str, observed_delta: float) -> bool | None:
     inside the dead band -- genuinely undecidable, not a soft pass. A
     `no_change` claim is decidable in both directions and never returns None.
 
-    Computed for control-arm records too, and that is the point: if a claim
-    is "upheld" just as often on ticks where the action did NOT run, the
-    claim is describing the weather, not the action.
+    Scope, stated precisely because the first version of this docstring
+    overclaimed (review finding 17): this is computed for `dispatched` and
+    `capacity_blocked` rows. It is NOT computed for the `no_action` control
+    arm -- those produce a ControlObservation, which carries no direction
+    because no action made a claim on that tick. So "was the claim upheld
+    just as often when the action did not run" is a question the ledger
+    cannot answer directly; the contrast is what answers it, on the delta
+    rather than on the claim.
     """
     moved = abs(observed_delta) >= NO_CHANGE_EPSILON
     if direction == "no_change":
@@ -80,15 +85,19 @@ class ControlObservation:
     rows/day for a quantity that is only ever read in aggregate; these fold
     straight into the control cell posteriors instead, which is O(1) writes
     and keeps the ledger growing at the real action rate.
+
+    Trimmed to the fields something actually reads (review finding 18: the
+    original carried seven, every one of them write-only outside tests).
+    `summary()` is what the feedback worker logs, so an operator can see
+    WHICH signals the untreated arm is accumulating and in which bins,
+    rather than a bare count that cannot distinguish "four healthy channels"
+    from "one channel, pinned".
     """
 
     signal_id: str
-    arm: str
     baseline_bin: int
-    baseline: float
-    observed_after: float
     observed_delta: float
-    observed_at: datetime
+    moved: bool
 
 
 @dataclass(frozen=True)
@@ -176,28 +185,24 @@ def resolve_action_outcomes(
             observed_after = float(after[signal])
             baseline = float(baseline)
             bin_index = baseline_bin(baseline)
-            key = control_key(signal, "no_action", bin_index)
-            cell = control_working.get(key) or ControlCell(EffectPosterior.cold(), 0)
             delta = observed_after - baseline
+            key = control_key(signal, "no_action", bin_index)
+            cell = control_working.get(key) or ControlCell(EffectPosterior.cold())
             posterior, _nats, _residual = score_observation(cell.posterior, delta)
             # Movement is counted, not inferred. A Normal-Normal posterior
             # with fixed observation variance shrinks as 1/n whether the
             # data varies or is one constant repeated, so a frozen channel
             # would otherwise produce the most confident cell in the table.
-            control_working[key] = ControlCell(
-                posterior=posterior,
-                moved_n=cell.moved_n + (1 if abs(delta) >= MOVEMENT_EPSILON else 0),
+            control_working[key] = cell.observe(
+                posterior, moved=abs(delta) >= NO_CHANGE_EPSILON
             )
             touched_control.add(key)
             control_observations.append(
                 ControlObservation(
                     signal_id=signal,
-                    arm="no_action",
                     baseline_bin=bin_index,
-                    baseline=baseline,
-                    observed_after=observed_after,
-                    observed_delta=observed_after - baseline,
-                    observed_at=observed_at,
+                    observed_delta=delta,
+                    moved=abs(delta) >= NO_CHANGE_EPSILON,
                 )
             )
 
@@ -324,4 +329,24 @@ def resolve_action_outcomes(
         control_posteriors={k: control_working[k] for k in touched_control},
         control_observations=control_observations,
         skipped=skipped,
+    )
+
+
+def summarize_control_observations(observations: list[ControlObservation]) -> str:
+    """One log-line summary of the untreated arm this tick.
+
+    `signal@bin:moved/total`. A bare count cannot distinguish four healthy
+    channels from one channel pinned at a constant, and distinguishing those
+    is the entire reason the control arm needs watching.
+    """
+    if not observations:
+        return "none"
+    agg: dict[tuple[str, int], list[int]] = {}
+    for obs in observations:
+        slot = agg.setdefault((obs.signal_id, obs.baseline_bin), [0, 0])
+        slot[0] += 1 if obs.moved else 0
+        slot[1] += 1
+    return " ".join(
+        f"{signal}@{b}:{moved}/{total}"
+        for (signal, b), (moved, total) in sorted(agg.items())
     )

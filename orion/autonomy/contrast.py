@@ -121,9 +121,48 @@ BASELINE_BIN_COUNT = 10
 # report, not a measurement.
 FROZEN_CONTROL_MIN_N = 200
 
-# Same dead band the feedback path already uses for these exact channels
-# (orion.feedback.extractors.classify_pressure_deltas).
-MOVEMENT_EPSILON = 1e-6
+# Minimum untreated observations before a bin is allowed to anchor a
+# contrast. Was 1 (review finding 8), which let a single untreated tick carry
+# an entire bin's weight while the posterior variance reported it as
+# confident -- the cold prior caps variance at 0.25, so the sd contribution
+# tops out at 0.5 and is never large enough to flag a 1-sample cell as thin.
+# Live control-arm bin populations over 3 days run 3 to 21,483, so 30 costs
+# essentially nothing on the bins that matter and refuses exactly the ones
+# that cannot support an estimate. Bins refused for thin coverage are
+# reported via `uncovered_weight` and `thin_bins`, never silently dropped.
+MIN_CONTROL_CELL_N = 30
+
+# Movement rate below which a cell is a report about the instrument rather
+# than a measurement of the signal. Read off the live control arm, not
+# guessed -- per baseline bin over 3 days of real untreated ticks:
+#
+#   bin      n   moved_n  moved_frac
+#     0   3396      2492      0.734
+#     1  21483     15964      0.743
+#     7   3015      2760      0.915
+#     8  19695       462      0.024   <- the pinned-at-0.85 window
+#
+# Healthy bins sit at 0.73-0.92. The degenerate one sits at 0.024. 0.25 is
+# comfortably between them with an order of magnitude of margin on both
+# sides, which is the only kind of threshold worth writing down.
+FROZEN_CONTROL_MAX_MOVE_RATE = 0.25
+
+# Smoothing for that rate. THE RATE MUST BE WINDOWED, and this is the whole
+# reason: the first version of this guard tested `moved_n == 0` against a
+# monotonically increasing lifetime counter, which makes it a COLD-START-ONLY
+# check. Once a cell has ever seen one movement it can never be frozen again,
+# so the scenario the guard exists for -- a healthy channel that freezes
+# LATER -- is precisely the one it structurally could not detect. Caught in
+# review, not by the live replay, because the replay built its cells from
+# scratch inside the pinned window and so happened to see a genuinely
+# never-moved cell.
+#
+# 1/1000 gives an effective horizon of ~1,000 observations. At the live
+# control rate (~80,400 untreated ticks over 3 days, ~27,000/day, ~19/min)
+# that is roughly a 50-minute window: long enough not to trip on an ordinary
+# quiet stretch, short enough that the 12-hour pin found on 2026-08-21 would
+# have driven the rate under the threshold within the first hour.
+CONTROL_MOVE_RATE_ALPHA = 1.0 / 1000.0
 
 
 def baseline_bin(value: float) -> int:
@@ -157,20 +196,61 @@ ControlCellKey = tuple[str, str, int]
 class ControlCell:
     """One untreated cell: the belief, plus proof the instrument is alive.
 
-    `moved_n` is the number of observations that left the dead band. It is
-    carried alongside the posterior rather than derived from it because a
-    Normal-Normal posterior with a FIXED observation variance cannot tell
-    the difference: its variance shrinks as 1/n whether the underlying data
-    varies or is a single repeated constant. A frozen channel therefore
-    produces a cell that looks MORE trustworthy the longer it stays broken.
+    Movement is carried alongside the posterior rather than derived from it
+    because a Normal-Normal posterior with a FIXED observation variance
+    cannot tell the difference: its variance shrinks as 1/n whether the
+    underlying data varies or is a single repeated constant. A frozen channel
+    therefore produces a cell that looks MORE trustworthy the longer it stays
+    broken.
+
+    Two counters, doing different jobs:
+
+    * `moved_n` -- lifetime count of observations that left the dead band.
+      Auditable, monotone, and useful for "has this channel EVER worked".
+      Deliberately NOT the freeze test: a lifetime counter can only ever
+      catch a channel that was born dead.
+    * `move_rate` -- EWMA of the same indicator, which is what `is_frozen`
+      actually reads. A channel that was healthy for a month and has been
+      pinned for an hour is invisible to the lifetime rate and obvious to
+      this one. That is the real failure mode; see
+      CONTROL_MOVE_RATE_ALPHA above for the live incident.
+
+    A brand-new cell starts at `move_rate = 1.0`, i.e. presumed alive. The
+    `posterior.n >= FROZEN_CONTROL_MIN_N` gate is what keeps that from being
+    a free pass -- a young cell is not trusted OR distrusted, it simply has
+    not earned a verdict yet.
     """
 
     posterior: EffectPosterior
     moved_n: int = 0
+    move_rate: float = 1.0
 
     @property
     def is_frozen(self) -> bool:
-        return self.moved_n == 0 and self.posterior.n >= FROZEN_CONTROL_MIN_N
+        return (
+            self.posterior.n >= FROZEN_CONTROL_MIN_N
+            and self.move_rate < FROZEN_CONTROL_MAX_MOVE_RATE
+        )
+
+    def observe(self, posterior: EffectPosterior, *, moved: bool) -> "ControlCell":
+        """Fold one untreated reading in, advancing both counters.
+
+        `moved` is decided by the CALLER, not by a dead band defined here.
+        This module is the estimator and knows nothing about pressure units;
+        `orion.feedback.extractors.PRESSURE_DELTA_EPSILON` is the one place
+        that decides what "moved" means for these channels, and importing it
+        here would close a real cycle (contrast -> extractors -> field ->
+        schemas.execution_dispatch_frame -> schemas.action_prediction ->
+        contrast).
+        """
+        return ControlCell(
+            posterior=posterior,
+            moved_n=self.moved_n + (1 if moved else 0),
+            move_rate=(
+                self.move_rate
+                + CONTROL_MOVE_RATE_ALPHA * ((1.0 if moved else 0.0) - self.move_rate)
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -210,6 +290,12 @@ class ContrastEstimate:
     control_arm: ActionArm
     bins: tuple[BinContrast, ...]
     uncovered_weight: float
+    # Bins the treated arm uses that the control arm covers too thinly or
+    # too degenerately to anchor. Distinguished from "no control at all" so
+    # a reader can tell "we never observed this condition untreated" from
+    # "we observed it 4 times" from "the instrument was pinned there".
+    thin_bins: tuple[int, ...] = ()
+    frozen_bins: tuple[int, ...] = ()
 
     @property
     def sd(self) -> float:
@@ -262,7 +348,7 @@ def contrast(
     target_id: str,
     signal_id: str,
     *,
-    min_control_n: int = 1,
+    min_control_n: int = MIN_CONTROL_CELL_N,
 ) -> ContrastEstimate | None:
     """Baseline-matched effect of one action on one signal.
 
@@ -287,17 +373,30 @@ def contrast(
         return None
 
     for arm in CONTROL_ARM_PRECEDENCE:
+        arm_cells = {
+            key[2]: cell for key, cell in control.items()
+            if key[0] == signal_id and key[1] == arm
+        }
         control_cells = {
-            key[2]: cell.posterior
-            for key, cell in control.items()
-            if key[0] == signal_id
-            and key[1] == arm
-            and cell.posterior.n >= min_control_n
-            and not cell.is_frozen
+            b: cell.posterior
+            for b, cell in arm_cells.items()
+            if cell.posterior.n >= min_control_n and not cell.is_frozen
         }
         covered = sorted(set(treated_cells) & set(control_cells))
         if not covered:
             continue
+        thin = tuple(
+            sorted(
+                b for b in treated_cells
+                if b in arm_cells and b not in control_cells and not arm_cells[b].is_frozen
+            )
+        )
+        frozen = tuple(
+            sorted(
+                b for b in treated_cells
+                if b in arm_cells and arm_cells[b].is_frozen
+            )
+        )
 
         covered_volume = sum(treated_cells[b].n for b in covered)
         total_volume = sum(p.n for p in treated_cells.values())
@@ -335,6 +434,8 @@ def contrast(
             uncovered_weight=(
                 (total_volume - covered_volume) / total_volume if total_volume else 0.0
             ),
+            thin_bins=thin,
+            frozen_bins=frozen,
         )
 
     return None

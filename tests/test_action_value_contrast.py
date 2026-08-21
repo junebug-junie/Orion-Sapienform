@@ -17,7 +17,10 @@ import pytest
 
 from orion.autonomy.contrast import (
     BASELINE_BIN_COUNT,
+    CONTROL_MOVE_RATE_ALPHA,
+    FROZEN_CONTROL_MAX_MOVE_RATE,
     FROZEN_CONTROL_MIN_N,
+    MIN_CONTROL_CELL_N,
     ControlCell,
     baseline_bin,
     contrast,
@@ -233,9 +236,9 @@ class TestTheControlArm:
         )
         by_signal = {o.signal_id: o for o in res.control_observations}
         obs = by_signal["resource_pressure"]
-        assert obs.arm == "no_action"
         assert obs.baseline_bin == 8
         assert obs.observed_delta == pytest.approx(-0.45)
+        assert obs.moved is True
         assert ("resource_pressure", "no_action", 8) in res.control_posteriors
         # deviation_pressure rides along because orion/field/pressure.py
         # injects it unconditionally from a field attribute that defaults to
@@ -248,6 +251,7 @@ class TestTheControlArm:
         assert res.control_posteriors[
             ("deviation_pressure", "no_action", 0)
         ].moved_n == 0
+        assert by_signal["deviation_pressure"].moved is False
 
     def test_a_tick_that_dispatched_anything_is_not_untreated(self):
         """5 of 16 live templates declare NO signal and are 72% of dispatch
@@ -256,7 +260,7 @@ class TestTheControlArm:
         res = resolve_action_outcomes(
             dispatch_frame=_frame(
                 dispatched=[
-                    _dispatched("d1", effect=None) if False else _dispatched("d1")
+                    _dispatched("d1")
                 ]
             ),
             feedback_frame_id="f",
@@ -299,10 +303,14 @@ class TestContrastArithmetic:
     }
     CONTROL = {
         ("resource_pressure", "no_action", 8): ControlCell(
-            EffectPosterior(mean=-0.09, variance=0.0005, n=1000), moved_n=900
+            EffectPosterior(mean=-0.09, variance=0.0005, n=1000),
+            moved_n=900,
+            move_rate=0.9,
         ),
         ("resource_pressure", "no_action", 5): ControlCell(
-            EffectPosterior(mean=-0.03, variance=0.0004, n=2000), moved_n=1800
+            EffectPosterior(mean=-0.03, variance=0.0004, n=2000),
+            moved_n=1800,
+            move_rate=0.9,
         ),
     }
 
@@ -350,7 +358,7 @@ class TestContrastArithmetic:
                 self.TREATED,
                 {
                     ("resource_pressure", "no_action", 0): ControlCell(
-                        EffectPosterior(0.0, 0.01, 50), moved_n=40
+                        EffectPosterior(0.0, 0.01, 50), moved_n=40, move_rate=0.8
                     )
                 },
                 "maintain",
@@ -373,7 +381,7 @@ class TestContrastArithmetic:
     def test_randomized_holdback_wins_and_is_never_pooled_with_no_action(self):
         control = dict(self.CONTROL)
         control[("resource_pressure", "randomized_holdback", 8)] = ControlCell(
-            EffectPosterior(mean=-0.05, variance=0.001, n=50), moved_n=45
+            EffectPosterior(mean=-0.05, variance=0.001, n=50), moved_n=45, move_rate=0.9
         )
         est = contrast(
             self.TREATED, control, "maintain", "host:docker_images", "resource_pressure"
@@ -418,9 +426,97 @@ class TestPooledTreatedMean:
         cells = {("maintain", "t", "resource_pressure", 3): EffectPosterior(0.0, 0.25, 0)}
         assert pooled_treated_mean(cells, "maintain", "t", "resource_pressure") is None
 
+    def test_variance_of_the_weighted_mean_is_propagated(self):
+        """Review finding 21: the variance had no test at all."""
+        cells = {
+            ("maintain", "t", "resource_pressure", 8): EffectPosterior(-0.10, 0.001, 300),
+            ("maintain", "t", "resource_pressure", 5): EffectPosterior(-0.02, 0.002, 100),
+        }
+        pooled = pooled_treated_mean(cells, "maintain", "t", "resource_pressure")
+        # mean = (300*-0.10 + 100*-0.02)/400 = -32/400 = -0.08
+        assert pooled.mean == pytest.approx(-0.08)
+        assert pooled.n == 400
+        # var = (300/400)^2 * 0.001 + (100/400)^2 * 0.002
+        #     = 0.5625*0.001 + 0.0625*0.002 = 0.0005625 + 0.000125 = 0.0006875
+        assert pooled.variance == pytest.approx(0.0006875)
+
+    def test_other_actions_and_signals_are_not_pooled_in(self):
+        cells = {
+            ("maintain", "t", "resource_pressure", 8): EffectPosterior(-0.10, 0.001, 300),
+            ("maintain", "OTHER", "resource_pressure", 8): EffectPosterior(9.0, 0.001, 999),
+            ("inspect", "t", "resource_pressure", 8): EffectPosterior(9.0, 0.001, 999),
+            ("maintain", "t", "execution_pressure", 8): EffectPosterior(9.0, 0.001, 999),
+        }
+        pooled = pooled_treated_mean(cells, "maintain", "t", "resource_pressure")
+        assert pooled.mean == pytest.approx(-0.10)
+        assert pooled.n == 300
+
+
+class TestExpectedEffectAcrossBins:
+    """Review finding 21: multi-bin pooling is the actual behaviour change in
+    builder.py and nothing exercised it -- the existing declaration tests only
+    bumped their single-bin keys."""
+
+    def _candidate(self, signal, direction, target="capability:orchestration"):
+        from orion.schemas.proposal_frame import ProposalCandidateV1
+
+        return ProposalCandidateV1(
+            proposal_id="p1",
+            proposal_kind="inspect",
+            title="t",
+            description="d",
+            target_id=target,
+            target_kind="capability",
+            priority_score=0.5,
+            urgency_score=0.4,
+            confidence_score=0.9,
+            risk_score=0.05,
+            reversibility_score=1.0,
+            proposed_effect="increase_observability",
+            required_policy_gate="none",
+            expected_signal=signal,
+            expected_direction=direction,
+        )
+
+    def test_prediction_pools_every_bin_weighted_by_volume(self):
+        from orion.execution_dispatch.builder import build_expected_effect
+
+        cells = {
+            ("inspect", "capability:orchestration", "execution_pressure", 1): EffectPosterior(
+                mean=+0.162, variance=0.002, n=285
+            ),
+            ("inspect", "capability:orchestration", "execution_pressure", 7): EffectPosterior(
+                mean=-0.376, variance=0.001, n=1135
+            ),
+        }
+        effect = build_expected_effect(
+            self._candidate("execution_pressure", "decrease"), "inspect", cells
+        )
+        # (285*0.162 + 1135*-0.376) / 1420 = (46.17 - 426.76)/1420 = -0.26802...
+        assert effect.predicted_delta == pytest.approx(-0.2680, abs=1e-4)
+        assert effect.predictor_n == 1420
+        assert effect.cold_start is False
+
+    def test_a_bin_with_no_history_does_not_dilute_the_prediction(self):
+        from orion.execution_dispatch.builder import build_expected_effect
+
+        cells = {
+            ("inspect", "capability:orchestration", "execution_pressure", 7): EffectPosterior(
+                mean=-0.376, variance=0.001, n=1135
+            ),
+            ("inspect", "capability:orchestration", "execution_pressure", 2): EffectPosterior(
+                mean=0.0, variance=0.25, n=0
+            ),
+        }
+        effect = build_expected_effect(
+            self._candidate("execution_pressure", "decrease"), "inspect", cells
+        )
+        assert effect.predicted_delta == pytest.approx(-0.376)
+        assert effect.predictor_n == 1135
+
 
 class TestTheFrozenInstrumentGuard:
-    """A control arm that has never seen the signal move is not calm.
+    """A control arm that has stopped seeing its signal move is not calm.
 
     Live case, 2026-08-21: resource_pressure held exactly 0.85 with stddev
     exactly 0.0 across ~12,000 consecutive frames -- a vision channel
@@ -438,7 +534,9 @@ class TestTheFrozenInstrumentGuard:
     def test_a_frozen_control_cell_is_refused_as_coverage(self):
         frozen = {
             ("resource_pressure", "no_action", 8): ControlCell(
-                EffectPosterior(mean=0.0, variance=1e-5, n=12000), moved_n=0
+                EffectPosterior(mean=0.0, variance=1e-5, n=12000),
+                moved_n=0,
+                move_rate=0.0,
             )
         }
         assert frozen[("resource_pressure", "no_action", 8)].is_frozen
@@ -449,11 +547,62 @@ class TestTheFrozenInstrumentGuard:
             is None
         )
 
+    def test_a_cell_that_was_healthy_and_then_froze_is_caught(self):
+        """The failure the FIRST version of this guard could not see.
+
+        `moved_n` is a monotone lifetime counter, so `moved_n == 0` can only
+        ever catch a channel that was born dead. A channel healthy for a
+        month and pinned for an hour keeps a large `moved_n` forever. That is
+        the actual live scenario -- resource_pressure ran at 2,600 distinct
+        values/day for a week and then pinned -- so the lifetime test was
+        structurally blind to it. Caught in review, not by the live replay,
+        because the replay happened to build its cells from scratch INSIDE
+        the pinned window.
+        """
+        cell = ControlCell(
+            EffectPosterior(mean=-0.05, variance=1e-4, n=50_000),
+            moved_n=40_000,
+            move_rate=0.8,
+        )
+        assert not cell.is_frozen
+
+        # Pin it. Each observation is a real fold, exactly as the resolver
+        # does it -- no hand-set rate.
+        for _ in range(2000):
+            cell = cell.observe(cell.posterior, moved=False)
+
+        assert cell.moved_n == 40_000  # lifetime counter: unchanged, still huge
+        assert cell.is_frozen  # ...and the windowed rate caught it anyway
+        assert cell.move_rate < FROZEN_CONTROL_MAX_MOVE_RATE
+
+    def test_the_freeze_is_detected_inside_a_bounded_number_of_ticks(self):
+        """A guard that eventually notices is not a guard. Pin the horizon."""
+        cell = ControlCell(EffectPosterior(0.0, 1e-4, 50_000), moved_n=40_000, move_rate=1.0)
+        ticks = 0
+        while not cell.is_frozen and ticks < 20_000:
+            cell = cell.observe(cell.posterior, moved=False)
+            ticks += 1
+        # From a rate of exactly 1.0 (the least favourable start), an alpha
+        # of 1/1000 crosses 0.25 at ln(0.25)/ln(1-alpha) = 1386 observations.
+        # At the live untreated rate (~27,000/day) that is ~74 minutes.
+        assert ticks == 1386
+        assert 1.0 * (1 - CONTROL_MOVE_RATE_ALPHA) ** ticks < FROZEN_CONTROL_MAX_MOVE_RATE
+
+    def test_a_recovering_channel_stops_being_frozen(self):
+        """Hysteresis check: the guard must not latch."""
+        cell = ControlCell(EffectPosterior(0.0, 1e-4, 50_000), moved_n=1, move_rate=0.0)
+        assert cell.is_frozen
+        for _ in range(2000):
+            cell = cell.observe(cell.posterior, moved=True)
+        assert not cell.is_frozen
+
     def test_without_the_guard_it_would_have_returned_the_raw_delta(self):
         """The number the guard prevents, stated explicitly."""
         alive = {
             ("resource_pressure", "no_action", 8): ControlCell(
-                EffectPosterior(mean=0.0, variance=1e-5, n=12000), moved_n=1
+                EffectPosterior(mean=0.0, variance=1e-5, n=12000),
+                moved_n=11000,
+                move_rate=0.9,
             )
         }
         est = contrast(
@@ -461,16 +610,24 @@ class TestTheFrozenInstrumentGuard:
         )
         assert est.value == pytest.approx(-0.148)
 
-    def test_a_young_quiet_cell_is_not_frozen(self):
-        young = ControlCell(EffectPosterior(0.0, 0.01, FROZEN_CONTROL_MIN_N - 1), moved_n=0)
+    def test_a_young_cell_has_not_earned_a_verdict(self):
+        young = ControlCell(
+            EffectPosterior(0.0, 0.01, FROZEN_CONTROL_MIN_N - 1), moved_n=0, move_rate=0.0
+        )
         assert not young.is_frozen
-        old = ControlCell(EffectPosterior(0.0, 0.01, FROZEN_CONTROL_MIN_N), moved_n=0)
+        old = ControlCell(
+            EffectPosterior(0.0, 0.01, FROZEN_CONTROL_MIN_N), moved_n=0, move_rate=0.0
+        )
         assert old.is_frozen
 
-    def test_the_resolver_counts_movement_rather_than_inferring_it(self):
+    def test_a_new_cell_is_presumed_alive_not_dead(self):
+        assert ControlCell(EffectPosterior.cold()).move_rate == 1.0
+        assert not ControlCell(EffectPosterior.cold()).is_frozen
+
+    def test_the_resolver_advances_both_counters(self):
         prior = {
             ("resource_pressure", "no_action", 8): ControlCell(
-                EffectPosterior(-0.01, 0.001, 500), moved_n=7
+                EffectPosterior(-0.01, 0.001, 500), moved_n=7, move_rate=0.5
             )
         }
         res = resolve_action_outcomes(
@@ -481,10 +638,10 @@ class TestTheFrozenInstrumentGuard:
             control_priors=prior,
             now=NOW,
         )
-        # A frozen reading advances n but NOT moved_n.
         cell = res.control_posteriors[("resource_pressure", "no_action", 8)]
         assert cell.posterior.n == 501
-        assert cell.moved_n == 7
+        assert cell.moved_n == 7  # frozen reading: n advances, moved_n does not
+        assert cell.move_rate == pytest.approx(0.5 * (1 - CONTROL_MOVE_RATE_ALPHA))
 
         res2 = resolve_action_outcomes(
             dispatch_frame=_frame(),
@@ -494,6 +651,49 @@ class TestTheFrozenInstrumentGuard:
             control_priors=prior,
             now=NOW,
         )
-        assert res2.control_posteriors[
-            ("resource_pressure", "no_action", 8)
-        ].moved_n == 8
+        cell2 = res2.control_posteriors[("resource_pressure", "no_action", 8)]
+        assert cell2.moved_n == 8
+        assert cell2.move_rate == pytest.approx(
+            0.5 + CONTROL_MOVE_RATE_ALPHA * (1.0 - 0.5)
+        )
+
+
+class TestThinControlCoverage:
+    """One untreated tick must not be allowed to anchor a bin."""
+
+    TREATED = {
+        ("maintain", "t", "resource_pressure", 4): EffectPosterior(-0.2, 0.001, 500),
+        ("maintain", "t", "resource_pressure", 5): EffectPosterior(-0.1, 0.001, 500),
+    }
+
+    def test_a_thin_bin_is_refused_and_reported(self):
+        control = {
+            ("resource_pressure", "no_action", 4): ControlCell(
+                EffectPosterior(-0.19, 0.001, MIN_CONTROL_CELL_N - 1),
+                moved_n=20,
+                move_rate=0.9,
+            ),
+            ("resource_pressure", "no_action", 5): ControlCell(
+                EffectPosterior(-0.09, 0.001, 5000), moved_n=4000, move_rate=0.9
+            ),
+        }
+        est = contrast(self.TREATED, control, "maintain", "t", "resource_pressure")
+        assert [b.baseline_bin for b in est.bins] == [5]
+        assert est.thin_bins == (4,)
+        assert est.frozen_bins == ()
+        assert est.uncovered_weight == pytest.approx(0.5)
+
+    def test_thin_and_frozen_are_reported_separately(self):
+        """'never observed untreated', 'observed 4 times' and 'the instrument
+        was pinned' are three different facts and must not collapse."""
+        control = {
+            ("resource_pressure", "no_action", 4): ControlCell(
+                EffectPosterior(0.0, 1e-5, 9000), moved_n=3, move_rate=0.0
+            ),
+            ("resource_pressure", "no_action", 5): ControlCell(
+                EffectPosterior(-0.09, 0.001, 5000), moved_n=4000, move_rate=0.9
+            ),
+        }
+        est = contrast(self.TREATED, control, "maintain", "t", "resource_pressure")
+        assert est.frozen_bins == (4,)
+        assert est.thin_bins == ()

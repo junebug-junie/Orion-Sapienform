@@ -13,18 +13,31 @@ contrast so the gap between them stays visible.
 
 Columns:
 
-  n            scored observations in the treated arm, restricted to
-               baseline bins that have control coverage
+  n            LIFETIME treated observations in bins that have control
+               coverage. Deliberately labelled: the contrast is computed
+               from cumulative posterior cells and is NOT affected by
+               --days, which filters only the ledger columns (`raw`,
+               `nats/act`, `alone%`, `upheld%`). Mixing a windowed and a
+               lifetime quantity in one row without saying so was review
+               finding 5.
   contrast     sum_b w_b * (treated_mean[b] - control_mean[b]), the effect
                over the conditions this action actually runs in. Can be
                zero. Can be positive when the action claims `decrease` --
                an action that cannot lose is not competing.
   +/-          one standard deviation of that contrast
-  raw          the unconditional mean delta, i.e. the phase-1 number. Shown
-               only to expose the size of the confound.
-  cover        share of the treated arm's volume that HAS a control bin.
-               A low number means the contrast describes a minority of the
-               action's real behaviour.
+  raw          the unconditional mean delta over --days, i.e. the phase-1
+               number. Shown only to expose the size of the confound. Note
+               the window mismatch above before reading the gap as pure
+               confound.
+  alone%       share of treated observations from a tick where this was the
+               ONLY dispatched action (frame_dispatch_count == 1). The field
+               delta is frame-wide, so a low number means the whole row is
+               shared attribution.
+  cover        share of the treated arm's volume that HAS a usable control
+               bin. A low number means the contrast describes a minority of
+               the action's real behaviour. `thin`/`frozen` name the bins
+               that were refused and why -- too few untreated observations,
+               versus an instrument that stopped moving there.
   arm          which control arm produced it. `no_action` is
                quasi-experimental (ticks where nothing ran are systematically
                calmer ticks; binning absorbs most of that, not all).
@@ -63,8 +76,8 @@ SELECT dispatch_kind,
        count(*)                                    AS n,
        avg(surprise_nats)                          AS mean_nats,
        sum(surprise_nats)                          AS total_nats,
-       avg(abs(prediction_error))                  AS mean_abs_err,
        avg(observed_delta)                         AS raw_delta,
+       count(*) FILTER (WHERE frame_dispatch_count = 1) AS alone_n,
        count(*) FILTER (WHERE co_predictors = 0)   AS sole_n,
        count(*) FILTER (WHERE claim_upheld)        AS upheld_n,
        count(*) FILTER (WHERE claim_upheld IS NOT NULL) AS decidable_n
@@ -130,21 +143,22 @@ def main() -> int:
         return 0
 
     header = (
-        f"{'kind':<10} {'target':<26} {'signal':<22} {'dir':<9} "
-        f"{'n':>6} {'contrast':>10} {'+/-':>8} {'raw':>9} {'cover':>6} "
-        f"{'arm':<20} {'nats/act':>9} {'sole%':>6} {'upheld%':>8}"
+        f"{'kind':<10} {'target':<24} {'signal':<20} {'dir':<9} "
+        f"{'n(life)':>8} {'contrast':>10} {'+/-':>8} {'raw(win)':>9} {'cover':>6} "
+        f"{'arm':<20} {'nats/act':>9} {'sole%':>6} {'alone%':>7} {'upheld%':>8}"
     )
     print(header)
     print("-" * len(header))
 
     frozen = sorted(
-        {k[0] for k, cell in control.items() if cell.is_frozen}
+        (k[0], k[2], cell.move_rate)
+        for k, cell in control.items()
+        if cell.is_frozen
     )
     if frozen:
-        print(
-            "FROZEN CONTROL CELLS (refused as coverage -- the signal has never "
-            f"moved in these bins): {', '.join(frozen)}"
-        )
+        print("FROZEN CONTROL CELLS -- refused as coverage:")
+        for signal, b, rate in frozen:
+            print(f"  {signal} bin {b}: movement rate {rate:.4f}")
         print()
 
     no_control: list[str] = []
@@ -153,29 +167,39 @@ def main() -> int:
             treated, control, r["dispatch_kind"], r["target_id"], r["signal_id"]
         )
         sole_pct = 100.0 * r["sole_n"] / r["n"] if r["n"] else 0.0
+        alone_pct = 100.0 * r["alone_n"] / r["n"] if r["n"] else 0.0
         upheld_pct = (
             100.0 * r["upheld_n"] / r["decidable_n"] if r["decidable_n"] else float("nan")
         )
         label = (
-            f"{r['dispatch_kind']:<10} {r['target_id']:<26.26} "
-            f"{r['signal_id']:<22} {r['direction']:<9}"
+            f"{r['dispatch_kind']:<10} {r['target_id']:<24.24} "
+            f"{r['signal_id']:<20.20} {r['direction']:<9}"
         )
         if est is None:
             no_control.append(
                 f"{r['dispatch_kind']}/{r['target_id']}/{r['signal_id']}"
             )
             print(
-                f"{label} {r['n']:>6} {'NO CONTROL':>10} {'':>8} "
+                f"{label} {r['n']:>7}w {'NO CONTROL':>10} {'':>8} "
                 f"{r['raw_delta']:>9.4f} {'0%':>6} {'-':<20} "
-                f"{r['mean_nats']:>9.5f} {sole_pct:>5.0f}% {upheld_pct:>7.0f}%"
+                f"{r['mean_nats']:>9.5f} {sole_pct:>5.0f}% {alone_pct:>6.0f}% "
+                f"{upheld_pct:>7.0f}%"
             )
             continue
         print(
-            f"{label} {est.treated_n:>6} {est.value:>10.4f} {est.sd:>8.4f} "
+            f"{label} {est.treated_n:>8} {est.value:>10.4f} {est.sd:>8.4f} "
             f"{r['raw_delta']:>9.4f} {1.0 - est.uncovered_weight:>5.0%} "
             f"{est.control_arm + '/' + est.evidence_class[:5]:<20} "
-            f"{r['mean_nats']:>9.5f} {sole_pct:>5.0f}% {upheld_pct:>7.0f}%"
+            f"{r['mean_nats']:>9.5f} {sole_pct:>5.0f}% {alone_pct:>6.0f}% "
+            f"{upheld_pct:>7.0f}%"
         )
+        if est.thin_bins or est.frozen_bins:
+            detail = []
+            if est.thin_bins:
+                detail.append(f"thin={list(est.thin_bins)}")
+            if est.frozen_bins:
+                detail.append(f"FROZEN={list(est.frozen_bins)}")
+            print(f"{'':<64}   refused bins: {' '.join(detail)}")
 
     print()
     if no_control:
@@ -190,6 +214,17 @@ def main() -> int:
         "contrast is quasi-experimental unless the arm says randomized_holdback. "
         "Ticks where nothing ran are calmer ticks; the baseline bin absorbs most "
         "of that, not all of it."
+    )
+    print(
+        "The +/- is a MODEL interval: posterior variance comes from a fixed "
+        "observation variance (0.04) divided by n, so it is 0.2/sqrt(n) by "
+        "construction. Successive field ticks are autocorrelated, so the "
+        "effective sample size is well below n and the real interval is wider "
+        "than this in both directions."
+    )
+    print(
+        "`n(life)` is cumulative; `raw(win)` and the trailing percentages honour "
+        "--days. They are not the same window."
     )
     return 0
 

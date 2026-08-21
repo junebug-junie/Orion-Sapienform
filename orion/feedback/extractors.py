@@ -3,6 +3,12 @@ from __future__ import annotations
 from orion.field.pressure import field_pressures
 from orion.schemas.field_state import FieldStateV1
 
+# Below this, a pressure delta is not a movement. Was a bare literal at the
+# one call site below; named in 2026-08-21's control-arm patch because two
+# other modules had independently restated the same 1e-6 and "moved" needs
+# to mean exactly one thing across the feedback path.
+PRESSURE_DELTA_EPSILON = 1e-6
+
 
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
@@ -43,7 +49,7 @@ def classify_pressure_deltas(
     negative: list[str] = []
     for channel, direction in positive_delta_channels.items():
         d = delta.get(channel)
-        if d is None or abs(d) < 1e-6:
+        if d is None or abs(d) < PRESSURE_DELTA_EPSILON:
             continue
         if direction == "increase" and d > 0:
             positive.append(f"pressure_delta:{channel}:+{d:.3f}")

@@ -103,11 +103,19 @@ class ActionOutcomeRecordV1(BaseModel):
     # never re-derive it differently. Matching happens within a bin.
     baseline_bin: int = Field(ge=0, le=9, default=0)
 
-    # How many candidates were dispatched in the source tick at all. The
-    # field delta is measured frame-wide, so a control observation drawn
-    # from a tick where other actions ran is contaminated even when none of
-    # them claimed this signal. Recorded so an analysis can restrict to
-    # clean ticks instead of discovering the contamination is invisible.
+    # How many candidates were dispatched in the source tick at all, and
+    # therefore how contaminated THIS (treated) row is. The field delta is
+    # measured frame-wide, so a row from a tick where four other actions
+    # also ran is not a clean reading of this one. `frame_dispatch_count ==
+    # 1` is the sole-actor subset. Consumed by
+    # scripts/analysis/report_action_value.py's `alone%` column.
+    #
+    # The first version of this comment claimed it existed to let an
+    # analysis filter contaminated CONTROL observations. That was impossible
+    # and was caught in review: control observations are emitted only when
+    # this count is 0 (orion/feedback/outcome_resolution.py), and they get no
+    # ledger row at all, so the field can never describe one. It is always
+    # >= 1 on every row that exists.
     frame_dispatch_count: int = Field(ge=0, default=0)
 
     observed_at: datetime
@@ -117,6 +125,23 @@ class ActionOutcomeRecordV1(BaseModel):
     observed_delta: float
 
     predicted_delta: float
+
+    # KNOWN INCONSISTENCY, recorded rather than papered over (review finding
+    # 10). This is `observed_delta - predicted_delta`, where predicted_delta
+    # is pooled ACROSS baseline bins, while `surprise_nats` below is scored
+    # against the per-bin prior. They are two different notions of "how wrong
+    # were we" on one record. Live, the same action's treated mean ranges
+    # from +0.162 (bin 1) to -0.376 (bin 7) -- a 0.54 spread -- so this
+    # residual is dominated by WHICH BIN the tick landed in, not by
+    # prediction quality. Do not read it as a quality measure; `surprise_nats`
+    # is the bin-matched quantity.
+    #
+    # The fix would be to bin-match predicted_delta at dispatch time, which
+    # needs the field, which the dispatch builder does not have (it is handed
+    # a field TICK ID). Resolving it there is one more DB read on the tick
+    # path, and the daily-risk-cap read on that same path is already 49.8% of
+    # this database's entire buffer traffic. Deferred deliberately, not
+    # forgotten.
     prediction_error: float
 
     surprise_nats: float = Field(ge=0.0)

@@ -23,8 +23,16 @@
 ALTER TABLE substrate_action_outcomes
     ADD COLUMN IF NOT EXISTS arm TEXT NOT NULL DEFAULT 'dispatched';
 
+-- DEFAULT 0 is load-bearing, not decoration (review finding 3). Phase-1 code
+-- is running RIGHT NOW and its INSERT does not list this column; a plain
+-- nullable add followed by SET NOT NULL below would make every phase-1 write
+-- fail a not-null violation the moment this lands. The failure would be
+-- swallowed by the savepoint in _write_action_outcomes and the ledger would
+-- simply stop filling, with a healthy-looking pipeline. Rows written by old
+-- code between this migration and the deploy get bin 0, which is wrong but
+-- harmless -- they predate phase 2 and are not in any contrast.
 ALTER TABLE substrate_action_outcomes
-    ADD COLUMN IF NOT EXISTS baseline_bin SMALLINT;
+    ADD COLUMN IF NOT EXISTS baseline_bin SMALLINT DEFAULT 0;
 
 -- The field delta is measured frame-wide. A record drawn from a tick where
 -- other actions also ran carries their effect too, and 5 of 16 live
@@ -41,7 +49,7 @@ ALTER TABLE substrate_action_outcomes
 -- lose nothing.
 UPDATE substrate_action_outcomes
    SET baseline_bin = LEAST(9, GREATEST(0, FLOOR(baseline * 10)::int))
- WHERE baseline_bin IS NULL;
+ WHERE baseline_bin IS DISTINCT FROM LEAST(9, GREATEST(0, FLOOR(baseline * 10)::int));
 
 ALTER TABLE substrate_action_outcomes
     ALTER COLUMN baseline_bin SET NOT NULL;
@@ -69,6 +77,22 @@ DROP INDEX IF EXISTS substrate_action_outcomes_dispatch_signal_uidx;
 
 CREATE UNIQUE INDEX IF NOT EXISTS substrate_action_outcomes_dispatch_frame_signal_uidx
     ON substrate_action_outcomes (dispatch_id, signal_id, dispatch_frame_id);
+
+-- `arm` and `baseline_bin` are closed vocabularies in the Python schema
+-- (ActionArm is a Literal, baseline_bin is Field(ge=0, le=9)) and were
+-- unconstrained here (review finding 16). A typo'd arm would become a
+-- phantom row that contrast() can never find and nothing would flag.
+ALTER TABLE substrate_action_outcomes
+    DROP CONSTRAINT IF EXISTS substrate_action_outcomes_arm_chk;
+ALTER TABLE substrate_action_outcomes
+    ADD CONSTRAINT substrate_action_outcomes_arm_chk
+    CHECK (arm IN ('dispatched', 'capacity_blocked', 'no_action', 'randomized_holdback'));
+
+ALTER TABLE substrate_action_outcomes
+    DROP CONSTRAINT IF EXISTS substrate_action_outcomes_baseline_bin_chk;
+ALTER TABLE substrate_action_outcomes
+    ADD CONSTRAINT substrate_action_outcomes_baseline_bin_chk
+    CHECK (baseline_bin BETWEEN 0 AND 9);
 
 -- The contrast's access pattern: treated cells for one action, by bin.
 CREATE INDEX IF NOT EXISTS substrate_action_outcomes_arm_bin_idx
@@ -164,7 +188,43 @@ CREATE TABLE IF NOT EXISTS substrate_signal_control_cells (
     -- against 2,600 distinct values/day on every prior day.
     moved_n             INTEGER     NOT NULL DEFAULT 0,
 
+    -- EWMA of the same movement indicator, and the one `is_frozen` actually
+    -- reads. `moved_n` above is a monotone LIFETIME counter, so a test
+    -- against it can only ever catch a channel that was born dead -- once a
+    -- cell has seen a single movement it can never be frozen again. The
+    -- failure this guard exists for is a channel that was healthy and
+    -- freezes LATER, which is exactly what a lifetime counter cannot see.
+    -- Caught in review; see orion/autonomy/contrast.py for the live numbers
+    -- the 0.25 threshold is read off.
+    move_rate           DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+
+    -- Dedup token. The control arm has NO per-observation ledger row, so the
+    -- monotone posterior_n guard in the upsert -- which only stops the belief
+    -- moving BACKWARDS -- was the only protection, and it does nothing
+    -- against a replay: a reprocessed tick reads n=N+k, computes n=N+2k, and
+    -- lands again. Not triggerable today (feedback frames are never re-fed
+    -- because nothing prunes substrate_feedback_frames), but
+    -- reconcile_feedback_pending exists precisely to re-queue dispatch
+    -- frames with no feedback frame, so adding retention to that table would
+    -- silently double-count the entire aged backlog into one arm of the
+    -- contrast and not the other.
+    last_dispatch_frame_id TEXT,
+
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (signal_id, arm, baseline_bin)
+    PRIMARY KEY (signal_id, arm, baseline_bin),
+
+    CONSTRAINT substrate_signal_control_cells_arm_chk
+        CHECK (arm IN ('dispatched', 'capacity_blocked', 'no_action', 'randomized_holdback')),
+    CONSTRAINT substrate_signal_control_cells_bin_chk
+        CHECK (baseline_bin BETWEEN 0 AND 9),
+    CONSTRAINT substrate_signal_control_cells_moved_chk
+        CHECK (moved_n <= posterior_n AND move_rate >= 0.0 AND move_rate <= 1.0)
 );
+
+-- Idempotent adds, for an install that created the table before these
+-- existed.
+ALTER TABLE substrate_signal_control_cells
+    ADD COLUMN IF NOT EXISTS move_rate DOUBLE PRECISION NOT NULL DEFAULT 1.0;
+ALTER TABLE substrate_signal_control_cells
+    ADD COLUMN IF NOT EXISTS last_dispatch_frame_id TEXT;

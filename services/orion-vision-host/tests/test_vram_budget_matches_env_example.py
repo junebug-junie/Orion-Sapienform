@@ -132,3 +132,34 @@ def test_budget_is_satisfiable_on_this_host() -> None:
         f"healthy -- the 2026-08-20 outage, exactly. Re-derive the budget for "
         f"this card (see this module's docstring)."
     )
+
+
+def test_settings_defaults_match_env_example() -> None:
+    """The CODE defaults must match .env_example too, not just the YAML doc.
+
+    Added from a review finding on PR #1805. The two tests above compare
+    config/vision_profiles.yaml against .env_example and against real hardware,
+    and neither reads settings.py -- so `Settings.VISION_VRAM_RESERVE_MB` sat at
+    the P100-era 3500 while `.env_example` said 1200, with this suite entirely
+    green, for the whole 21-hour outage. A host with no local `.env` override
+    would have inherited the fatal values from the code defaults alone.
+
+    Parsed textually rather than by importing Settings: app/settings.py pulls in
+    pydantic-settings, which is present in the service image but not necessarily
+    on the host venv this suite also runs on. The gate is worth more than the
+    elegance.
+    """
+    import re
+
+    settings_src = (_REPO / "services" / "orion-vision-host" / "app" / "settings.py").read_text()
+    env = _env_example_ints()
+
+    for env_key in _PAIRS.values():
+        m = re.search(rf"^\s*{env_key}:\s*int\s*=\s*(\d+)\s*$", settings_src, re.MULTILINE)
+        assert m, f"{env_key} not found as an int default in app/settings.py"
+        assert int(m.group(1)) == env[env_key], (
+            f"app/settings.py default {env_key}={m.group(1)} but .env_example "
+            f"says {env[env_key]}. A host with no local .env override inherits "
+            "the code default -- which is how the P100-era VRAM budget survived "
+            "into a P4 and blacked out vision for 21 hours."
+        )

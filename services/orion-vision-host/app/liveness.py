@@ -99,6 +99,7 @@ class VisionLivenessWatcher:
         self._failing_since: Optional[float] = None
         self._alerting: bool = False
         self._last_alert_at: Optional[float] = None
+        self._alert_unconfirmed: bool = False
 
     # -- introspection, for /health and tests -------------------------------
 
@@ -111,7 +112,11 @@ class VisionLivenessWatcher:
             "fail_rate": round(rate, 4),
             "sample_count": count,
             "top_error_code": top,
-            "failing_for_sec": round(ts - self._failing_since, 1) if self._failing_since else 0.0,
+            "failing_for_sec": (
+                round(ts - self._failing_since, 1)
+                if self._failing_since is not None
+                else 0.0
+            ),
             "window_sec": self._window_sec,
             "arm_fail_rate": self._arm_fail_rate,
             "clear_fail_rate": self._clear_fail_rate,
@@ -153,11 +158,30 @@ class VisionLivenessWatcher:
         self._evict(ts)
         rate, count, top = self._stats()
 
-        # Not enough evidence yet. Deliberately does not reset failing_since:
-        # a low-traffic stream whose sample count dips below the floor has not
-        # thereby recovered, and treating it as recovered would reset the
-        # sustain clock every time traffic thinned.
+        # Below the sample floor the rate is too thin to ARM on -- but clearing
+        # must stay reachable, which the first version of this got wrong.
+        #
+        # Review finding (HIGH): returning early here skipped the clear branch
+        # entirely, so a watcher that armed and then recovered at a low task
+        # cadence stayed `alerting=True` forever and short-circuited every
+        # later alert -- deaf to the next real outage. The margin was thin
+        # enough to hit in practice: measured healthy cadence is 13 samples per
+        # 300s window against a floor of 10.
+        #
+        # A full window with zero failures is unambiguous recovery no matter
+        # how few samples it holds, so that clears. Anything else below the
+        # floor holds state and holds the clock (a stream that merely thinned
+        # has not thereby recovered).
         if count < self._min_samples:
+            if count > 0 and rate == 0.0:
+                self._failing_since = None
+                if self._alerting:
+                    self._alerting = False
+                    return LivenessDecision(
+                        recovered=True,
+                        reason="vision tasks succeeding again",
+                        fail_rate=rate, sample_count=count, top_error_code=top,
+                    )
             return LivenessDecision(fail_rate=rate, sample_count=count, top_error_code=top)
 
         if rate >= self._arm_fail_rate:
@@ -191,14 +215,30 @@ class VisionLivenessWatcher:
                     failing_for_sec=failing_for, top_error_code=top,
                 )
 
+            # Provisional. The caller confirms via note_alert_delivered();
+            # see that method for why this is not committed here.
             self._alerting = True
             self._last_alert_at = ts
+            self._alert_unconfirmed = True
             return LivenessDecision(
                 alert=True,
                 reason=f"{int(rate * 100)}% of vision tasks failing ({top or 'unknown'})",
                 fail_rate=rate, sample_count=count,
                 failing_for_sec=failing_for, top_error_code=top,
             )
+
+        # Review finding (MEDIUM): the clock used to reset ONLY at or below the
+        # clear threshold, so a service parked in the hysteresis band (chronic
+        # partial failure) kept a clock set by some blip hours earlier. The
+        # sustain gate then did not gate -- a fresh outage alerted at 175s
+        # against a 180s requirement -- and the message told the operator the
+        # outage was 169 minutes old when it was under three.
+        #
+        # The band is meant to hold state for an ALREADY-ARMED alert, not to
+        # accumulate sustain credit for one that has not fired. So while not
+        # alerting, any rate below the arm threshold resets the clock.
+        if not self._alerting and rate < self._arm_fail_rate:
+            self._failing_since = None
 
         if rate <= self._clear_fail_rate:
             self._failing_since = None
@@ -214,6 +254,71 @@ class VisionLivenessWatcher:
         # and hold the sustain clock -- a rate that sags to 0.5 and climbs back
         # has not recovered and must not restart the clock.
         return LivenessDecision(fail_rate=rate, sample_count=count, top_error_code=top)
+
+
+    def note_alert_delivered(self, delivered: bool) -> None:
+        """Confirm or roll back the alert state set by the last ``record()``.
+
+        Review finding (MEDIUM): ``record()`` used to commit ``_alerting`` and
+        ``_last_alert_at`` at the moment it *decided* to alert, before the
+        caller had any idea whether the POST succeeded. If notify was down, the
+        token was rejected, or ``NOTIFY_BASE_URL`` was unset, the send failed
+        and nothing retried -- but the watcher believed it had alerted, so
+        ``if self._alerting`` suppressed every later attempt. The incident was
+        lost for its entire duration, not for one attempt.
+
+        On failure this rolls the state back so the next ``record()`` retries.
+        The sustain clock is deliberately NOT rolled back: the failure run is
+        still real and still ongoing: only the *notification* failed, so the
+        retry should be immediate rather than waiting out sustain_sec again.
+        """
+        if not self._alert_unconfirmed:
+            return
+        self._alert_unconfirmed = False
+        if not delivered:
+            self._alerting = False
+            self._last_alert_at = None
+
+
+def build_watcher_or_default(cfg: Any) -> VisionLivenessWatcher:
+    """Construct a watcher from settings, degrading loudly on a bad config.
+
+    Review finding (HIGH): ``VisionHostService`` is constructed at module
+    import, so a ``ValueError`` from the watcher's constructor -- raised for a
+    non-hysteretic ``VISION_LIVENESS_*`` value -- crashlooped the entire vision
+    service. The alerting subsystem became a brand-new way to cause the exact
+    21-hour blackout it was written to detect, and
+    ``VISION_LIVENESS_ALERT_ENABLED=false`` did not bypass it.
+
+    The ``ValueError`` stays in ``__init__``: refusing a flapping config is
+    correct for a library, and the tests assert it. This wrapper is the policy
+    layer -- **nothing in the alerting path may stop this service from
+    seeing**, so a bad value degrades to the known-good defaults with a loud
+    log instead.
+
+    Lives here rather than in ``app.main`` so it is importable and testable
+    without pulling in torch/PIL: the fix for a HIGH finding should not be
+    covered only by a test that skips on the host venv.
+    """
+    try:
+        return VisionLivenessWatcher(
+            window_sec=cfg.VISION_LIVENESS_WINDOW_SEC,
+            min_samples=cfg.VISION_LIVENESS_MIN_SAMPLES,
+            arm_fail_rate=cfg.VISION_LIVENESS_ARM_FAIL_RATE,
+            clear_fail_rate=cfg.VISION_LIVENESS_CLEAR_FAIL_RATE,
+            sustain_sec=cfg.VISION_LIVENESS_SUSTAIN_SEC,
+            cooldown_sec=cfg.VISION_LIVENESS_COOLDOWN_SEC,
+        )
+    except Exception as exc:
+        # print(), not loguru: this runs at import, before start() has
+        # configured the sink. stdout is what `docker logs` shows.
+        print(
+            f"[LIVENESS] invalid VISION_LIVENESS_* config ({exc}); falling back "
+            f"to defaults. Vision serving is UNAFFECTED -- check "
+            f"services/orion-vision-host/.env.",
+            flush=True,
+        )
+        return VisionLivenessWatcher()
 
 
 def build_attention_request(

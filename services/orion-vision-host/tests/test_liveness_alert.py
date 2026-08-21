@@ -20,7 +20,12 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from app.liveness import LivenessDecision, VisionLivenessWatcher, build_attention_request  # noqa: E402
+from app.liveness import (  # noqa: E402
+    LivenessDecision,
+    VisionLivenessWatcher,
+    build_attention_request,
+    build_watcher_or_default,
+)
 
 
 def _watcher(**kw):
@@ -269,3 +274,185 @@ def test_alert_message_names_the_real_diagnosis() -> None:
     assert "cannot see" in msg
     assert "VRAM" in msg and "card actually installed" in msg
     assert body["context"]["top_error_code"] == "gpu_hard_floor"
+
+
+# =========================================================================
+# Regression tests for PR #1805 review findings. Each reproduces the exact
+# scenario the reviewer demonstrated, so a revert re-breaks a named test.
+# =========================================================================
+
+
+def test_thin_traffic_recovery_clears_and_the_next_outage_still_alerts() -> None:
+    """Finding 2 (HIGH): the min_samples early return skipped the clear branch.
+
+    Reproduced by the reviewer: arm the watcher, then recover fully at a 40s
+    task cadence -- 7 samples per 300s window, below the floor of 10. The
+    watcher stayed alerting=True forever, and because the arm branch
+    short-circuits on `if self._alerting`, a brand-new 100%-failure outage
+    produced NO alert at all.
+
+    The margin is thin in production: measured healthy cadence is 13 samples
+    per window against a floor of 10.
+    """
+    # Short cooldown on purpose: with the 3600s default the second-outage
+    # assertion below would be blocked by the cooldown rather than by the wedge,
+    # and would pass for the wrong reason. (It did, on the first run.)
+    w = _watcher(cooldown_sec=60.0)
+    t = 0.0
+    for _ in range(50):                       # arm
+        w.record(ok=False, error_code="gpu_hard_floor", now=t); t += 5.0
+    w.note_alert_delivered(True)
+    assert w.snapshot(now=t)["alerting"] is True
+
+    # Full recovery, but slowly -- 40s apart keeps the window under min_samples.
+    for _ in range(20):
+        w.record(ok=True, now=t); t += 40.0
+    snap = w.snapshot(now=t)
+    assert snap["sample_count"] < 10, "test setup wrong: should be below the floor"
+    assert snap["alerting"] is False, "wedged alerting=True after a thin-traffic recovery"
+
+    # A genuinely new outage must still alert.
+    fired = False
+    for _ in range(80):
+        if w.record(ok=False, error_code="gpu_hard_floor", now=t).alert:
+            fired = True
+            break
+        t += 5.0
+    assert fired, "deaf to the next outage after a thin-traffic recovery"
+
+
+def test_failed_delivery_rolls_back_and_retries() -> None:
+    """Finding 3 (MEDIUM): state was committed on decision, not on delivery.
+
+    A notify outage meant the watcher believed it had alerted, so
+    `if self._alerting` suppressed every retry for the whole incident.
+    """
+    w = _watcher()
+    t = 0.0
+    decision = None
+    for _ in range(60):
+        d = w.record(ok=False, error_code="gpu_hard_floor", now=t)
+        if d.alert:
+            decision = d
+            break
+        t += 5.0
+    assert decision is not None
+
+    w.note_alert_delivered(False)             # the POST failed
+    assert w.snapshot(now=t)["alerting"] is False, "did not roll back a failed send"
+
+    # Next record retries immediately -- the failure run is still real, so the
+    # sustain clock is deliberately NOT restarted.
+    t += 5.0
+    assert w.record(ok=False, error_code="gpu_hard_floor", now=t).alert, "did not retry"
+
+
+def test_successful_delivery_commits_and_suppresses() -> None:
+    w = _watcher()
+    t = 0.0
+    for _ in range(60):
+        if w.record(ok=False, error_code="gpu_hard_floor", now=t).alert:
+            break
+        t += 5.0
+    w.note_alert_delivered(True)
+    assert w.snapshot(now=t)["alerting"] is True
+    for _ in range(20):
+        t += 5.0
+        assert not w.record(ok=False, error_code="gpu_hard_floor", now=t).alert
+
+
+def test_stale_clock_does_not_defeat_the_sustain_gate() -> None:
+    """Finding 4 (MEDIUM): _failing_since never expired below the arm rate.
+
+    Reviewer's reproduction: a 60s blip, then ~2.7h parked at a 50% failure
+    rate (inside the hysteresis band), then a fresh outage -- which alerted at
+    175s against a 180s sustain requirement, reporting "failing for 169 min"
+    for an outage under three minutes old.
+    """
+    w = _watcher()
+    t = 0.0
+    for _ in range(12):                       # blip: sets the clock
+        w.record(ok=False, error_code="gpu_hard_floor", now=t); t += 5.0
+
+    for i in range(2000):                     # ~2.7h parked at 50%
+        w.record(ok=(i % 2 == 0), error_code="gpu_hard_floor", now=t); t += 5.0
+    assert w.snapshot(now=t)["alerting"] is False
+
+    outage_start = t
+    fired_at = None
+    for _ in range(120):
+        d = w.record(ok=False, error_code="gpu_hard_floor", now=t)
+        if d.alert:
+            fired_at = t
+            assert d.failing_for_sec < 600.0, (
+                f"reported failing_for_sec={d.failing_for_sec:.0f}s from a stale clock"
+            )
+            break
+        t += 5.0
+    assert fired_at is not None
+    assert fired_at - outage_start >= 180.0, (
+        f"alerted {fired_at - outage_start:.0f}s into a new outage, under the "
+        f"180s sustain gate -- the stale clock defeated it"
+    )
+
+
+def test_failing_for_sec_handles_a_zero_timestamp() -> None:
+    """Finding 8 (LOW): `if self._failing_since` treated a real 0.0 as absent.
+
+    `now` is injectable and time.monotonic() has no guaranteed epoch.
+    """
+    w = _watcher()
+    for i in range(12):
+        w.record(ok=False, error_code="gpu_hard_floor", now=float(i) * 0.0)
+    snap = w.snapshot(now=100.0)
+    assert snap["failing_for_sec"] == 100.0, (
+        f"failing_since=0.0 was read as 'not failing'; got {snap['failing_for_sec']}"
+    )
+
+
+def test_bad_config_degrades_instead_of_crashing_the_service() -> None:
+    """Finding 1 (HIGH): a ValueError at import crashlooped the whole service.
+
+    VisionHostService is constructed at module import, so a typo'd
+    VISION_LIVENESS_* value made the alerting subsystem a brand-new way to
+    cause the exact blackout it exists to detect -- and the enable flag did not
+    bypass it. The ValueError stays (correct for a library); the service must
+    degrade to known-good defaults instead of dying.
+
+    Tested against the real helper `app.main` calls. It was deliberately moved
+    out of app/main.py for this: importing app.main pulls in torch/PIL and
+    skips on the host venv, and the fix for a HIGH finding should not be
+    covered only by a test that does not run.
+    """
+    class _BadCfg:
+        VISION_LIVENESS_WINDOW_SEC = 300.0
+        VISION_LIVENESS_MIN_SAMPLES = 10
+        VISION_LIVENESS_ARM_FAIL_RATE = 0.2
+        VISION_LIVENESS_CLEAR_FAIL_RATE = 0.9      # clear > arm
+        VISION_LIVENESS_SUSTAIN_SEC = 180.0
+        VISION_LIVENESS_COOLDOWN_SEC = 3600.0
+
+    w = build_watcher_or_default(_BadCfg())
+    snap = w.snapshot(now=0.0)
+    assert snap["arm_fail_rate"] == 0.8 and snap["clear_fail_rate"] == 0.2, \
+        "did not fall back to the known-good defaults"
+
+    class _MissingCfg:                              # attribute error, not ValueError
+        pass
+
+    assert isinstance(build_watcher_or_default(_MissingCfg()), VisionLivenessWatcher)
+
+
+def test_good_config_is_not_silently_replaced() -> None:
+    """The fallback must not swallow a VALID non-default config."""
+    class _Cfg:
+        VISION_LIVENESS_WINDOW_SEC = 111.0
+        VISION_LIVENESS_MIN_SAMPLES = 4
+        VISION_LIVENESS_ARM_FAIL_RATE = 0.7
+        VISION_LIVENESS_CLEAR_FAIL_RATE = 0.3
+        VISION_LIVENESS_SUSTAIN_SEC = 22.0
+        VISION_LIVENESS_COOLDOWN_SEC = 33.0
+
+    snap = build_watcher_or_default(_Cfg()).snapshot(now=0.0)
+    assert snap["window_sec"] == 111.0
+    assert snap["arm_fail_rate"] == 0.7 and snap["clear_fail_rate"] == 0.3

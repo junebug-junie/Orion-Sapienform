@@ -427,7 +427,7 @@ class FeedbackRuntimeStore:
 
         stmt = text(
             """
-            SELECT result_id, dispatch_id, status, result_json
+            SELECT result_id, dispatch_id, status, result_json, latency_ms
             FROM substrate_dispatch_results
             WHERE dispatch_id IN :dispatch_ids
             ORDER BY created_at DESC
@@ -452,14 +452,31 @@ class FeedbackRuntimeStore:
                 if isinstance(payload, str):
                     payload = json.loads(payload)
                 evidence_refs = list(payload.get("evidence_refs") or []) if isinstance(payload, dict) else []
-                evidence.append(
-                    {
-                        "result_id": row["result_id"],
-                        "dispatch_id": dispatch_id,
-                        "status": row["status"],
-                        "evidence_refs": evidence_refs,
-                    }
-                )
+                entry: dict[str, object] = {
+                    "result_id": row["result_id"],
+                    "dispatch_id": dispatch_id,
+                    "status": row["status"],
+                    "evidence_refs": evidence_refs,
+                }
+                # 2026-08-21: this dict used to be exactly the four keys above,
+                # which made worker.py::_latencies() UNREACHABLE -- it scans
+                # these entries for latency_ms/duration_ms/elapsed_ms and they
+                # were filtered out one layer earlier. Combined with nothing
+                # writing the value in the first place, ActionOutcomeRecordV1.
+                # latency_ms was populated on 0 of 5,739 rows over 6 hours: a
+                # schema field, a column and a reader, none of which could ever
+                # carry anything. Absent stays absent -- never coerced to 0.0,
+                # which would read as "this action was free".
+                # .get(), not ["..."]: a mapping without the key must read as
+                # "no cost recorded", not crash. A KeyError here would abort
+                # the whole evidence load and take feedback scoring down with
+                # it, for the sake of one absent optional measurement. (If the
+                # COLUMN were missing the SELECT above would fail first, so
+                # this is not hiding a schema problem.)
+                latency = row.get("latency_ms")
+                if latency is not None:
+                    entry["latency_ms"] = float(latency)
+                evidence.append(entry)
                 seen_dispatch_ids.add(dispatch_id)
             except (TypeError, ValueError, json.JSONDecodeError):
                 # Malformed result_json on one row shouldn't sink the whole

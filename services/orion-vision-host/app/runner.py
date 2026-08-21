@@ -100,7 +100,7 @@ class VisionRunner:
         for name, p in self.profiles.profiles.items():
             if not self._is_enabled(name) or not p.enabled or not p.warm_on_start:
                 continue
-            if p.kind not in ("embedding", "detect_open_vocab", "caption_frame"):
+            if p.kind not in ("embedding", "detect_open_vocab", "caption_frame", "vlm"):
                 continue
             try:
                 self._warm_profile_backend(p, device)
@@ -151,8 +151,14 @@ class VisionRunner:
             # `p.name` ("vlm_vqa"), same per-profile caching convention every
             # other kind above uses, so it loads as its own resident model
             # rather than silently sharing vlm_caption's. `vlm_vqa` ships
-            # with `warm_on_start: false` (this branch only matters if that
-            # is ever flipped on) -- real requests already lazy-load via
+            # with `warm_on_start: false`, so this branch is currently dead
+            # code -- reachable only if BOTH gates in `warm_profiles()`'s own
+            # loop agree: `p.warm_on_start` (this one) AND `p.kind` being in
+            # that loop's own separate kind-allowlist tuple (review finding,
+            # 2026-08-21: "vlm" was missing from that tuple too, so flipping
+            # warm_on_start alone would silently still not warm this profile
+            # -- fixed there in the same patch as this branch, not a second
+            # thing left for later). Real requests already lazy-load via
             # `_run_vlm_vqa`'s own `load_vlm_captioner` call regardless of
             # whether this warm path ever runs.
             model_id = settings.VISION_VLM_MODEL_ID

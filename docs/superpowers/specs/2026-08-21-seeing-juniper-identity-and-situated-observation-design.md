@@ -726,6 +726,47 @@ local path, carbon works, any future camera works, and the gateway's existing
 hash-verified fetch is the transport. This promotes the percept store from a
 step to a **prerequisite**, and it is now load-bearing for three separate asks.
 
+### What "deploy a sender on carbon" actually costs
+
+No new service. `orion-vision-retina` **is** the sender — it already has
+`WebcamFrameSource`, it already publishes to the bus over tailscale, and its
+deps are laptop-safe. The only thing it does wrong for a remote node is *how it
+names the frame*:
+
+```
+today:  frame_store.save() -> cv2.imwrite(local dir) -> image_path
+        -> VisionFramePointerPayload(image_path=...) -> orion:vision:frames
+```
+
+Four touch points to make that work from anywhere:
+
+| # | change | file |
+| ---: | :--- | :--- |
+| 1 | `frame_store` gains an upload mode: POST the JPEG to the percept store, get `sha256` back | `orion-vision-retina/app/frame_store.py` |
+| 2 | add `sha256: Optional[str]` to the frame pointer — the model is `extra="forbid"`, so this is an explicit **contract change** (§6: registry + producer test + consumer test in the same patch) | `orion/schemas/vision.py:93` |
+| 3 | `require_image_path_exists` becomes "path exists **or** sha256 present" | `config/vision_frame_router.yaml` + router policy |
+| 4 | resolve `sha256` → fetch bytes, when there is no readable path | `orion-vision-host` |
+
+**athena does not change.** Local capture keeps writing local paths — no HTTP
+hop, no extra copy. The `sha256` route is purely additive, for nodes with no
+shared disk.
+
+**And athena's frames only enter the store lazily.** A frame needs a `sha256`
+only when it is actually dispatched to the VL lane on circe, so vision-host
+uploads at call time rather than capture time. That is a smaller volume of
+traffic *and* a smaller privacy footprint: only the handful of frames that were
+worth interpreting are ever persisted somewhere fetchable, instead of every
+frame the camera ever took.
+
+carbon is the reverse — it must upload at capture time, because there is no
+other way for its bytes to leave the laptop. Which means carbon's frames land
+on athena under athena's retention, rather than accumulating on a laptop.
+
+One operational note: carbon is a laptop. It sleeps, closes, and roams. The
+sender must treat an unreachable bus or store as normal and resume, never queue
+frames to disk indefinitely — a backlog of webcam frames on a personal machine
+is the wrong failure mode.
+
 **Carbon is a different privacy surface and should not inherit cam0's policy.**
 A room camera catches Juniper occasionally and at a distance. A laptop webcam is
 a close, continuous, face-filling view of one person while they work. It is

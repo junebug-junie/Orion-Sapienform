@@ -8,6 +8,7 @@ from typing import Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.feedback.builder import build_feedback_frame
+from orion.feedback.outcome_resolution import resolve_action_outcomes
 from orion.feedback.policy import load_feedback_policy
 from orion.schemas.feedback_frame import FeedbackFrameV1
 
@@ -115,12 +116,73 @@ class FeedbackRuntimeWorker:
             cortex_results=cortex_results or None,
             policy=self._policy,
         )
-        self._store.save_feedback_frame(frame)
+        # Score whatever predictions this tick's dispatched actions made.
+        # Never allowed to take the feedback frame down with it: a scoring
+        # bug must not stall the pipeline that has been running for months.
+        # An empty resolution is a legitimate outcome (a tick can dispatch
+        # nothing, or dispatch only actions that declare no signal).
+        try:
+            resolution = resolve_action_outcomes(
+                dispatch_frame=dispatch,
+                feedback_frame_id=frame.frame_id,
+                field_before=field_before,
+                field_after=field_after,
+                priors=self._store.load_effect_posteriors(),
+                latency_by_dispatch_id=_latencies(cortex_results),
+            )
+        except Exception:
+            logger.exception(
+                "action_outcome_resolution_failed dispatch_frame_id=%s", dispatch.frame_id
+            )
+            resolution = None
+
+        self._store.save_feedback_frame(
+            frame, outcome_records=resolution.records if resolution else None
+        )
         logger.info(
-            "feedback_frame_saved frame_id=%s dispatch_frame_id=%s outcome_status=%s observations=%d",
+            "feedback_frame_saved frame_id=%s dispatch_frame_id=%s outcome_status=%s "
+            "observations=%d scored_actions=%d skipped_actions=%d",
             frame.frame_id,
             dispatch.frame_id,
             frame.outcome_status,
             len(frame.observations),
+            len(resolution.records) if resolution else 0,
+            len(resolution.skipped) if resolution else 0,
         )
+        if resolution and resolution.skipped:
+            # Aggregated, not per-dispatch: this fires every tick and the
+            # per-reason counts are the part anyone acts on.
+            counts: dict[str, int] = {}
+            for reason in resolution.skipped.values():
+                counts[reason] = counts.get(reason, 0) + 1
+            logger.info(
+                "action_outcome_skipped dispatch_frame_id=%s reasons=%s",
+                dispatch.frame_id,
+                sorted(counts.items()),
+            )
         return frame
+
+
+def _latencies(cortex_results: list[dict[str, object]] | None) -> dict[str, float]:
+    """Real measured cost per dispatch, when the cortex result reported one.
+
+    Absent keys stay absent -- never coerced to 0.0, which would read as
+    "this action was free" and quietly bias any cost-weighted comparison
+    built on top of this ledger toward whichever executor happens not to
+    report timings.
+    """
+    out: dict[str, float] = {}
+    for raw in cortex_results or []:
+        dispatch_id = str(raw.get("dispatch_id") or "")
+        if not dispatch_id:
+            continue
+        for key in ("latency_ms", "duration_ms", "elapsed_ms"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            try:
+                out[dispatch_id] = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            break
+    return out

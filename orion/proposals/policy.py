@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from orion.schemas.action_prediction import EffectDirection, PredictableSignal
+
+_VALID_SIGNALS = frozenset(PredictableSignal.__args__)
+_VALID_DIRECTIONS = frozenset(EffectDirection.__args__)
 
 
 class ProposalLimitsV1(BaseModel):
@@ -52,6 +57,42 @@ class ProposalTemplateV1(BaseModel):
     # always FieldAttentionFrameV1 underneath, self_state was a pass-through).
     # No general binding-expression DSL -- matched exactly, nothing fancier.
     target_binding: str | None = None
+
+    # 2026-08-21 (action-outcome ledger): the template author's claim about
+    # what this action does to a measured signal. Both must be set together
+    # or both left unset -- a signal with no direction is not a prediction.
+    # Enforced in ProposalPolicyV1's validator below, not just documented.
+    expected_signal: str | None = None
+    expected_direction: str | None = None
+
+    @model_validator(mode="after")
+    def _check_expected_effect(self) -> "ProposalTemplateV1":
+        """A half-declared prediction is worse than none -- it looks wired.
+
+        Rejecting at load time (rather than skipping the template at build
+        time) is deliberate: a typo'd signal name would otherwise silently
+        turn a scored action back into an unscored one, which is exactly the
+        failure this whole patch exists to make impossible to hide.
+        """
+        if (self.expected_signal is None) != (self.expected_direction is None):
+            raise ValueError(
+                "expected_signal and expected_direction must be set together "
+                f"(signal={self.expected_signal!r}, direction={self.expected_direction!r})"
+            )
+        if self.expected_signal is not None and self.expected_signal not in _VALID_SIGNALS:
+            raise ValueError(
+                f"expected_signal={self.expected_signal!r} is not a measured signal; "
+                f"valid: {sorted(_VALID_SIGNALS)}"
+            )
+        if (
+            self.expected_direction is not None
+            and self.expected_direction not in _VALID_DIRECTIONS
+        ):
+            raise ValueError(
+                f"expected_direction={self.expected_direction!r} invalid; "
+                f"valid: {sorted(_VALID_DIRECTIONS)}"
+            )
+        return self
 
 
 class ProposalPolicyV1(BaseModel):

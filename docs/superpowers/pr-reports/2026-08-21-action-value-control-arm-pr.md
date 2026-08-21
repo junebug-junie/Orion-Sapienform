@@ -42,6 +42,48 @@ term decaying to ~0 precisely because the wrong estimate was stable. The
 matched contrast says pruning very slightly **raises** it. The entire -0.1368
 was regression to the mean.
 
+### The same result, per bin, computed independently in SQL
+
+`host:docker_images`, 3 days. Recomputed straight from the frames with a
+`GROUP BY floor(before*10)`, i.e. without going through `contrast()` at all:
+
+```
+bin  treated_n  treated_mean   control_n  control_mean      diff
+ 0          11       +0.2936        3396       +0.0212   +0.2724
+ 1         285       +0.1624       21480       +0.0276   +0.1348
+ 2         416       +0.1020       12333       +0.0352   +0.0668
+ 3         705       +0.0123       13915       -0.0387   +0.0510
+ 4         536       -0.0795        5785       -0.1078   +0.0283
+ 5          93       -0.1906         494       -0.2057   +0.0151
+ 6         154       -0.3160         497       -0.3069   -0.0091
+ 7        1135       -0.3759        3015       -0.3820   +0.0061
+ 8         363       -0.1890       19695       -0.0117   -0.1773
+```
+
+Volume-weighted: **+0.0170**, against the estimator's +0.0172 (the small gap
+is posterior shrinkage toward the cold prior). The raw treated mean recomputes
+to -0.1362 against the estimator's -0.1368. The estimator is doing the
+arithmetic it claims to.
+
+Bin 7 is the whole story: 1,135 of 3,698 prunes happen when resource_pressure
+is between 0.7 and 0.8, and it then falls by -0.376. On untreated ticks
+starting in the same band it falls by **-0.382**. The prune is not what moved
+it.
+
+**A limit of the frozen-cell guard, visible right here.** Bin 8's control mean
+is -0.0117 across 19,695 ticks -- far calmer than bins 6 and 7 either side of
+it, which is not physical. That is the frozen block: ~12,000 of those ticks
+are the pinned-at-0.85 window described below, contributing exactly 0.0 and
+dragging the bin's control mean toward zero. `moved_n` for that cell is well
+above zero (the bin also contains real, moving ticks), so
+`ControlCell.is_frozen` does **not** fire. The guard catches a wholly frozen
+cell, not a partially poisoned one.
+
+Bin 8 carries 10% of the treated weight and contributes -0.0174 of the
+result, so dropping it entirely moves the contrast from +0.017 to +0.038.
+Both are small, both positive, and both are nowhere near -0.136 -- the
+conclusion is robust to the contamination, and the estimate is not.
+
 That is the whole point of the patch: the confounded estimator does not fail
 loudly like a zero-filled metric does. It converges on a plausible,
 low-variance, confident number and looks maximally trustworthy exactly when
@@ -403,6 +445,17 @@ delete block is wrapped in a `DO $$ ... $$` guarded on the absence of the
   a separate patch and should not wait long.
   **Mitigation:** `moved_n` guard; the failure is now visible in
   `report_action_value.py` rather than silent.
+
+- **Severity: MEDIUM.** `ControlCell.is_frozen` catches a *wholly* frozen
+  control cell and not a *partially poisoned* one. Live proof, in this
+  patch's own numbers: bin 8's control mean is -0.0117 across 19,695 ticks,
+  implausibly calm next to its neighbours, because ~12,000 of those ticks are
+  the pinned-at-0.85 window. `moved_n` is well above zero there, so the guard
+  does not fire. The contrast's *conclusion* survives it (+0.017 with bin 8,
+  +0.038 without, against a raw -0.136); the *estimate* does not.
+  **Mitigation:** none in this patch. The right fix is a per-cell movement
+  RATE with a history to compare against, which is a real design question,
+  not a constant.
 
 - **Severity: MEDIUM.** The `no_action` arm is **quasi-experimental**, not
   causal. Ticks where nothing ran are systematically calmer ticks. Binning on

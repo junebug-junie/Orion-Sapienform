@@ -1,5 +1,6 @@
 ## service to exclude from auto rebuilding
 # one service per line
+orion-diffusion-host
 orion-context-exec
 orion-llamacpp-neural-host
 orion-vllm-host

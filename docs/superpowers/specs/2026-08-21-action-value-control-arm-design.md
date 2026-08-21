@@ -392,6 +392,24 @@ value was rewritten every single tick. It was fresh, present, and constant.
 The freeze cleared when the runtimes were rebuilt at ~19:00 UTC, which makes
 it a recurring state, not a one-off.
 
+**Cross-reference, checked after the fact: PR #1800 (opened 19:11 UTC today)
+independently root-caused and fixed the camera half of this.**
+`orion-vision-host` was bricked from 2026-08-20 22:00 UTC by a self-defeating
+VRAM config (`free 4191 - reserve 3500 = 691 < hard_floor 1400`, unsatisfiable
+once the models warm up), refusing every task for ~21 hours while the
+container reported healthy. That timeline matches this pin exactly, and the
+restart that cleared the pin at ~19:00 UTC was that fix landing.
+
+That closes the *input*. It does not close the defect found here, and #1800
+does not mention it: **a blind camera should not have been able to move
+Orion's resource pressure at all.** The staleness reading was correct the
+whole time; the wiring took a correct perception alarm, multiplied it by a
+hand-typed edge weight, and let it win a `max()` merge into the dimension
+that decides whether to prune Docker images. Fixing the camera makes the
+symptom go away and leaves the mechanism in place for the next perception
+outage -- and #1800 itself reports that nothing alerted for 21 hours, so
+there will be a next one.
+
 Three separate follow-ups, none of them done here:
 
 - **The merge is wrong**, not just the input. A blind camera should not be

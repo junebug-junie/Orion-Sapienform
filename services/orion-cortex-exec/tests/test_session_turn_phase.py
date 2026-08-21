@@ -8,7 +8,6 @@ import pytest
 
 import app.session_turn_phase as session_turn_phase
 from app.session_turn_phase import (
-    SessionTurnState,
     bind_session_turn_phase_bus,
     read_session_turn_state,
     reset_session_turn_phase_bus_for_tests,
@@ -155,7 +154,12 @@ async def test_read_fails_open_when_redis_raises(caplog) -> None:
     bind_session_turn_phase_bus(_FakeBus(_RaisingRedis()))
     with caplog.at_level(logging.WARNING, logger="orion.cortex.session_turn_phase"):
         state = await read_session_turn_state("sid-read-error")
-    assert state == SessionTurnState(last_user_turn_at=None, last_orion_turn_at=None)
+    assert state.last_user_turn_at is None
+    assert state.last_orion_turn_at is None
+    # A genuine read FAILURE must be distinguishable from "confirmed no
+    # prior state" -- callers doing read-modify-write rely on .ok to decide
+    # whether it's safe to write back (see module docstring).
+    assert state.ok is False
     assert any("session_turn_phase_read_failed" in r.message for r in caplog.records)
 
 
@@ -175,7 +179,9 @@ async def test_write_fails_open_when_redis_raises_and_does_not_propagate(caplog)
 async def test_read_fails_open_when_bus_unbound_with_distinguishable_warning(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="orion.cortex.session_turn_phase"):
         state = await read_session_turn_state("sid-unbound")
-    assert state == SessionTurnState(last_user_turn_at=None, last_orion_turn_at=None)
+    assert state.last_user_turn_at is None
+    assert state.last_orion_turn_at is None
+    assert state.ok is False
     assert any("bus_unbound" in r.message for r in caplog.records)
 
 
@@ -196,7 +202,13 @@ async def test_missing_key_is_not_a_failure_and_does_not_warn(caplog) -> None:
     bind_session_turn_phase_bus(_FakeBus(_FakeRedis()))
     with caplog.at_level(logging.INFO, logger="orion.cortex.session_turn_phase"):
         state = await read_session_turn_state("sid-never-seen")
-    assert state == SessionTurnState(last_user_turn_at=None, last_orion_turn_at=None)
+    assert state.last_user_turn_at is None
+    assert state.last_orion_turn_at is None
+    # Confirmed-absent (not a failure): .ok is True, unlike the failure-path
+    # tests above -- this is exactly the distinction a read-modify-write
+    # caller needs to safely decide "write both fields fresh" vs "skip the
+    # write, true state is unknown."
+    assert state.ok is True
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert warnings == []
 
@@ -207,7 +219,9 @@ async def test_malformed_payload_fails_open(caplog) -> None:
     bind_session_turn_phase_bus(_FakeBus(redis))
     with caplog.at_level(logging.WARNING, logger="orion.cortex.session_turn_phase"):
         state = await read_session_turn_state("sid-garbage")
-    assert state == SessionTurnState(last_user_turn_at=None, last_orion_turn_at=None)
+    assert state.last_user_turn_at is None
+    assert state.last_orion_turn_at is None
+    assert state.ok is False
     assert any("session_turn_phase_read_failed" in r.message for r in caplog.records)
 
 
@@ -225,3 +239,4 @@ async def test_write_then_read_round_trips_both_timestamps() -> None:
     state = await read_session_turn_state("sid-roundtrip")
     assert state.last_user_turn_at == last_user
     assert state.last_orion_turn_at == last_orion
+    assert state.ok is True

@@ -40,6 +40,17 @@ class _FakeBus:
         self.redis = redis
 
 
+class _RaisingRedis:
+    """Simulates a Redis read failure (as opposed to a genuinely-empty
+    read) -- distinct from a plain `_FakeRedis()` with no seeded key."""
+
+    async def get(self, key: str):
+        raise ConnectionError("redis unreachable")
+
+    async def setex(self, key: str, ttl_seconds: int, payload: str):
+        raise ConnectionError("redis unreachable")
+
+
 @pytest.fixture(autouse=True)
 def _reset_bus():
     reset_session_turn_phase_bus_for_tests()
@@ -211,3 +222,71 @@ async def test_mark_orion_turn_defaults_session_id_to_global() -> None:
 
     redis = session_turn_phase._BUS.redis
     assert "orion:cortex-exec:session_turn_phase:global" in redis.store
+
+
+# --- clobber prevention on a failed read ------------------------------------
+#
+# A Redis read FAILURE (not "genuinely no prior data") must never result in
+# writing back a None that overwrites a real, existing value on the field
+# this call didn't intend to touch. Before session_turn_phase.py grew the
+# ok=False/True distinction, both _build_conversation_phase and
+# mark_orion_turn would happily write (None, computed_value) back on a
+# failed read -- silently wiping the OTHER timestamp. These tests would have
+# failed against that version.
+
+
+@pytest.mark.asyncio
+async def test_build_conversation_phase_does_not_write_when_read_fails() -> None:
+    bind_session_turn_phase_bus(_FakeBus(_RaisingRedis()))
+    out = await _build_conversation_phase({"session_id": "sid-read-fails"}, _time_ctx(), NOW)
+
+    # Classification still degrades safely to today's defaults...
+    assert out.phase_change == "unknown"
+    # ...but no write was attempted at all (a raising setex would have
+    # itself been caught and logged by write_session_turn_state -- the
+    # point here is the CALL never happens).
+    key = "orion:cortex-exec:session_turn_phase:sid-read-fails"
+    redis = session_turn_phase._BUS.redis
+    assert key not in getattr(redis, "store", {})
+
+
+@pytest.mark.asyncio
+async def test_build_conversation_phase_read_failure_does_not_clobber_last_orion() -> None:
+    """The scenario that actually matters: last_orion_turn_at has a real
+    value sitting in Redis, but THIS particular read transiently fails.
+    A naive implementation would write last_orion_turn_at=None here,
+    destroying real data this call never meant to touch."""
+
+    class _FlakyThenFakeRedis(_FakeRedis):
+        def __init__(self, store: dict) -> None:
+            super().__init__(store)
+            self._first_get_done = False
+
+        async def get(self, key: str):
+            if not self._first_get_done:
+                self._first_get_done = True
+                raise ConnectionError("transient redis blip")
+            return await super().get(key)
+
+    store: dict = {}
+    real_last_orion = NOW - timedelta(minutes=1)
+    _seed(store, "sid-flaky", last_user=NOW - timedelta(minutes=5), last_orion=real_last_orion)
+    bind_session_turn_phase_bus(_FakeBus(_FlakyThenFakeRedis(store)))
+
+    await _build_conversation_phase({"session_id": "sid-flaky"}, _time_ctx(), NOW)
+
+    # No write happened on the failed read, so the real last_orion value
+    # already in the store is untouched.
+    key = "orion:cortex-exec:session_turn_phase:sid-flaky"
+    written = json.loads(store[key])
+    assert written["last_orion_turn_at"] == real_last_orion.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_mark_orion_turn_does_not_write_when_read_fails() -> None:
+    bind_session_turn_phase_bus(_FakeBus(_RaisingRedis()))
+    await mark_orion_turn("sid-mark-read-fails")
+
+    key = "orion:cortex-exec:session_turn_phase:sid-mark-read-fails"
+    redis = session_turn_phase._BUS.redis
+    assert key not in getattr(redis, "store", {})

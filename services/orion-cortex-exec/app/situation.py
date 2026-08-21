@@ -377,18 +377,30 @@ async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1
         response_adjustments=adjustments,
     )
     # Read-modify-write: preserve last_orion_turn_at exactly as read above --
-    # this call only ever advances the user side of the pair.
-    await write_session_turn_state(
-        session_id,
-        last_user_turn_at=now_utc,
-        last_orion_turn_at=last_orion,
-    )
+    # this call only ever advances the user side of the pair. Skip the write
+    # entirely if the read itself failed (state.ok is False): last_orion is
+    # None in that case because it's UNKNOWN, not because it's genuinely
+    # empty, and writing it back would silently clobber a real value on a
+    # field this call never intended to touch. Losing this turn's
+    # last_user_turn_at update is an acceptable, strictly-better-than-before
+    # degradation -- clobbering last_orion_turn_at would not be.
+    if state.ok:
+        await write_session_turn_state(
+            session_id,
+            last_user_turn_at=now_utc,
+            last_orion_turn_at=last_orion,
+        )
     return out
 
 
 async def mark_orion_turn(session_id: str | None) -> None:
     sid = str(session_id or "global")
     state = await read_session_turn_state(sid)
+    if not state.ok:
+        # Same clobber hazard as _build_conversation_phase above, mirrored:
+        # skip the write rather than risk overwriting a real
+        # last_user_turn_at with an unknown-vs-empty None.
+        return
     # Read-modify-write: preserve last_user_turn_at exactly as read above --
     # this call only ever advances the Orion side of the pair.
     await write_session_turn_state(

@@ -42,6 +42,17 @@ misread as "unknown" instead of correctly classified as stale.
 Fail-open by contract: every function here degrades to "no prior state"
 (`None`, `None`) on any read/write failure, an unbound bus, or a malformed
 payload -- never raises. A Redis hiccup here must not break a chat turn.
+
+IMPORTANT for callers doing read-modify-write (both `situation.py`
+functions that use this module do): `SessionTurnState.ok` distinguishes a
+read that genuinely confirmed "no prior data" (`ok=True`, both fields
+`None` -- safe to write both fields fresh) from a read that FAILED and
+therefore has an UNKNOWN true state (`ok=False`, both fields `None`
+because we don't know them, not because they're empty). Blindly writing
+`(None, None)` back on `ok=False` would silently clobber a real,
+previously-good timestamp on the field the caller wasn't even trying to
+update -- worse than the bug this module fixes. Callers must check `.ok`
+and skip the write entirely when it's `False`.
 """
 
 from __future__ import annotations
@@ -62,9 +73,16 @@ _DEFAULT_TTL_SECONDS = 7 * 24 * 3600  # 7 days
 class SessionTurnState(NamedTuple):
     last_user_turn_at: datetime | None
     last_orion_turn_at: datetime | None
+    # True: read genuinely completed (key found and parsed, or confirmed
+    # absent) -- both fields are trustworthy as-is, safe to write back.
+    # False: read FAILED (unbound bus, Redis error, malformed payload) --
+    # both fields are None because the true state is unknown, not because
+    # it's empty. See the module docstring's read-modify-write warning.
+    ok: bool = True
 
 
-_NO_STATE = SessionTurnState(last_user_turn_at=None, last_orion_turn_at=None)
+_UNKNOWN_STATE = SessionTurnState(last_user_turn_at=None, last_orion_turn_at=None, ok=False)
+_CONFIRMED_EMPTY_STATE = SessionTurnState(last_user_turn_at=None, last_orion_turn_at=None, ok=True)
 
 
 def _key(session_id: str) -> str:
@@ -97,26 +115,28 @@ async def read_session_turn_state(session_id: str) -> SessionTurnState:
     """Fail-open read of the last known user/Orion turn timestamps for this
     session, shared across every cortex-exec replica.
 
-    Returns `(None, None)` -- never raises -- when the bus is unbound, the
-    key is genuinely absent (a new/never-tracked session; not a failure,
-    logged at INFO not WARNING), Redis errors, or the payload is
-    malformed/incomplete.
+    Returns a `SessionTurnState` with `ok=True` and both fields `None` when
+    the key is genuinely absent (a new/never-tracked session; not a
+    failure, logged at INFO not WARNING). Returns `ok=False` (also both
+    fields `None`, but meaning "unknown", not "empty" -- see the module
+    docstring) -- never raises -- when the bus is unbound, Redis errors, or
+    the payload is malformed/incomplete.
     """
     bus = _BUS
     if bus is None:
         logger.warning("session_turn_phase_read_bus_unbound session_id=%s", session_id)
-        return _NO_STATE
+        return _UNKNOWN_STATE
 
     key = _key(session_id)
     try:
         raw = await bus.redis.get(key)
     except Exception:
         logger.warning("session_turn_phase_read_failed key=%s redis_error", key, exc_info=True)
-        return _NO_STATE
+        return _UNKNOWN_STATE
 
     if raw is None:
         logger.info("session_turn_phase_read key=%s found=False", key)
-        return _NO_STATE
+        return _CONFIRMED_EMPTY_STATE
 
     try:
         if isinstance(raw, bytes):
@@ -124,16 +144,16 @@ async def read_session_turn_state(session_id: str) -> SessionTurnState:
         parsed = json.loads(raw)
     except Exception:
         logger.warning("session_turn_phase_read_failed key=%s malformed_json", key, exc_info=True)
-        return _NO_STATE
+        return _UNKNOWN_STATE
 
     if not isinstance(parsed, dict):
         logger.warning("session_turn_phase_read_failed key=%s not_a_dict", key)
-        return _NO_STATE
+        return _UNKNOWN_STATE
 
     last_user = _parse_iso(parsed.get("last_user_turn_at"))
     last_orion = _parse_iso(parsed.get("last_orion_turn_at"))
     logger.info("session_turn_phase_read key=%s found=True", key)
-    return SessionTurnState(last_user_turn_at=last_user, last_orion_turn_at=last_orion)
+    return SessionTurnState(last_user_turn_at=last_user, last_orion_turn_at=last_orion, ok=True)
 
 
 async def write_session_turn_state(

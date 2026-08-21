@@ -381,7 +381,11 @@ class BiometricsHub:
         weight_total = 0.0
 
         for node, summary in self._latest_summary.items():
-            role = "atlas" if "atlas" in node else "athena" if "athena" in node else "other"
+            # atlas is decommissioned (2026-08-21, see config/biometrics/node_catalog.yaml).
+            # circe took over its role as the fleet's dominant, always-up GPU workhorse (6
+            # GPUs after absorbing atlas's 2x V100 16GB + athena's old P100) -- inherits its
+            # 0.7 weight below instead of falling into the generic "other":0.5 bucket.
+            role = "circe" if "circe" in node else "athena" if "athena" in node else "other"
             weight = float(weights.get(role, 1.0))
             weight_total += weight
             sources.append(node)

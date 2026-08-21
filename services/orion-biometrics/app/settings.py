@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     BIOMETRICS_MODE: str = Field(default="agent")
     CLUSTER_PUBLISH_INTERVAL: int = Field(default=15)
     role_weights: Dict[str, float] = Field(
-        default_factory=lambda: {"atlas": 0.7, "athena": 0.3, "other": 0.5},
+        default_factory=lambda: {"circe": 0.7, "athena": 0.3, "other": 0.5},
         alias="CLUSTER_ROLE_WEIGHTS",
     )
     SPARK_SIGNAL_TTL_MS: int = Field(default=15000)
@@ -155,10 +155,10 @@ class Settings(BaseSettings):
             try:
                 data = json.loads(value)
             except json.JSONDecodeError:
-                return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+                return {"circe": 0.7, "athena": 0.3, "other": 0.5}
             if isinstance(data, dict):
                 return {str(k): float(v) for k, v in data.items()}
-        return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+        return {"circe": 0.7, "athena": 0.3, "other": 0.5}
 
     @field_validator("DISK_CAPACITY_MOUNTS", mode="before")
     @classmethod
@@ -197,4 +197,4 @@ settings = Settings()
 try:
     settings.role_weights = json.loads(settings.CLUSTER_ROLE_WEIGHTS)
 except Exception:
-    settings.role_weights = {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+    settings.role_weights = {"circe": 0.7, "athena": 0.3, "other": 0.5}

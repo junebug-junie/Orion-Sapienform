@@ -662,3 +662,124 @@ In order:
 Step 3 was the original goal and is still the goal. It is third because a
 budget is only meaningful over a set whose members have distinguishable value,
 and as of today no such set exists.
+
+---
+
+# Fourth amendment: the grader is the unlock, not the action
+
+**Date:** 2026-08-21, same conversation
+**Corrects:** the candidate table in the third amendment above.
+
+## The third amendment sorted the candidates on the wrong axis
+
+It classified `affective state analysis` and `co-creation signals` as "closed
+loop" because their INPUT is Orion's own telemetry. That is the wrong test.
+The criterion this document itself establishes is about the **grader**, not
+the input.
+
+Both of those actions produce an artifact -- a written report -- that Juniper
+reads. If Juniper reads and rates it, the grader is outside Orion regardless
+of what went in. They have exactly the same shape as the self-study journal
+entry the same table rated "strong."
+
+Corrected table:
+
+| candidate | input | artifact | grader | verdict |
+|---|---|---|---|---|
+| self-study over journals/chat logs | internal | journal entry | Juniper | open loop |
+| vision -- what is in the room | external | description | reality / Juniper | open loop |
+| affective state analysis | internal | report | Juniper | **open loop** |
+| co-creation signals over biometrics/Postgres | internal | report | Juniper | **open loop** |
+
+And a property the original sort missed: **with an external grader, even a
+worthless input domain still teaches.** "This report says nothing" is a valid
+rating. Under self-grading that verdict is unreachable, which is exactly why
+every action in the current vocabulary scores zero.
+
+## Compute is the second real scarcity, and it dissolves the exchange-rate objection
+
+Every artifact above burns real GPU and CPU. That is genuine, exogenous,
+measurable scarcity -- Orion cannot manufacture more cards, and the P4 is
+already tight (3,238 MB resident of 7,680 MB as of PR #1800).
+
+The third amendment argued a budget needs a hand-typed exchange rate between
+value and cost, and that typing one would recreate `risk_score` one layer up.
+**That is only true if the total budget size has to be chosen.** Denominate
+the budget in the scarce resource itself -- "there are N GPU-hours today,
+spend them on whatever is expected to be rated highest" -- and it is a
+knapsack, not a conversion. The budget's size is set by how much hardware
+exists. Nobody types anything.
+
+**Optional cost instrumentation:** watts and CPU on circe are available and can
+contextualise the cost side if the coarse GPU-seconds/token accounting turns
+out not to discriminate. Not needed to start; recorded so it is not
+rediscovered as a blocker.
+
+## Two constraints that bind in different places
+
+| constraint | bounds | source |
+|---|---|---|
+| GPU / CPU | how much Orion can **produce** | hardware |
+| Juniper's attention | how much can get **graded** | Juniper |
+
+These are not the same cap, and the structure between them is the interesting
+part: **an artifact that costs compute and never gets read is pure waste** --
+spend, no grade, no learning. Attention is therefore the binding constraint
+and compute is what makes over-producing expensive. A two-sided tradeoff, not
+a single ceiling, which is a better-posed budget problem than the one the
+third amendment described.
+
+## The unlock is the grading channel, not any single action
+
+If "Juniper rates an artifact -- discrete category plus freetext" exists as a
+feedback path, then EVERY artifact-producing action becomes gradeable on one
+scale: affect reports, co-creation reports, self-study journals, vision
+descriptions -- and pull requests, where merged/closed is a special case of a
+rating.
+
+One mechanism, many actions, two real scarcities, everything competing. The
+third amendment went hunting for the single right action; the leverage is in
+the channel that grades all of them.
+
+**This supersedes the third amendment's step 1** ("declare signals on the
+undeclared templates"). That step prices more of a set already established to
+be worthless, and it prices it in field pressures, which is the direction this
+amendment is moving away from. It is not wrong, it is just no longer first.
+
+## The schema consequence: the first non-pressure outcome
+
+`PredictableSignal` (orion/schemas/action_prediction.py) is a closed `Literal`
+of six field pressures, deliberately closed so that "a claim about a signal
+nothing measures is not a claim." Every one of them is a biometric.
+
+A Juniper rating would be the first admissible outcome that is not. That is
+the mandate's "affect a real outcome that isn't just more biometrics" clause
+going from unmet to **representable** -- which it currently is not, at the
+type level.
+
+## Three things that are load-bearing
+
+1. **The rating categories are where a keyword cathedral gets in.** Twelve
+   rating dimensions would be exactly the pile-of-labels this repo bans. Start
+   with the fewest that change a decision: was this worth the compute and the
+   time, plus one axis of why.
+2. **Most artifacts will not be rated.** Unrated is not bad and not good. This
+   is the same ambiguity as silence in the outreach case and needs deciding up
+   front, not discovering when the numbers look strange. (See the existing
+   `cold_start` flag for the precedent: "predicted 0.0 because we learned it
+   does nothing" and "predicted 0.0 because we never saw it run" are identical
+   floats with opposite meanings, and are kept distinguishable on purpose.)
+3. **The freetext is worth more than the score.** The discrete part feeds the
+   posterior. The freetext is the only part that says *why*, and it is the
+   part Orion can read back later as content rather than as a number.
+
+## Revised order, again
+
+1. **The grading channel.** Juniper rates an artifact; the rating lands as an
+   outcome record on the action that produced it. Requires the
+   `PredictableSignal` change above. Existing-mechanism check first --
+   `chat_response_feedback` and the Hub already carry human feedback in some
+   form and must be inspected before anything new is built.
+2. **One artifact-producing action wired to it**, cheapest first.
+3. **Then the budget**, denominated in GPU with attention as the second
+   constraint, absolute bar rather than relative ranking.

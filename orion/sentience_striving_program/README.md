@@ -926,6 +926,20 @@ named smallest probe.
    reverie/dream substrate instead of a cron job.
 2. **Society-of-Mind competition** — multiple independent salience scorers bidding, not one
    formula.
+   **Design-mode pass, 2026-08-20, spun off item 7's "integration not warranted" decision**
+   (the same-day finding that top-1 concentration was 36.31%, comparable to the killed
+   drives system's own post-fix 31.65% — not a clean win, and structurally explained by
+   every scoring formula in this repo being memoryless argmax, with nothing discounting a
+   target that has already won many ticks in a row). Proposes closing a real, disclosed,
+   month-old gap first — Candidate B's own three-scorer Borda combination
+   (`candidate_society_of_mind.py`) has never been validated against real data, only its
+   magnitude scorer has — before adding a fourth voter, `freshness_scorer`, that discounts
+   a target's score the longer it has held the win (real theory anchor: Groves & Thompson
+   1970 habituation/dishabituation), self-calibrated from today's own streak-length data
+   rather than a hand-picked constant, and explicitly NOT suppressing a genuinely
+   escalating signal (dishabituation on real deviation from baseline). Two-phase, both
+   shadow/read-only, no live wiring, no new schema. Full deliverable:
+   `docs/superpowers/specs/2026-08-20-habituated-society-of-mind-design.md`.
 3. **Free-energy/active-inference reframing** — `capability_policy` as literal expected-
    free-energy action selection.
 4. **φ-gated meta-competition** — use the orphaned Causal Geometry v1 φ metric to widen or

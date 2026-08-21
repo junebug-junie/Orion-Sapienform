@@ -86,6 +86,7 @@ def build_channel_series(
     Only a channel absent from EVERY row's raw vectors for the whole window
     is genuinely never_produced.
 
+<<<<<<< Updated upstream
     Returns (series, stamps, tick_times, unparsable_row_count). `stamps` is
     the producer write time behind each merged sample, aligned 1:1 with
     `series`, so `channel_regime` can use its AUTHORITATIVE timestamp path
@@ -125,6 +126,17 @@ def build_channel_series(
     `unparsable_row_count` lets callers distinguish "this channel is genuinely
     dead" from "every row in this window failed to parse" -- both would
     otherwise look identical (all channels empty).
+=======
+    Also always collects `tension_deviation_pressure` -- the one series here
+    that is NOT a raw pre-merge channel (it lives directly on FieldStateV1,
+    written by orion.attention.tension via services/orion-field-digester/
+    app/digestion/tension.py). See config/field/field_channel_glossary.v1
+    .yaml's own entry for that scalar for the full account.
+
+    Returns (series, unparsable_row_count) so callers can distinguish "this
+    channel is genuinely dead" from "every row in this window failed to
+    parse" -- both would otherwise look identical (all channels empty).
+>>>>>>> Stashed changes
     """
     series: dict[str, list[float]] = {ch: [] for ch in (known_channels or [])}
     stamps: dict[str, list[Any]] = {ch: [] for ch in (known_channels or [])}
@@ -138,6 +150,7 @@ def build_channel_series(
         except Exception:  # noqa: BLE001 - count and skip unparsable historical rows
             unparsable += 1
             continue
+<<<<<<< Updated upstream
         # See this function's own docstring's "Also always collects" section.
         # clamp01(), not a bare float() -- code review, 2026-08-16: every
         # other collected value in this function goes through
@@ -153,6 +166,21 @@ def build_channel_series(
         stamps.setdefault("tension_deviation_pressure", []).append(None)
         tick_times.setdefault("tension_deviation_pressure", []).append(state.generated_at)
         merged, provenance = collect_field_channel_pressures(state)
+=======
+        # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-
+        # mutating-dispatch-design.md): the one entry in field_channel_
+        # glossary.v1.yaml that is NOT a raw pre-merge channel --
+        # tension_deviation_pressure lives directly on FieldStateV1, not
+        # inside node_vectors/capability_vectors, so it can never be found
+        # via collect_field_channel_pressures()/raw_keys below. Collected
+        # here, in the same parse pass, rather than a second full-window
+        # query -- always present (the field has a real 0.0 default, never
+        # missing), so no known_channels/raw_keys presence check is needed.
+        series.setdefault("tension_deviation_pressure", []).append(
+            float(state.tension_deviation_pressure)
+        )
+        merged, _provenance = collect_field_channel_pressures(state)
+>>>>>>> Stashed changes
         raw_keys: set[str] = set()
         for vector in state.node_vectors.values():
             raw_keys.update(vector.keys())

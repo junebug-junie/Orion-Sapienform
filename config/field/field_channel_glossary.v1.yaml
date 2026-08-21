@@ -317,6 +317,7 @@ channels:
   # CHANNEL_DIMENSION_MAP route here would be false and would break that
   # gate. It already IS the dimension value, not a channel feeding one --
   # the `meaning` text says so instead.
+<<<<<<< Updated upstream
   #
   # Caveat added in review: "0.0 is a real reading, not an absence" is only
   # true for ticks the producer actually ran on. `tension_deviation_pressure`
@@ -335,3 +336,9 @@ channels:
     level: [field]
     category: synthesized_rollup
     meaning: "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is the expected reading once the producer has been running a while ('nothing admitted' is a real, common state) -- but a row from before the producer existed also reads 0.0 (schema default), indistinguishable in storage. Read verdicts from a window entirely after deploy."
+=======
+  - channel: tension_deviation_pressure
+    level: [field]
+    category: synthesized_rollup
+    meaning: "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is a real 'nothing deviated enough to admit' reading, not an absence."
+>>>>>>> Stashed changes

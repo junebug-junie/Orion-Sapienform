@@ -44,6 +44,12 @@ P4:     7680 - 3238 resident =  4191 free  -  3500 =  691  <  1400   refuse, for
 Arithmetically unsatisfiable the moment the models warm. The container stayed
 `Up` and healthy and served nothing.
 
+**Independently corroborated.** `orion_biometrics` shows circe's GPUs 3/4/5
+first appearing at `2026-08-21T06:02:25`, GPU 3 being a `Tesla P100-PCIE-16GB`.
+athena's vision died `2026-08-20 22:00` with a final straggler at `06:12`. The
+card was pulled and reinstalled that morning; two independent sources agree to
+the hour. See §3's inventory table.
+
 **This budget is a function of the card, not of the service.** That is the
 durable lesson, and it is why the gate below reads real hardware instead of
 baking in a constant — a constant pinned to "the P4" would rot identically on
@@ -151,35 +157,72 @@ The single organising rule:
 > images goes through `orion-llm-gateway` — but on the **small** lane, not the
 > chat lane.
 
-### Which lane does the labelling
+### Which lane does the labelling — and on which card
 
 The council **already routes to `metacog`** (`COUNCIL_LLM_ROUTE=metacog`,
-`services/orion-vision-council/.env:13` → :8012, Qwen3-8B). That is the right
-lane and it should stay there. Per-window interpretation runs continuously;
-putting it on :8011 would make Orion's passive perception contend with Orion's
-actual conversation for the 35B.
+`services/orion-vision-council/.env:13` → :8012). Per-window interpretation must
+not contend with Orion's conversation for the 35B on :8011 — that part is right.
+But metacog is already carrying a lot, and it should not absorb vision either.
 
-But :8012 reports `vision: false`. So the move is **not** "route vision to the
-chat lane" — it is **give metacog eyes**: load a VL-capable small model with an
-`--mmproj` on the metacog worker. The gateway's `resolve_vision_capability()`
-reads `/props` live and fails closed, so the day that lands, the council can
-send frames and until then it degrades to labels-only automatically. No config
-claim, no flag to forget.
+**There is no need to squeeze anything.** circe's real GPU inventory, read from
+`orion_biometrics` (24h, 1,144–1,690 samples per card — not a snapshot):
 
-| lane | role after this |
-| :--- | :--- |
-| `metacog` :8012 | **every window.** Needs an mmproj/VL model. Cheap, continuous, doesn't touch chat |
-| `quick` :8013 | fallback / burst overflow if metacog saturates |
-| `chat` :8011 (35B, `vision:true`, `video:true`) | **deliberate looking only** — Orion chooses to examine something, or a person is present and the cheap pass flagged it ambiguous. Rare, foveal, already capable today |
+| idx | card | total | peak used 24h | avg used | peak util | first seen |
+| ---: | :--- | ---: | ---: | ---: | ---: | :--- |
+| 0 | V100-PCIE-32GB | 32768 | 8532 | 8509 | 83% | 2026-07-24 |
+| 1 | V100-SXM2-32GB | 32768 | 23213 | 23183 | 82% | 2026-07-24 |
+| 2 | V100-PCIE-32GB | 32768 | 21320 | **4440** | 93% | 2026-07-24 |
+| 3 | **P100**-PCIE-16GB | 16384 | 7979 | 7979 | **100%** | **2026-08-21 06:02** |
+| 4 | V100-PCIE-16GB | 16384 | 7340 | 7340 | **100%** | **2026-08-21 06:02** |
+| 5 | V100-PCIE-16GB | 16384 | **0** | **0** | **5%** | **2026-08-21 06:02** |
 
-That split is also the honest answer to Q6 ("does Orion get to decline to
-look?"): the cheap lane always looks, the expensive lane looks *when there's a
-reason*, and the reason is inspectable.
+Six cards, 147 GB. **GPU 5 has been literally 0 MB used across 1,143 samples
+since it was installed.** GPU 2 is bursty — idle at any given glance but peaking
+to 21 GB, so a single-sample read would have called it free and been wrong.
 
-**What dies on the P4:** BLIP-base unloads (~1 GB back). The P4 keeps
+**This table also independently dates §1.1's root cause.** GPUs 3/4/5 first
+appear at `2026-08-21T06:02:25`, and GPU 3 is the P100. athena's vision died
+`2026-08-20 22:00` with a final straggler at `06:12`. The card was physically
+pulled from athena and installed in circe that morning; the P100-era VRAM budget
+became unsatisfiable on the P4 the moment it left. Two independent sources, same
+hour.
+
+### Why "add an mmproj to the affective worker" cannot work
+
+llama.cpp serves **one model per server process**, and an `--mmproj` is the
+vision projector belonging to *one specific VL model* — not a generic capability
+that can be attached to an unrelated model. An affective model and a VL model
+therefore cannot share a llama-server on :8014 no matter how much VRAM the card
+has. It is two processes either way.
+
+Once it is two processes, the only question is which cards they sit on — and
+there is an untouched V100 for exactly this.
+
+| lane | port | card | why |
+| :--- | :--- | :--- | :--- |
+| affective | 8014 | **GPU 2** (32 GB, avg 4.4 GB) | episodic — `JuniperAffectiveStateV1` ticks on a 900 s window, so it tolerates the bursty neighbour |
+| **perception** | **8015 (new)** | **GPU 5** (16 GB, never used) | continuous — every window. Needs a card that is actually free |
+| metacog | 8012 | GPU 0 | **untouched.** Stops absorbing vision work it was never sized for |
+| chat | 8011 | GPU 1 | deliberate looking only; already `vision:true`, `video:true` |
+
+A 7–8B VL model (Q5 weights ~5.5 GB + mmproj ~1.4 GB) leaves ~9 GB on GPU 5 for
+KV and slots. **That headroom is the webcam answer:** metacog runs
+`total_slots: 4` on an 8B today, so multi-camera becomes a slot-count and
+frame-router policy question rather than a "does it fit" question. Adding
+cameras does not require another card.
+
+Worth noting the V100 is Volta (sm_70) with real fp16 tensor cores — a
+materially better VLM host than either the P4 (Pascal, crippled fp16) or the
+P100 that used to do this work.
+
+**What dies on the P4:** BLIP-base unloads (~1 GB back). athena keeps
 GroundingDINO (hard labels), SigLIP2 (embeddings), and gains `identity_face` —
-biometric, must stay local. Note the P4 is a *downgrade* from the P100 this
-service was sized for; the sensor set is roughly all it can carry.
+biometric, must stay on-node. That sensor set is roughly all the P4 can carry,
+and it does not need to carry more.
+
+**Also worth checking on circe:** GPU 3 (the ex-athena P100) sits at 100% peak
+utilisation with a flat 7,979 MB — the busiest card in the fleet, arrived today,
+and nothing in this repo's config accounts for it.
 
 ### 3.1 The `vision_profiles.yaml` cathedral — with blast radius checked
 

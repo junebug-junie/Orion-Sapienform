@@ -179,15 +179,22 @@ def test_build_channel_series_always_collects_tension_deviation_pressure():
     known_channels/raw_keys presence -- it lives directly on FieldStateV1
     and is always a real float, never missing."""
     rows = [_field_state_row_with_tension(v) for v in (0.0, 0.3, 0.9)]
+<<<<<<< Updated upstream
     series, stamps, tick_times, unparsable = field_channel_glossary_routes.build_channel_series(
+=======
+    series, unparsable = field_channel_glossary_routes.build_channel_series(
+>>>>>>> Stashed changes
         rows, known_channels=["cpu_pressure"]  # deliberately NOT listing it
     )
     assert unparsable == 0
     assert series["tension_deviation_pressure"] == [0.0, 0.3, 0.9]
+<<<<<<< Updated upstream
     # No channel-merge provenance winner to time -- see build_channel_series()'s
     # own docstring.
     assert stamps["tension_deviation_pressure"] == [None, None, None]
     assert len(tick_times["tension_deviation_pressure"]) == 3
+=======
+>>>>>>> Stashed changes
 
 
 def test_health_endpoint_classifies_tension_deviation_pressure(client):

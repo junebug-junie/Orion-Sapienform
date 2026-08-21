@@ -1,5 +1,6 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
+<<<<<<< Updated upstream
   "metric_count": 600,
   "_last_change": {
     "base": "merge base 4ae678633 (origin/main)",
@@ -7,6 +8,16 @@
     "high_severity_count": 0,
     "changes": [
       "no definition changes relative to the merge base"
+=======
+  "metric_count": 597,
+  "_last_change": {
+    "base": "merge base a2974defd (origin/main)",
+    "change_count": 2,
+    "high_severity_count": 0,
+    "changes": [
+      "medium added metric://field_channel/orion-field-digester/tension_deviation_pressure",
+      "medium added metric://inner_state/orion-field-digester/field_state.v1#tension_deviation_pressure"
+>>>>>>> Stashed changes
     ]
   },
   "definitions": {
@@ -3341,7 +3352,11 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/tension_deviation_pressure": {
+<<<<<<< Updated upstream
       "meaning": "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is the expected reading once the producer has been running a while ('nothing admitted' is a real, common state) -- but a row from before the producer existed also reads 0.0 (schema default), indistinguishable in storage. Read verdicts from a window entirely after deploy.",
+=======
+      "meaning": "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is a real 'nothing deviated enough to admit' reading, not an absence.",
+>>>>>>> Stashed changes
       "notes": "category=synthesized_rollup level=field",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },

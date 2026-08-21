@@ -354,31 +354,40 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
         producer_service="orion-spark-introspector",
         cadence=Cadence.OFFLINE_TRAINED,
         composition_status=CompositionStatus.COMPOSED,
-        cognition_consumers=(
-            "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative",
-        ),
+        cognition_consumers=(),
         notes=(
-            "2026-07-22: spark_phi_narrative deleted (see phi_heuristic.valence's "
-            "note above) -- spark_embodiment_narrative is the only surviving "
-            "cognition consumer of this signal's Phase 3 threading. "
-            "Golden phi. Trained MLP autoencoder over InnerStateFeaturesV1. "
-            "Fixed + deployed 2026-07-12 (654a9803, 79a6d966) -- was dark "
-            "(SQL sink + debug WebSocket EKG panel only) for weeks before that. "
-            "Phase 2 (2026-07-12) adds dominant_node/dominant_node_reason, "
-            "sourced from self_state.v1's dominant_attention_target_details "
-            "(Phase 1), filtered to real hardware nodes only via "
-            "orion-spark-introspector's _dominant_hardware_node() -- excludes "
+            "RETIRED 2026-08-21: dominant_node/dominant_node_reason removed from "
+            "this schema, from SparkStateSnapshotV1, and from MoodArcCorpusRowV1 -- "
+            "their sole producer, orion-spark-introspector's "
+            "_dominant_hardware_node(), was deleted along with the rest of that "
+            "service (2026-07-28, \"retire orion-spark-introspector\"). Took "
+            "spark_embodiment_narrative (services/orion-cortex-exec/app/"
+            "spark_narrative.py, the last cognition consumer of this signal) and "
+            "the metacog draft prompt's whole EMBODIMENT section with it -- both "
+            "had rendered nothing but a fixed constant string since the "
+            "2026-07-28 retirement, which is why this signal's own producer_service "
+            "no longer exists in services/ at all. This entry is left in the "
+            "registry (not deleted) as a historical record; producer_service is "
+            "now permanently unreachable.\n\n"
+            "History: 2026-07-22, spark_phi_narrative deleted (see "
+            "phi_heuristic.valence's note above) -- spark_embodiment_narrative was "
+            "the only surviving cognition consumer of this signal's Phase 3 "
+            "threading even before the 2026-08-21 cleanup. Golden phi. Trained MLP "
+            "autoencoder over InnerStateFeaturesV1. Fixed + deployed 2026-07-12 "
+            "(654a9803, 79a6d966) -- was dark (SQL sink + debug WebSocket EKG "
+            "panel only) for weeks before that. Phase 2 (2026-07-12) added "
+            "dominant_node/dominant_node_reason, sourced from self_state.v1's "
+            "dominant_attention_target_details (Phase 1), filtered to real "
+            "hardware nodes only via _dominant_hardware_node() -- excluded "
             "target_kind!='node' (a system-kind entry like "
-            "field:recent_perturbations was confirmed live to frequently win "
-            "top salience) and the two synthetic pseudo-nodes. Phase 3 "
-            "(2026-07-12) threads dominant_node/dominant_node_reason through "
-            "SparkStateSnapshotV1 (a separate relay schema, "
-            "orion/schemas/telemetry/spark.py) into "
-            "spark_embodiment_narrative, rendered into both metacog prompt "
+            "field:recent_perturbations was confirmed live to frequently win top "
+            "salience) and the two synthetic pseudo-nodes. Phase 3 (2026-07-12) "
+            "threaded dominant_node/dominant_node_reason through SparkStateSnapshotV1 "
+            "into spark_embodiment_narrative, rendered into both metacog prompt "
             "templates alongside spark_phi_narrative -- confirmed live in "
             "production (node:atlas/node:circe alternating as "
-            "capability:llm_inference's real GPU contention winner) before "
-            "this phase was built."
+            "capability:llm_inference's real GPU contention winner) before this "
+            "phase was built."
         ),
     ),
     InnerStateSignal(

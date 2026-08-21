@@ -41,11 +41,14 @@ CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_artifact_ref
 -- rating. Reusing that shape because it exists would be the mirror image of
 -- the defect it was built to remove.
 --
--- What IS shared is the scale: surprise_nats here is the same Bayesian
--- surprise, in the same units, as the pressure ledger's. That is the whole
--- point of having a common currency -- an action that moves a pressure and an
--- action that earns a good rating can be compared without an invented
--- conversion.
+-- surprise_nats here is the same Bayesian surprise, in the same UNIT as the
+-- pressure ledger's, and NOT on the same scale. Measured: a pressure
+-- observation with delta exactly 0.0 -- no effect at all -- scores 0.5595
+-- nats, while a maximally informative human rating scores 0.2216. KL is not
+-- scale-free across differently-parameterised priors. Anything ranking across
+-- both ledgers must normalise (orion.autonomy.rating.cold_start_surprise_nats)
+-- or it will systematically down-weight the human grader in favour of the
+-- self-graded telemetry this table exists to provide an alternative to.
 
 CREATE TABLE IF NOT EXISTS substrate_action_ratings (
     id                  BIGSERIAL PRIMARY KEY,
@@ -95,6 +98,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS substrate_action_ratings_feedback_uidx
 
 CREATE INDEX IF NOT EXISTS substrate_action_ratings_action_idx
     ON substrate_action_ratings (dispatch_kind, target_id, rated_at DESC);
+
+-- The dedup that actually matters, and the one the first version of this file
+-- got wrong. `feedback_id` is a fresh uuid4 per CLI invocation, so keying only
+-- on it stops a re-SCORING of one event and is blind to two events carrying
+-- the same human opinion -- which is the likely case, because a rater who is
+-- not sure the first one landed will simply run it again. `submission_
+-- fingerprint` is a sha256 over (target_key, value, categories, free_text,
+-- source) and is identical across those two runs.
+--
+-- Scope honesty: the first version of this patch asserted in its commit
+-- message that submission_fingerprint "is what stops a resubmission landing
+-- twice." That was false -- the column was written and never read, and its
+-- only indexes were non-unique. This is the statement that makes it true, and
+-- it is enforced on the ARTIFACT path only, because 2 chat rows already exist
+-- and a unique constraint over historical chat data is a different decision
+-- with a different blast radius.
+CREATE UNIQUE INDEX IF NOT EXISTS chat_response_feedback_artifact_fingerprint_uidx
+    ON chat_response_feedback (submission_fingerprint)
+    WHERE target_artifact_ref IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- 3. Belief about what each action produces

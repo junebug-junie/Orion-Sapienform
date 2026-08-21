@@ -2413,6 +2413,18 @@ def _producer_pressure_events_from_chat_result(
 
 
 def _producer_pressure_events_from_feedback(feedback: ChatResponseFeedbackV1) -> list[MutationPressureEvidenceV1]:
+    # 2026-08-21: artifact ratings are NOT chat-lane evidence. Verified live in
+    # review that an artifact-targeted thumbs-down carrying
+    # missed_relevant_context + wrong_tool_wrong_routing_wrong_mode emitted 3
+    # MutationPressureEvidenceV1 events with correlation_id=None, filed under
+    # invocation_surface="chat_reflective_lane". Two things wrong with that,
+    # both material: a rating of a journal entry is not a recall miss in a
+    # conversation that never happened, and routing it here feeds the human
+    # verdict straight back into the same self-graded mutation-pressure
+    # machinery this outcome exists to sit OUTSIDE of -- counting one opinion
+    # twice, through two mechanisms, with different provenance.
+    if feedback.target_artifact_ref:
+        return []
     categories = {str(item or "").strip() for item in feedback.categories}
     corr = feedback.target_correlation_id
     source_event_id = feedback.feedback_id

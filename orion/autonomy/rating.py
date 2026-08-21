@@ -9,10 +9,33 @@ regression to the mean.
 
 **A rating has no "before" and does not mean-revert.** There is no confound to
 subtract; the value IS the rating. So this module reuses the posterior and the
-Bayesian surprise -- the same common scale, which is the entire reason for
-having one -- and reuses neither the baseline bins nor the arms. Forcing a
+Bayesian surprise and reuses neither the baseline bins nor the arms. Forcing a
 rating through the pressure-shaped hole because the hole exists would be the
 mirror image of the defect that ledger was built to remove.
+
+THE NATS ARE THE SAME UNIT AND NOT THE SAME SCALE
+-------------------------------------------------
+An earlier version of this docstring claimed the shared unit made a pressure
+effect and a rating "comparable without an invented conversion." That is
+false, and measured (2026-08-21, with the real code):
+
+    pressure, delta = 0.0   (no effect whatsoever)      0.5595 nats
+    pressure, delta = 0.2   (typical)                   0.6189 nats
+    pressure, delta = 0.392 (the measured maximum)      0.7879 nats
+    human rating, +1        (maximally informative)     0.2216 nats
+
+A pressure observation that measures literally NOTHING earns 2.52x the first
+human rating. KL is not scale-free across differently-parameterised priors:
+with the pressure ledger's 0.25/0.04, most of its surprise is the deterministic
+variance-shrink term, which fires on any observation at all.
+
+So: two ledgers reporting in the same unit, on different scales. Anything that
+ever ranks or budgets across both MUST normalise -- e.g. against each ledger's
+own cold-start surprise, exposed below -- or it will systematically down-weight
+the human grader in favour of the self-graded telemetry this module exists to
+provide an alternative to. Deliberately not normalised here: there is no
+cross-ledger consumer yet, and inventing a conversion before there is one is
+how the last five hand-typed constants got into this codebase.
 
 WHY IT MATTERS THAT THIS IS NOT A PRESSURE
 ------------------------------------------
@@ -49,19 +72,24 @@ RATING_SCALARS: dict[str, float] = {"up": 1.0, "down": -1.0}
 
 # UNCALIBRATED, AND SAID SO. The pressure priors in orion/autonomy/prediction.py
 # were fitted to 68,715 real observations. There are 2 human ratings in this
-# database, total, over three weeks -- so there is nothing to fit and these are
-# max-entropy choices, not measurements:
+# database, total, over three weeks -- so there is nothing to fit. These are
+# MAXIMUM-VARIANCE choices, deliberately over-dispersed:
 #
-#   prior variance 1.0  -- for a variable on [-1, +1] whose observations are
-#       +/-1, the largest possible variance is 1.0 (a fair coin on the two
-#       endpoints). Starting there asserts no belief at all about whether an
-#       action produces good artifacts.
-#   observation variance 1.0 -- same bound, same reasoning. It makes one
-#       explicit human rating carry the same weight as the entire prior, so
-#       the first rating moves the mean to +/-0.5 and the fourth to +/-0.8.
-#       That is intended: a person taking the trouble to rate something is a
-#       strong signal, and pretending otherwise would need ratings nobody is
-#       going to give.
+#   prior variance 1.0 -- a belief about an action's mean rating mu, started
+#       at the widest defensible spread. 1.0 is the variance of a fair
+#       two-point distribution on {-1, +1}. (An earlier comment called this
+#       "max-entropy", which is wrong and was caught in review: the
+#       maximum-ENTROPY distribution on [-1, +1] is the uniform, whose
+#       variance is 1/3. The two-point distribution is nearly minimum entropy.
+#       The number is fine; the justification was not.)
+#   observation variance 1.0 -- the same bound reused for Var(x | mu). Also
+#       over-conservative on purpose: the true value is 1 - mu^2, exact only
+#       at mu = 0 and increasingly generous as the belief sharpens. The effect
+#       is that one explicit human rating carries the same weight as the whole
+#       prior, so the mean lands at n/(n+1): +/-0.5 after one rating, +/-0.8
+#       after four. That is intended -- someone taking the trouble to rate
+#       something is a strong signal, and a weaker weighting would need a
+#       volume of ratings nobody is going to give.
 #
 # Recalibrate from the real distribution once there are enough ratings to have
 # one, and do not carry these numbers to any other domain -- borrowed
@@ -159,3 +187,19 @@ def score_rating(
 
 def rating_key(dispatch_kind: str, target_id: str) -> RatingKey:
     return (dispatch_kind, target_id)
+
+
+def cold_start_surprise_nats() -> float:
+    """Surprise of the FIRST rating against a cold prior, in nats.
+
+    The reference this ledger's numbers should be divided by before being
+    compared with any other ledger's -- see the scale note in the module
+    docstring. Computed rather than hardcoded so it cannot drift away from the
+    constants above.
+    """
+    return bayesian_surprise_nats(
+        cold_rating_prior(),
+        update_posterior(
+            cold_rating_prior(), 1.0, observation_variance=RATING_OBSERVATION_VARIANCE
+        ),
+    )

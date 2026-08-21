@@ -162,12 +162,6 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_corr_id ON chat_response_feedback (target_correlation_id);"
             )
             conn.exec_driver_sql(
-                "ALTER TABLE chat_response_feedback ADD COLUMN IF NOT EXISTS target_artifact_ref TEXT NULL;"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_artifact_ref ON chat_response_feedback (target_artifact_ref);"
-            )
-            conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_target_key ON chat_response_feedback (target_key);"
             )
             conn.exec_driver_sql(
@@ -762,6 +756,28 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
+
+    # Deliberately NOT inside the long bootstrap transaction above (review
+    # finding). That block runs ~700 statements under one engine.begin() with a
+    # single swallowing handler, so any earlier statement failing rolls the
+    # whole thing back -- including this ALTER -- while
+    # app/models/chat_response_feedback.py has ALREADY declared the column. The
+    # ORM would then put target_artifact_ref in every INSERT, Postgres would
+    # raise UndefinedColumn, only IntegrityError is handled downstream, and ALL
+    # chat feedback persistence would stop with a green health check and one
+    # warning line among hundreds. Its own transaction, its own handler.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_response_feedback "
+                "ADD COLUMN IF NOT EXISTS target_artifact_ref TEXT NULL;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_artifact_ref "
+                "ON chat_response_feedback (target_artifact_ref);"
+            )
+    except Exception as e:
+        logger.warning("chat_response_feedback artifact_ref migration warning: %s", e)
 
     # drive_audits retention startup job removed 2026-08-13 (same patch that
     # fully untangled DriveAuditSQL's write path) -- the table and its boot

@@ -1,34 +1,44 @@
 #!/usr/bin/env python3
-"""Rate something Orion made, from the terminal, in one line.
+"""Rate something Orion made, from the terminal.
 
-    scripts/rate_artifact.py artifact:journal:2026-08-21 up
-    scripts/rate_artifact.py artifact:journal:2026-08-21 down --why "all preamble"
-    scripts/rate_artifact.py artifact:report:affect:1234 up -c well_grounded -c right_depth
+    scripts/rate_artifact.py --list
+    scripts/rate_artifact.py --dispatch-id dispatch:proposal:... --kind journal up
+    scripts/rate_artifact.py -d dispatch:proposal:... -k report down --why "all preamble"
 
 WHY A CLI AND NOT MORE UI
 -------------------------
 The Hub already has a rating UI for chat responses, wired end to end through
-the bus and into `chat_response_feedback`. It has been used **twice in three
+the bus into `chat_response_feedback`. It has been used **twice in three
 weeks**. The plumbing was never the problem; the friction was. This exists
-because Juniper lives in a terminal, and a rating that costs one line has a
-different chance of happening than one that costs opening a page and finding
-the thing.
+because Juniper lives in a terminal.
 
-This is deliberately NOT a new channel. It POSTs to the same Hub endpoint the
-UI uses (`/api/chat/response-feedback`), which validates with the same
-registered schema and publishes to the same bus channel with the same
-consumers. Nothing here bypasses a contract.
+It is NOT a new channel. It POSTs to the same Hub endpoint the UI uses,
+validated by the same registered schema, published to the same bus channel,
+consumed by the same service. Nothing bypasses a contract.
 
-WHAT AN ARTIFACT REF IS
------------------------
-`artifact:<kind>:<id>` naming a thing Orion produced, carrying enough to find
-the dispatch that produced it. A rating that cannot be attributed to an action
-teaches nothing about any action, which is what the whole pipeline is for.
+WHY IT BUILDS THE REF INSTEAD OF TAKING ONE
+-------------------------------------------
+An artifact ref is `artifact:<kind>:<dispatch_id>`, and real dispatch ids look
+like `dispatch:proposal:prune_stopped_containers:tick_fc7585176059:none:
+execution_dispatch_policy.v1`. Nobody is retyping that. A ref typed by hand is
+a ref with a typo, and a typo silently creates a rating attributed to no
+action -- which teaches nothing about any action, which is the whole point of
+the pipeline this feeds. So `--list` finds them and this builds the ref.
+
+ATTESTATION, NOT AUTHENTICATION
+-------------------------------
+`--as` (default `$ORION_OPERATOR` or `$USER`) is recorded as `user_id`, and the
+schema refuses an artifact rating without one. That makes a rating Orion filed
+for itself *detectable*, not impossible: the Hub route has no auth and the Hub
+holds the docker socket, so no software boundary on this host is enforceable
+(resolved 2026-08-14 -- "detect, do not pretend to prevent"). Do not read a
+stored `user_id` as proof of a human.
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -43,34 +53,81 @@ from orion.schemas.chat_response_feedback import (  # noqa: E402
     THUMBS_DOWN_CATEGORY_LABELS,
     THUMBS_UP_CATEGORY_LABELS,
     ChatResponseFeedbackV1,
+    build_artifact_ref,
 )
 
-DEFAULT_HUB = os.environ.get("ORION_HUB_URL", "http://localhost:8081")
+# 8080, verified against the running container and services/orion-hub/
+# .env_example's HUB_PORT. The first version of this script defaulted to 8081,
+# which is not open -- so the one-line tool whose entire justification is low
+# friction failed on first use. It had never been run against the live Hub.
+DEFAULT_HUB = os.environ.get("ORION_HUB_URL", "http://127.0.0.1:8080")
+DEFAULT_DSN = os.environ.get(
+    "ORION_PG_DSN", "postgresql://postgres:postgres@localhost:55432/conjourney"
+)
+
+
+def _recent_dispatches(dsn: str, limit: int) -> list[tuple[str, str, str]]:
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(dsn)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT DISTINCT ON (dispatch_id)
+                       dispatch_id, dispatch_kind, target_id, observed_at
+                  FROM substrate_action_outcomes
+                 WHERE arm = 'dispatched'
+                 ORDER BY dispatch_id, observed_at DESC
+                 LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        ).all()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+def _verify_landed(dsn: str, feedback_id: str) -> bool:
+    """Did the rating actually reach storage?
+
+    The Hub route returns `{"ok": true}` unconditionally -- it awaits a publish
+    helper that catches and logs its own exceptions, so a Redis failure or
+    PUBLISH_CHAT_HISTORY_LOG=false both produce a 200 with ok:true and nothing
+    stored. An earlier version of this script claimed to "report the real
+    status" on the strength of reading that body, which was inert. This reads
+    the table.
+    """
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(dsn)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT 1 FROM chat_response_feedback WHERE feedback_id = :fid"),
+            {"fid": feedback_id},
+        ).first()
+    return row is not None
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("artifact_ref", help="e.g. artifact:journal:2026-08-21")
-    parser.add_argument("verdict", choices=["up", "down"])
-    parser.add_argument(
-        "-c",
-        "--category",
-        action="append",
-        default=[],
-        dest="categories",
-        help="repeatable. --list-categories to see them.",
-    )
-    parser.add_argument("--why", dest="free_text", default=None, help="freetext")
+    parser.add_argument("verdict", nargs="?", choices=["up", "down"])
+    parser.add_argument("-d", "--dispatch-id", help="the action that produced it")
+    parser.add_argument("-k", "--kind", default="artifact", help="journal, report, ...")
+    parser.add_argument("-c", "--category", action="append", default=[], dest="categories")
+    parser.add_argument("--why", dest="free_text", default=None)
+    parser.add_argument("--as", dest="rater", default=None, help="recorded as user_id")
     parser.add_argument("--hub", default=DEFAULT_HUB)
+    parser.add_argument("--dsn", default=DEFAULT_DSN)
+    parser.add_argument("--list", action="store_true", help="recent rateable actions")
+    parser.add_argument("--limit", type=int, default=15)
+    parser.add_argument("--list-categories", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
-        "--list-categories", action="store_true", help="print the vocabulary and exit"
-    )
-    parser.add_argument(
-        "--dry-run",
+        "--no-verify",
         action="store_true",
-        help="validate and print the payload; send nothing",
+        help="skip the storage read-back (do not use; see _verify_landed)",
     )
     args = parser.parse_args()
 
@@ -88,26 +145,39 @@ def main() -> int:
         )
         return 0
 
-    # Validated locally BEFORE the network call, against the same registered
-    # model the Hub will use, so a typo'd category is a clear message here
-    # rather than a 422 from a service.
+    if args.list:
+        rows = _recent_dispatches(args.dsn, args.limit)
+        if not rows:
+            print("no dispatched actions on record yet.")
+            return 0
+        for dispatch_id, kind, target in rows:
+            print(f"{kind:<10} {target:<28.28} -d {dispatch_id}")
+        return 0
+
+    if not args.verdict:
+        parser.error("a verdict (up|down) is required unless --list/--list-categories")
+    if not args.dispatch_id:
+        parser.error("--dispatch-id is required; find one with --list")
+
+    rater = args.rater or os.environ.get("ORION_OPERATOR") or getpass.getuser()
+
     try:
         feedback = ChatResponseFeedbackV1(
             feedback_id=f"artifact-rating-{uuid4()}",
-            target_artifact_ref=args.artifact_ref,
+            target_artifact_ref=build_artifact_ref(args.kind, args.dispatch_id),
             feedback_value=args.verdict,
             categories=args.categories,
             free_text=args.free_text,
+            user_id=rater,
             source="rate_artifact_cli",
             created_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:
         print(f"rejected: {exc}", file=sys.stderr)
-        print("try --list-categories", file=sys.stderr)
+        print("try --list-categories, or --list for dispatch ids", file=sys.stderr)
         return 2
 
     payload = feedback.model_dump(mode="json")
-
     if args.dry_run:
         print(json.dumps(payload, indent=2))
         return 0
@@ -121,13 +191,8 @@ def main() -> int:
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            body = response.read().decode("utf-8")
-            # Report the real status, not just "no exception". A 200 with a
-            # body saying the bus was unavailable is not a delivered rating,
-            # and this repo has already been bitten once by an outreach path
-            # returning ok while silently falling back.
-            print(f"{response.status} {body[:200]}")
-            return 0 if 200 <= response.status < 300 else 1
+            status = response.status
+            body = response.read().decode("utf-8")[:200]
     except urllib.error.HTTPError as exc:
         print(f"HTTP {exc.code}: {exc.read().decode('utf-8')[:300]}", file=sys.stderr)
         return 1
@@ -135,6 +200,20 @@ def main() -> int:
         print(f"could not reach the hub at {url}: {exc.reason}", file=sys.stderr)
         print("is orion-hub up? override with --hub or $ORION_HUB_URL", file=sys.stderr)
         return 1
+
+    if args.no_verify:
+        print(f"{status} {body}  (UNVERIFIED -- a 200 here does not mean stored)")
+        return 0
+
+    if _verify_landed(args.dsn, feedback.feedback_id):
+        print(f"stored: {feedback.feedback_id}")
+        return 0
+    print(
+        f"{status} {body}\nNOT STORED. The hub accepted it and nothing reached "
+        "chat_response_feedback -- check the bus and orion-sql-writer.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":

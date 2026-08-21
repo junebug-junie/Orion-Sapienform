@@ -23,6 +23,45 @@ CHAT_RESPONSE_FEEDBACK_KIND = "chat.response.feedback.v1"
 FeedbackValue = Literal["up", "down"]
 MAX_FREE_TEXT_CHARS = 2000
 
+# An artifact ref is `artifact:<kind>:<dispatch_id>` and the dispatch_id half
+# is NOT decoration. Review finding: without it the ref is a free-form string
+# that nothing validates and nothing can attribute, so a typo silently creates
+# an orphan rating and a rating that cannot be attributed to an action teaches
+# nothing about any action -- which is the entire purpose of the pipeline it
+# feeds. Real dispatch_ids look like
+# `dispatch:proposal:prune_stopped_containers:tick_fc7585176059:none:execution_dispatch_policy.v1`
+# -- colon-heavy and far too long to retype, which is why scripts/
+# rate_artifact.py BUILDS the ref rather than accepting one.
+ARTIFACT_REF_PREFIX = "artifact:"
+DISPATCH_ID_PREFIX = "dispatch:"
+
+
+def build_artifact_ref(kind: str, dispatch_id: str) -> str:
+    kind = (kind or "").strip()
+    dispatch_id = (dispatch_id or "").strip()
+    if not kind or ":" in kind:
+        raise ValueError(f"artifact kind must be non-empty and colon-free, got {kind!r}")
+    if not dispatch_id.startswith(DISPATCH_ID_PREFIX):
+        raise ValueError(
+            f"dispatch_id must start with {DISPATCH_ID_PREFIX!r}, got {dispatch_id!r}"
+        )
+    return f"{ARTIFACT_REF_PREFIX}{kind}:{dispatch_id}"
+
+
+def parse_artifact_ref(ref: str) -> tuple[str, str]:
+    """-> (kind, dispatch_id). Raises rather than guessing."""
+    if not ref.startswith(ARTIFACT_REF_PREFIX):
+        raise ValueError(f"artifact ref must start with {ARTIFACT_REF_PREFIX!r}: {ref!r}")
+    remainder = ref[len(ARTIFACT_REF_PREFIX):]
+    kind, sep, dispatch_id = remainder.partition(":")
+    if not sep or not kind:
+        raise ValueError(f"artifact ref must be artifact:<kind>:<dispatch_id>: {ref!r}")
+    if not dispatch_id.startswith(DISPATCH_ID_PREFIX):
+        raise ValueError(
+            f"artifact ref must carry a dispatch id starting {DISPATCH_ID_PREFIX!r}: {ref!r}"
+        )
+    return kind, dispatch_id
+
 THUMBS_UP_CATEGORY_LABELS: Dict[str, str] = {
     "helpful_actionable": "Helpful / actionable",
     "well_grounded": "Well grounded",
@@ -159,6 +198,25 @@ class ChatResponseFeedbackV1(BaseModel):
         ):
             raise ValueError("At least one target identifier is required")
 
+        if self.target_artifact_ref:
+            # Refuse an unattributable rating outright rather than storing an
+            # orphan. parse_artifact_ref raises with the reason.
+            parse_artifact_ref(self.target_artifact_ref)
+            # ATTESTATION, NOT AUTHENTICATION -- say which, because the
+            # difference is the patch's whole premise. Nothing on this host can
+            # actually prove a rating came from a person: the Hub route has no
+            # auth, and the Hub holds the docker socket, so any container is
+            # root-equivalent (resolved 2026-08-14: "detect, do not pretend to
+            # prevent"). Requiring user_id and source makes a self-rating
+            # DETECTABLE -- an artifact rating with no rater on record is
+            # rejected, and one claiming a rater is a claim that can be audited
+            # against `source`. It does not make one impossible.
+            if not self.user_id:
+                raise ValueError(
+                    "artifact ratings require user_id: an unattributed rating "
+                    "cannot be distinguished from Orion rating itself"
+                )
+
         allowed = THUMBS_UP_CATEGORIES if self.feedback_value == "up" else THUMBS_DOWN_CATEGORIES
         unknown = [item for item in self.categories if item not in allowed]
         if unknown:
@@ -187,7 +245,14 @@ class ChatResponseFeedbackV1(BaseModel):
             self.user_id or "",
         ]
         if self.target_artifact_ref:
-            key_parts.append(self.target_artifact_ref)
+            # Prefixed, not raw. The join separator is an unescaped "|", so a
+            # raw append lets a chat row whose user_id happens to contain
+            # "|artifact:z" produce a byte-identical key -- and therefore a
+            # byte-identical submission_fingerprint -- to a genuine artifact
+            # rating. Found in review; the previous test compared a trivial
+            # pair and asserted the property without testing the case that
+            # breaks it.
+            key_parts.append(f"artifact={self.target_artifact_ref}")
         self.target_key = self.target_key or "|".join(key_parts)
 
         fingerprint_material = {

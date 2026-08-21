@@ -2681,6 +2681,27 @@ def _plan_request_from_step_ctx(
                     len(ut),
                     ut[:200],
                 )
+    # Same gap, third occurrence (review finding, 2026-08-21, caught before
+    # shipping this time instead of after a live miss like the two cases
+    # above): ask_camera is capability_backed/requires_capability_selector,
+    # so a real chat turn routes through capability_bridge's nested call
+    # exactly like docker_prune/notify_chat_message do -- the user's actual
+    # question lives on ctx (raw_user_text/messages), not
+    # plan.metadata.skill_args, unless injected here. Without this,
+    # AskCameraVerb's own skill_args.get("question") always saw empty and
+    # returned missing_question regardless of what the user actually asked.
+    if "ask_camera" in verb_n:
+        if not str(skill_args.get("question") or "").strip():
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["question"] = ut
+                logger.info(
+                    "ask_camera_skill_args_injected corr=%s verb=%s question_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
+                )
     extra: Dict[str, Any] = {}
     if skill_args:
         extra["skill_args"] = skill_args

@@ -44,6 +44,12 @@ P4:     7680 - 3238 resident =  4191 free  -  3500 =  691  <  1400   refuse, for
 Arithmetically unsatisfiable the moment the models warm. The container stayed
 `Up` and healthy and served nothing.
 
+**Independently corroborated.** `orion_biometrics` shows circe's GPUs 3/4/5
+first appearing at `2026-08-21T06:02:25`, GPU 3 being a `Tesla P100-PCIE-16GB`.
+athena's vision died `2026-08-20 22:00` with a final straggler at `06:12`. The
+card was pulled and reinstalled that morning; two independent sources agree to
+the hour. See §3's inventory table.
+
 **This budget is a function of the card, not of the service.** That is the
 durable lesson, and it is why the gate below reads real hardware instead of
 baking in a constant — a constant pinned to "the P4" would rot identically on
@@ -151,35 +157,178 @@ The single organising rule:
 > images goes through `orion-llm-gateway` — but on the **small** lane, not the
 > chat lane.
 
-### Which lane does the labelling
+### Which lane does the labelling — and on which card
 
 The council **already routes to `metacog`** (`COUNCIL_LLM_ROUTE=metacog`,
-`services/orion-vision-council/.env:13` → :8012, Qwen3-8B). That is the right
-lane and it should stay there. Per-window interpretation runs continuously;
-putting it on :8011 would make Orion's passive perception contend with Orion's
-actual conversation for the 35B.
+`services/orion-vision-council/.env:13` → :8012). Per-window interpretation must
+not contend with Orion's conversation for the 35B on :8011 — that part is right.
+But metacog is already carrying a lot, and it should not absorb vision either.
 
-But :8012 reports `vision: false`. So the move is **not** "route vision to the
-chat lane" — it is **give metacog eyes**: load a VL-capable small model with an
-`--mmproj` on the metacog worker. The gateway's `resolve_vision_capability()`
-reads `/props` live and fails closed, so the day that lands, the council can
-send frames and until then it degrades to labels-only automatically. No config
-claim, no flag to forget.
+**There is no need to squeeze anything.** circe's real GPU inventory, read from
+`orion_biometrics` (24h, 1,144–1,690 samples per card — not a snapshot):
 
-| lane | role after this |
+| idx | card | total | peak used 24h | avg used | peak util | first seen |
+| ---: | :--- | ---: | ---: | ---: | ---: | :--- |
+| 0 | V100-PCIE-32GB | 32768 | 8532 | 8509 | 83% | 2026-07-24 |
+| 1 | V100-SXM2-32GB | 32768 | 23213 | 23183 | 82% | 2026-07-24 |
+| 2 | V100-PCIE-32GB | 32768 | 21320 | **4440** | 93% | 2026-07-24 |
+| 3 | **P100**-PCIE-16GB | 16384 | 7979 | 7979 | **100%** | **2026-08-21 06:02** |
+| 4 | V100-PCIE-16GB | 16384 | 7340 | 7340 | **100%** | **2026-08-21 06:02** |
+| 5 | V100-PCIE-16GB | 16384 | **0** | **0** | **5%** | **2026-08-21 06:02** |
+
+Six cards, 147 GB. **The table above is the pre-redeploy state and its
+placement was wrong** — metacog and fast were not where they were meant to be,
+which is why GPU 5 read as never-used. Juniper redeployed at `20:08` and the
+intended assignment is now live:
+
+| idx | card | assignment | state after redeploy |
+| ---: | :--- | :--- | :--- |
+| 0 | V100-32GB | **reserved — Orion's chat** | 8528 MB |
+| 1 | V100-SXM2-32GB | **reserved — Orion's chat** (:8011, the 35B) | 23213 MB |
+| 2 | V100-32GB | **agent / affect / testing lane** (:8014) | 0 MB — free |
+| 3 | **P100-16GB** | **vision — historically, and still** | 0 MB — free |
+| 4 | V100-16GB | metacog (:8012) | 8050 MB — busy |
+| 5 | V100-16GB | fast/quick (:8013) | 7258 MB — busy |
+
+So the corrected plan is **not** "put perception on the idle GPU 5" — 5 is
+fast's card and it stays busy. **Perception goes on GPU 3, the P100**, which is
+where vision work has always run. The card came off athena; the workload should
+follow it.
+
+The P100 is also the better host than it looks: GP100 has **full-rate FP16**
+(2× FP32), unlike the P4's GP104 (1/64 rate). 16 GB HBM2. A 7–8B VL model
+(Q5 ~5.5 GB + mmproj ~1.4 GB) leaves ~9 GB for KV and slots — metacog already
+runs `total_slots: 4` on an 8B, so **multi-camera is a slot-count and
+frame-router policy question, not another card.** One caveat on record:
+`config/vision_profiles.yaml:171` notes `GroundingDINO matmul fails fp16 on
+P100` — a specific op in that detector, not a llama.cpp constraint, and the
+detector is not what moves.
+
+| lane | port | card | why |
+| :--- | :--- | :--- | :--- |
+| **perception** | **8015 (new)** | **GPU 3, P100 16 GB** | the vision card, free, full-rate fp16 |
+| affective | 8014 | GPU 2, 32 GB | Juniper's agent/affect/testing lane |
+| metacog | 8012 | GPU 4 | **untouched.** Stays busy; stops absorbing vision |
+| fast | 8013 | GPU 5 | untouched |
+| chat | 8011 | GPU 0+1 | reserved; deliberate looking only |
+
+### Why an mmproj cannot be added to the affective worker
+
+llama.cpp serves **one model per server process**, and `--mmproj` is the vision
+projector belonging to *one specific VL model* — not a generic capability
+attachable to an unrelated model. An affective model and a VL model cannot share
+a llama-server on :8014 regardless of VRAM. It is two processes either way, so
+they are two ports on two cards.
+
+### Measured, not estimated: 1.74 s end to end
+
+Run 2026-08-21 against a **real live frame** from `/mnt/telemetry/vision/frames`,
+athena → circe :8011 over tailscale:
+
+```
+wall 1.74s   |  prompt_ms 734 (image encode)  predicted_ms 748  74.9 tok/s
+             |  prompt_tokens 340   finish_reason: stop
+```
+
+> *"This cluttered home office or workspace features two desks—one with a
+> monitor and chair draped in a blue jacket, the other holding electronics and
+> tools—surrounded by storage bins, cables, and equipment; no person is visible,
+> so I cannot describe their activity or confidence level."*
+
+The same room, same evening, from the pipeline that is live today:
+
+> *"Four chairs, four doors, two boxes, two desks, two tables, and one person
+> are detected in the scene."*
+
+Three things that measurement settles:
+
+1. **It reads the scene, not a label list.** "Home office", "chair draped in a
+   blue jacket", **"electronics and tools"** — the workbench that §F4 said the
+   21-label detector vocabulary could never reach. It did not need a label for
+   it. This is the direct evidence that widening the vocabulary was the wrong fix.
+2. **It refuses to speculate when there is nothing to see** — unprompted, and in
+   the exact hedged register §7 wants.
+3. **Thinking must be disabled.** The first run, identical except
+   `enable_thinking` left on, burned all 80 tokens inside the reasoning block and
+   returned an **empty `content`** — textbook §0A "empty-shell cognition". With
+   `chat_template_kwargs: {enable_thinking: false}` it answered in 1.74 s.
+   `build_interpretation_llm_options()` already sets
+   `structured_output_thinking_policy: "disabled_for_artifact"`; the precedent
+   exists and must carry over.
+
+**On the P100, expect slower but comfortable.** Generation is bandwidth-bound
+and the P100's 732 GB/s HBM2 is ~0.8× the V100-32GB's 900 GB/s. Prefill is
+compute-bound and the gap is much wider (P100 ~19 TFLOPS fp16, no tensor cores).
+A 7–8B dense VL is also different arithmetic from the 35B MoE measured here.
+Honest estimate **~3–6 s**; honest method is to re-run this exact test on :8015
+once it is up rather than trust the estimate. Either way it is far inside the
+budget: council windows arrive ~40–60 s apart, and the P4 already spends 2.48 s
+per `retina_fast`.
+
+### Frames cross the wire; the sensors still stay put
+
+Correcting an over-absolute claim: athena and circe are on the same tailnet and
+moving a frame between them is trivially cheap — the 99 KB transfer above is
+inside that 1.74 s and invisible in it. `/mnt/telemetry` being local ext4
+(`/dev/sdf1`, no NFS) does not mean circe *cannot* get frames; it means there is
+no shared **mount**, so frames travel as **bytes over HTTP**, which the gateway
+already does.
+
+The sensors still stay on athena, for better reasons than reachability:
+
+| athena (P4) | circe (P100) |
 | :--- | :--- |
-| `metacog` :8012 | **every window.** Needs an mmproj/VL model. Cheap, continuous, doesn't touch chat |
-| `quick` :8013 | fallback / burst overflow if metacog saturates |
-| `chat` :8011 (35B, `vision:true`, `video:true`) | **deliberate looking only** — Orion chooses to examine something, or a person is present and the cheap pass flagged it ambiguous. Rare, foveal, already capable today |
+| capture, GroundingDINO, SigLIP2, `identity_face` | the VL language pass |
 
-That split is also the honest answer to Q6 ("does Orion get to decline to
-look?"): the cheap lane always looks, the expensive lane looks *when there's a
-reason*, and the reason is inspectable.
+- **Volume.** The VL pass runs per *window*; detection runs per *frame*. Moving
+  detection means every frame crosses, not the handful that matter.
+- **Biometrics.** Face embedding stays where the camera is. Keeping it on-node
+  is a boundary worth having on purpose.
+- **It already works.** The P4 does detection at 2.48 s/task. It is not the
+  bottleneck; the 250 MB captioner is.
 
-**What dies on the P4:** BLIP-base unloads (~1 GB back). The P4 keeps
-GroundingDINO (hard labels), SigLIP2 (embeddings), and gains `identity_face` —
-biometric, must stay local. Note the P4 is a *downgrade* from the P100 this
-service was sized for; the sensor set is roughly all it can carry.
+Revisit if the P4 becomes the actual constraint — the transport exists either way.
+
+### Percept storage — decided: its own store
+
+**Approved by Juniper.** The gateway's attachment path is already correct:
+`resolve_attachment_url` rebuilds `<trusted base>/<sha256>` from a
+regex-validated hash only (the ref's own `source_url` is deliberately ignored —
+it round-trips through a browser and is client-controlled), and
+`fetch_attachment_data_uri` refuses bytes that do not hash to the requested
+address. Content-addressed, fail-closed, wired.
+
+But the configured base is the **chat** store
+(`http://100.92.216.81:8080/api/chat/attachments`), Hub-served, built for user
+uploads, with no retention suited to percepts — and Hub is the service holding
+the docker socket. Camera frames of a private home do not belong in it.
+
+**Ship `LLM_GATEWAY_PERCEPT_BASE_URL`**: a second base selected by attachment
+kind. Same mechanism, same security property, its own endpoint and its own short
+retention. Percepts get a deliberate home instead of inheriting chat's.
+
+### Camera-down alerting — decided: the attention queue
+
+**Approved by Juniper.** Hub already has the right surface and it is not the
+workflow-schedules "needs attention" filter — it is `GET /api/attention` +
+`POST /api/attention/{attention_id}/ack` (`api_routes.py:1908,1929`), rendering
+into `attentionList`/`attentionCount`. Live queue, 50 items, real contract:
+
+```
+attention_id, source_service, reason, severity, message, context,
+require_ack, ack_deadline_minutes, acked_at, escalated_at, status
+```
+
+A vision-liveness watcher emits `source_service: "vision-host"`,
+`severity: "warning"`, `require_ack: true` on either signal:
+
+- a sustained `ok: false` / `gpu_hard_floor` rate on vision tasks, **or**
+- a `vision_events` write gap exceeding N minutes.
+
+The second matters more: the 2026-08-20 outage produced a perfectly healthy
+container and a perfectly silent table. Note the honest hazard — a write gap is
+also what a genuinely quiet room looks like, so this alerts on *the task failure
+rate first* and uses the write gap as corroboration, not the other way round.
 
 ### 3.1 The `vision_profiles.yaml` cathedral — with blast radius checked
 
@@ -437,7 +586,27 @@ about their body and movements. Not a config constant — "what does it have on 
 must be answerable without reading code. §0A's UI/debug-surface requirement and
 the ethical requirement are the same requirement here.
 
-**Q5 — Screens. Answer this before §3 ships.** The detector already sees `screen`
+**Q5 — Screens. DECIDED 2026-08-21: redact content, preserve presence.**
+Black out `screen`/`laptop` regions **at the sensor on athena**, before bytes
+cross to circe. GroundingDINO already returns those boxes on every frame and
+they are currently discarded, so the redaction is ~10 lines and deterministic.
+
+Why redaction and not a prompt instruction: an instruction is a request, not a
+boundary. Redacting at the sensor means the content physically does not leave
+the node, and it holds even if the model, the prompt, or the lane changes later.
+
+Why blank the box rather than drop the frame: the box *shape* survives, so Orion
+still sees "there is a monitor there, they are at the desk." The activity signal
+is kept and only the content is lost. Testable: assert the pixels inside the
+detected box are uniform in the outgoing frame.
+
+Correcting an earlier claim in this document — **carbon is lower risk here, not
+higher.** A laptop webcam faces the user, not the user's display. The same
+redaction still applies to screens visible *behind* them.
+
+Original framing, retained for the record: 
+
+*(was)* **Q5 — Screens. Answer this before §3 ships.** The detector already sees `screen`
 and `laptop`. A 35B VL model pointed at this room **will read what is on those
 screens**, incidentally, without being asked. The perception frontier doc called
 this "the most dangerous idea here" and required an explicit spatial gate plus
@@ -480,26 +649,196 @@ the VLM.
 
 ---
 
-## 10. Order of work
+## 9A. Object permanence — the seam exists and is 90 seconds deep
 
-1. **Give `metacog` eyes.** Load a VL model + `--mmproj` on :8012. The gateway's
-   live `/props` probe means nothing else has to change to find out — the
-   council starts sending frames the moment the worker reports `vision: true`,
-   and degrades automatically if it doesn't. **Q5 gets answered before this
-   runs, not after.**
-2. **Point `caption_frame`/`vqa` at the gateway** instead of local BLIP. Same
-   task_type contract, so `perceive_caption_frame` and the frame-router policy
-   are untouched. BLIP unloads, ~1 GB back on the P4.
-3. **§5 presence reducer** — independent of all of the above, highest
-   care-per-line, reuses `hub_presence`'s exact shape, takes
-   `JuniperAffectiveStateV1`'s `cold_start` flag with it.
-4. **Delete the 7 zero-reference profiles.**
-5. **§4 identity** + retention in the same patch.
-6. **§3.2 fusion** into the episode summary, then **§6.3 outreach**, then
-   **§6.4 falsification**.
+Requested: track *things*, not just Juniper. "The cluttered office had a box,
+then the box is gone." And the sharper half of the request — a **slower rescan**,
+because a short interval watches an object being carried out and never registers
+that it left.
 
-Council v1's prompt rules come out in step 2, not before — they are correct for
-as long as the interpreter is blind.
+That intuition is exactly right, and there is already a half-built mechanism:
+`services/orion-vision-window/app/scene_belief.py`. `SceneBeliefTracker` holds a
+per-stream *believed* label set behind a vote ring and already emits `added` and
+`removed` on transition. `removed` is literally "a thing I believed was here is
+gone."
+
+Four things stop it from answering the question:
+
+1. **Its horizon is ~90 seconds.** `WINDOW_SIZE_SEC=30.0`,
+   `WINDOW_BELIEF_VOTE_N=3` (live values). Three 30-second windows. That *is* the
+   "smaller interval" the request names — the one that cannot see a long-lived
+   object leave.
+2. **`WINDOW_BELIEF_EXIT_VOTES=0`.** A label leaves belief the instant it is
+   missing from all three slots. Stand in front of a box for 90 seconds and the
+   box stops existing. There is no notion of "I still believe that is there, I
+   just cannot see it right now" — which is the whole of object permanence.
+3. **`removed` goes to a log line and nowhere else** (`main.py:291-298`:
+   `logger.info("[WINDOW] belief_transition ...")`). No event, no row, no
+   consumer. Nothing can ask "what disappeared today?"
+4. **It is label-level, not count-level**, and in-memory/ephemeral
+   (`settings.py:31`, "ephemeral like live_state") so it forgets on restart. The
+   live narratives already show the gap: *"two boxes"* then *"one box"* — `box`
+   remains believed and **no transition fires at all**.
+
+### What it needs
+
+**A persisted scene inventory, plus a slow sweep on its own clock.**
+
+The clock matters and is not a detail: this pipeline is event-triggered, and
+event-triggered statistics cannot detect absence — they freeze on silence rather
+than rising. A disappearance is a *non-event*. It can only be found by something
+that wakes up on a timer and asks what it has not seen, never by a threshold on
+the frame stream. That is precisely the "intermediary rescan".
+
+```
+scene_inventory (per stream, per label)
+  label, count, first_seen, last_seen, last_confirmed_count,
+  windows_since_seen, state: present | unconfirmed | departed
+```
+
+- **Fast path (unchanged, 90 s):** the existing belief ring keeps gating the
+  council. It is good at what it does.
+- **Slow sweep (new, timer-driven, ~15–30 min):** for each inventoried label,
+  how long since it was last confirmed? Cross a threshold scaled to **how long
+  it had been there** — something present for three days should need far more
+  absence to be declared gone than something present for ten minutes — and emit
+  a real event: `object_departed`, `object_arrived`, `object_count_changed`.
+- **Counts are first-class.** "two boxes → one box" is the common case and the
+  label-set model cannot express it. GroundingDINO already returns per-object
+  boxes; the count is there and is being thrown away.
+
+**Key it on hard labels + counts, not on the VL prose.** The VL narrative is
+richer ("storage bins, cables, and equipment") but not stable enough to diff
+across hours — it will rephrase the same shelf three ways. Detector labels are
+boring and stable, which is what an inventory needs. The narrative describes;
+the inventory remembers.
+
+That split also keeps the cost right: the sweep is pure SQL over an inventory
+table, no model, no GPU. It can ship before the VL lane exists.
+
+**Why this is worth building beyond the feature request:** "I thought that was
+there and it is not" is a prediction error about the world with a durable
+referent, which is a different and stronger thing than §6.4's per-window
+hypothesis checking. It is the same machinery Orion needs to be *surprised*.
+
+## 9B. Second camera: carbon
+
+Requested: wire carbon's integrated webcam — "when I'm on here, I want Orion
+watching" — primarily as an affective-state surface.
+
+**Most of this already exists.** `services/orion-vision-retina` has
+`WebcamFrameSource` (`app/sources.py:179`) alongside RTSP and folder sources, and
+its dependency set is `fastapi, uvicorn, redis, pydantic, loguru,
+opencv-python-headless, numpy` — **no torch, no YOLO**. That is a laptop-safe
+capture agent. `config/vision_frame_router.yaml` is already multi-stream
+(`streams:` / `cameras:` with per-stream policy), so a second stream is config,
+not architecture.
+
+**One real blocker, and it is the same one as everything else.** Both retina and
+edge write frames to a local `FRAME_STORAGE_DIR` and publish a **path**, and the
+router enforces `require_image_path_exists: true`. carbon shares no filesystem
+with athena. Today a second node physically cannot feed this pipeline.
+
+**So the percept store (§ above) is not a privacy nicety — it is the
+prerequisite that makes multi-node cameras possible at all.** Once capture
+publishes `sha256` + uploads bytes to a content-addressed store instead of a
+local path, carbon works, any future camera works, and the gateway's existing
+hash-verified fetch is the transport. This promotes the percept store from a
+step to a **prerequisite**, and it is now load-bearing for three separate asks.
+
+### What "deploy a sender on carbon" actually costs
+
+No new service. `orion-vision-retina` **is** the sender — it already has
+`WebcamFrameSource`, it already publishes to the bus over tailscale, and its
+deps are laptop-safe. The only thing it does wrong for a remote node is *how it
+names the frame*:
+
+```
+today:  frame_store.save() -> cv2.imwrite(local dir) -> image_path
+        -> VisionFramePointerPayload(image_path=...) -> orion:vision:frames
+```
+
+Four touch points to make that work from anywhere:
+
+| # | change | file |
+| ---: | :--- | :--- |
+| 1 | `frame_store` gains an upload mode: POST the JPEG to the percept store, get `sha256` back | `orion-vision-retina/app/frame_store.py` |
+| 2 | add `sha256: Optional[str]` to the frame pointer — the model is `extra="forbid"`, so this is an explicit **contract change** (§6: registry + producer test + consumer test in the same patch) | `orion/schemas/vision.py:93` |
+| 3 | `require_image_path_exists` becomes "path exists **or** sha256 present" | `config/vision_frame_router.yaml` + router policy |
+| 4 | resolve `sha256` → fetch bytes, when there is no readable path | `orion-vision-host` |
+
+**athena does not change.** Local capture keeps writing local paths — no HTTP
+hop, no extra copy. The `sha256` route is purely additive, for nodes with no
+shared disk.
+
+**And athena's frames only enter the store lazily.** A frame needs a `sha256`
+only when it is actually dispatched to the VL lane on circe, so vision-host
+uploads at call time rather than capture time. That is a smaller volume of
+traffic *and* a smaller privacy footprint: only the handful of frames that were
+worth interpreting are ever persisted somewhere fetchable, instead of every
+frame the camera ever took.
+
+carbon is the reverse — it must upload at capture time, because there is no
+other way for its bytes to leave the laptop. Which means carbon's frames land
+on athena under athena's retention, rather than accumulating on a laptop.
+
+One operational note: carbon is a laptop. It sleeps, closes, and roams. The
+sender must treat an unreachable bus or store as normal and resume, never queue
+frames to disk indefinitely — a backlog of webcam frames on a personal machine
+is the wrong failure mode.
+
+**Carbon is a different privacy surface and should not inherit cam0's policy.**
+A room camera catches Juniper occasionally and at a distance. A laptop webcam is
+a close, continuous, face-filling view of one person while they work. It is
+simultaneously the best identity and affect signal in the system and the most
+intrusive thing in it. Concretely:
+
+- **Its own stream policy.** Far lower baseline rate than cam0 — this is a
+  presence-and-affect sensor, not a scene sensor. It does not need `retina_fast`
+  on a schedule.
+- **Its own retention**, shorter than cam0's.
+- **A visible, local off switch that does not require reaching Hub.** "Orion is
+  watching me work" must be revocable from the machine being watched, instantly.
+- **§9A does not apply to it.** No object inventory on the laptop camera — there
+  is no scene to remember, and inventorying a person's desk from 40 cm is a
+  different act entirely.
+- **Q5 (screens) is worse here, not better.** A laptop webcam faces the room, but
+  it is on a machine whose screen is the whole point. Decide the screen policy
+  for cam0 first; carbon inherits whatever is decided, tightened.
+
+Note the honest scope: carbon feeding *affect* through vision is a **third**
+estimator on Juniper's state, alongside §3.2's `swear_frequency` and §5's
+presence duration. Per §3.2's precedent, the bar for wiring facial affect into
+anything is the one `typo_rate` failed. Start it as **presence** — "Juniper is at
+the laptop" is a strong, cheap, honest signal — and let facial affect earn its
+way in against real data, or not at all.
+
+## 10. The plan
+
+Decided: percepts get their own store; camera-down alerts into `/api/attention`;
+Orion's unified turn may see Juniper. Open: **Q5, screens** — answer before
+step 1 ships, not after.
+
+| # | what | where | why now |
+| ---: | :--- | :--- | :--- |
+| 1 | ~~**Vision-liveness alert** into `/api/attention`~~ **SHIPPED** (PR #1806) | `orion-vision-host/app/liveness.py` | 21 h blind with a healthy container. Live-verified: alert delivered to Hub's queue end to end |
+| 2 | **Percept store** — content-addressed, own retention | gateway + athena | **prerequisite, not a step.** Unblocks the VL lane, carbon, and any future camera at once (§9B) |
+| 3 | **Perception lane :8015** — VL + mmproj, thinking off | circe **GPU 3, P100** | measured 1.74 s on the V100; re-run there for the real number |
+| 4 | **Council v2** — send the frame, drop the blind-interpreter rules | vision-council | the rules are correct only while it cannot see |
+| 5 | **`caption_frame`/`vqa` → gateway** | vision-host | same task_type contract; `perceive_caption_frame` and the router policy untouched. BLIP unloads, ~1 GB back |
+| 6 | **Presence reducer** — `present/recent/absent` + `since_sec` | mirrors `hub_presence` | no model. The "five hours and it's 2am" payload. Parallel with 3–5 |
+| 7 | **Scene inventory + slow sweep** (§9A) | window + a timer | no model, no GPU — pure SQL. Object permanence. Parallel with 3–5 |
+| 8 | **Delete the 7 zero-reference profiles** | `vision_profiles.yaml` | cleanup, zero blast radius |
+| 9 | **carbon retina** — webcam source, own stream policy + retention + local off switch | carbon | needs #2. Ship as **presence** first, not facial affect (§9B) |
+| 10 | **`identity_face`** + percept retention, same patch | athena | biometric stays on-node |
+| 11 | **Fuse** presence + inventory + affect into the episode summary | situation brief | two, then three senses on one person |
+| 12 | **Outreach** gets the visual block, then **falsification** | Hub, council | the loop that makes this perception, not labelling |
+
+**Steps 1, 6, 7 and 8 need no VL model, no GPU, and no open decisions** — they
+can all start now and in parallel. Step 2 is the hinge: it unblocks 3 and 9 both.
+Steps 10–12 are the capability actually asked for, and they are only worth
+building on a pipeline already proven to produce sentences like §3's measured
+one.
 
 ## Non-goals
 

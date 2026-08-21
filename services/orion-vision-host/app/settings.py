@@ -71,10 +71,40 @@ class Settings(BaseSettings):
     VISION_QUEUE_WHEN_BUSY: bool = True
     VISION_MAX_QUEUE: int = 200
 
-    # VRAM pressure
-    VISION_VRAM_RESERVE_MB: int = 3500
-    VISION_VRAM_SOFT_FLOOR_MB: int = 2200
-    VISION_VRAM_HARD_FLOOR_MB: int = 1400
+    # VRAM pressure.
+    #
+    # These defaults were 3500/2200/1400 -- correct for the Tesla P100 16GB this
+    # service was originally written for, and fatal on the Tesla P4 7.68GB that
+    # replaced it when the P100 moved to circe (2026-08-21). app/gpu.py computes
+    # `effective_free = free_mb - reserve_mb` and refuses below hard_floor, so
+    # with ~3.2GB of warm resident models on the P4, 4191 - 3500 = 691 < 1400 was
+    # unsatisfiable and the service refused every task for ~21 hours while
+    # reporting healthy. A host with no .env override would have inherited that.
+    # Re-derive against the RESIDENT footprint whenever a card changes.
+    #
+    # These defaults are gated by test_vram_budget_matches_env_example.py::
+    # test_settings_defaults_match_env_example. That test was ADDED for this,
+    # because the original comment here claimed coverage that did not exist:
+    # the file only compared config/vision_profiles.yaml to .env_example, so
+    # settings.py could (and did) carry 3500/2200/1400 while .env_example
+    # carried 1200/1000/800 with the suite fully green -- including throughout
+    # the 21-hour outage.
+    VISION_VRAM_RESERVE_MB: int = 1200
+    VISION_VRAM_SOFT_FLOOR_MB: int = 1000
+    VISION_VRAM_HARD_FLOOR_MB: int = 800
+
+    # Liveness alerting -- see app/liveness.py for why this exists.
+    VISION_LIVENESS_ALERT_ENABLED: bool = True
+    VISION_LIVENESS_WINDOW_SEC: float = 300.0
+    VISION_LIVENESS_MIN_SAMPLES: int = 10
+    VISION_LIVENESS_ARM_FAIL_RATE: float = 0.8
+    VISION_LIVENESS_CLEAR_FAIL_RATE: float = 0.2
+    VISION_LIVENESS_SUSTAIN_SEC: float = 180.0
+    VISION_LIVENESS_COOLDOWN_SEC: float = 3600.0
+    NOTIFY_BASE_URL: str = ""
+    NOTIFY_API_TOKEN: str = ""
+    # NODE_NAME is already declared above -- a second declaration silently
+    # shadows the first (review finding).
 
     @property
     def enabled_profiles(self) -> List[str]:

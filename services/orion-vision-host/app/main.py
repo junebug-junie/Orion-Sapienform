@@ -20,6 +20,11 @@ from orion.schemas.vision import (
 )
 
 from .artifacts import build_artifact_payload
+from .liveness import (
+    build_attention_request,
+    build_watcher_or_default,
+    post_attention_request,
+)
 from .models import VisionResult, VisionTask
 from .profiles import VisionProfiles
 from .runner import VisionRunner
@@ -36,6 +41,28 @@ class VisionHostService:
         self.sched: Optional[VisionScheduler] = None
         self._consumer_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
+        # Review finding (MEDIUM): the event loop keeps only a WEAK reference to
+        # tasks, so a bare create_task() for the alert POST could be collected
+        # mid-flight -- silently dropping the one notification this whole
+        # feature exists to deliver. Held here the same way _consumer_task is.
+        self._alert_tasks: set = set()
+        # Liveness watcher: notices a healthy-but-serving-nothing host. See
+        # app/liveness.py. Constructed unconditionally so /profiles can always
+        # report the current failure rate even when alerting is disabled.
+        #
+        # Review finding (HIGH): this construction runs at module import
+        # (`service = VisionHostService()` at the bottom of this file), and the
+        # watcher raises ValueError on non-hysteretic config. A typo'd
+        # VISION_LIVENESS_* value in a .env therefore crashlooped the entire
+        # vision service -- the alerting subsystem becoming a brand-new way to
+        # cause the exact 21-hour blackout it was written to detect, and
+        # VISION_LIVENESS_ALERT_ENABLED=false did not bypass it.
+        #
+        # The ValueError stays in the watcher: refusing a flapping config is
+        # correct for a library, and the tests still assert it. But nothing in
+        # the alerting path is allowed to stop this service from seeing, so a
+        # bad value here degrades loudly to the known-good defaults instead.
+        self.liveness = build_watcher_or_default(settings)
 
     async def start(self):
         logger.remove()
@@ -164,6 +191,69 @@ class VisionHostService:
             "queue_wait_est_s": (meta.get("timings") or {}).get("queue_wait_est_s"),
         }
         logger.info("[VISION_TASK] {}", json.dumps(line, default=str))
+        self._note_liveness(ok=bool(res.ok), error_code=meta.get("error_code"))
+
+    def _note_liveness(self, *, ok: bool, error_code: Optional[str]) -> None:
+        """Feed one task outcome to the watcher; fire an alert if it asks.
+
+        Wrapped whole: a liveness bug must never break task completion, which
+        is the path that logs and replies to the caller.
+        """
+        try:
+            decision = self.liveness.record(ok=ok, error_code=error_code)
+            if not (decision.alert or decision.recovered):
+                return
+            if not settings.VISION_LIVENESS_ALERT_ENABLED:
+                # Not delivered -- roll the provisional state back, or the
+                # watcher believes it alerted and suppresses forever.
+                self.liveness.note_alert_delivered(False)
+                logger.warning(
+                    "[LIVENESS] {} (alerting disabled) fail_rate={:.2f} n={}",
+                    decision.reason, decision.fail_rate, decision.sample_count,
+                )
+                return
+            if not settings.NOTIFY_BASE_URL:
+                self.liveness.note_alert_delivered(False)
+                logger.warning(
+                    "[LIVENESS] {} but NOTIFY_BASE_URL is unset -- no alert sent",
+                    decision.reason,
+                )
+                return
+            body = build_attention_request(decision, node_name=settings.NODE_NAME)
+            logger.warning("[LIVENESS] {} -> attention request", decision.reason)
+            # to_thread: urllib is blocking and this runs on the task-completion
+            # path. A hung notify service must not stall the vision event loop.
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    post_attention_request,
+                    body,
+                    base_url=settings.NOTIFY_BASE_URL,
+                    token=settings.NOTIFY_API_TOKEN or None,
+                )
+            )
+            self._alert_tasks.add(task)
+            task.add_done_callback(self._alert_tasks.discard)
+            task.add_done_callback(self._on_alert_sent)
+        except Exception as exc:
+            logger.warning("[LIVENESS] watcher error (ignored): {}", exc)
+
+    def _on_alert_sent(self, task: "asyncio.Task") -> None:
+        """Confirm or roll back the watcher's provisional alert state.
+
+        Without this a failed POST would still leave the watcher believing it
+        had alerted, suppressing every retry for the rest of the incident.
+        """
+        try:
+            delivered = bool(task.result())
+        except Exception as exc:
+            logger.warning("[LIVENESS] alert send raised: {}", exc)
+            delivered = False
+        try:
+            self.liveness.note_alert_delivered(delivered)
+            if not delivered:
+                logger.warning("[LIVENESS] alert NOT delivered -- will retry")
+        except Exception as exc:
+            logger.warning("[LIVENESS] confirm error (ignored): {}", exc)
 
     async def run_vision_task(self, task: VisionTask) -> VisionResult:
         if not self.runner or not self.sched:
@@ -425,6 +515,7 @@ async def profiles_summary():
     return {
         "ok": True,
         "version": service.profiles.version,
+        "liveness": service.liveness.snapshot(),
         "enabled": settings.enabled_profiles,
         "pipelines": list(service.profiles.pipelines.keys()),
         "profiles": list(service.profiles.profiles.keys()),

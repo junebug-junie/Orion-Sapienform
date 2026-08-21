@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
+from orion.autonomy.prediction import EffectPosterior
+from orion.schemas.action_prediction import ActionOutcomeRecordV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_state import FieldStateV1
@@ -468,7 +470,44 @@ class FeedbackRuntimeStore:
                 continue
         return evidence
 
-    def save_feedback_frame(self, frame: FeedbackFrameV1) -> None:
+    def load_effect_posteriors(self) -> dict[tuple[str, str, str], EffectPosterior]:
+        """Current belief about what each action does to each signal.
+
+        A full read of a tiny table (one row per real (kind, target, signal),
+        tens of rows) rather than a newest-row-wins scan over the ledger.
+        That distinction is not cosmetic here: re-deriving state by scanning
+        a large frame table on every check is exactly the pattern that made
+        the daily risk baseline 49.8% of this database's buffer traffic.
+        """
+        rows = []
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT dispatch_kind, target_id, signal_id,
+                               posterior_mean, posterior_variance, posterior_n
+                          FROM substrate_action_effect_posterior
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return {
+            (r["dispatch_kind"], r["target_id"], r["signal_id"]): EffectPosterior(
+                mean=float(r["posterior_mean"]),
+                variance=float(r["posterior_variance"]),
+                n=int(r["posterior_n"]),
+            )
+            for r in rows
+        }
+
+    def save_feedback_frame(
+        self,
+        frame: FeedbackFrameV1,
+        outcome_records: list[ActionOutcomeRecordV1] | None = None,
+    ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
@@ -529,4 +568,108 @@ class FeedbackRuntimeStore:
                      WHERE frame_id = :frame_id
                 """),
                 {"frame_id": frame.source_execution_dispatch_frame_id},
+            )
+
+            # SAME TRANSACTION again, for the same reason and one more: the
+            # marker clear above is what makes this dispatch frame stop being
+            # work. If the ledger write landed in its own transaction and the
+            # process died between the two, the observation would be gone
+            # permanently -- nothing ever revisits a frame whose marker is
+            # already clear.
+            self._write_action_outcomes(conn, outcome_records or [])
+
+    @staticmethod
+    def _write_action_outcomes(conn, records: list[ActionOutcomeRecordV1]) -> None:
+        """Append scored outcomes and advance the posteriors they produced.
+
+        Two guards against double-counting, because an observation absorbed
+        twice corrupts the belief permanently and silently:
+
+        1. The ledger insert is ON CONFLICT DO NOTHING on
+           (dispatch_id, signal_id) and RETURNS the rows that actually
+           landed. A reprocessed frame inserts nothing.
+        2. The posterior is advanced ONLY for records whose ledger row was
+           genuinely new, and only when it moves `posterior_n` forward. An
+           out-of-order or replayed write cannot walk the belief backwards.
+        """
+        if not records:
+            return
+        for record in records:
+            inserted = conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_action_outcomes (
+                        dispatch_id, dispatch_frame_id, feedback_frame_id,
+                        dispatch_kind, target_id, signal_id, direction,
+                        observed_at, baseline, observed_after, observed_delta,
+                        predicted_delta, prediction_error, surprise_nats,
+                        posterior_mean, posterior_variance, posterior_n,
+                        co_predictors, latency_ms
+                    ) VALUES (
+                        :dispatch_id, :dispatch_frame_id, :feedback_frame_id,
+                        :dispatch_kind, :target_id, :signal_id, :direction,
+                        :observed_at, :baseline, :observed_after, :observed_delta,
+                        :predicted_delta, :prediction_error, :surprise_nats,
+                        :posterior_mean, :posterior_variance, :posterior_n,
+                        :co_predictors, :latency_ms
+                    )
+                    ON CONFLICT (dispatch_id, signal_id) DO NOTHING
+                    RETURNING id
+                    """
+                ),
+                # Explicit param map, not model_dump(): the model carries a
+                # `schema_version` field with no matching bind parameter, and
+                # relying on the driver to quietly drop unknown keys is the
+                # kind of implicit behaviour that breaks on a library bump.
+                {
+                    "dispatch_id": record.dispatch_id,
+                    "dispatch_frame_id": record.dispatch_frame_id,
+                    "feedback_frame_id": record.feedback_frame_id,
+                    "dispatch_kind": record.dispatch_kind,
+                    "target_id": record.target_id,
+                    "signal_id": record.signal_id,
+                    "direction": record.direction,
+                    "observed_at": record.observed_at,
+                    "baseline": record.baseline,
+                    "observed_after": record.observed_after,
+                    "observed_delta": record.observed_delta,
+                    "predicted_delta": record.predicted_delta,
+                    "prediction_error": record.prediction_error,
+                    "surprise_nats": record.surprise_nats,
+                    "posterior_mean": record.posterior_mean,
+                    "posterior_variance": record.posterior_variance,
+                    "posterior_n": record.posterior_n,
+                    "co_predictors": record.co_predictors,
+                    "latency_ms": record.latency_ms,
+                },
+            ).first()
+            if inserted is None:
+                continue
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_action_effect_posterior (
+                        dispatch_kind, target_id, signal_id,
+                        posterior_mean, posterior_variance, posterior_n, updated_at
+                    ) VALUES (
+                        :dispatch_kind, :target_id, :signal_id,
+                        :posterior_mean, :posterior_variance, :posterior_n, now()
+                    )
+                    ON CONFLICT (dispatch_kind, target_id, signal_id) DO UPDATE SET
+                        posterior_mean = EXCLUDED.posterior_mean,
+                        posterior_variance = EXCLUDED.posterior_variance,
+                        posterior_n = EXCLUDED.posterior_n,
+                        updated_at = now()
+                     WHERE substrate_action_effect_posterior.posterior_n
+                           < EXCLUDED.posterior_n
+                    """
+                ),
+                {
+                    "dispatch_kind": record.dispatch_kind,
+                    "target_id": record.target_id,
+                    "signal_id": record.signal_id,
+                    "posterior_mean": record.posterior_mean,
+                    "posterior_variance": record.posterior_variance,
+                    "posterior_n": record.posterior_n,
+                },
             )

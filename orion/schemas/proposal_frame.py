@@ -47,6 +47,16 @@ class ProposalCandidateV1(BaseModel):
     risk_score: float = Field(ge=0.0, le=1.0)
     reversibility_score: float = Field(ge=0.0, le=1.0)
 
+    # 2026-08-21: the template's declared, falsifiable claim -- which
+    # measured signal this proposal expects to move, and which way. Distinct
+    # from `proposed_effect` directly below, which is a closed vocabulary of
+    # intent labels ("increase_observability") with no signal, no magnitude,
+    # and nothing that can ever be checked against the world. These two
+    # fields are the checkable version; `proposed_effect` is left alone
+    # because other consumers read it.
+    expected_signal: str | None = None
+    expected_direction: Literal["increase", "decrease", "no_change"] | None = None
+
     motivating_dimensions: dict[str, float] = Field(default_factory=dict)
     motivating_targets: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)

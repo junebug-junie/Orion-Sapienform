@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
+from orion.schemas.action_prediction import ExpectedEffectV1
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -65,6 +66,14 @@ class ExecutionDispatchCandidateV1(BaseModel):
     # is the whole point of the record -- "starved 40 ticks running" and
     # "lost once" are different facts and used to be stored identically.
     starvation_ticks: int = 0
+
+    # 2026-08-21: the action's own falsifiable claim, recorded before it
+    # runs. None means this candidate's proposal template declares no
+    # signal -- which is itself the audit result ("if it cannot name a
+    # signal it expects to move, it is a habit, not an action"), not a
+    # failure. Optional so every frame stored before this patch still
+    # parses.
+    expected_effect: ExpectedEffectV1 | None = None
 
     @model_validator(mode="after")
     def _dispatched_requires_evidence(self) -> "ExecutionDispatchCandidateV1":

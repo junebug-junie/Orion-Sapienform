@@ -13,6 +13,7 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.autonomy.prediction import EffectPosterior
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
     build_stale_discard_execution_dispatch_frame,
@@ -445,6 +446,12 @@ class ExecutionDispatchRuntimeWorker:
             policy=self._policy,
             override_dispatch_mode=self._settings.execution_dispatch_mode,
             prev_starvation_counts=prev_starvation_counts,
+            # Current belief about what each action does to each signal, so
+            # every candidate carries a magnitude taken from its own measured
+            # history instead of a hand-typed constant. A read failure yields
+            # {} -- cold priors, honestly flagged via ExpectedEffectV1.
+            # cold_start -- and never stalls a dispatch tick.
+            effect_posteriors=self._load_effect_posteriors(),
             # NOTE: updated_baseline deliberately does NOT carry
             # starvation_counts -- this frame computes its own fresh map and
             # model_copy would otherwise stamp the previous tick's map back
@@ -469,6 +476,13 @@ class ExecutionDispatchRuntimeWorker:
             frame.blocked_count,
             frame.dispatch_count,
         )
+
+    def _load_effect_posteriors(self) -> dict[tuple[str, str, str], "EffectPosterior"]:
+        try:
+            return self._store.load_effect_posteriors()
+        except Exception:
+            logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
+            return {}
 
     def _derive_daily_risk_cap(
         self, frame_generated_at: datetime

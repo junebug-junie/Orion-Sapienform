@@ -139,6 +139,11 @@ def _build_candidate(
         confidence_score=confidence,
         risk_score=risk,
         reversibility_score=clamp01(template.reversibility),
+        # 2026-08-21: carried straight through from the template, not
+        # re-derived. The claim belongs to the template author; every layer
+        # below is transport for it.
+        expected_signal=template.expected_signal,
+        expected_direction=template.expected_direction,  # type: ignore[arg-type]
         motivating_dimensions=motivating_dimensions,
         motivating_targets=motivating_targets,
         evidence_refs=sorted(set(evidence_refs)),

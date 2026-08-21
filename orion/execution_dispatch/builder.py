@@ -10,6 +10,8 @@ from orion.execution_dispatch.policy import (
     DispatchLimitsV1,
     ExecutionDispatchPolicyV1,
 )
+from orion.autonomy.prediction import EffectPosterior
+from orion.schemas.action_prediction import ExpectedEffectV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
@@ -257,6 +259,46 @@ def _candidate_status_for_mode(dispatch_mode: str) -> tuple[str, str]:
     return "dry_run", "dry_run"
 
 
+def build_expected_effect(
+    candidate: ProposalCandidateV1,
+    dispatch_kind: str,
+    effect_posteriors: dict[tuple[str, str, str], EffectPosterior] | None,
+) -> ExpectedEffectV1 | None:
+    """Attach the action's claim, with a magnitude taken from real history.
+
+    Returns None when the proposal's template declares no signal. That is a
+    real finding recorded as an absence, not an error to paper over: an
+    action that names no measurable signal cannot be scored, and 5 of this
+    repo's 16 templates -- responsible for ~62% of all real dispatches as of
+    2026-08-21 -- are in exactly that state.
+
+    The posterior key is (dispatch_kind, target_id, signal_id) rather than
+    the template key: `inspect_attended_target` resolves to a DIFFERENT
+    target on different ticks via its attention binding, and inspecting two
+    different things is two different actions with two different effects.
+    Keying on the template would pool them into one meaningless average.
+    """
+    signal = candidate.expected_signal
+    direction = candidate.expected_direction
+    if signal is None or direction is None:
+        return None
+
+    key = (dispatch_kind, candidate.target_id, signal)
+    posterior = (effect_posteriors or {}).get(key)
+    cold = posterior is None or posterior.n == 0
+    if posterior is None:
+        posterior = EffectPosterior.cold()
+
+    return ExpectedEffectV1(
+        signal_id=signal,  # type: ignore[arg-type]
+        direction=direction,
+        predicted_delta=posterior.mean,
+        predictor_variance=posterior.variance,
+        predictor_n=posterior.n,
+        cold_start=cold,
+    )
+
+
 def build_execution_dispatch_frame(
     *,
     policy_frame: PolicyDecisionFrameV1,
@@ -266,6 +308,7 @@ def build_execution_dispatch_frame(
     now: datetime | None = None,
     override_dispatch_mode: str | None = None,
     prev_starvation_counts: dict[str, int] | None = None,
+    effect_posteriors: dict[tuple[str, str, str], EffectPosterior] | None = None,
 ) -> ExecutionDispatchFrameV1:
     generated_at = now or datetime.now(timezone.utc)
     dispatch_mode = _resolve_dispatch_mode(policy=policy, override_dispatch_mode=override_dispatch_mode)
@@ -513,6 +556,9 @@ def build_execution_dispatch_frame(
             cortex_verb=route.cortex_verb,
             cortex_mode=route.cortex_mode,
             request_envelope=envelope,
+            expected_effect=build_expected_effect(
+                candidate, route.dispatch_kind, effect_posteriors
+            ),
             constraints={k: str(v) for k, v in envelope.get("constraints", {}).items()},
             # 2026-08-12: was the hardcoded literal "approved_read_only_dispatch_v1"
             # on EVERY dispatched candidate. Once a mutating route exists that

@@ -84,36 +84,104 @@ caused all three becomes structurally inexpressible.
    already carry this information — not yet surfaced to any consumer.
 3. Can tier boundaries (active/watch/quiet) be derived from each tick's own rank/points
    distribution instead of any hand-set or borrowed constant? Proposed below: yes,
-   via the tick's own Borda-totals mean/std — self-calibrating per tick, no global
+   via the tick's own percentile distribution — self-calibrating per tick, no global
    constant, same precedent `cross_domain_variance_floor` already established.
+
+## Verified correction: naive union-universe Borda does not actually fix the bug
+
+**The first version of this document asserted "make `aggregate_borda()` the mandatory
+substrate" without checking whether calling it on the union of two non-overlapping
+target universes actually produces a fair comparison. It does not — checked with real
+code, not asserted, after the claim was challenged.**
+
+Reproduced the exact real shape from today's data — Candidate A real-scores 5 targets
+(`node:substrate.*`), Candidate B real-scores 3 (`node:athena`/`atlas`/`circe`), and
+`candidate_society_of_mind.py`'s own docstring already discloses these universes never
+overlap in live data:
+
+```python
+from orion.attention.rank_aggregation import aggregate_borda
+scorer_a = {"route": 0.1, "chat": 0.3, "biometrics": 0.5, "execution": 0.7, "bus_synaptic": 0.9}
+scorer_b = {"athena": 0.2, "atlas": 0.5, "circe": 0.8}
+result = aggregate_borda({"magnitude": scorer_a, "novelty": scorer_b})
+```
+
+Result: Candidate A's best total (`bus_synaptic`, 9.0) beats Candidate B's best
+(`circe`, 8.0); Candidate A's worst (`route`, 5.0) is *below* Candidate B's worst
+(`athena`, 6.0). Candidate A structurally gets both the higher ceiling and the lower
+floor, purely because it has 5 targets to Candidate B's 3 — more room to spread across
+Borda's `0..N-1` point range on its own ballot, nothing to do with real cross-domain
+surprise. Naive union-universe Borda reproduces a version of the exact bug it was
+proposed to fix, just keyed on universe size instead of raw magnitude.
+
+**Real fix, verified, not asserted:** normalize each scorer's ballot to its own
+`rank_position / (own_universe_size - 1)` — a percentile in `[0, 1]` computed
+independently within each scorer's real universe — before combining across scorers.
+Re-run on the same data:
+
+```python
+def percentile_ballot(scores: dict) -> dict:
+    n = len(scores)
+    if n <= 1:
+        return {k: 1.0 for k in scores}
+    ordered = sorted(scores.items(), key=lambda kv: kv[1])
+    return {tid: i / (n - 1) for i, (tid, _) in enumerate(ordered)}
+```
+
+Result: best-of-Candidate-A (`bus_synaptic`, 1.000) exactly ties best-of-Candidate-B
+(`circe`, 1.000); worst-of-Candidate-A (`route`, 0.000) exactly ties worst-of-Candidate-B
+(`athena`, 0.000) — the universe-size bias is gone, verified by direct computation, not
+assumed from the theory.
+
+**This fix has its own real, disclosed cost, also checked, not glossed over:** percentile
+normalization guarantees each domain's own top target always hits exactly 1.0, regardless
+of true magnitude — the same "always-ceiling" artifact `normalize_across_targets()`'s own
+"single/all-equal edge case" already has (see that function's docstring), just now
+happening independently per domain instead of once globally. A domain with only one real
+competitor this tick will *always* report a 1.0-percentile target, real surprise or not.
+This means "how many domains have an active concern" is a more honest question for this
+mechanism to answer than "how surprising is the most active concern" — the latter is
+still not comparable across domains, even after this fix.
 
 ## Proposed schema / API changes
 
-No new schema, bus channel, or registry entry in this patch. `BordaResult` already
-carries everything needed. New pure functions only:
+No new schema, bus channel, or registry entry in this patch. New pure functions only,
+built on the VERIFIED percentile mechanism above, not the disproven naive-union approach:
+
+```python
+# orion/attention/rank_aggregation.py, new function alongside aggregate_borda() --
+# percentile normalization happens BEFORE cross-scorer combination, not after, since
+# aggregate_borda()'s own point range depends on total universe size in a way percentiles
+# must correct for first (see verified correction above).
+
+def percentile_ballot(scores: dict[str, float]) -> dict[str, float]:
+    """Rank position / (own real universe size - 1), computed independently within one
+    scorer's own real universe. [0,1], comparable across scorers with different universe
+    sizes -- verified 2026-08-20 to remove the universe-size bias naive aggregate_borda()
+    union has (see this module's design doc). Single-target universe -> 1.0 (matches
+    normalize_across_targets()'s own single-target-edge-case precedent: no real basis to
+    call a sole real competitor anything but fully salient)."""
+```
 
 ```python
 # orion/attention/field_attention/concern_state.py, REPLACING the cardinal-threshold
 # version built today (which is not being kept -- same mistake this doc exists to stop)
 
-def classify_concern_state_from_borda(result: "BordaResult") -> ConcernSetV1:
-    """Tiers derived from THIS TICK's own Borda-totals distribution -- z-score-style
-    banding against the tick's own mean/std, not any hand-set or borrowed constant.
-    Self-calibrating per tick, the same precedent `cross_domain_variance_floor`
-    (PR #1774) already established for variance floors, applied here to tier
-    boundaries instead. A target's tier depends only on how it ranks against its
-    REAL competitors this tick -- never on a global number tuned against a different
-    domain's score shape (the exact mistake in `select_actions()`'s disclosed-stale
-    0.48/0.35 and in this module's own first cut).
+def classify_concern_state_from_percentiles(percentile_ballots: dict[str, dict[str, float]]) -> ConcernSetV1:
+    """Combine each scorer's percentile_ballot() (already comparable across domains) via
+    aggregate_borda() -- now safe, since inputs are already [0,1]-normalized per-scorer
+    before combination, not raw magnitudes or raw universe-dependent point counts. Tiers
+    derived from THIS TICK's own combined-percentile distribution mean/std -- self-
+    calibrating, no hand-set or borrowed constant (the exact mistake in
+    `select_actions()`'s disclosed-stale 0.48/0.35 and in this module's own first cut).
 
-    active:  totals[target] >= mean(totals) + 0.5 * std(totals)
-    watch:   totals[target] >= mean(totals)
+    active:  combined_percentile[target] >= mean + 0.5 * std
+    watch:   combined_percentile[target] >= mean
     quiet:   below mean
 
-    Degenerate case (std == 0, e.g. every real competitor tied): falls back to
-    watch-only classification for anything at or above the (single) mean value --
-    matches `normalize_across_targets()`'s own "all-equal -> no arbitrary floor"
-    precedent rather than inventing a new edge-case rule.
+    Degenerate case (std == 0): falls back to watch-only classification for anything at
+    or above the single mean value -- matches normalize_across_targets()'s own
+    "all-equal -> no arbitrary floor" precedent.
     """
 ```
 
@@ -133,8 +201,12 @@ def precision_rank_scorer(node_target_results: dict[str, "PrecisionWeightedSalie
 
 ## Files likely to touch
 
+- `orion/attention/rank_aggregation.py` — new `percentile_ballot()` function (verified
+  above; naive `aggregate_borda()` on a raw union of non-overlapping universes is
+  confirmed biased by universe size and must not be used directly for cross-Candidate
+  comparison without this normalization step first).
 - `orion/attention/field_attention/concern_state.py` — replace cardinal-threshold
-  classification with Borda-totals-distribution classification (function signature
+  classification with percentile/Borda-distribution classification (function signature
   changes; this is a rewrite, not an addition, since the cardinal version is the exact
   thing being retired).
 - `scripts/analysis/measure_society_of_mind_full_replay.py` (new) — finally closes
@@ -182,11 +254,14 @@ def precision_rank_scorer(node_target_results: dict[str, "PrecisionWeightedSalie
    informative — the literal, never-met bar from the original design doc.
 2. **Does rank-native classification actually avoid the mixed-scale bug**: replay the
    SAME real Candidate-A + Candidate-B population that produced today's false 92% figure,
-   through `classify_concern_state_from_borda()` instead of the retired cardinal
+   through `classify_concern_state_from_percentiles()` instead of the retired cardinal
    classifier, and confirm the tier distribution no longer depends on which raw scale a
-   target's scorer happened to use. Concretely checkable: shuffle/rescale one scorer's
-   raw output (multiply by 1000, or divide by 1000) and confirm the resulting tiers are
-   IDENTICAL — a real, mechanical proof of scale-invariance, not an assertion.
+   target's scorer happened to use. Concretely checkable, same as the verified check
+   above: shuffle/rescale one scorer's raw output (multiply by 1000, or divide by 1000)
+   and confirm the resulting tiers are IDENTICAL — real, mechanical proof, not an
+   assertion. **Partially pre-verified above with synthetic data** (universe-size bias
+   confirmed real, percentile fix confirmed to remove it) — this check is the same
+   proof re-run against real historical ticks instead of a 5-vs-3 synthetic example.
 3. **Does self-calibrated tier banding produce non-degenerate tiers on real data**: report
    the real distribution of active/watch/quiet counts per tick, same shape as today's
    (now-retired) multiplicity replay, so the "no hand-picked constant" claim is checked

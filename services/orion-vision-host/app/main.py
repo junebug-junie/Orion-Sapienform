@@ -20,6 +20,11 @@ from orion.schemas.vision import (
 )
 
 from .artifacts import build_artifact_payload
+from .liveness import (
+    VisionLivenessWatcher,
+    build_attention_request,
+    post_attention_request,
+)
 from .models import VisionResult, VisionTask
 from .profiles import VisionProfiles
 from .runner import VisionRunner
@@ -36,6 +41,17 @@ class VisionHostService:
         self.sched: Optional[VisionScheduler] = None
         self._consumer_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
+        # Liveness watcher: notices a healthy-but-serving-nothing host. See
+        # app/liveness.py. Constructed unconditionally so /health can always
+        # report the current failure rate even when alerting is disabled.
+        self.liveness = VisionLivenessWatcher(
+            window_sec=settings.VISION_LIVENESS_WINDOW_SEC,
+            min_samples=settings.VISION_LIVENESS_MIN_SAMPLES,
+            arm_fail_rate=settings.VISION_LIVENESS_ARM_FAIL_RATE,
+            clear_fail_rate=settings.VISION_LIVENESS_CLEAR_FAIL_RATE,
+            sustain_sec=settings.VISION_LIVENESS_SUSTAIN_SEC,
+            cooldown_sec=settings.VISION_LIVENESS_COOLDOWN_SEC,
+        )
 
     async def start(self):
         logger.remove()
@@ -164,6 +180,44 @@ class VisionHostService:
             "queue_wait_est_s": (meta.get("timings") or {}).get("queue_wait_est_s"),
         }
         logger.info("[VISION_TASK] {}", json.dumps(line, default=str))
+        self._note_liveness(ok=bool(res.ok), error_code=meta.get("error_code"))
+
+    def _note_liveness(self, *, ok: bool, error_code: Optional[str]) -> None:
+        """Feed one task outcome to the watcher; fire an alert if it asks.
+
+        Wrapped whole: a liveness bug must never break task completion, which
+        is the path that logs and replies to the caller.
+        """
+        try:
+            decision = self.liveness.record(ok=ok, error_code=error_code)
+            if not (decision.alert or decision.recovered):
+                return
+            if not settings.VISION_LIVENESS_ALERT_ENABLED:
+                logger.warning(
+                    "[LIVENESS] {} (alerting disabled) fail_rate={:.2f} n={}",
+                    decision.reason, decision.fail_rate, decision.sample_count,
+                )
+                return
+            if not settings.NOTIFY_BASE_URL:
+                logger.warning(
+                    "[LIVENESS] {} but NOTIFY_BASE_URL is unset -- no alert sent",
+                    decision.reason,
+                )
+                return
+            body = build_attention_request(decision, node_name=settings.NODE_NAME)
+            logger.warning("[LIVENESS] {} -> attention request", decision.reason)
+            # to_thread: urllib is blocking and this runs on the task-completion
+            # path. A hung notify service must not stall the vision event loop.
+            asyncio.create_task(
+                asyncio.to_thread(
+                    post_attention_request,
+                    body,
+                    base_url=settings.NOTIFY_BASE_URL,
+                    token=settings.NOTIFY_API_TOKEN or None,
+                )
+            )
+        except Exception as exc:
+            logger.warning("[LIVENESS] watcher error (ignored): {}", exc)
 
     async def run_vision_task(self, task: VisionTask) -> VisionResult:
         if not self.runner or not self.sched:
@@ -425,6 +479,7 @@ async def profiles_summary():
     return {
         "ok": True,
         "version": service.profiles.version,
+        "liveness": service.liveness.snapshot(),
         "enabled": settings.enabled_profiles,
         "pipelines": list(service.profiles.pipelines.keys()),
         "profiles": list(service.profiles.profiles.keys()),

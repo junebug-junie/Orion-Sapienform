@@ -139,6 +139,8 @@ def build_chat_salience_trace_row(frame: AttentionFrameV1) -> dict[str, Any] | N
         "loop_id": loop.id,
         "theme_key": loop.id,
         "description": (loop.description or "")[:200],
+        "why_it_matters": (loop.why_it_matters or "")[:500],
+        "target_type": str(loop.target_type or "other"),
         "correlation_id": frame.correlation_id,
         "salience": _bounded(loop.salience),
         "weights_version": _WEIGHTS_VERSION,
@@ -157,11 +159,11 @@ def _persist_sync(row: dict[str, Any]) -> bool:
             text(
                 """
                 INSERT INTO attention_salience_trace
-                    (trace_id, loop_id, theme_key, description, correlation_id, salience,
-                     weights_version, scope, features, created_at)
+                    (trace_id, loop_id, theme_key, description, why_it_matters, target_type,
+                     correlation_id, salience, weights_version, scope, features, created_at)
                 VALUES
-                    (:trace_id, :loop_id, :theme_key, :description, :correlation_id, :salience,
-                     :weights_version, :scope, CAST(:features AS jsonb), :created_at)
+                    (:trace_id, :loop_id, :theme_key, :description, :why_it_matters, :target_type,
+                     :correlation_id, :salience, :weights_version, :scope, CAST(:features AS jsonb), :created_at)
                 ON CONFLICT (trace_id) DO NOTHING
                 """
             ),

@@ -169,6 +169,14 @@ only automatic repeat-suppression mechanism in this scoring path; a loop with
 strong evidence that nobody has explicitly resolved/dismissed can now re-win
 coalition attention indefinitely.
 
+**2026-08-21**: this disclosed gap is real and expected, not a regression to
+chase -- it's exactly why the Hub's pending-attention panel now treats a
+`scope="reverie"` loop as `"chronic_pressure"` rather than a one-off decision
+needing Resolve/Dismiss (see `services/orion-hub/README.md`'s "Pending
+Attention" section). Suppressing this scoring path's re-selection would be
+wrong (the underlying pressure is still live); the fix belongs entirely in how
+the loop is *presented*, not in this file.
+
 `ORION_ATTENTION_SALIENCE_V2_ENABLED` (default-off) is the one remaining flag
 here, narrowed to a single purpose: whether the reverie tick emits
 `AttentionSalienceTraceV1` on `orion:attention:salience:trace` (persisted to

@@ -16,7 +16,9 @@ from pydantic import BaseModel
 from scripts.attention_loops_store import (
     build_loop_outcome,
     build_pending_card,
+    card_kind_for_scope,
     latest_salience_for_theme,
+    latest_scope_for_theme,
     load_pending_loops,
     persist_loop_outcome,
     suppress_loop,
@@ -55,10 +57,10 @@ def list_loops(limit: int = 50):
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    for loop, first_seen, recurrence, narrative in load_pending_loops()[:limit]:
+    for loop, first_seen, recurrence, narrative, scope in load_pending_loops()[:limit]:
         card = build_pending_card(
             loop, first_seen=first_seen, recurrence_count=recurrence,
-            narrative=narrative, now=now,
+            narrative=narrative, now=now, scope=scope,
         )
         cards.append(card.model_dump(mode="json"))
     return cards
@@ -67,6 +69,16 @@ def list_loops(limit: int = 50):
 def _close(loop_id: str, verdict: str, note: str):
     if not _cards_enabled():
         raise HTTPException(status_code=404, detail="pending attention cards disabled")
+    if card_kind_for_scope(latest_scope_for_theme(loop_id)) == "chronic_pressure":
+        # Reverie/substrate-broadcast loops are re-selected every tick by design --
+        # a human Resolve/Dismiss here would falsely mark still-live system
+        # pressure as closed. The Hub UI no longer offers these buttons for a
+        # chronic_pressure card; this is defense in depth against a stale client
+        # or a direct API call.
+        raise HTTPException(
+            status_code=409,
+            detail="this loop is sustained system pressure, not a resolvable decision -- it cannot be resolved/dismissed",
+        )
     salience, features = latest_salience_for_theme(loop_id)
     outcome = build_loop_outcome(
         loop_id=loop_id, theme_key=loop_id, verdict=verdict, actor="juniper",

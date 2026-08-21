@@ -8472,33 +8472,53 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderCognitiveLoopCard(card) {
+    const isChronic = card.card_kind === 'chronic_pressure';
     const el = document.createElement('div');
-    el.className = 'p-2 rounded border border-purple-800 bg-gray-900';
+    el.className = `p-2 rounded border ${isChronic ? 'border-amber-800' : 'border-purple-800'} bg-gray-900`;
+    const header = document.createElement('div');
+    header.className = 'flex items-center justify-between gap-2';
     const title = document.createElement('div');
     title.className = 'text-xs font-semibold text-purple-200';
     title.textContent = card.title;
+    header.appendChild(title);
+    if (isChronic) {
+      const badge = document.createElement('span');
+      badge.className = 'text-[9px] px-1.5 py-0.5 rounded-full uppercase bg-amber-900/60 text-amber-300';
+      badge.textContent = 'Sustained pressure';
+      header.appendChild(badge);
+    }
     const why = document.createElement('div');
     why.className = 'text-[11px] text-gray-400 mt-1';
     why.textContent = card.why_it_matters;
     const feats = document.createElement('div');
     feats.className = 'text-[10px] text-gray-500 mt-1';
     feats.textContent = (Array.isArray(card.top_contributing_features) ? card.top_contributing_features : []).join(' \u00b7 ');
-    const actions = document.createElement('div');
-    actions.className = 'flex gap-2 mt-2';
-    const resolveBtn = document.createElement('button');
-    resolveBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-green-700 text-white';
-    resolveBtn.textContent = 'Resolve';
-    resolveBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'resolve');
-    const dismissBtn = document.createElement('button');
-    dismissBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-gray-700 text-gray-200';
-    dismissBtn.textContent = 'Dismiss';
-    dismissBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'dismiss');
-    actions.appendChild(resolveBtn);
-    actions.appendChild(dismissBtn);
-    el.appendChild(title);
+    el.appendChild(header);
     el.appendChild(why);
     el.appendChild(feats);
-    el.appendChild(actions);
+    if (isChronic) {
+      // Reverie/substrate-broadcast loops are re-selected every tick by design --
+      // Resolve/Dismiss here would falsely mark still-live system pressure as
+      // closed (server also rejects it with 409; see attention_loops_routes.py).
+      const note = document.createElement('div');
+      note.className = 'text-[10px] text-amber-500/80 mt-2 italic';
+      note.textContent = `Recurring ${card.recurrence_count || 0}x -- ongoing system state, not a pending decision.`;
+      el.appendChild(note);
+    } else {
+      const actions = document.createElement('div');
+      actions.className = 'flex gap-2 mt-2';
+      const resolveBtn = document.createElement('button');
+      resolveBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-green-700 text-white';
+      resolveBtn.textContent = 'Resolve';
+      resolveBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'resolve');
+      const dismissBtn = document.createElement('button');
+      dismissBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-gray-700 text-gray-200';
+      dismissBtn.textContent = 'Dismiss';
+      dismissBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'dismiss');
+      actions.appendChild(resolveBtn);
+      actions.appendChild(dismissBtn);
+      el.appendChild(actions);
+    }
     return el;
   }
 

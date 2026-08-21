@@ -264,11 +264,11 @@ def persist_salience_trace(trace) -> bool:
                 text(
                     """
                     INSERT INTO attention_salience_trace
-                        (trace_id, loop_id, theme_key, description, correlation_id, salience,
-                         weights_version, scope, features, created_at)
+                        (trace_id, loop_id, theme_key, description, why_it_matters, target_type,
+                         correlation_id, salience, weights_version, scope, features, created_at)
                     VALUES
-                        (:trace_id, :loop_id, :theme_key, :description, :correlation_id, :salience,
-                         :weights_version, :scope, CAST(:features AS jsonb), :created_at)
+                        (:trace_id, :loop_id, :theme_key, :description, :why_it_matters, :target_type,
+                         :correlation_id, :salience, :weights_version, :scope, CAST(:features AS jsonb), :created_at)
                     ON CONFLICT (trace_id) DO NOTHING
                     """
                 ),
@@ -277,6 +277,8 @@ def persist_salience_trace(trace) -> bool:
                     "loop_id": trace.loop_id,
                     "theme_key": trace.theme_key,
                     "description": trace.description,
+                    "why_it_matters": getattr(trace, "why_it_matters", "") or "",
+                    "target_type": getattr(trace, "target_type", "other") or "other",
                     "correlation_id": trace.correlation_id,
                     "salience": float(trace.salience),
                     "weights_version": trace.weights_version,

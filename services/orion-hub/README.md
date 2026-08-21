@@ -1646,3 +1646,58 @@ Flag: `ORION_ATTENTION_PENDING_CARDS_ENABLED` (default-off). API:
 `attention_loop_outcome`, and suppress the loop via `substrate_reverie_refractory`.
 
 Migration: `psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_attention_loop_outcome.sql`
+
+**`card_kind` (2026-08-21):** every card is `"resolvable"` (chat-derived, a discrete
+turn-scoped candidate a human can actually close) or `"chronic_pressure"`
+(reverie/substrate-broadcast, re-selected every tick by design — the same 7
+substrate nodes recurring indefinitely is expected, not stuck). The split is
+architectural, keyed off the underlying trace row's `scope`, not a heuristic —
+see `orion/schemas/attention_salience.py`'s `PendingCardKindV1` docstring and
+`attention_loops_store.py::card_kind_for_scope`. The Hub UI renders
+`chronic_pressure` cards without Resolve/Dismiss buttons; the API also rejects
+those verbs on one with `409` (defense in depth against a stale client).
+
+**Why every card used to show the same sentence:** `why_it_matters`/`target_type`
+were computed on every loop (`orion/substrate/attention/scoring.py`) but never
+survived into `attention_salience_trace` — both producers dropped them before
+storage, so the Hub's fallback text (`build_pending_card`'s
+`f"This {target_type} has stayed active without resolution."`, `target_type`
+always defaulting to `"other"`) was the *only* text any card ever showed. Fixed
+2026-08-21: both columns are now persisted (see
+`manual_migration_attention_salience_trace.sql`) and both producers
+(`chat_attention_salience_trace.py`, `orion-thought`'s `reverie.py`) carry them
+through. The old sentence is now a true last-resort fallback.
+
+**Implicit decay (2026-08-21):** the panel previously had no expiry at all — a
+loop left it only via a human's Resolve/Dismiss click, forever, even for a
+one-off chat candidate nobody was ever going to act on again.
+`scripts/attention_loop_decay_digest.py` (cron, same pattern as
+`concept_relation_digest.py`) now labels a loop `decayed_unattended` once it's
+gone silent for 24h+ with no human verdict, and suppresses it out of this panel
+the same way a Dismiss does. It does **not** suppress a loop from live reverie
+selection (`decayed_unattended` is deliberately non-terminal for that purpose —
+see `orion/substrate/attention/verdicts.py`), so a `chronic_pressure` loop that's
+still genuinely salient keeps competing normally; only a stale card goes away.
+Liveness fail-safe: `make check-attention-loop-decay-liveness` (see
+`scripts/check_attention_loop_decay_liveness.py`).
+
+**Scheduled maintenance (Athena cron):** `scripts/attention_loop_decay_digest.py`
+is a standalone script, not a live service loop -- install on the host that runs
+the Hub stack (`crontab -e` as the operating user), same pattern as
+`concept_relation_digest.py` (see `services/orion-memory-consolidation/README.md`'s
+"Scheduled maintenance" section):
+
+```cron
+# Attention-loop implicit-decay digest -- labels loops silent 24h+ with no human
+# verdict as decayed_unattended and suppresses them out of the Hub's
+# pending-attention panel (never out of live reverie selection). Idempotent
+# (outcome_id is episode-scoped), safe to run frequently. Requires POSTGRES_URI
+# in the shell environment or a sourced .env; see services/orion-hub/.env.
+*/30 * * * * cd /mnt/scripts/Orion-Sapienform && POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' services/orion-hub/.env | cut -d= -f2-) make attention-loop-decay-digest >> /mnt/scripts/Orion-Sapienform/logs/orion-attention-loop-decay-digest.log 2>&1
+```
+
+If this cron entry dies or is dropped after a host migration, nothing else
+notices on its own -- `make check-attention-loop-decay-liveness` is the
+fail-safe (queries the real overshoot past each loop's own decay threshold, not
+a heartbeat file); run it by hand any time you suspect the digest stopped
+running.

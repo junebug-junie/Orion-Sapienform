@@ -21,6 +21,15 @@ create table if not exists attention_salience_trace (
 -- Backfill for existing deployments (create table above is a no-op if table exists).
 alter table attention_salience_trace add column if not exists description text not null default '';
 
+-- 2026-08-21: carry the loop's real why_it_matters/target_type through to storage.
+-- Both producers (chat_attention_salience_trace.py, orion-thought's reverie.py)
+-- already compute these on OpenLoopV1 and were dropping them before this column
+-- existed -- every pending-attention card fell back to one static sentence
+-- ("This other has stayed active without resolution.") regardless of what the
+-- loop actually was. Old rows keep the defaults; nothing is backfilled.
+alter table attention_salience_trace add column if not exists why_it_matters text not null default '';
+alter table attention_salience_trace add column if not exists target_type text not null default 'other';
+
 create index if not exists idx_attention_salience_trace_created_at
     on attention_salience_trace (created_at desc);
 

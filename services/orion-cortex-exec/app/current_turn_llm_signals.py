@@ -189,6 +189,19 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
         type_hint = str(item.get("type") or "other").strip().lower()
         if type_hint not in _ALLOWED_TYPES:
             type_hint = "other"
+        # Structural floor under the prompt's own filtering instruction, not a
+        # replacement for it. Confirmed live 2026-08-21 (after the prompt's
+        # interjection ban already shipped): a quick-lane model under a tight
+        # max_tokens budget still returns bare single words as "concept"/"other"
+        # candidates ("bus", "Glad", "Compact", "Interesting") -- the same
+        # unactionable-garbage failure mode the deleted regex detector had, one
+        # step removed. A single bare token is only ever a real trackable thing
+        # when it names a person or place (see run_current_turn_signal_eval.py
+        # for the labeled fixture this threshold is measured against) -- a bare
+        # "concept"/"belief"/"activity"/"plan" is essentially never expressible
+        # in one word ("the reactor rollout plan" is; "plan" alone is not).
+        if " " not in phrase and type_hint not in {"person", "place"}:
+            continue
         out.append({"phrase": phrase[:_MAX_PHRASE_LEN], "type": type_hint})
     return out
 

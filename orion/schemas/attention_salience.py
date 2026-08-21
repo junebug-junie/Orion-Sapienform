@@ -24,6 +24,15 @@ PendingCardStatusV1 = Literal["pending", "resolved", "dismissed"]
 
 MAX_FEATURE_LIST = 16
 
+# "resolvable": a discrete, turn-scoped candidate a human can actually close
+# (chat-derived). "chronic_pressure": a recurring reverie/substrate-broadcast
+# signal that is re-selected every tick by design -- Resolve/Dismiss on one of
+# these would be a false closure (the underlying pressure is still live), so
+# the Hub renders it without those actions. Split is architectural, keyed off
+# `scope` (chat vs reverie), not a heuristic threshold -- see
+# attention_loops_store.py::card_kind_for_scope.
+PendingCardKindV1 = Literal["resolvable", "chronic_pressure"]
+
 
 class AttentionSalienceTraceV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -33,6 +42,12 @@ class AttentionSalienceTraceV1(BaseModel):
     loop_id: str
     theme_key: str
     description: str = Field(default="", max_length=200)
+    # Carried through from OpenLoopV1 at score time so the Hub's pending-attention
+    # panel doesn't have to reconstruct these from nothing at read time (see
+    # attention_loops_store.py::build_pending_card's fallback text, previously
+    # the ONLY text every card ever showed because these were never persisted).
+    why_it_matters: str = Field(default="", max_length=500)
+    target_type: str = "other"
     correlation_id: str | None = None
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
     weights_version: str = "gwt-coalition-v1"
@@ -74,3 +89,4 @@ class PendingAttentionCardV1(BaseModel):
     top_contributing_features: list[str] = Field(default_factory=list, max_length=MAX_FEATURE_LIST)
     source: Literal["cognitive_loop"] = "cognitive_loop"
     status: PendingCardStatusV1 = "pending"
+    card_kind: PendingCardKindV1 = "resolvable"

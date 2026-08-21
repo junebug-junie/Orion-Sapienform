@@ -19,10 +19,22 @@ ENV IS_SANDBOX=1
 # No git, no gh, no ssh client: this service reads one credential file and
 # talks to the bus. Every tool absent here is one a compromised room turn
 # cannot reach for.
+#
+# Node 22, not 20: confirmed live 2026-08-18, `npm install -g
+# @anthropic-ai/claude-code` with no version pin does NOT install the latest
+# published release when the local Node doesn't satisfy its `engines.node`
+# constraint -- it silently resolves to the newest version that DOES, with no
+# warning. @anthropic-ai/claude-code@2.1.234 (current at the time) requires
+# node >=22; under Node 20 this installed 2.1.197 instead, which then failed
+# `claude setup-token` auth with `401 Invalid bearer token` against a token
+# the same host's up-to-date CLI accepted fine -- a stale-CLI bug that looked
+# exactly like a bad credential until versions were compared directly. `apt
+# list --installed nodejs` in a shell inside the built image is the fast way
+# to notice this recurring, since there's no error at build time either way.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg && \
     mkdir -p /etc/apt/keyrings && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     npm install -g @anthropic-ai/claude-code && \
     apt-get purge -y --auto-remove gnupg && \

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 import app.situation as situation
+from app.session_turn_phase import (
+    bind_session_turn_phase_bus,
+    reset_session_turn_phase_bus_for_tests,
+    write_session_turn_state,
+)
 from app.situation import build_situation_for_ctx
 
 
@@ -45,6 +51,22 @@ def _settings(**overrides):
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+class _FakeSessionTurnPhaseRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+
+    async def get(self, key: str):
+        return self.store.get(key)
+
+    async def setex(self, key: str, ttl_seconds: int, payload: str):
+        self.store[key] = payload.encode("utf-8")
+
+
+class _FakeSessionTurnPhaseBus:
+    def __init__(self, redis: _FakeSessionTurnPhaseRedis) -> None:
+        self.redis = redis
 
 
 # NOTE: build_situation_for_ctx (and, inside it, _build_conversation_phase)
@@ -142,6 +164,73 @@ async def test_situation_cache_refreshes_when_requestor_changes():
         _settings(orion_situation_ttl_seconds=300),
     )
     assert brief_guest["presence"]["requestor"]["display_name"] == "Guest"
+
+
+@pytest.mark.asyncio
+async def test_situation_cache_survives_executors_own_presence_context_mutation():
+    """Regression test for a real bug found in review (2026-08-21): the
+    cache fingerprint used to include raw.get("submitted_at")/("expires_at"),
+    which are always None on genuine caller input but get populated once
+    executor.py's own `ctx["presence_context"] = situation_brief.get
+    ("presence")` (executor.py, `call_step_services`) round-trips this
+    function's own prior output back in as if it were fresh input, on the
+    second+ service iteration of the SAME step. expires_at carries
+    microsecond precision, so that self-mutation changed the cache key on
+    essentially every call -- meaning a same-turn re-entry within the
+    _SITUATION_CACHE's own TTL window never actually hit the cache.
+
+    Consequence when it doesn't hit: _build_conversation_phase runs again,
+    reads back the last_user_turn_at the FIRST call in this turn just wrote
+    to Redis (now == "a moment ago"), computes delta_user ≈ 0, and silently
+    reclassifies a genuine long_gap as same_breath -- overwriting the
+    correct phase mid-turn with exactly the kind of masking this whole
+    patch exists to prevent. This test seeds a real long_gap timestamp,
+    calls build_situation_for_ctx once, applies the exact ctx mutation
+    executor.py performs, then calls it again immediately -- the second
+    call must return the SAME cached long_gap brief, not a fresh
+    same_breath one.
+    """
+    reset_session_turn_phase_bus_for_tests()
+    bind_session_turn_phase_bus(_FakeSessionTurnPhaseBus(_FakeSessionTurnPhaseRedis()))
+    try:
+        situation._SITUATION_CACHE.clear()
+        session = "sid-mutation-regression"
+        six_hours_ago = datetime.now(timezone.utc) - timedelta(hours=6)
+        await write_session_turn_state(session, last_user_turn_at=six_hours_ago, last_orion_turn_at=None)
+
+        ctx = {"session_id": session, "presence_context": {"audience_mode": "solo"}}
+        cfg = _settings(orion_situation_ttl_seconds=300)
+
+        brief_first, _ = await build_situation_for_ctx(ctx, cfg)
+        phase_first = brief_first["conversation_phase"]["phase_change"]
+        # Not asserting the exact bucket name: _build_conversation_phase's
+        # separate crossed_day_boundary check (a real, pre-existing, out-of-
+        # scope-for-this-patch quirk -- see test_situation_conversation_phase.py)
+        # calls the REAL wall-clock datetime.now(), so "6 hours ago" reads
+        # as either long_gap or next_day depending on what time this suite
+        # happens to run. Either way it must not be same_breath/unknown.
+        assert phase_first not in ("same_breath", "unknown", "short_pause")
+        seconds_first = brief_first["conversation_phase"]["time_since_last_user_turn_seconds"]
+        assert seconds_first is not None and seconds_first > 3600
+
+        # Exactly executor.py's own mutation (executor.py ~3029):
+        ctx["presence_context"] = brief_first.get("presence")
+
+        brief_second, _ = await build_situation_for_ctx(ctx, cfg)
+        phase_second = brief_second["conversation_phase"]["phase_change"]
+        seconds_second = brief_second["conversation_phase"]["time_since_last_user_turn_seconds"]
+        assert phase_second == phase_first, (
+            "cache miss caused by the executor's own ctx mutation reclassified "
+            f"the conversation phase mid-turn: {phase_first!r} -> {phase_second!r}"
+        )
+        assert seconds_second == seconds_first, (
+            "cache miss caused by the executor's own ctx mutation recomputed "
+            "time_since_last_user_turn_seconds mid-turn instead of serving the "
+            "cached brief -- this is the exact mechanism that would silently "
+            "reclassify a genuine long_gap as same_breath"
+        )
+    finally:
+        reset_session_turn_phase_bus_for_tests()
 
 
 @pytest.mark.asyncio

@@ -176,6 +176,26 @@ async def test_write_fails_open_when_redis_raises_and_does_not_propagate(caplog)
 
 
 @pytest.mark.asyncio
+async def test_write_fails_open_when_payload_construction_itself_raises(caplog) -> None:
+    """Payload construction (the .astimezone() calls) must be inside the
+    same try as the network call -- a pathological datetime that raises
+    there must not escape this module either, same fail-open contract as
+    a Redis error."""
+
+    class _ExplodingDatetime(datetime):
+        def astimezone(self, tz=None):
+            raise OverflowError("date value out of range")
+
+    bad = _ExplodingDatetime(2026, 1, 1, tzinfo=timezone.utc)
+    redis = _FakeRedis()
+    bind_session_turn_phase_bus(_FakeBus(redis))
+    with caplog.at_level(logging.WARNING, logger="orion.cortex.session_turn_phase"):
+        await write_session_turn_state("sid-exploding", last_user_turn_at=bad, last_orion_turn_at=None)  # must not raise
+    assert any("session_turn_phase_write_failed" in r.message for r in caplog.records)
+    assert redis.setex_calls == []
+
+
+@pytest.mark.asyncio
 async def test_read_fails_open_when_bus_unbound_with_distinguishable_warning(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="orion.cortex.session_turn_phase"):
         state = await read_session_turn_state("sid-unbound")
@@ -214,15 +234,74 @@ async def test_missing_key_is_not_a_failure_and_does_not_warn(caplog) -> None:
 
 
 @pytest.mark.asyncio
-async def test_malformed_payload_fails_open(caplog) -> None:
+async def test_malformed_payload_fails_open_and_is_confirmed_not_unknown(caplog) -> None:
+    """A malformed payload is a DIFFERENT case from a Redis error: the GET
+    itself succeeded, so we affirmatively know this key holds no usable
+    data. ok=True here (unlike a real read failure) so a caller's next
+    write actually overwrites the garbage instead of the key silently
+    self-poisoning for the rest of its 7-day TTL -- a corrupt record must
+    self-heal on the next turn, not permanently block every future write
+    the way returning ok=False here would (that was the original,
+    now-fixed, shape of this bug)."""
     redis = _FakeRedis({"orion:cortex-exec:session_turn_phase:sid-garbage": b"not json at all"})
     bind_session_turn_phase_bus(_FakeBus(redis))
     with caplog.at_level(logging.WARNING, logger="orion.cortex.session_turn_phase"):
         state = await read_session_turn_state("sid-garbage")
     assert state.last_user_turn_at is None
     assert state.last_orion_turn_at is None
-    assert state.ok is False
+    assert state.ok is True
     assert any("session_turn_phase_read_failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_malformed_payload_self_heals_on_the_next_write() -> None:
+    """End-to-end proof of the self-healing property above: a corrupt
+    record gets overwritten by a normal write immediately after, rather
+    than staying wedged."""
+    key = "orion:cortex-exec:session_turn_phase:sid-heal"
+    redis = _FakeRedis({key: b"not json at all"})
+    bind_session_turn_phase_bus(_FakeBus(redis))
+
+    good_now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+    await write_session_turn_state("sid-heal", last_user_turn_at=good_now, last_orion_turn_at=None)
+
+    state = await read_session_turn_state("sid-heal")
+    assert state.ok is True
+    assert state.last_user_turn_at == good_now
+
+
+@pytest.mark.asyncio
+async def test_not_a_dict_payload_is_confirmed_not_unknown() -> None:
+    key = "orion:cortex-exec:session_turn_phase:sid-not-dict"
+    redis = _FakeRedis({key: b"[1, 2, 3]"})
+    bind_session_turn_phase_bus(_FakeBus(redis))
+    state = await read_session_turn_state("sid-not-dict")
+    assert state.ok is True
+    assert state.last_user_turn_at is None
+
+
+# --- naive-datetime normalization (a foreign/hand-edited payload) ----------
+
+
+@pytest.mark.asyncio
+async def test_naive_datetime_in_payload_is_normalized_to_utc_not_left_naive() -> None:
+    """Everything this module itself writes is tz-aware UTC, but a foreign
+    or hand-edited payload could contain a naive string. Left naive, this
+    used to raise TypeError deep in situation.py's `now_utc - last_user`
+    the first time a caller actually used the value -- see _parse_iso's
+    docstring for the full failure mode this prevents."""
+    key = "orion:cortex-exec:session_turn_phase:sid-naive"
+    redis = _FakeRedis({key: json.dumps({"last_user_turn_at": "2026-08-20T12:00:00", "last_orion_turn_at": None}).encode("utf-8")})
+    bind_session_turn_phase_bus(_FakeBus(redis))
+
+    state = await read_session_turn_state("sid-naive")
+
+    assert state.ok is True
+    assert state.last_user_turn_at is not None
+    assert state.last_user_turn_at.tzinfo is not None
+    # Subtracting from a tz-aware "now" must not raise.
+    delta = datetime.now(timezone.utc) - state.last_user_turn_at
+    assert delta.total_seconds() > 0
 
 
 # --- round trip ---------------------------------------------------------------

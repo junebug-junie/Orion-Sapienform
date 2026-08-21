@@ -146,6 +146,32 @@ async def test_long_gap_between_three_and_twelve_hours() -> None:
 
 
 @pytest.mark.asyncio
+async def test_KNOWN_GAP_twelve_to_forty_eight_hours_falls_through_to_unknown() -> None:
+    """KNOWN GAP, pre-existing and out of scope for this storage-only
+    patch (confirmed byte-identical against `git show main:.../situation.py`
+    -- this is not something the Redis migration introduced or could have
+    fixed incidentally): `long_gap` requires `delta_user < 12*3600` and
+    `stale_thread` requires `delta_user > 48*3600` (strict), so anything
+    from 12h up to and including 48h falls through every bucket and lands
+    on `phase="unknown"`/`continuity_mode="continue_directly"` -- the SAME
+    "as if we just talked" framing as a session with no prior history at
+    all. A day-and-a-half of real silence renders identically to "fresh
+    session." Found during review of this patch; pinned here rather than
+    silently changed, so the hole stays documented instead of invisible.
+    Follow-up: close this 12h-48h dead zone in a separate, threshold-only
+    change.
+    """
+    store: dict = {}
+    for hours in (13, 24, 36, 47, 48):
+        session_id = f"sid-known-gap-{hours}h"
+        _seed(store, session_id, last_user=NOW - timedelta(hours=hours))
+        bind_session_turn_phase_bus(_FakeBus(_FakeRedis(store)))
+        out = await _build_conversation_phase({"session_id": session_id}, _time_ctx(), NOW)
+        assert out.phase_change == "unknown", f"expected the known 12h-48h dead zone at {hours}h, got {out.phase_change!r}"
+        assert out.continuity_mode == "continue_directly"
+
+
+@pytest.mark.asyncio
 async def test_stale_thread_beyond_forty_eight_hours() -> None:
     store: dict = {}
     _seed(store, "sid-stale", last_user=NOW - timedelta(hours=72))

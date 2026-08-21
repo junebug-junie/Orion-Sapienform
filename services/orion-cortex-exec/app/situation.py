@@ -132,7 +132,34 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
     )
 
 
-def _presence_cache_fingerprint(ctx: dict[str, Any]) -> str:
+def _presence_cache_fingerprint(ctx: dict[str, Any], cfg: SituationSettings) -> str:
+    """Fingerprint of the presence-relevant fields that should bust the
+    situation cache when they meaningfully change.
+
+    MUST be idempotent under executor.py's own `ctx["presence_context"] =
+    situation_brief.get("presence")` self-mutation (executor.py
+    ~3029, `call_step_services`), which round-trips this function's OWN
+    prior *output* back in as if it were fresh caller *input* on the
+    second+ service iteration of the same step within one turn. That means
+    every default this function applies has to match `_presence_from_ctx`'s
+    defaults byte-for-byte -- fingerprint(raw_caller_input) must equal
+    fingerprint(that_same_input_after_one_round_trip_through_the_defaults),
+    or a same-turn re-entry within the cache's own TTL window "changes"
+    fingerprint purely because a None got filled in with its default value,
+    never actually hitting the cache. Confirmed live: an earlier version of
+    this function used `raw.get(...)` with no defaulting (or a defaulting
+    scheme that didn't match `_presence_from_ctx`), so requestor and
+    privacy_mode alone differed enough to bust the cache on literally every
+    call within a turn. Consequence when the cache never hits:
+    _build_conversation_phase runs again, reads back the
+    last_user_turn_at the FIRST call in this turn just wrote to Redis (now
+    == "a moment ago"), computes delta_user≈0, and silently reclassifies a
+    genuine long_gap/stale_thread as same_breath mid-turn -- exactly the
+    kind of masking this whole patch exists to prevent. submitted_at/
+    expires_at are excluded entirely rather than defaulted-and-matched:
+    they carry microsecond precision and no real caller ever sets them on
+    genuine input, so there is no meaningful signal to preserve there.
+    """
     raw = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
     companions = raw.get("companions") if isinstance(raw.get("companions"), list) else []
     normalized_companions = [
@@ -146,30 +173,30 @@ def _presence_cache_fingerprint(ctx: dict[str, Any]) -> str:
         if isinstance(item, dict) and item.get("display_name")
     ]
     requestor = raw.get("requestor") if isinstance(raw.get("requestor"), dict) else {}
+    # Same default logic as _presence_from_ctx below, field for field.
+    audience_mode = str(raw.get("audience_mode") or ("solo" if not normalized_companions else "mixed_group"))
     fingerprint = {
-        "audience_mode": str(raw.get("audience_mode") or "solo"),
+        "audience_mode": audience_mode,
         "companions": normalized_companions,
         "requestor": {
-            "display_name": requestor.get("display_name"),
-            "relationship_to_orion": requestor.get("relationship_to_orion"),
+            "display_name": str(requestor.get("display_name") or cfg.default_requestor),
+            "relationship_to_orion": str(requestor.get("relationship_to_orion") or "primary_operator"),
         },
-        "privacy_mode": raw.get("privacy_mode"),
-        "submitted_at": raw.get("submitted_at"),
-        "expires_at": raw.get("expires_at"),
+        "privacy_mode": str(raw.get("privacy_mode") or "session_only"),
     }
     return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
 
 
-def _situation_cache_key(ctx: dict[str, Any]) -> str:
+def _situation_cache_key(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     session_key = str(ctx.get("session_id") or "global")
-    return f"{session_key}:{_presence_cache_fingerprint(ctx)}"
+    return f"{session_key}:{_presence_cache_fingerprint(ctx, cfg)}"
 
 
 async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     cfg = settings_from_runtime(runtime_settings)
     if not cfg.enabled:
         return {}, {}
-    cache_key = _situation_cache_key(ctx)
+    cache_key = _situation_cache_key(ctx, cfg)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
         if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.ttl_seconds:

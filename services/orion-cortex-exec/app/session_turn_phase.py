@@ -34,10 +34,12 @@ precedent, not an ad hoc new one.
 
 Key: ``orion:cortex-exec:session_turn_phase:{session_id}``
 Payload: ``{"last_user_turn_at": "<ISO8601 UTC>" | null, "last_orion_turn_at": "<ISO8601 UTC>" | null}``
-TTL: 7 days by default (`ttl_seconds` kwarg) -- comfortably longer than the
-48h `stale_thread` threshold in `situation.py`, so the key never expires out
-from under a genuinely-stale-but-still-tracked thread and gets silently
-misread as "unknown" instead of correctly classified as stale.
+TTL: 7 days by default (`ttl_seconds` kwarg) -- comfortably covers the 48h
+`stale_thread` threshold in `situation.py` with room to spare (a gap longer
+than 7 days is still possible -- `stale_thread` has no upper bound -- and
+in that case the key legitimately expires and the thread reads "unknown"
+rather than "stale"; the TTL bounds the window this can misclassify, it
+does not eliminate it entirely).
 
 Fail-open by contract: every function here degrades to "no prior state"
 (`None`, `None`) on any read/write failure, an unbound bus, or a malformed
@@ -53,6 +55,15 @@ because we don't know them, not because they're empty). Blindly writing
 previously-good timestamp on the field the caller wasn't even trying to
 update -- worse than the bug this module fixes. Callers must check `.ok`
 and skip the write entirely when it's `False`.
+
+KNOWN, ACCEPTED LIMITATION: the read and its matching write are not
+atomic (no Redis transaction/WATCH, no hash field ops), so two different
+replicas racing on the exact same session within the same sub-millisecond
+window could lose one field's update. Self-heals on the next turn either
+way, and one process only ever writes the field it's actively updating
+while carrying forward the other field it just read -- worth closing with
+a Redis hash (one field per writer, no read-modify-write at all) if this
+ever proves to matter in practice, not before.
 """
 
 from __future__ import annotations
@@ -90,12 +101,29 @@ def _key(session_id: str) -> str:
 
 
 def _parse_iso(value: object) -> datetime | None:
+    """Parse an ISO8601 string, normalizing a tz-naive result to UTC.
+
+    `write_session_turn_state` always writes a tz-aware UTC string, but a
+    foreign/hand-edited payload could contain a naive one. Left unnormalized,
+    a naive value later hits `now_utc - last_user` in
+    `situation._build_conversation_phase` and raises `TypeError: can't
+    subtract offset-naive and offset-aware datetimes` -- which would escape
+    this "never raises" module and, worse, propagate out of
+    `build_situation_for_ctx` into `executor.py`'s broad except block,
+    discarding the ENTIRE situation brief (weather/presence/perception/
+    runtime too, not just phase) over one bad timestamp field. Confirmed
+    live before this fix. `mark_orion_turn`'s `.astimezone(timezone.utc)`
+    on a naive value doesn't raise either -- it silently reinterprets it as
+    local time and writes a shifted timestamp back, which is worse (a loud
+    failure would at least have been visible).
+    """
     if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 _BUS: OrionBusAsync | None = None
@@ -117,10 +145,15 @@ async def read_session_turn_state(session_id: str) -> SessionTurnState:
 
     Returns a `SessionTurnState` with `ok=True` and both fields `None` when
     the key is genuinely absent (a new/never-tracked session; not a
-    failure, logged at INFO not WARNING). Returns `ok=False` (also both
-    fields `None`, but meaning "unknown", not "empty" -- see the module
-    docstring) -- never raises -- when the bus is unbound, Redis errors, or
-    the payload is malformed/incomplete.
+    failure, logged at INFO not WARNING) OR when the payload was read
+    successfully but is malformed/not-a-dict -- in both cases the read
+    itself succeeded and we affirmatively know there is no usable prior
+    data, so it is safe for a caller to overwrite fresh (a malformed
+    payload must self-heal on the next write, not self-poison for the
+    remaining TTL by permanently blocking every future write too). Returns
+    `ok=False` (also both fields `None`, but meaning "unknown", not
+    "confirmed empty") -- never raises -- only when the read itself could
+    not be trusted at all: the bus is unbound or Redis errored.
     """
     bus = _BUS
     if bus is None:
@@ -143,12 +176,16 @@ async def read_session_turn_state(session_id: str) -> SessionTurnState:
             raw = raw.decode("utf-8")
         parsed = json.loads(raw)
     except Exception:
+        # The GET itself succeeded -- this is a confirmed-unusable payload,
+        # not an unknown read outcome, so ok=True (see docstring above: a
+        # caller must be able to overwrite this on its next write rather
+        # than have it wedge for the rest of the TTL).
         logger.warning("session_turn_phase_read_failed key=%s malformed_json", key, exc_info=True)
-        return _UNKNOWN_STATE
+        return _CONFIRMED_EMPTY_STATE
 
     if not isinstance(parsed, dict):
         logger.warning("session_turn_phase_read_failed key=%s not_a_dict", key)
-        return _UNKNOWN_STATE
+        return _CONFIRMED_EMPTY_STATE
 
     last_user = _parse_iso(parsed.get("last_user_turn_at"))
     last_orion = _parse_iso(parsed.get("last_orion_turn_at"))
@@ -179,13 +216,17 @@ async def write_session_turn_state(
         return
 
     key = _key(session_id)
-    payload = json.dumps(
-        {
-            "last_user_turn_at": last_user_turn_at.astimezone(timezone.utc).isoformat() if last_user_turn_at else None,
-            "last_orion_turn_at": last_orion_turn_at.astimezone(timezone.utc).isoformat() if last_orion_turn_at else None,
-        }
-    )
     try:
+        # Payload construction lives inside the try too, not just the
+        # setex call -- .astimezone() can raise on a pathological/out-of-
+        # range datetime, and this module's whole contract is "never
+        # raises," not "never raises past the network call."
+        payload = json.dumps(
+            {
+                "last_user_turn_at": last_user_turn_at.astimezone(timezone.utc).isoformat() if last_user_turn_at else None,
+                "last_orion_turn_at": last_orion_turn_at.astimezone(timezone.utc).isoformat() if last_orion_turn_at else None,
+            }
+        )
         await bus.redis.setex(key, ttl_seconds, payload)
         logger.info("session_turn_phase_write key=%s ttl_seconds=%s", key, ttl_seconds)
     except Exception:

@@ -1,9 +1,110 @@
 # Action value needs a control arm
 
 **Date:** 2026-08-21
-**Status:** design, not implemented
+**Status:** IMPLEMENTED, with one central amendment -- see "Amendment" below
 **Supersedes the value definition in:** PR "action-outcome ledger" (phase 1)
 **Blocks:** any decision budget that reads `substrate_action_outcomes.posterior_mean`
+
+## Amendment (2026-08-21, during implementation)
+
+**The control arm proposed below does not work, and the implementation uses a
+different one.** Kept visible rather than rewritten, because the reasoning
+that produced the wrong arm is the same reasoning a later patch will reach
+for.
+
+The proposal was to contrast a dispatched candidate against a
+capacity-blocked one. Checked against live frames before building it:
+
+```
+n_dispatched  n_blocked  frames (2h live sample)
+0             0          667
+5             5           34
+3             7            5
+```
+
+Blocked candidates only ever exist in ticks where five other candidates DID
+go out, because the cap only binds when there is a queue. Two consequences,
+both fatal:
+
+1. The field delta is measured frame-wide, so a dispatched and a
+   capacity-blocked candidate in the same tick read the **same** before and
+   the **same** after. A within-tick contrast between them is identically
+   zero by construction.
+2. Across ticks, every capacity-blocked observation is contaminated by the
+   five siblings that did run. There is no clean capacity-blocked control
+   frame at all.
+
+**The arm actually used is `no_action`:** one untreated observation per
+(tick, signal) drawn from the ~94% of ticks in which NOTHING was dispatched.
+Live over 3 days that is 80,414 untreated ticks against 86,910 total. The
+condition is "nothing ran", not "nothing claiming this signal ran", because
+5 of 16 templates declare no signal at all and are 72% of dispatch volume --
+an undeclared action still acts.
+
+`capacity_blocked` rows are still written to the ledger (a lost candidate's
+reading is real evidence) and are **not admissible as a control arm**;
+`contrast()` will not accept them as one.
+
+**Result, replayed on the live 3-day corpus** (acceptance check 3):
+
+```
+target                      n        raw   contrast       +/-   cover
+host:docker_images       3385    -0.1350    +0.0371    0.0037    90%
+host:docker_containers    741    +0.0477    +0.0646    0.0074    78%
+host:docker_build_cache  1261    -0.0205    +0.0468    0.0057    53%
+```
+
+The headline number does not merely shrink, it **changes sign**: phase 1
+would have reported "pruning dangling images reduces resource_pressure by
+0.14"; the matched contrast says it slightly raises it. The whole -0.1350
+was mean reversion.
+
+`cover` is below 100% because the frozen-cell guard is refusing the bins
+whose control arm was pinned during this window -- see the second amendment.
+An earlier run of this eval reported 100% coverage and a contrast of +0.0172;
+that run folded its EWMA over an unordered result set, which is not a rate of
+anything, and so failed to notice a bin whose instrument had been dead for
+twelve hours. Both the ordering and the numbers were corrected before this
+document was finalised.
+
+**Second amendment -- a guard the design did not anticipate.** A control cell
+that has stopped seeing its signal move is not a calm baseline, it is a frozen
+instrument, and contrasting against it hands the treated arm's entire raw
+delta back wearing the contrast's name and confidence. This is not
+hypothetical: see "Live instrument failure found during implementation"
+at the end of this document. A Normal-Normal posterior with a fixed
+observation variance cannot detect it -- its variance shrinks as 1/n whether
+the data varies or is one constant repeated, so a frozen channel produces the
+most confident-looking cell in the table.
+
+`ControlCell` therefore carries movement explicitly. **The first version of
+this guard tested a lifetime counter (`moved_n == 0`) and was wrong in a way
+worth recording:** a monotone lifetime counter can only ever catch a channel
+that was *born* dead. Once a cell has seen a single movement it can never be
+frozen again, so the scenario the guard exists for -- a healthy channel that
+freezes later, which is exactly what happened on 2026-08-21 -- was
+structurally undetectable. It survived the live replay only because the
+replay built its cells from scratch inside the pinned window. Caught in
+review. `is_frozen` now reads `move_rate`, an EWMA (alpha = 1/1000, ~50 min
+at the live untreated rate) against a threshold of 0.25, read off the live
+per-bin movement fractions: healthy bins run 0.73-0.92, the pinned bin ran
+0.024.
+
+**What the guard does and does not do.** It refuses a cell *while* the
+instrument is pinned. It does not retroactively clean contamination a cell
+absorbed before recovering. Live, `resource_pressure` bin 8's control cell
+holds 19,695 observations of which only 462 moved, and its mean of -0.0117 is
+diluted by ~19,200 fabricated zeros; the guard refuses that bin, which is why
+`cover` reads 90% rather than 100%. `eval_action_value_contrast.py` now
+prints an instrument-sensitivity band for exactly this reason -- if the
+conclusion is not robust across it, there is no conclusion.
+
+**Binning also changed:** fixed-width deciles of [0,1], not trailing-window
+quantiles. Quantile edges make bin identity mean something different at
+different times, so pooling records across time would silently mix
+conditions -- the same class of defect as the confound itself.
+
+---
 
 ## Arsonist summary
 
@@ -276,3 +377,76 @@ Steps 1 and 2 only (`arm`, `baseline_bin`, contrast reporting), with
 acceptance check 3 as the gate. Holdback (step 3) ships after the contrast is
 proven to reproduce the decile inversion on real data, because a randomized
 arm that feeds a broken estimator is worse than no arm at all.
+
+
+---
+
+## Live instrument failure found during implementation (2026-08-21)
+
+Recorded here because it poisons this design's main signal and is a separate
+patch, not because it was fixed.
+
+`resource_pressure` -- 26.5% of declared-claim dispatch volume, the signal all
+three docker-prune templates claim -- sat at **exactly 0.85, stddev exactly
+0.0, across ~12,000 consecutive frames** on 2026-08-21 (03:00 to ~18:00 UTC),
+against 2,600 distinct values/day on every preceding day:
+
+```
+day          frames   pinned at 0.85    distinct values
+2026-08-19    26868       12  (0.0%)          2596
+2026-08-20    38668       32  (0.1%)          2063
+2026-08-21    20754    20510 (98.8%)            38
+```
+
+Mechanism, traced end to end:
+
+1. `node:substrate.vision.prediction_error` saturated at exactly **1.0** for
+   12+ consecutive hours. That reading is correct -- it is
+   `vision_channel_staleness_pressure` (orion/substrate/prediction_error.py)
+   reporting that no vision artifact has arrived at all. The eye is blind.
+2. The `node:substrate.vision -> capability:vision` edge in
+   `config/field/orion_field_topology.v1.yaml` maps `prediction_error` to the
+   `pressure` channel with **weight 0.85**. 1.0 x 0.85 = 0.85.
+3. `capability:vision`'s pressure wins the `max()` merge into the
+   `resource_pressure` dimension (`orion/field/pressure.py`,
+   `CHANNEL_DIMENSION_MAP["pressure"] = "resource_pressure"`).
+
+So for most of a day, Orion's *resource* pressure -- the thing that drives
+~21% of everything it does, all of it docker pruning -- was a constant equal
+to a hand-typed YAML edge weight, and what it was actually reporting was that
+a camera was off. **No staleness or freshness check could catch this**: the
+value was rewritten every single tick. It was fresh, present, and constant.
+
+The freeze cleared when the runtimes were rebuilt at ~19:00 UTC, which makes
+it a recurring state, not a one-off.
+
+**Cross-reference, checked after the fact: PR #1800 (opened 19:11 UTC today)
+independently root-caused and fixed the camera half of this.**
+`orion-vision-host` was bricked from 2026-08-20 22:00 UTC by a self-defeating
+VRAM config (`free 4191 - reserve 3500 = 691 < hard_floor 1400`, unsatisfiable
+once the models warm up), refusing every task for ~21 hours while the
+container reported healthy. That timeline matches this pin exactly, and the
+restart that cleared the pin at ~19:00 UTC was that fix landing.
+
+That closes the *input*. It does not close the defect found here, and #1800
+does not mention it: **a blind camera should not have been able to move
+Orion's resource pressure at all.** The staleness reading was correct the
+whole time; the wiring took a correct perception alarm, multiplied it by a
+hand-typed edge weight, and let it win a `max()` merge into the dimension
+that decides whether to prune Docker images. Fixing the camera makes the
+symptom go away and leaves the mechanism in place for the next perception
+outage -- and #1800 itself reports that nothing alerted for 21 hours, so
+there will be a next one.
+
+Three separate follow-ups, none of them done here:
+
+- **The merge is wrong**, not just the input. A blind camera should not be
+  able to raise a resource dimension. `max()` over a capability set that
+  mixes perception with disk/CPU/memory collapses "my eye is off" into "I am
+  out of resources", and the prune templates then fire on it.
+- **Saturation needs to be visible.** A channel pegged at its ceiling and a
+  channel genuinely at its ceiling are indistinguishable downstream. The
+  `moved_n` guard above catches it in the ledger; nothing catches it in the
+  field.
+- **The camera.** `node:substrate.vision` reporting maximum staleness for 12
+  hours is itself a real, unhandled outage.

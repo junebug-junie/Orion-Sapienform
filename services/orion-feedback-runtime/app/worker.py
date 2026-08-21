@@ -8,7 +8,10 @@ from typing import Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.feedback.builder import build_feedback_frame
-from orion.feedback.outcome_resolution import resolve_action_outcomes
+from orion.feedback.outcome_resolution import (
+    resolve_action_outcomes,
+    summarize_control_observations,
+)
 from orion.feedback.policy import load_feedback_policy
 from orion.schemas.feedback_frame import FeedbackFrameV1
 
@@ -128,6 +131,7 @@ class FeedbackRuntimeWorker:
                 field_before=field_before,
                 field_after=field_after,
                 priors=self._store.load_effect_posteriors(),
+                control_priors=self._store.load_control_posteriors(),
                 latency_by_dispatch_id=_latencies(cortex_results),
             )
         except Exception:
@@ -137,17 +141,23 @@ class FeedbackRuntimeWorker:
             resolution = None
 
         self._store.save_feedback_frame(
-            frame, outcome_records=resolution.records if resolution else None
+            frame,
+            outcome_records=resolution.records if resolution else None,
+            control_cells=resolution.control_posteriors if resolution else None,
+            control_frame_id=dispatch.frame_id,
         )
         logger.info(
             "feedback_frame_saved frame_id=%s dispatch_frame_id=%s outcome_status=%s "
-            "observations=%d scored_actions=%d skipped_actions=%d",
+            "observations=%d scored_actions=%d skipped_actions=%d untreated=%s",
             frame.frame_id,
             dispatch.frame_id,
             frame.outcome_status,
             len(frame.observations),
             len(resolution.records) if resolution else 0,
             len(resolution.skipped) if resolution else 0,
+            summarize_control_observations(
+                resolution.control_observations if resolution else []
+            ),
         )
         if resolution and resolution.skipped:
             # Aggregated, not per-dispatch: this fires every tick and the

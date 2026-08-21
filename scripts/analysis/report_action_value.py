@@ -1,25 +1,56 @@
 #!/usr/bin/env python3
 """What has each autonomous action actually been worth?
 
-Reads the action-outcome ledger (services/orion-sql-db/
-manual_migration_action_outcome_ledger.sql) and reports, per
-(dispatch_kind, target_id, signal_id):
+Reports a BASELINE-MATCHED CONTRAST, not a raw post-action delta.
 
-  n            how many scored observations
-  nats/action  mean Bayesian surprise -- the information one run of this
-               action buys, in nats. Converges toward 0 for an action whose
-               effect is already known, which is the whole point: a tic
-               earns nothing without anyone writing a rule against tics.
-  total nats   n * mean -- the cumulative value of the whole habit
-  |err|        mean absolute prediction error, in the signal's own units.
-               Directly auditable against baseline/observed_after, unlike
-               the nats.
-  posterior    current belief about the mean effect, and its sample count
-  sole%        share of observations where NO other candidate in the same
-               tick claimed the same signal. The field delta is frame-wide,
-               so a low sole% means the attribution is shared and the row
-               should be read with that in mind. Reported rather than
-               hidden: phase 1 scores both and shows the split.
+The distinction is the whole point of this script. An action is dispatched
+because a pressure is high, and a high pressure falls on its own. So "what
+the signal did after the action ran" is dominated by mean reversion. Live
+over 3 days, `prune_dangling_images` reads as a 5.8x effect on the raw
+number (-0.148 vs -0.026) and INVERTS in 6 of 8 baseline deciles. The raw
+column is therefore not printed as a value; it is printed next to the
+contrast so the gap between them stays visible.
+
+Columns:
+
+  n            LIFETIME treated observations in bins that have control
+               coverage. Deliberately labelled: the contrast is computed
+               from cumulative posterior cells and is NOT affected by
+               --days, which filters only the ledger columns (`raw`,
+               `nats/act`, `alone%`, `upheld%`). Mixing a windowed and a
+               lifetime quantity in one row without saying so was review
+               finding 5.
+  contrast     sum_b w_b * (treated_mean[b] - control_mean[b]), the effect
+               over the conditions this action actually runs in. Can be
+               zero. Can be positive when the action claims `decrease` --
+               an action that cannot lose is not competing.
+  +/-          one standard deviation of that contrast
+  raw          the unconditional mean delta over --days, i.e. the phase-1
+               number. Shown only to expose the size of the confound. Note
+               the window mismatch above before reading the gap as pure
+               confound.
+  alone%       share of treated observations from a tick where this was the
+               ONLY dispatched action (frame_dispatch_count == 1). The field
+               delta is frame-wide, so a low number means the whole row is
+               shared attribution.
+  cover        share of the treated arm's volume that HAS a usable control
+               bin. A low number means the contrast describes a minority of
+               the action's real behaviour. `thin`/`frozen` name the bins
+               that were refused and why -- too few untreated observations,
+               versus an instrument that stopped moving there.
+  arm          which control arm produced it. `no_action` is
+               quasi-experimental (ticks where nothing ran are systematically
+               calmer ticks; binning absorbs most of that, not all).
+               `randomized_holdback` is experimental. Never merged.
+  nats/act     mean Bayesian surprise per run -- the information one run
+               buys. Converges toward 0 for an action whose effect is
+               already known, which is the point: a tic earns nothing
+               without anyone writing a rule against tics.
+  sole%        share of observations where no other dispatched candidate in
+               the same tick claimed the same signal.
+
+An action/signal pair with no control coverage prints `NO CONTROL` and no
+number, because a number there is what would be believed.
 
 Read-only. Safe to run any time.
 
@@ -32,95 +63,171 @@ import argparse
 import os
 import sys
 
-QUERY = """
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+from orion.autonomy.contrast import ControlCell, contrast  # noqa: E402
+from orion.autonomy.prediction import EffectPosterior  # noqa: E402
+
+LEDGER_QUERY = """
 SELECT dispatch_kind,
        target_id,
        signal_id,
        direction,
-       count(*)                                              AS n,
-       avg(surprise_nats)                                    AS mean_nats,
-       sum(surprise_nats)                                    AS total_nats,
-       avg(abs(prediction_error))                            AS mean_abs_err,
-       avg(observed_delta)                                   AS mean_delta,
-       max(posterior_mean)     FILTER (WHERE rn = 1)         AS posterior_mean,
-       max(posterior_n)        FILTER (WHERE rn = 1)         AS posterior_n,
-       count(*) FILTER (WHERE co_predictors = 0)             AS sole_n,
-       avg(latency_ms)                                       AS mean_latency_ms
-  FROM (
-        SELECT *,
-               row_number() OVER (
-                   PARTITION BY dispatch_kind, target_id, signal_id
-                   ORDER BY observed_at DESC, id DESC
-               ) AS rn
-          FROM substrate_action_outcomes
-         WHERE observed_at > now() - make_interval(days => %(days)s)
-       ) s
+       count(*)                                    AS n,
+       avg(surprise_nats)                          AS mean_nats,
+       sum(surprise_nats)                          AS total_nats,
+       avg(observed_delta)                         AS raw_delta,
+       count(*) FILTER (WHERE frame_dispatch_count = 1) AS alone_n,
+       count(*) FILTER (WHERE co_predictors = 0)   AS sole_n,
+       count(*) FILTER (WHERE claim_upheld)        AS upheld_n,
+       count(*) FILTER (WHERE claim_upheld IS NOT NULL) AS decidable_n
+  FROM substrate_action_outcomes
+ WHERE observed_at > now() - make_interval(days => :days)
+   AND arm = 'dispatched'
  GROUP BY 1, 2, 3, 4
  ORDER BY total_nats DESC
 """
 
+TREATED_CELLS_QUERY = """
+SELECT dispatch_kind, target_id, signal_id, baseline_bin,
+       posterior_mean, posterior_variance, posterior_n
+  FROM substrate_action_effect_posterior
+"""
+
+CONTROL_CELLS_QUERY = """
+SELECT signal_id, arm, baseline_bin,
+       posterior_mean, posterior_variance, posterior_n, moved_n
+  FROM substrate_signal_control_cells
+"""
+
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--days", type=int, default=7)
-    ap.add_argument(
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--days", type=int, default=7)
+    parser.add_argument(
         "--dsn",
         default=os.environ.get(
-            "ORION_SQL_DSN", "postgresql://postgres:postgres@localhost:55432/conjourney"
+            "ORION_PG_DSN", "postgresql://postgres:postgres@localhost:55432/conjourney"
         ),
     )
-    args = ap.parse_args()
+    args = parser.parse_args()
 
-    import psycopg2
-    import psycopg2.extras
+    from sqlalchemy import create_engine, text
 
-    with psycopg2.connect(args.dsn) as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(QUERY, {"days": args.days})
-            rows = cur.fetchall()
+    engine = create_engine(args.dsn)
+    with engine.connect() as conn:
+        rows = conn.execute(text(LEDGER_QUERY), {"days": args.days}).mappings().all()
+        treated = {
+            (r["dispatch_kind"], r["target_id"], r["signal_id"], int(r["baseline_bin"])):
+            EffectPosterior(
+                mean=float(r["posterior_mean"]),
+                variance=float(r["posterior_variance"]),
+                n=int(r["posterior_n"]),
+            )
+            for r in conn.execute(text(TREATED_CELLS_QUERY)).mappings().all()
+        }
+        control = {
+            (r["signal_id"], r["arm"], int(r["baseline_bin"])): ControlCell(
+                posterior=EffectPosterior(
+                    mean=float(r["posterior_mean"]),
+                    variance=float(r["posterior_variance"]),
+                    n=int(r["posterior_n"]),
+                ),
+                moved_n=int(r["moved_n"]),
+            )
+            for r in conn.execute(text(CONTROL_CELLS_QUERY)).mappings().all()
+        }
 
     if not rows:
-        print(
-            f"No scored action outcomes in the last {args.days} day(s).\n"
-            "That is a real answer, not an empty report: either nothing has been\n"
-            "dispatched with a declared expected_effect yet, or the feedback\n"
-            "runtime has not caught up. Check with:\n"
-            "  SELECT count(*) FROM substrate_action_outcomes;"
-        )
+        print(f"No scored actions in the last {args.days} days.")
         return 0
 
     header = (
-        f"{'kind':<10} {'target':<42} {'signal':<21} {'dir':<10} "
-        f"{'n':>6} {'nats/act':>9} {'total':>10} {'|err|':>7} "
-        f"{'post_mu':>8} {'post_n':>7} {'sole%':>6}"
+        f"{'kind':<10} {'target':<24} {'signal':<20} {'dir':<9} "
+        f"{'n(life)':>8} {'contrast':>10} {'+/-':>8} {'raw(win)':>9} {'cover':>6} "
+        f"{'arm':<20} {'nats/act':>9} {'sole%':>6} {'alone%':>7} {'upheld%':>8}"
     )
     print(header)
     print("-" * len(header))
-    total_nats = 0.0
-    total_n = 0
+
+    frozen = sorted(
+        (k[0], k[2], cell.move_rate)
+        for k, cell in control.items()
+        if cell.is_frozen
+    )
+    if frozen:
+        print("FROZEN CONTROL CELLS -- refused as coverage:")
+        for signal, b, rate in frozen:
+            print(f"  {signal} bin {b}: movement rate {rate:.4f}")
+        print()
+
+    no_control: list[str] = []
     for r in rows:
-        total_nats += float(r["total_nats"] or 0.0)
-        total_n += int(r["n"])
-        sole_pct = 100.0 * int(r["sole_n"]) / int(r["n"])
-        print(
-            f"{r['dispatch_kind']:<10} {r['target_id'][:42]:<42} {r['signal_id']:<21} "
-            f"{r['direction']:<10} {int(r['n']):>6} "
-            f"{float(r['mean_nats']):>9.5f} {float(r['total_nats']):>10.3f} "
-            f"{float(r['mean_abs_err']):>7.4f} "
-            f"{float(r['posterior_mean'] or 0.0):>8.4f} {int(r['posterior_n'] or 0):>7} "
-            f"{sole_pct:>5.0f}%"
+        est = contrast(
+            treated, control, r["dispatch_kind"], r["target_id"], r["signal_id"]
         )
-    print("-" * len(header))
+        sole_pct = 100.0 * r["sole_n"] / r["n"] if r["n"] else 0.0
+        alone_pct = 100.0 * r["alone_n"] / r["n"] if r["n"] else 0.0
+        upheld_pct = (
+            100.0 * r["upheld_n"] / r["decidable_n"] if r["decidable_n"] else float("nan")
+        )
+        label = (
+            f"{r['dispatch_kind']:<10} {r['target_id']:<24.24} "
+            f"{r['signal_id']:<20.20} {r['direction']:<9}"
+        )
+        if est is None:
+            no_control.append(
+                f"{r['dispatch_kind']}/{r['target_id']}/{r['signal_id']}"
+            )
+            print(
+                f"{label} {r['n']:>7}w {'NO CONTROL':>10} {'':>8} "
+                f"{r['raw_delta']:>9.4f} {'0%':>6} {'-':<20} "
+                f"{r['mean_nats']:>9.5f} {sole_pct:>5.0f}% {alone_pct:>6.0f}% "
+                f"{upheld_pct:>7.0f}%"
+            )
+            continue
+        print(
+            f"{label} {est.treated_n:>8} {est.value:>10.4f} {est.sd:>8.4f} "
+            f"{r['raw_delta']:>9.4f} {1.0 - est.uncovered_weight:>5.0%} "
+            f"{est.control_arm + '/' + est.evidence_class[:5]:<20} "
+            f"{r['mean_nats']:>9.5f} {sole_pct:>5.0f}% {alone_pct:>6.0f}% "
+            f"{upheld_pct:>7.0f}%"
+        )
+        if est.thin_bins or est.frozen_bins:
+            detail = []
+            if est.thin_bins:
+                detail.append(f"thin={list(est.thin_bins)}")
+            if est.frozen_bins:
+                detail.append(f"FROZEN={list(est.frozen_bins)}")
+            print(f"{'':<64}   refused bins: {' '.join(detail)}")
+
+    print()
+    if no_control:
+        print(
+            f"{len(no_control)} action/signal pair(s) have NO control coverage and "
+            "are reported without a value:"
+        )
+        for name in no_control:
+            print(f"  - {name}")
+        print()
     print(
-        f"{total_n} scored actions over {args.days} day(s), "
-        f"{total_nats:.3f} nats total, {total_nats / total_n:.5f} nats/action mean."
+        "contrast is quasi-experimental unless the arm says randomized_holdback. "
+        "Ticks where nothing ran are calmer ticks; the baseline bin absorbs most "
+        "of that, not all of it."
     )
     print(
-        "\nActions near 0 nats/action are actions whose effect is already known.\n"
-        "Repeating them buys nothing -- that is the measurement, not a bug."
+        "The +/- is a MODEL interval: posterior variance comes from a fixed "
+        "observation variance (0.04) divided by n, so it is 0.2/sqrt(n) by "
+        "construction. Successive field ticks are autocorrelated, so the "
+        "effective sample size is well below n and the real interval is wider "
+        "than this in both directions."
+    )
+    print(
+        "`n(life)` is cumulative; `raw(win)` and the trailing percentages honour "
+        "--days. They are not the same window."
     )
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

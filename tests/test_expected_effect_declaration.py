@@ -142,7 +142,7 @@ class TestBuildExpectedEffect:
 
     def test_prediction_uses_measured_history_when_it_exists(self):
         posteriors = {
-            ("inspect", "capability:orchestration", "execution_pressure"): EffectPosterior(
+            ("inspect", "capability:orchestration", "execution_pressure", 7): EffectPosterior(
                 mean=-0.23, variance=0.004, n=140
             )
         }
@@ -157,7 +157,7 @@ class TestBuildExpectedEffect:
         """`inspect_attended_target` binds a different target per tick.
         Pooling those into one average would make every prediction wrong."""
         posteriors = {
-            ("inspect", "node:atlas", "execution_pressure"): EffectPosterior(
+            ("inspect", "node:atlas", "execution_pressure", 5): EffectPosterior(
                 mean=-0.5, variance=0.004, n=90
             )
         }
@@ -171,7 +171,7 @@ class TestBuildExpectedEffect:
     def test_n_zero_posterior_still_reads_as_cold(self):
         """A stored row with n=0 is not history; it must not claim to be."""
         posteriors = {
-            ("inspect", "capability:orchestration", "execution_pressure"): EffectPosterior(
+            ("inspect", "capability:orchestration", "execution_pressure", 4): EffectPosterior(
                 mean=0.0, variance=0.25, n=0
             )
         }

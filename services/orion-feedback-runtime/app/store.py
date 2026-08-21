@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
+from orion.autonomy.contrast import ControlCell, ControlCellKey, TreatedCellKey
 from orion.autonomy.prediction import EffectPosterior
 from orion.schemas.action_prediction import ActionOutcomeRecordV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
@@ -470,7 +471,7 @@ class FeedbackRuntimeStore:
                 continue
         return evidence
 
-    def load_effect_posteriors(self) -> dict[tuple[str, str, str], EffectPosterior]:
+    def load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
         """Current belief about what each action does to each signal.
 
         A full read of a tiny table (one row per real (kind, target, signal),
@@ -485,7 +486,7 @@ class FeedbackRuntimeStore:
                 conn.execute(
                     text(
                         """
-                        SELECT dispatch_kind, target_id, signal_id,
+                        SELECT dispatch_kind, target_id, signal_id, baseline_bin,
                                posterior_mean, posterior_variance, posterior_n
                           FROM substrate_action_effect_posterior
                         """
@@ -495,10 +496,50 @@ class FeedbackRuntimeStore:
                 .all()
             )
         return {
-            (r["dispatch_kind"], r["target_id"], r["signal_id"]): EffectPosterior(
+            (
+                r["dispatch_kind"],
+                r["target_id"],
+                r["signal_id"],
+                int(r["baseline_bin"]),
+            ): EffectPosterior(
                 mean=float(r["posterior_mean"]),
                 variance=float(r["posterior_variance"]),
                 n=int(r["posterior_n"]),
+            )
+            for r in rows
+        }
+
+    def load_control_posteriors(self) -> dict[ControlCellKey, ControlCell]:
+        """The untreated arm: what each signal does on ticks where nothing ran.
+
+        Same tiny-table, full-read shape as load_effect_posteriors -- one row
+        per (signal, arm, baseline bin), so at most
+        len(PredictableSignal) * arms * 10 rows.
+        """
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT signal_id, arm, baseline_bin,
+                               posterior_mean, posterior_variance, posterior_n,
+                               moved_n, move_rate
+                          FROM substrate_signal_control_cells
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return {
+            (r["signal_id"], r["arm"], int(r["baseline_bin"])): ControlCell(
+                posterior=EffectPosterior(
+                    mean=float(r["posterior_mean"]),
+                    variance=float(r["posterior_variance"]),
+                    n=int(r["posterior_n"]),
+                ),
+                moved_n=int(r["moved_n"]),
+                move_rate=float(r["move_rate"]),
             )
             for r in rows
         }
@@ -507,6 +548,8 @@ class FeedbackRuntimeStore:
         self,
         frame: FeedbackFrameV1,
         outcome_records: list[ActionOutcomeRecordV1] | None = None,
+        control_cells: dict[ControlCellKey, ControlCell] | None = None,
+        control_frame_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -589,6 +632,11 @@ class FeedbackRuntimeStore:
             # moving, and the lost observation is one row rather than the
             # whole loop.
             try:
+                # TWO savepoints, not one (review finding 12). The arms are
+                # independent data from different populations; a constraint
+                # violation on one scored action must not also discard that
+                # tick's untreated observations, which is what a shared
+                # savepoint did.
                 with conn.begin_nested():
                     self._write_action_outcomes(conn, outcome_records or [])
             except Exception:
@@ -596,6 +644,17 @@ class FeedbackRuntimeStore:
                     "action_outcome_ledger_write_failed frame_id=%s records=%d",
                     frame.frame_id,
                     len(outcome_records or []),
+                )
+            try:
+                with conn.begin_nested():
+                    self._write_control_cells(
+                        conn, control_cells or {}, dispatch_frame_id=control_frame_id
+                    )
+            except Exception:
+                logger.exception(
+                    "action_control_cell_write_failed frame_id=%s cells=%d",
+                    frame.frame_id,
+                    len(control_cells or {}),
                 )
 
     @staticmethod
@@ -621,6 +680,7 @@ class FeedbackRuntimeStore:
                     INSERT INTO substrate_action_outcomes (
                         dispatch_id, dispatch_frame_id, feedback_frame_id,
                         dispatch_kind, target_id, signal_id, direction,
+                        arm, baseline_bin, frame_dispatch_count,
                         observed_at, baseline, observed_after, observed_delta,
                         predicted_delta, prediction_error, surprise_nats,
                         posterior_mean, posterior_variance, posterior_n,
@@ -628,12 +688,13 @@ class FeedbackRuntimeStore:
                     ) VALUES (
                         :dispatch_id, :dispatch_frame_id, :feedback_frame_id,
                         :dispatch_kind, :target_id, :signal_id, :direction,
+                        :arm, :baseline_bin, :frame_dispatch_count,
                         :observed_at, :baseline, :observed_after, :observed_delta,
                         :predicted_delta, :prediction_error, :surprise_nats,
                         :posterior_mean, :posterior_variance, :posterior_n,
                         :co_predictors, :latency_ms, :claim_upheld
                     )
-                    ON CONFLICT (dispatch_id, signal_id) DO NOTHING
+                    ON CONFLICT (dispatch_id, signal_id, dispatch_frame_id) DO NOTHING
                     RETURNING id
                     """
                 ),
@@ -649,6 +710,9 @@ class FeedbackRuntimeStore:
                     "target_id": record.target_id,
                     "signal_id": record.signal_id,
                     "direction": record.direction,
+                    "arm": record.arm,
+                    "baseline_bin": record.baseline_bin,
+                    "frame_dispatch_count": record.frame_dispatch_count,
                     "observed_at": record.observed_at,
                     "baseline": record.baseline,
                     "observed_after": record.observed_after,
@@ -666,17 +730,27 @@ class FeedbackRuntimeStore:
             ).first()
             if inserted is None:
                 continue
+            if record.arm != "dispatched":
+                # A capacity-blocked candidate never ran. Its row is kept --
+                # "the action that lost the race saw the signal do X" is real
+                # evidence -- but folding it into the ACTION's own belief
+                # would record the weather as the action's effect, which is
+                # the exact defect the control arm exists to expose. The
+                # posterior_n guard below would mask this as a silent no-op
+                # rather than a decision, so it is stated here instead.
+                continue
             conn.execute(
                 text(
                     """
                     INSERT INTO substrate_action_effect_posterior (
-                        dispatch_kind, target_id, signal_id,
+                        dispatch_kind, target_id, signal_id, baseline_bin,
                         posterior_mean, posterior_variance, posterior_n, updated_at
                     ) VALUES (
-                        :dispatch_kind, :target_id, :signal_id,
+                        :dispatch_kind, :target_id, :signal_id, :baseline_bin,
                         :posterior_mean, :posterior_variance, :posterior_n, now()
                     )
-                    ON CONFLICT (dispatch_kind, target_id, signal_id) DO UPDATE SET
+                    ON CONFLICT (dispatch_kind, target_id, signal_id, baseline_bin)
+                    DO UPDATE SET
                         posterior_mean = EXCLUDED.posterior_mean,
                         posterior_variance = EXCLUDED.posterior_variance,
                         posterior_n = EXCLUDED.posterior_n,
@@ -689,8 +763,77 @@ class FeedbackRuntimeStore:
                     "dispatch_kind": record.dispatch_kind,
                     "target_id": record.target_id,
                     "signal_id": record.signal_id,
+                    "baseline_bin": record.baseline_bin,
                     "posterior_mean": record.posterior_mean,
                     "posterior_variance": record.posterior_variance,
                     "posterior_n": record.posterior_n,
+                },
+            )
+
+    @staticmethod
+    def _write_control_cells(
+        conn,
+        cells: dict[ControlCellKey, ControlCell],
+        *,
+        dispatch_frame_id: str | None = None,
+    ) -> None:
+        """Advance the untreated arm, once per dispatch frame.
+
+        TWO guards, because the first one alone is not what it was documented
+        to be (review finding 2). The monotone `posterior_n <` comparison
+        stops the belief moving BACKWARDS; it does nothing against
+        double-counting, since a replayed tick reads n=N+k, recomputes
+        n=N+2k, and lands again quite happily. `last_dispatch_frame_id` is
+        the actual dedup: the same dispatch frame folded twice is refused.
+
+        Not triggerable today -- nothing prunes `substrate_feedback_frames`,
+        so `reconcile_feedback_pending` never finds an aged frame to re-queue
+        -- but that reconciler is a live, deliberate replay mechanism, and
+        adding retention to that table would otherwise recount the entire
+        backlog into ONE arm of the contrast and not the other. A replay that
+        corrupts only the control side is worse than one that corrupts both.
+
+        `dispatch_frame_id=None` disables the dedup rather than silently
+        matching everything: a NULL stored token is DISTINCT FROM anything,
+        so the write proceeds, which is the right failure direction for a
+        caller that genuinely has no frame identity.
+        """
+        for (signal_id, arm, bin_index), cell in cells.items():
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_signal_control_cells (
+                        signal_id, arm, baseline_bin,
+                        posterior_mean, posterior_variance, posterior_n,
+                        moved_n, move_rate, last_dispatch_frame_id, updated_at
+                    ) VALUES (
+                        :signal_id, :arm, :baseline_bin,
+                        :posterior_mean, :posterior_variance, :posterior_n,
+                        :moved_n, :move_rate, :dispatch_frame_id, now()
+                    )
+                    ON CONFLICT (signal_id, arm, baseline_bin) DO UPDATE SET
+                        posterior_mean = EXCLUDED.posterior_mean,
+                        posterior_variance = EXCLUDED.posterior_variance,
+                        posterior_n = EXCLUDED.posterior_n,
+                        moved_n = EXCLUDED.moved_n,
+                        move_rate = EXCLUDED.move_rate,
+                        last_dispatch_frame_id = EXCLUDED.last_dispatch_frame_id,
+                        updated_at = now()
+                     WHERE substrate_signal_control_cells.posterior_n
+                           < EXCLUDED.posterior_n
+                       AND substrate_signal_control_cells.last_dispatch_frame_id
+                           IS DISTINCT FROM EXCLUDED.last_dispatch_frame_id
+                    """
+                ),
+                {
+                    "signal_id": signal_id,
+                    "arm": arm,
+                    "baseline_bin": bin_index,
+                    "posterior_mean": cell.posterior.mean,
+                    "posterior_variance": cell.posterior.variance,
+                    "posterior_n": cell.posterior.n,
+                    "moved_n": cell.moved_n,
+                    "move_rate": cell.move_rate,
+                    "dispatch_frame_id": dispatch_frame_id,
                 },
             )

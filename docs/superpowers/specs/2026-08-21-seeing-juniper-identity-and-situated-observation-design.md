@@ -586,7 +586,27 @@ about their body and movements. Not a config constant — "what does it have on 
 must be answerable without reading code. §0A's UI/debug-surface requirement and
 the ethical requirement are the same requirement here.
 
-**Q5 — Screens. Answer this before §3 ships.** The detector already sees `screen`
+**Q5 — Screens. DECIDED 2026-08-21: redact content, preserve presence.**
+Black out `screen`/`laptop` regions **at the sensor on athena**, before bytes
+cross to circe. GroundingDINO already returns those boxes on every frame and
+they are currently discarded, so the redaction is ~10 lines and deterministic.
+
+Why redaction and not a prompt instruction: an instruction is a request, not a
+boundary. Redacting at the sensor means the content physically does not leave
+the node, and it holds even if the model, the prompt, or the lane changes later.
+
+Why blank the box rather than drop the frame: the box *shape* survives, so Orion
+still sees "there is a monitor there, they are at the desk." The activity signal
+is kept and only the content is lost. Testable: assert the pixels inside the
+detected box are uniform in the outgoing frame.
+
+Correcting an earlier claim in this document — **carbon is lower risk here, not
+higher.** A laptop webcam faces the user, not the user's display. The same
+redaction still applies to screens visible *behind* them.
+
+Original framing, retained for the record: 
+
+*(was)* **Q5 — Screens. Answer this before §3 ships.** The detector already sees `screen`
 and `laptop`. A 35B VL model pointed at this room **will read what is on those
 screens**, incidentally, without being asked. The perception frontier doc called
 this "the most dangerous idea here" and required an explicit spatial gate plus
@@ -801,7 +821,7 @@ step 1 ships, not after.
 
 | # | what | where | why now |
 | ---: | :--- | :--- | :--- |
-| 1 | **Vision-liveness alert** into `/api/attention` | Hub + watcher | 21 h blind with a healthy container. The reason everything else sat. Independent of all of it |
+| 1 | ~~**Vision-liveness alert** into `/api/attention`~~ **SHIPPED** (PR #1806) | `orion-vision-host/app/liveness.py` | 21 h blind with a healthy container. Live-verified: alert delivered to Hub's queue end to end |
 | 2 | **Percept store** — content-addressed, own retention | gateway + athena | **prerequisite, not a step.** Unblocks the VL lane, carbon, and any future camera at once (§9B) |
 | 3 | **Perception lane :8015** — VL + mmproj, thinking off | circe **GPU 3, P100** | measured 1.74 s on the V100; re-run there for the real number |
 | 4 | **Council v2** — send the frame, drop the blind-interpreter rules | vision-council | the rules are correct only while it cannot see |

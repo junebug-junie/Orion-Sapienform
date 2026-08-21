@@ -661,10 +661,14 @@ first place. Full reasoning and phased detail:
    `generated_at >= 2026-07-28T21:58:00Z` in the same run's `ticks.csv` artifact gives
    `field:recent_perturbations` winning top-1 in **11.13%** of post-fix ticks (1,257/11,293),
    down from the pre-fix 99.98%. `node:athena` now wins the remaining 88.87% — the monoculture
-   pathology this item named is broken, but note this trades one single-target dominance pattern
-   for another; whether `node:athena`'s 88.87% is genuine (real, warranted elevated pressure) or
-   itself an artifact worth investigating is an open question this patch didn't examine, separate
-   from the recent_perturbations fix itself.
+   pathology this item named is broken.
+   **Closed, not open (Juniper, repeated direction, most recently 2026-08-20): `node:athena`
+   winning most ticks is a real architectural asymmetry, not a bug.** Athena is the host
+   Orion's substrate actually runs on — it is structurally the busiest, most-instrumented,
+   highest-signal-volume node in the system by design, not an artifact of a saturating
+   formula the way `field:recent_perturbations`' old `/10.0` cap was. Do not reopen this as
+   an investigation thread; if a future session's data makes it look surprising again, check
+   this line and the git history around it before re-litigating.
 6. **Revisit `capability_policy.py`'s coupling to live salience** — only after item 3 closes
    the `drive_origin` dependency and item 2's field-native attention is proven, not assumed.
    At this point the actual mechanism is a real open choice, not a given: a salience-to-

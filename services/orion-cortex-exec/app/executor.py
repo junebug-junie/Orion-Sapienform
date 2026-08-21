@@ -3023,7 +3023,7 @@ async def call_step_services(
                     md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
                     if isinstance(md.get("presence_context"), dict):
                         ctx["presence_context"] = md.get("presence_context")
-                situation_brief, situation_fragment = build_situation_for_ctx(ctx, settings)
+                situation_brief, situation_fragment = await build_situation_for_ctx(ctx, settings)
                 if situation_brief:
                     ctx["situation_brief"] = situation_brief
                     ctx["presence_context"] = situation_brief.get("presence")

@@ -1617,7 +1617,7 @@ class PlanRunner:
         model_used = _last_model_used(step_results)
         if model_used:
             metadata["model"] = model_used
-        mark_orion_turn(str(ctx.get("session_id") or "global"))
+        await mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         record_assembled_grammar(
             ctx,

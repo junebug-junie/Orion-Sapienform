@@ -8,6 +8,7 @@ good intentions.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -147,7 +148,12 @@ def _brief(perception: PerceptionContextV1) -> SituationBriefV1:
     return SituationBriefV1(
         generated_at=NOW,
         time=time_ctx,
-        conversation_phase=situation_mod._build_conversation_phase({}, time_ctx, NOW),
+        # _build_conversation_phase is now async (Redis-backed session turn
+        # state, see session_turn_phase.py) -- these tests only care about
+        # perception rendering, so no bus is bound here and the call
+        # fails open to phase="unknown" (an unbound-bus WARNING is expected
+        # and harmless in this file's test output).
+        conversation_phase=asyncio.run(situation_mod._build_conversation_phase({}, time_ctx, NOW)),
         place=situation_mod._build_place_context(cfg),
         perception=perception,
     )

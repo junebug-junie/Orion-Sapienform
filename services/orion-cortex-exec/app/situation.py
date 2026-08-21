@@ -11,6 +11,7 @@ from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from .perception_reader import fetch_latest_percept, percept_age_seconds
+from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.schemas.situation import (
     AgendaContextV1,
     ConversationPhaseContextV1,
@@ -37,8 +38,12 @@ _LOCK = threading.Lock()
 _SITUATION_CACHE: dict[str, tuple[datetime, SituationBriefV1, SituationPromptFragmentV1]] = {}
 _WEATHER_CACHE: dict[str, tuple[datetime, EnvironmentContextV1]] = {}
 _RUNTIME_CACHE: dict[str, tuple[datetime, RuntimeContextV1]] = {}
-_SESSION_LAST_USER_TURN: dict[str, datetime] = {}
-_SESSION_LAST_ORION_TURN: dict[str, datetime] = {}
+# NOTE: session turn-timestamp state (_SESSION_LAST_USER_TURN /
+# _SESSION_LAST_ORION_TURN, formerly in-process dicts here) now lives in
+# Redis via session_turn_phase.py -- see that module's docstring for why.
+# _SITUATION_CACHE/_WEATHER_CACHE/_RUNTIME_CACHE above are unaffected: they
+# are legitimate per-process TTL caches for external calls with no
+# cross-process consistency requirement, not the bug this fixes.
 
 
 @dataclass
@@ -160,7 +165,7 @@ def _situation_cache_key(ctx: dict[str, Any]) -> str:
     return f"{session_key}:{_presence_cache_fingerprint(ctx)}"
 
 
-def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     cfg = settings_from_runtime(runtime_settings)
     if not cfg.enabled:
         return {}, {}
@@ -174,7 +179,7 @@ def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple
     diagnostics = SituationDiagnosticsV1()
     presence = _presence_from_ctx(ctx, cfg, now)
     time_ctx = _build_time_context(cfg, diagnostics)
-    phase_ctx = _build_conversation_phase(ctx, time_ctx, now)
+    phase_ctx = await _build_conversation_phase(ctx, time_ctx, now)
     place_ctx = _build_place_context(cfg)
     env_ctx = _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
@@ -322,11 +327,11 @@ def _season_label(month: int) -> str:
     return "autumn"
 
 
-def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
+async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
     session_id = str(ctx.get("session_id") or "global")
-    with _LOCK:
-        last_user = _SESSION_LAST_USER_TURN.get(session_id)
-        last_orion = _SESSION_LAST_ORION_TURN.get(session_id)
+    state = await read_session_turn_state(session_id)
+    last_user = state.last_user_turn_at
+    last_orion = state.last_orion_turn_at
     delta_user = int((now_utc - last_user).total_seconds()) if last_user else None
     phase = "unknown"
     continuity = "continue_directly"
@@ -371,14 +376,26 @@ def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_
         topic_staleness_risk=risk,  # type: ignore[arg-type]
         response_adjustments=adjustments,
     )
-    with _LOCK:
-        _SESSION_LAST_USER_TURN[session_id] = now_utc
+    # Read-modify-write: preserve last_orion_turn_at exactly as read above --
+    # this call only ever advances the user side of the pair.
+    await write_session_turn_state(
+        session_id,
+        last_user_turn_at=now_utc,
+        last_orion_turn_at=last_orion,
+    )
     return out
 
 
-def mark_orion_turn(session_id: str | None) -> None:
-    with _LOCK:
-        _SESSION_LAST_ORION_TURN[str(session_id or "global")] = datetime.now(UTC)
+async def mark_orion_turn(session_id: str | None) -> None:
+    sid = str(session_id or "global")
+    state = await read_session_turn_state(sid)
+    # Read-modify-write: preserve last_user_turn_at exactly as read above --
+    # this call only ever advances the Orion side of the pair.
+    await write_session_turn_state(
+        sid,
+        last_user_turn_at=state.last_user_turn_at,
+        last_orion_turn_at=datetime.now(UTC),
+    )
 
 
 def _build_place_context(cfg: SituationSettings) -> PlaceContextV1:

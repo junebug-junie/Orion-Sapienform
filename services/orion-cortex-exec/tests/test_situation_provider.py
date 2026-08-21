@@ -47,17 +47,30 @@ def _settings(**overrides):
     return SimpleNamespace(**base)
 
 
-def test_situation_marks_temporal_resume_for_long_gap():
+# NOTE: build_situation_for_ctx (and, inside it, _build_conversation_phase)
+# is async since conversation-phase turn timestamps moved to Redis
+# (session_turn_phase.py) -- see that module's docstring for why. No bus is
+# bound in these tests, so the Redis read/write inside it fails open (a
+# "bus_unbound" WARNING is expected and harmless) and phase resolves to its
+# safe default ("unknown"/"continue_directly"), same as a fresh session with
+# no prior state. These tests only assert on weather/presence/runtime/
+# affordance behavior, not on phase-bucketing itself (that's covered by
+# test_session_turn_phase.py).
+
+
+@pytest.mark.asyncio
+async def test_situation_marks_temporal_resume_for_long_gap():
     ctx = {"session_id": "sid-temporal", "raw_user_text": "yeah do that"}
     settings = _settings()
-    build_situation_for_ctx(ctx, settings)
-    brief, fragment = build_situation_for_ctx(ctx, settings)
+    await build_situation_for_ctx(ctx, settings)
+    brief, fragment = await build_situation_for_ctx(ctx, settings)
     assert brief["kind"] == "situation.brief.v1"
     assert "conversation_phase" in brief
     assert fragment["kind"] == "situation.prompt_fragment.v1"
 
 
-def test_situation_presence_child_affordance():
+@pytest.mark.asyncio
+async def test_situation_presence_child_affordance():
     from app import situation as situation_mod
 
     situation_mod._SITUATION_CACHE.clear()
@@ -70,23 +83,24 @@ def test_situation_presence_child_affordance():
             "requestor": {"display_name": "Juniper"},
         },
     }
-    brief, fragment = build_situation_for_ctx(ctx, _settings())
+    brief, fragment = await build_situation_for_ctx(ctx, _settings())
     kinds = {item["kind"] for item in brief["affordances"]}
     assert brief["presence"]["audience_mode"] == "kid_present"
     assert "kid_friendly_explanation" in kinds
     assert "kid_present" in fragment["compact_text"]
 
 
-def test_situation_cache_refreshes_when_presence_changes():
+@pytest.mark.asyncio
+async def test_situation_cache_refreshes_when_presence_changes():
     from app import situation as situation_mod
 
     situation_mod._SITUATION_CACHE.clear()
     session = "sid-cache-presence"
-    brief_solo, _ = build_situation_for_ctx(
+    brief_solo, _ = await build_situation_for_ctx(
         {"session_id": session, "presence_context": {"audience_mode": "solo"}},
         _settings(orion_situation_ttl_seconds=300),
     )
-    brief_kid, fragment_kid = build_situation_for_ctx(
+    brief_kid, fragment_kid = await build_situation_for_ctx(
         {
             "session_id": session,
             "presence_context": {
@@ -101,12 +115,13 @@ def test_situation_cache_refreshes_when_presence_changes():
     assert "kid_present" in fragment_kid["compact_text"]
 
 
-def test_situation_cache_refreshes_when_requestor_changes():
+@pytest.mark.asyncio
+async def test_situation_cache_refreshes_when_requestor_changes():
     from app import situation as situation_mod
 
     situation_mod._SITUATION_CACHE.clear()
     session = "sid-cache-requestor"
-    build_situation_for_ctx(
+    await build_situation_for_ctx(
         {
             "session_id": session,
             "presence_context": {
@@ -116,7 +131,7 @@ def test_situation_cache_refreshes_when_requestor_changes():
         },
         _settings(orion_situation_ttl_seconds=300),
     )
-    brief_guest, _ = build_situation_for_ctx(
+    brief_guest, _ = await build_situation_for_ctx(
         {
             "session_id": session,
             "presence_context": {
@@ -129,17 +144,19 @@ def test_situation_cache_refreshes_when_requestor_changes():
     assert brief_guest["presence"]["requestor"]["display_name"] == "Guest"
 
 
-def test_situation_outdoor_departure_affordance():
+@pytest.mark.asyncio
+async def test_situation_outdoor_departure_affordance():
     ctx = {"session_id": "sid-outdoor", "raw_user_text": "I am heading out the door soon"}
-    brief, fragment = build_situation_for_ctx(ctx, _settings())
+    brief, fragment = await build_situation_for_ctx(ctx, _settings())
     kinds = {item["kind"] for item in brief["affordances"]}
     assert "outdoor_departure" in kinds
     assert len(fragment["compact_text"]) <= 400
 
 
-def test_situation_disabled_returns_no_brief_or_fragment():
+@pytest.mark.asyncio
+async def test_situation_disabled_returns_no_brief_or_fragment():
     ctx = {"session_id": "sid-disabled", "raw_user_text": "hello"}
-    brief, fragment = build_situation_for_ctx(ctx, _settings(orion_situation_enabled=False))
+    brief, fragment = await build_situation_for_ctx(ctx, _settings(orion_situation_enabled=False))
     assert brief == {}
     assert fragment == {}
 
@@ -171,7 +188,8 @@ def _clear_runtime_cache():
     situation._RUNTIME_CACHE.clear()
 
 
-def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
     routes_payload = {
         "default_route": "chat",
         "routes": [
@@ -190,20 +208,21 @@ def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
         situation, "urlopen", lambda url, timeout=None: _FakeUrlopenResponse(routes_payload)
     )
     ctx = {"session_id": "sid-runtime-up", "raw_user_text": "hello"}
-    brief, fragment = build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
+    brief, fragment = await build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
     assert brief["runtime"]["available"] is True
     assert brief["runtime"]["model_id"] == "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"
     assert brief["runtime"]["served_by"] == "circe-worker-1"
     assert "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf" in fragment["compact_text"]
 
 
-def test_runtime_context_degrades_when_gateway_unreachable(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_context_degrades_when_gateway_unreachable(monkeypatch):
     def _raise(url, timeout=None):
         raise OSError("connection refused")
 
     monkeypatch.setattr(situation, "urlopen", _raise)
     ctx = {"session_id": "sid-runtime-down", "raw_user_text": "hello"}
-    brief, fragment = build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
+    brief, fragment = await build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
     assert brief["runtime"]["available"] is False
     assert brief["runtime"]["model_id"] is None
     assert brief["diagnostics"]["provider_status"]["runtime"] == "error"
@@ -211,19 +230,21 @@ def test_runtime_context_degrades_when_gateway_unreachable(monkeypatch):
     assert "Qwen" not in fragment["compact_text"]
 
 
-def test_runtime_context_degrades_when_route_missing_from_response(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_context_degrades_when_route_missing_from_response(monkeypatch):
     monkeypatch.setattr(
         situation,
         "urlopen",
         lambda url, timeout=None: _FakeUrlopenResponse({"default_route": "chat", "routes": []}),
     )
     ctx = {"session_id": "sid-runtime-missing-route", "raw_user_text": "hello"}
-    brief, _ = build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
+    brief, _ = await build_situation_for_ctx(ctx, _settings(orion_situation_runtime_enabled=True))
     assert brief["runtime"]["available"] is False
     assert brief["diagnostics"]["provider_status"]["runtime"] == "error"
 
 
-def test_runtime_context_disabled_by_default_in_shared_fixture(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_context_disabled_by_default_in_shared_fixture(monkeypatch):
     # Sanity check on the shared _settings() default itself: it must be
     # False, or every unrelated situation test would attempt a real network
     # call to orion-llm-gateway.
@@ -235,7 +256,7 @@ def test_runtime_context_disabled_by_default_in_shared_fixture(monkeypatch):
 
     monkeypatch.setattr(situation, "urlopen", _raise)
     ctx = {"session_id": "sid-runtime-disabled", "raw_user_text": "hello"}
-    brief, fragment = build_situation_for_ctx(ctx, _settings())
+    brief, fragment = await build_situation_for_ctx(ctx, _settings())
     assert called["n"] == 0
     assert brief["runtime"]["available"] is False
     assert brief["runtime"]["source"] == "disabled"

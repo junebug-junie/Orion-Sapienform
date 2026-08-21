@@ -307,3 +307,97 @@ class TestScoresTheClaimThatWasActuallyMade:
             now=NOW,
         )
         assert res.records[0].latency_ms is None
+
+
+class TestDirectionIsActuallyScored:
+    """Review finding 3: `direction` had a schema, a producer and a
+    persister, and no consumer -- so an action that declared `decrease` and
+    delivered `+0.4` scored identically to one that declared `increase`.
+    These pin the consumer down."""
+
+    def _resolve(self, direction, before, after):
+        return resolve_action_outcomes(
+            dispatch_frame=_frame([_candidate("d1", effect=_effect(direction=direction))]),
+            feedback_frame_id="f",
+            field_before=_field("b", {"execution_pressure": before}),
+            field_after=_field("a", {"execution_pressure": after}),
+            now=NOW,
+        )
+
+    def test_decrease_claim_upheld_when_it_decreases(self):
+        assert self._resolve("decrease", 0.8, 0.3).records[0].claim_upheld is True
+
+    def test_decrease_claim_broken_when_it_increases(self):
+        assert self._resolve("decrease", 0.3, 0.8).records[0].claim_upheld is False
+
+    def test_increase_claim_upheld_when_it_increases(self):
+        assert self._resolve("increase", 0.3, 0.8).records[0].claim_upheld is True
+
+    def test_increase_claim_broken_when_it_decreases(self):
+        assert self._resolve("increase", 0.8, 0.3).records[0].claim_upheld is False
+
+    def test_no_change_claim_upheld_when_nothing_moves(self):
+        assert self._resolve("no_change", 0.5, 0.5).records[0].claim_upheld is True
+
+    def test_no_change_claim_broken_when_something_moves(self):
+        assert self._resolve("no_change", 0.5, 0.9).records[0].claim_upheld is False
+
+    def test_directional_claim_inside_the_dead_band_is_undecidable_not_a_pass(self):
+        """A `decrease` claim with a 1e-9 wobble must NOT read as upheld.
+        Returning True there is how a dead channel confirms every claim."""
+        r = self._resolve("decrease", 0.5, 0.5 - 1e-9).records[0]
+        assert r.claim_upheld is None
+
+    def test_no_change_claim_is_decidable_in_both_directions(self):
+        """no_change never returns None -- the dead band IS its claim."""
+        assert self._resolve("no_change", 0.5, 0.5 - 1e-9).records[0].claim_upheld is True
+
+    def test_opposite_directions_on_the_same_delta_do_not_score_alike(self):
+        up = self._resolve("increase", 0.3, 0.8).records[0]
+        down = self._resolve("decrease", 0.3, 0.8).records[0]
+        # Same observation, same nats -- surprise is direction-agnostic by
+        # construction -- but the CLAIM verdicts must differ, which is the
+        # whole point of the field.
+        assert up.surprise_nats == pytest.approx(down.surprise_nats)
+        assert up.claim_upheld is True and down.claim_upheld is False
+
+
+class TestPredictionErrorMatchesTheStoredClaim:
+    """Review finding 6: prediction_error was measured against the belief at
+    SCORING time, while predicted_delta on the same row is the claim made at
+    DISPATCH time. A reader recomputing the error from the row got a
+    different number, sometimes with the opposite sign."""
+
+    def test_error_is_recomputable_from_the_row(self):
+        prior = EffectPosterior(mean=-0.05, variance=0.02, n=30)
+        res = resolve_action_outcomes(
+            dispatch_frame=_frame([_candidate("d1", effect=_effect(predicted=-0.30, n=30))]),
+            feedback_frame_id="f",
+            field_before=_field("b", {"execution_pressure": 0.8}),
+            field_after=_field("a", {"execution_pressure": 0.6}),
+            priors={("inspect", "capability:orchestration", "execution_pressure"): prior},
+            now=NOW,
+        )
+        r = res.records[0]
+        assert r.observed_delta == pytest.approx(-0.2)
+        assert r.predicted_delta == pytest.approx(-0.3)
+        # The exact case that used to disagree: residual-vs-prior would be
+        # -0.15 here, opposite in sign to the recomputable +0.10.
+        assert r.prediction_error == pytest.approx(0.1)
+        assert r.prediction_error == pytest.approx(r.observed_delta - r.predicted_delta)
+
+    def test_holds_for_every_record_in_a_multi_candidate_frame(self):
+        res = resolve_action_outcomes(
+            dispatch_frame=_frame(
+                [
+                    _candidate("d1", effect=_effect(predicted=-0.1, n=5)),
+                    _candidate("d2", effect=_effect(predicted=-0.1, n=5)),
+                ]
+            ),
+            feedback_frame_id="f",
+            field_before=_field("b", {"execution_pressure": 0.8}),
+            field_after=_field("a", {"execution_pressure": 0.3}),
+            now=NOW,
+        )
+        for r in res.records:
+            assert r.prediction_error == pytest.approx(r.observed_delta - r.predicted_delta)

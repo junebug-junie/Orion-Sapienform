@@ -100,6 +100,16 @@ class ActionOutcomeRecordV1(BaseModel):
 
     surprise_nats: float = Field(ge=0.0)
 
+    # Finding 3 (review, 2026-08-21): `direction` is the ONLY field a template
+    # author hand-writes, and it had a schema, a producer and a persister but
+    # no consumer -- a keyword cathedral by this repo's own definition, and it
+    # made the patch's central claim false: with direction unscored, an action
+    # that declared `decrease` and produced `+0.4` earned exactly the same
+    # nats as one that declared `increase`. This is the consumer. None only
+    # when the delta sits inside the dead band and the claim was directional
+    # (i.e. genuinely undecidable), never as a shrug.
+    claim_upheld: bool | None = None
+
     posterior_mean: float
     posterior_variance: float = Field(ge=0.0)
     posterior_n: int = Field(ge=0)

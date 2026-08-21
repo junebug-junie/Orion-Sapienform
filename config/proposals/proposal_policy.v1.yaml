@@ -347,11 +347,14 @@ proposal_templates:
   prune_build_cache:
     kind: maintain
     # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
-    # Read-only kinds declare no_change because their own constraint set
-    # (read_only / no_file_writes / no_external_side_effects) entails it --
-    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
-    # a tic proves itself. Magnitude is NEVER declared here; it comes from
-    # the measured posterior (see orion/schemas/action_prediction.py).
+    # A MUTATING template, so unlike the read-only ones this declares a real
+    # directional effect: freeing disk should lower resource_pressure. That
+    # claim is the one most at risk of a fabricated confirmation -- this
+    # action fires BECAUSE resource_pressure is high, and high pressure falls
+    # on its own, so the raw post-action delta flatters it badly (review
+    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
+    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
+    # Magnitude is NEVER declared here; it comes from the measured posterior.
     expected_signal: resource_pressure
     expected_direction: decrease
     target_kind: system
@@ -451,11 +454,14 @@ proposal_templates:
   prune_dangling_images:
     kind: maintain
     # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
-    # Read-only kinds declare no_change because their own constraint set
-    # (read_only / no_file_writes / no_external_side_effects) entails it --
-    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
-    # a tic proves itself. Magnitude is NEVER declared here; it comes from
-    # the measured posterior (see orion/schemas/action_prediction.py).
+    # A MUTATING template, so unlike the read-only ones this declares a real
+    # directional effect: freeing disk should lower resource_pressure. That
+    # claim is the one most at risk of a fabricated confirmation -- this
+    # action fires BECAUSE resource_pressure is high, and high pressure falls
+    # on its own, so the raw post-action delta flatters it badly (review
+    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
+    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
+    # Magnitude is NEVER declared here; it comes from the measured posterior.
     expected_signal: resource_pressure
     expected_direction: decrease
     target_kind: system
@@ -472,11 +478,14 @@ proposal_templates:
   prune_stopped_containers:
     kind: maintain
     # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
-    # Read-only kinds declare no_change because their own constraint set
-    # (read_only / no_file_writes / no_external_side_effects) entails it --
-    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
-    # a tic proves itself. Magnitude is NEVER declared here; it comes from
-    # the measured posterior (see orion/schemas/action_prediction.py).
+    # A MUTATING template, so unlike the read-only ones this declares a real
+    # directional effect: freeing disk should lower resource_pressure. That
+    # claim is the one most at risk of a fabricated confirmation -- this
+    # action fires BECAUSE resource_pressure is high, and high pressure falls
+    # on its own, so the raw post-action delta flatters it badly (review
+    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
+    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
+    # Magnitude is NEVER declared here; it comes from the measured posterior.
     expected_signal: resource_pressure
     expected_direction: decrease
     target_kind: system

@@ -37,8 +37,19 @@ CREATE TABLE IF NOT EXISTS substrate_action_outcomes (
     posterior_n         INTEGER     NOT NULL,
 
     co_predictors       INTEGER     NOT NULL DEFAULT 0,
-    latency_ms          DOUBLE PRECISION
+    latency_ms          DOUBLE PRECISION,
+
+    -- Did the action do what it declared? NULL only for a directional claim
+    -- whose delta landed inside the 1e-6 dead band (undecidable), never as a
+    -- shrug. Added in the same migration file rather than a new one because
+    -- this table was created the same day and holds no rows anywhere yet.
+    claim_upheld        BOOLEAN
 );
+
+-- Idempotent, for an install that applied the CREATE TABLE above before
+-- claim_upheld existed.
+ALTER TABLE substrate_action_outcomes
+    ADD COLUMN IF NOT EXISTS claim_upheld BOOLEAN;
 
 -- One row per (dispatch, signal). A dispatch_id is stable per proposal per
 -- policy, so a retried feedback pass must not double-count an observation

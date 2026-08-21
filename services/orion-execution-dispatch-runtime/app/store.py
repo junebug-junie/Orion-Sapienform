@@ -837,7 +837,6 @@ class ExecutionDispatchRuntimeStore:
             ).mappings().all()
         return [str(row["status"]) for row in rows]
 
-
     def load_effect_posteriors(self) -> dict[tuple[str, str, str], EffectPosterior]:
         """Current per-(kind, target, signal) belief, for stamping predictions.
 

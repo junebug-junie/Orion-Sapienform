@@ -576,7 +576,27 @@ class FeedbackRuntimeStore:
             # process died between the two, the observation would be gone
             # permanently -- nothing ever revisits a frame whose marker is
             # already clear.
-            self._write_action_outcomes(conn, outcome_records or [])
+            # SAVEPOINT, not a bare call. Finding 4 (review, 2026-08-21):
+            # this shares a transaction with the frame insert and the
+            # `feedback_pending = false` clear ABOVE, so an exception here
+            # used to roll back all three. The next tick's
+            # load_latest_dispatch_frame_without_feedback() is a FIFO on the
+            # oldest unfed frame, so it would re-select the identical row and
+            # fail identically -- a permanent head-of-line stall, which this
+            # service has already suffered once (see that method's own
+            # comment). A nested transaction lets the ledger write fail alone:
+            # the frame and the marker still commit, the pipeline keeps
+            # moving, and the lost observation is one row rather than the
+            # whole loop.
+            try:
+                with conn.begin_nested():
+                    self._write_action_outcomes(conn, outcome_records or [])
+            except Exception:
+                logger.exception(
+                    "action_outcome_ledger_write_failed frame_id=%s records=%d",
+                    frame.frame_id,
+                    len(outcome_records or []),
+                )
 
     @staticmethod
     def _write_action_outcomes(conn, records: list[ActionOutcomeRecordV1]) -> None:
@@ -604,14 +624,14 @@ class FeedbackRuntimeStore:
                         observed_at, baseline, observed_after, observed_delta,
                         predicted_delta, prediction_error, surprise_nats,
                         posterior_mean, posterior_variance, posterior_n,
-                        co_predictors, latency_ms
+                        co_predictors, latency_ms, claim_upheld
                     ) VALUES (
                         :dispatch_id, :dispatch_frame_id, :feedback_frame_id,
                         :dispatch_kind, :target_id, :signal_id, :direction,
                         :observed_at, :baseline, :observed_after, :observed_delta,
                         :predicted_delta, :prediction_error, :surprise_nats,
                         :posterior_mean, :posterior_variance, :posterior_n,
-                        :co_predictors, :latency_ms
+                        :co_predictors, :latency_ms, :claim_upheld
                     )
                     ON CONFLICT (dispatch_id, signal_id) DO NOTHING
                     RETURNING id
@@ -641,6 +661,7 @@ class FeedbackRuntimeStore:
                     "posterior_n": record.posterior_n,
                     "co_predictors": record.co_predictors,
                     "latency_ms": record.latency_ms,
+                    "claim_upheld": record.claim_upheld,
                 },
             ).first()
             if inserted is None:

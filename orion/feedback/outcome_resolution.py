@@ -25,6 +25,27 @@ from orion.schemas.field_state import FieldStateV1
 
 PosteriorKey = tuple[str, str, str]
 
+# Below this, a delta is not a movement. Same 1e-6 dead band
+# orion.feedback.extractors.classify_pressure_deltas already applies to these
+# exact channels -- reused rather than invented so "moved" means one thing
+# across the feedback path, not two.
+NO_CHANGE_EPSILON = 1e-6
+
+
+def claim_upheld(direction: str, observed_delta: float) -> bool | None:
+    """Did the action do what it said it would?
+
+    Returns None only for a directional claim whose observed delta landed
+    inside the dead band -- genuinely undecidable, not a soft pass. A
+    `no_change` claim is decidable in both directions and never returns None.
+    """
+    moved = abs(observed_delta) >= NO_CHANGE_EPSILON
+    if direction == "no_change":
+        return not moved
+    if not moved:
+        return None
+    return observed_delta > 0 if direction == "increase" else observed_delta < 0
+
 
 @dataclass(frozen=True)
 class OutcomeResolution:
@@ -111,8 +132,18 @@ def resolve_action_outcomes(
 
         key = posterior_key(candidate.dispatch_kind, candidate.target_id, signal)
         prior = working.get(key) or EffectPosterior.cold()
-        posterior, surprise, error = score_observation(prior, observed_delta)
+        posterior, surprise, _residual_vs_prior = score_observation(prior, observed_delta)
         working[key] = posterior
+
+        # Finding 6 (review, 2026-08-21): this used to store
+        # score_observation's residual, which is measured against
+        # `prior.mean` -- the belief at SCORING time. `predicted_delta` on
+        # the row is the claim recorded at DISPATCH time. Whenever the
+        # posterior moved in between (routinely), the two disagreed, and a
+        # reader recomputing `observed_delta - predicted_delta` from the row
+        # got a different number, sometimes with the opposite sign. The
+        # error of a prediction has to be measured against that prediction.
+        error = observed_delta - effect.predicted_delta
 
         records.append(
             ActionOutcomeRecordV1(
@@ -138,6 +169,7 @@ def resolve_action_outcomes(
                 posterior_mean=posterior.mean,
                 posterior_variance=posterior.variance,
                 posterior_n=posterior.n,
+                claim_upheld=claim_upheld(effect.direction, observed_delta),
                 co_predictors=max(claim_counts.get(signal, 1) - 1, 0),
                 latency_ms=(latency_by_dispatch_id or {}).get(candidate.dispatch_id),
             )

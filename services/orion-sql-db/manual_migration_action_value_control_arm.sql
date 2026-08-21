@@ -46,18 +46,25 @@ UPDATE substrate_action_outcomes
 ALTER TABLE substrate_action_outcomes
     ALTER COLUMN baseline_bin SET NOT NULL;
 
--- The old unique key was (dispatch_id, signal_id), which is wrong in two
--- ways that only became visible once a second arm existed:
---   * `dispatch_id` is stable per (proposal, policy), and starvation aging
---     means the SAME proposal is capacity-blocked on many consecutive ticks
---     and may finally be dispatched later. Under the old key the first
---     blocked observation won and every later one -- including the real
---     dispatch -- was silently discarded by ON CONFLICT DO NOTHING.
---   * Each tick is a separate field window, so each is a genuinely separate
---     observation, not a duplicate.
--- Adding dispatch_frame_id keeps the property that actually matters (a
--- reprocessed feedback pass over the same dispatch frame inserts nothing)
--- while letting distinct ticks through.
+-- The old unique key was (dispatch_id, signal_id). Adding dispatch_frame_id
+-- makes the dedup unit match the real observation unit: each tick is a
+-- separate field window, so the same action observed in two ticks is two
+-- observations, not a duplicate. The property that actually matters -- a
+-- reprocessed feedback pass over the SAME dispatch frame inserts nothing --
+-- is preserved exactly.
+--
+-- HONEST SCOPE, checked rather than asserted. The first draft of this
+-- comment claimed the old key was live-losing rows, on the reasoning that
+-- `dispatch_id` is a pure function of (proposal_id, policy_id) and
+-- starvation aging re-blocks the same action across many consecutive ticks.
+-- Measured before shipping the claim: over 24h, 21,895 distinct dispatch_ids
+-- across every blocked and dispatched candidate, and ZERO of them appear in
+-- more than one frame -- because proposal_ids are regenerated every tick
+-- (~190k proposals in 3 days) and starvation is keyed on (kind, target), not
+-- on the proposal. So this is a defensive correctness fix that makes the
+-- constraint mean what the data means; it is NOT fixing an observed loss.
+-- Nothing guarantees that invariant holds after a proposal-id change, which
+-- is why the looser key is still the right one.
 DROP INDEX IF EXISTS substrate_action_outcomes_dispatch_signal_uidx;
 
 CREATE UNIQUE INDEX IF NOT EXISTS substrate_action_outcomes_dispatch_frame_signal_uidx
@@ -82,23 +89,41 @@ CREATE INDEX IF NOT EXISTS substrate_action_outcomes_arm_bin_idx
 -- destroyed; the ledger rows they were derived from are all still present
 -- and carry an exact baseline_bin after the backfill above.
 
-CREATE TABLE IF NOT EXISTS substrate_action_effect_posterior_phase1_backup
-    (LIKE substrate_action_effect_posterior INCLUDING ALL);
+-- Guarded on the FIRST-RUN condition, not written as a bare sequence.
+-- These files are applied by hand and get re-applied (see
+-- scripts/check_sql_migrations_applied.py's own reason for existing). Every
+-- other statement in this migration is idempotent, and the PK swap below is
+-- too -- Postgres re-auto-names the constraint `..._pkey`, so a second run
+-- would find it, drop it, and re-add it happily. A bare `DELETE FROM` beside
+-- idempotent neighbours would therefore look harmless and would silently
+-- wipe every accumulated posterior on any re-run. The presence of the
+-- `baseline_bin` column is the first-run test.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'substrate_action_effect_posterior'
+           AND column_name = 'baseline_bin'
+    ) THEN
+        CREATE TABLE IF NOT EXISTS substrate_action_effect_posterior_phase1_backup
+            (LIKE substrate_action_effect_posterior INCLUDING ALL);
 
-INSERT INTO substrate_action_effect_posterior_phase1_backup
-SELECT * FROM substrate_action_effect_posterior
-ON CONFLICT DO NOTHING;
+        INSERT INTO substrate_action_effect_posterior_phase1_backup
+        SELECT * FROM substrate_action_effect_posterior
+        ON CONFLICT DO NOTHING;
 
-DELETE FROM substrate_action_effect_posterior;
+        DELETE FROM substrate_action_effect_posterior;
 
-ALTER TABLE substrate_action_effect_posterior
-    ADD COLUMN IF NOT EXISTS baseline_bin SMALLINT NOT NULL DEFAULT 0;
+        ALTER TABLE substrate_action_effect_posterior
+            ADD COLUMN baseline_bin SMALLINT NOT NULL DEFAULT 0;
 
-ALTER TABLE substrate_action_effect_posterior
-    DROP CONSTRAINT IF EXISTS substrate_action_effect_posterior_pkey;
+        ALTER TABLE substrate_action_effect_posterior
+            DROP CONSTRAINT IF EXISTS substrate_action_effect_posterior_pkey;
 
-ALTER TABLE substrate_action_effect_posterior
-    ADD PRIMARY KEY (dispatch_kind, target_id, signal_id, baseline_bin);
+        ALTER TABLE substrate_action_effect_posterior
+            ADD PRIMARY KEY (dispatch_kind, target_id, signal_id, baseline_bin);
+    END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 3. The control arm

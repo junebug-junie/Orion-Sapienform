@@ -10,6 +10,7 @@ from app.tensor.channels import (
     DEFAULT_CAPABILITY_VECTOR,
     DEFAULT_NODE_VECTOR,
     NODE_CHANNELS,
+    RETIRED_LATTICE_NODES,
     RETIRED_NODE_CHANNELS,
     SINGLE_OBSERVER_NODE_CHANNELS,
 )
@@ -98,6 +99,24 @@ def _prune_every_node_vector(state: FieldStateV1) -> None:
                     stamps.pop(channel, None)
 
 
+def _prune_retired_lattice_nodes(state: FieldStateV1) -> None:
+    """Drop the whole node_vectors/node_vector_updated_at entry for a node
+    that has been permanently removed from the lattice (RETIRED_LATTICE_NODES
+    in channels.py), not just a renamed channel on a still-live node.
+
+    _ensure_node_vector() above only ever runs for `lattice.nodes`, so once a
+    node_id leaves the yaml nothing seeds, decays-with-intent, or perturbs its
+    entry again -- it just sits in node_vectors forever at whatever value
+    decay last left it, which every generic consumer iterating node_vectors
+    reads as a real (if quiet) node. Unlike a pseudo-node (node:rpc_timeout,
+    node:substrate.*), which is off-lattice by design and must be left alone,
+    a retired lattice node has no reason to still be reported at all.
+    """
+    for node_id in RETIRED_LATTICE_NODES:
+        state.node_vectors.pop(node_id, None)
+        state.node_vector_updated_at.pop(node_id, None)
+
+
 def reconcile_field_state_with_lattice(
     state: FieldStateV1,
     *,
@@ -107,6 +126,7 @@ def reconcile_field_state_with_lattice(
     for node_id in lattice.nodes:
         _ensure_node_vector(updated.node_vectors, node_id)
     _prune_every_node_vector(updated)
+    _prune_retired_lattice_nodes(updated)
     for capability_id in lattice.capabilities:
         _ensure_capability_vector(updated.capability_vectors, capability_id)
     updated.edges = [

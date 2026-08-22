@@ -1685,10 +1685,20 @@ one-off chat candidate nobody was ever going to act on again.
 `scripts/attention_loop_decay_digest.py` (cron, same pattern as
 `concept_relation_digest.py`) now labels a loop `decayed_unattended` once it's
 gone silent for 24h+ with no human verdict, and suppresses it out of this panel
-the same way a Dismiss does. It does **not** suppress a loop from live reverie
-selection (`decayed_unattended` is deliberately non-terminal for that purpose —
-see `orion/substrate/attention/verdicts.py`), so a `chronic_pressure` loop that's
-still genuinely salient keeps competing normally; only a stale card goes away.
+the same way a Dismiss does.
+
+**Chat-scope only, deliberately.** The digest never touches `chronic_pressure`
+(`scope='reverie'`) loops — a second review pass caught that its own
+suppression write lands in `substrate_reverie_refractory`, which
+`services/orion-thought/app/chain.py` ALSO reads (by deliberate pre-existing
+design) to gate real reverie-chain reignition. A human's explicit Resolve/
+Dismiss is meant to carry that consequence; this digest's implicit,
+machine-driven decay is not the same kind of act, and letting it auto-suppress
+a still-possibly-live reverie signal would be the exact false-closure failure
+`card_kind` exists to prevent, one layer removed from the Hub's 409 guard. A
+`chronic_pressure` card that's gone quiet just... stays on the panel, framed as
+sustained pressure, until a real trace row arrives again or the underlying
+mechanism changes — that's intended, not a gap.
 Liveness fail-safe: `make check-attention-loop-decay-liveness` (see
 `scripts/check_attention_loop_decay_liveness.py`).
 

@@ -1335,6 +1335,64 @@ async def api_debug_endogenous_outreach_trigger() -> Dict[str, Any]:
     return {"ok": True, "result": result}
 
 
+@router.get("/api/debug/endogenous-outreach/decisions")
+def api_debug_endogenous_outreach_decisions(limit: int = Query(default=50, ge=1, le=500)) -> Dict[str, Any]:
+    """Durable decision-cycle history -- every tick's outcome, not just
+    sends. See endogenous_outreach_decisions.py's own module docstring for
+    why this exists: `status()`'s `last_result` is in-process and wiped on
+    restart; this reads the real Postgres row history instead.
+    """
+    from scripts.pg_engine import get_engine
+
+    engine = get_engine()
+    if engine is None:
+        return {"ok": False, "reason": "no_postgres_uri"}
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.exc import ProgrammingError
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql_text(
+                    """
+                    SELECT decision_id, decided_at, outreach, reason, forced,
+                           target_id, run_length, peak_deviation_pressure,
+                           sustained_load_pressure, correlation_id, session_id,
+                           result_json
+                    FROM endogenous_outreach_decisions
+                    ORDER BY decided_at DESC
+                    LIMIT :lim
+                    """
+                ),
+                {"lim": limit},
+            ).mappings().all()
+    except ProgrammingError:
+        # Migration not applied yet -- see this route's own docstring.
+        return {"ok": False, "reason": "table_not_migrated"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_decisions_query_failed err=%s", exc)
+        return {"ok": False, "reason": "query_failed"}
+
+    decisions = [
+        {
+            "decision_id": r["decision_id"],
+            "decided_at": r["decided_at"].isoformat() if r["decided_at"] else None,
+            "outreach": r["outreach"],
+            "reason": r["reason"],
+            "forced": r["forced"],
+            "target_id": r["target_id"],
+            "run_length": r["run_length"],
+            "peak_deviation_pressure": r["peak_deviation_pressure"],
+            "sustained_load_pressure": r["sustained_load_pressure"],
+            "correlation_id": r["correlation_id"],
+            "session_id": r["session_id"],
+            "result": r["result_json"],
+        }
+        for r in rows
+    ]
+    return {"ok": True, "count": len(decisions), "decisions": decisions}
+
+
 @router.get("/api/service-logs/services")
 def api_service_logs_services() -> Dict[str, Any]:
     return collect_service_inventory()

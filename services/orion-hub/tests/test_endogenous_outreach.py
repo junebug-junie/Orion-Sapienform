@@ -1228,3 +1228,113 @@ def test_tick_sec_default_is_not_the_root_caused_300s_value() -> None:
     )
     assert settings_match, "HUB_ENDOGENOUS_OUTREACH_TICK_SEC Field default not found in settings.py"
     assert float(settings_match.group(1)) != 300.0
+
+
+# --------------------------------------------------------------------------
+# Durable decision log (2026-08-22) -- _record() is the one choke point
+# every branch funnels through; these assert the persist hook fires with the
+# right forced/tension_reason for each shape, not just the happy path.
+# --------------------------------------------------------------------------
+
+
+def _patch_record_decision(monkeypatch):
+    import scripts.endogenous_outreach_decisions as decisions_mod
+
+    calls: list[dict] = []
+
+    def fake_record(result, *, tension_reason=None, forced=False):
+        calls.append({"result": result, "tension_reason": tension_reason, "forced": forced})
+
+    monkeypatch.setattr(decisions_mod, "record_decision", fake_record)
+    return calls
+
+
+def test_record_persists_a_blocked_decision_with_the_real_forced_flag(monkeypatch) -> None:
+    """The already_sending early-return in maybe_outreach never reaches
+    _outreach_once -- this is exactly the path the `_last_forced` comment on
+    `maybe_outreach` calls out as needing to be set before that return."""
+    outreach = _outreach()
+    calls = _patch_record_decision(monkeypatch)
+
+    async def run_both():
+        async with outreach._send_lock:
+            return await outreach.maybe_outreach(force=True)
+
+    result = asyncio.run(run_both())
+
+    assert result["reason"] == "already_sending"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is True
+    assert calls[0]["result"]["reason"] == "already_sending"
+
+
+def test_record_persists_no_tension_trigger_with_no_stale_reason(monkeypatch) -> None:
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    calls = _patch_record_decision(monkeypatch)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "no_tension_trigger"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is False
+    assert calls[0]["tension_reason"] is None
+
+
+def test_record_persists_a_successful_send_with_the_real_tension_reason(monkeypatch) -> None:
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "The execution node has been noisy all afternoon.")
+
+    async def fake_history(self, **kwargs):
+        return None
+
+    async def fake_notify(self, **kwargs):
+        return None
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", fake_notify)
+    calls = _patch_record_decision(monkeypatch)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "sent"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is False
+    assert calls[0]["result"]["reason"] == "sent"
+    assert calls[0]["tension_reason"].target_id == "node:test"
+
+
+def test_record_persists_a_forced_trigger_with_no_stale_tension_reason(monkeypatch) -> None:
+    """Mirrors test_forced_outreach_does_not_carry_a_stale_tension_reason --
+    the decision log must not misattribute a forced debug trigger to
+    whatever the LAST organic tick's reason was."""
+    outreach = _outreach()
+    outreach._last_tension_reason = _always_fires()  # stale, from a prior organic tick
+    _stub_context(monkeypatch, summaries=(), turns=())  # no organic grounding
+    calls = _patch_record_decision(monkeypatch)
+
+    # No curiosity/turns/tension_reason -> no_grounding_context, but the
+    # important assertion is what tension_reason gets threaded through.
+    result = asyncio.run(outreach.maybe_outreach(force=True))
+
+    assert result["reason"] == "no_grounding_context"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is True
+    assert calls[0]["tension_reason"] is None
+
+
+def test_decision_log_hook_failure_does_not_break_the_tick(monkeypatch) -> None:
+    """A broken persist hook must not make maybe_outreach itself raise or
+    change its returned result -- same best-effort contract this module's
+    other side rails (_push_to_sockets, _publish_notification) already have."""
+    import scripts.endogenous_outreach_decisions as decisions_mod
+
+    def broken_record(*args, **kwargs):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(decisions_mod, "record_decision", broken_record)
+    outreach = _outreach(trigger_evaluator=lambda: None)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "no_tension_trigger"

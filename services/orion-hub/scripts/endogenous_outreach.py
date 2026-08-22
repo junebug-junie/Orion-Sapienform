@@ -481,6 +481,12 @@ class EndogenousOutreach:
         self._sent_today = 0
         self._counter_day: Optional[date] = None
         self._last_result: Dict[str, Any] = {}
+        # Set at the top of `_outreach_once`, read by `_record` -- see that
+        # method's own comment for why this can't just be the `force`
+        # parameter threaded through (every `_record` call site would need
+        # it, and this is the same "known at the start of the tick" shape
+        # `_last_tension_reason` already uses).
+        self._last_forced = False
 
     # -- connection registry (called from websocket_handler) ---------------
 
@@ -683,6 +689,11 @@ class EndogenousOutreach:
         is unauthenticated, so a carve-out here would make "off by default" a
         lie that one POST could undo.
         """
+        # Set here, not only inside `_outreach_once`: the `already_sending`
+        # early-return below calls `_record` without ever reaching that
+        # method, and `_record` needs this tick's real `forced` value, not
+        # whatever a previous tick left behind.
+        self._last_forced = bool(force)
         if self._send_lock.locked():
             return self._record({"outreach": False, "reason": "already_sending"})
         async with self._send_lock:
@@ -779,6 +790,26 @@ class EndogenousOutreach:
     def _record(self, result: Dict[str, Any]) -> Dict[str, Any]:
         result["at"] = datetime.now(timezone.utc).isoformat()
         self._last_result = result
+        # Durable trail for every decision cycle, not just the ones that
+        # ship -- see endogenous_outreach_decisions.py's own module
+        # docstring for why: `self._last_result`/`logger.warning` are both
+        # wiped on container restart, which is exactly what made the
+        # 2026-08-22 "why hasn't Orion reached out" investigation unable to
+        # tell "Orion keeps legitimately PASSing" apart from "generation is
+        # silently failing" after the fact. Best-effort, fire-and-forget --
+        # see that module's own contract; a decision-log failure must never
+        # affect this tick's real outcome, which has already been decided
+        # by the time this method runs.
+        try:
+            from scripts.endogenous_outreach_decisions import record_decision
+
+            record_decision(
+                result,
+                tension_reason=self._last_tension_reason,
+                forced=self._last_forced,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("endogenous_outreach_decision_hook_failed err=%s", exc)
         return result
 
     async def _gather_context(self, session_id: Optional[str]) -> OutreachContext:

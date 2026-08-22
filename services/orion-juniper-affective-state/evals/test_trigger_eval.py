@@ -41,6 +41,13 @@ def test_trigger_round_trips_and_publishes():
     assert body["event"]["ok"] is True
     assert body["event"]["source"] == "affectgpt"
     assert body["event"]["input_ref"]["video_path"] == DEMO_VIDEO
+    # trigger/correlation_id (2026-08-22, review finding): /trigger passes
+    # neither explicitly, so trigger must still default to "manual" and
+    # correlation_id must still be populated (generated internally by
+    # trigger_assessment()) -- proves the fields work end to end through a
+    # REAL bus round trip, not just the mocked unit tests in tests/.
+    assert body["event"]["trigger"] == "manual"
+    assert body["event"]["correlation_id"], "correlation_id must be populated even on the plain /trigger path"
     print(f"event={body['event']}")
 
 

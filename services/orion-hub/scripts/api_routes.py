@@ -1274,17 +1274,34 @@ def api_vision_affect_capture() -> Dict[str, Any]:
     not a substitute for it (2026-08-22 design correction: this route
     originally shipped alone, mislabeled as fulfilling the toggle Juniper
     had actually asked for).
+
+    Shares vision_affect_ambient's exclusive capture slot with the ambient
+    loop (review finding, 2026-08-22): originally this route bypassed that
+    module's state entirely, so a collision with an in-flight ambient tick
+    was only ever caught incidentally by retina's own device lock -- a
+    confusing generic "busy" straight from the capture hardware, with no
+    record here of why. Now this route claims the same slot the ambient
+    loop uses, so a real collision gets an explicit, honest 429 instead.
     """
     base = str(settings.JUNIPER_AFFECTIVE_STATE_BASE_URL or "").strip().rstrip("/")
     if not base:
         raise HTTPException(
             status_code=503, detail="juniper_affective_state_base_url_not_configured"
         )
+    if not vision_affect_ambient.try_begin_capture("manual"):
+        raise HTTPException(
+            status_code=429,
+            detail="a capture is already in progress (manual or ambient) -- try again shortly",
+        )
     try:
-        return vision_affect_ambient.call_capture_and_assess(
+        body = vision_affect_ambient.call_capture_and_assess(
             base, float(settings.JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC), "manual"
         )
+        ok, error = vision_affect_ambient.result_ok_and_error(body)
+        vision_affect_ambient.end_capture(ok=ok, error=error)
+        return body
     except requests.RequestException as exc:
+        vision_affect_ambient.end_capture(ok=False, error=str(exc))
         raise HTTPException(
             status_code=502, detail=f"juniper_affective_state_unavailable:{exc}"
         ) from exc

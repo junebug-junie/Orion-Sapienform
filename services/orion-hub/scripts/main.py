@@ -802,12 +802,15 @@ async def startup_event():
     # Ambient (recurring) AffectGPT capture toggle -- see
     # scripts/vision_affect_ambient.py module docstring for the full design
     # (2026-08-22 correction: Hub owns this loop, not the orchestrator).
-    # AFFECT_AMBIENT_ENABLED gates whether the loop TASK starts at all (an
-    # operator kill switch, same spirit as SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED
-    # above) -- it is NOT the runtime on/off toggle itself, which always
-    # starts False regardless (state.enabled, fails closed on restart by
-    # construction). Also requires JUNIPER_AFFECTIVE_STATE_BASE_URL to be
-    # configured -- no point running a loop with nowhere to call.
+    # AFFECT_AMBIENT_ENABLED gates whether the loop TASK is CREATED at
+    # startup, same spirit as SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED
+    # above -- it is a boot-time switch, NOT a live kill switch (review
+    # finding, 2026-08-22: an earlier comment here called it one; flipping
+    # this env var to false and NOT restarting Hub does nothing to a loop
+    # already running -- only the runtime toggle, state.enabled via
+    # POST /api/vision/affect-ambient, stops live capture immediately).
+    # Also requires JUNIPER_AFFECTIVE_STATE_BASE_URL to be configured -- no
+    # point running a loop with nowhere to call.
     if settings.AFFECT_AMBIENT_ENABLED and settings.JUNIPER_AFFECTIVE_STATE_BASE_URL:
         affect_ambient_loop_task = asyncio.create_task(
             vision_affect_ambient_runtime.affect_ambient_loop(

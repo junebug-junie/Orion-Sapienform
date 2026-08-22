@@ -34,8 +34,13 @@ from scripts import vision_affect_ambient as ambient  # noqa: E402
 @pytest.fixture(autouse=True)
 def _fresh_state():
     ambient.state = ambient.AffectAmbientState()
+    # threading.Lock instances can't be "reset" -- a test that acquires
+    # without releasing (intentionally, to test the collision path) would
+    # otherwise leave every later test unable to ever acquire it again.
+    ambient._capture_lock = ambient.threading.Lock()
     yield
     ambient.state = ambient.AffectAmbientState()
+    ambient._capture_lock = ambient.threading.Lock()
 
 
 def test_call_capture_and_assess_sends_trigger_and_url():
@@ -190,12 +195,81 @@ def test_status_payload_shape():
     ambient.state.tick_count = 3
     ambient.state.last_result_ok = False
     ambient.state.last_error = "timeout"
+    ambient.state.last_trigger = "ambient"
     payload = ambient.state.status_payload()
     assert payload == {
         "enabled": True,
         "tick_in_progress": False,
         "tick_count": 3,
         "last_attempt_at": None,
+        "last_trigger": "ambient",
         "last_result_ok": False,
         "last_error": "timeout",
     }
+
+
+# --- Shared capture slot (review finding, 2026-08-22) -----------------------
+# Originally the manual "Check now" route bypassed this module's state
+# entirely -- a collision with an in-flight ambient tick was only ever
+# caught incidentally by retina's own device lock (a confusing generic
+# "busy", and the ambient loop losing its cycle with no record of why).
+
+
+def test_try_begin_capture_excludes_a_concurrent_caller():
+    assert ambient.try_begin_capture("manual") is True
+    assert ambient.state.tick_in_progress is True
+    assert ambient.state.last_trigger == "manual"
+
+    # A second caller (either trigger) must NOT win the slot while the
+    # first is still in flight.
+    assert ambient.try_begin_capture("ambient") is False
+    assert ambient.state.last_trigger == "manual", "a losing caller must not overwrite state"
+
+
+def test_end_capture_releases_the_slot_for_the_next_caller():
+    assert ambient.try_begin_capture("manual") is True
+    ambient.end_capture(ok=True, error=None)
+
+    assert ambient.state.tick_in_progress is False
+    assert ambient.state.last_result_ok is True
+    assert ambient.try_begin_capture("ambient") is True, "the slot must be free again after end_capture"
+
+
+@pytest.mark.asyncio
+async def test_ambient_tick_skips_without_retrying_when_manual_holds_the_slot():
+    """No retries, per Juniper's explicit instruction -- a collision with a
+    manual capture is handled exactly like any other failed tick: skip,
+    wait for the next scheduled attempt."""
+    assert ambient.try_begin_capture("manual") is True  # simulate an in-flight manual call
+
+    called = False
+
+    async def _should_not_run(base_url, timeout_sec):
+        nonlocal called
+        called = True
+
+    with patch.object(ambient, "call_capture_and_assess", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be called"))):
+        await ambient.run_ambient_tick("http://circe:32799", 1.0)
+
+    assert not called
+    # tick_in_progress must still be True -- it's the manual caller's to
+    # release, not something the failed ambient attempt should touch.
+    assert ambient.state.tick_in_progress is True
+    assert ambient.state.last_trigger == "manual"
+
+
+def test_call_capture_and_assess_returns_error_shape_on_non_dict_response():
+    """Review finding, 2026-08-22: this used to degrade to a bare {} on a
+    malformed (non-dict) JSON response, silently dropping the error signal
+    for both callers (the manual route saw neither ok nor error; the
+    ambient loop's status line showed a generic "failed (unknown)")."""
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = ["not", "a", "dict"]
+    with patch.object(ambient.requests, "post", return_value=fake_resp):
+        body = ambient.call_capture_and_assess("http://circe:32799", 240.0, "manual")
+
+    assert body == {"result": {"ok": False, "error": "invalid_response"}}
+    ok, error = ambient.result_ok_and_error(body)
+    assert ok is False
+    assert error == "invalid_response"

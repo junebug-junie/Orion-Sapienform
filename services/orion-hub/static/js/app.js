@@ -646,6 +646,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const affectCaptureResult = document.getElementById("affectCaptureResult");
   const affectAmbientToggle = document.getElementById("affectAmbientToggle");
   const affectAmbientStatusLine = document.getElementById("affectAmbientStatusLine");
+  // Tracked separately from the button's rendered label (review finding,
+  // 2026-08-22: parsing textContent for "off" broke the moment the label
+  // wording changed) -- always set from the last real status fetch, never
+  // inferred from what's currently displayed.
+  let affectAmbientEnabled = false;
 
   // Biometrics
   const biometricsPanel = document.getElementById("biometricsPanel");
@@ -11924,6 +11929,7 @@ document.addEventListener("DOMContentLoaded", () => {
       function renderAmbientStatus(status) {
         if (!affectAmbientToggle) return;
         const on = !!(status && status.enabled);
+        affectAmbientEnabled = on;
         affectAmbientToggle.textContent = on ? "Ambient: on" : "Ambient: off";
         affectAmbientToggle.classList.toggle("bg-emerald-700", on);
         affectAmbientToggle.classList.toggle("border-emerald-500", on);
@@ -11938,14 +11944,15 @@ document.addEventListener("DOMContentLoaded", () => {
           parts.push("ambient loop not configured on this Hub deployment");
         }
         if (status.tick_in_progress) {
-          parts.push("capturing now…");
+          parts.push(`capturing now (${status.last_trigger || "?"})…`);
         } else if (status.last_attempt_at) {
           const okText = status.last_result_ok === true
             ? "ok"
             : status.last_result_ok === false
               ? `failed (${status.last_error || "unknown"})`
               : "pending";
-          parts.push(`last tick ${formatAgo(status.last_attempt_at)}: ${okText}`);
+          const kind = status.last_trigger === "manual" ? "last check" : "last tick";
+          parts.push(`${kind} ${formatAgo(status.last_attempt_at)}: ${okText}`);
         }
         if (status.enabled && status.interval_sec) {
           parts.push(`every ${Math.round(status.interval_sec / 60)} min`);
@@ -11966,7 +11973,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       async function toggleAffectAmbient() {
         if (!affectAmbientToggle) return;
-        const wantsOn = affectAmbientToggle.textContent.indexOf("off") !== -1;
+        const wantsOn = !affectAmbientEnabled;
         affectAmbientToggle.disabled = true;
         try {
           const resp = await fetch("/api/vision/affect-ambient", {

@@ -34,11 +34,12 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from loguru import logger
+from pydantic import BaseModel, ConfigDict
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -61,6 +62,30 @@ class PerceptFetchError(Exception):
     used to hand-verify carbon's first real capture live, 2026-08-22: never
     trust a reported sha256 without recomputing it from the bytes actually
     received)."""
+
+
+def _normalize_trigger(value: object) -> Literal["manual", "ambient"]:
+    """One place deciding what counts as a valid trigger label -- review
+    finding, 2026-08-22: this clamp used to be duplicated verbatim in two
+    call sites (capture_and_assess() and _wrap_event()), so a future third
+    trigger value added to only one of them would silently miscategorize
+    events with nothing to catch the mismatch."""
+    return "ambient" if value == "ambient" else "manual"
+
+
+class CaptureAndAssessRequest(BaseModel):
+    """Real validation for POST /v1/juniper/affect/capture_and_assess's body
+    -- review finding, 2026-08-22: this used to be an untyped ``dict``,
+    silently coercing a malformed ``trigger`` (e.g. an int, a list) via
+    _normalize_trigger deep inside application code instead of a 422 at the
+    API boundary, unlike /trigger's own AffectGptAssessRequestPayload(**payload)
+    validation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    subtitle: str = ""
+    user_message: Optional[str] = None
+    trigger: Literal["manual", "ambient"] = "manual"
 
 
 class JuniperAffectiveStateService:
@@ -95,6 +120,16 @@ class JuniperAffectiveStateService:
         # failure (the operationally most likely outcomes) never published
         # to orion:affectgpt:assessment at all, contradicting this class's
         # own README ("publishes ... success or failure").
+        #
+        # corr_id generated HERE if the caller didn't supply one (review
+        # finding, 2026-08-22: /trigger's plain call used to leave this
+        # None, so _call_worker generated its own internally for the real
+        # RPC exchange but that id was never surfaced back to _wrap_event --
+        # the published event's correlation_id was always None on this
+        # path even though a real one existed and was used). Generating it
+        # here, once, and threading it to BOTH _call_worker and _wrap_event
+        # is what makes it real for every caller, not just capture_and_assess().
+        corr_id = corr_id or uuid.uuid4()
         if not self.bus or not self.bus.enabled:
             result = AffectGptAssessResultPayload(
                 ok=False, error="bus not connected", error_code="bus_unavailable"
@@ -109,13 +144,10 @@ class JuniperAffectiveStateService:
     async def _call_worker(
         self, req: AffectGptAssessRequestPayload, *, corr_id: "uuid.UUID | None" = None
     ) -> AffectGptAssessResultPayload:
-        # corr_id may be supplied by a caller that wants this leg to share
-        # an id with the rest of its own attempt (capture_and_assess() below
-        # threads ONE id through the retina RPC, this RPC, and the
-        # published event -- Juniper's ask, 2026-08-22: "ensure the data
-        # model has good ability to be correlative with other components in
-        # the mesh"). /trigger's plain manual path has no such context, so
-        # it falls through to generating its own, same as before.
+        # corr_id is always supplied by trigger_assessment() above (it
+        # generates one at the top if the caller didn't provide one) --
+        # this fallback only matters for a hypothetical direct caller of
+        # _call_worker() that skips trigger_assessment entirely.
         corr_id = corr_id or uuid.uuid4()
         reply_channel = f"{settings.CHANNEL_AFFECTGPT_REPLY_PREFIX}:{corr_id}"
         request_envelope = BaseEnvelope(
@@ -184,7 +216,7 @@ class JuniperAffectiveStateService:
         JuniperMultimodalAffectV1's Literal field deep inside _wrap_event
         and raise a pydantic ValidationError with no handler around it.
         """
-        trigger = trigger if trigger == "ambient" else "manual"
+        trigger = _normalize_trigger(trigger)
         # ONE id for this whole attempt -- threaded through the retina RPC
         # below, the worker RPC inside trigger_assessment(), and the
         # published event, so all three legs of one tick are joinable via a
@@ -366,17 +398,30 @@ class JuniperAffectiveStateService:
             face_detection=result.face_detection,
             timings=result.timings,
             input_ref={"video_path": req.video_path, "audio_path": req.audio_path},
-            trigger=trigger if trigger == "ambient" else "manual",
+            trigger=_normalize_trigger(trigger),
             correlation_id=str(corr_id) if corr_id else None,
         )
 
     async def _publish_event(self, event: JuniperMultimodalAffectV1):
         if not self.bus:
             return
+        # BaseEnvelope's own correlation_id (the standard, documented
+        # mesh-wide join key -- orion/core/bus/bus_schemas.py: "Stable id
+        # for a request/flow") must carry the SAME id as the payload's own
+        # correlation_id field, not an unrelated fresh uuid4() from
+        # BaseEnvelope's default_factory -- review finding, 2026-08-22: a
+        # consumer that already knows the standard envelope-level
+        # convention (rather than digging into this payload's own nested
+        # field) got a random id every time, defeating the whole point of
+        # adding correlation_id here.
+        envelope_kwargs = {}
+        if event.correlation_id:
+            envelope_kwargs["correlation_id"] = event.correlation_id
         envelope = BaseEnvelope(
             kind="affectgpt.juniper_multimodal_affect.v1",
             source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=event.model_dump(mode="json"),
+            **envelope_kwargs,
         )
         await self.bus.publish(settings.CHANNEL_AFFECTGPT_ASSESSMENT, envelope)
 
@@ -461,12 +506,17 @@ async def capture_and_assess(payload: dict | None = None):
     own inference (README: ~20s warm, more cold). Callers need a generous
     timeout -- a slow reply here is normal, not a hang.
     """
-    body = payload or {}
-    subtitle = str(body.get("subtitle") or "")
-    user_message = body.get("user_message")
-    trigger_kind = str(body.get("trigger") or "manual")
+    try:
+        req = CaptureAndAssessRequest(**(payload or {}))
+    except Exception as e:
+        # Real validation at the API boundary (review finding, 2026-08-22)
+        # -- matches /trigger's own AffectGptAssessRequestPayload(**payload)
+        # pattern instead of silently coercing a malformed trigger deep
+        # inside application code.
+        return JSONResponse({"ok": False, "error": f"invalid request: {e}"}, status_code=422)
+
     capture, result, event = await service.capture_and_assess(
-        subtitle=subtitle, user_message=user_message, trigger=trigger_kind
+        subtitle=req.subtitle, user_message=req.user_message, trigger=req.trigger
     )
     return {
         "capture": capture.model_dump(exclude_none=True),

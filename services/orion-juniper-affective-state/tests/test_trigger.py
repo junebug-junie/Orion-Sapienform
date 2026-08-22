@@ -126,3 +126,29 @@ async def test_bus_unavailable_fails_cleanly(req):
     assert result.ok is False
     assert result.error_code == "bus_unavailable"
     assert event.ok is False
+
+
+@pytest.mark.asyncio
+async def test_trigger_generates_a_real_correlation_id_and_surfaces_it_on_the_envelope(req):
+    """Review finding, 2026-08-22: /trigger's plain call used to leave
+    corr_id as None all the way through -- _call_worker generated its own
+    internally for the real RPC exchange, but that id was never surfaced
+    back to _wrap_event, so the published event's correlation_id was
+    always None despite a real id existing and being used for the RPC.
+    Also: the PUBLISHED ENVELOPE's own correlation_id (the standard,
+    documented mesh-wide join key) must carry the same id as the payload's
+    nested correlation_id field, not an unrelated fresh uuid4()."""
+    svc = JuniperAffectiveStateService()
+    svc.bus = FakeBus()
+    svc.bus._rpc_reply_payload = AffectGptAssessResultPayload(ok=True).model_dump()
+
+    result, event = await svc.trigger_assessment(req)
+
+    assert event.correlation_id, "correlation_id must be populated even with no caller-supplied corr_id"
+    # last_reply_channel is f"{prefix}:{corr_id}" -- the same id used for
+    # the real RPC exchange must match what ended up on the event.
+    rpc_corr_id = svc.bus.last_reply_channel.rsplit(":", 1)[-1]
+    assert event.correlation_id == rpc_corr_id
+
+    channel, published_envelope = svc.bus.published[0]
+    assert str(published_envelope.correlation_id) == event.correlation_id

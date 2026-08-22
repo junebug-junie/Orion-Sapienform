@@ -15,9 +15,16 @@ from typing import Any
 
 import pytest
 
-from app.main import JuniperAffectiveStateService, PerceptFetchError, settings
+from app.main import (
+    CaptureAndAssessRequest,
+    JuniperAffectiveStateService,
+    PerceptFetchError,
+    _normalize_trigger,
+    settings,
+)
 from orion.schemas.affectgpt import AffectGptAssessResultPayload
 from orion.schemas.vision import RetinaClipCaptureResultPayload
+from pydantic import ValidationError
 
 
 class FakeEnvelope:
@@ -419,3 +426,37 @@ async def test_fetch_percept_sends_no_token_header_when_unset(monkeypatch, tmp_p
     svc._fetch_percept(sha, str(tmp_path / "out.bin"))
 
     assert captured["token"] is None
+
+
+# --- _normalize_trigger / CaptureAndAssessRequest (review finding, 2026-08-22) --
+# The trigger clamp used to be duplicated verbatim in two places
+# (capture_and_assess() and _wrap_event()) with no shared function backing
+# either; the HTTP endpoint accepted an untyped dict with no real
+# validation. Both fixed via one helper + one pydantic request model.
+
+
+def test_normalize_trigger_only_accepts_the_literal_string_ambient():
+    assert _normalize_trigger("ambient") == "ambient"
+    assert _normalize_trigger("manual") == "manual"
+    assert _normalize_trigger("not-a-real-value") == "manual"
+    assert _normalize_trigger(None) == "manual"
+    assert _normalize_trigger(123) == "manual"
+    assert _normalize_trigger(["ambient"]) == "manual"
+
+
+def test_capture_and_assess_request_rejects_unrecognized_trigger():
+    with pytest.raises(ValidationError):
+        CaptureAndAssessRequest(trigger="not-a-real-value")
+
+
+def test_capture_and_assess_request_defaults_to_manual():
+    req = CaptureAndAssessRequest()
+    assert req.trigger == "manual"
+    assert req.subtitle == ""
+    assert req.user_message is None
+
+
+def test_capture_and_assess_request_accepts_ambient():
+    req = CaptureAndAssessRequest(trigger="ambient", subtitle="hi")
+    assert req.trigger == "ambient"
+    assert req.subtitle == "hi"

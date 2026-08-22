@@ -31,11 +31,26 @@ consciously flip it back on.
 **No retries on a failed tick, by design (Juniper's explicit instruction,
 2026-08-22).** A failed attempt just waits for the next scheduled one --
 hammering retries on every failure would be the wrong instinct for a live
-webcam+mic recording trigger.
+webcam+mic recording trigger. A collision with the manual "Check now" button
+(see try_begin_capture below) is handled the same way -- it's a real failure
+for that cycle, not something to retry immediately.
+
+**Manual and ambient captures share one exclusive slot (review finding,
+2026-08-22).** Originally the manual route bypassed this module's state
+entirely and only retina's own device-level lock caught a collision (a
+confusing generic "busy" error, and the ambient loop losing its cycle with
+no record of why). try_begin_capture()/end_capture() below is a real
+threading.Lock, not just the GIL-atomic boolean flag this started as --
+the manual route runs in FastAPI's threadpool (a real OS thread), the
+ambient loop runs on the asyncio event loop thread, so this is a genuine
+cross-thread race, not just a single-threaded check-then-act. Both paths
+now update the SAME state, so the status line reflects manual activity too,
+not just ambient ticks.
 """
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -50,6 +65,7 @@ class AffectAmbientState:
     tick_in_progress: bool = False
     tick_count: int = 0
     last_attempt_at: Optional[float] = None
+    last_trigger: Optional[str] = None
     last_result_ok: Optional[bool] = None
     last_error: Optional[str] = None
 
@@ -59,15 +75,52 @@ class AffectAmbientState:
             "tick_in_progress": self.tick_in_progress,
             "tick_count": self.tick_count,
             "last_attempt_at": self.last_attempt_at,
+            "last_trigger": self.last_trigger,
             "last_result_ok": self.last_result_ok,
             "last_error": self.last_error,
         }
 
 
-# Module-level singleton, same convention as biometrics_cache.py's own
+# Module-level singletons, same convention as biometrics_cache.py's own
 # process-wide cache object -- one Hub process, one ambient state, no need
 # for a class instance threaded through every call site.
 state = AffectAmbientState()
+# threading.Lock, NOT asyncio.Lock -- the manual "Check now" route runs
+# synchronously in FastAPI's threadpool (a real OS thread), while the
+# ambient loop runs on the asyncio event loop thread. An asyncio.Lock only
+# protects against concurrent coroutines on the SAME event loop; it does
+# nothing for a genuine cross-thread race. This does.
+_capture_lock = threading.Lock()
+
+
+def try_begin_capture(trigger: str) -> bool:
+    """Non-blocking: returns True if this caller won the exclusive capture
+    slot (manual or ambient, whichever asks first), False if another
+    capture is already in flight. Never queues -- a caller that loses just
+    reports "busy" and, for the ambient loop, waits for its next scheduled
+    tick rather than retrying immediately.
+    """
+    acquired = _capture_lock.acquire(blocking=False)
+    if not acquired:
+        return False
+    state.tick_in_progress = True
+    state.last_trigger = trigger
+    state.last_attempt_at = time.time()
+    state.tick_count += 1
+    return True
+
+
+def end_capture(*, ok: bool, error: Optional[str]) -> None:
+    state.last_result_ok = ok
+    state.last_error = error
+    state.tick_in_progress = False
+    try:
+        _capture_lock.release()
+    except RuntimeError:
+        # Released without being held -- should not happen given every
+        # caller only reaches here after a successful try_begin_capture(),
+        # but never let bookkeeping crash the caller's own error handling.
+        logger.warning("[HUB] affect_ambient_end_capture_release_without_lock")
 
 
 def call_capture_and_assess(base_url: str, timeout_sec: float, trigger: str) -> Dict[str, Any]:
@@ -76,6 +129,14 @@ def call_capture_and_assess(base_url: str, timeout_sec: float, trigger: str) -> 
     manual "Check now" route (api_routes.py) and this module's own tick so
     there is exactly ONE call site for "hit capture_and_assess", not two
     that can drift.
+
+    Always returns a dict shaped like the orchestrator's real response
+    (``{"capture": ..., "result": {"ok": ..., "error": ...}, "event": ...}``)
+    even on a malformed/non-dict reply -- review finding, 2026-08-22: this
+    used to silently degrade to a bare ``{}`` on that path, dropping the
+    error signal for both callers (the manual route's caller saw neither
+    ``ok`` nor ``error``; the ambient loop's status line showed a generic
+    "failed (unknown)" with no diagnostic value).
     """
     resp = requests.post(
         f"{base_url.rstrip('/')}/v1/juniper/affect/capture_and_assess",
@@ -84,7 +145,19 @@ def call_capture_and_assess(base_url: str, timeout_sec: float, trigger: str) -> 
     )
     resp.raise_for_status()
     parsed = resp.json()
-    return parsed if isinstance(parsed, dict) else {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"result": {"ok": False, "error": "invalid_response"}}
+
+
+def result_ok_and_error(body: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+    """Shared by run_ambient_tick below and the manual "Check now" route
+    (api_routes.py) -- one place that decides "was this attempt actually
+    ok" from call_capture_and_assess()'s response, not two that can drift."""
+    result = body.get("result") if isinstance(body, dict) else None
+    ok = bool(result.get("ok")) if isinstance(result, dict) else False
+    error = None if ok else ((result or {}).get("error") if isinstance(result, dict) else "invalid_response")
+    return ok, error
 
 
 async def run_ambient_tick(base_url: str, timeout_sec: float) -> None:
@@ -92,23 +165,22 @@ async def run_ambient_tick(base_url: str, timeout_sec: float) -> None:
     the blocking requests.post above can take up to ~195s worst case; a
     background asyncio.create_task loop calling it directly would freeze
     every other Hub request for that whole window.
+
+    Skips (does not retry) if the manual "Check now" route currently holds
+    the capture slot -- the loop's own next scheduled tick will try again;
+    this cycle is just logged as a collision, same as any other failure.
     """
-    state.tick_in_progress = True
-    state.last_attempt_at = time.time()
-    state.tick_count += 1
+    if not try_begin_capture("ambient"):
+        logger.info("[HUB] affect_ambient_tick_skipped reason=capture_in_progress")
+        return
     try:
         body = await asyncio.to_thread(call_capture_and_assess, base_url, timeout_sec, "ambient")
-        result = body.get("result") if isinstance(body, dict) else None
-        ok = bool(result.get("ok")) if isinstance(result, dict) else False
-        state.last_result_ok = ok
-        state.last_error = None if ok else (result or {}).get("error")
+        ok, error = result_ok_and_error(body)
         logger.info(f"[HUB] affect_ambient_tick ok={ok} tick_count={state.tick_count}")
+        end_capture(ok=ok, error=error)
     except Exception as exc:  # advisory loop -- never crash Hub, never retry immediately
-        state.last_result_ok = False
-        state.last_error = str(exc)
         logger.warning(f"[HUB] affect_ambient_tick_error error={exc}")
-    finally:
-        state.tick_in_progress = False
+        end_capture(ok=False, error=str(exc))
 
 
 async def affect_ambient_loop(

@@ -16,7 +16,7 @@ from orion.schemas.vision import (
     VisionFramePointerPayload,
 )
 
-from .clip_capture import ClipCaptureError, capture_clip
+from .clip_capture import ClipCaptureCooldownError, ClipCaptureError, capture_clip
 from .envelopes import make_frame_pointer_envelope
 from .frame_store import (
     PerceptUploadError,
@@ -73,6 +73,9 @@ class RetinaService:
         # -- both must serialize through the same lock, not one each.
         self._clip_capture_lock = asyncio.Lock()
         self._clip_consumer_task: Optional[asyncio.Task] = None
+        # 0.0 means "no prior capture" -- the very first request is never
+        # subject to the cooldown. See RETINA_CLIP_MIN_INTERVAL_SEC.
+        self._last_clip_capture_ts: float = 0.0
 
     async def start(self) -> None:
         logger.remove()
@@ -111,6 +114,21 @@ class RetinaService:
         """
         s = self.settings
         async with self._clip_capture_lock:
+            # Re-checked here (inside the lock, not before acquiring it) so
+            # a request that queued up behind an in-flight capture is still
+            # subject to the cooldown measured from the PRIOR capture's
+            # actual completion -- checking before the lock would let a
+            # queued request fire the instant the lock frees, defeating the
+            # whole point. See RETINA_CLIP_MIN_INTERVAL_SEC / review finding
+            # 2026-08-22.
+            elapsed = time.time() - self._last_clip_capture_ts
+            if elapsed < s.RETINA_CLIP_MIN_INTERVAL_SEC:
+                wait = s.RETINA_CLIP_MIN_INTERVAL_SEC - elapsed
+                raise ClipCaptureCooldownError(
+                    f"capture requested {elapsed:.1f}s after the last one finished; "
+                    f"minimum interval is {s.RETINA_CLIP_MIN_INTERVAL_SEC:.0f}s "
+                    f"({wait:.1f}s remaining)"
+                )
             # pause_device(): release /dev/video0 for the continuous
             # capture_loop first -- see _device_lock comment above. Real bug
             # found live on carbon (2026-08-22): without this, ffmpeg failed
@@ -143,6 +161,12 @@ class RetinaService:
                     timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
                 ),
             )
+            # Marks completion, not request time -- the cooldown above
+            # measures time since a capture actually FINISHED, not since it
+            # was last attempted. Set while still holding the lock so a
+            # request already queued behind this one sees the up-to-date
+            # value the instant it acquires the lock next.
+            self._last_clip_capture_ts = time.time()
         logger.info(
             f"[RETINA] clip captured+uploaded video={video_sha256[:12]} audio={audio_sha256[:12]}"
         )
@@ -200,6 +224,13 @@ class RetinaService:
         else:
             try:
                 result = await self.capture_and_upload_clip()
+            except ClipCaptureCooldownError as exc:
+                # Caught before the broader ClipCaptureError below --
+                # cooldown deserves its own error_code, not "capture_error".
+                logger.warning(f"[RETINA] clip capture cooldown (bus): {exc}")
+                result = RetinaClipCaptureResultPayload(
+                    ok=False, error=str(exc), error_code="cooldown"
+                )
             except ClipCaptureError as exc:
                 logger.error(f"[RETINA] clip capture failed (bus): {exc}")
                 result = RetinaClipCaptureResultPayload(
@@ -441,6 +472,10 @@ async def capture_clip_endpoint(request: Request):
 
     try:
         result = await service.capture_and_upload_clip()
+    except ClipCaptureCooldownError as exc:
+        # Caught before the broader ClipCaptureError below.
+        logger.warning(f"[RETINA] clip capture cooldown: {exc}")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=429)
     except ClipCaptureError as exc:
         logger.error(f"[RETINA] clip capture failed: {exc}")
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
@@ -454,5 +489,13 @@ async def capture_clip_endpoint(request: Request):
     except PerceptUploadError as exc:
         logger.error(f"[RETINA] clip upload failed: {exc}")
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    except Exception as exc:  # noqa: BLE001
+        # Symmetry with _handle_clip_request's own catch-all (review
+        # finding, 2026-08-22): an exception type outside the three above
+        # used to propagate uncaught here, returning a bare unstructured 500
+        # instead of the {"ok": false, "error": ...} shape every other
+        # branch (and this docstring) promises.
+        logger.error(f"[RETINA] clip capture failed unexpectedly: {exc}")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
     return result.model_dump(exclude_none=True)

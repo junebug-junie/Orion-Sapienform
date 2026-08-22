@@ -176,14 +176,27 @@ class JuniperAffectiveStateService:
         ) as tmpdir:
             video_path = str(Path(tmpdir) / "clip.mp4")
             audio_path = str(Path(tmpdir) / "clip.wav")
-            try:
-                await asyncio.gather(
-                    asyncio.to_thread(self._fetch_percept, capture.video_sha256, video_path),
-                    asyncio.to_thread(self._fetch_percept, capture.audio_sha256, audio_path),
-                )
-            except PerceptFetchError as exc:
+            # return_exceptions=True is load-bearing, not cosmetic: plain
+            # gather() re-raises the moment ONE side fails while the other's
+            # asyncio.to_thread call keeps running in a real OS thread (it
+            # can't be cancelled). The bare `except` used to return from
+            # inside this `with tempfile.TemporaryDirectory(...)` block right
+            # then, so __exit__'s rmtree could race a sibling thread still
+            # mid-write into the same directory -- review finding,
+            # 2026-08-22. return_exceptions=True makes gather wait for BOTH
+            # threads to actually finish before this line returns, so by the
+            # time any error handling or cleanup runs, nothing is still
+            # writing.
+            fetch_results = await asyncio.gather(
+                asyncio.to_thread(self._fetch_percept, capture.video_sha256, video_path),
+                asyncio.to_thread(self._fetch_percept, capture.audio_sha256, audio_path),
+                return_exceptions=True,
+            )
+            fetch_errors = [r for r in fetch_results if isinstance(r, BaseException)]
+            if fetch_errors:
+                detail = "; ".join(str(e) for e in fetch_errors)
                 result = AffectGptAssessResultPayload(
-                    ok=False, error=f"percept-store fetch failed: {exc}", error_code="fetch_failed"
+                    ok=False, error=f"percept-store fetch failed: {detail}", error_code="fetch_failed"
                 )
                 event = self._wrap_event(
                     result, AffectGptAssessRequestPayload(video_path="", audio_path="")
@@ -272,6 +285,8 @@ class JuniperAffectiveStateService:
             raise PerceptFetchError("PERCEPT_STORE_BASE_URL is unset")
         url = f"{base}/{sha256}"
         req = urllib.request.Request(url, method="GET")
+        if settings.PERCEPT_STORE_TOKEN:
+            req.add_header("X-Orion-Percept-Token", settings.PERCEPT_STORE_TOKEN)
         try:
             with urllib.request.urlopen(req, timeout=settings.PERCEPT_STORE_TIMEOUT_SEC) as resp:
                 data = resp.read()
@@ -383,7 +398,7 @@ async def capture_and_assess(payload: dict | None = None):
     overrides, same fields as /trigger's request minus the paths (those are
     filled in internally from the live capture, not caller-supplied).
 
-    Synchronous and can take 30-90s: retina's capture (~8s clip +
+    Synchronous and can take up to ~195s worst case: retina's capture (~8s clip +
     RETINA_CLIP_TIMEOUT_SEC ceiling + RPC overhead) followed by the worker's
     own inference (README: ~20s warm, more cold). Callers need a generous
     timeout -- a slow reply here is normal, not a hang.

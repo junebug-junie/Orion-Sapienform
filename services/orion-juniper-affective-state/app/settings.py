@@ -66,6 +66,14 @@ class Settings(BaseSettings):
     # e.g. http://100.92.216.81:8021/percepts) -- GET {base}/{sha256}.
     PERCEPT_STORE_BASE_URL: str = ""
     PERCEPT_STORE_TIMEOUT_SEC: float = 15.0
+    # Sent as X-Orion-Percept-Token if set -- same shared-secret convention
+    # retina's own upload path already uses. Added so PERCEPT_STORE_TOKEN
+    # can actually be turned on for orion-percept-store (it defaults
+    # disabled, "acceptable only on a closed tailnet") without silently
+    # breaking every capture_and_assess() fetch with a 401 (review finding,
+    # 2026-08-22: this setting didn't exist at all before, so there was no
+    # way to close that gap from this side even if an operator wanted to).
+    PERCEPT_STORE_TOKEN: str = ""
 
     # WHERE the fetched clip is written before being handed to the worker.
     # Must be the SAME shared volume orion-affectgpt-worker mounts read-only

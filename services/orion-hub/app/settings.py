@@ -289,13 +289,18 @@ class Settings(BaseSettings):
     # orion-juniper-affective-state (circe) -- the "Affect check" toggle in
     # the Vision panel calls POST /v1/juniper/affect/capture_and_assess on
     # this base. Long timeout on purpose: that call is synchronous through a
-    # live webcam+mic capture on carbon AND a GPU inference call on circe --
-    # ~30-90s end to end (see that service's README), not a quick proxy.
+    # live webcam+mic capture on carbon AND a GPU inference call on circe.
+    # 240s, not the earlier 120s (review finding, 2026-08-22): the
+    # backend's own worst-case SEQUENTIAL sum is retina's
+    # RETINA_CLIP_RPC_TIMEOUT_S (60s) + PERCEPT_STORE_TIMEOUT_SEC (15s) +
+    # AFFECTGPT_RPC_TIMEOUT_S (120s) = ~195s -- a 120s Hub-side timeout could
+    # fire and show "failed" on a request that was actually still
+    # succeeding underneath, with no way for the UI to tell the difference.
     JUNIPER_AFFECTIVE_STATE_BASE_URL: str = Field(
         default="", alias="JUNIPER_AFFECTIVE_STATE_BASE_URL"
     )
     JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC: float = Field(
-        default=120.0, alias="JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC"
+        default=240.0, alias="JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC"
     )
 
     # --- Biometrics Cache (Hub) ---

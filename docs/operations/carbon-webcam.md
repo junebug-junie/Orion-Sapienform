@@ -144,14 +144,27 @@ A second, separate HTTP surface on this same service:
 images), and returns their sha256 refs. See
 `services/orion-vision-retina/README.md` for the full contract.
 
-**Live-verified on carbon, 2026-08-22**: real h264/PCM, correct durations,
-sha256 round-trips confirmed byte-for-byte against percept-store by fetching
-both blobs back and re-hashing. First real run also surfaced and fixed a
-genuine `/dev/video0` contention bug against the continuous presence loop
-(`pause_device()`, see the vision-retina README) -- not something a mock or
-fixture could have caught. A same-session dark/quiet capture was a real
-room condition (camera covered), not a pipeline bug, ruled out by checking
-individual frame brightness across the whole clip.
+**Live-verified on carbon, 2026-08-22** -- the actual evidence, not just the
+claim (CLAUDE.md's own "runtime truth beats config truth" bar, review
+finding 2026-08-22: an earlier version of this note asserted "confirmed"
+with no artifact attached):
+
+```text
+video_sha256=051a73480d23e38076188bf363b2a62dfe2cbff8f0c328810a25541db1d5e991
+  video_bytes=115757  ffprobe: h264, 640x480, nb_frames=94, duration=7.966667s
+audio_sha256=d7c4b1e48d81549b0eeca5b748c6833f30aad9027818bcabbc18506b45ec446b
+  audio_bytes=256412  ffprobe: pcm_s16le, 16000Hz, mono, duration=8.010438s
+```
+
+Both blobs independently re-fetched from percept-store with `curl` and
+re-hashed with `sha256sum` -- exact match against the sha256 the capture
+response reported, both directions (chain-of-custody, not just "the API said
+ok"). First real run also surfaced and fixed a genuine `/dev/video0`
+contention bug against the continuous presence loop (`pause_device()`, see
+the vision-retina README) -- not something a mock or fixture could have
+caught. A same-session dark/quiet capture was checked frame-by-frame
+(5 frames spanning the full clip, `cv2.imread(..., IMREAD_GRAYSCALE).mean()`)
+and confirmed a real room condition (camera covered), not a pipeline bug.
 
 **Bus-reachable twin, same day**: `orion:exec:request:RetinaClipCaptureService`
 (reply on `orion:retina:clip:reply:<corr_id>`) does the identical capture

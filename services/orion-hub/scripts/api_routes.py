@@ -1260,7 +1260,7 @@ def api_vision_affect_capture() -> Dict[str, Any]:
     static/js/app.js): triggers orion-juniper-affective-state's
     capture_and_assess -- carbon records an on-demand clip (bus RPC to
     orion-vision-retina, no direct HTTP path to carbon exists), circe fetches
-    it from percept-store and runs AffectGPT. Synchronous and slow (~30-90s:
+    it from percept-store and runs AffectGPT. Synchronous and slow (~30-195s worst case:
     real webcam+mic capture plus a real GPU inference call) -- the long
     JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC default is deliberate, not an
     oversight. The orchestrator's own endpoint always replies 200 with

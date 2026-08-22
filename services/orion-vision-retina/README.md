@@ -157,11 +157,11 @@ If `PULSE_SERVER`/the audio socket mount is wrong for carbon's actual setup
 failure specifically -- video capture (v4l2) doesn't depend on that
 mount and should work independently, which narrows down which half broke.
 
-**Live-verified 2026-08-22** (real hardware, no longer just "should work"):
-real h264/PCM output, correct durations, sha256 round-trips confirmed byte-
-for-byte against percept-store. The `/dev/video0` device-contention bug
-(`pause_device()` / `_device_lock`, see below) was found and fixed from this
-first real run.
+**Live-verified 2026-08-22** (real hardware, no longer just "should work") --
+see `docs/operations/carbon-webcam.md`'s "Live-verified on carbon" section
+for the actual evidence (sha256s, ffprobe output, byte counts), not just the
+claim. The `/dev/video0` device-contention bug (`pause_device()` /
+`_device_lock`, see below) was found and fixed from this first real run.
 
 ### Bus-reachable twin: `orion:exec:request:RetinaClipCaptureService`
 
@@ -185,6 +185,19 @@ No toggle, no scheduling logic lives here -- that's Hub's job
 the Vision panel's "Affect check" button). See
 `services/orion-juniper-affective-state/README.md` for the rest of the
 chain (percept-store fetch, worker hand-off).
+
+**Known, accepted risk (disclosed, not silently accepted, review finding
+2026-08-22):** trusting the bus as the sole boundary means ANY bus-connected
+service can trigger a live webcam+mic recording of Juniper via this channel
+-- there is no per-caller identity or credential check, only "reachable the
+bus." This is not unique to this channel (every RPC channel in this codebase
+works the same way), but it is qualitatively more sensitive here: the action
+IS a live recording, not a data query. `RETINA_CLIP_MIN_INTERVAL_SEC`
+(default 30s, `ClipCaptureCooldownError`) bounds the worst case to a known
+rate rather than de facto continuous recording -- it does not add real
+authentication. Real per-caller auth on this channel (or a signed capability
+token) is legitimate follow-up work, not done here; note this in any future
+threat-model pass on the bus.
 
 ## Tests
 

@@ -10,6 +10,7 @@ request channel instead.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import pytest
@@ -211,6 +212,49 @@ async def test_scratch_dir_is_cleaned_up_after(monkeypatch, scratch_dir):
 
 
 @pytest.mark.asyncio
+async def test_gather_waits_for_slow_sibling_fetch_before_cleanup(monkeypatch, scratch_dir):
+    """The exact race return_exceptions=True exists to prevent (review
+    finding, 2026-08-22): plain asyncio.gather() re-raises the instant ONE
+    side fails while the other's asyncio.to_thread call is still a real,
+    running OS thread -- the old code returned from inside the
+    `with tempfile.TemporaryDirectory(...)` block right then, so __exit__'s
+    rmtree could race a sibling thread still mid-write into that same
+    directory. This uses a REAL time.sleep inside a REAL thread (not a mock)
+    to prove capture_and_assess() doesn't return until the slow side has
+    actually finished, not just that no exception escaped.
+    """
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+
+    slow_finished = {"done": False}
+
+    def _fetch(self, sha256, dest_path):
+        if sha256 == "a" * 64:
+            raise PerceptFetchError("fast failure")
+        time.sleep(0.3)  # a real OS thread sleep, standing in for a slow write
+        slow_finished["done"] = True
+        with open(dest_path, "wb") as f:
+            f.write(b"ok")
+        return dest_path
+
+    monkeypatch.setattr(JuniperAffectiveStateService, "_fetch_percept", _fetch)
+
+    capture, result, event = await svc.capture_and_assess()
+
+    assert slow_finished["done"], (
+        "capture_and_assess() returned before the slow sibling fetch actually "
+        "finished -- the exact race this fix exists to prevent"
+    )
+    assert result.ok is False
+    assert result.error_code == "fetch_failed"
+
+
+@pytest.mark.asyncio
 async def test_fetch_percept_verifies_hash_and_rejects_mismatch(monkeypatch, tmp_path):
     """Chain-of-custody check: bytes returned by percept-store must
     actually hash to the sha256 that was asked for."""
@@ -240,3 +284,72 @@ async def test_fetch_percept_rejects_when_base_url_unset(monkeypatch, tmp_path):
 
     with pytest.raises(PerceptFetchError, match="PERCEPT_STORE_BASE_URL"):
         svc._fetch_percept("a" * 64, str(tmp_path / "out.bin"))
+
+
+@pytest.mark.asyncio
+async def test_fetch_percept_sends_configured_token_header(monkeypatch, tmp_path):
+    """Review finding, 2026-08-22: PERCEPT_STORE_TOKEN didn't exist on this
+    service at all before -- enabling percept-store's own auth would have
+    silently 401'd every fetch with no way to configure a credential here."""
+    svc, _ = _svc_with_fake_bus()
+    monkeypatch.setattr(settings, "PERCEPT_STORE_BASE_URL", "http://store/percepts")
+    monkeypatch.setattr(settings, "PERCEPT_STORE_TOKEN", "s3cr3t")
+
+    import hashlib as _hashlib
+
+    body = b"real bytes"
+    sha = _hashlib.sha256(body).hexdigest()
+    captured: dict = {}
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return body
+
+    def _fake_urlopen(req, timeout):
+        captured["token"] = req.headers.get("X-orion-percept-token")
+        return _FakeResp()
+
+    monkeypatch.setattr("app.main.urllib.request.urlopen", _fake_urlopen)
+
+    svc._fetch_percept(sha, str(tmp_path / "out.bin"))
+
+    assert captured["token"] == "s3cr3t"
+
+
+@pytest.mark.asyncio
+async def test_fetch_percept_sends_no_token_header_when_unset(monkeypatch, tmp_path):
+    svc, _ = _svc_with_fake_bus()
+    monkeypatch.setattr(settings, "PERCEPT_STORE_BASE_URL", "http://store/percepts")
+    monkeypatch.setattr(settings, "PERCEPT_STORE_TOKEN", "")
+
+    import hashlib as _hashlib
+
+    body = b"real bytes"
+    sha = _hashlib.sha256(body).hexdigest()
+    captured: dict = {}
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return body
+
+    def _fake_urlopen(req, timeout):
+        captured["token"] = req.headers.get("X-orion-percept-token")
+        return _FakeResp()
+
+    monkeypatch.setattr("app.main.urllib.request.urlopen", _fake_urlopen)
+
+    svc._fetch_percept(sha, str(tmp_path / "out.bin"))
+
+    assert captured["token"] is None

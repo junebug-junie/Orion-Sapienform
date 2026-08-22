@@ -33,6 +33,24 @@ class ClipCaptureError(RuntimeError):
     """ffmpeg failed to produce a usable clip."""
 
 
+class ClipCaptureCooldownError(ClipCaptureError):
+    """Raised when a capture is requested before RETINA_CLIP_MIN_INTERVAL_SEC
+    has elapsed since the last one completed. Subclasses ClipCaptureError so
+    any existing `except ClipCaptureError` still catches it.
+
+    Mitigates a real risk (review finding, 2026-08-22): nothing else in this
+    service rate-limits how often a bus-connected caller may trigger a live
+    webcam+mic recording -- the bus itself is the only trust boundary on the
+    RPC path (orion:exec:request:RetinaClipCaptureService), same as every
+    other RPC channel in this codebase. Without this, a buggy or
+    compromised bus-connected caller firing requests back-to-back would
+    produce de facto continuous recording -- exactly the ambient-
+    surveillance posture this service's own docs explicitly disclaim as a
+    non-goal (see docs/operations/carbon-webcam.md's "No facial affect"
+    bullet). This does not replace real authentication -- it bounds the
+    blast radius of not having any on the bus path."""
+
+
 @dataclass
 class ClipCaptureResult:
     video_bytes: bytes

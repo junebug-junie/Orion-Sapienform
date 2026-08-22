@@ -41,8 +41,14 @@ services:
       # /mnt/telemetry -- see reference_circe_gpu_inventory_and_lane_map).
       - /mnt/scripts/orion-affectgpt-models:/opt/affectgpt-src/AffectGPT/models:ro
       # Scratch: shared with orion-juniper-affective-state so it can hand
-      # this worker a video/audio path both containers can read.
-      - /mnt/scripts/orion-affectgpt-scratch:/mnt/scripts/orion-affectgpt-scratch:ro
+      # this worker a video/audio path both containers can read (its
+      # capture_and_assess() writes fetched percept-store blobs here).
+      # MUST match that service's AFFECTGPT_SCRATCH_DIR exactly -- review
+      # finding, 2026-08-22: this used to be a bare literal with no env var,
+      # so changing the other service's setting silently broke this mount
+      # with no config-mismatch signal, just a generic file-not-found at
+      # capture time. Same variable name, same default, on both sides now.
+      - ${AFFECTGPT_SCRATCH_DIR:-/mnt/scripts/orion-affectgpt-scratch}:${AFFECTGPT_SCRATCH_DIR:-/mnt/scripts/orion-affectgpt-scratch}:ro
 
     ports:
       - "${HOST_PORT}:6610"

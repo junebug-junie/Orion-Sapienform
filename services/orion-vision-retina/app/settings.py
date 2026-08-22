@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     RETINA_CLIP_WIDTH: int | None = None
     RETINA_CLIP_HEIGHT: int | None = None
     RETINA_CLIP_TIMEOUT_SEC: float = 30.0
+    # Minimum seconds between the END of one capture and the START of the
+    # next, enforced regardless of caller/path (HTTP or bus RPC). Real risk
+    # this closes (review finding, 2026-08-22): the bus RPC path has no
+    # auth beyond bus reachability, so nothing else stops a bus-connected
+    # caller from firing capture requests back-to-back -- this bounds that
+    # to a known worst-case rate rather than de facto continuous recording.
+    RETINA_CLIP_MIN_INTERVAL_SEC: float = 30.0
 
     # Bus-reachable twin of POST /capture/clip -- see orion/bus/channels.yaml
     # for why this exists (carbon has no reachable inbound HTTP surface at

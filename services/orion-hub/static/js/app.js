@@ -11841,7 +11841,8 @@ document.addEventListener("DOMContentLoaded", () => {
       // Affect check: live AffectGPT read via carbon's webcam+mic. Manual/
       // turn-scoped only (no ambient polling -- see services/orion-juniper-
       // affective-state/README.md non-goal). Synchronous round trip through
-      // a real capture + real GPU inference: 30-90s is normal, not a hang.
+      // a real capture + real GPU inference: up to ~195s worst-case (see
+      // JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC comment) is normal, not a hang.
       function showAffectResult(text, tone) {
         if (!affectCaptureResult) return;
         affectCaptureResult.classList.remove("hidden", "text-gray-300", "text-red-300", "text-emerald-300");
@@ -11857,7 +11858,7 @@ document.addEventListener("DOMContentLoaded", () => {
         affectCaptureButton.classList.add("opacity-50", "cursor-not-allowed");
         const originalLabel = affectCaptureButton.textContent;
         affectCaptureButton.textContent = "Recording…";
-        showAffectResult("Recording an 8s clip on carbon and running AffectGPT — this can take up to 90s.", "info");
+        showAffectResult("Recording an 8s clip on carbon and running AffectGPT — this can take a couple of minutes.", "info");
         try {
           const resp = await fetch("/api/vision/affect-capture", {
             method: "POST",

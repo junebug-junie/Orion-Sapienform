@@ -63,7 +63,7 @@ any other failed assessment.
 
 1. `GET /health`
 2. `POST /v1/juniper/affect/trigger` — `{"video_path": "...", "audio_path": "...", "subtitle": "..."}` (paths must be readable inside the *worker's* container).
-3. `POST /v1/juniper/affect/capture_and_assess` — optional `{"subtitle": "...", "user_message": "..."}`. Synchronous, 30-90s (real capture + real GPU inference) — use a generous client timeout, not a quick one.
+3. `POST /v1/juniper/affect/capture_and_assess` — optional `{"subtitle": "...", "user_message": "..."}`. Synchronous, typically well under a minute but up to ~195s worst case (real capture + real GPU inference) — use a generous client timeout, not a quick one.
 
 ## Tests
 

@@ -1335,6 +1335,59 @@ async def api_debug_endogenous_outreach_trigger() -> Dict[str, Any]:
     return {"ok": True, "result": result}
 
 
+@router.get("/api/debug/endogenous-outreach/decisions")
+def api_debug_endogenous_outreach_decisions(limit: int = Query(default=50, ge=1, le=500)) -> Dict[str, Any]:
+    """Durable decision-cycle history -- every tick's outcome, not just
+    sends. See endogenous_outreach_decisions.py's own module docstring for
+    why this exists: `status()`'s `last_result` is in-process and wiped on
+    restart; this reads the real Postgres row history instead.
+    """
+    from scripts.pg_engine import get_engine
+
+    engine = get_engine()
+    if engine is None:
+        return {"ok": False, "reason": "no_postgres_uri"}
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.exc import ProgrammingError
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql_text(
+                    """
+                    SELECT decision_id, decided_at, outreach, reason, forced,
+                           target_id, run_length, peak_deviation_pressure,
+                           sustained_load_pressure, correlation_id, session_id,
+                           result_json
+                    FROM endogenous_outreach_decisions
+                    ORDER BY decided_at DESC
+                    LIMIT :lim
+                    """
+                ),
+                {"lim": limit},
+            ).mappings().all()
+    except ProgrammingError:
+        # Migration not applied yet -- see this route's own docstring.
+        return {"ok": False, "reason": "table_not_migrated"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_decisions_query_failed err=%s", exc)
+        return {"ok": False, "reason": "query_failed"}
+
+    # Row -> dict directly rather than re-listing every column by hand (review
+    # finding, 2026-08-22: the original hand-listed form meant a new SELECT
+    # column had to be added a third time here just to reach the response) --
+    # only `decided_at` (timestamp -> isoformat) and `result_json` (renamed to
+    # `result`, matching the field name `_record()`/`record_decision` use)
+    # are actually special-cased.
+    decisions = []
+    for r in rows:
+        d = dict(r)
+        d["decided_at"] = d["decided_at"].isoformat() if d["decided_at"] else None
+        d["result"] = d.pop("result_json")
+        decisions.append(d)
+    return {"ok": True, "count": len(decisions), "decisions": decisions}
+
+
 @router.get("/api/service-logs/services")
 def api_service_logs_services() -> Dict[str, Any]:
     return collect_service_inventory()

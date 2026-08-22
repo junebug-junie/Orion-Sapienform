@@ -480,6 +480,16 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID: str = Field(
         default="orion_outreach", alias="HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID"
     )
+    # Durable per-decision-cycle log (endogenous_outreach_decisions.py) --
+    # every tick's outcome (sent/passed/blocked/failed), not just sends.
+    # Env-first like HUB_PRESENCE_WRITER_ENABLED (that module's own comment
+    # explains why: keeps the hot path free of the full settings import);
+    # this Field exists so the key is discoverable/typed for compose and
+    # `check_env_template_parity.py`, matching that same key's own dual
+    # presence here and as a direct `os.getenv` read.
+    HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED"
+    )
 
     # --- Cortex Gateway Integration (Titanium) ---
     CORTEX_GATEWAY_REQUEST_CHANNEL: str = Field(

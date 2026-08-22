@@ -684,7 +684,18 @@ class EndogenousOutreach:
         lie that one POST could undo.
         """
         if self._send_lock.locked():
-            return self._record({"outreach": False, "reason": "already_sending"})
+            # Never reaches `_outreach_once` -- pass `force` explicitly
+            # rather than reading any shared instance attribute. Review
+            # finding, 2026-08-22: an earlier version of this patch set
+            # `self._last_forced` here for `_record` to read back later, but
+            # that is unlocked shared state -- a concurrent lock-holding
+            # tick's own eventual `_record()` call (after its `_generate`
+            # await resumes) could read THIS call's leftover value instead
+            # of its own, persisting the wrong `forced` flag. Passing it as
+            # a parameter removes the shared-state read entirely.
+            return self._record(
+                {"outreach": False, "reason": "already_sending"}, forced=force, tension_reason=None
+            )
         async with self._send_lock:
             return await self._outreach_once(force=force)
 
@@ -698,21 +709,43 @@ class EndogenousOutreach:
             # `status()` reporting it unchanged would let an operator
             # mistake a stale episode for one active right now.
             self._last_tension_reason = None
-            return self._record({"outreach": False, "reason": blocked})
+            return self._record({"outreach": False, "reason": blocked}, forced=force, tension_reason=None)
+
+        # Captured into a LOCAL variable, not read back from
+        # `self._last_tension_reason` at each `_record()` call below --
+        # review finding, 2026-08-22: `self._last_tension_reason` is
+        # unlocked shared state, and this coroutine is about to `await`
+        # several times (`_gather_context`, `_generate`) during which a
+        # concurrent tick (the periodic loop, or the unauthenticated debug
+        # trigger) can reassign it. A local snapshot taken right here is
+        # immune to that -- it belongs to this call's own stack frame, not
+        # the shared instance.
+        tension_reason: Optional[Any] = None
         if force:
             # A forced (debug-endpoint) call skips the trigger check
             # entirely -- it must not carry over whatever reason the LAST
             # organic tick set, or a manual trigger would misattribute
             # itself to a stale (possibly minutes-old) tension episode.
             self._last_tension_reason = None
-        elif not await self._should_roll():
-            return self._record({"outreach": False, "reason": "no_tension_trigger"})
+        else:
+            fired = await self._should_roll()
+            tension_reason = self._last_tension_reason
+            if not fired:
+                return self._record(
+                    {"outreach": False, "reason": "no_tension_trigger"},
+                    forced=force,
+                    tension_reason=tension_reason,
+                )
 
         session_id = self._active_session_id()
         ctx = await self._gather_context(session_id)
         prompt = build_outreach_prompt(ctx)
         if not prompt:
-            return self._record({"outreach": False, "reason": "no_grounding_context"})
+            return self._record(
+                {"outreach": False, "reason": "no_grounding_context"},
+                forced=force,
+                tension_reason=tension_reason,
+            )
 
         correlation_id = str(uuid4())
         raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
@@ -722,11 +755,15 @@ class EndogenousOutreach:
         text = str(raw_text or "").strip()
         if not text:
             return self._record(
-                {"outreach": False, "reason": "empty_generation", "generation": gen_debug}
+                {"outreach": False, "reason": "empty_generation", "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
             )
         if is_pass_response(text):
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "generation": gen_debug}
+                {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
             )
 
         # Re-gate immediately before delivery. Generation is a bus RPC bounded
@@ -746,7 +783,9 @@ class EndogenousOutreach:
                     "outreach": False,
                     "reason": f"{blocked_now}_after_generation",
                     "generation": gen_debug,
-                }
+                },
+                forced=force,
+                tension_reason=tension_reason,
             )
 
         await self._deliver(
@@ -773,12 +812,36 @@ class EndogenousOutreach:
                 "session_id": session_id,
                 "chars": len(text),
                 "generation": gen_debug,
-            }
+            },
+            forced=force,
+            tension_reason=tension_reason,
         )
 
-    def _record(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def _record(
+        self, result: Dict[str, Any], *, forced: bool, tension_reason: Optional[Any] = None
+    ) -> Dict[str, Any]:
         result["at"] = datetime.now(timezone.utc).isoformat()
         self._last_result = result
+        # Durable trail for every decision cycle, not just the ones that
+        # ship -- see endogenous_outreach_decisions.py's own module
+        # docstring for why: `self._last_result`/`logger.warning` are both
+        # wiped on container restart, which is exactly what made the
+        # 2026-08-22 "why hasn't Orion reached out" investigation unable to
+        # tell "Orion keeps legitimately PASSing" apart from "generation is
+        # silently failing" after the fact. Best-effort, fire-and-forget --
+        # see that module's own contract; a decision-log failure must never
+        # affect this tick's real outcome, which has already been decided
+        # by the time this method runs.
+        try:
+            from scripts.endogenous_outreach_decisions import record_decision
+
+            record_decision(
+                result,
+                tension_reason=tension_reason,
+                forced=forced,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("endogenous_outreach_decision_hook_failed err=%s", exc)
         return result
 
     async def _gather_context(self, session_id: Optional[str]) -> OutreachContext:

@@ -188,6 +188,8 @@ def build_salience_trace(
         loop_id=loop.id,
         theme_key=loop.id,
         description=(loop.description or "")[:200],
+        why_it_matters=(loop.why_it_matters or "")[:500],
+        target_type=str(loop.target_type or "other"),
         correlation_id=correlation_id,
         salience=_bounded(float(loop.salience)),
         weights_version=_weights_version(),

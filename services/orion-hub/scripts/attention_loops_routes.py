@@ -16,7 +16,8 @@ from pydantic import BaseModel
 from scripts.attention_loops_store import (
     build_loop_outcome,
     build_pending_card,
-    latest_salience_for_theme,
+    card_kind_for_scope,
+    latest_trace_for_theme,
     load_pending_loops,
     persist_loop_outcome,
     suppress_loop,
@@ -55,10 +56,10 @@ def list_loops(limit: int = 50):
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    for loop, first_seen, recurrence, narrative in load_pending_loops()[:limit]:
+    for loop, first_seen, recurrence, narrative, scope in load_pending_loops()[:limit]:
         card = build_pending_card(
             loop, first_seen=first_seen, recurrence_count=recurrence,
-            narrative=narrative, now=now,
+            narrative=narrative, now=now, scope=scope,
         )
         cards.append(card.model_dump(mode="json"))
     return cards
@@ -67,10 +68,23 @@ def list_loops(limit: int = 50):
 def _close(loop_id: str, verdict: str, note: str):
     if not _cards_enabled():
         raise HTTPException(status_code=404, detail="pending attention cards disabled")
-    salience, features = latest_salience_for_theme(loop_id)
+    # One round-trip for both the scope guard and the salience/features this
+    # close needs -- see latest_trace_for_theme's docstring for why this used
+    # to be two separate lookups with two different (and disagreeing) defaults.
+    trace = latest_trace_for_theme(loop_id)
+    if card_kind_for_scope(trace["scope"]) == "chronic_pressure":
+        # Reverie/substrate-broadcast loops are re-selected every tick by design --
+        # a human Resolve/Dismiss here would falsely mark still-live system
+        # pressure as closed. The Hub UI no longer offers these buttons for a
+        # chronic_pressure card; this is defense in depth against a stale client
+        # or a direct API call.
+        raise HTTPException(
+            status_code=409,
+            detail="this loop is sustained system pressure, not a resolvable decision -- it cannot be resolved/dismissed",
+        )
     outcome = build_loop_outcome(
         loop_id=loop_id, theme_key=loop_id, verdict=verdict, actor="juniper",
-        note=note, salience_at_close=salience, features_at_close=features,
+        note=note, salience_at_close=trace["salience"], features_at_close=trace["features"],
     )
     persist_loop_outcome(outcome)
     suppress_loop(loop_id)

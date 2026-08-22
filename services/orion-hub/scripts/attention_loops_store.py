@@ -14,13 +14,22 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from orion.schemas.attention_frame import OpenLoopV1
+from orion.schemas.attention_frame import AttentionTargetTypeV1, OpenLoopV1
 from orion.schemas.attention_salience import (
     AttentionLoopOutcomeV1,
     PendingAttentionCardV1,
 )
 
 logger = logging.getLogger("orion-hub.attention_loops")
+
+_VALID_TARGET_TYPES = set(AttentionTargetTypeV1.__args__)
+
+
+def _safe_target_type(raw: str) -> str:
+    """Old/malformed rows shouldn't be able to take the whole panel down on a
+    Pydantic Literal mismatch -- fall back to 'other' rather than raising."""
+    return raw if raw in _VALID_TARGET_TYPES else "other"
+
 
 _FEATURE_LABELS = {
     "evidence_strength": "strong evidence",
@@ -67,6 +76,20 @@ def _top_features(features: dict[str, Any], *, limit: int = 3) -> list[str]:
     return [label for _, label in scored[:limit]]
 
 
+def card_kind_for_scope(scope: str) -> str:
+    """'resolvable' ONLY for scope=='chat' (a discrete, turn-scoped candidate a
+    human can actually close); everything else -- 'reverie', the schema-documented
+    but not-yet-produced 'broadcast', an unrecognized future value, or 'unknown'
+    (a failed/missing lookup, see latest_trace_for_theme) -- is 'chronic_pressure'.
+    Inverted deliberately (allowlist the safe case, not denylist the known one):
+    review caught that a scope=='reverie' check alone would silently treat any
+    future 'broadcast' producer as resolvable, reopening the exact false-closure-
+    of-live-system-pressure failure this split exists to prevent. See
+    PendingCardKindV1's docstring in orion/schemas/attention_salience.py for the
+    full rationale."""
+    return "resolvable" if scope == "chat" else "chronic_pressure"
+
+
 def build_pending_card(
     loop: OpenLoopV1,
     *,
@@ -74,6 +97,7 @@ def build_pending_card(
     recurrence_count: int,
     narrative: str,
     now: datetime | None = None,
+    scope: str = "chat",
 ) -> PendingAttentionCardV1:
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
@@ -83,6 +107,9 @@ def build_pending_card(
     age = max(0.0, (now - first_seen).total_seconds())
 
     title = (loop.description or "").strip() or f"An unresolved {loop.target_type} loop"
+    # Real reasoning now survives storage (attention_salience_trace.why_it_matters,
+    # 2026-08-21) -- this generic sentence is a true last-resort fallback, not the
+    # only text every card shows.
     why = (loop.why_it_matters or "").strip() or (
         f"This {loop.target_type} has stayed active without resolution."
     )
@@ -102,6 +129,7 @@ def build_pending_card(
         weights_version=str((loop.salience_features or {}).get("weights_version") or "gwt-coalition-v1"),
         top_contributing_features=_top_features(loop.salience_features or {}),
         status="pending",
+        card_kind=card_kind_for_scope(scope),
     )
 
 
@@ -205,12 +233,14 @@ SURFACE_MIN_SALIENCE = 0.5
 SURFACE_MIN_AGE_SEC = 300.0
 
 
-def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int, str]]:
-    """Return (loop, first_seen, recurrence_count, narrative) worth a human's time.
+def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int, str, str]]:
+    """Return (loop, first_seen, recurrence_count, narrative, scope) worth a human's time.
 
     Surfacing policy (quiet panel): salience >= SURFACE_MIN_SALIENCE and age >=
     SURFACE_MIN_AGE_SEC, excluding themes already suppressed (resolved/dismissed).
-    Reads the salience trace table; best-effort -> [] on any miss.
+    Reads the salience trace table; best-effort -> [] on any miss. `scope` is the
+    most recent trace row's scope for that theme -- feeds build_pending_card's
+    card_kind split (chat vs reverie/chronic).
     """
     try:
         from sqlalchemy import text
@@ -221,7 +251,7 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
                     """
                     SELECT DISTINCT ON (t.theme_key)
                         t.theme_key, t.loop_id, t.salience, t.features, t.description,
-                        t.created_at,
+                        t.why_it_matters, t.target_type, t.scope, t.created_at,
                         (SELECT count(*) FROM attention_salience_trace t2
                          WHERE t2.theme_key = t.theme_key) AS recurrence_count,
                         (SELECT min(created_at) FROM attention_salience_trace t3
@@ -242,7 +272,7 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
         logger.warning("load_pending_loops failed: %s", exc)
         return []
 
-    out: list[tuple[OpenLoopV1, datetime, int, str]] = []
+    out: list[tuple[OpenLoopV1, datetime, int, str, str]] = []
     now = datetime.now(timezone.utc)
     for r in rows:
         features = r["features"]
@@ -256,18 +286,44 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
         loop = OpenLoopV1(
             id=str(r["loop_id"]),
             description=description,
+            target_type=_safe_target_type(str(r["target_type"] or "other")),
+            why_it_matters=str(r["why_it_matters"] or ""),
             salience=float(r["salience"]),
             salience_features=features or {},
         )
-        out.append((loop, first_seen, int(r["recurrence_count"] or 1), ""))
+        # NOT NULL DB default is 'reverie' so this Python fallback is normally
+        # dead, but kept as 'unknown' (not 'reverie') for consistency with
+        # latest_trace_for_theme's fail-safe default -- both feed the same
+        # card_kind_for_scope allowlist, so an ambiguous scope should always
+        # resolve to the same (safe) branch in every reader.
+        out.append((loop, first_seen, int(r["recurrence_count"] or 1), "", str(r["scope"] or "unknown")))
     return out
 
 
-def latest_salience_for_theme(theme_key: str) -> tuple[float, dict[str, Any]]:
-    """Most-recent (salience, features) for a theme from the trace table.
+def latest_trace_for_theme(theme_key: str) -> dict[str, Any]:
+    """Most-recent (salience, features, scope) for a theme, in ONE round-trip.
 
-    Best-effort: returns (0.0, {}) on any miss so closing a loop never fails.
+    `_close()` used to call two separate single-column lookups
+    (`latest_salience_for_theme` + a since-removed `latest_scope_for_theme`) --
+    review caught both the extra query on a user-facing click path AND that the
+    two functions defaulted to DIFFERENT scopes on failure ('reverie' vs 'chat').
+    One function, one query fixes both.
+
+    Failure-path default is scope='chat' (the PERMISSIVE branch), not 'unknown'
+    -- a second review pass caught that defaulting a DB-error/no-row miss to the
+    restrictive branch was a real regression: `latest_salience_for_theme`'s
+    original contract was "closing a loop never fails" (best-effort, always
+    (0.0, {}) on a miss), and this is called from `_close()` on a `loop_id` the
+    Hub panel already showed the user moments earlier -- by construction that
+    row existed at load_pending_loops() time, so a miss here is virtually
+    always a transient hiccup, not evidence the loop is actually chronic_pressure.
+    Only a SUCCESSFULLY read, real scope value routes to chronic_pressure below
+    (card_kind_for_scope's allowlist) -- that's the fix that actually mattered
+    (a genuinely-read non-'chat' scope, e.g. a future 'broadcast' producer,
+    must not fall through to resolvable); a failed lookup must not manufacture
+    a false chronic_pressure block on a legitimate human Resolve/Dismiss click.
     """
+    default: dict[str, Any] = {"salience": 0.0, "features": {}, "scope": "chat"}
     try:
         from sqlalchemy import text
 
@@ -275,7 +331,7 @@ def latest_salience_for_theme(theme_key: str) -> tuple[float, dict[str, Any]]:
             row = conn.execute(
                 text(
                     """
-                    SELECT salience, features
+                    SELECT salience, features, scope
                     FROM attention_salience_trace
                     WHERE theme_key = :k
                     ORDER BY created_at DESC
@@ -285,14 +341,26 @@ def latest_salience_for_theme(theme_key: str) -> tuple[float, dict[str, Any]]:
                 {"k": theme_key},
             ).mappings().first()
     except Exception as exc:
-        logger.warning("latest_salience_for_theme failed theme=%s err=%s", theme_key, exc)
-        return (0.0, {})
+        logger.warning("latest_trace_for_theme failed theme=%s err=%s", theme_key, exc)
+        return default
     if not row:
-        return (0.0, {})
-    features = row["features"]
+        return default
+    features = row.get("features")
     if isinstance(features, str):
         try:
             features = json.loads(features or "{}")
         except Exception:
             features = {}
-    return (float(row["salience"] or 0.0), dict(features or {}))
+    return {
+        "salience": float(row.get("salience") or 0.0),
+        "features": dict(features or {}),
+        "scope": str(row.get("scope") or "unknown"),
+    }
+
+
+def latest_salience_for_theme(theme_key: str) -> tuple[float, dict[str, Any]]:
+    """Most-recent (salience, features) for a theme. Thin wrapper over
+    `latest_trace_for_theme` -- kept as its own function since it's a distinct,
+    already-tested public contract, not because it needs a second query."""
+    trace = latest_trace_for_theme(theme_key)
+    return (trace["salience"], trace["features"])

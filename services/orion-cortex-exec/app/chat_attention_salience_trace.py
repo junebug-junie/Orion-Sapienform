@@ -139,6 +139,8 @@ def build_chat_salience_trace_row(frame: AttentionFrameV1) -> dict[str, Any] | N
         "loop_id": loop.id,
         "theme_key": loop.id,
         "description": (loop.description or "")[:200],
+        "why_it_matters": (loop.why_it_matters or "")[:500],
+        "target_type": str(loop.target_type or "other"),
         "correlation_id": frame.correlation_id,
         "salience": _bounded(loop.salience),
         "weights_version": _WEIGHTS_VERSION,
@@ -149,6 +151,14 @@ def build_chat_salience_trace_row(frame: AttentionFrameV1) -> dict[str, Any] | N
 
 
 def _persist_sync(row: dict[str, Any]) -> bool:
+    # Requires services/orion-sql-db/manual_migration_attention_salience_trace.sql
+    # applied (adds why_it_matters/target_type, 2026-08-21) -- if this service is
+    # redeployed before the migration runs, EVERY insert here raises "column ...
+    # does not exist" and persist_chat_attention_salience_trace()'s fail-open
+    # contract swallows it as a WARNING, silently dropping ALL chat-scope
+    # attention_salience_trace writes (not just the two new columns) until
+    # someone reads the logs and runs the migration. Apply the migration BEFORE
+    # deploying this file's changes, not after.
     engine = _get_engine()
     if engine is None:
         raise RuntimeError("chat_attention_salience_trace_dsn_unset")
@@ -157,11 +167,11 @@ def _persist_sync(row: dict[str, Any]) -> bool:
             text(
                 """
                 INSERT INTO attention_salience_trace
-                    (trace_id, loop_id, theme_key, description, correlation_id, salience,
-                     weights_version, scope, features, created_at)
+                    (trace_id, loop_id, theme_key, description, why_it_matters, target_type,
+                     correlation_id, salience, weights_version, scope, features, created_at)
                 VALUES
-                    (:trace_id, :loop_id, :theme_key, :description, :correlation_id, :salience,
-                     :weights_version, :scope, CAST(:features AS jsonb), :created_at)
+                    (:trace_id, :loop_id, :theme_key, :description, :why_it_matters, :target_type,
+                     :correlation_id, :salience, :weights_version, :scope, CAST(:features AS jsonb), :created_at)
                 ON CONFLICT (trace_id) DO NOTHING
                 """
             ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -58,9 +59,11 @@ def test_parse_ignores_stray_bracket_after_the_real_array() -> None:
 
 
 def test_parse_unrecognized_type_falls_back_to_other() -> None:
-    raw = '[{"phrase": "Something", "type": "not_a_real_type"}]'
+    # Multi-word phrase, so the structural floor (below) doesn't apply here --
+    # this test is purely about the type-fallback behavior.
+    raw = '[{"phrase": "Something specific", "type": "not_a_real_type"}]'
     parsed = parse_current_turn_llm_signals(raw)
-    assert parsed == [{"phrase": "Something", "type": "other"}]
+    assert parsed == [{"phrase": "Something specific", "type": "other"}]
 
 
 def test_parse_malformed_json_returns_none_not_empty() -> None:
@@ -77,12 +80,60 @@ def test_parse_non_array_json_returns_none() -> None:
 
 
 def test_parse_drops_entries_without_a_usable_phrase() -> None:
-    raw = '[{"phrase": "", "type": "person"}, {"type": "person"}, {"phrase": "x"}, {"phrase": "Ok"}]'
-    # "x" is length 1 after strip -- below the parser's own 2-char floor --
-    # while "Ok" (2 chars) survives parsing (still subject to the
-    # detector's own STOP_PHRASES/length filtering downstream).
+    raw = (
+        '[{"phrase": "", "type": "person"}, {"type": "person"}, {"phrase": "x"}, '
+        '{"phrase": "Ok"}, {"phrase": "Sam", "type": "person"}]'
+    )
+    # "x" is length 1 after strip -- below the parser's own 2-char floor.
+    # "Ok" (2 chars, no type -> defaults to "other") is now ALSO dropped: a bare
+    # single word typed "other" is exactly the class of garbage
+    # (test_single_bare_word_typed_other_or_concept_is_dropped below) this
+    # parser is supposed to keep out, and "ok" was never on the detector's
+    # STOP_PHRASES list downstream -- it would have sailed all the way through
+    # as a real signal before this filter existed. "Sam" (person, single word)
+    # survives -- see the structural-floor tests below for the full rationale.
     parsed = parse_current_turn_llm_signals(raw)
-    assert parsed == [{"phrase": "Ok", "type": "other"}]
+    assert parsed == [{"phrase": "Sam", "type": "person"}]
+
+
+# --- structural floor: single bare word must be person/place ----------------
+
+
+def test_single_bare_word_typed_other_or_concept_is_dropped() -> None:
+    # The real garbage confirmed live 2026-08-21 (a same-turn LLM probe still
+    # returning bare single words as "concept"/"other" candidates, one step
+    # removed from the deleted regex detector's failure mode): "bus", "Glad",
+    # "Compact", "Interesting" -- none are a person or place, none have a space.
+    raw = (
+        '[{"phrase": "bus", "type": "concept"}, {"phrase": "Glad", "type": "other"}, '
+        '{"phrase": "Compact", "type": "activity"}, {"phrase": "Interesting", "type": "belief"}]'
+    )
+    assert parse_current_turn_llm_signals(raw) == []
+
+
+def test_single_bare_word_person_or_place_survives() -> None:
+    raw = '[{"phrase": "Sarah", "type": "person"}, {"phrase": "Paris", "type": "place"}]'
+    assert parse_current_turn_llm_signals(raw) == [
+        {"phrase": "Sarah", "type": "person"},
+        {"phrase": "Paris", "type": "place"},
+    ]
+
+
+def test_multi_word_phrase_survives_regardless_of_type() -> None:
+    raw = '[{"phrase": "the reactor rollout plan", "type": "plan"}, {"phrase": "context compaction", "type": "concept"}]'
+    assert parse_current_turn_llm_signals(raw) == [
+        {"phrase": "the reactor rollout plan", "type": "plan"},
+        {"phrase": "context compaction", "type": "concept"},
+    ]
+
+
+def test_multi_word_phrase_joined_by_non_breaking_space_still_counts_as_multi_word() -> None:
+    # Regression (code review, 2nd pass): a literal `" " not in phrase` check
+    # would misclassify this as a single bare token and drop it. `.split()`
+    # recognizes U+00A0 (non-breaking space) as whitespace.
+    phrase = "context\u00a0compaction"  # NBSP, not a normal space
+    raw = json.dumps([{"phrase": phrase, "type": "concept"}])
+    assert parse_current_turn_llm_signals(raw) == [{"phrase": phrase, "type": "concept"}]
 
 
 # --- build_current_turn_llm_prompt ------------------------------------------

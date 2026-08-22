@@ -28,6 +28,18 @@ def test_build_salience_trace_from_selected_loop():
     assert trace.scope == "reverie"
 
 
+def test_build_salience_trace_carries_why_it_matters_and_target_type():
+    # 2026-08-21: these were computed on OpenLoopV1 but dropped before storage --
+    # every pending-attention card fell back to one static sentence regardless
+    # of what the loop actually was (attention_loops_store.py's fallback text).
+    loop = OpenLoopV1(id="loop-b", description="reactor drift", target_type="anomaly",
+                      why_it_matters="you flagged it as urgent", salience=0.9)
+    trace = build_salience_trace(_broadcast(loop), correlation_id="corr-2")
+    assert trace is not None
+    assert trace.why_it_matters == "you flagged it as urgent"
+    assert trace.target_type == "anomaly"
+
+
 def test_build_salience_trace_none_without_selection():
     frame = AttentionFrameV1(generated_at=datetime.now(timezone.utc), open_loops=[])
     b = AttentionBroadcastProjectionV1(generated_at=frame.generated_at, frame=frame,

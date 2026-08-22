@@ -184,6 +184,23 @@ check-merge-domination:
 check-concept-relation-digest-liveness:
 	@python scripts/check_concept_relation_digest_liveness.py $(if $(MAX_AGE_HOURS),--max-age-hours $(MAX_AGE_HOURS),)
 
+# Labels attention_salience_trace loops that were scored, never explicitly
+# closed by a human (Resolve/Dismiss in the Hub), and then stopped being
+# re-scored -- writes attention_loop_outcome verdict=decayed_unattended and
+# suppresses the theme out of the Hub's pending-attention panel (never out of
+# live reverie selection -- see the script's own docstring). This is the actual
+# cron entry point; run on a schedule via host crontab, same as
+# concept-relation-digest. Requires POSTGRES_URI.
+attention-loop-decay-digest:
+	@python scripts/attention_loop_decay_digest.py $(if $(DRY_RUN),--dry-run,)
+
+# Fail-safe for the above: fails if the most-overdue decay-eligible loop
+# exceeds its own min-silence threshold by more than --max-overshoot-hours
+# (default 3h), which only happens if the digest cron entry died, was dropped
+# after a host migration, or the job is crashing. Requires POSTGRES_URI.
+check-attention-loop-decay-liveness:
+	@python scripts/check_attention_loop_decay_liveness.py $(if $(MAX_OVERSHOOT_HOURS),--max-overshoot-hours $(MAX_OVERSHOOT_HOURS),)
+
 # Diffs a service's .env_example keys against its docker-compose.yml environment:
 # list. A missing key is a working accident today only if the service's Dockerfile
 # bakes .env into the image directly (see services/orion-recall's history) -- this

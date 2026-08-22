@@ -36,16 +36,16 @@ from scripts import api_routes  # noqa: E402
 from orion.substrate.store import InMemorySubstrateGraphStore  # noqa: E402
 
 
-def test_seed_golden_concepts_at_startup_seeds_three_concepts(monkeypatch) -> None:
+def test_seed_golden_concepts_at_startup_seeds_four_concepts(monkeypatch) -> None:
     fresh_store = InMemorySubstrateGraphStore()
     monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", fresh_store)
 
     count = api_routes.seed_golden_concepts_at_startup()
 
-    assert count == 3
+    assert count == 4
     result = fresh_store.query_concept_region(limit_nodes=32, limit_edges=64)
     labels = {node.label for node in result.slice.nodes}
-    assert labels == {"Orion", "Juniper", "Orion-Juniper relationship"}
+    assert labels == {"Orion", "Juniper", "Claude", "Orion-Juniper relationship"}
 
 
 def test_seed_golden_concepts_at_startup_is_idempotent(monkeypatch) -> None:
@@ -55,10 +55,10 @@ def test_seed_golden_concepts_at_startup_is_idempotent(monkeypatch) -> None:
     first = api_routes.seed_golden_concepts_at_startup()
     second = api_routes.seed_golden_concepts_at_startup()
 
-    assert first == 3
-    assert second == 3
+    assert first == 4
+    assert second == 4
     result = fresh_store.query_concept_region(limit_nodes=32, limit_edges=64)
-    assert len(result.slice.nodes) == 3  # no duplicates from calling twice
+    assert len(result.slice.nodes) == 4  # no duplicates from calling twice
 
 
 def test_seed_golden_concepts_at_startup_degrades_gracefully_on_loader_failure(monkeypatch) -> None:

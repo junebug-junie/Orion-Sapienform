@@ -15,6 +15,28 @@ from orion.core.schemas.cognitive_substrate import (
 
 from ._common import make_activation, make_provenance, make_temporal
 
+# Golden seed anchor node_ids (orion/substrate/seed_concepts.yaml, loaded by
+# orion/substrate/seed.py::load_seed_concepts_into_store()) that every real
+# induced concept connects back to: a concept induced from subject "orion"'s
+# conversation window IS about Orion, so it gets an edge from Orion's own
+# golden node. This is a structural fact already carried by
+# ConceptProfile.subject (never inferred/fabricated), not a semantic claim
+# about the concept's own meaning -- it's the fix for real induced concepts
+# being permanently zero-degree (2026-08-22), the actual reason Concept
+# Atlas's graph looked disconnected from anything before this patch.
+#
+# Deliberately duplicates seed.py's `f"sub-concept-seed-{key}"` node_id
+# convention as a hardcoded literal rather than importing/calling into
+# seed.py at profile-mapping time (this module has no I/O and no reason to
+# read seed_concepts.yaml on every chat turn) -- orion/substrate/tests/
+# test_seed_concepts.py cross-checks this constant against the real fixture
+# so the two can't silently drift.
+_GOLDEN_SUBJECT_ANCHOR_NODE_IDS: dict[str, str] = {
+    "orion": "sub-concept-seed-orion",
+    "juniper": "sub-concept-seed-juniper",
+    "relationship": "sub-concept-seed-orion_juniper_relationship",
+}
+
 
 def map_concept_profile_to_substrate(
     *,
@@ -25,6 +47,13 @@ def map_concept_profile_to_substrate(
     resolved_subject_ref = subject_ref or profile.metadata.get("subject_ref") or profile.subject
     nodes = []
     edges = []
+
+    # See _GOLDEN_SUBJECT_ANCHOR_NODE_IDS above. Unknown/unrecognized
+    # profile.subject values (ConceptProfile.subject is a plain str, not a
+    # schema-enforced Literal) degrade to no anchor edge at all rather than
+    # referencing a node_id that may not exist -- never fabricate a link to
+    # something we can't confirm is real.
+    subject_anchor_node_id = _GOLDEN_SUBJECT_ANCHOR_NODE_IDS.get(profile.subject)
 
     evidence_to_concepts: dict[str, list[str]] = defaultdict(list)
     for concept in profile.concepts:
@@ -53,6 +82,22 @@ def map_concept_profile_to_substrate(
                 metadata={"concept_id": concept.concept_id, "aliases": list(concept.aliases), "embedding_ref": concept.embedding_ref},
             )
         )
+        if subject_anchor_node_id is not None:
+            edges.append(
+                SubstrateEdgeV1(
+                    source=NodeRefV1(node_id=subject_anchor_node_id, node_kind="concept"),
+                    target=NodeRefV1(node_id=concept_node_id, node_kind="concept"),
+                    predicate="associated_with",
+                    temporal=make_temporal(observed_at=profile.created_at),
+                    provenance=make_provenance(
+                        source_kind="concept_induction.subject_anchor",
+                        source_channel="orion:concept_induction",
+                        producer="concept_induction_adapter",
+                    ),
+                    confidence=concept.confidence,
+                    salience=concept_salience,
+                )
+            )
         for evidence in concept.evidence:
             evidence_node_id = f"sub-evidence-msg-{evidence.message_id}"
             evidence_to_concepts[evidence_node_id].append(concept_node_id)

@@ -254,7 +254,7 @@ class Settings(BaseSettings):
     )
     # Turn-scoped concept-region collector (services/orion-recall/app/collectors/
     # concept_region.py) -- cheap, self-gating label-substring match against the
-    # substrate concept graph (golden Orion/Juniper/relationship concepts +
+    # substrate concept graph (golden Orion/Juniper/Claude/relationship concepts +
     # organically-grown topic-foundry concepts, see orion/substrate/seed.py and
     # orion/substrate/adapters/topic_foundry.py). Reads via
     # app/substrate_store.py's lazily-initialized store handle (env-driven

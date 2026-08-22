@@ -4,10 +4,15 @@ Filters ``map_concept_profile_to_substrate`` output to Concept nodes and
 concept↔concept edges only (PR #1120 durable-write contract). Evidence /
 hypothesis / contradiction nodes are skipped intentionally — Option A thin cut.
 
-Note: the profile mapper currently emits NO concept↔concept edges (its edges
-are concept→hypothesis and evidence→concept), so the live outcome today is
-concept NODES only. The edge path below is exercised by tests and becomes
-live if/when the mapper emits concept↔concept relations.
+As of 2026-08-22 the profile mapper emits real concept↔concept edges: each
+induced concept gets an ``associated_with`` edge from the golden subject
+anchor node it was induced from (Orion/Juniper/the relationship — see
+``orion.substrate.adapters.concept_induction._GOLDEN_SUBJECT_ANCHOR_NODE_IDS``).
+That anchor node is NOT part of the profile's own ``record.nodes`` (it's a
+pre-existing node seeded separately at Hub startup), so
+``filter_concept_atlas_record`` below only requires ONE endpoint of a
+concept↔concept edge to belong to this record — not both — or every such
+edge would be silently dropped as "referencing an unknown node."
 """
 
 from __future__ import annotations
@@ -46,7 +51,16 @@ class FalkorMaterializationResult:
 
 
 def filter_concept_atlas_record(record) -> tuple[list[ConceptNodeV1], list[SubstrateEdgeV1], int, int]:
-    """Keep ConceptNodeV1 + edges whose both endpoints are concepts."""
+    """Keep ConceptNodeV1 + edges whose both endpoints are concept-kind.
+
+    An edge only needs ONE endpoint present in this record's own concept set,
+    not both -- the subject-anchor edges the profile mapper now emits
+    (concept_induction.py's ``_GOLDEN_SUBJECT_ANCHOR_NODE_IDS``) reference a
+    pre-existing golden node (Orion/Juniper/the relationship) that was seeded
+    into the store separately, so it never appears in ``record.nodes``
+    itself. Both endpoints must still be ``node_kind="concept"`` -- this
+    never lets an evidence/hypothesis/contradiction endpoint through.
+    """
     concepts = [n for n in record.nodes if isinstance(n, ConceptNodeV1)]
     concept_ids = {n.node_id for n in concepts}
     skipped_nodes = len(record.nodes) - len(concepts)
@@ -58,8 +72,7 @@ def filter_concept_atlas_record(record) -> tuple[list[ConceptNodeV1], list[Subst
         if (
             src_kind == "concept"
             and tgt_kind == "concept"
-            and edge.source.node_id in concept_ids
-            and edge.target.node_id in concept_ids
+            and (edge.source.node_id in concept_ids or edge.target.node_id in concept_ids)
         ):
             edges.append(edge)
         else:
@@ -105,6 +118,18 @@ def materialize_concept_profile_to_falkor(
         # original incident.
         store.upsert_node(identity_key=node.node_id, node=node, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
     for edge in edges:
+        # A subject-anchor edge's source is a golden node seeded by a
+        # *different* process (Hub's startup seed, orion/substrate/seed.py)
+        # -- Falkor's own upsert_edge Cypher is `MERGE (source:SubstrateNode
+        # {node_id: $source_id})`, which creates a bare, label-less stub if
+        # that node doesn't durably exist yet (e.g. this service starts
+        # before Hub ever has). Not a correctness bug: decode_concept_node()
+        # requires node_kind="concept" to even construct a ConceptNodeV1, so
+        # a bare stub never surfaces as a node anywhere -- it just self-heals
+        # into a real node the moment Hub's idempotent seed step runs (every
+        # startup), at which point the edge that was already waiting resolves
+        # normally. Worth knowing when debugging "an edge exists but its
+        # source node doesn't render yet" during a fresh bring-up.
         store.upsert_edge(identity_key=edge_identity_key(edge), edge=edge)
     logger.info(
         "concept_profile_falkor_materialization subject=%s revision=%s "

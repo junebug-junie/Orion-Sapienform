@@ -12,17 +12,27 @@ This replaces the previous data source, the old spaCy-based
 repository, so this adapter always returned ``None`` and nothing from the
 concept substrate ever reached a live chat turn.
 
-Filters to the three subjects ``chat_stance`` cares about (orion,
-relationship, juniper — matching this producer's own ``anchor_scopes``
-registration) and derives ``metadata["concept_type"]`` bucketing from each
-node's ``anchor_scope`` when not already set, mirroring the exact fallback
-precedent already established in
+Filters to the four subjects ``chat_stance`` cares about (orion,
+relationship, juniper, claude — matching this producer's own
+``anchor_scopes`` registration) and derives ``metadata["concept_type"]``
+bucketing from each node's ``anchor_scope`` when not already set, mirroring
+the exact fallback precedent already established in
 ``chat_stance.py::_concept_summary_from_store``: only ``anchor_scope ==
 "relationship"`` auto-routes to the relationship bucket downstream in
 ``_project_concept_from_beliefs`` (via ``anchor_key == "relationship"``); both
 ``orion`` and ``juniper`` subjects fall into the "self" bucket by default in
 that same legacy function, so this adapter reproduces that mapping rather
-than inventing a new one.
+than inventing a new one. ``claude`` (added 2026-08-22, once the golden seed
+fixture's ``anchor_scope="claude"`` landed -- see
+``orion/substrate/seed_concepts.yaml``) maps to "relationship" rather than
+"self": Claude is a collaborator in Orion's Hub, not part of Orion's own
+self-identity, and "relationship" is the closest fit among
+``_project_concept_from_beliefs``'s fixed 4 buckets
+(self/relationship/growth/tension) for "a collaborative dynamic with another
+party" -- reused rather than inventing a 5th bucket for one subject.
+Confirmed live 2026-08-22: without this, Claude's node was silently dropped
+entirely (not merely misbucketed) by the ``_SUBJECTS`` filter below, so it
+never reached chat_stance's concept summary at all.
 
 Never raises: degrades to ``None`` on any store connectivity failure,
 malformed data, or empty result.
@@ -40,17 +50,19 @@ from orion.substrate.store import SubstrateGraphStore
 logger = logging.getLogger("orion.substrate.relational.adapters.concept_induction_ctx")
 
 _TIER_RANK = 3  # concept_induced
-_SUBJECTS = ("orion", "relationship", "juniper")
+_SUBJECTS = ("orion", "relationship", "juniper", "claude")
 
 # Fallback concept_type derived from a node's anchor_scope when the node has
 # no explicit metadata["concept_type"]. Mirrors the subject-based bucketing
 # precedent in chat_stance.py::_concept_summary_from_store: only
 # "relationship" auto-routes to the relationship bucket; "orion" and
-# "juniper" both default to "self".
+# "juniper" both default to "self". "claude" defaults to "relationship" --
+# see this module's own docstring for why.
 _ANCHOR_TO_CONCEPT_TYPE: dict[str, str] = {
     "orion": "self",
     "relationship": "relationship",
     "juniper": "self",
+    "claude": "relationship",
 }
 
 _STORE: SubstrateGraphStore | None = None

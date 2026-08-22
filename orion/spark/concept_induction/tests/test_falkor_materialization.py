@@ -108,6 +108,12 @@ def test_filter_skips_non_concept_nodes_and_edges() -> None:
     assert all(
         e.source.node_kind == "concept" and e.target.node_kind == "concept" for e in edges
     )
+    # 2 concepts (subject="orion") -> 2 real subject-anchor associated_with
+    # edges kept; the evidence->concept (supports) and concept->hypothesis
+    # (co_occurs_with) edges are still skipped, same as before this feature.
+    assert len(edges) == 2
+    assert all(e.predicate == "associated_with" for e in edges)
+    assert all(e.source.node_id == "sub-concept-seed-orion" for e in edges)
     assert skipped_edges >= 1
 
 
@@ -121,10 +127,10 @@ def test_materialize_writes_native_cypher_without_payload_json_sor() -> None:
     result = materialize_concept_profile_to_falkor(profile=_fixture_profile(), store=store)
     assert result.concept_nodes == 2
     assert result.skipped_nodes >= 1
-    # The profile mapper emits no concept↔concept edges today: live outcome is
-    # concept NODES only. If this assertion breaks, the mapper gained
-    # concept↔concept relations — update docs and verify Hub identity merge.
-    assert result.concept_edges == 0
+    # As of 2026-08-22 the profile mapper emits a real associated_with edge
+    # from the golden subject anchor (here: Orion) to each induced concept --
+    # see orion.substrate.adapters.concept_induction._GOLDEN_SUBJECT_ANCHOR_NODE_IDS.
+    assert result.concept_edges == 2
     assert result.skipped_edges >= 1
 
     node_calls = [(c, p) for c, p in client.calls if "MERGE (n:SubstrateNode" in c]
@@ -134,6 +140,10 @@ def test_materialize_writes_native_cypher_without_payload_json_sor() -> None:
         assert "n.evidence_refs_json = $evidence_refs_json" in cypher
         assert params["node_kind"] == "concept"
         assert "REMOVE n.payload_json" in cypher
+
+    edge_calls = [(c, p) for c, p in client.calls if "MERGE (source:SubstrateNode" in c]
+    assert edge_calls
+    assert any(p and p.get("source_id") == "sub-concept-seed-orion" for _, p in edge_calls)
 
     # Non-concept kinds must never be written (would raise on store; also no Drive/Evidence MERGE)
     assert all("Evidence" not in c and "Hypothesis" not in c for c, _ in client.calls)

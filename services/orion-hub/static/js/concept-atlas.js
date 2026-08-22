@@ -227,7 +227,13 @@ if (typeof document !== "undefined") {
     const cyNodes = nodes.map((n) => ({
       data: {
         id: n.id,
-        label: n.label || n.id,
+        // synthetic_label (see concept_atlas_routes.py's node_payload):
+        // topic-foundry's adapter falls back to a bare "topic_<id>"
+        // placeholder when a clustering run produced neither a real topic
+        // label nor keywords -- non-blank, but not a human label. Rendered
+        // with an explicit suffix instead of masquerading as a real concept
+        // name so it reads as "unlabeled," not "broken."
+        label: n.synthetic_label ? `${n.label || n.id} (unlabeled topic)` : n.label || n.id,
         nodeKind: n.node_kind,
         anchorScope: n.anchor_scope,
         promotionState: n.promotion_state,
@@ -238,6 +244,8 @@ if (typeof document !== "undefined") {
         godNode: !!n.god_node,
         componentId: n.component_id,
         topicId: n.topic_id === undefined ? null : n.topic_id,
+        origin: n.origin || "concept",
+        syntheticLabel: !!n.synthetic_label,
       },
     }));
     const cyEdges = edges.map((e) => ({
@@ -271,6 +279,8 @@ if (typeof document !== "undefined") {
       ["god_node", nodeData.godNode],
       ["component_id", nodeData.componentId],
       ["topic_id", nodeData.topicId],
+      ["origin", nodeData.origin],
+      ["synthetic_label", nodeData.syntheticLabel],
     ];
     let html = '<dl class="grid grid-cols-2 gap-x-3 gap-y-1">';
     fields.forEach(([k, v]) => {
@@ -315,11 +325,19 @@ if (typeof document !== "undefined") {
             "text-valign": "bottom",
             "text-margin-y": 4,
             // God-node purple stays the priority signal (top-degree is the
-            // rarer, more load-bearing fact); community coloring from
-            // topic-foundry's HDBSCAN cluster id (when the node carries one)
-            // fills in for everyone else, default blue when neither applies.
-            "background-color": (ele) =>
-              ele.data("godNode") ? "#a855f7" : topicColor(ele.data("topicId")) || "#0ea5e9",
+            // rarer, more load-bearing fact); muted slate marks a node whose
+            // only available label is topic-foundry's synthetic "topic_<id>"
+            // fallback -- deliberately never the same color as a real named
+            // concept, so it can't be mistaken for one at a glance; community
+            // coloring from topic-foundry's HDBSCAN cluster id (when the node
+            // carries one) fills in for everyone else, default blue when none
+            // of the above applies.
+            "background-color": (ele) => {
+              if (ele.data("godNode")) return "#a855f7";
+              if (ele.data("syntheticLabel")) return "#64748b";
+              return topicColor(ele.data("topicId")) || "#0ea5e9";
+            },
+            "border-style": (ele) => (ele.data("syntheticLabel") ? "dashed" : "solid"),
             width: (ele) => (ele.data("godNode") ? 42 : 24),
             height: (ele) => (ele.data("godNode") ? 42 : 24),
             "border-width": 2,

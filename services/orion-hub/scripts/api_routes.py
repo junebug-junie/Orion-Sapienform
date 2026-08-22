@@ -296,7 +296,7 @@ SUBSTRATE_SEMANTIC_STORE_AITOWN = _build_aitown_substrate_store_from_env()
 
 
 def seed_golden_concepts_at_startup() -> int:
-    """Load the 3 golden concepts (Orion, Juniper, relationship) into
+    """Load the 4 golden concepts (Orion, Juniper, Claude, relationship) into
     SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on
     every startup. Never raises -- the try/except below degrades to 0 on
     any failure (missing/malformed fixture, or a store-level error such as

@@ -5,10 +5,10 @@ hand-authored, canonical `ConceptNodeV1` nodes (plus their cross-reference
 edges) directly into a `SubstrateGraphStore`. This bypasses any
 extraction/clustering pipeline entirely -- it exists to give Orion's
 cognition an immediate, inspectable self/other/relationship floor
-(Orion, Juniper, and the Orion-Juniper relationship) before organic
+(Orion, Juniper, Claude, and the Orion-Juniper relationship) before organic
 concept induction has produced anything.
 
-This is intentionally a fixed 3-row fixture loader, not a general-purpose
+This is intentionally a fixed 4-row fixture loader, not a general-purpose
 seeding framework. Do not extend it into a plugin system for future seed
 sets -- add a new fixture + loader when that need actually exists.
 """
@@ -105,6 +105,9 @@ def load_seed_concept_nodes(
             logger.warning("seed_concepts: skipping entry missing key/label/anchor_scope: %r", entry)
             continue
 
+        raw_metadata = entry.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+
         node_id = f"sub-concept-seed-{key}"
         try:
             node = ConceptNodeV1(
@@ -117,6 +120,7 @@ def load_seed_concept_nodes(
                 label=label,
                 definition=entry.get("definition"),
                 signals=_SEED_CONCEPT_SIGNALS.model_copy(),
+                metadata=metadata,
             )
         except Exception as exc:  # noqa: BLE001 - malformed fixture row must not crash callers
             logger.warning("seed_concepts: skipping invalid entry %r: %s", entry, exc)

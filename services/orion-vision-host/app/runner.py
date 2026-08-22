@@ -93,7 +93,21 @@ def _load_image_from_percept_store(sha256: str) -> Image.Image:
         raise FileNotFoundError(f"percept {sha256[:12]} not retrievable from {base}: {exc}") from exc
     if not data:
         raise FileNotFoundError(f"percept {sha256[:12]} came back empty")
-    return Image.open(io.BytesIO(data)).convert("RGB")
+    try:
+        return Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception as exc:
+        # percept-store is one unpartitioned sha256 keyspace, and
+        # PERCEPT_ALLOWED_MIMES now also accepts audio/wav and video/mp4
+        # (2026-08-22, AffectGPT) -- this path has never routed a non-image
+        # sha to this function (vision-frame-router only ever forwards JPEG-
+        # frame refs), but nothing enforced that structurally. A clear error
+        # here beats an unhandled PIL.UnidentifiedImageError crash if that
+        # ever stops being true (review finding, 2026-08-22).
+        raise ValueError(
+            f"percept {sha256[:12]} did not decode as an image "
+            f"(percept-store now also stores non-image content -- audio/video "
+            f"clips): {exc}"
+        ) from exc
 
 
 def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:

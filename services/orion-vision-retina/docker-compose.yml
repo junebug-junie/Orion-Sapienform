@@ -30,6 +30,7 @@ services:
       # On-demand clip capture (AffectGPT) -- UNVERIFIED against real
       # hardware, see app/clip_capture.py. Off by default.
       - RETINA_CLIP_ENABLED=${RETINA_CLIP_ENABLED:-false}
+      - RETINA_CLIP_TOKEN=${RETINA_CLIP_TOKEN:-}
       - RETINA_CLIP_FFMPEG_BIN=${RETINA_CLIP_FFMPEG_BIN:-ffmpeg}
       - RETINA_CLIP_VIDEO_DEVICE=${RETINA_CLIP_VIDEO_DEVICE:-/dev/video0}
       - RETINA_CLIP_AUDIO_INPUT=${RETINA_CLIP_AUDIO_INPUT:-default}
@@ -69,8 +70,16 @@ services:
       - ${RETINA_VIDEO_DEVICE:-/dev/null}:${RETINA_VIDEO_DEVICE:-/dev/null}
     ports:
       # Only needed for POST /capture/clip (bus-only otherwise). Added
-      # 2026-08-22; not previously exposed.
-      - "${RETINA_HTTP_PORT:-8022}:8000"
+      # 2026-08-22; not previously exposed. Bound to 127.0.0.1 explicitly --
+      # docs/operations/carbon-webcam.md's whole documented security posture
+      # for this service is "nothing needs to reach carbon inbound" /
+      # "127.0.0.1 on purpose" (the venv/systemd deploy path already does
+      # this via `uvicorn --host 127.0.0.1`); a bare `"PORT:8000"` mapping
+      # here would publish to 0.0.0.0 by default and break that posture for
+      # anyone using the Docker path instead (review finding, 2026-08-22).
+      # Also gated by RETINA_CLIP_TOKEN (settings.py) as defense in depth --
+      # a POST here triggers a live recording, unlike every other route.
+      - "127.0.0.1:${RETINA_HTTP_PORT:-8022}:8000"
     networks:
       - app-net
 

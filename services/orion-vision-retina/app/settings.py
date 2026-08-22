@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     # (see clip_capture.py module docstring) -- defaults are a starting
     # point, not confirmed-correct for carbon's actual devices.
     RETINA_CLIP_ENABLED: bool = False
+    # Shared-secret gate for POST /capture/clip, same convention as
+    # orion-percept-store's PERCEPT_STORE_TOKEN. Added after review
+    # (2026-08-22): docs/operations/carbon-webcam.md's whole documented
+    # security posture is "nothing needs to reach carbon inbound" -- true
+    # when this app's HTTP surface was health-only, no longer true once a
+    # POST here triggers a live webcam+mic recording. Empty disables the
+    # check (acceptable only on a closed tailnet, same caveat as percept
+    # store) -- strongly set this one given what the endpoint actually does.
+    RETINA_CLIP_TOKEN: str = ""
     RETINA_CLIP_FFMPEG_BIN: str = "ffmpeg"
     RETINA_CLIP_VIDEO_DEVICE: str = "/dev/video0"
     # PipeWire's pulse-compatible socket (the modern default on most desktop

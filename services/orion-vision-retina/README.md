@@ -124,7 +124,13 @@ default). Records `RETINA_CLIP_DURATION_SEC` of video (v4l2) and audio
 (pulse) **concurrently** via ffmpeg subprocess, uploads both to
 `orion-percept-store`, returns their sha256 refs. Nothing is written to
 carbon's disk beyond a `TemporaryDirectory` that's always cleaned up --
-same privacy discipline as `upload_frame`'s percept-store path.
+same privacy discipline as `upload_frame`'s percept-store path. Gated by
+`RETINA_CLIP_TOKEN` (header `X-Orion-Retina-Token`) once enabled -- unlike
+every other route on this service, a POST here triggers a live recording,
+so set this. **These refs are not yet consumable end-to-end**:
+`orion-affectgpt-worker` currently requires local file paths, not a
+percept-store ref -- fetch-by-hash on that side is real, separate,
+not-yet-built follow-up work.
 
 **UNVERIFIED against real hardware.** Written without access to carbon (see
 `docs/operations/carbon-webcam.md` -- tailnet policy blocks SSH there for
@@ -136,7 +142,8 @@ Before trusting this:
 
 ```bash
 # on carbon, after deploying:
-curl -X POST http://localhost:${RETINA_HTTP_PORT:-8022}/capture/clip
+curl -X POST http://localhost:${RETINA_HTTP_PORT:-8022}/capture/clip \
+  -H "X-Orion-Retina-Token: ${RETINA_CLIP_TOKEN}"
 # expect: {"ok": true, "video_sha256": "...", "audio_sha256": "...", ...}
 # then fetch both back from percept-store and confirm they're a real,
 # audible/viewable clip -- sha256 round-tripping correctly does not by

@@ -60,13 +60,22 @@ def sniff_mime(data: bytes) -> Optional[str]:
         if fourcc == b"WEBP":
             return "image/webp"
         # WAV: same RIFF container family as WEBP, different fourcc. ffmpeg's
-        # default PCM WAV muxer writes this at a fixed offset.
-        if fourcc == b"WAVE":
+        # default PCM WAV muxer writes this at a fixed offset. Also requires
+        # a "fmt " subchunk marker somewhere in the header region (review
+        # finding, 2026-08-22: the bare 12-byte RIFF/WAVE fourcc alone,
+        # header with no real audio data, used to sniff as valid audio/wav
+        # and would have been handed straight to orion-affectgpt-worker's
+        # audio decode -- checking for "fmt " is still a cheap sniff, not a
+        # full parser, but it rules out that specific degenerate case).
+        if fourcc == b"WAVE" and b"fmt " in data[12:64]:
             return "audio/wav"
     # MP4 (ISO base media file format): the first box is [4-byte size][4-byte
     # type], so "ftyp" sits at offset 4, not offset 0 -- not a startswith()
     # prefix like the formats above. ffmpeg's default (non-fragmented) mp4
-    # muxer writes ftyp as the first box.
+    # muxer writes ftyp as the first box; this is NOT universally true of
+    # every possible MP4 producer (a fragmented/faststart stream can lead
+    # with a different box name) -- correct for what this service's actual
+    # producer (clip_capture.py) writes, not a general MP4 validator.
     if len(data) >= 8 and data[4:8] == b"ftyp":
         return "video/mp4"
     return None

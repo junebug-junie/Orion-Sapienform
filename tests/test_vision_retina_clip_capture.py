@@ -7,6 +7,7 @@ trusted.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import sys
@@ -86,6 +87,69 @@ async def test_captures_video_and_audio_concurrently(fake_ffmpeg_ok):
     assert result.video_bytes.startswith(b"\x00\x00\x00\x18ftyp")
     assert result.audio_bytes.startswith(b"RIFF")
     assert result.duration_sec == 1.0
+
+
+@pytest.mark.asyncio
+async def test_sibling_process_is_killed_not_orphaned_when_one_side_fails(tmp_path):
+    """Regression guard for the exact bug review caught (2026-08-22):
+    asyncio.gather() does not cancel a still-running sibling task when the
+    other raises. Audio fails immediately; video would otherwise run for 5s
+    (and leave a real process, and a real PID, alive against a tempdir this
+    test then deletes). Asserts BOTH that capture_clip raises promptly
+    (proving cancellation actually happened, not just that it eventually
+    would have) and that the video process is not still running afterward.
+    """
+    pid_file = tmp_path / "video.pid"
+    script = f"""#!/bin/bash
+is_audio=0
+for arg in "$@"; do
+    if [ "$arg" = "pulse" ]; then is_audio=1; fi
+done
+if [ "$is_audio" = "1" ]; then
+    echo "fake audio failure" >&2
+    exit 1
+fi
+echo $$ > "{pid_file}"
+sleep 5
+out="${{@: -1}}"
+printf '\\x00\\x00\\x00\\x18ftypisom0000000000000000000000000000000' > "$out"
+"""
+    path = str(tmp_path / "fake_ffmpeg_slow_video.sh")
+    with open(path, "w") as f:
+        f.write(script)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+
+    import time
+
+    start = time.monotonic()
+    with pytest.raises(ClipCaptureError, match="ffmpeg exited"):
+        await capture_clip(
+            ffmpeg_bin=path,
+            video_device="/dev/video0",
+            audio_input="default",
+            duration_sec=5.0,
+            video_framerate=15,
+            width=None,
+            height=None,
+            timeout_sec=10.0,
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed < 3.0, f"took {elapsed:.1f}s -- video side was not cancelled promptly"
+
+    assert pid_file.exists(), "video process never started -- test setup is wrong"
+    video_pid = int(pid_file.read_text().strip())
+    await asyncio.sleep(0.2)  # let the kill signal actually land
+    assert not _pid_alive(video_pid), "video ffmpeg process was left running (orphaned)"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 @pytest.mark.asyncio

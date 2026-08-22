@@ -128,18 +128,62 @@ watched, and it needs nothing from athena or Hub:
 systemctl --user stop orion-retina     # or Ctrl-C, or: docker stop orion-vision-retina
 ```
 
+## On-demand affect clip capture (AffectGPT, 2026-08-22)
+
+A second, separate HTTP surface on this same service:
+`POST http://127.0.0.1:8022/capture/clip` records a few seconds of video
+(v4l2) and audio (pulse/PipeWire mic) **concurrently**, uploads both to
+`orion-percept-store` (now accepts `audio/wav`/`video/mp4`, not just
+images), and returns their sha256 refs. See
+`services/orion-vision-retina/README.md` for the full contract —
+**UNVERIFIED against real hardware**, written without access to carbon,
+must be checked live before being trusted.
+
+This is a materially different, more sensitive capability than the presence
+frames above (see the amended "No facial affect" bullet below) — off by
+default (`RETINA_CLIP_ENABLED=false`) and gated by a shared-secret token
+(`RETINA_CLIP_TOKEN` / header `X-Orion-Retina-Token`) once enabled, because
+unlike everything else on this service, a POST here triggers a live
+recording. Extra setup beyond the base install above:
+
+```bash
+sudo apt install ffmpeg   # or your distro's equivalent -- not pulled in by
+                           # requirements.txt, which is Python-only
+pactl list sources short   # confirm the mic source name (RETINA_CLIP_AUDIO_INPUT)
+ls /dev/video*             # confirm the camera device (RETINA_CLIP_VIDEO_DEVICE)
+```
+
+Add to `services/orion-vision-retina/.env` (see `.env_example` for the
+full set): `RETINA_CLIP_ENABLED=true`, `RETINA_CLIP_TOKEN=<pick one>`, and
+adjust `RETINA_CLIP_VIDEO_DEVICE`/`RETINA_CLIP_AUDIO_INPUT` if the defaults
+above don't match. Verify:
+
+```bash
+curl -X POST http://127.0.0.1:8022/capture/clip \
+  -H "X-Orion-Retina-Token: <same value>"
+# expect: {"ok": true, "video_sha256": "...", "audio_sha256": "...", ...}
+```
+
 ## What this deliberately does not do
 
 - **Nothing is written to carbon's disk.** The upload path uses `imencode`,
   never `imwrite`. If the store is unreachable the frame is dropped and the next
   one attempted — no spooling. A backlog of webcam images of your own face on
-  your own laptop is a worse failure than a gap in the record.
+  your own laptop is a worse failure than a gap in the record. Clip capture
+  above follows the same rule: nothing survives past an always-cleaned-up
+  temp directory.
 - **Frames expire in an hour.** `orion-percept-store` sweeps on a timer. The
-  interpretation is the durable artifact; the picture is not.
-- **No facial affect.** carbon reports presence. Reading emotion off a webcam has
-  to clear the bar `typo_rate` failed — built, tested, then deliberately not
-  wired because it never reached a genuine rest state across 111 real sessions.
-  See `orion/schemas/affective_state.py`.
+  interpretation is the durable artifact; the picture is not. Clips follow
+  the same retention.
+- **No *continuous* facial affect on this presence stream.** carbon's normal
+  low-fps stream reports presence, not emotion — reading emotion off it
+  would have to clear the bar `typo_rate` failed (built, tested, then
+  deliberately not wired because it never reached a genuine rest state
+  across 111 real sessions; see `orion/schemas/affective_state.py`). The
+  on-demand AffectGPT capture above is a deliberate, explicit exception to
+  that stance, not a reversal of it — separate model, separate trigger,
+  off by default, and its own accuracy questions are tracked in
+  `services/orion-affectgpt-worker/README.md` rather than assumed solved.
 - **No object inventory on this stream.** There is no scene to remember at 40 cm,
   and inventorying a person's desk is a different act from inventorying a room.
 

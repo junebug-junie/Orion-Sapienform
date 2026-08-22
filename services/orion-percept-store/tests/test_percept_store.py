@@ -22,7 +22,8 @@ from app.storage import SHA256_RE, PerceptStore, sniff_mime  # noqa: E402
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 WEBP = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 64
-WAV = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"\x00" * 64
+WAV = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"fmt " + b"\x00" * 60
+WAV_HEADER_ONLY_NO_FMT = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"\x00" * 64
 MP4 = b"\x00\x00\x00\x18" + b"ftyp" + b"isom" + b"\x00" * 64
 
 
@@ -120,6 +121,15 @@ def test_wav_and_webp_share_a_riff_container_but_are_distinguished(store) -> Non
     sha_wav = store.put(WAV, mime="audio/wav")
     data, mime = store.get(sha_wav)
     assert data == WAV and mime == "audio/wav"
+
+
+def test_wav_header_with_no_fmt_subchunk_is_refused() -> None:
+    """A bare RIFF/WAVE fourcc with no real audio data is not a usable WAV
+    file, and used to sniff as one (review finding, 2026-08-22) -- it would
+    have been stored and handed straight to orion-affectgpt-worker's audio
+    decode. Not a full parser (still just a cheap sniff), but this specific
+    degenerate case is now caught."""
+    assert sniff_mime(WAV_HEADER_ONLY_NO_FMT) is None
 
 
 @pytest.mark.parametrize(

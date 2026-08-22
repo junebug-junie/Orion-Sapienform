@@ -217,6 +217,17 @@ class RetinaService:
                     error=f"capture failed to start: {exc}",
                     error_code="os_error",
                 )
+            except Exception as exc:  # noqa: BLE001
+                # Unlike the HTTP route (a raised exception there just
+                # becomes a 500 the caller sees immediately), this runs in a
+                # fire-and-forget asyncio.create_task from _clip_consume_loop
+                # -- an uncaught exception here is silently swallowed by
+                # asyncio and the RPC caller gets nothing but a timeout,
+                # indistinguishable from a hung device. Always reply.
+                logger.error(f"[RETINA] clip capture failed unexpectedly (bus): {exc}")
+                result = RetinaClipCaptureResultPayload(
+                    ok=False, error=str(exc), error_code="unexpected_error"
+                )
 
         host_ref = ServiceRef(name=s.SERVICE_NAME, version=s.SERVICE_VERSION)
         reply_envelope = envelope.derive_child(

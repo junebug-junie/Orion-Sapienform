@@ -129,6 +129,25 @@ async def test_handle_clip_request_maps_clip_capture_error(svc, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handle_clip_request_still_replies_on_an_unexpected_exception(svc, monkeypatch):
+    """Regression guard: this runs in a fire-and-forget asyncio.create_task
+    from _clip_consume_loop -- an uncaught exception here would be silently
+    swallowed by asyncio, and the RPC caller would just time out,
+    indistinguishable from a genuinely hung device."""
+
+    async def _fake_capture(self):
+        raise RuntimeError("something nobody anticipated")
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
+
+    await svc._handle_clip_request(_make_envelope())
+
+    _, reply_envelope = svc.bus.publish.await_args.args
+    assert reply_envelope.payload["ok"] is False
+    assert reply_envelope.payload["error_code"] == "unexpected_error"
+
+
+@pytest.mark.asyncio
 async def test_handle_clip_request_maps_percept_upload_error(svc, monkeypatch):
     async def _fake_capture(self):
         raise PerceptUploadError("percept-store unreachable")

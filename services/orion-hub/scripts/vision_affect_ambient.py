@@ -50,13 +50,15 @@ not just ambient ticks.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import requests
-from loguru import logger
+
+logger = logging.getLogger("orion-hub.vision_affect_ambient")
 
 
 @dataclass

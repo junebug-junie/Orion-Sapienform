@@ -2,11 +2,11 @@
 
 Thin, isolated service that generates real, evidence-grounded "what is this
 and why" prose summaries for architectural clusters touched by a real
-commit, using an actual `claude -p` subprocess authenticated as the host's
-already-logged-in Claude Code CLI session (not a separate API key -- see
-"Credential isolation" below). Producer side for a self-study consumer
-capability that does not exist yet -- see "Fast-follow: self_study.py
-consumer" below.
+commit, using an actual `claude -p` subprocess authenticated via a
+long-lived OAuth token against the operator's own Claude subscription (not
+a separate API key -- see "Credential isolation" below for the exact
+mechanism). Producer side for a self-study consumer capability that does
+not exist yet -- see "Fast-follow: self_study.py consumer" below.
 
 ## Why this exists
 
@@ -92,27 +92,60 @@ this service (code, `.env_example`, `settings.py`, `docker-compose.yml`) is
 a regression; `tests/test_main.py::test_claude_subprocess_env_has_no_api_key`
 guards against it silently coming back.
 
-The real fix: Claude Code CLI resolves its login credential from
-`$CLAUDE_CONFIG_DIR/.credentials.json` if `CLAUDE_CONFIG_DIR` is set, else
-`~/.claude/.credentials.json`. `app/main.py`'s `handle_request_payload` sets
-`CLAUDE_CONFIG_DIR` in the subprocess env to
-`SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR` (default
-`/root/.claude` -- container-side, matching the container's real default
-`HOME` since the Dockerfile runs as root with no `USER` directive), and
-`docker-compose.yml` bind-
-mounts **only** the host's `~/.claude/.credentials.json` file -- read-only,
-matching its real 600/owner-only host perms -- into that directory at
-`.credentials.json`. The rest of the host's real `~/.claude/` (history,
-plugins, session transcripts, `stats-cache.json`, `gh-pr-status-cache.json`,
-etc) is never mounted into the container; only the one credential file is.
-This service never writes to, logs, or echoes any part of that file.
+**FIXED 2026-08-21.** The credential mechanism above (bind-mounting the
+host's `~/.claude/.credentials.json` into the container, read-only) carried
+a real bug shared with every service that used the same pattern: Claude
+Code's login credential refreshes internally on roughly a 7.5h cycle, and
+nothing ever re-wrote the bind-mounted file inside the container after that
+happened, so the mount silently went stale and calls started failing with
+auth errors that looked nothing like "the credential expired." First
+confirmed and fixed in `orion-room-companion` on 2026-08-18 (see that
+service's README for the incident); this service inherited the identical
+bug from the same design and gets the identical fix here.
 
-This is a real, sensitive credential tied to the operator's actual logged-
-in account/subscription -- arguably a bigger blast radius than a scoped API
-key would have been, which is exactly why the mount is a single read-only
-file bind, not a directory mount, and why `SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH`
-has no safe default baked into code (operator sets it explicitly in their
-own local `.env`, same as any other host-path override in this repo).
+The fix: `claude -p` now authenticates via `CLAUDE_CODE_OAUTH_TOKEN`, a
+long-lived (1-year) token from `claude setup-token`
+(`SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN` in `.env` -- `SecretStr` in
+`settings.py`, so it never appears in a repr/log by accident).
+`app/main.py`'s `build_subprocess_env()` injects it into the subprocess env
+explicitly from `Settings`, the same pattern `CLAUDE_CONFIG_DIR` already
+used. This is deliberately not just a denylist: the subprocess env is built
+from an **allowlist** (`_ENV_ALLOWLIST`) of generic passthrough names plus a
+belt-and-braces `_ENV_DENY_PREFIXES` covering `ANTHROPIC_`,
+`CLAUDE_CODE_OAUTH`, `AWS_`, `GOOGLE_`, `GCP_` -- so neither
+`SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN` (this container's own ambient
+copy of the secret, present because `docker-compose.yml` has to pass it in
+via `environment:` for `Settings` to read it at all) nor an ambient
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (what orion-hub's FCC lane sets
+to redirect `claude` at a local gateway -- see
+`services/orion-hub/scripts/fcc_claude_bridge.py`) can reach the subprocess.
+The real secret exists exactly once in the subprocess env, under the
+literal `CLAUDE_CODE_OAUTH_TOKEN` name `claude` actually reads -- an earlier
+version of this fix used a plain `dict(os.environ)` copy plus a single-key
+`ANTHROPIC_API_KEY` denylist, which a live-code review caught leaking all
+four of the above; `orion-room-companion` had already hit and fixed the
+identical gap on 2026-08-18, and this service now mirrors that fix exactly
+rather than repeating the mistake.
+
+`docker-compose.yml` no longer bind-mounts anything credential-shaped at
+all; the token is `${VAR:?err}`-guarded so an unset value fails the
+container at startup instead of silently starting with no auth. Rotating
+the token needs `docker compose up -d` (recreate), not `restart` -- Compose
+resolves `${SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN:?...}` into the
+container's environment once, at container-creation time; `restart` reuses
+the already-created container and its already-frozen env, it does not
+re-read `.env` or re-interpolate anything (this is a Compose-level fact,
+independent of `Settings` also being `@lru_cache`-d and read once at
+process start inside the container). Revoke at
+https://claude.ai/settings/claude-code (no CLI revoke command exists as of
+this writing).
+
+This is still a real, sensitive credential tied to the operator's actual
+account/subscription -- the OAuth token form doesn't change that, only how
+it's transported. It's why `SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN` has
+no safe default baked into code (operator sets it explicitly in their own
+local `.env`, same as any other secret in this repo) and why it's
+`SecretStr`, not a plain `str`, on the settings model.
 
 `orion-cortex-exec` and `orion-cortex-orch` are not touched by this patch
 at all except (possibly) channel/schema registration in

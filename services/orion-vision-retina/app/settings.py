@@ -49,6 +49,32 @@ class Settings(BaseSettings):
     HEALTH_INTERVAL_SECONDS: float = 10.0
     SOURCE_RECONNECT_SECONDS: float = 5.0
 
+    # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
+    # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
+    # existing single-frame capture_loop, this is a distinct on-demand path
+    # triggered via POST /capture/clip. UNVERIFIED against real hardware
+    # (see clip_capture.py module docstring) -- defaults are a starting
+    # point, not confirmed-correct for carbon's actual devices.
+    RETINA_CLIP_ENABLED: bool = False
+    RETINA_CLIP_FFMPEG_BIN: str = "ffmpeg"
+    RETINA_CLIP_VIDEO_DEVICE: str = "/dev/video0"
+    # PipeWire's pulse-compatible socket (the modern default on most desktop
+    # Linux) accepts "default" as the default source name, same as plain
+    # PulseAudio. Override if carbon's audio backend names sources differently.
+    RETINA_CLIP_AUDIO_INPUT: str = "default"
+    RETINA_CLIP_DURATION_SEC: float = 8.0
+    RETINA_CLIP_FRAMERATE: int = 15
+    RETINA_CLIP_WIDTH: int | None = None
+    RETINA_CLIP_HEIGHT: int | None = None
+    RETINA_CLIP_TIMEOUT_SEC: float = 30.0
+
+    @field_validator("RETINA_CLIP_WIDTH", "RETINA_CLIP_HEIGHT", mode="before")
+    @classmethod
+    def _blank_clip_dims_to_none(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
     @field_validator("JPEG_QUALITY", mode="before")
     @classmethod
     def _clamp_jpeg_quality(cls, v: object) -> int:

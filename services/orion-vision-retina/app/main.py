@@ -6,16 +6,19 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.vision import VisionFramePointerPayload
 
+from .clip_capture import ClipCaptureError, capture_clip
 from .envelopes import make_frame_pointer_envelope
 from .frame_store import (
     PerceptUploadError,
     cleanup_old_frames,
     save_frame,
+    upload_bytes,
     upload_frame,
 )
 from .health import RetinaMetrics, make_system_health_envelope
@@ -207,3 +210,72 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Orion Vision Retina", version="0.2.0", lifespan=lifespan)
+
+
+@app.post("/capture/clip")
+async def capture_clip_endpoint():
+    """On-demand video+audio clip capture for AffectGPT. See
+    app/clip_capture.py module docstring: UNVERIFIED against real hardware.
+
+    No toggle, no bus wiring yet -- deliberately on-demand only for this
+    first patch (see services/orion-juniper-affective-state/README.md non-
+    goals). A caller (curl, or later Hub) hits this, gets back sha256 refs,
+    and is responsible for feeding them to orion-affectgpt-worker.
+    """
+    s = service.settings
+    if not s.RETINA_CLIP_ENABLED:
+        return JSONResponse(
+            {"ok": False, "error": "RETINA_CLIP_ENABLED is false"}, status_code=503
+        )
+    if not s.RETINA_PERCEPT_STORE_URL:
+        return JSONResponse(
+            {"ok": False, "error": "RETINA_PERCEPT_STORE_URL is unset"}, status_code=503
+        )
+
+    try:
+        result = await capture_clip(
+            ffmpeg_bin=s.RETINA_CLIP_FFMPEG_BIN,
+            video_device=s.RETINA_CLIP_VIDEO_DEVICE,
+            audio_input=s.RETINA_CLIP_AUDIO_INPUT,
+            duration_sec=s.RETINA_CLIP_DURATION_SEC,
+            video_framerate=s.RETINA_CLIP_FRAMERATE,
+            width=s.RETINA_CLIP_WIDTH,
+            height=s.RETINA_CLIP_HEIGHT,
+            timeout_sec=s.RETINA_CLIP_TIMEOUT_SEC,
+        )
+    except ClipCaptureError as exc:
+        logger.error(f"[RETINA] clip capture failed: {exc}")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+
+    try:
+        video_sha256, audio_sha256 = await asyncio.gather(
+            asyncio.to_thread(
+                upload_bytes,
+                result.video_bytes,
+                base_url=s.RETINA_PERCEPT_STORE_URL,
+                token=s.RETINA_PERCEPT_STORE_TOKEN or None,
+                timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
+            ),
+            asyncio.to_thread(
+                upload_bytes,
+                result.audio_bytes,
+                base_url=s.RETINA_PERCEPT_STORE_URL,
+                token=s.RETINA_PERCEPT_STORE_TOKEN or None,
+                timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
+            ),
+        )
+    except PerceptUploadError as exc:
+        logger.error(f"[RETINA] clip upload failed: {exc}")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+
+    logger.info(
+        f"[RETINA] clip captured+uploaded video={video_sha256[:12]} audio={audio_sha256[:12]}"
+    )
+    return {
+        "ok": True,
+        "video_sha256": video_sha256,
+        "audio_sha256": audio_sha256,
+        "duration_sec": result.duration_sec,
+        "video_bytes": len(result.video_bytes),
+        "audio_bytes": len(result.audio_bytes),
+    }

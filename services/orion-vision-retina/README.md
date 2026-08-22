@@ -117,6 +117,41 @@ python scripts/publish_test_task.py --image /mnt/telemetry/vision/frames/<file>.
 
 That exercises **host inference**, not retina itself.
 
+## On-demand video+audio clip capture (AffectGPT)
+
+`POST /capture/clip` (new 2026-08-22, `RETINA_CLIP_ENABLED=false` by
+default). Records `RETINA_CLIP_DURATION_SEC` of video (v4l2) and audio
+(pulse) **concurrently** via ffmpeg subprocess, uploads both to
+`orion-percept-store`, returns their sha256 refs. Nothing is written to
+carbon's disk beyond a `TemporaryDirectory` that's always cleaned up --
+same privacy discipline as `upload_frame`'s percept-store path.
+
+**UNVERIFIED against real hardware.** Written without access to carbon (see
+`docs/operations/carbon-webcam.md` -- tailnet policy blocks SSH there for
+Claude sessions same as it did before the original webcam wiring). The
+subprocess construction and error handling are tested
+(`tests/test_vision_retina_clip_capture.py`, fake ffmpeg) but real device
+names, the audio backend, and actual timing have not been exercised live.
+Before trusting this:
+
+```bash
+# on carbon, after deploying:
+curl -X POST http://localhost:${RETINA_HTTP_PORT:-8022}/capture/clip
+# expect: {"ok": true, "video_sha256": "...", "audio_sha256": "...", ...}
+# then fetch both back from percept-store and confirm they're a real,
+# audible/viewable clip -- sha256 round-tripping correctly does not by
+# itself prove the *content* is a valid recording of anything.
+```
+
+If `PULSE_SERVER`/the audio socket mount is wrong for carbon's actual setup
+(see docker-compose.yml comments), the symptom will be an ffmpeg audio
+failure specifically -- video capture (v4l2) doesn't depend on that
+mount and should work independently, which narrows down which half broke.
+
+This is on-demand only -- no toggle, no scheduling, no Hub UI yet. See
+`services/orion-juniper-affective-state/README.md` for why (deliberate
+non-goal until this capture path is proven).
+
 ## Tests
 
 From repo root (worktree or main):
@@ -132,6 +167,7 @@ PYTHONPATH=. ./venv/bin/python -m pytest tests/test_vision_retina_*.py -v
 | `app/settings.py` | Env contract |
 | `app/sources.py` | Frame source adapters |
 | `app/frame_store.py` | Save + retention |
+| `app/clip_capture.py` | On-demand video+audio clip capture (AffectGPT, UNVERIFIED live) |
 | `app/envelopes.py` | `BaseEnvelope` builder |
 | `app/health.py` | `SystemHealthV1` helper |
 | `app/main.py` | `RetinaService`, FastAPI lifespan |

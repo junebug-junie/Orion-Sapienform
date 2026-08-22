@@ -1,8 +1,9 @@
 """Content-addressed percept blob storage.
 
-Percepts are camera frames. They exist so a model can look at one, once, and
-they are the shortest-lived artifact in the system -- the *interpretation* is
-what gets kept, not the picture.
+Percepts are camera frames, and -- since 2026-08-22 (AffectGPT multimodal
+affect capture) -- short audio/video clips. They exist so a model can look
+at (or listen to) one, once, and they are the shortest-lived artifact in the
+system -- the *interpretation* is what gets kept, not the picture or clip.
 
 Three properties, in order of how much they matter:
 
@@ -45,7 +46,8 @@ _MAGIC: tuple[tuple[str, bytes], ...] = (
 
 
 def sniff_mime(data: bytes) -> Optional[str]:
-    """Identify image bytes by magic number.
+    """Identify percept bytes by magic number (images, and since 2026-08-22
+    the audio/video clips AffectGPT capture needs).
 
     The declared content-type is not trusted: it is caller-supplied and the
     value gets handed to a model downstream.
@@ -53,8 +55,20 @@ def sniff_mime(data: bytes) -> Optional[str]:
     for mime, prefix in _MAGIC:
         if data.startswith(prefix):
             return mime
-    if len(data) >= 12 and data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
+    if len(data) >= 12 and data[0:4] == b"RIFF":
+        fourcc = data[8:12]
+        if fourcc == b"WEBP":
+            return "image/webp"
+        # WAV: same RIFF container family as WEBP, different fourcc. ffmpeg's
+        # default PCM WAV muxer writes this at a fixed offset.
+        if fourcc == b"WAVE":
+            return "audio/wav"
+    # MP4 (ISO base media file format): the first box is [4-byte size][4-byte
+    # type], so "ftyp" sits at offset 4, not offset 0 -- not a startswith()
+    # prefix like the formats above. ffmpeg's default (non-fragmented) mp4
+    # muxer writes ftyp as the first box.
+    if len(data) >= 8 and data[4:8] == b"ftyp":
+        return "video/mp4"
     return None
 
 

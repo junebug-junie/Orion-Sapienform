@@ -1,0 +1,47 @@
+# torch/torchvision/torchaudio come from the base image (pytorch/pytorch:
+# 2.4.0-cuda12.1-cudnn9-runtime) -- not listed here; pip could otherwise
+# silently swap in a non-CUDA wheel. flash-attn is intentionally NOT listed:
+# it requires Ampere+ (sm_80), this deployment's card is Volta (sm_70), and
+# AffectGPT's own code never imports it directly (transitive pin only in
+# upstream's environment.yml) -- see README "Provenance".
+
+# AffectGPT model stack
+transformers==4.49.0
+tokenizers==0.21.0
+accelerate==1.0.0
+peft==0.13.2
+decord
+einops
+ftfy
+iopath
+librosa
+soundfile
+omegaconf
+pandas
+pillow
+pytorchvideo
+scipy
+scikit-learn
+timm
+tqdm
+pyyaml
+zhon
+# Pinned, NOT bare -- confirmed live 2026-08-22 that opencv-python-headless
+# 5.x removes cv2.CascadeClassifier (the Haar cascade API app/face_extract.py
+# depends on) entirely, replaced by a DNN-based FaceDetectorYN. A bare
+# `opencv-python-headless` would silently break face extraction on the next
+# image rebuild. 4.11.0.86 is the exact version this pipeline was proven
+# against on circe GPU2.
+opencv-python-headless==4.11.0.86
+sentencepiece
+safetensors
+huggingface_hub
+hf_transfer
+
+# Service layer (this file's own app/, not AffectGPT's)
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+redis[hiredis]==5.0.7
+pydantic==2.9.2
+pydantic-settings==2.5.2
+loguru

@@ -1,0 +1,42 @@
+services:
+  juniper-affective-state:
+    build:
+      context: ../..
+      dockerfile: services/orion-juniper-affective-state/Dockerfile
+    container_name: ${PROJECT}-juniper-affective-state
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      # Deliberately circe, not athena -- see app/settings.py NODE_NAME comment.
+      - NODE_NAME=${NODE_NAME:-circe}
+
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+      - CHANNEL_AFFECTGPT_INTAKE=${CHANNEL_AFFECTGPT_INTAKE}
+      - CHANNEL_AFFECTGPT_ASSESSMENT=${CHANNEL_AFFECTGPT_ASSESSMENT}
+      - AFFECTGPT_RPC_TIMEOUT_S=${AFFECTGPT_RPC_TIMEOUT_S}
+
+    volumes:
+      # Shared scratch so a caller can hand this service a video/audio path
+      # that the worker (on circe) can ALSO read -- see orion-affectgpt-
+      # worker's docker-compose.yml, same host path convention. Read-write
+      # here since this is the natural place to eventually drop a captured
+      # clip; read-only on the worker side.
+      - /mnt/scripts/orion-affectgpt-scratch:/mnt/scripts/orion-affectgpt-scratch
+
+    ports:
+      - "${HOST_PORT}:6611"
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

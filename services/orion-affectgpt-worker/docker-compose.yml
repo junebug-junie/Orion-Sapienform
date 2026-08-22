@@ -1,0 +1,63 @@
+services:
+  affectgpt-worker:
+    build:
+      context: ../..
+      dockerfile: services/orion-affectgpt-worker/Dockerfile
+    container_name: ${PROJECT}-affectgpt-worker
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - NODE_NAME=${NODE_NAME:-circe}
+
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+      - CHANNEL_AFFECTGPT_INTAKE=${CHANNEL_AFFECTGPT_INTAKE}
+      - CHANNEL_AFFECTGPT_REPLY_PREFIX=${CHANNEL_AFFECTGPT_REPLY_PREFIX}
+
+      - AFFECTGPT_SRC_ROOT=${AFFECTGPT_SRC_ROOT}
+      - AFFECTGPT_MODEL_ROOT=${AFFECTGPT_MODEL_ROOT}
+      - AFFECTGPT_CKPT_ROOT=${AFFECTGPT_CKPT_ROOT}
+      - AFFECTGPT_CFG_PATH=${AFFECTGPT_CFG_PATH}
+      - AFFECTGPT_CKPT_EPOCH=${AFFECTGPT_CKPT_EPOCH}
+      - AFFECTGPT_FACE_OR_FRAME=${AFFECTGPT_FACE_OR_FRAME}
+      - AFFECTGPT_DEFAULT_USER_MESSAGE=${AFFECTGPT_DEFAULT_USER_MESSAGE}
+      - AFFECTGPT_DEVICE=${AFFECTGPT_DEVICE:-cuda:0}
+      - AFFECTGPT_MAX_NEW_TOKENS=${AFFECTGPT_MAX_NEW_TOKENS}
+      - AFFECTGPT_MAX_LENGTH=${AFFECTGPT_MAX_LENGTH}
+      - AFFECTGPT_FACE_MARGIN=${AFFECTGPT_FACE_MARGIN}
+      - AFFECTGPT_FACE_MIN_SIZE_PX=${AFFECTGPT_FACE_MIN_SIZE_PX}
+      - AFFECTGPT_REQUEST_TIMEOUT_S=${AFFECTGPT_REQUEST_TIMEOUT_S}
+
+    volumes:
+      # Model weights + checkpoint (~33GB) -- never baked into the image.
+      # Host path is circe-local (no shared filesystem with athena's
+      # /mnt/telemetry -- see reference_circe_gpu_inventory_and_lane_map).
+      - /mnt/scripts/orion-affectgpt-models:/opt/affectgpt-src/AffectGPT/models:ro
+      # Scratch: shared with orion-juniper-affective-state so it can hand
+      # this worker a video/audio path both containers can read.
+      - /mnt/scripts/orion-affectgpt-scratch:/mnt/scripts/orion-affectgpt-scratch:ro
+
+    ports:
+      - "${HOST_PORT}:6610"
+
+    # Pinned to GPU2 (circe's "agent / affect / testing lane", :8014 --
+    # per reference_circe_gpu_inventory_and_lane_map this card is Juniper's
+    # own designated slot for prototyping an affective model). Physical
+    # device N is always remapped to container-local index 0 -- confirmed
+    # live 2026-08-22 -- hence AFFECTGPT_DEVICE=cuda:0 above regardless of
+    # which physical card this points at.
+    gpus: '"device=2"'
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

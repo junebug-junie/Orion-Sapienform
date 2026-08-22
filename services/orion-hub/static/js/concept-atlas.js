@@ -204,7 +204,13 @@ if (typeof document !== "undefined") {
     const cyNodes = nodes.map((n) => ({
       data: {
         id: n.id,
-        label: n.label || n.id,
+        // synthetic_label (see concept_atlas_routes.py's node_payload):
+        // topic-foundry's adapter falls back to a bare "topic_<id>"
+        // placeholder when a clustering run produced neither a real topic
+        // label nor keywords -- non-blank, but not a human label. Rendered
+        // with an explicit suffix instead of masquerading as a real concept
+        // name so it reads as "unlabeled," not "broken."
+        label: n.synthetic_label ? `${n.label || n.id} (unlabeled topic)` : n.label || n.id,
         nodeKind: n.node_kind,
         anchorScope: n.anchor_scope,
         promotionState: n.promotion_state,
@@ -213,6 +219,8 @@ if (typeof document !== "undefined") {
         confidence: n.confidence,
         degree: n.degree,
         godNode: !!n.god_node,
+        origin: n.origin || "concept",
+        syntheticLabel: !!n.synthetic_label,
       },
     }));
     const cyEdges = edges.map((e) => ({
@@ -244,6 +252,8 @@ if (typeof document !== "undefined") {
       ["confidence", nodeData.confidence],
       ["degree", nodeData.degree],
       ["god_node", nodeData.godNode],
+      ["origin", nodeData.origin],
+      ["synthetic_label", nodeData.syntheticLabel],
     ];
     let html = '<dl class="grid grid-cols-2 gap-x-3 gap-y-1">';
     fields.forEach(([k, v]) => {
@@ -276,7 +286,19 @@ if (typeof document !== "undefined") {
             color: "#e2e8f0",
             "text-valign": "bottom",
             "text-margin-y": 4,
-            "background-color": (ele) => (ele.data("godNode") ? "#a855f7" : "#0ea5e9"),
+            // Purple = god node (always true for canonical/golden-seeded
+            // concepts, see concept_atlas_routes.py). Muted slate = a real,
+            // stored node whose only available label is topic-foundry's
+            // synthetic "topic_<id>" fallback -- deliberately NOT the same
+            // blue as a real named concept, so it can't be mistaken for one
+            // at a glance. Blue = everything else (real induced/topic-
+            // foundry concepts with an actual label).
+            "background-color": (ele) => {
+              if (ele.data("godNode")) return "#a855f7";
+              if (ele.data("syntheticLabel")) return "#64748b";
+              return "#0ea5e9";
+            },
+            "border-style": (ele) => (ele.data("syntheticLabel") ? "dashed" : "solid"),
             width: (ele) => (ele.data("godNode") ? 42 : 24),
             height: (ele) => (ele.data("godNode") ? 42 : 24),
             "border-width": 2,

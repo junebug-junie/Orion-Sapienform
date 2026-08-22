@@ -538,8 +538,8 @@ for signal legitimacy audit and architecture decisions.
 
 **What it is:** the concept-graph-pipeline design's live substrate. A shared FalkorDB-backed
 concept graph (`SUBSTRATE_STORE_BACKEND=falkor`, graph `orion_substrate` — same instance
-`orion-cortex-exec` and `orion-recall` read from) seeded with three golden concepts (Orion,
-Juniper, the Orion↔Juniper relationship, see `orion/substrate/seed.py`) plus concepts that
+`orion-cortex-exec` and `orion-recall` read from) seeded with four golden concepts (Orion,
+Juniper, Claude, the Orion↔Juniper relationship, see `orion/substrate/seed.py`) plus concepts that
 grow organically from real conversation via topic-foundry clustering
 (`orion/substrate/adapters/topic_foundry.py`). Inspect it live at the **Concept Atlas** Hub
 tab (`GET /concept-atlas`, backed by `GET /api/substrate/concepts/summary` and `.../network`).

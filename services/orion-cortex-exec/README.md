@@ -142,12 +142,14 @@ pytest services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py -q
 `chat_stance.py`'s `CognitiveUnificationLayer` runs an always-on (`pull_on_cold=True`)
 `concept_induction` producer lane, backed by
 `orion/substrate/relational/adapters/concept_induction_ctx.py`. It reads golden concepts
-(Orion, Juniper, the Orion↔Juniper relationship) and organically-grown topic-foundry
+(Orion, Juniper, Claude, the Orion↔Juniper relationship) and organically-grown topic-foundry
 concepts from the shared FalkorDB substrate graph (`SUBSTRATE_STORE_BACKEND=falkor`,
 `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH=orion_substrate` in `.env` — same instance
 `orion-hub` seeds/decays and `orion-recall` reads from) via `query_concept_region()`,
 filtered to `anchor_scope in ("orion", "relationship", "juniper")` and bucketed into
-`concept_type` (`self` for orion/juniper, `relationship` for the relationship anchor).
+`concept_type` (`self` for orion/juniper by default, `relationship` for the relationship
+anchor and for any node with an explicit `metadata["concept_type"]` override — e.g. Claude's
+seed entry sets `relationship` explicitly so it doesn't fall into Orion's own `self` bucket).
 
 Before PR #1128 this adapter read a dead spaCy pipeline
 (`orion.spark.concept_induction.profile_repository`) that always returned `None` — the

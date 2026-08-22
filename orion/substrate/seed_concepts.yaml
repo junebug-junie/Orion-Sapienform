@@ -47,3 +47,39 @@ concepts:
     related_concept_keys:
       - orion
       - juniper
+
+  - key: claude
+    # anchor_scope reuses "orion" rather than introducing a new
+    # SubstrateAnchorScopeV1 literal value -- Claude's operational context
+    # (a Hub collaborator, not a separately-anchored subject with its own
+    # recall/promotion semantics) lives inside Orion's own scope, the same
+    # way dozens of other self-context adapters already write anchor_scope=
+    # "orion" nodes with varying subject_ref. A real new anchor_scope value
+    # would ripple into orion/core/schemas/cognitive_substrate.py's
+    # SubstrateAnchorScopeV1 Literal, concept_atlas_routes.py's
+    # _VALID_ANCHOR_SCOPES, and every anchor_scope-gated consumer (e.g.
+    # orion/reasoning/promotion.py's canonical-promotion allowlist) for no
+    # real behavioral gain here -- subject_ref="claude" already gives this
+    # node its own distinct identity within the "orion" scope.
+    anchor_scope: orion
+    subject_ref: claude
+    label: "Claude"
+    definition: >-
+      Claude is the AI collaborator operating inside Orion Hub alongside
+      Juniper: a distinct Anthropic model instance that works on Orion's own
+      development and day-to-day operation, not Orion itself.
+    # Review-caught (2026-08-22): without this, orion/substrate/relational/
+    # adapters/concept_induction_ctx.py's anchor_scope->concept_type fallback
+    # (metadata["concept_type"] unset -> anchor_scope="orion" -> "self")
+    # would bucket Claude into chat_stance.py's "self" concept summary
+    # alongside Orion's own identity -- directly contradicting this node's
+    # own definition text ("not Orion itself"). "relationship" is the
+    # closest fit among chat_stance.py::_project_concept_from_beliefs's
+    # fixed 4 buckets (self/relationship/growth/tension) for "a collaborative
+    # dynamic with another party" -- reused rather than inventing a 5th
+    # bucket for one seed concept.
+    metadata:
+      concept_type: relationship
+    related_concept_keys:
+      - orion
+      - juniper

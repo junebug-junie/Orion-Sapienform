@@ -277,6 +277,111 @@ def test_network_god_node_flag_on_highest_degree_node(client: TestClient, monkey
     assert body["god_node_count"] >= 1
 
 
+def test_network_canonical_node_is_always_god_node_regardless_of_degree(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression, confirmed live 2026-08-22: pure-degree god-node ranking
+    # buried the golden-seeded Orion/Juniper/Claude/relationship anchors
+    # (orion/substrate/seed_concepts.yaml) behind whatever topic-foundry
+    # cluster racked up the most same-day co_occurs_with edges -- an
+    # artifact of day-bucket co-occurrence rewarding vocabulary ubiquity, not
+    # a real signal of what's load-bearing to Orion's identity. A canonical
+    # node must be a god node even with zero edges; a non-canonical
+    # high-degree node must still fill any remaining top-N slots.
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    # _GOD_NODE_TOP_N is 5: 1 canonical node here leaves 4 remaining slots
+    # for non-canonical nodes, ranked strictly by degree -- so 5 non-canonical
+    # spokes at distinct, deterministic degrees (via distinct edge salience)
+    # guarantees the weakest one is left out, proving the cutoff still
+    # applies to everything that isn't canonical.
+    store = InMemorySubstrateGraphStore()
+    golden = _concept_node("concept-golden", "Orion", promotion_state="canonical")
+    store.upsert_node(identity_key="concept:golden", node=golden)
+
+    hub = _concept_node("concept-noisy-hub", "topic_7", promotion_state="proposed")
+    store.upsert_node(identity_key="concept:noisy-hub", node=hub)
+    for i, salience in enumerate([0.9, 0.7, 0.5, 0.3, 0.1]):
+        spoke = _concept_node(f"concept-spoke-{i}", f"Spoke {i}", promotion_state="proposed")
+        store.upsert_node(identity_key=f"concept:spoke-{i}", node=spoke)
+        store.upsert_edge(
+            identity_key=f"edge:hub-spoke-{i}",
+            edge=_edge(f"edge-hub-spoke-{i}", "concept-noisy-hub", f"concept-spoke-{i}", salience=salience),
+        )
+
+    isolate = _concept_node("concept-isolate-2", "Isolate", promotion_state="proposed")
+    store.upsert_node(identity_key="concept:isolate-2", node=isolate)
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    nodes_by_id = {n["id"]: n for n in body["nodes"]}
+
+    # canonical, zero-degree -> still a god node.
+    assert nodes_by_id["concept-golden"]["degree"] == 0
+    assert nodes_by_id["concept-golden"]["god_node"] is True
+    # non-canonical, highest real degree in the whole graph -> fills a
+    # remaining slot ahead of every spoke.
+    assert nodes_by_id["concept-noisy-hub"]["god_node"] is True
+    # non-canonical, highest-degree spoke -> fills one of the 3 remaining
+    # slots left after the hub takes one of the 4.
+    assert nodes_by_id["concept-spoke-0"]["god_node"] is True
+    # non-canonical, weakest real degree -> 5 non-canonical contenders (hub +
+    # 5 spokes) for only 4 remaining slots, so the weakest loses out. The
+    # cutoff still applies to real organic hubs; it just no longer applies to
+    # canonical golden anchors.
+    assert nodes_by_id["concept-spoke-4"]["god_node"] is False
+    # non-canonical, zero degree -> never a god node.
+    assert nodes_by_id["concept-isolate-2"]["god_node"] is False
+
+
+def test_network_topic_foundry_synthetic_label_flagged_honestly(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # topic_foundry.py::_derive_label falls back to a bare "topic_<id>"
+    # placeholder when a run produced neither a real label nor keywords --
+    # non-blank, but not a human label. The network route must surface that
+    # so the UI can render it honestly instead of indistinguishable from a
+    # real named concept.
+    from scripts import concept_atlas_routes
+    from orion.core.schemas.cognitive_substrate import ConceptNodeV1, SubstrateSignalBundleV1
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    synthetic = ConceptNodeV1(
+        node_id="concept-synthetic",
+        label="topic_7",
+        anchor_scope="world",
+        temporal=_temporal(),
+        provenance=_provenance(),
+        signals=SubstrateSignalBundleV1(confidence=0.5, salience=0.3),
+        metadata={"source": "orion-topic-foundry", "topic_id": 7},
+    )
+    real = ConceptNodeV1(
+        node_id="concept-real",
+        label="autonomy",
+        anchor_scope="orion",
+        temporal=_temporal(),
+        provenance=_provenance(),
+        signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.6),
+        metadata={"concept_id": "c-1"},
+    )
+    store.upsert_node(identity_key="concept:synthetic", node=synthetic)
+    store.upsert_node(identity_key="concept:real", node=real)
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    nodes_by_id = {n["id"]: n for n in r.json()["nodes"]}
+
+    assert nodes_by_id["concept-synthetic"]["origin"] == "topic_foundry"
+    assert nodes_by_id["concept-synthetic"]["synthetic_label"] is True
+    assert nodes_by_id["concept-real"]["origin"] == "concept"
+    assert nodes_by_id["concept-real"]["synthetic_label"] is False
+
+
 def test_network_malformed_query_params_do_not_500(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts import concept_atlas_routes
 

@@ -45,10 +45,13 @@ logger = logging.getLogger("orion-hub.concept_atlas")
 
 router = APIRouter(tags=["concept-atlas"])
 
-# Top-N nodes by (activation-weighted) degree flagged as "god nodes" in the
-# network response. The store is small and in-memory (per the design spec's
-# explicit non-goal of no precomputed ranking job), so this is computed fresh
-# on every request rather than cached.
+# Cap on how many nodes get flagged "god node" in the network response. Every
+# canonical (golden-seeded) node is always included regardless of this cap --
+# see concept_atlas_network()'s canonical_ids handling -- and any remaining
+# slots up to this total go to the highest (activation-weighted) degree
+# non-canonical nodes. The store is small and in-memory (per the design
+# spec's explicit non-goal of no precomputed ranking job), so this is
+# computed fresh on every request rather than cached.
 _GOD_NODE_TOP_N = 5
 
 _VALID_ANCHOR_SCOPES = {"orion", "juniper", "relationship", "world", "session"}
@@ -698,8 +701,28 @@ async def concept_atlas_network(
         if e.target.node_id in degree:
             degree[e.target.node_id] += weight
 
-    ranked = sorted((nid for nid in degree if degree[nid] > 0.0), key=lambda nid: degree[nid], reverse=True)
-    god_ids = set(ranked[:_GOD_NODE_TOP_N])
+    # canonical nodes (orion/substrate/seed_concepts.yaml's hand-authored,
+    # human_verified golden anchors -- Orion, Juniper, Claude, the
+    # Orion-Juniper relationship) are ALWAYS god nodes, regardless of degree.
+    # Confirmed live 2026-08-22: pure-degree ranking buried every one of
+    # these behind whatever topic-foundry HDBSCAN cluster happened to
+    # accumulate the most same-day co_occurs_with edges -- an artifact of
+    # topic-foundry's day-bucket co-occurrence proxy rewarding vocabulary
+    # ubiquity (e.g. "Orion" appearing in nearly every chat window), not a
+    # real ranking of what's actually load-bearing to Orion's identity. A
+    # canonical node earns its authority from human-verified seeding, not
+    # from edge count, so it must never be outranked into invisibility by
+    # organically-clustered noise. Remaining top-N slots (if any) still go
+    # to the highest-degree non-canonical nodes, same as before, so real
+    # organic hubs can still surface alongside the golden anchors.
+    canonical_ids = {n.node_id for n in nodes if getattr(n, "promotion_state", None) == "canonical"}
+    remaining_slots = max(0, _GOD_NODE_TOP_N - len(canonical_ids))
+    ranked = sorted(
+        (nid for nid in degree if degree[nid] > 0.0 and nid not in canonical_ids),
+        key=lambda nid: degree[nid],
+        reverse=True,
+    )
+    god_ids = canonical_ids | set(ranked[:remaining_slots])
 
     node_payload = [
         {
@@ -713,6 +736,18 @@ async def concept_atlas_network(
             "confidence": float(n.signals.confidence),
             "degree": degree.get(n.node_id, 0.0),
             "god_node": n.node_id in god_ids,
+            # Honest-label plumbing: topic-foundry's adapter (see
+            # orion/substrate/adapters/topic_foundry.py::_derive_label) falls
+            # back to a bare "topic_<id>" placeholder when a run produced
+            # neither a real topic label nor keywords -- a real, non-blank
+            # string that nonetheless carries no human meaning. Surfacing
+            # both fields lets the UI render those honestly (e.g. muted /
+            # unlabeled) instead of indistinguishable from a real induced or
+            # golden-seeded concept.
+            "origin": "topic_foundry" if n.metadata.get("source") == "orion-topic-foundry" else "concept",
+            "synthetic_label": bool(
+                n.metadata.get("source") == "orion-topic-foundry" and str(n.label or "").startswith("topic_")
+            ),
         }
         for n in nodes
     ]

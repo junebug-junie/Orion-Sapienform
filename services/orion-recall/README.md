@@ -841,7 +841,7 @@ Note this only affects *scoring* (a continuous, soft decay) — it does not give
 `app/collectors/concept_region.py::fetch_concept_region_fragment()` is a PCR collector
 alongside `active_packet`, wired into `process_recall`'s purposeful phase in `app/worker.py`.
 It matches the current turn's text against concept labels already materialized in the
-shared substrate graph (golden Orion/Juniper/relationship concepts seeded by `orion-hub`,
+shared substrate graph (golden Orion/Juniper/Claude/relationship concepts seeded by `orion-hub`,
 plus organically-grown topic-foundry concepts) and, on a match, returns a bounded
 neighborhood fragment scoped to that turn. Matching is deliberately dumb — case-insensitive
 label substring match, no embedding/LLM call — and it never does a store read at all if the

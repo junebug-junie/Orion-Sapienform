@@ -656,7 +656,7 @@ class Settings(BaseSettings):
         ),
     )
     HUB_AUTONOMY_SUBJECT_DISPLAY: str = Field(default="two", alias="HUB_AUTONOMY_SUBJECT_DISPLAY")
-    # Seeds the 3 golden concepts (Orion, Juniper, Orion-Juniper relationship) into
+    # Seeds the 4 golden concepts (Orion, Juniper, Claude, Orion-Juniper relationship) into
     # SUBSTRATE_SEMANTIC_STORE at startup -- see orion/substrate/seed.py. Idempotent
     # (same node_ids every call), safe to leave enabled. Runs in a background thread
     # (see main.py's startup_event) since SUBSTRATE_STORE_BACKEND=sparql (this

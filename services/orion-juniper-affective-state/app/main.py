@@ -54,14 +54,29 @@ class JuniperAffectiveStateService:
     async def trigger_assessment(
         self, req: AffectGptAssessRequestPayload
     ) -> tuple[AffectGptAssessResultPayload, JuniperMultimodalAffectV1]:
+        # Every path through this method falls through to the single
+        # publish call at the bottom -- a real bug caught in review
+        # (2026-08-22): the four early-return failure branches used to
+        # `return` directly, so a bus-unavailable/timeout/empty-reply/decode
+        # failure (the operationally most likely outcomes) never published
+        # to orion:affectgpt:assessment at all, contradicting this class's
+        # own README ("publishes ... success or failure").
         if not self.bus or not self.bus.enabled:
             result = AffectGptAssessResultPayload(
                 ok=False, error="bus not connected", error_code="bus_unavailable"
             )
-            return result, self._wrap_event(result, req)
+        else:
+            result = await self._call_worker(req)
 
+        event = self._wrap_event(result, req)
+        await self._publish_event(event)
+        return result, event
+
+    async def _call_worker(
+        self, req: AffectGptAssessRequestPayload
+    ) -> AffectGptAssessResultPayload:
         corr_id = uuid.uuid4()
-        reply_channel = f"{'orion:affectgpt:reply'}:{corr_id}"
+        reply_channel = f"{settings.CHANNEL_AFFECTGPT_REPLY_PREFIX}:{corr_id}"
         request_envelope = BaseEnvelope(
             kind="affectgpt.assess.request",
             source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
@@ -78,40 +93,33 @@ class JuniperAffectiveStateService:
                 timeout_sec=settings.AFFECTGPT_RPC_TIMEOUT_S,
             )
         except TimeoutError:
-            result = AffectGptAssessResultPayload(
+            return AffectGptAssessResultPayload(
                 ok=False, error="worker did not reply in time", error_code="timeout"
             )
-            return result, self._wrap_event(result, req)
 
         data = msg.get("data") if isinstance(msg, dict) else None
         if not data:
-            result = AffectGptAssessResultPayload(
+            return AffectGptAssessResultPayload(
                 ok=False, error="empty reply from worker", error_code="empty_reply"
             )
-            return result, self._wrap_event(result, req)
 
         decoded = self.bus.codec.decode(data)
         if not decoded.ok or not decoded.envelope:
-            result = AffectGptAssessResultPayload(
+            return AffectGptAssessResultPayload(
                 ok=False, error=f"decode failed: {decoded.error}", error_code="decode_error"
             )
-            return result, self._wrap_event(result, req)
 
         try:
             payload = decoded.envelope.payload
-            result = (
+            return (
                 payload
                 if isinstance(payload, AffectGptAssessResultPayload)
                 else AffectGptAssessResultPayload(**payload)
             )
         except Exception as e:
-            result = AffectGptAssessResultPayload(
+            return AffectGptAssessResultPayload(
                 ok=False, error=f"reply payload invalid: {e}", error_code="invalid_reply"
             )
-
-        event = self._wrap_event(result, req)
-        await self._publish_event(event)
-        return result, event
 
     def _wrap_event(
         self, result: AffectGptAssessResultPayload, req: AffectGptAssessRequestPayload

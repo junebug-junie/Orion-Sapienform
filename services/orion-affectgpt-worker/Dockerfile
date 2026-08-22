@@ -15,14 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY services/orion-affectgpt-worker/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Compat shim: pytorchvideo (unmaintained since ~2022) imports the removed
-# public torchvision.transforms.functional_tensor module. This image's
-# torchvision 0.19.0 still ships the same code privately as
-# _functional_tensor -- confirmed live (has affine==True) -- so re-export it
-# under the old public name rather than downgrading torchvision and risking
-# a CUDA 12.1 wheel mismatch.
+# Compat shim -- see vendor_patches/functional_tensor_shim.py for why this
+# exists. Tracked file, not an inline `echo ...py` (review finding,
+# 2026-08-22: the previous inline form was invisible to normal code
+# review/diff and would silently ImportError again on any base-image or
+# torchvision bump with no signal until the container failed to start).
+COPY services/orion-affectgpt-worker/vendor_patches/functional_tensor_shim.py /tmp/functional_tensor_shim.py
 RUN SITE=$(python -c "import torchvision, os; print(os.path.dirname(torchvision.__file__))") \
-    && echo "from torchvision.transforms._functional_tensor import *" > "$SITE/transforms/functional_tensor.py"
+    && cp /tmp/functional_tensor_shim.py "$SITE/transforms/functional_tensor.py"
 
 # Vendored AffectGPT source, pinned to the exact commit this service was
 # built and proven against -- treat as an external dependency (like a pip
@@ -40,6 +40,32 @@ RUN mkdir -p /opt/affectgpt-src/dataset/mer2025-dataset \
 WORKDIR /app
 COPY services/orion-affectgpt-worker/app ./app
 COPY orion ./orion
+
+# Build-time import smoke check -- exercises the exact same deferred-import
+# chain as app/model_runtime.py's load() (minus actual model-weight
+# loading, which needs the volume-mounted weights this build stage doesn't
+# have). Added after review (2026-08-22) found this dependency list had
+# already broken twice from a trimmed-without-testing edit (missing
+# webdataset, then missing openai/matplotlib) and shipped with no test that
+# would catch a repeat -- a bad requirements.txt edit now fails `docker
+# build` instead of surfacing only as a runtime crash-loop after `docker up`.
+RUN python -c "\
+import sys, os; \
+sys.path.insert(0, '/opt/affectgpt-src/AffectGPT'); \
+os.chdir('/opt/affectgpt-src/AffectGPT'); \
+import config; \
+import my_affectgpt.tasks; \
+import my_affectgpt.models; \
+import my_affectgpt.runners; \
+import my_affectgpt.processors; \
+import my_affectgpt.datasets.builders; \
+import my_affectgpt.datasets.builders.image_text_pair_builder; \
+from my_affectgpt.common.config import Config; \
+from my_affectgpt.common.registry import registry; \
+from my_affectgpt.conversation.conversation_video import Chat; \
+from my_affectgpt.datasets.datasets.mer2025ov_dataset import MER2025OV_Dataset; \
+from my_affectgpt.processors.base_processor import BaseProcessor; \
+print('AFFECTGPT_IMPORT_CHAIN_OK')"
 
 EXPOSE 6610
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "6610"]

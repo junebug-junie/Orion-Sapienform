@@ -29,7 +29,17 @@ class AffectGptWorkerService:
         # and AffectGPT's Chat object is not documented thread-safe. A single
         # lock is the honest limit, not a placeholder for a future scheduler
         # -- see README non-goals.
-        self._inflight_lock = asyncio.Lock()
+        #
+        # Held by the background _do_work() task in run_assessment(), NOT by
+        # the request handler's own await -- a real bug caught in review
+        # (2026-08-22): asyncio cannot cancel a running thread, so wrapping
+        # `async with lock: await wait_for(to_thread(...), timeout)` releases
+        # the lock the instant wait_for times out while the thread keeps
+        # running against self._chat underneath, letting a second request
+        # start a truly concurrent GPU call. Locking the background task
+        # instead means the lock stays held for the real work's entire
+        # duration regardless of whether the caller gave up waiting.
+        self._busy_lock = asyncio.Lock()
 
     async def start(self):
         logger.remove()
@@ -78,62 +88,87 @@ class AffectGptWorkerService:
                 ok=False, error="model not loaded", error_code="not_ready"
             )
 
-        async with self._inflight_lock:
-            try:
-                face_result = await asyncio.wait_for(
-                    asyncio.to_thread(
+        if self._busy_lock.locked():
+            return AffectGptAssessResultPayload(
+                ok=False, error="worker busy with another request", error_code="busy"
+            )
+
+        loop = asyncio.get_event_loop()
+        result_future: asyncio.Future = loop.create_future()
+
+        async def _do_work():
+            # Runs to real completion regardless of whether run_assessment's
+            # own wait_for below gives up on it -- see _busy_lock comment.
+            async with self._busy_lock:
+                try:
+                    face_result = await asyncio.to_thread(
                         extract_face_crops,
                         payload.video_path,
                         margin=settings.AFFECTGPT_FACE_MARGIN,
                         min_size_px=settings.AFFECTGPT_FACE_MIN_SIZE_PX,
-                    ),
-                    timeout=settings.AFFECTGPT_REQUEST_TIMEOUT_S,
-                )
-            except asyncio.TimeoutError:
-                return AffectGptAssessResultPayload(
-                    ok=False, error="face extraction timed out", error_code="timeout"
-                )
-            except Exception as exc:  # noqa: BLE001
-                return AffectGptAssessResultPayload(
-                    ok=False, error=str(exc), error_code="face_extraction_error"
-                )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    res = AffectGptAssessResultPayload(
+                        ok=False, error=str(exc), error_code="face_extraction_error"
+                    )
+                    if not result_future.done():
+                        result_future.set_result(res)
+                    return
 
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.runtime.assess,
-                        face_result=face_result,
-                        audio_path=payload.audio_path,
-                        subtitle=payload.subtitle,
-                        user_message=payload.user_message,
-                    ),
-                    timeout=settings.AFFECTGPT_REQUEST_TIMEOUT_S,
+                result = await asyncio.to_thread(
+                    self.runtime.assess,
+                    face_result=face_result,
+                    audio_path=payload.audio_path,
+                    subtitle=payload.subtitle,
+                    user_message=payload.user_message,
                 )
-            except asyncio.TimeoutError:
-                return AffectGptAssessResultPayload(
-                    ok=False,
-                    error="inference timed out",
-                    error_code="timeout",
-                    face_detection=face_result.as_meta(),
+                res = AffectGptAssessResultPayload(
+                    ok=result.ok,
+                    raw_response=result.raw_response,
+                    error=result.error,
+                    error_code=result.error_code,
+                    model_ckpt=result.model_ckpt,
+                    face_or_frame_mode=result.face_or_frame_mode,
+                    face_detection=result.face_detection,
+                    timings=result.timings or None,
                 )
+                if not result_future.done():
+                    result_future.set_result(res)
 
-        return AffectGptAssessResultPayload(
-            ok=result.ok,
-            raw_response=result.raw_response,
-            error=result.error,
-            error_code=result.error_code,
-            model_ckpt=result.model_ckpt,
-            face_or_frame_mode=result.face_or_frame_mode,
-            face_detection=result.face_detection,
-            timings=result.timings or None,
-        )
+        asyncio.create_task(_do_work())
+        try:
+            # shield: a caller-facing timeout must not cancel the underlying
+            # future (it can't cancel the thread anyway) -- it only stops
+            # THIS call from waiting on it. The busy lock above is what
+            # actually keeps a second request from starting concurrently.
+            return await asyncio.wait_for(
+                asyncio.shield(result_future), timeout=settings.AFFECTGPT_REQUEST_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            return AffectGptAssessResultPayload(
+                ok=False,
+                error=(
+                    f"no reply within {settings.AFFECTGPT_REQUEST_TIMEOUT_S}s -- worker is "
+                    "still processing this request in the background and stays busy until "
+                    "it finishes"
+                ),
+                error_code="timeout",
+            )
 
     async def _consume_loop(self):
         if not self.bus:
             return
-        async with self.bus.subscribe(settings.CHANNEL_AFFECTGPT_INTAKE) as pubsub:
-            while not self._shutdown_event.is_set():
-                try:
+        # The `async with subscribe(...)` block is INSIDE the retry loop,
+        # not around it -- a real bug caught in review (2026-08-22): a
+        # pubsub object that raises mid-listen (e.g. a transient Redis blip)
+        # was never resubscribed, so the loop retried iter_messages() on the
+        # same broken object forever, silently dropping every request with
+        # no health-check signal distinguishing it from a healthy idle
+        # worker. Resubscribing fresh on every retry is what actually
+        # recovers.
+        while not self._shutdown_event.is_set():
+            try:
+                async with self.bus.subscribe(settings.CHANNEL_AFFECTGPT_INTAKE) as pubsub:
                     async for msg in self.bus.iter_messages(pubsub):
                         if self._shutdown_event.is_set():
                             break
@@ -145,9 +180,9 @@ class AffectGptWorkerService:
                             logger.error(f"[BUS] decode failed: {decoded.error}")
                             continue
                         asyncio.create_task(self._handle_envelope(decoded.envelope))
-                except Exception as e:
-                    logger.error(f"[BUS] consumer error: {e}")
-                    await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"[BUS] consumer error: {e}")
+                await asyncio.sleep(1)
 
     async def _handle_envelope(self, envelope: BaseEnvelope):
         try:

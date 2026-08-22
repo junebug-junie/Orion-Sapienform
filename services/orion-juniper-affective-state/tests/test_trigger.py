@@ -28,8 +28,10 @@ class FakeBus:
         self.published: list[tuple[str, Any]] = []
         self._rpc_reply_payload: dict | None = None
         self._rpc_raises: Exception | None = None
+        self.last_reply_channel: str | None = None
 
     async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):
+        self.last_reply_channel = reply_channel
         if self._rpc_raises:
             raise self._rpc_raises
         return {"data": b"fake"}  # decode() below is also faked
@@ -79,6 +81,21 @@ async def test_successful_round_trip_publishes_event(req):
 
 
 @pytest.mark.asyncio
+async def test_reply_channel_uses_configured_prefix_not_a_hardcoded_literal(req):
+    # Regression guard: this was a hardcoded 'orion:affectgpt:reply' literal
+    # (review finding, 2026-08-22) instead of settings.CHANNEL_AFFECTGPT_REPLY_PREFIX.
+    from app.settings import Settings
+
+    svc = JuniperAffectiveStateService()
+    svc.bus = FakeBus()
+    svc.bus._rpc_reply_payload = AffectGptAssessResultPayload(ok=True).model_dump()
+
+    await svc.trigger_assessment(req)
+
+    assert svc.bus.last_reply_channel.startswith(Settings().CHANNEL_AFFECTGPT_REPLY_PREFIX + ":")
+
+
+@pytest.mark.asyncio
 async def test_timeout_produces_failed_event_not_a_crash(req):
     svc = JuniperAffectiveStateService()
     svc.bus = FakeBus()
@@ -89,8 +106,14 @@ async def test_timeout_produces_failed_event_not_a_crash(req):
     assert result.ok is False
     assert result.error_code == "timeout"
     assert event.ok is False
-    # Timeout path returns before any publish -- there was nothing real to report.
-    assert svc.bus.published == []
+    # A failed assessment is still a real, publishable event -- review
+    # finding (2026-08-22): this used to assert published == [] because
+    # trigger_assessment's early-return branches skipped _publish_event
+    # entirely, silently dropping the four most operationally likely
+    # failure modes from orion:affectgpt:assessment. Every path publishes now.
+    assert len(svc.bus.published) == 1
+    channel, _ = svc.bus.published[0]
+    assert channel == "orion:affectgpt:assessment"
 
 
 @pytest.mark.asyncio

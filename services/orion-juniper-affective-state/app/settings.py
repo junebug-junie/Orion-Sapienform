@@ -28,6 +28,14 @@ class Settings(BaseSettings):
 
     # Where the request goes.
     CHANNEL_AFFECTGPT_INTAKE: str = "orion:exec:request:AffectGptWorkerService"
+    # Prefix for the per-request reply channel this service listens on
+    # (actual channel is f"{prefix}:{corr_id}"). Must match the worker's own
+    # CHANNEL_AFFECTGPT_REPLY_PREFIX -- both default to the same value, but
+    # this was a hardcoded literal here until review (2026-08-22) caught
+    # that it made the worker's matching setting a non-functional config
+    # knob (the worker always honors envelope.reply_to over its own prefix
+    # setting, so nothing broke live, but the two could silently desync).
+    CHANNEL_AFFECTGPT_REPLY_PREFIX: str = "orion:affectgpt:reply"
     # Where this service's own domain event goes after wrapping the worker's
     # reply -- see orion/schemas/affectgpt.py for why this is deliberately
     # NOT orion:substrate:juniper_affective_state (the existing, narrower,

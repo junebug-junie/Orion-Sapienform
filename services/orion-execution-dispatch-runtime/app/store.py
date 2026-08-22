@@ -486,6 +486,8 @@ class ExecutionDispatchRuntimeStore:
         result_json: dict,
         raw_len: int,
         latency_ms: float | None = None,
+        dispatch_kind: str | None = None,
+        target_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -494,16 +496,18 @@ class ExecutionDispatchRuntimeStore:
                     """
                     INSERT INTO substrate_dispatch_results (
                         result_id, dispatch_id, frame_id, status, result_json, raw_len,
-                        latency_ms, created_at
+                        latency_ms, dispatch_kind, target_id, created_at
                     ) VALUES (
                         :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len,
-                        :latency_ms, :created_at
+                        :latency_ms, :dispatch_kind, :target_id, :created_at
                     )
                     ON CONFLICT (result_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         result_json = EXCLUDED.result_json,
                         raw_len = EXCLUDED.raw_len,
-                        latency_ms = EXCLUDED.latency_ms
+                        latency_ms = EXCLUDED.latency_ms,
+                        dispatch_kind = EXCLUDED.dispatch_kind,
+                        target_id = EXCLUDED.target_id
                     """
                 ),
                 {
@@ -514,6 +518,8 @@ class ExecutionDispatchRuntimeStore:
                     "result_json": Json(result_json),
                     "raw_len": raw_len,
                     "latency_ms": latency_ms,
+                    "dispatch_kind": dispatch_kind,
+                    "target_id": target_id,
                     "created_at": now,
                 },
             )
@@ -530,10 +536,13 @@ class ExecutionDispatchRuntimeStore:
         first hour of cost data; a mean would let a single hung dispatch
         permanently price its whole action out of the budget.
 
-        Reads substrate_action_outcomes, which carries dispatch_kind and
-        target_id alongside latency -- no frame join needed. Restricted to
-        arm='dispatched': a capacity_blocked candidate never ran and has no
-        cost, and averaging its NULL in would understate the real price.
+        Reads substrate_dispatch_results, NOT substrate_action_outcomes.
+        The outcome ledger has dispatch_kind and target_id but only contains
+        actions that DECLARED A SIGNAL -- 32.3% of dispatch volume. Sourcing
+        cost from it made the allocator refuse `no_cost_estimate` on 7 of 12
+        live pending actions whose cost was sitting in dispatch_results the
+        whole time. A result row only exists for an action that actually ran,
+        so there is no blocked-candidate NULL to filter out here.
         """
         with self._engine.connect() as conn:
             rows = conn.execute(
@@ -541,9 +550,10 @@ class ExecutionDispatchRuntimeStore:
                     """
                     SELECT dispatch_kind, target_id,
                            percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_ms
-                      FROM substrate_action_outcomes
-                     WHERE arm = 'dispatched'
-                       AND latency_ms IS NOT NULL
+                      FROM substrate_dispatch_results
+                     WHERE latency_ms IS NOT NULL
+                       AND dispatch_kind IS NOT NULL
+                       AND target_id IS NOT NULL
                        AND created_at > now() - make_interval(hours => :hours)
                      GROUP BY 1, 2
                     """

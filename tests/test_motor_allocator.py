@@ -200,3 +200,106 @@ class TestSpendingTheAllowance:
     def test_nats_bought_is_reported(self):
         result = allocate([_c("x", var=0.25)], allowance_sec=100.0, min_nats_per_sec=0.0)
         assert result.admitted_nats == pytest.approx(0.9905007, abs=1e-6)
+
+
+class TestUnmeasurableIsNotUninformed:
+    """The defect that inverted the whole allocator, and the test shape that
+    would have caught it.
+
+    Every other test here constructs a Candidate directly with a scalar
+    variance, so none of them exercised the reconstruction in
+    worker._log_allocator_preview -- which is where the bug lived. Live
+    evidence before the fix: across 57 consecutive previews EVERY admitted
+    candidate scored exactly 0.9905007 nats (the cold-start default) and every
+    measured action was refused below the floor.
+    """
+
+    def test_an_action_that_declares_no_signal_scores_zero(self):
+        """It is UNMEASURABLE, not maximally uncertain. It can never acquire
+        a posterior at all -- outcome_resolution skips it with
+        `no_declared_signal` -- so there is no belief for an observation to
+        update and running it buys exactly nothing."""
+        c = Candidate("undeclared", "inspect", "orion/bus/channels.yaml",
+                      posterior_variance=None, cost_sec=4.7)
+        assert not c.measurable
+        assert c.expected_nats == 0.0
+        assert c.nats_per_sec == 0.0
+
+    def test_it_is_refused_with_its_own_reason(self):
+        """Not folded into below_information_floor: 'we have learned what this
+        does' and 'this can never be scored' need different fixes."""
+        c = Candidate("undeclared", "inspect", "t", posterior_variance=None, cost_sec=4.7)
+        result = allocate([c], allowance_sec=1000.0, min_nats_per_sec=0.0)
+        assert result.admitted == ()
+        assert result.refused[0][1] == "unmeasurable"
+
+    def test_it_cannot_outrank_a_measured_action(self):
+        """The inversion, stated as an assertion. Before the fix the
+        undeclared action scored 0.9905/4.7 = 0.2107 and the measured one
+        0.0065/0.71 = 0.0091 -- a 23x advantage for declaring nothing, which
+        made omitting expected_effect the dominant strategy."""
+        undeclared = Candidate("undeclared", "inspect", "a",
+                               posterior_variance=None, cost_sec=4.7)
+        measured = Candidate("measured", "maintain", "b",
+                             posterior_variance=0.0005, cost_sec=0.71)
+        result = allocate([undeclared, measured], allowance_sec=1000.0, min_nats_per_sec=0.0)
+        assert [c.dispatch_id for c in result.admitted] == ["measured"]
+
+    def test_a_genuinely_new_but_measurable_action_still_scores_high(self):
+        """The fix must not throw away real cold starts -- an action that
+        declares a signal and has no history yet is the most informative
+        thing available, and that is still true."""
+        from orion.autonomy.prediction import DEFAULT_PRIOR_VARIANCE
+
+        c = Candidate("new", "inspect", "t",
+                      posterior_variance=DEFAULT_PRIOR_VARIANCE, cost_sec=5.0)
+        assert c.measurable
+        assert c.expected_nats == pytest.approx(0.9905007, abs=1e-6)
+
+
+class TestPerBinVarianceNotPooled:
+    def test_the_weighted_gain_uses_each_bin_not_a_pooled_mean(self):
+        from orion.autonomy.allocator import expected_information_gain_across_bins
+
+        # Two bins, equal volume: variances 0.01 and 0.001.
+        # 0.5*ln(1+0.01/0.04)  = 0.5*ln(1.25)  = 0.1115718
+        # 0.5*ln(1+0.001/0.04) = 0.5*ln(1.025) = 0.0123457
+        # mean = 0.0619587
+        assert expected_information_gain_across_bins(
+            [(0.01, 100), (0.001, 100)]
+        ) == pytest.approx(0.0619587, abs=1e-6)
+
+    def test_volume_weighting_follows_where_the_action_actually_runs(self):
+        from orion.autonomy.allocator import expected_information_gain_across_bins
+
+        # 900 observations in the well-known bin, 100 in the uncertain one.
+        # 0.9*0.0123457 + 0.1*0.1115718 = 0.0111111 + 0.0111572 = 0.0222683
+        assert expected_information_gain_across_bins(
+            [(0.001, 900), (0.01, 100)]
+        ) == pytest.approx(0.0222683, abs=1e-6)
+
+    def test_empty_cells_are_absent_not_zero(self):
+        from orion.autonomy.allocator import expected_information_gain_across_bins
+
+        assert expected_information_gain_across_bins([]) is None
+        assert expected_information_gain_across_bins([(0.01, 0)]) is None
+
+    def test_pooling_across_bins_understates_uncertainty(self):
+        """Why the pooled figure was wrong, as arithmetic.
+
+        pooled_treated_mean computes sum((n_b/N)^2 * var_b) -- the sampling
+        variance of a MEAN across bins, which divides by roughly the bin
+        count. So an action read as better-known the more distinct conditions
+        it had run under. Live this scored maintain/host:docker_containers at
+        0.0091 nats/s (refused) against 0.192 per-bin (top of the whole set).
+        """
+        from orion.autonomy.allocator import (
+            expected_information_gain_across_bins,
+            expected_information_gain_nats,
+        )
+
+        cells = [(0.01, 100), (0.01, 100), (0.01, 100), (0.01, 100)]
+        pooled_variance = sum((100 / 400) ** 2 * 0.01 for _ in cells)  # 0.0025
+        assert expected_information_gain_nats(pooled_variance) < (
+            expected_information_gain_across_bins(cells) / 3
+        )

@@ -53,6 +53,32 @@ So they are kept in different roles:
 
 An action that cannot lose is not competing; the gate is what lets one lose.
 
+STATUS OF THAT GATE: UNVERIFIED, AND CURRENTLY INERT.
+-----------------------------------------------------
+`contrast` and `contrast_sd` have NO producer anywhere in this repository.
+`orion.autonomy.contrast.contrast()` is called from exactly one place --
+`orion/autonomy/evals/eval_action_value_contrast.py` -- and no service,
+worker or store persists a ContrastEstimate. The dispatch worker passes None
+for both, so `confidently_harmful` returns False on every candidate and has
+never once fired.
+
+Recorded here because commit 4b28d1369's message claimed the opposite: "The
+live prune trips it -- claims `decrease`, measures +0.037 +/- 0.0037, ten
+sigma the wrong way. First time anything here can refuse an action for being
+BAD." That was false. Those numbers are the raw pre-contrast delta, hand-typed
+into a unit test, cited as though they were live behaviour. Nothing has been
+refused for being bad.
+
+Two known hazards for whoever wires it, so the gate does not arrive worse
+than absent:
+  * `contrast_sd` is a standard error and shrinks as 1/sqrt(n), while
+    contrast.py's own docstring concedes residual confounding the baseline
+    binning "does not absorb all of". Any systematic bias therefore crosses
+    2 sigma eventually -- firing time set by sample size, not by harm.
+  * At 2 sigma one-sided across ~15 targets x ~5 signals, roughly 1.7 false
+    positives stand at any moment, and a false positive is PERMANENT: nothing
+    re-tests a contrast, so a fluke bans an action forever.
+
 THE BAR IS ABSOLUTE, NOT RELATIVE
 ---------------------------------
 `min_nats_per_sec` is a floor, not a rank cut. A relative ranking always
@@ -74,6 +100,7 @@ RefusalReason = Literal[
     "confidently_harmful",
     "allowance_exhausted",
     "no_cost_estimate",
+    "unmeasurable",
 ]
 
 # How many standard deviations of the measured contrast must sit on the wrong
@@ -83,6 +110,39 @@ RefusalReason = Literal[
 # failure this module exists to avoid. It should refuse almost nothing today
 # and start biting as evidence accumulates.
 HARM_CONFIDENCE_SIGMAS = 2.0
+
+
+def expected_information_gain_across_bins(
+    cell_variances_by_volume: list[tuple[float, int]],
+    observation_variance: float = DEFAULT_OBSERVATION_VARIANCE,
+) -> float | None:
+    """Volume-weighted expected gain across an action's baseline bins.
+
+    The next observation lands in exactly ONE bin, so the prior variance that
+    matters is that bin's, not a pooled figure.
+
+    The first version of this module used
+    `pooled_treated_mean(...).variance`, which is `sum (n_b/N)^2 * var_b` --
+    the sampling variance of a MEAN ACROSS bins. That divides by roughly the
+    number of bins, so an action read as better-known the more distinct
+    conditions it had run under, which is backwards. Measured live: the
+    pooled figure scored `maintain/host:docker_containers` at 0.0091 nats/s
+    (refused) where the per-bin figure gives 0.192 (top-ranked candidate in
+    the entire set) -- a 21x error that changed the answer.
+
+    `orion/autonomy/contrast.py::pooled_treated_mean` says so in its own
+    docstring: "The contrast is what a BUDGET reads; the pooled mean is what
+    a PREDICTION claims." This module is the budget and it was reading the
+    prediction quantity.
+    """
+    live = [(v, n) for v, n in cell_variances_by_volume if n > 0]
+    if not live:
+        return None
+    total = sum(n for _, n in live)
+    return sum(
+        (n / total) * expected_information_gain_nats(v, observation_variance)
+        for v, n in live
+    )
 
 
 def expected_information_gain_nats(
@@ -114,7 +174,23 @@ class Candidate:
 
     # Current uncertainty about what this action does. A cold cell is
     # maximally informative; a well-measured one is nearly worthless.
-    posterior_variance: float
+    #
+    # None means UNMEASURABLE, which is emphatically not the same as
+    # unmeasured. An action that declares no signal can never acquire a
+    # posterior at all -- orion/feedback/outcome_resolution.py skips it with
+    # `no_declared_signal` -- so its uncertainty is not a cold start that will
+    # resolve, it is a permanent absence of any way to find out.
+    #
+    # Scoring it as maximally informative was the single worst defect in the
+    # first version of this module, and it was live: across 57 consecutive
+    # previews EVERY admitted candidate scored exactly 0.9905007 nats, the
+    # cold-start default, while every action that HAD declared a signal and
+    # been measured fell below the floor and was refused. Orion was allocating
+    # its entire allowance to the actions it structurally cannot learn from,
+    # and refusing every action it can -- the exact inversion of this module's
+    # stated purpose, and self-reinforcing, since omitting `expected_effect`
+    # from a template bought a 100-350x score multiplier.
+    posterior_variance: float | None
 
     # Real measured cost, from this action's own history. None means we have
     # never timed it -- see the `no_cost_estimate` refusal.
@@ -129,7 +205,15 @@ class Candidate:
     claimed_direction: str | None = None
 
     @property
+    def measurable(self) -> bool:
+        return self.posterior_variance is not None
+
+    @property
     def expected_nats(self) -> float:
+        """Zero for an unmeasurable action. Running it buys nothing, because
+        there is no belief for the observation to update."""
+        if self.posterior_variance is None:
+            return 0.0
         return expected_information_gain_nats(self.posterior_variance)
 
     @property
@@ -202,6 +286,13 @@ def allocate(
 
     scored: list[Candidate] = []
     for candidate in candidates:
+        if not candidate.measurable:
+            # Refused with its own reason, not folded into the information
+            # floor: "we have learned what this does" and "this can never be
+            # scored" are different facts and the fix for each is different.
+            # The fix for this one is to declare a signal on the template.
+            refused.append((candidate, "unmeasurable"))
+            continue
         if candidate.confidently_harmful:
             refused.append((candidate, "confidently_harmful"))
             continue

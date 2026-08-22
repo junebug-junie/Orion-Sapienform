@@ -261,10 +261,15 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
     i.e. "this specific piece of evidence was already judged, nothing new has
     arrived since." A row that legitimately postdates the verdict (fresh
     activity after a close) still surfaces normally -- this is a real reopen,
-    not the same stale evidence again. Mirrors
-    `orion/substrate/attention/verdicts.py::load_terminal_verdict_loop_ids`'s
-    exclusion semantics for the live reverie coalition, which the Hub panel's
-    own query never applied to itself.
+    not the same stale evidence again. Related to but NOT the same exclusion as
+    `orion/substrate/attention/verdicts.py::load_terminal_verdict_loop_ids`
+    (used by the live reverie coalition) -- that one deliberately keeps
+    decayed_unattended eligible to keep competing (a different question: loop
+    re-selection, where a quiet loop should still get to win again if it's
+    still genuinely salient). This one answers "is this specific trace ROW
+    stale review-panel evidence", where decayed_unattended correctly belongs
+    in the exclusion -- the panel shouldn't keep showing a row the digest
+    already judged abandoned.
     """
     try:
         from sqlalchemy import text

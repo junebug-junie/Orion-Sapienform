@@ -53,7 +53,19 @@ services:
     # device N is always remapped to container-local index 0 -- confirmed
     # live 2026-08-22 -- hence AFFECTGPT_DEVICE=cuda:0 above regardless of
     # which physical card this points at.
-    gpus: '"device=2"'
+    #
+    # Compose's top-level `gpus:` key only accepts the literal 'all' --
+    # confirmed live 2026-08-22 ("gpus value must be 'all'"). Per-device
+    # pinning needs the deploy.resources.reservations.devices form instead
+    # (the `docker run --gpus '"device=N"'` CLI flag used during benchmarking
+    # is a different schema, not valid here).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
 
     networks:
       - app-net

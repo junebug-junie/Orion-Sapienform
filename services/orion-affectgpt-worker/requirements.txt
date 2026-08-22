@@ -5,7 +5,35 @@
 # AffectGPT's own code never imports it directly (transitive pin only in
 # upstream's environment.yml) -- see README "Provenance".
 
-# AffectGPT model stack
+# AffectGPT model stack. `my_affectgpt/__init__.py` eagerly imports
+# my_affectgpt.tasks (and that cascades further) regardless of which task
+# actually runs, so anything transitively imported anywhere in that chain is
+# a hard requirement even if this service never calls it directly -- that's
+# how `webdataset` ended up here (my_affectgpt/datasets/data_utils.py,
+# several hops down from the first `import my_affectgpt.tasks`).
+#
+# vllm was in an earlier draft of this list, restored wholesale from the
+# original benchmark's proven-working Dockerfile without re-checking
+# whether it was actually load-bearing -- Juniper caught this live
+# (2026-08-22: "huh vllm? we have a vllm host"). Verified with
+# `grep -rln 'import vllm' /opt/affectgpt-src/AffectGPT/`: vllm only appears
+# in my_affectgpt/evaluation/ew_metric.py, evaluation.py,
+# evaluation-scoreonly.py (AffectGPT's own benchmark-scoring scripts, an
+# LLM-judge path -- never imported by tasks/models/runners/processors/
+# datasets.builders or anything else this service's import chain touches).
+# Confirmed by actually removing it and running the full import chain
+# clean -- this worker never used orion-vllm-host or bypassed it; the pip
+# install was just unnecessary weight.
+#
+# openai and matplotlib got trimmed in that same pass on the strength of the
+# same style of grep, WITHOUT doing the same removal-and-test check --
+# wrong both times, caught immediately on redeploy: toolkit/utils/functions.py
+# (imported by mer2025ov_dataset.py, which IS on this service's real import
+# chain) unconditionally does `import matplotlib` and
+# `from toolkit.utils.chatgpt import ...` (which does `import openai`) at
+# module level. Both restored; this time verified by actually deleting each
+# one from a running container and re-importing the full chain before
+# trusting the answer, not by grep alone.
 transformers==4.49.0
 tokenizers==0.21.0
 accelerate==1.0.0
@@ -16,7 +44,9 @@ ftfy
 iopath
 librosa
 soundfile
+matplotlib
 omegaconf
+openai
 pandas
 pillow
 pytorchvideo
@@ -24,6 +54,7 @@ scipy
 scikit-learn
 timm
 tqdm
+webdataset
 pyyaml
 zhon
 # Pinned, NOT bare -- confirmed live 2026-08-22 that opencv-python-headless

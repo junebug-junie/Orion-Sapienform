@@ -11811,25 +11811,152 @@ document.addEventListener("DOMContentLoaded", () => {
       window.addEventListener('resize', setAllCanvasSizes);
       
       // Vision UI Init
+      // Carbon has no continuous video stream -- only a ~5s-interval
+      // still-frame presence loop (docs/operations/carbon-webcam.md). The
+      // "Carbon (live)" option below polls the latest captured frame
+      // rather than showing real video; carbonLivePollTimer tracks that
+      // poll so switching away from it (or re-selecting it) doesn't stack
+      // multiple overlapping timers.
+      let carbonLivePollTimer = null;
+      let carbonLiveLastSha256 = null;
+      // Bumped every updateVisionUi() call -- async renderers (both carbon
+      // views hit the network) capture their own value at start and check
+      // it's still current before touching the DOM. Review finding,
+      // 2026-08-22: without this, switching away from "Carbon (live)" or
+      // "Carbon (affect snapshot)" before an in-flight request resolves let
+      // the stale callback overwrite whatever the user had just switched to.
+      let visionRenderGeneration = 0;
+
+      function stopCarbonLivePoll() {
+        if (carbonLivePollTimer) {
+          clearInterval(carbonLivePollTimer);
+          carbonLivePollTimer = null;
+        }
+        carbonLiveLastSha256 = null;
+      }
+
+      async function renderCarbonLiveFrame(container, generation) {
+        // Cheap metadata check first, full image bytes only if the frame
+        // actually changed -- review finding, 2026-08-22: polling the
+        // image route directly every 5s re-fetched+re-transferred the full
+        // JPEG through Hub even on ticks where carbon's own capture hadn't
+        // produced a new frame yet (same ~5s cadence on both sides).
+        let meta;
+        try {
+          const resp = await fetch("/api/vision/carbon/latest-frame");
+          meta = await resp.json().catch(() => null);
+        } catch (err) {
+          meta = null;
+        }
+        if (generation !== visionRenderGeneration) return;
+        if (!meta || !meta.available) {
+          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No frame from carbon yet -- confirm orion-vision-retina is running there.</div>';
+          carbonLiveLastSha256 = null;
+          return;
+        }
+        if (meta.sha256 === carbonLiveLastSha256) {
+          return; // unchanged since the last poll -- nothing to refetch
+        }
+        const img = new Image();
+        img.className = "w-full h-full object-contain";
+        img.alt = "Carbon (latest captured frame)";
+        img.src = `/api/vision/carbon/latest-frame/image?t=${Date.now()}`;
+        img.onerror = () => {
+          if (generation !== visionRenderGeneration) return;
+          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No frame from carbon yet -- confirm orion-vision-retina is running there.</div>';
+        };
+        img.onload = () => {
+          if (generation !== visionRenderGeneration) return;
+          container.innerHTML = "";
+          container.appendChild(img);
+          carbonLiveLastSha256 = meta.sha256;
+        };
+      }
+
+      async function renderCarbonAffectSnapshot(container, generation) {
+        container.innerHTML = '<div class="text-gray-400 text-xs text-center px-4">Loading last affect check…</div>';
+        let resp, status;
+        try {
+          resp = await fetch("/api/vision/affect-ambient/status");
+          status = await resp.json().catch(() => null);
+        } catch (err) {
+          resp = null;
+          status = null;
+        }
+        if (generation !== visionRenderGeneration) return;
+        if (!resp || !resp.ok || !status) {
+          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">Affect status unavailable.</div>';
+          return;
+        }
+        if (!status.last_attempt_at) {
+          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No affect check has run yet -- use "Check now" or the ambient toggle.</div>';
+          return;
+        }
+        const when = formatAgo(status.last_attempt_at);
+        const kindLabel = status.last_trigger === "manual" ? "manual check" : "ambient tick";
+        if (status.last_result_ok && status.last_raw_response) {
+          container.innerHTML = `
+            <div class="w-full h-full overflow-y-auto p-4 text-sm text-gray-200 whitespace-pre-wrap">
+              <div class="text-[11px] text-gray-500 mb-2">Last ${kindLabel}, ${when}</div>
+              ${status.last_raw_response.replace(/</g, "&lt;")}
+            </div>`;
+        } else {
+          container.innerHTML = `<div class="text-gray-500 text-xs text-center px-4">Last ${kindLabel} (${when}) had no successful result${status.last_error ? ": " + status.last_error : ""}.</div>`;
+        }
+      }
+
+      function setPopoutEnabled(enabled) {
+        if (!visionPopoutButton) return;
+        visionPopoutButton.disabled = !enabled;
+        visionPopoutButton.classList.toggle("opacity-50", !enabled);
+        visionPopoutButton.classList.toggle("cursor-not-allowed", !enabled);
+      }
+
       function updateVisionUi() {
         if (!visionDockedContainer) return;
+        stopCarbonLivePoll();
+        const generation = ++visionRenderGeneration;
         const value = visionSourceSelect ? visionSourceSelect.value : "";
-        
+
         // Simple visibility toggles based on source selection
         const hasSource = value !== 'none';
         if (!hasSource) {
+            setPopoutEnabled(true);
             visionFloatingContainer.classList.add("hidden");
             // Show placeholder
             visionDockedContainer.innerHTML = '<div id="visionPlaceholder" class="text-gray-400 text-sm text-center px-4">Vision service stub.</div>';
             return;
         }
 
+        if (value === "carbon-live" || value === "carbon-affect") {
+            // Neither carbon view has a "pop out to floating video" concept
+            // (no continuous stream to pop out) -- disable the button and
+            // force visionIsFloating back to false rather than letting a
+            // stale click leave it desynced from what's actually shown
+            // (review finding, 2026-08-22: clicking Pop Out while a carbon
+            // view was selected flipped the flag with no visible effect,
+            // then silently broke the NEXT dropdown selection's pop-out).
+            visionIsFloating = false;
+            setPopoutEnabled(false);
+            if (visionFloatingContainer) visionFloatingContainer.classList.add("hidden");
+            if (value === "carbon-live") {
+                renderCarbonLiveFrame(visionDockedContainer, generation);
+                carbonLivePollTimer = setInterval(
+                    () => renderCarbonLiveFrame(visionDockedContainer, generation), 5000
+                );
+            } else {
+                renderCarbonAffectSnapshot(visionDockedContainer, generation);
+            }
+            return;
+        }
+        setPopoutEnabled(true);
+
         let endpoint = value === "gopro-1" ? `${VISION_EDGE_BASE}/stream.mjpg` : "/static/img/vision-simulated.gif";
         // prevent caching
         if(value === "gopro-1") endpoint += "?t=" + Date.now();
 
         const imgHtml = `<img src="${endpoint}" class="w-full h-full object-cover">`;
-        
+
         if (visionIsFloating && visionFloatingContainer) {
             visionFloatingContainer.classList.remove("hidden");
             const flex = visionFloatingContainer.querySelector('.flex-1');

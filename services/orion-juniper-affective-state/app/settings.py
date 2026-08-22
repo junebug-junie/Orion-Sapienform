@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     # not reply in time" here.
     RETINA_CLIP_RPC_TIMEOUT_S: float = 60.0
 
+    # Which physical camera this service is allowed to trigger a capture on
+    # -- Juniper's explicit instruction, 2026-08-22: "I want this to only
+    # run on my carbon webcam." Must equal the responding retina instance's
+    # own RETINA_STREAM_ID or it refuses (error_code="wrong_camera") --
+    # see RetinaClipCaptureRequestPayload's docstring (orion/schemas/vision.py)
+    # for why this exists: the shared bus channel has no built-in per-
+    # instance routing, so without this field ANY retina instance
+    # subscribed to it with RETINA_CLIP_ENABLED=true would respond to ANY
+    # request. "carbon" matches docs/operations/carbon-webcam.md's own
+    # RETINA_STREAM_ID=carbon convention.
+    AFFECT_TARGET_STREAM_ID: str = "carbon"
+
     # Where capture_and_assess() fetches the video/audio blobs retina
     # uploaded. Same base-URL convention as orion-vision-retina's
     # RETINA_PERCEPT_STORE_URL (includes the /percepts suffix already,

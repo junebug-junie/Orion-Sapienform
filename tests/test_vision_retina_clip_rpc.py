@@ -33,14 +33,19 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import RetinaClipCaptureResultPayload
 
 
-def _make_envelope() -> BaseEnvelope:
+def _make_envelope(target_stream_id: str = "retina-stream-01") -> BaseEnvelope:
+    """Defaults to "retina-stream-01" -- the Settings() default RETINA_STREAM_ID
+    the svc fixture below uses, so every existing call site in this file (all
+    of which call this with no args) keeps exercising the SAME instance's own
+    stream, matching by construction rather than needing every test updated
+    when target_stream_id became required (2026-08-22)."""
     corr = uuid.uuid4()
     return BaseEnvelope(
         kind="retina.clip_capture.request",
         source=ServiceRef(name="test-caller", version="0.0.0"),
         correlation_id=corr,
         reply_to=f"orion:retina:clip:reply:{corr}",
-        payload={},
+        payload={"target_stream_id": target_stream_id},
     )
 
 
@@ -94,8 +99,31 @@ async def test_handle_clip_request_reports_disabled_without_capturing(monkeypatc
 
     assert not called
     _, reply_envelope = svc.bus.publish.await_args.args
-    assert reply_envelope.payload["ok"] is False
     assert reply_envelope.payload["error_code"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_handle_clip_request_reports_not_configured_without_capturing(monkeypatch):
+    """Review finding, 2026-08-22: this branch (RETINA_PERCEPT_STORE_URL
+    unset) had zero direct test coverage before or after the try/except/else
+    refactor that added the camera-identity check ahead of it -- a future
+    change that silently reorders/misnests this elif chain would ship
+    undetected without this."""
+    settings = Settings(RETINA_CLIP_ENABLED=True, RETINA_PERCEPT_STORE_URL="")
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    svc = RetinaService(settings=settings, bus=bus)
+
+    async def _must_not_run(self):
+        raise AssertionError("capture_and_upload_clip must not run when not configured")
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
+
+    await svc._handle_clip_request(_make_envelope())
+
+    _, reply_envelope = svc.bus.publish.await_args.args
+    assert reply_envelope.payload["ok"] is False
+    assert reply_envelope.payload["error_code"] == "not_configured"
 
 
 @pytest.mark.asyncio
@@ -197,3 +225,189 @@ async def test_a_capture_in_flight_makes_a_second_bus_request_report_busy(svc, m
 
     release.set()
     await first
+
+
+# --- Camera-identity check (review/design instruction, 2026-08-22) ---------
+# Juniper's explicit instruction: "I want this to only run on my carbon
+# webcam." orion:exec:request:RetinaClipCaptureService has no built-in
+# per-instance routing -- any retina instance subscribed to it with
+# RETINA_CLIP_ENABLED=true would otherwise respond to ANY request. This is
+# the structural guarantee: every instance checks the request's
+# target_stream_id against its own RETINA_STREAM_ID before doing anything
+# else, including before checking RETINA_CLIP_ENABLED.
+
+
+@pytest.mark.asyncio
+async def test_mismatched_target_stream_id_refuses_without_capturing(svc, monkeypatch):
+    async def _must_not_run(self):
+        raise AssertionError("capture_and_upload_clip must not run for the wrong camera")
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
+
+    await svc._handle_clip_request(_make_envelope(target_stream_id="cam0"))
+
+    _, reply_envelope = svc.bus.publish.await_args.args
+    assert reply_envelope.payload["ok"] is False
+    assert reply_envelope.payload["error_code"] == "wrong_camera"
+
+
+@pytest.mark.asyncio
+async def test_mismatched_target_stream_id_checked_before_clip_enabled(monkeypatch):
+    """The camera-identity check must be the FIRST gate -- even an instance
+    with RETINA_CLIP_ENABLED=false must report "wrong_camera", not
+    "disabled", when the request wasn't meant for it at all."""
+    settings = Settings(RETINA_CLIP_ENABLED=False, RETINA_STREAM_ID="carbon")
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    svc = RetinaService(settings=settings, bus=bus)
+
+    await svc._handle_clip_request(_make_envelope(target_stream_id="cam0"))
+
+    _, reply_envelope = svc.bus.publish.await_args.args
+    assert reply_envelope.payload["error_code"] == "wrong_camera"
+
+
+@pytest.mark.asyncio
+async def test_matching_target_stream_id_proceeds_normally(monkeypatch):
+    settings = Settings(
+        RETINA_CLIP_ENABLED=True,
+        RETINA_PERCEPT_STORE_URL="http://store/percepts",
+        RETINA_STREAM_ID="carbon",
+    )
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    svc = RetinaService(settings=settings, bus=bus)
+
+    async def _fake_capture(self):
+        return RetinaClipCaptureResultPayload(ok=True, video_sha256="a" * 64, audio_sha256="b" * 64)
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
+
+    await svc._handle_clip_request(_make_envelope(target_stream_id="carbon"))
+
+    _, reply_envelope = svc.bus.publish.await_args.args
+    assert reply_envelope.payload["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_missing_target_stream_id_reports_invalid_request_not_a_crash(svc):
+    """target_stream_id is required with no default -- a caller that omits
+    it entirely (e.g. a stale/pre-2026-08-22 orchestrator) must get a clean
+    error reply, not an unhandled exception that leaves the RPC caller
+    waiting for a reply that never comes."""
+    corr = uuid.uuid4()
+    envelope = BaseEnvelope(
+        kind="retina.clip_capture.request",
+        source=ServiceRef(name="test-caller", version="0.0.0"),
+        correlation_id=corr,
+        reply_to=f"orion:retina:clip:reply:{corr}",
+        payload={},  # no target_stream_id at all
+    )
+
+    await svc._handle_clip_request(envelope)
+
+    _, reply_envelope = svc.bus.publish.await_args.args
+    assert reply_envelope.payload["ok"] is False
+    assert reply_envelope.payload["error_code"] == "invalid_request"
+
+
+# --- HTTP route (POST /capture/clip) camera-identity check, review finding
+# 2026-08-22 ------------------------------------------------------------
+# The bus RPC path (_handle_clip_request, above) got a required
+# target_stream_id check; the pre-existing HTTP route did NOT get the same
+# check in the same commit, so the whole camera-identity guarantee was
+# fully bypassable via a plain curl for one commit. Fixed by requiring
+# ?target_stream_id=<this instance's RETINA_STREAM_ID> on the HTTP route
+# too. These exercise app.main.capture_clip_endpoint directly (a duck-typed
+# fake Request, no real ASGI/ TestClient machinery -- matches the
+# lightweight direct-call convention already used throughout this file and
+# services/orion-hub's own route tests).
+
+
+class _FakeRequest:
+    def __init__(self, *, query_params: dict | None = None, headers: dict | None = None):
+        self.query_params = query_params or {}
+        self.headers = headers or {}
+
+
+@pytest.mark.asyncio
+async def test_http_route_rejects_mismatched_target_stream_id(monkeypatch):
+    import app.main as main_module
+
+    settings = Settings(
+        RETINA_CLIP_ENABLED=True,
+        RETINA_PERCEPT_STORE_URL="http://store/percepts",
+        RETINA_STREAM_ID="carbon",
+    )
+    bus = MagicMock()
+    test_svc = RetinaService(settings=settings, bus=bus)
+    monkeypatch.setattr(main_module, "service", test_svc)
+
+    async def _must_not_run(self):
+        raise AssertionError("capture_and_upload_clip must not run for the wrong camera")
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
+
+    response = await main_module.capture_clip_endpoint(
+        _FakeRequest(query_params={"target_stream_id": "cam0"})
+    )
+
+    assert response.status_code == 400
+    import json as _json
+
+    body = _json.loads(response.body)
+    assert body["ok"] is False
+    assert body["error_code"] == "wrong_camera"
+
+
+@pytest.mark.asyncio
+async def test_http_route_rejects_a_missing_target_stream_id(monkeypatch):
+    """target_stream_id has no default on this route either -- omitting it
+    entirely must not silently fall through to a capture."""
+    import app.main as main_module
+
+    settings = Settings(
+        RETINA_CLIP_ENABLED=True,
+        RETINA_PERCEPT_STORE_URL="http://store/percepts",
+        RETINA_STREAM_ID="carbon",
+    )
+    bus = MagicMock()
+    test_svc = RetinaService(settings=settings, bus=bus)
+    monkeypatch.setattr(main_module, "service", test_svc)
+
+    async def _must_not_run(self):
+        raise AssertionError("capture_and_upload_clip must not run without target_stream_id")
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
+
+    response = await main_module.capture_clip_endpoint(_FakeRequest())
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_http_route_proceeds_when_target_stream_id_matches(monkeypatch):
+    import app.main as main_module
+
+    settings = Settings(
+        RETINA_CLIP_ENABLED=True,
+        RETINA_PERCEPT_STORE_URL="http://store/percepts",
+        RETINA_STREAM_ID="carbon",
+    )
+    bus = MagicMock()
+    test_svc = RetinaService(settings=settings, bus=bus)
+    monkeypatch.setattr(main_module, "service", test_svc)
+
+    async def _fake_capture(self):
+        return RetinaClipCaptureResultPayload(ok=True, video_sha256="a" * 64, audio_sha256="b" * 64)
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
+
+    response = await main_module.capture_clip_endpoint(
+        _FakeRequest(query_params={"target_stream_id": "carbon"})
+    )
+
+    # A dict/pydantic return (not a JSONResponse) means it fell through to
+    # the success path at the end of the route rather than one of the
+    # early-return error branches.
+    assert response.get("ok") is True

@@ -586,6 +586,14 @@
             <select id="visionSource" class="bg-gray-800 text-gray-200 text-xs rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500">
               <option value="none">No source selected</option>
               <option value="gopro-1">Eye-Ball-1</option>
+              <!-- Carbon (2026-08-22, Juniper's ask: "port that into hub's
+                   camera drop down... one for streaming carbon, and one for
+                   the most recent affect snapshot"). Two distinct views,
+                   not one -- carbon has no continuous video stream (only a
+                   ~5s-interval still-frame presence loop), so "live" here
+                   means "poll the latest captured frame", not real video. -->
+              <option value="carbon-live">Carbon (live)</option>
+              <option value="carbon-affect">Carbon (affect snapshot)</option>
               <option value="simulated">Simulated Feed</option>
             </select>
             <button id="visionPopoutButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Pop Out</button>

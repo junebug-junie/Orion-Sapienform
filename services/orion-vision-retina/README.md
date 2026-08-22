@@ -144,9 +144,13 @@ To re-verify after a change:
 # on carbon (Docker path), after deploying -- RETINA_HTTP_PORT defaults to
 # 8027, not 8022, to avoid colliding with other services on a shared host
 # (see docker-compose.yml comment); check your actual .env value.
-curl -X POST http://localhost:${RETINA_HTTP_PORT:-8027}/capture/clip \
+curl -X POST "http://localhost:${RETINA_HTTP_PORT:-8027}/capture/clip?target_stream_id=${RETINA_STREAM_ID}" \
   -H "X-Orion-Retina-Token: ${RETINA_CLIP_TOKEN}"
 # expect: {"ok": true, "video_sha256": "...", "audio_sha256": "...", ...}
+# target_stream_id is REQUIRED and must equal THIS instance's own
+# RETINA_STREAM_ID (2026-08-22) -- omitted or wrong returns
+# {"ok": false, "error_code": "wrong_camera"}, same guarantee as the bus
+# RPC path (see "Camera-identity check" below).
 # then fetch both back from percept-store and confirm they're a real,
 # audible/viewable clip -- sha256 round-tripping correctly does not by
 # itself prove the *content* is a valid recording of anything.
@@ -198,6 +202,48 @@ rate rather than de facto continuous recording -- it does not add real
 authentication. Real per-caller auth on this channel (or a signed capability
 token) is legitimate follow-up work, not done here; note this in any future
 threat-model pass on the bus.
+
+**Camera-identity check (Juniper's explicit instruction, 2026-08-22): "I want
+this to only run on my carbon webcam."** This channel has no built-in
+per-instance routing at all -- confirmed live 2026-08-22: no second retina
+deployment is actually configured anywhere in this repo today (the office/
+room camera, "Eye-Ball-1"/`cam0` in Hub's Vision panel, is a completely
+separate service, `orion-vision-edge`, sharing zero code path with this
+one), but the docs for THIS service already anticipate a future room-camera
+retina deployment. Without a check, that future deployment (or any retina
+instance with `RETINA_CLIP_ENABLED=true`) would silently race this one for
+every request on the shared channel. `RetinaClipCaptureRequestPayload.target_stream_id`
+(required, no default -- see `orion/schemas/vision.py`) closes that: every
+instance compares the incoming request's `target_stream_id` against its own
+`RETINA_STREAM_ID` BEFORE checking `RETINA_CLIP_ENABLED` or anything else,
+and refuses (`error_code="wrong_camera"`) on a mismatch. Both entry points
+enforce this the same way (`_handle_clip_request` for the bus RPC path,
+`capture_clip_endpoint`'s required `?target_stream_id=` query param for
+HTTP -- review finding, 2026-08-22: the HTTP route shipped this check
+LATER than the bus path did, so the guarantee was fully bypassable via a
+plain curl for one commit).
+
+**Precise about what this actually guards against (review finding,
+2026-08-22 -- an earlier version of this note overclaimed):** it's a
+value-equality check on an unauthenticated channel/route, not
+authentication. It closes the *accidental-misconfiguration* failure mode
+this section opens with -- a second retina instance quietly left with
+`RETINA_CLIP_ENABLED=true` no longer silently races this one for every
+request. It does NOT stop a caller who deliberately knows or guesses the
+right `target_stream_id` (the documented default, `"carbon"`), and it does
+NOT stop two instances that are BOTH misconfigured with the same
+`RETINA_STREAM_ID` from racing each other -- that's the same
+unauthenticated-channel risk the "Known, accepted risk" paragraph above
+already discloses, not a new gap this check claims to close.
+
+**Deploy order:** `target_stream_id` is required with no default on
+`RetinaClipCaptureRequestPayload` (`extra="forbid"`), so a version mismatch
+between this service and `orion-juniper-affective-state` fails safely in
+either direction -- a request missing the field, or an old retina that
+doesn't recognize it, both land on `error_code="invalid_request"` (payload
+parse failure), never a silent wrong-camera capture. No coordinated
+rollout is required; a stale request just gets a clean rejection until both
+sides are updated.
 
 ## Tests
 

@@ -12,6 +12,7 @@ from loguru import logger
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import (
+    RetinaClipCaptureRequestPayload,
     RetinaClipCaptureResultPayload,
     VisionFramePointerPayload,
 )
@@ -207,58 +208,94 @@ class RetinaService:
 
     async def _handle_clip_request(self, envelope: BaseEnvelope) -> None:
         s = self.settings
-        if not s.RETINA_CLIP_ENABLED:
-            result = RetinaClipCaptureResultPayload(
-                ok=False, error="RETINA_CLIP_ENABLED is false", error_code="disabled"
+        # Camera-identity check FIRST, before RETINA_CLIP_ENABLED or anything
+        # else -- Juniper's explicit instruction, 2026-08-22: "I want this
+        # to only run on my carbon webcam." This channel
+        # (orion:exec:request:RetinaClipCaptureService) has no built-in
+        # per-instance routing -- any retina instance subscribed to it with
+        # RETINA_CLIP_ENABLED=true would otherwise respond to any request.
+        # See RetinaClipCaptureRequestPayload's own docstring
+        # (orion/schemas/vision.py) for why this is a structural guarantee,
+        # not just an operational convention.
+        try:
+            payload = envelope.payload
+            req = (
+                payload
+                if isinstance(payload, RetinaClipCaptureRequestPayload)
+                else RetinaClipCaptureRequestPayload(**payload)
             )
-        elif not s.RETINA_PERCEPT_STORE_URL:
+        except Exception as exc:
+            logger.error(f"[RETINA] clip request payload invalid: {exc}")
             result = RetinaClipCaptureResultPayload(
-                ok=False,
-                error="RETINA_PERCEPT_STORE_URL is unset",
-                error_code="not_configured",
-            )
-        elif self._clip_capture_lock.locked():
-            result = RetinaClipCaptureResultPayload(
-                ok=False, error="a capture is already in progress", error_code="busy"
+                ok=False, error=f"invalid request: {exc}", error_code="invalid_request"
             )
         else:
-            try:
-                result = await self.capture_and_upload_clip()
-            except ClipCaptureCooldownError as exc:
-                # Caught before the broader ClipCaptureError below --
-                # cooldown deserves its own error_code, not "capture_error".
-                logger.warning(f"[RETINA] clip capture cooldown (bus): {exc}")
-                result = RetinaClipCaptureResultPayload(
-                    ok=False, error=str(exc), error_code="cooldown"
+            if req.target_stream_id != s.RETINA_STREAM_ID:
+                logger.warning(
+                    f"[RETINA] clip request targeted stream_id={req.target_stream_id!r}, "
+                    f"this instance is {s.RETINA_STREAM_ID!r} -- refusing"
                 )
-            except ClipCaptureError as exc:
-                logger.error(f"[RETINA] clip capture failed (bus): {exc}")
-                result = RetinaClipCaptureResultPayload(
-                    ok=False, error=str(exc), error_code="capture_error"
-                )
-            except PerceptUploadError as exc:
-                logger.error(f"[RETINA] clip upload failed (bus): {exc}")
-                result = RetinaClipCaptureResultPayload(
-                    ok=False, error=str(exc), error_code="upload_error"
-                )
-            except OSError as exc:
-                logger.error(f"[RETINA] clip capture could not start (bus): {exc}")
                 result = RetinaClipCaptureResultPayload(
                     ok=False,
-                    error=f"capture failed to start: {exc}",
-                    error_code="os_error",
+                    error=(
+                        f"this instance is stream_id={s.RETINA_STREAM_ID!r}, "
+                        f"request targeted {req.target_stream_id!r}"
+                    ),
+                    error_code="wrong_camera",
                 )
-            except Exception as exc:  # noqa: BLE001
-                # Unlike the HTTP route (a raised exception there just
-                # becomes a 500 the caller sees immediately), this runs in a
-                # fire-and-forget asyncio.create_task from _clip_consume_loop
-                # -- an uncaught exception here is silently swallowed by
-                # asyncio and the RPC caller gets nothing but a timeout,
-                # indistinguishable from a hung device. Always reply.
-                logger.error(f"[RETINA] clip capture failed unexpectedly (bus): {exc}")
+            elif not s.RETINA_CLIP_ENABLED:
                 result = RetinaClipCaptureResultPayload(
-                    ok=False, error=str(exc), error_code="unexpected_error"
+                    ok=False, error="RETINA_CLIP_ENABLED is false", error_code="disabled"
                 )
+            elif not s.RETINA_PERCEPT_STORE_URL:
+                result = RetinaClipCaptureResultPayload(
+                    ok=False,
+                    error="RETINA_PERCEPT_STORE_URL is unset",
+                    error_code="not_configured",
+                )
+            elif self._clip_capture_lock.locked():
+                result = RetinaClipCaptureResultPayload(
+                    ok=False, error="a capture is already in progress", error_code="busy"
+                )
+            else:
+                try:
+                    result = await self.capture_and_upload_clip()
+                except ClipCaptureCooldownError as exc:
+                    # Caught before the broader ClipCaptureError below --
+                    # cooldown deserves its own error_code, not "capture_error".
+                    logger.warning(f"[RETINA] clip capture cooldown (bus): {exc}")
+                    result = RetinaClipCaptureResultPayload(
+                        ok=False, error=str(exc), error_code="cooldown"
+                    )
+                except ClipCaptureError as exc:
+                    logger.error(f"[RETINA] clip capture failed (bus): {exc}")
+                    result = RetinaClipCaptureResultPayload(
+                        ok=False, error=str(exc), error_code="capture_error"
+                    )
+                except PerceptUploadError as exc:
+                    logger.error(f"[RETINA] clip upload failed (bus): {exc}")
+                    result = RetinaClipCaptureResultPayload(
+                        ok=False, error=str(exc), error_code="upload_error"
+                    )
+                except OSError as exc:
+                    logger.error(f"[RETINA] clip capture could not start (bus): {exc}")
+                    result = RetinaClipCaptureResultPayload(
+                        ok=False,
+                        error=f"capture failed to start: {exc}",
+                        error_code="os_error",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Unlike the HTTP route (a raised exception there just
+                    # becomes a 500 the caller sees immediately), this runs
+                    # in a fire-and-forget asyncio.create_task from
+                    # _clip_consume_loop -- an uncaught exception here is
+                    # silently swallowed by asyncio and the RPC caller gets
+                    # nothing but a timeout, indistinguishable from a hung
+                    # device. Always reply.
+                    logger.error(f"[RETINA] clip capture failed unexpectedly (bus): {exc}")
+                    result = RetinaClipCaptureResultPayload(
+                        ok=False, error=str(exc), error_code="unexpected_error"
+                    )
 
         host_ref = ServiceRef(name=s.SERVICE_NAME, version=s.SERVICE_VERSION)
         reply_envelope = envelope.derive_child(
@@ -448,8 +485,33 @@ async def capture_clip_endpoint(request: Request):
     still requires local video_path/audio_path; orion-juniper-affective-state
     does the percept-store fetch-by-hash + temp-file bridge on circe (see
     that service's app/main.py capture_and_assess()).
+
+    Requires ``?target_stream_id=<this instance's RETINA_STREAM_ID>`` in the
+    query string -- review finding, 2026-08-22: the bus RPC twin
+    (_handle_clip_request) got a required target_stream_id check the same
+    day this route did NOT, so the camera-identity guarantee was fully
+    bypassable via a plain curl even though this module's own docstring and
+    README claimed it "holds even if a second instance is misconfigured."
+    Now both entry points enforce it the same way.
     """
     s = service.settings
+    target_stream_id = request.query_params.get("target_stream_id")
+    if target_stream_id != s.RETINA_STREAM_ID:
+        logger.warning(
+            f"[RETINA] HTTP clip request targeted stream_id={target_stream_id!r}, "
+            f"this instance is {s.RETINA_STREAM_ID!r} -- refusing"
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"this instance is stream_id={s.RETINA_STREAM_ID!r}, "
+                    f"request targeted {target_stream_id!r}"
+                ),
+                "error_code": "wrong_camera",
+            },
+            status_code=400,
+        )
     if not s.RETINA_CLIP_ENABLED:
         return JSONResponse(
             {"ok": False, "error": "RETINA_CLIP_ENABLED is false"}, status_code=503

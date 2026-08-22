@@ -311,7 +311,9 @@ class JuniperAffectiveStateService:
             source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             correlation_id=corr_id,
             reply_to=reply_channel,
-            payload=RetinaClipCaptureRequestPayload().model_dump(),
+            payload=RetinaClipCaptureRequestPayload(
+                target_stream_id=settings.AFFECT_TARGET_STREAM_ID
+            ).model_dump(),
         )
         try:
             msg = await self.bus.rpc_request(

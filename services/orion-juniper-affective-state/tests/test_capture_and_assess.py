@@ -53,6 +53,9 @@ class FakeBus:
         # the SAME correlation_id was used across both legs of one attempt
         # (retina RPC, then worker RPC).
         self.correlation_ids_used: list[str] = []
+        # One entry per rpc_request call -- lets a test assert on exactly
+        # what was sent (e.g. target_stream_id on the retina leg).
+        self.request_payloads: list[dict] = []
 
     def set_reply(self, channel: str, payload: dict) -> None:
         self._replies[channel] = payload
@@ -63,6 +66,7 @@ class FakeBus:
     async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):
         self.calls.append(request_channel)
         self.correlation_ids_used.append(str(envelope.correlation_id))
+        self.request_payloads.append(envelope.payload)
         if request_channel in self._raises:
             raise self._raises[request_channel]
         return {"data": request_channel}
@@ -460,3 +464,39 @@ def test_capture_and_assess_request_accepts_ambient():
     req = CaptureAndAssessRequest(trigger="ambient", subtitle="hi")
     assert req.trigger == "ambient"
     assert req.subtitle == "hi"
+
+
+@pytest.mark.asyncio
+async def test_capture_clip_via_retina_sends_the_configured_target_stream_id(
+    monkeypatch, scratch_dir
+):
+    """Juniper's explicit instruction, 2026-08-22: 'I want this to only run
+    on my carbon webcam.' The shared bus channel has no built-in per-
+    instance routing, so this field is the only thing stopping any other
+    retina instance from responding -- it must actually be sent, and it
+    must come from AFFECT_TARGET_STREAM_ID, not a hardcoded literal."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(ok=False, error="unreachable").model_dump(),
+    )
+
+    await svc.capture_and_assess()
+
+    assert bus.request_payloads[0]["target_stream_id"] == settings.AFFECT_TARGET_STREAM_ID
+
+
+@pytest.mark.asyncio
+async def test_capture_clip_via_retina_respects_a_reconfigured_target_stream_id(
+    monkeypatch, scratch_dir
+):
+    monkeypatch.setattr(settings, "AFFECT_TARGET_STREAM_ID", "some-other-camera")
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(ok=False, error="unreachable").model_dump(),
+    )
+
+    await svc.capture_and_assess()
+
+    assert bus.request_payloads[0]["target_stream_id"] == "some-other-camera"

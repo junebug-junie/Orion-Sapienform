@@ -68,6 +68,13 @@ class AffectAmbientState:
     last_trigger: Optional[str] = None
     last_result_ok: Optional[bool] = None
     last_error: Optional[str] = None
+    # The actual content of the last SUCCESSFUL attempt (manual or ambient)
+    # -- added 2026-08-22 for the Vision panel's "Carbon (affect snapshot)"
+    # dropdown option (Juniper's ask: show the most recent affect result,
+    # not just whether the last tick succeeded). Left as-is (not cleared)
+    # on a failed attempt -- a failure doesn't erase the last real reading.
+    last_raw_response: Optional[str] = None
+    last_video_sha256: Optional[str] = None
 
     def status_payload(self) -> Dict[str, Any]:
         return {
@@ -78,6 +85,8 @@ class AffectAmbientState:
             "last_trigger": self.last_trigger,
             "last_result_ok": self.last_result_ok,
             "last_error": self.last_error,
+            "last_raw_response": self.last_raw_response,
+            "last_video_sha256": self.last_video_sha256,
         }
 
 
@@ -110,9 +119,20 @@ def try_begin_capture(trigger: str) -> bool:
     return True
 
 
-def end_capture(*, ok: bool, error: Optional[str]) -> None:
+def end_capture(
+    *,
+    ok: bool,
+    error: Optional[str],
+    raw_response: Optional[str] = None,
+    video_sha256: Optional[str] = None,
+) -> None:
     state.last_result_ok = ok
     state.last_error = error
+    if ok:
+        # Only overwrite on success -- a failed attempt's None/blank must
+        # not erase the last real reading the "affect snapshot" view shows.
+        state.last_raw_response = raw_response
+        state.last_video_sha256 = video_sha256
     state.tick_in_progress = False
     try:
         _capture_lock.release()
@@ -160,6 +180,17 @@ def result_ok_and_error(body: Dict[str, Any]) -> tuple[bool, Optional[str]]:
     return ok, error
 
 
+def result_content(body: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """(raw_response, video_sha256) for the "Carbon (affect snapshot)"
+    dropdown option -- same call_capture_and_assess() response shape as
+    result_ok_and_error above, just pulling different fields out of it."""
+    result = body.get("result") if isinstance(body, dict) else None
+    capture = body.get("capture") if isinstance(body, dict) else None
+    raw_response = result.get("raw_response") if isinstance(result, dict) else None
+    video_sha256 = capture.get("video_sha256") if isinstance(capture, dict) else None
+    return raw_response, video_sha256
+
+
 async def run_ambient_tick(base_url: str, timeout_sec: float) -> None:
     """One ambient attempt. Always off the event loop (asyncio.to_thread) --
     the blocking requests.post above can take up to ~195s worst case; a
@@ -176,8 +207,9 @@ async def run_ambient_tick(base_url: str, timeout_sec: float) -> None:
     try:
         body = await asyncio.to_thread(call_capture_and_assess, base_url, timeout_sec, "ambient")
         ok, error = result_ok_and_error(body)
+        raw_response, video_sha256 = result_content(body)
         logger.info(f"[HUB] affect_ambient_tick ok={ok} tick_count={state.tick_count}")
-        end_capture(ok=ok, error=error)
+        end_capture(ok=ok, error=error, raw_response=raw_response, video_sha256=video_sha256)
     except Exception as exc:  # advisory loop -- never crash Hub, never retry immediately
         logger.warning(f"[HUB] affect_ambient_tick_error error={exc}")
         end_capture(ok=False, error=str(exc))

@@ -29,6 +29,7 @@ from scripts.self_brain_routes import router as self_brain_router
 from scripts.chat_attachments import router as chat_attachments_router
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
+import scripts.vision_affect_ambient as vision_affect_ambient_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
@@ -286,6 +287,7 @@ presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 substrate_decay_task: Optional[asyncio.Task] = None
 substrate_topic_foundry_scheduler_task: Optional[asyncio.Task] = None
+affect_ambient_loop_task: Optional[asyncio.Task] = None
 heartbeat_chassis: Optional[HeartbeatOnly] = None
 
 
@@ -377,7 +379,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -797,6 +799,35 @@ async def startup_event():
     else:
         logger.info("substrate_topic_foundry_scheduler_disabled reason=env_disabled")
 
+    # Ambient (recurring) AffectGPT capture toggle -- see
+    # scripts/vision_affect_ambient.py module docstring for the full design
+    # (2026-08-22 correction: Hub owns this loop, not the orchestrator).
+    # AFFECT_AMBIENT_ENABLED gates whether the loop TASK starts at all (an
+    # operator kill switch, same spirit as SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED
+    # above) -- it is NOT the runtime on/off toggle itself, which always
+    # starts False regardless (state.enabled, fails closed on restart by
+    # construction). Also requires JUNIPER_AFFECTIVE_STATE_BASE_URL to be
+    # configured -- no point running a loop with nowhere to call.
+    if settings.AFFECT_AMBIENT_ENABLED and settings.JUNIPER_AFFECTIVE_STATE_BASE_URL:
+        affect_ambient_loop_task = asyncio.create_task(
+            vision_affect_ambient_runtime.affect_ambient_loop(
+                base_url=settings.JUNIPER_AFFECTIVE_STATE_BASE_URL,
+                interval_sec=max(1.0, float(settings.AFFECT_AMBIENT_INTERVAL_SEC)),
+                timeout_sec=float(settings.JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC),
+                poll_sec=max(1.0, float(settings.AFFECT_AMBIENT_POLL_SEC)),
+            ),
+            name="hub-affect-ambient-loop",
+        )
+        logger.info(
+            "affect_ambient_loop_task_started interval_sec=%s poll_sec=%s enabled_at_boot=False",
+            settings.AFFECT_AMBIENT_INTERVAL_SEC,
+            settings.AFFECT_AMBIENT_POLL_SEC,
+        )
+    else:
+        logger.info(
+            "affect_ambient_loop_disabled reason=%s",
+            "env_disabled" if not settings.AFFECT_AMBIENT_ENABLED else "no_base_url_configured",
+        )
 
     # ------------------------------------------------------------
     # Validate UI HTML Template (served fresh from disk on each GET /)
@@ -856,7 +887,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -892,6 +923,13 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_topic_foundry_scheduler_task = None
+    if affect_ambient_loop_task is not None:
+        affect_ambient_loop_task.cancel()
+        try:
+            await affect_ambient_loop_task
+        except asyncio.CancelledError:
+            pass
+        affect_ambient_loop_task = None
     if biometrics_cache is not None:
         await biometrics_cache.stop()
     if notification_cache is not None:

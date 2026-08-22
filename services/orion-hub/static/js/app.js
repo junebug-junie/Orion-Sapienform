@@ -644,6 +644,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const visionSourceSelect = document.getElementById("visionSource");
   const affectCaptureButton = document.getElementById("affectCaptureButton");
   const affectCaptureResult = document.getElementById("affectCaptureResult");
+  const affectAmbientToggle = document.getElementById("affectAmbientToggle");
+  const affectAmbientStatusLine = document.getElementById("affectAmbientStatusLine");
 
   // Biometrics
   const biometricsPanel = document.getElementById("biometricsPanel");
@@ -11849,11 +11851,16 @@ document.addEventListener("DOMContentLoaded", () => {
         updateVisionUi();
       });
 
-      // Affect check: live AffectGPT read via carbon's webcam+mic. Manual/
-      // turn-scoped only (no ambient polling -- see services/orion-juniper-
-      // affective-state/README.md non-goal). Synchronous round trip through
-      // a real capture + real GPU inference: up to ~195s worst-case (see
-      // JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC comment) is normal, not a hang.
+      // Affect check: live AffectGPT read via carbon's webcam+mic. Two
+      // controls: "Check now" (one-shot, below) and the ambient toggle
+      // (recurring while on -- see scripts/vision_affect_ambient.py on the
+      // Hub backend, which owns the actual loop; this file only flips a
+      // flag and polls a read-only status endpoint for display, it does
+      // NOT run the loop itself -- a browser-side interval driving captures
+      // was explicitly rejected during design: it dies on tab close and
+      // multiplies with multiple open tabs). Either path's capture round
+      // trip is synchronous and can take up to ~195s worst-case (see
+      // JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC comment) -- normal, not a hang.
       function showAffectResult(text, tone) {
         if (!affectCaptureResult) return;
         affectCaptureResult.classList.remove("hidden", "text-gray-300", "text-red-300", "text-emerald-300");
@@ -11901,6 +11908,95 @@ document.addEventListener("DOMContentLoaded", () => {
       if (affectCaptureButton) affectCaptureButton.addEventListener("click", () => {
         runAffectCapture();
       });
+
+      // Ambient toggle -- flips a server-owned flag (Hub's own background
+      // loop checks it, see api_routes.py /api/vision/affect-ambient).
+      // This client only reflects state via the read-only status endpoint
+      // below; it never itself decides when a capture happens.
+      function formatAgo(epochSeconds) {
+        if (!epochSeconds) return "never";
+        const deltaSec = Math.max(0, (Date.now() / 1000) - epochSeconds);
+        if (deltaSec < 60) return `${Math.round(deltaSec)}s ago`;
+        if (deltaSec < 3600) return `${Math.round(deltaSec / 60)}m ago`;
+        return `${Math.round(deltaSec / 3600)}h ago`;
+      }
+
+      function renderAmbientStatus(status) {
+        if (!affectAmbientToggle) return;
+        const on = !!(status && status.enabled);
+        affectAmbientToggle.textContent = on ? "Ambient: on" : "Ambient: off";
+        affectAmbientToggle.classList.toggle("bg-emerald-700", on);
+        affectAmbientToggle.classList.toggle("border-emerald-500", on);
+        if (!affectAmbientStatusLine) return;
+        if (!status || (!status.enabled && !status.last_attempt_at)) {
+          affectAmbientStatusLine.classList.add("hidden");
+          return;
+        }
+        affectAmbientStatusLine.classList.remove("hidden");
+        const parts = [];
+        if (status.loop_running === false) {
+          parts.push("ambient loop not configured on this Hub deployment");
+        }
+        if (status.tick_in_progress) {
+          parts.push("capturing now…");
+        } else if (status.last_attempt_at) {
+          const okText = status.last_result_ok === true
+            ? "ok"
+            : status.last_result_ok === false
+              ? `failed (${status.last_error || "unknown"})`
+              : "pending";
+          parts.push(`last tick ${formatAgo(status.last_attempt_at)}: ${okText}`);
+        }
+        if (status.enabled && status.interval_sec) {
+          parts.push(`every ${Math.round(status.interval_sec / 60)} min`);
+        }
+        affectAmbientStatusLine.textContent = parts.join(" · ");
+      }
+
+      async function fetchAmbientStatus() {
+        try {
+          const resp = await fetch("/api/vision/affect-ambient/status");
+          if (!resp.ok) return;
+          const status = await resp.json().catch(() => null);
+          renderAmbientStatus(status);
+        } catch (err) {
+          // Best-effort UI refresh -- a failed poll shouldn't disable the toggle itself.
+        }
+      }
+
+      async function toggleAffectAmbient() {
+        if (!affectAmbientToggle) return;
+        const wantsOn = affectAmbientToggle.textContent.indexOf("off") !== -1;
+        affectAmbientToggle.disabled = true;
+        try {
+          const resp = await fetch("/api/vision/affect-ambient", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: wantsOn }),
+          });
+          const body = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            const detail = body && body.detail ? body.detail : `HTTP ${resp.status}`;
+            showAffectResult(`Ambient toggle failed: ${detail}`, "error");
+            return;
+          }
+          renderAmbientStatus(body);
+        } catch (err) {
+          showAffectResult(`Ambient toggle failed: ${err && err.message ? err.message : err}`, "error");
+        } finally {
+          affectAmbientToggle.disabled = false;
+        }
+      }
+
+      if (affectAmbientToggle) affectAmbientToggle.addEventListener("click", () => {
+        toggleAffectAmbient();
+      });
+
+      // Reflect real server state on load, then keep the status line
+      // roughly fresh while the panel is open. Read-only GET -- harmless
+      // if multiple tabs/viewers are open, unlike a capture-driving timer.
+      fetchAmbientStatus();
+      setInterval(fetchAmbientStatus, 15000);
 
       // Initial call
       updateVisionUi();

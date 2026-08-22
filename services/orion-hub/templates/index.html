@@ -589,10 +589,16 @@
               <option value="simulated">Simulated Feed</option>
             </select>
             <button id="visionPopoutButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Pop Out</button>
-            <!-- Live AffectGPT read via carbon's webcam+mic (2026-08-22).
-                 Manual/turn-scoped only -- see services/orion-juniper-
-                 affective-state/README.md non-goal (no ambient polling). -->
-            <button id="affectCaptureButton" title="Record a short clip on carbon's webcam+mic and run AffectGPT" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Affect check</button>
+            <!-- Live AffectGPT read via carbon's webcam+mic (2026-08-22,
+                 toggle added same day after a design correction -- see
+                 scripts/vision_affect_ambient.py module docstring). Two
+                 controls: one-shot "Check now", and a real on/off toggle
+                 that keeps capturing every AFFECT_AMBIENT_INTERVAL_SEC
+                 while on. Toggle state is server-owned (Hub), not
+                 client-guessed -- reflects real state via GET
+                 /api/vision/affect-ambient/status on load. -->
+            <button id="affectCaptureButton" title="Record one clip on carbon's webcam+mic right now and run AffectGPT" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Check now</button>
+            <button id="affectAmbientToggle" title="Toggle recurring capture while on" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Ambient: off</button>
           </div>
         </div>
         <div id="visionDockedContainer" class="relative mt-2 rounded-lg bg-gray-800/50 overflow-hidden h-[28rem] flex items-center justify-center">
@@ -600,6 +606,7 @@
             Vision service stub.
           </div>
         </div>
+        <div id="affectAmbientStatusLine" class="hidden text-[11px] text-gray-500"></div>
         <div id="affectCaptureResult" class="hidden rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-300 whitespace-pre-wrap"></div>
       </div>
 

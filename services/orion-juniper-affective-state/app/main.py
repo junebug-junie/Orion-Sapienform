@@ -13,9 +13,17 @@ loop. Two ways in as of 2026-08-22:
 
 Both paths converge on the same worker RPC and the same
 ``orion:affectgpt:assessment`` publish -- one real event stream regardless
-of entry point. Still no scheduled/ambient polling: a background loop with
-nothing forcing a capture to happen would be the empty-shell cognition
-CLAUDE.md bans; every capture here is caused by an explicit caller.
+of entry point.
+
+Ambient/recurring capture DOES now exist (2026-08-22) -- Hub owns that loop
+(services/orion-hub/scripts/vision_affect_ambient.py), not this service. It
+just calls this same ``/capture_and_assess`` endpoint repeatedly with
+``trigger="ambient"``; this service still has no scheduling logic of its
+own and no notion of "on/off" -- every call here is still a single explicit
+request from a caller, ambient or not. See ``JuniperMultimodalAffectV1``'s
+``trigger``/``correlation_id`` fields (orion/schemas/affectgpt.py) for how a
+consumer tells manual and ambient events apart and joins one attempt's
+retina-RPC/worker-RPC/event legs together.
 """
 import asyncio
 import hashlib
@@ -74,7 +82,11 @@ class JuniperAffectiveStateService:
             await self.bus.close()
 
     async def trigger_assessment(
-        self, req: AffectGptAssessRequestPayload
+        self,
+        req: AffectGptAssessRequestPayload,
+        *,
+        trigger: str = "manual",
+        corr_id: "uuid.UUID | None" = None,
     ) -> tuple[AffectGptAssessResultPayload, JuniperMultimodalAffectV1]:
         # Every path through this method falls through to the single
         # publish call at the bottom -- a real bug caught in review
@@ -88,16 +100,23 @@ class JuniperAffectiveStateService:
                 ok=False, error="bus not connected", error_code="bus_unavailable"
             )
         else:
-            result = await self._call_worker(req)
+            result = await self._call_worker(req, corr_id=corr_id)
 
-        event = self._wrap_event(result, req)
+        event = self._wrap_event(result, req, trigger=trigger, corr_id=corr_id)
         await self._publish_event(event)
         return result, event
 
     async def _call_worker(
-        self, req: AffectGptAssessRequestPayload
+        self, req: AffectGptAssessRequestPayload, *, corr_id: "uuid.UUID | None" = None
     ) -> AffectGptAssessResultPayload:
-        corr_id = uuid.uuid4()
+        # corr_id may be supplied by a caller that wants this leg to share
+        # an id with the rest of its own attempt (capture_and_assess() below
+        # threads ONE id through the retina RPC, this RPC, and the
+        # published event -- Juniper's ask, 2026-08-22: "ensure the data
+        # model has good ability to be correlative with other components in
+        # the mesh"). /trigger's plain manual path has no such context, so
+        # it falls through to generating its own, same as before.
+        corr_id = corr_id or uuid.uuid4()
         reply_channel = f"{settings.CHANNEL_AFFECTGPT_REPLY_PREFIX}:{corr_id}"
         request_envelope = BaseEnvelope(
             kind="affectgpt.assess.request",
@@ -144,7 +163,10 @@ class JuniperAffectiveStateService:
             )
 
     async def capture_and_assess(
-        self, subtitle: str = "", user_message: str | None = None
+        self,
+        subtitle: str = "",
+        user_message: str | None = None,
+        trigger: str = "manual",
     ) -> tuple[RetinaClipCaptureResultPayload, AffectGptAssessResultPayload, JuniperMultimodalAffectV1]:
         """Full loop: bus RPC to retina for a live clip -> fetch both blobs
         from percept-store into a local temp dir on circe -> the same
@@ -153,15 +175,35 @@ class JuniperAffectiveStateService:
         assessment failure (error_code carries the actual stage) -- one
         observable failure surface for this whole capability, not a capture
         failure that silently never reaches orion:affectgpt:assessment.
+
+        ``trigger`` distinguishes Hub's manual "Check now" button from its
+        recurring ambient toggle (2026-08-22) -- both call this same method,
+        only the label differs, so there's still one implementation, not two
+        that can drift. Clamped to a known value rather than trusted
+        verbatim: an unrecognized string here would otherwise reach
+        JuniperMultimodalAffectV1's Literal field deep inside _wrap_event
+        and raise a pydantic ValidationError with no handler around it.
         """
-        capture = await self._capture_clip_via_retina()
+        trigger = trigger if trigger == "ambient" else "manual"
+        # ONE id for this whole attempt -- threaded through the retina RPC
+        # below, the worker RPC inside trigger_assessment(), and the
+        # published event, so all three legs of one tick are joinable via a
+        # single id (Juniper's ask, 2026-08-22: "ensure the data model has
+        # good ability to be correlative with other components in the mesh").
+        corr_id = uuid.uuid4()
+        capture = await self._capture_clip_via_retina(corr_id=corr_id)
         if not capture.ok:
             result = AffectGptAssessResultPayload(
                 ok=False,
                 error=f"capture failed: {capture.error}",
                 error_code=capture.error_code or "capture_failed",
             )
-            event = self._wrap_event(result, AffectGptAssessRequestPayload(video_path="", audio_path=""))
+            event = self._wrap_event(
+                result,
+                AffectGptAssessRequestPayload(video_path="", audio_path=""),
+                trigger=trigger,
+                corr_id=corr_id,
+            )
             await self._publish_event(event)
             return capture, result, event
 
@@ -199,7 +241,10 @@ class JuniperAffectiveStateService:
                     ok=False, error=f"percept-store fetch failed: {detail}", error_code="fetch_failed"
                 )
                 event = self._wrap_event(
-                    result, AffectGptAssessRequestPayload(video_path="", audio_path="")
+                    result,
+                    AffectGptAssessRequestPayload(video_path="", audio_path=""),
+                    trigger=trigger,
+                    corr_id=corr_id,
                 )
                 await self._publish_event(event)
                 return capture, result, event
@@ -210,14 +255,16 @@ class JuniperAffectiveStateService:
                 subtitle=subtitle,
                 user_message=user_message,
             )
-            result, event = await self.trigger_assessment(req)
+            result, event = await self.trigger_assessment(req, trigger=trigger, corr_id=corr_id)
             # tmpdir (and the fetched clip bytes) is removed here on context
             # exit, always -- same "nothing survives past a temp dir"
             # discipline as retina's own clip_capture.py. The assess call
             # above has already read what it needs off disk by this point.
         return capture, result, event
 
-    async def _capture_clip_via_retina(self) -> RetinaClipCaptureResultPayload:
+    async def _capture_clip_via_retina(
+        self, *, corr_id: "uuid.UUID | None" = None
+    ) -> RetinaClipCaptureResultPayload:
         """Bus RPC twin of orion-vision-retina's POST /capture/clip. Mirrors
         _call_worker below almost exactly -- same RPC/decode/validate shape,
         different channel and payload types."""
@@ -225,7 +272,7 @@ class JuniperAffectiveStateService:
             return RetinaClipCaptureResultPayload(
                 ok=False, error="bus not connected", error_code="bus_unavailable"
             )
-        corr_id = uuid.uuid4()
+        corr_id = corr_id or uuid.uuid4()
         reply_channel = f"{settings.CHANNEL_RETINA_CLIP_REPLY_PREFIX}:{corr_id}"
         request_envelope = BaseEnvelope(
             kind="retina.clip_capture.request",
@@ -302,7 +349,12 @@ class JuniperAffectiveStateService:
         return dest_path
 
     def _wrap_event(
-        self, result: AffectGptAssessResultPayload, req: AffectGptAssessRequestPayload
+        self,
+        result: AffectGptAssessResultPayload,
+        req: AffectGptAssessRequestPayload,
+        *,
+        trigger: str = "manual",
+        corr_id: "uuid.UUID | None" = None,
     ) -> JuniperMultimodalAffectV1:
         return JuniperMultimodalAffectV1(
             observed_at=datetime.now(timezone.utc),
@@ -314,6 +366,8 @@ class JuniperAffectiveStateService:
             face_detection=result.face_detection,
             timings=result.timings,
             input_ref={"video_path": req.video_path, "audio_path": req.audio_path},
+            trigger=trigger if trigger == "ambient" else "manual",
+            correlation_id=str(corr_id) if corr_id else None,
         )
 
     async def _publish_event(self, event: JuniperMultimodalAffectV1):
@@ -392,11 +446,15 @@ async def trigger(payload: dict):
 
 @app.post("/v1/juniper/affect/capture_and_assess")
 async def capture_and_assess(payload: dict | None = None):
-    """Live-capture entry point -- this is what Hub's toggle calls.
+    """Live-capture entry point -- this is what Hub's "Check now" button AND
+    its ambient toggle both call.
 
-    No required body. Optional ``{"subtitle": "...", "user_message": "..."}``
-    overrides, same fields as /trigger's request minus the paths (those are
-    filled in internally from the live capture, not caller-supplied).
+    No required body. Optional ``{"subtitle": "...", "user_message": "...",
+    "trigger": "manual" | "ambient"}`` -- subtitle/user_message are the same
+    fields /trigger's request has, minus the paths (those are filled in
+    internally from the live capture, not caller-supplied). ``trigger``
+    defaults to "manual"; Hub's ambient loop passes "ambient" explicitly so
+    the published event can tell the two apart.
 
     Synchronous and can take up to ~195s worst case: retina's capture (~8s clip +
     RETINA_CLIP_TIMEOUT_SEC ceiling + RPC overhead) followed by the worker's
@@ -406,8 +464,9 @@ async def capture_and_assess(payload: dict | None = None):
     body = payload or {}
     subtitle = str(body.get("subtitle") or "")
     user_message = body.get("user_message")
+    trigger_kind = str(body.get("trigger") or "manual")
     capture, result, event = await service.capture_and_assess(
-        subtitle=subtitle, user_message=user_message
+        subtitle=subtitle, user_message=user_message, trigger=trigger_kind
     )
     return {
         "capture": capture.model_dump(exclude_none=True),

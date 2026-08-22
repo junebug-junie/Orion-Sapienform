@@ -26,6 +26,7 @@ from orion.hub.chat_route import (
     CHAT_ROUTE_UNIFIED_TURN_HARNESS,
 )
 from .settings import settings
+from . import vision_affect_ambient
 from .grafana_tempo_link import build_grafana_tempo_trace_explore_url
 from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 from .session import ensure_session
@@ -1256,17 +1257,23 @@ class SelfExperimentsTriggerRequest(BaseModel):
 
 @router.post("/api/vision/affect-capture")
 def api_vision_affect_capture() -> Dict[str, Any]:
-    """"Affect check" button in the Vision panel (templates/index.html /
+    """"Check now" button in the Vision panel (templates/index.html /
     static/js/app.js): triggers orion-juniper-affective-state's
-    capture_and_assess -- carbon records an on-demand clip (bus RPC to
-    orion-vision-retina, no direct HTTP path to carbon exists), circe fetches
-    it from percept-store and runs AffectGPT. Synchronous and slow (~30-195s worst case:
-    real webcam+mic capture plus a real GPU inference call) -- the long
-    JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC default is deliberate, not an
-    oversight. The orchestrator's own endpoint always replies 200 with
-    ok/error fields inside the body even on internal failure (capture
-    failed, GPU busy, etc.) -- raise_for_status here only catches a true
-    transport failure (service down, connection refused).
+    capture_and_assess ONCE, trigger="manual" -- carbon records an on-demand
+    clip (bus RPC to orion-vision-retina, no direct HTTP path to carbon
+    exists), circe fetches it from percept-store and runs AffectGPT.
+    Synchronous and slow (~30-195s worst case: real webcam+mic capture plus
+    a real GPU inference call) -- the long JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC
+    default is deliberate, not an oversight. The orchestrator's own endpoint
+    always replies 200 with ok/error fields inside the body even on internal
+    failure (capture failed, GPU busy, etc.) -- raise_for_status only catches
+    a true transport failure (service down, connection refused).
+
+    For the recurring toggle (record periodically while on), see
+    /api/vision/affect-ambient below -- this route is the one-shot sibling,
+    not a substitute for it (2026-08-22 design correction: this route
+    originally shipped alone, mislabeled as fulfilling the toggle Juniper
+    had actually asked for).
     """
     base = str(settings.JUNIPER_AFFECTIVE_STATE_BASE_URL or "").strip().rstrip("/")
     if not base:
@@ -1274,18 +1281,55 @@ def api_vision_affect_capture() -> Dict[str, Any]:
             status_code=503, detail="juniper_affective_state_base_url_not_configured"
         )
     try:
-        resp = requests.post(
-            f"{base}/v1/juniper/affect/capture_and_assess",
-            json={},
-            timeout=float(settings.JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC),
+        return vision_affect_ambient.call_capture_and_assess(
+            base, float(settings.JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC), "manual"
         )
-        resp.raise_for_status()
-        parsed = resp.json()
-        return parsed if isinstance(parsed, dict) else {"ok": False, "error": "invalid_response"}
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=502, detail=f"juniper_affective_state_unavailable:{exc}"
         ) from exc
+
+
+class AffectAmbientToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/api/vision/affect-ambient/status")
+def api_vision_affect_ambient_status() -> Dict[str, Any]:
+    """Current state of the recurring capture toggle -- polled by the
+    Vision panel on load so the UI reflects real server-owned state (e.g.
+    correctly shows "off" after a Hub restart) rather than guessing from
+    whatever it last rendered."""
+    payload = vision_affect_ambient.state.status_payload()
+    payload["interval_sec"] = settings.AFFECT_AMBIENT_INTERVAL_SEC
+    payload["loop_running"] = settings.AFFECT_AMBIENT_ENABLED and bool(
+        str(settings.JUNIPER_AFFECTIVE_STATE_BASE_URL or "").strip()
+    )
+    return payload
+
+
+@router.post("/api/vision/affect-ambient")
+def api_vision_affect_ambient_toggle(req: AffectAmbientToggleRequest) -> Dict[str, Any]:
+    """Flip the recurring capture toggle on/off. Does not itself trigger a
+    capture -- it only sets the flag the background loop
+    (scripts/vision_affect_ambient.py, started in scripts/main.py) checks on
+    its own poll cadence (AFFECT_AMBIENT_POLL_SEC, default 5s), so turning
+    on doesn't fire immediately and turning off doesn't cut off an
+    in-progress tick -- it just stops the NEXT one from starting.
+    """
+    base = str(settings.JUNIPER_AFFECTIVE_STATE_BASE_URL or "").strip()
+    if req.enabled and not (settings.AFFECT_AMBIENT_ENABLED and base):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "affect_ambient_loop_not_running -- "
+                "AFFECT_AMBIENT_ENABLED and JUNIPER_AFFECTIVE_STATE_BASE_URL "
+                "must both be configured for the toggle to do anything"
+            ),
+        )
+    vision_affect_ambient.state.enabled = req.enabled
+    logger.info(f"[HUB] affect_ambient_toggle enabled={req.enabled}")
+    return vision_affect_ambient.state.status_payload()
 
 
 class AutonomyGoalArchiveRequest(BaseModel):

@@ -95,3 +95,27 @@ class JuniperMultimodalAffectV1(BaseModel):
     # Paths only, never raw bytes/frames on the wire -- keeps this event
     # inspectable/traceable without becoming a raw-media exposure surface.
     input_ref: Optional[Dict[str, Any]] = None
+    # Added 2026-08-22 for the ambient (recurring) capture toggle -- Juniper's
+    # own ask: "ensure data model has good ability to be correlative with
+    # other components in the mesh." Two distinct things:
+    trigger: Literal["manual", "ambient"] = Field(
+        default="manual",
+        description=(
+            "Which entry point produced this event -- POST /trigger or "
+            "/capture_and_assess called directly (manual) vs Hub's recurring "
+            "toggle loop (ambient). Now two producers of the same event type; "
+            "a consumer needs this to tell them apart."
+        ),
+    )
+    correlation_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The ONE id threading through this entire capture attempt -- the "
+            "retina clip-capture RPC, the worker assess RPC, and this event "
+            "all share it (see capture_and_assess()'s single corr_id, not two "
+            "independently-generated ones per RPC leg). Lets any mesh "
+            "consumer join all three legs of one tick via a single id, on top "
+            "of the existing observed_at-proximity join every other signal "
+            "here already supports."
+        ),
+    )

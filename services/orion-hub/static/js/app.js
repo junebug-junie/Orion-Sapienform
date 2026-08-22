@@ -11175,7 +11175,18 @@ document.addEventListener("DOMContentLoaded", () => {
     let wsOpen = socket && socket.readyState === WebSocket.OPEN;
     if (!wsOpen) {
       updateStatus('Connecting...');
-      wsOpen = await waitForWebSocketOpen(5000);
+      // 5s was too tight for the case that matters most: a tab left open
+      // across a long idle gap (backgrounded, laptop sleep) has almost
+      // certainly had its socket die, and the browser's own reconnect can
+      // take longer than that to re-establish on the first attempt after
+      // wake. Missing this window used to mean falling straight to the HTTP
+      // path below, which has no way to carry prior conversation turns (the
+      // browser holds no client-side history array -- confirmed live
+      // 2026-08-22: a message sent in exactly this window read as a
+      // first-ever greeting despite 12+ hours of same-session history).
+      // 15s gives reconnect real room without making a genuinely offline
+      // socket block the send for long.
+      wsOpen = await waitForWebSocketOpen(15000);
     }
 
     if (wsOpen && socket && socket.readyState === WebSocket.OPEN) {

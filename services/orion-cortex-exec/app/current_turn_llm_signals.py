@@ -217,13 +217,44 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
         # or place is essentially always a mistyped common noun, not a real
         # entity -- requiring capitalization on top of the type check is a
         # second, independent signal, not just re-deriving the same one.
-        looks_like_a_name = phrase[:1].isupper() if phrase else False
+        #
+        # `not phrase[:1].islower()` -- NOT `phrase[:1].isupper()` (review
+        # caught this): isupper() is False for any uncased script (CJK,
+        # Arabic, Hebrew, Thai, ...), so a real bare name like "東京" or
+        # "محمد" would be wrongly dropped -- a regression the pre-floor code
+        # never had, since it only checked type_hint. islower() is equally
+        # False for those scripts (no case distinction exists), so "not
+        # islower()" correctly treats "no case signal available" as
+        # non-disqualifying while still catching an affirmatively-lowercase
+        # Latin word like "bus"/"glad".
+        looks_like_a_name = not phrase[:1].islower() if phrase else False
         if is_bare_word and (type_hint not in {"person", "place"} or not looks_like_a_name):
             logger.debug(
                 "current_turn_llm_signal_dropped_bare_word phrase=%r type=%s",
                 phrase, type_hint,
             )
             continue
+        if is_bare_word:
+            # Disclosed, NOT fixed here (review, 2026-08-22): a sentence-
+            # initial interjection is capitalized by ordinary English
+            # convention too ("Heck", "Glad" were both capitalized in the
+            # original live-garbage batch) -- if the model ever mistypes one
+            # of those as person/place instead of other/activity/belief (not
+            # yet observed, but this diff's own two incidents already prove
+            # the type field is unreliable call-to-call for an identical
+            # word), it reproduces the deleted LegacyRegexSignalDetector's
+            # exact known failure mode one layer up. A static interjection
+            # denylist would close this, but nothing has actually been
+            # observed hitting it yet -- CLAUDE.md's metric-quality-gate
+            # ("live-data sanity check" before wiring a new mechanism in)
+            # argues against pre-building one on spec. Logged at INFO (not
+            # DEBUG, unlike the drop case) specifically so this exact
+            # highest-risk acceptance path is greppable/auditable if it ever
+            # does start happening -- instrumentation first, per that gate.
+            logger.info(
+                "current_turn_llm_signal_bare_word_name_accepted phrase=%r type=%s",
+                phrase, type_hint,
+            )
         out.append({"phrase": phrase[:_MAX_PHRASE_LEN], "type": type_hint})
     return out
 

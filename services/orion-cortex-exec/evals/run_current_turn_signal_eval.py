@@ -90,6 +90,13 @@ _FIXTURES: list[tuple[str, list[dict[str, str]], list[str]]] = [
         ["Sarah"],
     ),
     (
+        "real_uncased_script_place",
+        # Regression: `phrase[:1].isupper()` is False for every uncased
+        # script (CJK, Arabic, ...), which would wrongly drop this.
+        [{"phrase": "東京", "type": "place"}],
+        ["東京"],
+    ),
+    (
         "real_place_single_word",
         [{"phrase": "Paris", "type": "place"}],
         ["Paris"],

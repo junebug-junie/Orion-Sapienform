@@ -77,10 +77,25 @@ shipped: "bus" got through a second time because the model classified it
 capitalized to survive the person/place carve-out (a real name/place is
 capitalized by ordinary convention; a lowercase word claiming to be one is
 almost always a mistyped common noun) — two independent signals instead of
-trusting the model's type field alone. See
+trusting the model's type field alone (uses `not phrase[:1].islower()`, not
+`.isupper()` — the latter is False for every uncased script like CJK/Arabic,
+which would wrongly drop a real bare name in one of those). See
 `evals/run_current_turn_signal_eval.py` for the labeled precision fixture this
 threshold is measured against (includes the exact live-garbage strings from
 both incidents as regression cases).
+
+**Disclosed, not fixed:** a sentence-initial interjection is capitalized by
+ordinary English convention too — if the model ever mistypes one of those as
+`person`/`place` instead of `other`/`activity`/`belief` (not yet observed
+live, but this arc's own two incidents already prove the type field is
+unreliable call-to-call for the identical word), it reproduces the deleted
+regex detector's exact known failure mode one layer up. No static interjection
+denylist was built to close this pre-emptively — nothing has been observed
+hitting it yet, and CLAUDE.md's metric-quality-gate calls for a live-data
+sanity check before wiring a new mechanism in, not building one on spec.
+Every bare-word person/place acceptance logs at INFO (`current_turn_llm_signal_bare_word_name_accepted`)
+specifically so this highest-risk path is auditable if it ever does start
+happening.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |

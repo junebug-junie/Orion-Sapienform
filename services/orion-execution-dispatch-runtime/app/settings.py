@@ -96,6 +96,43 @@ class Settings(BaseSettings):
     # justification was itself later found to be ~2x a *clamped* value, not
     # real demand).
     orion_dispatch_max_risk_per_day: float = Field(10.0, alias="ORION_DISPATCH_MAX_RISK_PER_DAY")
+
+    # The real daily budget, in motor-seconds -- wall-clock an action occupies
+    # on the dispatch path. EXOGENOUS on purpose: set by an operator, never
+    # derived from usage. _derive_daily_risk_cap sizes its ceiling from an
+    # EWMA of Orion's own past demand plus three standard deviations, which
+    # cannot bind by construction. An allowance that tracks what you already
+    # wanted is a mirror, not a constraint.
+    #
+    # 129600 = 36 motor-hours. Measured draw the day this shipped was ~40
+    # motor-hours/day (p50 5.0s per action, 1.7x concurrency), so this default
+    # sits ~10% BELOW current usage -- deliberately, so the mechanism is
+    # exercised and its refusals are countable rather than hypothetical.
+    orion_dispatch_motor_budget_sec_per_day: float = Field(
+        129600.0, alias="ORION_DISPATCH_MOTOR_BUDGET_SEC_PER_DAY"
+    )
+
+    # Advisory until proven. OFF means the budget is computed, logged and
+    # stamped on every frame but refuses nothing.
+    #
+    # This is NOT a permanent hedge -- CLAUDE.md 0A bans a switch that reports
+    # success while changing nothing. Advisory mode must publish what it WOULD
+    # have refused every tick, and the exit criterion is written down: flip it
+    # once a full day of `motor_budget_would_refuse` counts exists and the
+    # refused set is inspected and judged droppable. If nobody has looked in a
+    # week, that is the answer -- either flip it or delete it.
+    orion_dispatch_motor_budget_enforce: bool = Field(
+        False, alias="ORION_DISPATCH_MOTOR_BUDGET_ENFORCE"
+    )
+
+    # What a not-yet-run action is assumed to cost, for the would-refuse
+    # projection only. 5.0s is the live p50 measured 2026-08-21 (p95 6.5s).
+    # A real allocator will use the action's OWN measured history instead --
+    # this is a placeholder for the advisory count, and is deliberately not
+    # used for anything that is enforced.
+    orion_dispatch_motor_typical_cost_sec: float = Field(
+        5.0, alias="ORION_DISPATCH_MOTOR_TYPICAL_COST_SEC"
+    )
     # 2026-07-29: enforcement is back ON (default flipped True -> False).
     # Real sequence, not "we always knew this": ORION_DISPATCH_MAX_RISK_PER_DAY
     # was a fixed 10.0 constant, ENFORCED, from 2026-07-26 through 2026-07-27

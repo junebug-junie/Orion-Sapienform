@@ -14,6 +14,7 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.autonomy.budget import budget_state, day_elapsed_fraction
 from orion.autonomy.contrast import TreatedCellKey
 from orion.autonomy.prediction import EffectPosterior
 from orion.execution_dispatch.builder import (
@@ -486,6 +487,40 @@ class ExecutionDispatchRuntimeWorker:
             logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
             return {}
 
+    def _derive_motor_budget(self, frame_generated_at: datetime):
+        """The real daily ceiling: motor-seconds spent against an operator-set
+        allowance.
+
+        Runs alongside _derive_daily_risk_cap rather than replacing it yet.
+        The risk cap stays as the only live enforcement until this one has a
+        day of would-refuse counts behind it -- removing the old ceiling while
+        the new one is advisory would leave NO ceiling, which is worse than a
+        useless one. The exit criterion is in settings.py; when this enforces,
+        the risk cap goes, entirely (CLAUDE.md: kill means kill).
+        """
+        if frame_generated_at.tzinfo is None:
+            frame_generated_at = frame_generated_at.replace(tzinfo=timezone.utc)
+        else:
+            frame_generated_at = frame_generated_at.astimezone(timezone.utc)
+        day_start = datetime.combine(frame_generated_at.date(), time.min, tzinfo=timezone.utc)
+        day_end = day_start + timedelta(days=1)
+
+        try:
+            spent = self._store.sum_motor_seconds_for_day(day_start, day_end)
+        except Exception:
+            # A budget that cannot read its own spend must not silently behave
+            # as though nothing has been spent -- that reads as a full
+            # allowance and permits everything. Absent budget, not empty one.
+            logger.warning("motor_budget_spend_read_failed", exc_info=True)
+            return None
+
+        return budget_state(
+            allowance_sec=self._settings.orion_dispatch_motor_budget_sec_per_day,
+            spent_sec=spent,
+            elapsed_fraction=day_elapsed_fraction(frame_generated_at, day_start),
+            enforcing=self._settings.orion_dispatch_motor_budget_enforce,
+        )
+
     def _derive_daily_risk_cap(
         self, frame_generated_at: datetime
     ) -> tuple[float, dict[str, float | int | str | None]]:
@@ -606,6 +641,40 @@ class ExecutionDispatchRuntimeWorker:
             # tripped (this tick or a prior one) -- send nothing, but still
             # carry the current baseline state forward onto the saved frame.
             return frame.model_copy(update=baseline_fields)
+
+        # THE REAL BUDGET, advisory for now. Denominated in motor-seconds --
+        # wall-clock an action actually occupies -- against an operator-set
+        # allowance, rather than in risk_score against an EWMA of Orion's own
+        # past demand. Reported every tick with what it WOULD have refused,
+        # because an advisory budget whose only output is "still fine" is the
+        # switch-that-changes-nothing this repo bans; the would-refuse count is
+        # the evidence the enforce flip gets decided on.
+        motor = self._derive_motor_budget(frame.generated_at)
+        if motor is not None:
+            pending = list(frame.candidates) + list(frame.dispatched_candidates)
+            typical_cost_sec = self._settings.orion_dispatch_motor_typical_cost_sec
+            would_refuse = 0
+            running = motor.spent_sec
+            for _ in pending:
+                if (running + typical_cost_sec) > motor.allowance_sec:
+                    would_refuse += 1
+                running += typical_cost_sec
+            logger.info(
+                "motor_budget mode=%s spent_sec=%.1f allowance_sec=%.1f "
+                "remaining_sec=%.1f pace=%.2fx projected_day_h=%.1f "
+                "pending=%d would_refuse=%d",
+                motor.mode,
+                motor.spent_sec,
+                motor.allowance_sec,
+                motor.remaining_sec,
+                motor.pace,
+                motor.projected_day_sec / 3600.0,
+                len(pending),
+                would_refuse,
+            )
+            if motor.mode == "enforcing" and motor.exhausted:
+                logger.info("motor_budget_exhausted sending nothing this tick")
+                return frame.model_copy(update=baseline_fields)
 
         spent_today = self._store.sum_risk_dispatched_today()
         remaining_risk_budget = derived_cap - spent_today

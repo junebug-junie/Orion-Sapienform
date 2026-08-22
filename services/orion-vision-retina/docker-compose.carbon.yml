@@ -1,0 +1,67 @@
+# Standalone compose for a REMOTE capture node (carbon, or any laptop/pi).
+#
+# Not an override of docker-compose.yml -- a replacement. That file is written
+# for athena and carries three things a remote node cannot satisfy:
+#
+#   1. `networks: app-net: external: true` -- app-net only exists on athena.
+#      A remote node talks to the bus over tailscale, so it needs no shared
+#      docker network at all.
+#   2. `/mnt/telemetry/vision/{frames,intake}` mounts -- athena paths. In
+#      percept_store mode nothing is written to disk anyway, and Docker would
+#      silently create empty root-owned dirs on a personal machine.
+#   3. The repo-root `.env` that athena's dual --env-file convention assumes.
+#      It is gitignored, so a fresh clone does not have one -- and retina needs
+#      nothing from it: every var below has a default.
+#
+# Usage (from the repo root, ONE --env-file):
+#
+#   docker compose --env-file services/orion-vision-retina/.env \
+#     -f services/orion-vision-retina/docker-compose.carbon.yml up -d --build
+#
+# See docs/operations/carbon-webcam.md. The venv path in that doc is simpler
+# still and needs no Docker at all.
+
+services:
+  orion-vision-retina:
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-retina/Dockerfile
+    container_name: orion-vision-retina
+    restart: unless-stopped
+
+    environment:
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED:-false}
+      - CHANNEL_RETINA_PUB=${CHANNEL_RETINA_PUB:-orion:vision:frames}
+      - CHANNEL_RETINA_ERROR=${CHANNEL_RETINA_ERROR:-orion:vision:retina:error}
+      - CHANNEL_SYSTEM_HEALTH=${CHANNEL_SYSTEM_HEALTH:-orion:system:health}
+
+      - RETINA_SOURCE_TYPE=${RETINA_SOURCE_TYPE:-webcam}
+      - RETINA_SOURCE=${RETINA_SOURCE:-/dev/video0}
+      - RETINA_CAMERA_ID=${RETINA_CAMERA_ID:-carbon-webcam}
+      - RETINA_STREAM_ID=${RETINA_STREAM_ID:-carbon}
+      - RETINA_FPS=${RETINA_FPS:-0.2}
+      - RETINA_WIDTH=${RETINA_WIDTH:-}
+      - RETINA_HEIGHT=${RETINA_HEIGHT:-}
+      - JPEG_QUALITY=${JPEG_QUALITY:-75}
+
+      # The whole reason a remote node works at all: encode in memory, POST to
+      # the percept store, publish a content hash. Nothing touches local disk.
+      - RETINA_FRAME_MODE=${RETINA_FRAME_MODE:-percept_store}
+      - RETINA_PERCEPT_STORE_URL=${RETINA_PERCEPT_STORE_URL:-http://100.92.216.81:8021/percepts}
+      - RETINA_PERCEPT_STORE_TOKEN=${RETINA_PERCEPT_STORE_TOKEN:-}
+      - RETINA_PERCEPT_TIMEOUT_SEC=${RETINA_PERCEPT_TIMEOUT_SEC:-10.0}
+
+      - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
+
+    # No FRAME_STORAGE_DIR, no telemetry mounts: percept_store mode writes
+    # nothing locally, deliberately. A capture agent on a personal laptop must
+    # not accumulate a spool of webcam frames.
+
+    devices:
+      - ${RETINA_VIDEO_DEVICE:-/dev/video0}:${RETINA_VIDEO_DEVICE:-/dev/video0}
+
+    # Default bridge network. The bus and the percept store are reached over
+    # tailscale by IP, so no shared docker network is needed or wanted.

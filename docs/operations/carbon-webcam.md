@@ -97,15 +97,30 @@ journalctl --user -u orion-retina -f
 
 `Restart=on-failure` covers a sleep/resume that drops the bus connection.
 
-## Setup (Docker — only if you prefer it)
+## Setup (Docker)
 
-Same `.env`, plus `RETINA_VIDEO_DEVICE=/dev/video0` for the device passthrough
-the compose file wires up:
+**Use `docker-compose.carbon.yml`, not `docker-compose.yml`.** The latter is
+written for athena and carries three things a remote node cannot satisfy:
+
+| athena's compose | why it breaks on carbon |
+| :--- | :--- |
+| `--env-file .env` (repo root) | gitignored, so a fresh clone has none — `Couldn't find env file`. Retina needs nothing from it; every var has a default. |
+| `networks: app-net: external: true` | `app-net` only exists on athena. A remote node reaches the bus over tailscale and needs no shared docker network. |
+| `/mnt/telemetry/vision/{frames,intake}` mounts | athena paths. Inert in percept_store mode, and Docker would silently create empty root-owned dirs on your laptop. |
+
+One `--env-file`, one `-f`:
 
 ```bash
-docker compose --env-file .env --env-file services/orion-vision-retina/.env \
-  -f services/orion-vision-retina/docker-compose.yml up -d --build
+cd ~/Orion-Sapienform
+docker compose --env-file services/orion-vision-retina/.env \
+  -f services/orion-vision-retina/docker-compose.carbon.yml up -d --build
+
+docker logs -f orion-vision-retina
 ```
+
+Its defaults are already carbon-shaped (`webcam`, `percept_store`, stream
+`carbon`, 0.2 fps), so a minimal `.env` is enough — but set `RETINA_SOURCE`
+and `RETINA_VIDEO_DEVICE` to whatever `ls /dev/video*` actually shows.
 
 ## Verify from athena
 

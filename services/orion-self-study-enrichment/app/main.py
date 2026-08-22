@@ -7,6 +7,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
@@ -18,6 +19,53 @@ from .rate_limit import allow_and_record
 from .settings import Settings, get_settings
 
 logger = logging.getLogger("orion-self-study-enrichment")
+
+# Env the `claude -p` subprocess is allowed to inherit. An ALLOWLIST, not a
+# denylist -- identical rationale and shape to orion-room-companion's
+# build_subprocess_env (app/main.py), added there 2026-08-18 specifically
+# because a denylist-of-one (`env.pop("ANTHROPIC_API_KEY", None)`, this
+# service's original approach) does not cover ANTHROPIC_BASE_URL /
+# ANTHROPIC_AUTH_TOKEN -- exactly what orion-hub's FCC lane sets
+# (services/orion-hub/scripts/fcc_claude_bridge.py) to redirect `claude` at a
+# local gateway. If either reached this subprocess it would still produce
+# fluent text -- it just would not be Claude, the hardest failure here to
+# notice by eye. An *ambient* CLAUDE_CODE_OAUTH_TOKEN (leaked from the host
+# shell) would authenticate as someone else's credential entirely, which is
+# why it stays on _ENV_DENY_PREFIXES and is never read out of os.environ
+# here -- the real, deliberately-configured token is injected explicitly from
+# settings.SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN in build_subprocess_env
+# below, the same explicit-injection pattern already used for
+# CLAUDE_CONFIG_DIR, not the ambient allowlist path.
+_ENV_ALLOWLIST = frozenset(
+    {
+        "PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM",
+        "HOSTNAME", "PWD", "SHELL", "USER", "LOGNAME",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+        # Claude Code's own root-sandbox gate; without it the CLI refuses to
+        # start under bypassPermissions as root. See
+        # orion/fcc/claude_spawn.py::claude_permission_argv.
+        "IS_SANDBOX", "CLAUDE_CODE_BUBBLEWRAP",
+    }
+)
+
+# Names that must never reach the subprocess even if someone adds them to the
+# allowlist by mistake. Belt to the allowlist's braces.
+_ENV_DENY_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_OAUTH", "AWS_", "GOOGLE_", "GCP_")
+
+
+def build_subprocess_env(settings: Settings) -> Dict[str, str]:
+    """Env for the `claude -p` subprocess, built from an allowlist. See the
+    module-level comment above _ENV_ALLOWLIST for why this is load-bearing,
+    not hygiene."""
+    env = {k: v for k, v in os.environ.items() if k in _ENV_ALLOWLIST}
+    env = {
+        k: v for k, v in env.items()
+        if not any(k.startswith(prefix) for prefix in _ENV_DENY_PREFIXES)
+    }
+    env["CLAUDE_CONFIG_DIR"] = settings.SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR
+    if settings.SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN.get_secret_value()
+    return env
 
 
 def setup_logging() -> None:
@@ -88,15 +136,11 @@ def handle_request_payload(settings: Settings, payload: dict) -> None:
             logger.warning("self_study_enrichment_rate_limit_hit skip_key=%s", key)
             return
 
-        # Authenticate `claude -p` as the host's already-logged-in Claude
-        # Code session, never via a separate ANTHROPIC_API_KEY billing path.
-        # `env.pop` is a defensive regression guard, not just belt-and-
-        # suspenders: `dict(os.environ)` copies whatever the *container's*
-        # own process env happens to hold, and this service must never pass
-        # an API key through even if one leaked in via that env by accident.
-        env = dict(os.environ)
-        env.pop("ANTHROPIC_API_KEY", None)
-        env["CLAUDE_CONFIG_DIR"] = settings.SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR
+        # Authenticate `claude -p` via a claude-setup-token long-lived OAuth
+        # token, never via a separate ANTHROPIC_API_KEY billing path -- see
+        # build_subprocess_env's module-level comment above for why this is
+        # an allowlist, not a denylist.
+        env = build_subprocess_env(settings)
 
         result = run_claude_once(
             prompt,

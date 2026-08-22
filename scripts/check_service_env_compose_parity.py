@@ -121,11 +121,14 @@ def _read_compose_env_keys(path: Path, service_dirname: str) -> tuple[set[str], 
 
     # Keys consumed by compose INTERPOLATION rather than passed into the
     # container. The canonical case is a `*_HOST_PATH` used in `volumes:` --
-    # e.g. orion-self-study-enrichment's SELF_STUDY_ENRICHMENT_*_HOST_PATH.
-    # (orion-room-companion used to be a second example here --
-    # ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH -- retired 2026-08-18 when
-    # that service switched off the file-mount credential pattern entirely;
-    # self-study still uses it and is the live example as of this writing.)
+    # e.g. orion-cocreation-signals' COCREATION_SIGNALS_REPO_HOST_PATH /
+    # COCREATION_SIGNALS_CLAUDE_PROJECTS_HOST_PATH. (orion-room-companion
+    # and orion-self-study-enrichment used to be examples here too --
+    # ROOM_COMPANION_CLAUDE_CREDENTIALS_HOST_PATH and
+    # SELF_STUDY_ENRICHMENT_CLAUDE_CREDENTIALS_HOST_PATH -- retired
+    # 2026-08-18 and 2026-08-21 respectively, when each service switched off
+    # the file-mount credential pattern in favor of a claude-setup-token
+    # OAuth env var.)
     # Those name a path on the OPERATOR'S disk; adding them to `environment:`
     # would push a host path into the container that means nothing there, and
     # for a credential mount it would advertise where the secret lives on the
@@ -134,9 +137,16 @@ def _read_compose_env_keys(path: Path, service_dirname: str) -> tuple[set[str], 
     #
     # Without this, the gate was permanently red for every service using that
     # pattern, which is the failure mode where a real gate gets ignored.
-    # Scanned across the whole service block, not just `volumes:`, so the same
-    # allowance covers interpolation in ports:, devices:, etc.
-    interpolated = _interpolated_keys(block, skip_key="environment")
+    # Scanned across the whole service block, INCLUDING environment: values
+    # (not skipped -- e.g. orion-self-study-enrichment's
+    # `CLAUDE_CONFIG_DIR=${SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR:-...}`
+    # interpolates a *differently-named* .env_example key entirely inside
+    # environment:, with no other block to catch it once that service
+    # dropped its last non-environment interpolation of the same var
+    # 2026-08-21; a service's own left-hand key names get re-added here too,
+    # but `keys | interpolated` is a set union, so that's a harmless no-op,
+    # not a double-count.
+    interpolated = _interpolated_keys(block)
 
     # env_file: accepts a bare string, a list of strings, or a list of mappings
     # ({"path": ..., "required": ...}) -- any non-empty form means every key in
@@ -149,12 +159,15 @@ def _read_compose_env_keys(path: Path, service_dirname: str) -> tuple[set[str], 
 _INTERPOLATION_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
 
 
-def _interpolated_keys(block: Any, *, skip_key: str | None = None) -> set[str]:
-    """Every ${VAR} referenced anywhere in a compose service block.
-
-    Walks nested lists/dicts because compose values are arbitrarily shaped.
-    `skip_key` omits one top-level key (`environment:`, whose keys are already
-    counted directly) so this only ever ADDS interpolation-only names.
+def _interpolated_keys(block: Any) -> set[str]:
+    """Every ${VAR} referenced anywhere in a compose service block, including
+    inside `environment:` values -- a value there can legitimately
+    interpolate a differently-named .env_example key, e.g.
+    `CLAUDE_CONFIG_DIR=${SOME_OTHER_NAME:-default}` (2026-08-21: previously
+    `environment:` was skipped entirely on the assumption that its own
+    left-hand key names already covered everything relevant there, which
+    missed exactly this shape). Walks nested lists/dicts because compose
+    values are arbitrarily shaped.
     """
     found: set[str] = set()
 
@@ -165,9 +178,7 @@ def _interpolated_keys(block: Any, *, skip_key: str | None = None) -> set[str]:
             for item in node:
                 _walk(item)
         elif isinstance(node, dict):
-            for key, value in node.items():
-                if skip_key is not None and key == skip_key:
-                    continue
+            for value in node.values():
                 _walk(value)
 
     _walk(block)

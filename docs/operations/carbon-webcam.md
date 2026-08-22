@@ -1,0 +1,97 @@
+# Running Orion's eye on carbon
+
+carbon's built-in webcam, feeding the normal vision pipeline.
+
+**You have to run this.** Tailnet policy refuses SSH as `athena`, so it can't be
+deployed for you — same block as circe.
+
+## What made it possible
+
+Capture used to publish a **local file path**, and the frame router enforces
+`require_image_path_exists`. carbon shares no filesystem with athena, so it
+physically could not feed the pipeline. Frames now carry a `sha256`: carbon
+encodes in memory, POSTs to `orion-percept-store` on athena, and publishes the
+content address. Everything downstream — router, host, window, council, census,
+blindness alerting — then treats carbon as a normal camera.
+
+## One-time
+
+```bash
+cd ~/Orion-Sapienform/services/orion-vision-retina
+cp .env_example .env
+```
+
+Edit `.env`:
+
+```ini
+ORION_BUS_URL=redis://100.92.216.81:6379/0
+
+RETINA_SOURCE_TYPE=webcam
+RETINA_SOURCE=/dev/video0            # ls /dev/video* to confirm
+RETINA_VIDEO_DEVICE=/dev/video0      # container passthrough
+RETINA_CAMERA_ID=carbon-webcam
+RETINA_STREAM_ID=carbon              # keeps it separate from cam0 everywhere
+
+# The bit that makes this work from a machine with no shared disk.
+RETINA_FRAME_MODE=percept_store
+RETINA_PERCEPT_STORE_URL=http://100.92.216.81:8021/percepts
+
+# A laptop webcam is a close, continuous view of one person. Far slower than a
+# room camera on purpose: this is a presence sensor, not a scene sensor.
+RETINA_FPS=0.2                       # one frame per 5s
+JPEG_QUALITY=75
+```
+
+## Run
+
+```bash
+cd ~/Orion-Sapienform
+docker compose --env-file .env --env-file services/orion-vision-retina/.env \
+  -f services/orion-vision-retina/docker-compose.yml up -d --build
+
+docker logs -f orion-vision-retina    # frames_published should climb
+```
+
+## Verify from athena
+
+```bash
+curl -s localhost:8021/stats          # count climbing
+
+psql -h localhost -p 55432 -U postgres -d conjourney -c \
+ "SELECT stream_id, count(*) FROM vision_scene_inventory
+   WHERE observed_at > now()-interval '10 min' GROUP BY 1;"
+```
+
+`carbon` should appear alongside `cam0`.
+
+## Turning it off
+
+Stop the container. That is the entire off switch, it lives on the machine being
+watched, and it needs nothing from athena or Hub:
+
+```bash
+docker stop orion-vision-retina
+```
+
+## What this deliberately does not do
+
+- **Nothing is written to carbon's disk.** The upload path uses `imencode`,
+  never `imwrite`. If the store is unreachable the frame is dropped and the next
+  one attempted — no spooling. A backlog of webcam images of your own face on
+  your own laptop is a worse failure than a gap in the record.
+- **Frames expire in an hour.** `orion-percept-store` sweeps on a timer. The
+  interpretation is the durable artifact; the picture is not.
+- **No facial affect.** carbon reports presence. Reading emotion off a webcam has
+  to clear the bar `typo_rate` failed — built, tested, then deliberately not
+  wired because it never reached a genuine rest state across 111 real sessions.
+  See `orion/schemas/affective_state.py`.
+- **No object inventory on this stream.** There is no scene to remember at 40 cm,
+  and inventorying a person's desk is a different act from inventorying a room.
+
+## Screens
+
+Screen redaction is decided but **not built**: blank `screen`/`laptop` regions at
+the sensor before bytes leave the node, using boxes GroundingDINO already
+returns and currently discards. carbon is lower risk than the room camera — a
+laptop webcam faces you, not your display — but screens *behind* you are in
+frame. Worth knowing before pointing it at the room.

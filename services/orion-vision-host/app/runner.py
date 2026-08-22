@@ -50,6 +50,52 @@ def _resolve_latest_frame_path() -> Path:
     return candidates[0]
 
 
+_SHA256_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
+
+
+def _load_image_from_percept_store(sha256: str) -> Image.Image:
+    """Fetch a content-addressed frame from orion-percept-store.
+
+    This is the leg that lets a second machine feed this pipeline at all --
+    before it, capture had to share a filesystem with this host.
+
+    The digest is regex-validated before it becomes part of a URL: it is the
+    only caller-supplied component of that URL, and keeping it to 64 hex chars
+    is what stops it being a path or an authority. Same reasoning as the LLM
+    gateway's own attachment resolver.
+
+    urllib rather than a new dependency (AGENTS.md section 10); this runs on a
+    worker thread already.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    if not _SHA256_RE.match(sha256):
+        raise ValueError(f"percept_sha256 must be 64 lowercase hex chars, got {sha256[:16]!r}")
+    base = str(getattr(settings, "VISION_PERCEPT_STORE_URL", "") or "").strip().rstrip("/")
+    if not base:
+        raise ValueError(
+            "percept_sha256 supplied but VISION_PERCEPT_STORE_URL is unset; "
+            "this host cannot resolve content-addressed frames"
+        )
+    url = f"{base}/{sha256}"
+    token = str(getattr(settings, "VISION_PERCEPT_STORE_TOKEN", "") or "")
+    req = urllib.request.Request(url, method="GET")
+    if token:
+        req.add_header("X-Orion-Percept-Token", token)
+    try:
+        with urllib.request.urlopen(
+            req, timeout=float(getattr(settings, "VISION_PERCEPT_TIMEOUT_SEC", 10.0))
+        ) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, OSError) as exc:
+        raise FileNotFoundError(f"percept {sha256[:12]} not retrievable from {base}: {exc}") from exc
+    if not data:
+        raise FileNotFoundError(f"percept {sha256[:12]} came back empty")
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
 def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
     """
     We do NOT ship frames over Redis. We take a pointer.
@@ -66,11 +112,20 @@ def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
     """
     path = request.get("image_path") or request.get("frame_path")
     if not path:
+        sha = str(request.get("percept_sha256") or "").strip()
+        if sha:
+            # A frame captured on a node that shares no filesystem with us.
+            # Fetched, never spooled: the bytes go straight into PIL and the
+            # percept store expires its own copy on its own schedule.
+            return _load_image_from_percept_store(sha)
         if request.get("use_latest_frame"):
             p = _resolve_latest_frame_path()
             img = Image.open(p).convert("RGB")
             return img
-        raise ValueError("request.image_path is required (do not send raw frames over bus)")
+        raise ValueError(
+            "request needs image_path or percept_sha256 "
+            "(do not send raw frames over bus)"
+        )
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"image_path not found: {path}")

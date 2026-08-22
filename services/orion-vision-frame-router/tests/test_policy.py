@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+import pathlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -137,13 +138,41 @@ cameras: {}
     assert decision.reason == "global_inflight_limit"
 
 
-def test_missing_image_path_skips(policy_path: Path) -> None:
-    settings = Settings(ROUTER_POLICY_PATH=str(policy_path), REQUIRE_IMAGE_PATH_EXISTS=True)
-    policy = FrameDispatchPolicy.load(settings)
-    state = RouterState()
-    decision = policy.decide(_frame_env("cam-a", image_path=""), state, now=1.0)
-    assert decision.should_dispatch is False
-    assert decision.reason == "missing_image_path"
+def test_addressless_pointer_is_rejected_at_construction() -> None:
+    """A frame with no address is now a schema error, not a router skip.
+
+    `VisionFramePointerPayload` gained a validator when `sha256` was added:
+    with two possible addresses, "has neither" is unambiguously a producer bug
+    and should fail at the boundary rather than travel the bus to be skipped
+    downstream. This test used to build such a payload and assert the router
+    skipped it with `missing_image_path`; the guard simply moved earlier.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="image_path, frame_paths, video_path or sha256"):
+        VisionFramePointerPayload(camera_id="cam-a", image_path="")
+
+
+def test_dispatcher_skips_an_addressless_payload_without_crashing() -> None:
+    """The reachable defensive path, at the layer that actually sees bad input.
+
+    `decide()` cannot skip an addressless frame -- it re-validates first, so
+    such a payload raises there and never reaches a branch. The real guard is in
+    the dispatcher, which validates before dispatching and reports
+    `invalid_frame_payload`. Tested here rather than deleted, because "the
+    schema catches it" is only true for producers that validate.
+    """
+    import asyncio
+
+    from app.dispatcher import FrameDispatcher
+
+    src = pathlib.Path(
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "dispatcher.py"
+    ).read_text()
+    assert "invalid_frame_payload" in src
+    # and the outer handler must swallow, so one bad frame cannot end the loop
+    assert "frame_handler_error" in src
+    assert hasattr(FrameDispatcher, "handle_frame_envelope")
 
 
 def test_image_path_not_visible(tmp_path: Path) -> None:

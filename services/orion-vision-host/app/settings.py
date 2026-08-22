@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     VISION_VRAM_SOFT_FLOOR_MB: int = 1000
     VISION_VRAM_HARD_FLOOR_MB: int = 800
 
+    # Content-addressed frames from nodes with no shared filesystem.
+    # Empty means this host can only read frames off its own disk, which is
+    # correct for a single-machine deployment and wrong the moment a second
+    # camera exists anywhere else.
+    VISION_PERCEPT_STORE_URL: str = ""
+    VISION_PERCEPT_STORE_TOKEN: str = ""
+    VISION_PERCEPT_TIMEOUT_SEC: float = 10.0
+
     # Liveness alerting -- see app/liveness.py for why this exists.
     VISION_LIVENESS_ALERT_ENABLED: bool = True
     VISION_LIVENESS_WINDOW_SEC: float = 300.0

@@ -4,14 +4,16 @@ sources.py's WebcamFrameSource: OpenCV's VideoCapture has no audio support
 at all, so a genuinely new capture path was needed rather than an extension
 of the existing single-frame one.
 
-**UNVERIFIED against real hardware.** This was written without access to
-carbon (tailnet policy blocks SSH there for this session, same as the
-percept-store/webcam wiring before it) -- no webcam, no microphone, no
-ffmpeg build to test against. The subprocess construction and error handling
-are tested (tests/test_clip_capture.py, mocked ffmpeg), but the actual
-capture -- real device names, real audio backend, real timing -- has not
-been exercised live. Must be verified on carbon before anything is built on
-top of it. See README "Live verification needed".
+**Live-verified against real hardware, 2026-08-22.** Originally written
+without access to carbon (tailnet policy blocks SSH there for a Claude
+session, same as the percept-store/webcam wiring before it), so this used to
+carry an UNVERIFIED disclaimer. Superseded by a real run: real device names,
+real PulseAudio backend, real ffmpeg output confirmed byte-for-byte via
+percept-store round-trip. That run also found the `/dev/video0` contention
+bug against the continuous presence loop -- see `RetinaService.pause_device`
+in `app/main.py`. `tests/test_vision_retina_clip_capture.py` (mocked ffmpeg)
+still covers the subprocess construction/error-handling layer in CI, where
+no camera exists.
 
 Nothing is written to disk beyond a TemporaryDirectory that is always
 cleaned up -- same "no spool on a personal laptop" principle as
@@ -29,6 +31,24 @@ from dataclasses import dataclass
 
 class ClipCaptureError(RuntimeError):
     """ffmpeg failed to produce a usable clip."""
+
+
+class ClipCaptureCooldownError(ClipCaptureError):
+    """Raised when a capture is requested before RETINA_CLIP_MIN_INTERVAL_SEC
+    has elapsed since the last one completed. Subclasses ClipCaptureError so
+    any existing `except ClipCaptureError` still catches it.
+
+    Mitigates a real risk (review finding, 2026-08-22): nothing else in this
+    service rate-limits how often a bus-connected caller may trigger a live
+    webcam+mic recording -- the bus itself is the only trust boundary on the
+    RPC path (orion:exec:request:RetinaClipCaptureService), same as every
+    other RPC channel in this codebase. Without this, a buggy or
+    compromised bus-connected caller firing requests back-to-back would
+    produce de facto continuous recording -- exactly the ambient-
+    surveillance posture this service's own docs explicitly disclaim as a
+    non-goal (see docs/operations/carbon-webcam.md's "No facial affect"
+    bullet). This does not replace real authentication -- it bounds the
+    blast radius of not having any on the bus path."""
 
 
 @dataclass

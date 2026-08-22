@@ -52,9 +52,9 @@ class Settings(BaseSettings):
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
     # existing single-frame capture_loop, this is a distinct on-demand path
-    # triggered via POST /capture/clip. UNVERIFIED against real hardware
-    # (see clip_capture.py module docstring) -- defaults are a starting
-    # point, not confirmed-correct for carbon's actual devices.
+    # triggered via POST /capture/clip or the bus RPC twin. Defaults below
+    # are live-verified correct for carbon's actual devices, 2026-08-22 (see
+    # clip_capture.py module docstring).
     RETINA_CLIP_ENABLED: bool = False
     # Shared-secret gate for POST /capture/clip, same convention as
     # orion-percept-store's PERCEPT_STORE_TOKEN. Added after review
@@ -76,6 +76,21 @@ class Settings(BaseSettings):
     RETINA_CLIP_WIDTH: int | None = None
     RETINA_CLIP_HEIGHT: int | None = None
     RETINA_CLIP_TIMEOUT_SEC: float = 30.0
+    # Minimum seconds between the END of one capture and the START of the
+    # next, enforced regardless of caller/path (HTTP or bus RPC). Real risk
+    # this closes (review finding, 2026-08-22): the bus RPC path has no
+    # auth beyond bus reachability, so nothing else stops a bus-connected
+    # caller from firing capture requests back-to-back -- this bounds that
+    # to a known worst-case rate rather than de facto continuous recording.
+    RETINA_CLIP_MIN_INTERVAL_SEC: float = 30.0
+
+    # Bus-reachable twin of POST /capture/clip -- see orion/bus/channels.yaml
+    # for why this exists (carbon has no reachable inbound HTTP surface at
+    # all). Gated by RETINA_CLIP_ENABLED same as the HTTP route; no separate
+    # token check here since the bus itself is the trust boundary (unlike an
+    # HTTP port, nothing needs to be additionally exposed to reach it).
+    CHANNEL_RETINA_CLIP_INTAKE: str = "orion:exec:request:RetinaClipCaptureService"
+    CHANNEL_RETINA_CLIP_REPLY_PREFIX: str = "orion:retina:clip:reply"
 
     @field_validator("RETINA_CLIP_WIDTH", "RETINA_CLIP_HEIGHT", mode="before")
     @classmethod

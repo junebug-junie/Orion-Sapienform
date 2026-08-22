@@ -589,6 +589,10 @@
               <option value="simulated">Simulated Feed</option>
             </select>
             <button id="visionPopoutButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Pop Out</button>
+            <!-- Live AffectGPT read via carbon's webcam+mic (2026-08-22).
+                 Manual/turn-scoped only -- see services/orion-juniper-
+                 affective-state/README.md non-goal (no ambient polling). -->
+            <button id="affectCaptureButton" title="Record a short clip on carbon's webcam+mic and run AffectGPT" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Affect check</button>
           </div>
         </div>
         <div id="visionDockedContainer" class="relative mt-2 rounded-lg bg-gray-800/50 overflow-hidden h-[28rem] flex items-center justify-center">
@@ -596,6 +600,7 @@
             Vision service stub.
           </div>
         </div>
+        <div id="affectCaptureResult" class="hidden rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-300 whitespace-pre-wrap"></div>
       </div>
 
       <!-- ✅ ADDED: Vision pop-out container (hidden; does not change layout) -->

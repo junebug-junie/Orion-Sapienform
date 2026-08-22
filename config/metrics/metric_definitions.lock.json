@@ -1,12 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 604,
+  "metric_count": 606,
   "_last_change": {
-    "base": "merge base 0d6e559ed (origin/main)",
-    "change_count": 0,
+    "base": "merge base 282f2ea12 (origin/main)",
+    "change_count": 2,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-juniper-affective-state/orion:exec:request:RetinaClipCaptureService",
+      "medium added metric://bus_channel/orion-vision-retina/orion:retina:clip:reply:*"
     ]
   },
   "definitions": {
@@ -1653,6 +1654,17 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-juniper-affective-state/orion:exec:request:RetinaClipCaptureService": {
+      "schema_id": "RetinaClipCaptureRequestPayload",
+      "all_producers": [
+        "orion-juniper-affective-state"
+      ],
+      "declared_consumers": [
+        "orion-vision-retina"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-llm-gateway/orion:council:reply*": {
       "schema_id": "ChatResultPayload",
       "all_producers": [
@@ -2700,6 +2712,17 @@
       "declared_consumers": [
         "*",
         "orion-vision-frame-router"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-retina/orion:retina:clip:reply:*": {
+      "schema_id": "RetinaClipCaptureResultPayload",
+      "all_producers": [
+        "orion-vision-retina"
+      ],
+      "declared_consumers": [
+        "orion-juniper-affective-state"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

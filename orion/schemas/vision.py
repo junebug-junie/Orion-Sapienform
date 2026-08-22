@@ -133,7 +133,6 @@ class VisionFramePointerPayload(BaseModel):
     height: Optional[int] = None
     format: Optional[str] = None
 
-
     @model_validator(mode="after")
     def _require_an_address(self) -> "VisionFramePointerPayload":
         """A pointer with neither address is silently undeliverable.
@@ -150,6 +149,43 @@ class VisionFramePointerPayload(BaseModel):
 
 # Alias for explicit requirement
 VisionFramePointer = VisionFramePointerPayload
+
+
+class RetinaClipCaptureRequestPayload(BaseModel):
+    """Bus RPC request: 'record an on-demand video+audio clip right now.'
+
+    Mirrors ``POST /capture/clip`` on orion-vision-retina (2026-08-22,
+    services/orion-vision-retina/app/clip_capture.py) -- this is the
+    bus-reachable twin of that HTTP route, for callers with no network path
+    to the capturing node (e.g. carbon accepts no inbound HTTP per
+    docs/operations/carbon-webcam.md; the bus is its only reachable surface).
+
+    Deliberately empty of tunable fields for v1: duration/framerate/device
+    are the capturing node's own configured defaults
+    (RETINA_CLIP_DURATION_SEC etc.), not caller-overridable -- a remote
+    caller dictating recording parameters to a physical webcam it cannot see
+    is a bigger surface than this capability needs yet.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RetinaClipCaptureResultPayload(BaseModel):
+    """Reply to RetinaClipCaptureRequestPayload. Field-for-field mirror of
+    the JSON body POST /capture/clip already returns -- see that route's
+    docstring for the "refs are not yet consumable end-to-end" caveat this
+    inherits (services/orion-affectgpt-worker fetch-by-hash side)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    video_sha256: Optional[str] = None
+    audio_sha256: Optional[str] = None
+    duration_sec: Optional[float] = None
+    video_bytes: Optional[int] = None
+    audio_bytes: Optional[int] = None
+    error: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 class VisionEdgeActivityPayload(BaseModel):

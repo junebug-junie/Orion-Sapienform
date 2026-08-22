@@ -642,6 +642,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const visionFloatingContainer = document.getElementById("visionFloatingContainer");
   const visionCloseFloatingButton = document.getElementById("visionCloseFloating");
   const visionSourceSelect = document.getElementById("visionSource");
+  const affectCaptureButton = document.getElementById("affectCaptureButton");
+  const affectCaptureResult = document.getElementById("affectCaptureResult");
 
   // Biometrics
   const biometricsPanel = document.getElementById("biometricsPanel");
@@ -11835,7 +11837,60 @@ document.addEventListener("DOMContentLoaded", () => {
         visionIsFloating = false;
         updateVisionUi();
       });
-      
+
+      // Affect check: live AffectGPT read via carbon's webcam+mic. Manual/
+      // turn-scoped only (no ambient polling -- see services/orion-juniper-
+      // affective-state/README.md non-goal). Synchronous round trip through
+      // a real capture + real GPU inference: up to ~195s worst-case (see
+      // JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC comment) is normal, not a hang.
+      function showAffectResult(text, tone) {
+        if (!affectCaptureResult) return;
+        affectCaptureResult.classList.remove("hidden", "text-gray-300", "text-red-300", "text-emerald-300");
+        affectCaptureResult.classList.add(
+          tone === "error" ? "text-red-300" : tone === "ok" ? "text-emerald-300" : "text-gray-300"
+        );
+        affectCaptureResult.textContent = text;
+      }
+
+      async function runAffectCapture() {
+        if (!affectCaptureButton) return;
+        affectCaptureButton.disabled = true;
+        affectCaptureButton.classList.add("opacity-50", "cursor-not-allowed");
+        const originalLabel = affectCaptureButton.textContent;
+        affectCaptureButton.textContent = "Recording…";
+        showAffectResult("Recording an 8s clip on carbon and running AffectGPT — this can take a couple of minutes.", "info");
+        try {
+          const resp = await fetch("/api/vision/affect-capture", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          const body = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            const detail = body && body.detail ? body.detail : `HTTP ${resp.status}`;
+            showAffectResult(`Affect check failed: ${detail}`, "error");
+            return;
+          }
+          const result = body && body.result ? body.result : null;
+          const capture = body && body.capture ? body.capture : null;
+          if (!result || !result.ok) {
+            const err = (result && result.error) || (capture && capture.error) || "unknown error";
+            showAffectResult(`Affect check failed: ${err}`, "error");
+            return;
+          }
+          showAffectResult(result.raw_response || "(model returned no text)", "ok");
+        } catch (err) {
+          showAffectResult(`Affect check failed: ${err && err.message ? err.message : err}`, "error");
+        } finally {
+          affectCaptureButton.disabled = false;
+          affectCaptureButton.classList.remove("opacity-50", "cursor-not-allowed");
+          affectCaptureButton.textContent = originalLabel;
+        }
+      }
+
+      if (affectCaptureButton) affectCaptureButton.addEventListener("click", () => {
+        runAffectCapture();
+      });
+
       // Initial call
       updateVisionUi();
   })();

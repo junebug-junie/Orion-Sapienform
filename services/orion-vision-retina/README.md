@@ -127,18 +127,18 @@ carbon's disk beyond a `TemporaryDirectory` that's always cleaned up --
 same privacy discipline as `upload_frame`'s percept-store path. Gated by
 `RETINA_CLIP_TOKEN` (header `X-Orion-Retina-Token`) once enabled -- unlike
 every other route on this service, a POST here triggers a live recording,
-so set this. **These refs are not yet consumable end-to-end**:
-`orion-affectgpt-worker` currently requires local file paths, not a
-percept-store ref -- fetch-by-hash on that side is real, separate,
-not-yet-built follow-up work.
+so set this. **The HTTP route's refs alone are still not consumable
+end-to-end from a bare curl**: `orion-affectgpt-worker` requires local file
+paths, not a percept-store ref directly. The bus RPC path below (via
+`orion-juniper-affective-state`) IS the built fetch-by-hash bridge -- see
+that service's README.
 
-**UNVERIFIED against real hardware.** Written without access to carbon (see
-`docs/operations/carbon-webcam.md` -- tailnet policy blocks SSH there for
-Claude sessions same as it did before the original webcam wiring). The
-subprocess construction and error handling are tested
-(`tests/test_vision_retina_clip_capture.py`, fake ffmpeg) but real device
-names, the audio backend, and actual timing have not been exercised live.
-Before trusting this:
+**Live-verified against real hardware, 2026-08-22** (real device names, real
+PulseAudio backend, real timing) -- the disclaimer that used to sit here was
+written without access to carbon and has been superseded by an actual run.
+`tests/test_vision_retina_clip_capture.py` (fake ffmpeg) still covers the
+subprocess construction/error-handling layer in CI, where no camera exists.
+To re-verify after a change:
 
 ```bash
 # on carbon (Docker path), after deploying -- RETINA_HTTP_PORT defaults to
@@ -157,9 +157,47 @@ If `PULSE_SERVER`/the audio socket mount is wrong for carbon's actual setup
 failure specifically -- video capture (v4l2) doesn't depend on that
 mount and should work independently, which narrows down which half broke.
 
-This is on-demand only -- no toggle, no scheduling, no Hub UI yet. See
-`services/orion-juniper-affective-state/README.md` for why (deliberate
-non-goal until this capture path is proven).
+**Live-verified 2026-08-22** (real hardware, no longer just "should work") --
+see `docs/operations/carbon-webcam.md`'s "Live-verified on carbon" section
+for the actual evidence (sha256s, ffprobe output, byte counts), not just the
+claim. The `/dev/video0` device-contention bug (`pause_device()` /
+`_device_lock`, see below) was found and fixed from this first real run.
+
+### Bus-reachable twin: `orion:exec:request:RetinaClipCaptureService`
+
+Same capture, triggered over the bus instead of HTTP -- for a caller with no
+network path to this node at all. carbon accepts no inbound HTTP whatsoever
+(see "Nothing needs to reach carbon inbound" above); Hub's "Affect check"
+button reaches it through `orion-juniper-affective-state` (circe), which
+does the bus RPC. Request payload is `RetinaClipCaptureRequestPayload`
+(empty -- no caller-tunable fields, see that schema's docstring in
+`orion/schemas/vision.py`), reply is `RetinaClipCaptureResultPayload` on
+`orion:retina:clip:reply:<corr_id>`. Gated the same way as the HTTP route
+(`RETINA_CLIP_ENABLED`), minus the HTTP token check -- the bus itself is the
+trust boundary here, same as every other channel this service already
+publishes/consumes with `ORION_BUS_ENFORCE_CATALOG`. Both entry points share
+one implementation (`RetinaService.capture_and_upload_clip()`) and one
+`_clip_capture_lock`, so a capture started through either path excludes the
+other.
+
+No toggle, no scheduling logic lives here -- that's Hub's job
+(`services/orion-hub/scripts/api_routes.py`'s `/api/vision/affect-capture`,
+the Vision panel's "Affect check" button). See
+`services/orion-juniper-affective-state/README.md` for the rest of the
+chain (percept-store fetch, worker hand-off).
+
+**Known, accepted risk (disclosed, not silently accepted, review finding
+2026-08-22):** trusting the bus as the sole boundary means ANY bus-connected
+service can trigger a live webcam+mic recording of Juniper via this channel
+-- there is no per-caller identity or credential check, only "reachable the
+bus." This is not unique to this channel (every RPC channel in this codebase
+works the same way), but it is qualitatively more sensitive here: the action
+IS a live recording, not a data query. `RETINA_CLIP_MIN_INTERVAL_SEC`
+(default 30s, `ClipCaptureCooldownError`) bounds the worst case to a known
+rate rather than de facto continuous recording -- it does not add real
+authentication. Real per-caller auth on this channel (or a signed capability
+token) is legitimate follow-up work, not done here; note this in any future
+threat-model pass on the bus.
 
 ## Tests
 
@@ -176,7 +214,7 @@ PYTHONPATH=. ./venv/bin/python -m pytest tests/test_vision_retina_*.py -v
 | `app/settings.py` | Env contract |
 | `app/sources.py` | Frame source adapters |
 | `app/frame_store.py` | Save + retention |
-| `app/clip_capture.py` | On-demand video+audio clip capture (AffectGPT, UNVERIFIED live) |
+| `app/clip_capture.py` | On-demand video+audio clip capture (AffectGPT, live-verified 2026-08-22) |
 | `app/envelopes.py` | `BaseEnvelope` builder |
 | `app/health.py` | `SystemHealthV1` helper |
 | `app/main.py` | `RetinaService`, FastAPI lifespan |

@@ -15,6 +15,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.vision import (
+    VisionSceneInventoryV1,
     VisionArtifactPayload,
     VisionWindowPayload,
     VisionWindowRequestPayload,
@@ -78,6 +79,8 @@ class WindowService:
         # Metrics counters (§12)
         self._m_ingest = 0
         self._m_snapshots = 0
+        self._m_inventory_published = 0
+        self._m_inventory_failed = 0
         self._m_recovery_ok = 0
         self._m_recovery_fail = 0
         self._m_catchup_expired = 0
@@ -321,10 +324,64 @@ class WindowService:
         )
         await self.bus.publish(settings.CHANNEL_WINDOW_PUB, envelope)
         self._m_snapshots += 1
+        await self._publish_scene_inventory(payload, stream_id, cid, causality_chain)
         logger.info(
             f"[WINDOW] flush snapshot_id={payload.window_id} stream={stream_id} "
             f"artifacts={len(buffered)} cursor={cursor}"
         )
+
+    async def _publish_scene_inventory(
+        self,
+        payload: VisionWindowPayload,
+        stream_id: str,
+        correlation_id: str,
+        causality_chain: List[str],
+    ) -> None:
+        """Emit this window's scene census. Best effort; never blocks a flush.
+
+        Written on EVERY window, deliberately unlike `vision_events`. The
+        council only re-interprets when the observed label SET changes and logs
+        `reason=stable_scene` otherwise, so a pure count change (two boxes
+        become one) emits no event at all -- and a departure is a non-event by
+        nature, since nothing fires when a thing stops being there. Object
+        permanence needs a continuous record, so this one is unconditional and
+        a timer-driven reducer reads it later.
+
+        A failure here must never cost a window: the snapshot is already
+        published and cached by the time this runs.
+        """
+        if not settings.WINDOW_SCENE_INVENTORY_ENABLED or not self.bus:
+            return
+        try:
+            summary = payload.summary or {}
+            evidence = summary.get("evidence") or {}
+            inventory = VisionSceneInventoryV1(
+                window_id=payload.window_id,
+                stream_id=payload.stream_id or stream_id,
+                camera_id=payload.camera_id,
+                window_start_ts=payload.start_ts,
+                window_end_ts=payload.end_ts,
+                frame_count=int(summary.get("item_count") or 0),
+                counts={str(k): int(v) for k, v in (summary.get("object_counts") or {}).items()},
+                detections={
+                    str(k): int(v) for k, v in (summary.get("label_detections") or {}).items()
+                },
+                believed_labels=[str(x) for x in (evidence.get("believed_hard_labels") or [])],
+            )
+            await self.bus.publish(
+                settings.CHANNEL_SCENE_INVENTORY_PUB,
+                BaseEnvelope(
+                    kind="vision.scene.inventory.v1",
+                    source=_source_ref(),
+                    correlation_id=correlation_id,
+                    causality_chain=[*causality_chain],
+                    payload=inventory.model_dump(mode="json"),
+                ),
+            )
+            self._m_inventory_published += 1
+        except Exception as exc:
+            self._m_inventory_failed += 1
+            logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
     async def health_live(self) -> Dict[str, Any]:
         return {"status": "ok", "service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}

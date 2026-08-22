@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -241,6 +242,53 @@ class VisionSceneInterpretationV1(BaseModel):
     grammar_projection: VisionGrammarProjectionCandidateV1 | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     raw_model_output: dict[str, Any] | None = None
+
+
+class VisionSceneInventoryV1(BaseModel):
+    """One window's observed inventory of the scene, persisted per window.
+
+    **Why this exists as its own record rather than riding on
+    ``vision_events``.** Object permanence needs a continuous record of what
+    was present, and the event stream cannot supply one: the council's
+    evidence-transition gate only re-interprets on a **label-set** change and
+    logs ``reason=stable_scene`` otherwise, so a pure *count* change (two boxes
+    become one box) produces no event at all. A departure is also a non-event
+    by nature -- nothing fires when a thing stops being there. Both facts mean
+    the inventory has to be written on every window, unconditionally, and read
+    later by a timer-driven reducer.
+
+    ``counts`` is the per-frame **max** from
+    ``orion-vision-window.projection.summarize_items`` -- an estimate of how
+    many are in the room. It is deliberately not the detection tally, which
+    scales with the number of frames in the window and which
+    ``detections`` carries separately under an honest name. The two differed by
+    exactly the frame count until 2026-08-21; see that function's docstring.
+
+    **Privacy.** Labels and counts only. No frame path, no bounding boxes, no
+    caption text, no embedding, and nothing identity-bearing. This is a
+    furniture census, and it should stay one: an inventory table is a poor
+    place to discover that it has quietly started recording people.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["vision.scene.inventory.v1"] = "vision.scene.inventory.v1"
+    window_id: str
+    stream_id: Optional[str] = None
+    camera_id: Optional[str] = None
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    window_start_ts: Optional[float] = None
+    window_end_ts: Optional[float] = None
+    # Frames that actually contributed. A count derived from 0 frames is
+    # absence-of-evidence, not evidence-of-absence, and the reducer must be
+    # able to tell those apart.
+    frame_count: int = Field(default=0, ge=0)
+    # label -> how many are believed to be present (per-frame max).
+    counts: Dict[str, int] = Field(default_factory=dict)
+    # label -> raw detections fired across the window. Frame-rate dependent.
+    detections: Dict[str, int] = Field(default_factory=dict)
+    # Habituated belief set from the window service's SceneBeliefTracker.
+    believed_labels: List[str] = Field(default_factory=list)
 
 
 class VisionScribeAckPayload(BaseModel):

@@ -486,6 +486,7 @@ from orion.schemas.world_model import (
 )
 from orion.schemas.vision import (
     VisionArtifactPayload,
+    VisionSceneInventoryV1,
     VisionCouncilRequestPayload,
     VisionCouncilResultPayload,
     VisionEdgeActivityPayload,
@@ -823,6 +824,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionArtifactPayload": VisionArtifactPayload,
     "VisionEdgeArtifact": VisionEdgeArtifact,
     "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
+    "VisionSceneInventoryV1": VisionSceneInventoryV1,
+    # Pre-existing gap surfaced by test_registry_and_schema_registry_agree:
+    # registered in SCHEMA_REGISTRY, carried on a real channel
+    # (orion/bus/channels.yaml:2790) and published by
+    # scripts/self_study_enrichment_hook.py, but absent here -- so any
+    # consumer calling resolve() on it raised "Unknown schema_id".
+    "SelfStudyEnrichmentRequestV1": SelfStudyEnrichmentRequestV1,
     "VisionEdgeHealth": VisionEdgeHealth,
     "VisionEdgeError": VisionEdgeError,
     "VisionEventPayload": VisionEventPayload,
@@ -1372,6 +1380,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "VisionEdgeActivityPayload": SchemaRegistration(
         model=VisionEdgeActivityPayload,
         kind="vision.edge.activity.v1",
+    ),
+    "VisionSceneInventoryV1": SchemaRegistration(
+        model=VisionSceneInventoryV1,
+        kind="vision.scene.inventory.v1",
     ),
     "CoalitionSnapshotV1": SchemaRegistration(
         model=CoalitionSnapshotV1,

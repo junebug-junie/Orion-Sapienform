@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     WINDOW_BELIEF_ENTER_VOTES: int = 3
     WINDOW_BELIEF_EXIT_VOTES: int = 0
 
+    # Per-window scene census -> orion-sql-writer -> vision_scene_inventory.
+    # Written on every window because the council only emits an event on a
+    # label-SET change, so counts and departures are invisible in the event
+    # stream. See main.py::_publish_scene_inventory.
+    WINDOW_SCENE_INVENTORY_ENABLED: bool = True
+    CHANNEL_SCENE_INVENTORY_PUB: str = "orion:vision:inventory:sql-write"
+
     # HTTP
     HTTP_HOST: str = "0.0.0.0"
     HTTP_PORT: int = 8000

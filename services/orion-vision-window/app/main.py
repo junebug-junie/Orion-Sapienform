@@ -24,6 +24,7 @@ from orion.schemas.vision import (
 
 from .projection import build_window_payload, envelope_to_http_dict, stream_key_from_artifact
 from .recovery_store import RecoveryStore
+from .presence import PresenceRegistry, write_snapshot_to_postgres
 from .scene_belief import SceneBeliefRegistry
 from .settings import Settings
 
@@ -75,6 +76,14 @@ class WindowService:
             enter_votes=settings.WINDOW_BELIEF_ENTER_VOTES,
             exit_votes=settings.WINDOW_BELIEF_EXIT_VOTES,
         )
+        self._presence_registry = PresenceRegistry(
+            grace_sec=settings.WINDOW_PRESENCE_GRACE_SEC,
+            write_min_interval_sec=settings.WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC,
+        )
+        # Background presence writes, tracked so they cannot be GC'd mid-flight
+        # (asyncio.create_task holds only a weak reference -- same reasoning
+        # as orion-vision-host's liveness alert task).
+        self._presence_write_tasks: set = set()
 
         # Metrics counters (§12)
         self._m_ingest = 0
@@ -291,6 +300,8 @@ class WindowService:
             result = self._belief_registry.observe(stream_id, observed)
             summary["evidence"] = self._belief_registry.enrich_evidence(stream_id, evidence)
             payload = payload.model_copy(update={"summary": summary})
+            if settings.WINDOW_PRESENCE_ENABLED:
+                self._note_presence(stream_id, result.believed_labels)
             if result.added or result.removed:
                 added = ",".join(sorted(result.added)) or "-"
                 removed = ",".join(sorted(result.removed)) or "-"
@@ -382,6 +393,29 @@ class WindowService:
         except Exception as exc:
             self._m_inventory_failed += 1
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
+
+    def _note_presence(self, stream_id: str, believed_labels: frozenset[str]) -> None:
+        """Update presence and, if due, fire a best-effort Postgres write.
+
+        Best-effort end to end: `PresenceRegistry.record` never raises, and a
+        failed or slow write cannot delay this window's flush -- the same
+        contract as the scene-belief transition it rides alongside.
+        """
+        snapshot = self._presence_registry.record(stream_id, believed_labels)
+        if snapshot is None:
+            return
+        if not settings.POSTGRES_URI:
+            return
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                write_snapshot_to_postgres,
+                stream_id,
+                snapshot,
+                postgres_uri=settings.POSTGRES_URI,
+            )
+        )
+        self._presence_write_tasks.add(task)
+        task.add_done_callback(self._presence_write_tasks.discard)
 
     async def health_live(self) -> Dict[str, Any]:
         return {"status": "ok", "service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}

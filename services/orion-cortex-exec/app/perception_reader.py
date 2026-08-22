@@ -90,6 +90,39 @@ def fetch_latest_percept() -> dict[str, Any] | None:
     return {"scene_summary": str(row[0]).strip(), "observed_at": observed_at}
 
 
+def fetch_presence(stream_id: str) -> dict[str, Any] | None:
+    """Return the current embodied-presence snapshot for one stream, or None.
+
+    Reads `substrate_embodied_presence` (`orion-vision-window`'s direct write,
+    see `app/presence.py` in that service -- keyed one row per stream_id, JSONB
+    blob: `{state, since_sec, last_seen_sec, subject}`).
+
+    Deliberately the SAME fail-open contract as `fetch_latest_percept`: a
+    presence read failure must degrade to "no presence enrichment", never to
+    an exception that blocks turn assembly. Shares this module's cached
+    engine/DSN rather than opening a second connection pool.
+    """
+    engine = _get_engine()
+    if engine is None:
+        return None
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT presence_json, updated_at FROM substrate_embodied_presence "
+                    "WHERE presence_id = :stream_id"
+                ),
+                {"stream_id": stream_id},
+            ).first()
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.warning("situation_presence_read_failed err=%s", exc)
+        return None
+
+    if row is None or not row[0]:
+        return None
+    return dict(row[0])
+
+
 def reset_perception_reader_engine_for_tests() -> None:
     global _ENGINE, _ENGINE_URL
     _ENGINE = None

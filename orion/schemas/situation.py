@@ -323,6 +323,22 @@ class PerceptionContextV1(BaseModel):
     # value this should hold without an explicit, separately-approved change.
     privacy_mode: Literal["session_only", "persist_allowed"] = "session_only"
 
+    # Embodied presence (orion-vision-window's `substrate_embodied_presence`,
+    # see that service's app/presence.py) folded into `scene_summary` as a
+    # sentence fragment -- "someone has been in view for..." -- AND exposed
+    # here as small structured fields for a non-prompt consumer (a debug
+    # surface, say) that would rather read a number than parse prose.
+    #
+    # `presence_subject` stays within the SAME "unknown" honesty the writer
+    # already commits to: no identity signal exists yet, so this is never
+    # "juniper". Adding it here does not widen the privacy contract this
+    # schema's docstring names -- a duration and a state are not raw frames,
+    # boxes, detections, embeddings, or identity, which is the actual list
+    # that clause gates.
+    presence_state: Optional[str] = None            # "present" | "recent" | "absent"
+    presence_since_sec: Optional[float] = None
+    presence_subject: Optional[str] = None           # "unknown" | "none"
+
 
 class SituationDiagnosticsV1(BaseModel):
     model_config = ConfigDict(extra="forbid")

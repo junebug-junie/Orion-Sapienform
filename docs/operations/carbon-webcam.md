@@ -198,9 +198,12 @@ adjust `RETINA_CLIP_VIDEO_DEVICE`/`RETINA_CLIP_AUDIO_INPUT` if the defaults
 above don't match. Verify:
 
 ```bash
-curl -X POST http://127.0.0.1:8022/capture/clip \
+curl -X POST "http://127.0.0.1:8022/capture/clip?target_stream_id=carbon" \
   -H "X-Orion-Retina-Token: <same value>"
 # expect: {"ok": true, "video_sha256": "...", "audio_sha256": "...", ...}
+# target_stream_id is REQUIRED and must equal this instance's own
+# RETINA_STREAM_ID (2026-08-22, camera-identity guarantee) -- omitting it
+# or getting it wrong returns {"ok": false, "error_code": "wrong_camera"}.
 ```
 
 ## What this deliberately does not do

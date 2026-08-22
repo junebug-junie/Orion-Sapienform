@@ -485,8 +485,33 @@ async def capture_clip_endpoint(request: Request):
     still requires local video_path/audio_path; orion-juniper-affective-state
     does the percept-store fetch-by-hash + temp-file bridge on circe (see
     that service's app/main.py capture_and_assess()).
+
+    Requires ``?target_stream_id=<this instance's RETINA_STREAM_ID>`` in the
+    query string -- review finding, 2026-08-22: the bus RPC twin
+    (_handle_clip_request) got a required target_stream_id check the same
+    day this route did NOT, so the camera-identity guarantee was fully
+    bypassable via a plain curl even though this module's own docstring and
+    README claimed it "holds even if a second instance is misconfigured."
+    Now both entry points enforce it the same way.
     """
     s = service.settings
+    target_stream_id = request.query_params.get("target_stream_id")
+    if target_stream_id != s.RETINA_STREAM_ID:
+        logger.warning(
+            f"[RETINA] HTTP clip request targeted stream_id={target_stream_id!r}, "
+            f"this instance is {s.RETINA_STREAM_ID!r} -- refusing"
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    f"this instance is stream_id={s.RETINA_STREAM_ID!r}, "
+                    f"request targeted {target_stream_id!r}"
+                ),
+                "error_code": "wrong_camera",
+            },
+            status_code=400,
+        )
     if not s.RETINA_CLIP_ENABLED:
         return JSONResponse(
             {"ok": False, "error": "RETINA_CLIP_ENABLED is false"}, status_code=503

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -1359,31 +1360,62 @@ def api_vision_affect_ambient_toggle(req: AffectAmbientToggleRequest) -> Dict[st
 
 
 @router.get("/api/vision/carbon/latest-frame")
-async def api_vision_carbon_latest_frame() -> Dict[str, Any]:
-    """Metadata (sha256, frame_ts) for carbon's most recent captured frame
-    -- powers the Vision panel's "Carbon (live)" dropdown option. Backed by
-    vision_frame_cache.py's bus-subscriber cache -- confirmed live 2026-08-22
-    that no persisted "latest frame for stream X" lookup exists anywhere
-    else in this repo (see that module's docstring)."""
+async def api_vision_carbon_latest_frame(
+    stream_id: str = Query(default="carbon"),
+) -> Dict[str, Any]:
+    """Metadata (sha256, frame_ts) for the most recent captured frame on
+    ``stream_id`` (default "carbon") -- powers the Vision panel's
+    "Carbon (live)" dropdown option. Backed by vision_frame_cache.py's
+    bus-subscriber cache -- confirmed live 2026-08-22 that no persisted
+    "latest frame for stream X" lookup exists anywhere else in this repo
+    (see that module's docstring).
+
+    ``stream_id`` is a real query param, not hardcoded to "carbon" inside
+    this function -- review finding, 2026-08-22: VisionFrameCache already
+    supports an arbitrary allowlist (VISION_FRAME_CACHE_STREAM_IDS), but a
+    hardcoded route body would make any OTHER stream an operator adds to
+    that allowlist permanently unreachable through this route. The Vision
+    panel's own JS only ever requests "carbon" today -- this just avoids a
+    second hardcoded route+JS pair being needed the day that changes.
+    """
     if vision_frame_cache.cache is None:
         return {"available": False, "reason": "cache_not_started"}
-    latest = await vision_frame_cache.cache.get_latest("carbon")
+    latest = await vision_frame_cache.cache.get_latest(stream_id)
     if not latest:
         return {"available": False, "reason": "no_frame_seen_yet"}
     return {"available": True, **latest}
 
 
 @router.get("/api/vision/carbon/latest-frame/image")
-async def api_vision_carbon_latest_frame_image() -> Response:
+async def api_vision_carbon_latest_frame_image(
+    stream_id: str = Query(default="carbon"),
+) -> Response:
     """Proxies the actual JPEG bytes from orion-percept-store, server-side
     -- the browser never talks to percept-store directly (no auth/CORS
     surface to expose, and percept-store's port doesn't need to be
-    reachable from wherever Hub's frontend happens to be loaded from)."""
+    reachable from wherever Hub's frontend happens to be loaded from).
+
+    Uses aiohttp (already a dependency, already this file's own convention
+    for proxied fetches -- see _proxy_request above), not
+    asyncio.to_thread(requests.get, ...) -- review finding, 2026-08-22: the
+    thread-pool version tied up a shared executor slot for the whole fetch,
+    the same pool vision_affect_ambient's blocking capture calls (up to
+    ~195s worst case) also use.
+
+    Verifies the fetched bytes actually hash to the sha256 that was asked
+    for before serving them -- review finding, 2026-08-22: this used to
+    trust percept-store's response uncritically, unlike the orchestrator's
+    own percept fetch (services/orion-juniper-affective-state/app/main.py
+    _fetch_percept), which has done this chain-of-custody check since it
+    was first built. Corrupted or substituted content must not reach the
+    browser silently.
+    """
     if vision_frame_cache.cache is None:
         raise HTTPException(status_code=503, detail="vision_frame_cache_not_started")
-    latest = await vision_frame_cache.cache.get_latest("carbon")
+    latest = await vision_frame_cache.cache.get_latest(stream_id)
     if not latest or not latest.get("sha256"):
         raise HTTPException(status_code=404, detail="no_frame_seen_yet")
+    sha256 = latest["sha256"]
 
     base = str(settings.PERCEPT_STORE_BASE_URL or "").strip().rstrip("/")
     if not base:
@@ -1391,19 +1423,26 @@ async def api_vision_carbon_latest_frame_image() -> Response:
     fetch_headers = {}
     if settings.PERCEPT_STORE_TOKEN:
         fetch_headers["X-Orion-Percept-Token"] = settings.PERCEPT_STORE_TOKEN
+    timeout = aiohttp.ClientTimeout(total=float(settings.PERCEPT_STORE_TIMEOUT_SEC))
     try:
-        resp = await asyncio.to_thread(
-            requests.get,
-            f"{base}/{latest['sha256']}",
-            headers=fetch_headers,
-            timeout=float(settings.PERCEPT_STORE_TIMEOUT_SEC),
-        )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{base}/{sha256}", headers=fetch_headers) as resp:
+                resp.raise_for_status()
+                data = await resp.read()
+    except aiohttp.ClientError as exc:
         raise HTTPException(
             status_code=502, detail=f"percept_store_unavailable:{exc}"
         ) from exc
-    return Response(content=resp.content, media_type="image/jpeg")
+
+    fetched_sha256 = hashlib.sha256(data).hexdigest()
+    if fetched_sha256 != sha256:
+        logger.error(
+            f"[HUB] carbon_latest_frame_hash_mismatch expected={sha256[:12]} "
+            f"got={fetched_sha256[:12]}"
+        )
+        raise HTTPException(status_code=502, detail="percept_store_hash_mismatch")
+
+    return Response(content=data, media_type="image/jpeg")
 
 
 class AutonomyGoalArchiveRequest(BaseModel):

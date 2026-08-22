@@ -7,11 +7,13 @@ the full app via TestClient.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import aiohttp
 import pytest
 import requests
 from fastapi import HTTPException
@@ -276,35 +278,129 @@ async def test_latest_frame_image_503s_when_percept_store_base_url_unset():
     assert exc_info.value.status_code == 503
 
 
+class _FakeAiohttpGetCtx:
+    """Stands in for the object aiohttp.ClientSession.get(...) returns --
+    itself an async context manager, entered/exited around the actual
+    request. raise_exc fires on __aenter__, matching where a real aiohttp
+    connection error would surface."""
+
+    def __init__(self, *, response=None, raise_exc=None):
+        self._response = response
+        self._raise_exc = raise_exc
+
+    async def __aenter__(self):
+        if self._raise_exc:
+            raise self._raise_exc
+        return self._response
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, *, content: bytes):
+        self._content = content
+
+    def raise_for_status(self):
+        pass
+
+    async def read(self):
+        return self._content
+
+
+class _FakeAiohttpSession:
+    """Stands in for aiohttp.ClientSession() -- itself an async context
+    manager too. get_calls records (url, headers) for assertion."""
+
+    def __init__(self, *, response=None, raise_exc=None):
+        self._response = response
+        self._raise_exc = raise_exc
+        self.get_calls: list[tuple[str, dict]] = []
+
+    def get(self, url, headers=None):
+        self.get_calls.append((url, headers or {}))
+        return _FakeAiohttpGetCtx(response=self._response, raise_exc=self._raise_exc)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def _patch_aiohttp_session(fake_session):
+    return patch.object(api_routes.aiohttp, "ClientSession", lambda timeout=None: fake_session)
+
+
 @pytest.mark.asyncio
 async def test_latest_frame_image_proxies_bytes_from_percept_store():
-    latest = {"sha256": "a" * 64, "frame_ts": 100.0}
-    fake_resp = MagicMock()
-    fake_resp.raise_for_status.return_value = None
-    fake_resp.content = b"\xff\xd8fake-jpeg-bytes"
+    real_bytes = b"\xff\xd8fake-jpeg-bytes"
+    sha256 = hashlib.sha256(real_bytes).hexdigest()
+    latest = {"sha256": sha256, "frame_ts": 100.0}
+    fake_session = _FakeAiohttpSession(response=_FakeAiohttpResponse(content=real_bytes))
+
     with patch.object(
         vision_frame_cache, "cache", _FakeFrameCache(latest=latest)
     ), patch.object(
         api_routes.settings, "PERCEPT_STORE_BASE_URL", "http://store/percepts"
-    ), patch.object(api_routes.requests, "get", return_value=fake_resp) as mock_get:
+    ), _patch_aiohttp_session(fake_session):
         response = await api_routes.api_vision_carbon_latest_frame_image()
 
-    mock_get.assert_called_once()
-    assert mock_get.call_args.args[0] == "http://store/percepts/" + "a" * 64
+    assert fake_session.get_calls == [(f"http://store/percepts/{sha256}", {})]
     assert response.media_type == "image/jpeg"
-    assert response.body == b"\xff\xd8fake-jpeg-bytes"
+    assert response.body == real_bytes
 
 
 @pytest.mark.asyncio
 async def test_latest_frame_image_502s_on_percept_store_transport_failure():
     latest = {"sha256": "a" * 64, "frame_ts": 100.0}
+    fake_session = _FakeAiohttpSession(raise_exc=aiohttp.ClientConnectionError("refused"))
+
     with patch.object(
         vision_frame_cache, "cache", _FakeFrameCache(latest=latest)
     ), patch.object(
         api_routes.settings, "PERCEPT_STORE_BASE_URL", "http://store/percepts"
-    ), patch.object(
-        api_routes.requests, "get", side_effect=requests.ConnectionError("refused")
-    ):
+    ), _patch_aiohttp_session(fake_session):
         with pytest.raises(HTTPException) as exc_info:
             await api_routes.api_vision_carbon_latest_frame_image()
     assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_image_502s_when_fetched_bytes_dont_match_the_sha256():
+    """Chain-of-custody check (review finding, 2026-08-22): this route used
+    to trust percept-store's response uncritically -- corrupted or
+    substituted content must not reach the browser silently."""
+    latest = {"sha256": "a" * 64, "frame_ts": 100.0}  # doesn't match the real hash of the bytes below
+    fake_session = _FakeAiohttpSession(response=_FakeAiohttpResponse(content=b"not the right bytes"))
+
+    with patch.object(
+        vision_frame_cache, "cache", _FakeFrameCache(latest=latest)
+    ), patch.object(
+        api_routes.settings, "PERCEPT_STORE_BASE_URL", "http://store/percepts"
+    ), _patch_aiohttp_session(fake_session):
+        with pytest.raises(HTTPException) as exc_info:
+            await api_routes.api_vision_carbon_latest_frame_image()
+    assert exc_info.value.status_code == 502
+    assert "hash_mismatch" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_routes_accept_a_stream_id_param_not_hardcoded_carbon():
+    """VisionFrameCache already supports an arbitrary allowlist -- these
+    routes must not hardcode "carbon" so a future second stream_id isn't
+    permanently unreachable through them (review finding, 2026-08-22)."""
+
+    class _RecordingFrameCache:
+        def __init__(self):
+            self.requested_stream_ids: list[str] = []
+
+        async def get_latest(self, stream_id):
+            self.requested_stream_ids.append(stream_id)
+            return None
+
+    fake_cache = _RecordingFrameCache()
+    with patch.object(vision_frame_cache, "cache", fake_cache):
+        await api_routes.api_vision_carbon_latest_frame(stream_id="cam0")
+
+    assert fake_cache.requested_stream_ids == ["cam0"]

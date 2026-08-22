@@ -518,6 +518,44 @@ class ExecutionDispatchRuntimeStore:
                 },
             )
 
+    def load_action_cost_estimates(self, lookback_hours: int = 24) -> dict[tuple[str, str], float]:
+        """Median motor-seconds per (dispatch_kind, target_id), from history.
+
+        The allocator's denominator. A global p50 would make cost uniform and
+        collapse ranking back to raw information -- and the spread is real:
+        measured live, `maintain host:docker_containers` is 890ms against
+        `summarize self:current` at 5,362ms, a 6x difference.
+
+        MEDIAN, not mean. One 92-second outlier was already observed in the
+        first hour of cost data; a mean would let a single hung dispatch
+        permanently price its whole action out of the budget.
+
+        Reads substrate_action_outcomes, which carries dispatch_kind and
+        target_id alongside latency -- no frame join needed. Restricted to
+        arm='dispatched': a capacity_blocked candidate never ran and has no
+        cost, and averaging its NULL in would understate the real price.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT dispatch_kind, target_id,
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_ms
+                      FROM substrate_action_outcomes
+                     WHERE arm = 'dispatched'
+                       AND latency_ms IS NOT NULL
+                       AND created_at > now() - make_interval(hours => :hours)
+                     GROUP BY 1, 2
+                    """
+                ),
+                {"hours": lookback_hours},
+            ).all()
+        return {
+            (r[0], r[1]): float(r[2]) / 1000.0
+            for r in rows
+            if r[2] is not None and float(r[2]) > 0
+        }
+
     def sum_motor_seconds_for_day(self, day_start, day_end) -> float:
         """Motor-seconds actually spent in a UTC day.
 

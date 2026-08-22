@@ -133,6 +133,20 @@ class Settings(BaseSettings):
     orion_dispatch_motor_typical_cost_sec: float = Field(
         5.0, alias="ORION_DISPATCH_MOTOR_TYPICAL_COST_SEC"
     )
+
+    # The ABSOLUTE bar: expected information per motor-second below which an
+    # action is not worth its seconds, however much allowance is left. This is
+    # what makes "none of these were worth doing" expressible -- a relative
+    # ranking always crowns a winner however worthless the set.
+    #
+    # 0.02 nats/sec: a cold, never-measured action costing 5s scores 0.198,
+    # ten times over. A thoroughly-measured one (variance 0.001) at the same
+    # cost scores 0.0025, ten times under. The bar sits in the gap, so it
+    # separates "we have learned what this does" from "we have not" rather
+    # than encoding a preference about which actions are nice.
+    orion_dispatch_min_nats_per_sec: float = Field(
+        0.02, alias="ORION_DISPATCH_MIN_NATS_PER_SEC"
+    )
     # 2026-07-29: enforcement is back ON (default flipped True -> False).
     # Real sequence, not "we always knew this": ORION_DISPATCH_MAX_RISK_PER_DAY
     # was a fixed 10.0 constant, ENFORCED, from 2026-07-26 through 2026-07-27

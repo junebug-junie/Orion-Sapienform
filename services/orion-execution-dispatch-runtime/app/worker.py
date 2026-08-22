@@ -14,9 +14,11 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.autonomy.allocator import Candidate as AllocatorCandidate
+from orion.autonomy.allocator import allocate
 from orion.autonomy.budget import budget_state, day_elapsed_fraction
-from orion.autonomy.contrast import TreatedCellKey
-from orion.autonomy.prediction import EffectPosterior
+from orion.autonomy.contrast import TreatedCellKey, pooled_treated_mean
+from orion.autonomy.prediction import DEFAULT_PRIOR_VARIANCE, EffectPosterior
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
     build_stale_discard_execution_dispatch_frame,
@@ -487,6 +489,67 @@ class ExecutionDispatchRuntimeWorker:
             logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
             return {}
 
+    def _log_allocator_preview(self, frame: ExecutionDispatchFrameV1, motor) -> None:
+        """Report the allocation that WOULD have happened, against the one
+        that did. Advisory: changes nothing, decides the flip.
+
+        Comparing the two sets is the whole output. "The allocator agrees with
+        priority order" and "the allocator would drop 4 of 5 every tick" are
+        very different findings and only one of them justifies enforcing.
+        """
+        pending = list(frame.candidates) + list(frame.dispatched_candidates)
+        if not pending:
+            return
+
+        costs = self._store.load_action_cost_estimates()
+        posteriors = self._load_effect_posteriors()
+
+        candidates: list[AllocatorCandidate] = []
+        for item in pending:
+            effect = item.expected_effect
+            signal = effect.signal_id if effect is not None else None
+            pooled = (
+                pooled_treated_mean(posteriors, item.dispatch_kind, item.target_id, signal)
+                if signal
+                else None
+            )
+            candidates.append(
+                AllocatorCandidate(
+                    dispatch_id=item.dispatch_id,
+                    dispatch_kind=item.dispatch_kind,
+                    target_id=item.target_id,
+                    # No history is maximum uncertainty, which is exactly
+                    # right: an action nobody has measured is the most
+                    # informative one available.
+                    posterior_variance=(
+                        pooled.variance if pooled is not None else DEFAULT_PRIOR_VARIANCE
+                    ),
+                    cost_sec=costs.get((item.dispatch_kind, item.target_id)),
+                    contrast=None,
+                    contrast_sd=None,
+                    claimed_direction=effect.direction if effect is not None else None,
+                )
+            )
+
+        allocation = allocate(
+            candidates,
+            allowance_sec=motor.remaining_sec,
+            min_nats_per_sec=self._settings.orion_dispatch_min_nats_per_sec,
+        )
+        chosen = {c.dispatch_id for c in allocation.admitted}
+        actual = {c.dispatch_id for c in pending}
+        logger.info(
+            "motor_allocator_preview pending=%d would_admit=%d would_drop=%d "
+            "agree=%d nats=%.4f cost_sec=%.1f refusals=%s",
+            len(pending),
+            len(allocation.admitted),
+            len(actual - chosen),
+            len(actual & chosen),
+            allocation.admitted_nats,
+            allocation.spent_sec,
+            allocation.refusals_by_reason() or "{}",
+        )
+
     def _derive_motor_budget(self, frame_generated_at: datetime):
         """The real daily ceiling: motor-seconds spent against an operator-set
         allowance.
@@ -672,6 +735,20 @@ class ExecutionDispatchRuntimeWorker:
                 len(pending),
                 would_refuse,
             )
+            # STEP 3, ADVISORY: what would an allocator have chosen?
+            # Scored on expected information per motor-second -- the epistemic
+            # term of expected free energy, which is the only one that
+            # discriminates when every action's measured effect sits inside its
+            # own error bar. Pragmatic value is a GATE (confidently harmful ->
+            # refused), never converted into the score, because inventing that
+            # exchange rate is how risk_score happened.
+            try:
+                self._log_allocator_preview(frame, motor)
+            except Exception:
+                # An advisory readout must never be able to stall a real
+                # dispatch tick.
+                logger.warning("motor_allocator_preview_failed", exc_info=True)
+
             if motor.mode == "enforcing" and motor.exhausted:
                 logger.info("motor_budget_exhausted sending nothing this tick")
                 return frame.model_copy(update=baseline_fields)

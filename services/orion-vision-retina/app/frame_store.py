@@ -90,6 +90,42 @@ class PerceptUploadError(RuntimeError):
     """The frame could not be handed to the percept store."""
 
 
+def upload_bytes(
+    data: bytes,
+    *,
+    base_url: str,
+    token: str | None = None,
+    timeout_sec: float = 10.0,
+) -> str:
+    """POST arbitrary bytes (a clip, not necessarily a JPEG frame) to
+    orion-percept-store and return the content hash.
+
+    Added 2026-08-22 for clip_capture.py's audio/video output -- upload_frame
+    above stays JPEG-frame-specific and untouched (it is the proven,
+    already-live path; this is a new sibling for a new content shape, not a
+    refactor of working code). Same "never touches disk beyond what the
+    caller already gave us" and hash-verification-on-response discipline.
+    """
+    local_sha = hashlib.sha256(data).hexdigest()
+    url = f"{str(base_url).rstrip('/')}"
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/octet-stream")
+    if token:
+        req.add_header("X-Orion-Percept-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise PerceptUploadError(f"percept upload to {url} failed: {exc}") from exc
+
+    sha256 = str(body.get("sha256") or "")
+    if sha256 != local_sha:
+        raise PerceptUploadError(
+            f"percept store returned {sha256[:12]!r} for content hashing to {local_sha[:12]!r}"
+        )
+    return sha256
+
+
 def upload_frame(
     frame: np.ndarray,
     *,

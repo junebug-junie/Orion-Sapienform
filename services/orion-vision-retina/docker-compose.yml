@@ -27,6 +27,24 @@ services:
       - JPEG_QUALITY=${JPEG_QUALITY:-90}
       - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
       - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
+      # On-demand clip capture (AffectGPT) -- UNVERIFIED against real
+      # hardware, see app/clip_capture.py. Off by default.
+      - RETINA_CLIP_ENABLED=${RETINA_CLIP_ENABLED:-false}
+      - RETINA_CLIP_TOKEN=${RETINA_CLIP_TOKEN:-}
+      - RETINA_CLIP_FFMPEG_BIN=${RETINA_CLIP_FFMPEG_BIN:-ffmpeg}
+      - RETINA_CLIP_VIDEO_DEVICE=${RETINA_CLIP_VIDEO_DEVICE:-/dev/video0}
+      - RETINA_CLIP_AUDIO_INPUT=${RETINA_CLIP_AUDIO_INPUT:-default}
+      - RETINA_CLIP_DURATION_SEC=${RETINA_CLIP_DURATION_SEC:-8.0}
+      - RETINA_CLIP_FRAMERATE=${RETINA_CLIP_FRAMERATE:-15}
+      - RETINA_CLIP_WIDTH=${RETINA_CLIP_WIDTH:-}
+      - RETINA_CLIP_HEIGHT=${RETINA_CLIP_HEIGHT:-}
+      - RETINA_CLIP_TIMEOUT_SEC=${RETINA_CLIP_TIMEOUT_SEC:-30.0}
+      # ffmpeg's `-f pulse` input looks here by default -- best-effort
+      # default for a single-user desktop Linux session, NOT verified
+      # against carbon's actual audio backend/UID. Override
+      # PULSE_SERVER_UID below if carbon's user is not uid 1000 (`id -u`
+      # on carbon).
+      - PULSE_SERVER=unix:/run/user/${PULSE_SERVER_UID:-1000}/pulse/native
     volumes:
       - ./app:/app/app
       - ../../orion:/app/orion
@@ -35,6 +53,14 @@ services:
       # to keep so one compose file serves both deployments.
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
       - /mnt/telemetry/vision/intake:/mnt/telemetry/vision/intake
+      # PulseAudio/PipeWire socket passthrough for clip_capture.py's audio
+      # capture. UNVERIFIED path -- if this host directory doesn't exist,
+      # Docker silently creates an empty one rather than failing startup, so
+      # a wrong path here fails at actual capture time (a clear ffmpeg
+      # connection error), not at `docker compose up`. Adjust
+      # PULSE_SERVER_UID above, or this whole mount, if carbon's real
+      # socket lives elsewhere.
+      - /run/user/${PULSE_SERVER_UID:-1000}/pulse:/run/user/${PULSE_SERVER_UID:-1000}/pulse
 
     # Webcam passthrough. Required for RETINA_SOURCE_TYPE=webcam and inert
     # otherwise -- `${RETINA_VIDEO_DEVICE:-/dev/null}` means a host with no
@@ -42,6 +68,18 @@ services:
     # has one (see docs/operations/carbon-webcam.md).
     devices:
       - ${RETINA_VIDEO_DEVICE:-/dev/null}:${RETINA_VIDEO_DEVICE:-/dev/null}
+    ports:
+      # Only needed for POST /capture/clip (bus-only otherwise). Added
+      # 2026-08-22; not previously exposed. Bound to 127.0.0.1 explicitly --
+      # docs/operations/carbon-webcam.md's whole documented security posture
+      # for this service is "nothing needs to reach carbon inbound" /
+      # "127.0.0.1 on purpose" (the venv/systemd deploy path already does
+      # this via `uvicorn --host 127.0.0.1`); a bare `"PORT:8000"` mapping
+      # here would publish to 0.0.0.0 by default and break that posture for
+      # anyone using the Docker path instead (review finding, 2026-08-22).
+      # Also gated by RETINA_CLIP_TOKEN (settings.py) as defense in depth --
+      # a POST here triggers a live recording, unlike every other route.
+      - "127.0.0.1:${RETINA_HTTP_PORT:-8022}:8000"
     networks:
       - app-net
 

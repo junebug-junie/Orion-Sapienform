@@ -3,8 +3,11 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+# ffmpeg added 2026-08-22 for app/clip_capture.py (AffectGPT on-demand
+# video+audio clips) -- everything else here is unchanged from before.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY services/orion-vision-retina/requirements.txt ./requirements.txt

@@ -1,10 +1,11 @@
 # orion-percept-store
 
-Short-lived, content-addressed storage for camera frames.
+Short-lived, content-addressed storage for camera frames, and (since
+2026-08-22) short audio/video clips for AffectGPT.
 
-A percept exists so a model can look at it **once**. The interpretation is the
-durable artifact; the picture is not. This service exists to make that true
-structurally instead of by intention.
+A percept exists so a model can look at (or listen to) it **once**. The
+interpretation is the durable artifact; the picture or clip is not. This
+service exists to make that true structurally instead of by intention.
 
 ## Why this is not Hub
 
@@ -27,7 +28,7 @@ matter.
 ## Contract
 
 ```
-POST /percepts            raw image bytes  -> {"sha256", "mime", "bytes"}
+POST /percepts            raw bytes  -> {"sha256", "mime", "bytes"}
 GET  /percepts/{sha256}   -> the bytes, or 404 if absent/expired
 GET  /stats               count, bytes, oldest age, retention  (never hashes)
 GET  /healthz /readyz
@@ -35,6 +36,14 @@ GET  /healthz /readyz
 
 `X-Orion-Percept-Token` gates both if `PERCEPT_STORE_TOKEN` is set. Empty
 disables the check, which is acceptable only on a closed tailnet.
+
+Accepted content is an explicit allow-list (`PERCEPT_ALLOWED_MIMES`),
+sniffed from the bytes themselves, never the caller-declared Content-Type
+(`app/storage.py::sniff_mime`) -- anything else is refused with HTTP 415.
+`image/jpeg`, `image/png`, `image/webp` from the original design;
+`audio/wav`, `video/mp4` added 2026-08-22 for
+`services/orion-vision-retina/app/clip_capture.py`'s AffectGPT clips
+(live-verified round-trip both ways, see that service's README).
 
 ## The properties that matter
 

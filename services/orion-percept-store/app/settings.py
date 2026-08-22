@@ -26,7 +26,12 @@ class Settings(BaseSettings):
 
     # Upload guards.
     PERCEPT_MAX_BYTES: int = 8 * 1024 * 1024
-    PERCEPT_ALLOWED_MIMES: str = "image/jpeg,image/png,image/webp"
+    # audio/wav and video/mp4 added 2026-08-22 for AffectGPT's short
+    # face+audio capture clips (see sniff_mime in storage.py) -- still
+    # comfortably under PERCEPT_MAX_BYTES for a clip of a few seconds at
+    # modest resolution/bitrate; raise PERCEPT_MAX_BYTES if clip length or
+    # quality grows.
+    PERCEPT_ALLOWED_MIMES: str = "image/jpeg,image/png,image/webp,audio/wav,video/mp4"
 
     # Shared-secret gate. Empty disables the check, which is acceptable only on
     # a closed tailnet; set it wherever the port is reachable more widely.

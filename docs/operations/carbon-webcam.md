@@ -14,21 +14,37 @@ encodes in memory, POSTs to `orion-percept-store` on athena, and publishes the
 content address. Everything downstream — router, host, window, council, census,
 blindness alerting — then treats carbon as a normal camera.
 
-## One-time
+## You do not need Docker
+
+Retina is a plain uvicorn app: the Dockerfile only pip-installs
+`requirements.txt`, copies `app/` and `orion/`, and runs uvicorn. Nothing about
+it is container-specific, the deps are light (no torch, no CUDA), and a plain
+process opens `/dev/video0` directly instead of needing device passthrough.
+
+**Nothing needs to reach carbon inbound.** Capture runs inside the app's
+`lifespan`, so the HTTP surface is only a health shell. carbon needs *outbound*
+to athena and nothing else:
+
+- `100.92.216.81:6379` — the bus
+- `100.92.216.81:8021` — the percept store
+
+## Setup (venv — recommended)
 
 ```bash
-cd ~/Orion-Sapienform/services/orion-vision-retina
-cp .env_example .env
+git clone <repo> ~/Orion-Sapienform && cd ~/Orion-Sapienform
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r services/orion-vision-retina/requirements.txt
+
+cp services/orion-vision-retina/.env_example services/orion-vision-retina/.env
 ```
 
-Edit `.env`:
+Edit `services/orion-vision-retina/.env`:
 
 ```ini
 ORION_BUS_URL=redis://100.92.216.81:6379/0
 
 RETINA_SOURCE_TYPE=webcam
 RETINA_SOURCE=/dev/video0            # ls /dev/video* to confirm
-RETINA_VIDEO_DEVICE=/dev/video0      # container passthrough
 RETINA_CAMERA_ID=carbon-webcam
 RETINA_STREAM_ID=carbon              # keeps it separate from cam0 everywhere
 
@@ -42,14 +58,53 @@ RETINA_FPS=0.2                       # one frame per 5s
 JPEG_QUALITY=75
 ```
 
-## Run
+Run it:
 
 ```bash
 cd ~/Orion-Sapienform
+set -a && . services/orion-vision-retina/.env && set +a
+PYTHONPATH=.:services/orion-vision-retina \
+  .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8022
+```
+
+`127.0.0.1` on purpose — nothing needs to reach it.
+
+### Keep it running across reboots
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/orion-retina.service <<'UNIT'
+[Unit]
+Description=Orion vision retina (carbon webcam)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/Orion-Sapienform
+EnvironmentFile=%h/Orion-Sapienform/services/orion-vision-retina/.env
+Environment=PYTHONPATH=%h/Orion-Sapienform:%h/Orion-Sapienform/services/orion-vision-retina
+ExecStart=%h/Orion-Sapienform/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8022
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+UNIT
+
+systemctl --user daemon-reload
+systemctl --user enable --now orion-retina
+journalctl --user -u orion-retina -f
+```
+
+`Restart=on-failure` covers a sleep/resume that drops the bus connection.
+
+## Setup (Docker — only if you prefer it)
+
+Same `.env`, plus `RETINA_VIDEO_DEVICE=/dev/video0` for the device passthrough
+the compose file wires up:
+
+```bash
 docker compose --env-file .env --env-file services/orion-vision-retina/.env \
   -f services/orion-vision-retina/docker-compose.yml up -d --build
-
-docker logs -f orion-vision-retina    # frames_published should climb
 ```
 
 ## Verify from athena
@@ -66,11 +121,11 @@ psql -h localhost -p 55432 -U postgres -d conjourney -c \
 
 ## Turning it off
 
-Stop the container. That is the entire off switch, it lives on the machine being
+Stop the process. That is the entire off switch, it lives on the machine being
 watched, and it needs nothing from athena or Hub:
 
 ```bash
-docker stop orion-vision-retina
+systemctl --user stop orion-retina     # or Ctrl-C, or: docker stop orion-vision-retina
 ```
 
 ## What this deliberately does not do

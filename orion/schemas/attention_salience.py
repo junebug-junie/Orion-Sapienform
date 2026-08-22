@@ -25,12 +25,16 @@ PendingCardStatusV1 = Literal["pending", "resolved", "dismissed"]
 MAX_FEATURE_LIST = 16
 
 # "resolvable": a discrete, turn-scoped candidate a human can actually close
-# (chat-derived). "chronic_pressure": a recurring reverie/substrate-broadcast
-# signal that is re-selected every tick by design -- Resolve/Dismiss on one of
-# these would be a false closure (the underlying pressure is still live), so
-# the Hub renders it without those actions. Split is architectural, keyed off
-# `scope` (chat vs reverie), not a heuristic threshold -- see
-# attention_loops_store.py::card_kind_for_scope.
+# (chat-derived). "chronic_pressure": everything else -- a recurring
+# reverie/substrate-broadcast signal re-selected every tick by design, the
+# schema-documented-but-not-yet-produced "broadcast" scope, an unrecognized
+# future value, or a failed/missing lookup. Resolve/Dismiss on one of these
+# would be a false closure (the underlying pressure may still be live), so the
+# Hub renders it without those actions. Split is architectural, keyed off
+# `scope`, and deliberately an ALLOWLIST of the one safe case ('chat') rather
+# than a denylist of the one known case ('reverie') -- see
+# attention_loops_store.py::card_kind_for_scope's docstring for why the
+# allowlist direction matters.
 PendingCardKindV1 = Literal["resolvable", "chronic_pressure"]
 
 

@@ -15,6 +15,18 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import attention_loop_decay_digest as digest  # noqa: E402
 
 
+def test_select_traces_sql_is_scoped_to_chat_only():
+    # Regression (code review, 2nd pass): substrate_reverie_refractory -- the
+    # table a decay-driven suppression lands in -- is ALSO read by
+    # services/orion-thought/app/chain.py::theme_key_for()/is_suppressed() to
+    # gate real reverie-chain reignition (deliberate pre-existing design, not
+    # something this digest gets to override). Auto-decaying a chronic_pressure
+    # (reverie-scope) loop would silently suppress real cognition, exactly the
+    # false-closure-of-live-pressure failure this whole feature-arc exists to
+    # prevent. This digest must only ever touch scope='chat' rows.
+    assert "scope = 'chat'" in digest._SELECT_TRACES_SQL
+
+
 class _FakeTxn:
     async def __aenter__(self):
         return self

@@ -13,16 +13,48 @@ is the missing producer: it reads `attention_salience_trace`, finds loops that w
 scored, never explicitly closed by a human, and then stopped being re-scored, and
 labels them `decayed_unattended`.
 
-`decayed_unattended` is NOT a suppression signal for live cognition --
+`decayed_unattended` is NOT a suppression signal for live coalition SELECTION --
 `orion/substrate/attention/verdicts.py::TERMINAL_VERDICTS` deliberately excludes it
 ("implicit non-engagement signal, not an explicit closure -- left eligible to
 compete"), so a decayed loop can still be re-selected by a live reverie tick if the
-underlying pressure is real. This script ALSO writes a `substrate_reverie_refractory`
-suppression (same table/mechanism as a human Dismiss, 24h cooldown) purely so the
-Hub's pending-attention panel stops showing a loop nobody is looking at -- that table
-is read only by the Hub panel query, never by the live coalition
-(`orion/substrate/attention_broadcast.py`), so this cannot mute real cognition, only
-a stale card.
+underlying pressure is real.
+
+**Scoped to `scope='chat'` only -- this is deliberate, not an oversight.** This
+script ALSO writes a `substrate_reverie_refractory` suppression (same table/
+mechanism as a human Dismiss, 24h cooldown). Code review (2026-08-21) caught
+that an earlier version of this docstring claimed that table "is read only by
+the Hub panel query, never by the live coalition" -- FALSE:
+`services/orion-thought/app/chain.py::theme_key_for()`'s own docstring says
+this is the SAME table a human's Resolve/Dismiss already suppresses real
+reverie-chain reignition through, by deliberate pre-existing design ("A chain
+must see the refractory suppression a human's Resolve/Dismiss action in the
+Hub just wrote, or a closed loop keeps re-igniting chains indefinitely"). A
+HUMAN'S explicit Resolve/Dismiss intentionally carrying that consequence is a
+reasonable design (a person said "done with this"). This script's IMPLICIT,
+machine-driven decay is not the same kind of act -- `decayed_unattended` means
+"nobody engaged," not "a human confirmed this is closed," and chronic_pressure
+(scope='reverie') loops are exactly the ones the pending-attention panel
+already renders as ongoing system state, never as something needing
+resolution (see services/orion-hub/README.md's `card_kind` section) -- auto-
+suppressing THEIR chain reignition would be the false-closure-of-live-pressure
+failure this whole feature-arc exists to prevent, just moved one layer down
+into a different table's cross-service reader instead of the Hub API's 409
+guard. Chat-scope loops carry no such consequence today (nothing in
+`orion-thought` spawns a chain keyed to a chat-derived theme_key in the
+ordinary case), so this script only ever touches `scope='chat'` rows.
+
+Residual, pre-existing risk this narrowing does NOT eliminate (disclosed, not
+fixed here -- a larger change than this script owns): chat and reverie loop
+ids share the same `theme_key` namespace by design (`chain.py::theme_key_for`'s
+own docstring) and both use the identical `stable_id("open-loop", <normalized
+phrase>)` formula (`orion/substrate/attention/scoring.py`), so a
+chat turn and a reverie signal that normalize to the exact same phrase collide
+on theme_key. Scoping this script's SELECT to `scope='chat'` means it only
+ever WRITES a decay-driven refractory suppression when the row it read was
+itself chat-scoped, which is the fix that matters -- but does not change that
+`attention_loops_store.py::latest_trace_for_theme`'s per-click lookup (used by
+the Hub's Resolve/Dismiss guard) has no scope filter and could, on an exact
+phrase collision, read whichever scope's row is most recent.
 
 Deliberately does NOT publish to the `orion:attention:loop_outcome` bus channel the
 way a human Resolve/Dismiss does (`services/orion-hub/scripts/bus_publish.py`) --
@@ -74,7 +106,8 @@ _REFRACTORY_COOLDOWN = timedelta(hours=24)
 _SELECT_TRACES_SQL = """
     SELECT theme_key, loop_id, salience, features, created_at
     FROM attention_salience_trace
-    ORDER BY theme_key, created_at
+    WHERE scope = 'chat'
+    ORDER BY loop_id, created_at
 """
 
 _SELECT_LATEST_VERDICTS_SQL = """
@@ -157,8 +190,11 @@ def build_observations(
             {"theme_key": row["theme_key"], "times": [], "last_salience": 0.0, "last_features": {}},
         )
         entry["times"].append(row["created_at"])
-        # rows are ordered by created_at within each theme_key/loop_id, so the
-        # last one seen is the most recent -- keep its salience/features.
+        # _SELECT_TRACES_SQL orders by (loop_id, created_at) -- matching the
+        # grouping key used here (loop_id), not theme_key -- so the last row
+        # seen for a given loop_id is genuinely its most recent, even in the
+        # (currently unobserved) case where one loop_id's rows span more than
+        # one theme_key. Keep its salience/features.
         entry["last_salience"] = float(row["salience"] or 0.0)
         features = row["features"]
         if isinstance(features, str):
@@ -245,7 +281,10 @@ async def _apply_decisions(
 
 def _print_report(report: DigestReport, *, dry_run: bool) -> None:
     verb = "would decay" if dry_run else "decayed"
-    print(f"attention_loop_decay_digest: {report.themes_scanned} loop(s) scanned, {len(report.decayed)} {verb}")
+    print(
+        f"attention_loop_decay_digest: {report.themes_scanned} chat-scope loop(s) scanned, "
+        f"{len(report.decayed)} {verb}"
+    )
     for item in report.decayed:
         print(f"  [{item['theme_key']}] silent {item['silence_hours']}h -- {item['reason']}")
 

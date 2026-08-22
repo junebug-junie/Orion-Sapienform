@@ -130,10 +130,10 @@ def main(argv: list[str] | None = None) -> int:
         }))
     else:
         if backlog == 0:
-            print("check_attention_loop_decay_liveness: OK -- no loop is currently decay-eligible.")
+            print("check_attention_loop_decay_liveness: OK -- no chat-scope loop is currently decay-eligible.")
         else:
             print(
-                f"check_attention_loop_decay_liveness: {backlog} loop(s) decay-eligible right now, "
+                f"check_attention_loop_decay_liveness: {backlog} chat-scope loop(s) decay-eligible right now, "
                 f"worst overshoot {overshoot_hours:.2f}h past its own threshold (theme={worst_theme}, "
                 f"max allowed overshoot {args.max_overshoot_hours:.2f}h)"
             )

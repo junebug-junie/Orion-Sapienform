@@ -200,7 +200,16 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
         # for the labeled fixture this threshold is measured against) -- a bare
         # "concept"/"belief"/"activity"/"plan" is essentially never expressible
         # in one word ("the reactor rollout plan" is; "plan" alone is not).
-        if " " not in phrase and type_hint not in {"person", "place"}:
+        # `.split()` (not `" " not in phrase`, second review pass) -- str.split()
+        # with no separator splits on any whitespace str.isspace() recognizes,
+        # including non-breaking space (U+00A0) and other Unicode whitespace a
+        # literal ASCII-space check would miss, misclassifying a real multi-word
+        # phrase as a bare single token.
+        if len(phrase.split()) < 2 and type_hint not in {"person", "place"}:
+            logger.debug(
+                "current_turn_llm_signal_dropped_bare_word phrase=%r type=%s",
+                phrase, type_hint,
+            )
             continue
         out.append({"phrase": phrase[:_MAX_PHRASE_LEN], "type": type_hint})
     return out

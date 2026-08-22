@@ -134,11 +134,18 @@ def test_latest_trace_for_theme_reads_scope_in_the_same_query(monkeypatch):
     assert trace == {"salience": 0.8, "features": {"evidence_strength": 0.5}, "scope": "reverie"}
 
 
-def test_latest_trace_for_theme_no_row_defaults_to_unknown_scope(monkeypatch):
-    # 'unknown' (not 'chat') so card_kind_for_scope routes an unresolvable
-    # lookup to the safe/restrictive chronic_pressure branch by default.
+def test_latest_trace_for_theme_no_row_defaults_to_chat_scope(monkeypatch):
+    # 'chat' (permissive), NOT 'unknown' -- regression from a second review
+    # pass: this is called from _close() on a loop_id the Hub panel already
+    # showed the user moments earlier, so a miss here is virtually always a
+    # transient hiccup, not evidence the loop is chronic_pressure. Defaulting
+    # to the restrictive branch would falsely block a legitimate human
+    # Resolve/Dismiss click on a DB blip -- preserves
+    # latest_salience_for_theme's original "closing a loop never fails"
+    # contract. A genuinely-read non-'chat' scope (see the dict/string-features
+    # tests above) is the only thing that should ever route to chronic_pressure.
     monkeypatch.setattr(store, "_engine", lambda: _Engine([]))
-    assert store.latest_trace_for_theme("missing") == {"salience": 0.0, "features": {}, "scope": "unknown"}
+    assert store.latest_trace_for_theme("missing") == {"salience": 0.0, "features": {}, "scope": "chat"}
 
 
 class _BoomEngine:
@@ -146,9 +153,9 @@ class _BoomEngine:
         raise RuntimeError("db unreachable")
 
 
-def test_latest_trace_for_theme_db_failure_defaults_to_unknown_scope(monkeypatch):
+def test_latest_trace_for_theme_db_failure_defaults_to_chat_scope(monkeypatch):
     monkeypatch.setattr(store, "_engine", lambda: _BoomEngine())
-    assert store.latest_trace_for_theme("t1") == {"salience": 0.0, "features": {}, "scope": "unknown"}
+    assert store.latest_trace_for_theme("t1") == {"salience": 0.0, "features": {}, "scope": "chat"}
 
 
 def test_card_kind_for_scope_allowlists_only_chat():

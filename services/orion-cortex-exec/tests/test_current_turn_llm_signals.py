@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -124,6 +125,15 @@ def test_multi_word_phrase_survives_regardless_of_type() -> None:
         {"phrase": "the reactor rollout plan", "type": "plan"},
         {"phrase": "context compaction", "type": "concept"},
     ]
+
+
+def test_multi_word_phrase_joined_by_non_breaking_space_still_counts_as_multi_word() -> None:
+    # Regression (code review, 2nd pass): a literal `" " not in phrase` check
+    # would misclassify this as a single bare token and drop it. `.split()`
+    # recognizes U+00A0 (non-breaking space) as whitespace.
+    phrase = "context\u00a0compaction"  # NBSP, not a normal space
+    raw = json.dumps([{"phrase": phrase, "type": "concept"}])
+    assert parse_current_turn_llm_signals(raw) == [{"phrase": phrase, "type": "concept"}]
 
 
 # --- build_current_turn_llm_prompt ------------------------------------------

@@ -306,15 +306,24 @@ def latest_trace_for_theme(theme_key: str) -> dict[str, Any]:
     `_close()` used to call two separate single-column lookups
     (`latest_salience_for_theme` + a since-removed `latest_scope_for_theme`) --
     review caught both the extra query on a user-facing click path AND that the
-    two functions defaulted to DIFFERENT scopes on failure ('reverie' vs 'chat'),
-    so a legacy/missing-scope row could render as chronic_pressure in the panel
-    (load_pending_loops' own per-row `t.scope` read) yet be let through as
-    resolvable by this guard. One function, one query, one default closes both:
-    on any miss (DB error, no row) this returns scope='unknown', which
-    `card_kind_for_scope` already routes to the SAFE branch (chronic_pressure --
-    no false-closure risk) since it only allowlists the literal 'chat' case.
+    two functions defaulted to DIFFERENT scopes on failure ('reverie' vs 'chat').
+    One function, one query fixes both.
+
+    Failure-path default is scope='chat' (the PERMISSIVE branch), not 'unknown'
+    -- a second review pass caught that defaulting a DB-error/no-row miss to the
+    restrictive branch was a real regression: `latest_salience_for_theme`'s
+    original contract was "closing a loop never fails" (best-effort, always
+    (0.0, {}) on a miss), and this is called from `_close()` on a `loop_id` the
+    Hub panel already showed the user moments earlier -- by construction that
+    row existed at load_pending_loops() time, so a miss here is virtually
+    always a transient hiccup, not evidence the loop is actually chronic_pressure.
+    Only a SUCCESSFULLY read, real scope value routes to chronic_pressure below
+    (card_kind_for_scope's allowlist) -- that's the fix that actually mattered
+    (a genuinely-read non-'chat' scope, e.g. a future 'broadcast' producer,
+    must not fall through to resolvable); a failed lookup must not manufacture
+    a false chronic_pressure block on a legitimate human Resolve/Dismiss click.
     """
-    default: dict[str, Any] = {"salience": 0.0, "features": {}, "scope": "unknown"}
+    default: dict[str, Any] = {"salience": 0.0, "features": {}, "scope": "chat"}
     try:
         from sqlalchemy import text
 

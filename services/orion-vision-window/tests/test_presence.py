@@ -158,3 +158,29 @@ def test_record_never_raises_on_a_bad_input() -> None:
     reg = PresenceRegistry(grace_sec=120.0, write_min_interval_sec=0.0)
     result = reg.record("cam0", None, now=0.0)   # type: ignore[arg-type]
     assert result is None
+
+
+def test_concurrent_streams_do_not_bleed_into_each_other() -> None:
+    """Interleaved calls, not just sequential ones -- proves isolation under
+    the real access pattern: the RPC path (_handle_rpc) dispatches concurrent
+    asyncio tasks per stream, unlike the periodic drain loop, which is
+    sequential. Simulates that interleaving directly.
+    """
+    reg = PresenceRegistry(grace_sec=120.0, write_min_interval_sec=0.0)
+
+    # Interleave observations for two streams as if two concurrent tasks were
+    # each mid-flight: cam0 present, carbon absent, cam0 absent, carbon
+    # present -- crossing back and forth rather than completing one stream
+    # before starting the other.
+    reg.record("cam0", PERSON, now=0.0)
+    reg.record("carbon", EMPTY, now=0.0)
+    reg.record("cam0", EMPTY, now=1.0)
+    reg.record("carbon", PERSON, now=1.0)
+    reg.record("cam0", EMPTY, now=125.0)     # past grace -> absent
+    snap_carbon = reg.record("carbon", PERSON, now=125.0)
+    snap_cam0 = reg.record("cam0", EMPTY, now=126.0)
+
+    assert snap_carbon["state"] == "present"
+    assert snap_carbon["since_sec"] == 124.0    # carbon has been present since t=1
+    assert snap_cam0["state"] == "absent"
+    assert snap_cam0["last_seen_sec"] == 126.0  # cam0 last seen at t=0

@@ -328,3 +328,52 @@ def allocate(
         spent_sec=spent,
         allowance_sec=allowance_sec,
     )
+
+
+def candidate_from_dispatch(
+    *,
+    dispatch_id: str,
+    dispatch_kind: str,
+    target_id: str,
+    signal_id: str | None,
+    claimed_direction: str | None,
+    cell_variances_by_volume: list[tuple[float, int]],
+    cost_sec: float | None,
+    cold_variance: float,
+    observation_variance: float = DEFAULT_OBSERVATION_VARIANCE,
+) -> Candidate:
+    """Build a scored Candidate from what a dispatch frame actually carries.
+
+    Lives here, not in the worker, because this is where the two live defects
+    were and neither was reachable by a test while it sat inside a method on a
+    class that needs a database and a settings object to instantiate. Every
+    allocator test constructed a Candidate directly with a scalar variance, so
+    the reconstruction -- the part that was wrong -- had no coverage at all.
+    A bare `_blended_variance(...)` NameError also shipped to a running
+    container from that same blind spot.
+
+    `signal_id is None` means UNMEASURABLE and yields `posterior_variance
+    None`, not a cold start. See Candidate.posterior_variance.
+    """
+    if signal_id is None:
+        variance = None
+    else:
+        blended = expected_information_gain_across_bins(
+            cell_variances_by_volume, observation_variance
+        )
+        variance = (
+            cold_variance
+            if blended is None
+            # Invert the volume-weighted mean gain back to the equivalent
+            # single variance, so Candidate keeps one scalar:
+            #   nats = 0.5*ln(1 + v/tau)  =>  v = tau*(exp(2*nats) - 1)
+            else observation_variance * (math.exp(2.0 * blended) - 1.0)
+        )
+    return Candidate(
+        dispatch_id=dispatch_id,
+        dispatch_kind=dispatch_kind,
+        target_id=target_id,
+        posterior_variance=variance,
+        cost_sec=cost_sec,
+        claimed_direction=claimed_direction,
+    )

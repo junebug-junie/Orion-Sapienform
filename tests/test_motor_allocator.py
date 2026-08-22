@@ -303,3 +303,78 @@ class TestPerBinVarianceNotPooled:
         assert expected_information_gain_nats(pooled_variance) < (
             expected_information_gain_across_bins(cells) / 3
         )
+
+
+class TestReconstructionFromADispatchFrame:
+    """The code path where BOTH live defects lived, and which had no test.
+
+    It sat inside a method on a class needing a database and a settings object,
+    so nothing exercised it: not the inversion (undeclared actions scoring the
+    cold-start maximum), not the pooled-variance error, and not a bare
+    `_blended_variance(...)` NameError that shipped to a running container.
+    Extracted to a pure function for exactly that reason.
+    """
+
+    def test_an_undeclared_signal_yields_an_unmeasurable_candidate(self):
+        from orion.autonomy.allocator import candidate_from_dispatch
+
+        c = candidate_from_dispatch(
+            dispatch_id="d", dispatch_kind="inspect", target_id="orion/bus/channels.yaml",
+            signal_id=None, claimed_direction=None,
+            cell_variances_by_volume=[], cost_sec=4.7, cold_variance=0.25,
+        )
+        assert c.posterior_variance is None
+        assert c.expected_nats == 0.0
+
+    def test_a_declared_signal_with_no_history_is_a_real_cold_start(self):
+        from orion.autonomy.allocator import candidate_from_dispatch
+
+        c = candidate_from_dispatch(
+            dispatch_id="d", dispatch_kind="inspect", target_id="t",
+            signal_id="execution_pressure", claimed_direction="no_change",
+            cell_variances_by_volume=[], cost_sec=5.0, cold_variance=0.25,
+        )
+        assert c.posterior_variance == 0.25
+        assert c.expected_nats == pytest.approx(0.9905007, abs=1e-6)
+
+    def test_history_round_trips_through_the_blended_variance(self):
+        """The inversion of nats -> equivalent variance must reproduce the
+        volume-weighted per-bin gain exactly."""
+        from orion.autonomy.allocator import (
+            candidate_from_dispatch,
+            expected_information_gain_across_bins,
+        )
+
+        cells = [(0.01, 100), (0.001, 900)]
+        expected = expected_information_gain_across_bins(cells)
+        c = candidate_from_dispatch(
+            dispatch_id="d", dispatch_kind="maintain", target_id="t",
+            signal_id="resource_pressure", claimed_direction="decrease",
+            cell_variances_by_volume=cells, cost_sec=1.0, cold_variance=0.25,
+        )
+        assert c.expected_nats == pytest.approx(expected, abs=1e-9)
+
+    def test_the_live_inversion_as_a_whole_frame(self):
+        """Reproduces the exact live population: undeclared inspects that were
+        winning every slot, against a measured prune that was being refused."""
+        from orion.autonomy.allocator import candidate_from_dispatch
+
+        undeclared = [
+            candidate_from_dispatch(
+                dispatch_id=f"u{i}", dispatch_kind="inspect", target_id=f"cfg{i}",
+                signal_id=None, claimed_direction=None,
+                cell_variances_by_volume=[], cost_sec=4.7, cold_variance=0.25,
+            )
+            for i in range(4)
+        ]
+        measured = candidate_from_dispatch(
+            dispatch_id="m", dispatch_kind="maintain", target_id="host:docker_containers",
+            signal_id="resource_pressure", claimed_direction="decrease",
+            cell_variances_by_volume=[(0.01, 50), (0.02, 50)], cost_sec=0.71,
+            cold_variance=0.25,
+        )
+        result = allocate(undeclared + [measured], allowance_sec=1000.0, min_nats_per_sec=0.02)
+        # Before the fix this admitted all four undeclared and refused the
+        # measured one. It must now be exactly the other way round.
+        assert [c.dispatch_id for c in result.admitted] == ["m"]
+        assert result.refusals_by_reason() == {"unmeasurable": 4}

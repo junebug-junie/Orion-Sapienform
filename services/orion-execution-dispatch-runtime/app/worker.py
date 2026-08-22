@@ -14,8 +14,7 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.autonomy.allocator import Candidate as AllocatorCandidate
-from orion.autonomy.allocator import allocate, expected_information_gain_across_bins
+from orion.autonomy.allocator import Candidate, allocate, candidate_from_dispatch
 from orion.autonomy.budget import budget_state, day_elapsed_fraction
 from orion.autonomy.contrast import TreatedCellKey, pooled_treated_mean
 from orion.autonomy.prediction import (
@@ -493,19 +492,6 @@ class ExecutionDispatchRuntimeWorker:
             logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
             return {}
 
-    @staticmethod
-    def _blended_variance(cells: list[tuple[float, int]]) -> float:
-        """The variance whose EIG equals the volume-weighted per-bin EIG.
-
-        Candidate carries one scalar, so invert the weighted average back to
-        an equivalent variance rather than changing the dataclass shape:
-        mean_nats = 0.5*ln(1+v/tau) => v = tau*(exp(2*mean_nats) - 1).
-        """
-        blended = expected_information_gain_across_bins(cells)
-        if blended is None:
-            return DEFAULT_PRIOR_VARIANCE
-        return DEFAULT_OBSERVATION_VARIANCE * (math.exp(2.0 * blended) - 1.0)
-
     def _log_allocator_preview(self, frame: ExecutionDispatchFrameV1, motor) -> None:
         """Report the allocation that WOULD have happened, against the one
         that did. Advisory: changes nothing, decides the flip.
@@ -523,7 +509,7 @@ class ExecutionDispatchRuntimeWorker:
         costs = self._store.load_action_cost_estimates()
         posteriors = self._load_effect_posteriors()
 
-        candidates: list[AllocatorCandidate] = []
+        candidates: list[Candidate] = []
         for item in pending:
             effect = item.expected_effect
             signal = effect.signal_id if effect is not None else None
@@ -544,24 +530,15 @@ class ExecutionDispatchRuntimeWorker:
                 else []
             )
             candidates.append(
-                AllocatorCandidate(
+                candidate_from_dispatch(
                     dispatch_id=item.dispatch_id,
                     dispatch_kind=item.dispatch_kind,
                     target_id=item.target_id,
-                    # None = UNMEASURABLE (declares no signal, so no
-                    # posterior can ever exist for it). DEFAULT_PRIOR_VARIANCE
-                    # = genuinely new but measurable. These were conflated in
-                    # the first version and the conflation inverted the whole
-                    # allocator -- see Candidate.posterior_variance.
-                    posterior_variance=(
-                        None
-                        if signal is None
-                        else (_blended_variance(cells) if cells else DEFAULT_PRIOR_VARIANCE)
-                    ),
-                    cost_sec=costs.get((item.dispatch_kind, item.target_id)),
-                    contrast=None,
-                    contrast_sd=None,
+                    signal_id=signal,
                     claimed_direction=effect.direction if effect is not None else None,
+                    cell_variances_by_volume=cells,
+                    cost_sec=costs.get((item.dispatch_kind, item.target_id)),
+                    cold_variance=DEFAULT_PRIOR_VARIANCE,
                 )
             )
 

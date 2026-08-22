@@ -151,6 +151,14 @@ def build_chat_salience_trace_row(frame: AttentionFrameV1) -> dict[str, Any] | N
 
 
 def _persist_sync(row: dict[str, Any]) -> bool:
+    # Requires services/orion-sql-db/manual_migration_attention_salience_trace.sql
+    # applied (adds why_it_matters/target_type, 2026-08-21) -- if this service is
+    # redeployed before the migration runs, EVERY insert here raises "column ...
+    # does not exist" and persist_chat_attention_salience_trace()'s fail-open
+    # contract swallows it as a WARNING, silently dropping ALL chat-scope
+    # attention_salience_trace writes (not just the two new columns) until
+    # someone reads the logs and runs the migration. Apply the migration BEFORE
+    # deploying this file's changes, not after.
     engine = _get_engine()
     if engine is None:
         raise RuntimeError("chat_attention_salience_trace_dsn_unset")

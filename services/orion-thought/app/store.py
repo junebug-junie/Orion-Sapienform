@@ -254,7 +254,16 @@ def persist_expectation_verdict(thought_id: str, verdict: str, scored_at: dateti
 
 
 def persist_salience_trace(trace) -> bool:
-    """Persist one salience trace row. Never raises; idempotent on trace_id."""
+    """Persist one salience trace row. Never raises; idempotent on trace_id.
+
+    Requires services/orion-sql-db/manual_migration_attention_salience_trace.sql
+    applied (adds why_it_matters/target_type, 2026-08-21) -- if this service is
+    redeployed before the migration runs, EVERY insert here raises "column ...
+    does not exist" and the except-block below swallows it as a WARNING,
+    silently dropping ALL reverie-scope attention_salience_trace writes (not
+    just the two new columns) until someone reads the logs and runs the
+    migration. Apply the migration BEFORE deploying this file's changes.
+    """
     try:
         from sqlalchemy import text
 

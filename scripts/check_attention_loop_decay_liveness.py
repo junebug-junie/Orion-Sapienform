@@ -39,15 +39,22 @@ _REPO_ROOT = str(Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from orion.substrate.attention.implicit_outcome import (  # noqa: E402
-    DEFAULT_MIN_SILENCE,
-    LoopObservation,
-    derive_implicit_verdicts,
-)
+from orion.substrate.attention.implicit_outcome import DEFAULT_MIN_SILENCE  # noqa: E402
 
+# Shared grouping + eligibility logic with the digest this gate watches -- NOT
+# reimplemented here. Review caught that a hand-reimplemented copy of the
+# trace-row -> LoopObservation grouping had a real bug (theme_key=loop_id
+# instead of the row's actual theme_key column, dormant only because every
+# current producer happens to set them equal) and that a second independent
+# copy of the "exclude already-decayed loops" filter is exactly the kind of
+# duplication that let this gate falsely report STALE right after a successful
+# digest run (confirmed live 2026-08-21) -- a fix applied in one copy and not
+# the other would silently desync the gate from the thing it watches.
 from scripts.attention_loop_decay_digest import (  # noqa: E402
     _SELECT_LATEST_VERDICTS_SQL,
     _SELECT_TRACES_SQL,
+    build_observations,
+    eligible_verdicts,
 )
 
 
@@ -61,35 +68,9 @@ async def _query_overshoot(postgres_uri: str, *, min_silence: timedelta) -> tupl
     finally:
         await conn.close()
 
-    existing_verdict = {r["loop_id"]: r["verdict"] for r in verdict_rows}
-    by_loop: dict[str, list[datetime]] = {}
-    for row in trace_rows:
-        by_loop.setdefault(row["loop_id"], []).append(row["created_at"])
-
-    observations = [
-        LoopObservation(
-            loop_id=loop_id, theme_key=loop_id, trace_times=times,
-            existing_verdict=existing_verdict.get(loop_id),
-        )
-        for loop_id, times in by_loop.items()
-    ]
-
+    observations = build_observations(trace_rows, verdict_rows)
     now = datetime.now(timezone.utc)
-    verdicts = derive_implicit_verdicts(observations, now=now, min_silence=min_silence)
-    # derive_implicit_verdicts() deliberately keeps decayed_unattended out of
-    # TERMINAL_VERDICTS (a real, intentional design choice -- see
-    # implicit_outcome.py's own comment: it's a label-stream signal, not a
-    # closure, so a loop can be re-derived as decayed_unattended indefinitely
-    # if it stays silent). That is correct for the digest itself (idempotent
-    # via outcome_id, see attention_loop_decay_digest.py::_outcome_id), but
-    # WRONG as a liveness signal -- confirmed live 2026-08-21: immediately
-    # after a successful digest run labelled 2 loops, this gate still reported
-    # both as "eligible" and STALE, because they had never stopped being
-    # eligible. For liveness purposes only, a loop that has received ANY
-    # outcome at all (including its own prior decayed_unattended) has been
-    # handled -- only a loop that has NEVER been labeled and is silent past
-    # threshold indicates the digest isn't running.
-    verdicts = [v for v in verdicts if existing_verdict.get(v.loop_id) is None]
+    verdicts = eligible_verdicts(observations, now=now, min_silence=min_silence)
     if not verdicts:
         return (0, 0.0, None)
 

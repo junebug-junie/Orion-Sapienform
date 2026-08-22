@@ -17,8 +17,7 @@ from scripts.attention_loops_store import (
     build_loop_outcome,
     build_pending_card,
     card_kind_for_scope,
-    latest_salience_for_theme,
-    latest_scope_for_theme,
+    latest_trace_for_theme,
     load_pending_loops,
     persist_loop_outcome,
     suppress_loop,
@@ -69,7 +68,11 @@ def list_loops(limit: int = 50):
 def _close(loop_id: str, verdict: str, note: str):
     if not _cards_enabled():
         raise HTTPException(status_code=404, detail="pending attention cards disabled")
-    if card_kind_for_scope(latest_scope_for_theme(loop_id)) == "chronic_pressure":
+    # One round-trip for both the scope guard and the salience/features this
+    # close needs -- see latest_trace_for_theme's docstring for why this used
+    # to be two separate lookups with two different (and disagreeing) defaults.
+    trace = latest_trace_for_theme(loop_id)
+    if card_kind_for_scope(trace["scope"]) == "chronic_pressure":
         # Reverie/substrate-broadcast loops are re-selected every tick by design --
         # a human Resolve/Dismiss here would falsely mark still-live system
         # pressure as closed. The Hub UI no longer offers these buttons for a
@@ -79,10 +82,9 @@ def _close(loop_id: str, verdict: str, note: str):
             status_code=409,
             detail="this loop is sustained system pressure, not a resolvable decision -- it cannot be resolved/dismissed",
         )
-    salience, features = latest_salience_for_theme(loop_id)
     outcome = build_loop_outcome(
         loop_id=loop_id, theme_key=loop_id, verdict=verdict, actor="juniper",
-        note=note, salience_at_close=salience, features_at_close=features,
+        note=note, salience_at_close=trace["salience"], features_at_close=trace["features"],
     )
     persist_loop_outcome(outcome)
     suppress_loop(loop_id)

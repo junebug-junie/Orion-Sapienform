@@ -32,8 +32,11 @@ class FakeConn:
         self.closed = True
 
 
-def _rows(loop_id: str, times: list[datetime]) -> list[dict]:
-    return [{"theme_key": loop_id, "loop_id": loop_id, "created_at": t} for t in times]
+def _rows(loop_id: str, times: list[datetime], *, theme_key: str | None = None) -> list[dict]:
+    return [
+        {"theme_key": theme_key or loop_id, "loop_id": loop_id, "salience": 0.3, "features": {}, "created_at": t}
+        for t in times
+    ]
 
 
 @pytest.mark.asyncio
@@ -70,6 +73,26 @@ async def test_loop_silent_past_floor_reports_overshoot():
     assert backlog == 1
     assert overshoot == pytest.approx(6.0, abs=0.1)
     assert worst == "loop-a"
+
+
+@pytest.mark.asyncio
+async def test_worst_theme_key_is_the_row_theme_key_not_the_loop_id():
+    # Regression (code review, 2026-08-21): the first version of this gate built
+    # LoopObservation(theme_key=loop_id) instead of reading the row's actual
+    # theme_key column -- dormant only because every current producer happens to
+    # set them equal. Now shares build_observations() with the digest, which
+    # gets this right.
+    now = datetime.now(timezone.utc)
+    silent_since = now - timedelta(hours=30)
+    conn = FakeConn(
+        trace_rows=_rows("loop-a", [silent_since], theme_key="theme-different-from-loop-id"),
+        verdict_rows=[],
+    )
+    with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
+        backlog, overshoot, worst = await liveness._query_overshoot(
+            "postgresql://fake/db", min_silence=timedelta(hours=24)
+        )
+    assert worst == "theme-different-from-loop-id"
 
 
 @pytest.mark.asyncio

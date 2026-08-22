@@ -1655,7 +1655,10 @@ architectural, keyed off the underlying trace row's `scope`, not a heuristic —
 see `orion/schemas/attention_salience.py`'s `PendingCardKindV1` docstring and
 `attention_loops_store.py::card_kind_for_scope`. The Hub UI renders
 `chronic_pressure` cards without Resolve/Dismiss buttons; the API also rejects
-those verbs on one with `409` (defense in depth against a stale client).
+those verbs on one with `409` (defense in depth against a stale client). The
+badge/button-suppression branching itself is pure logic in
+`static/js/cognitive-loop-card.js` (`cognitiveLoopCardViewModel`), unit-tested
+without a DOM harness: `node --test static/js/cognitive-loop-card.test.js`.
 
 **Why every card used to show the same sentence:** `why_it_matters`/`target_type`
 were computed on every loop (`orion/substrate/attention/scoring.py`) but never
@@ -1667,6 +1670,14 @@ always defaulting to `"other"`) was the *only* text any card ever showed. Fixed
 `manual_migration_attention_salience_trace.sql`) and both producers
 (`chat_attention_salience_trace.py`, `orion-thought`'s `reverie.py`) carry them
 through. The old sentence is now a true last-resort fallback.
+
+**Deploy order matters:** apply `manual_migration_attention_salience_trace.sql`
+*before* deploying orion-cortex-exec/orion-thought with these changes, not
+after. Both producers now INSERT `why_it_matters`/`target_type` unconditionally;
+without the migration every insert fails with "column ... does not exist" and
+the fail-open contract on both write paths swallows it as a WARNING log --
+silently dropping ALL `attention_salience_trace` persistence (both scopes, not
+just the two new columns) until someone reads the logs and runs the migration.
 
 **Implicit decay (2026-08-21):** the panel previously had no expiry at all — a
 loop left it only via a human's Resolve/Dismiss click, forever, even for a
@@ -1680,6 +1691,13 @@ see `orion/substrate/attention/verdicts.py`), so a `chronic_pressure` loop that'
 still genuinely salient keeps competing normally; only a stale card goes away.
 Liveness fail-safe: `make check-attention-loop-decay-liveness` (see
 `scripts/check_attention_loop_decay_liveness.py`).
+
+`--min-silence-hours` is an independent CLI default on both the digest and the
+liveness gate (both default to the same 24h constant,
+`implicit_outcome.DEFAULT_MIN_SILENCE`). If you ever tune one on its cron/host
+config, tune the other to match — nothing enforces agreement beyond this note;
+a mismatch makes the gate measure the wrong threshold (false STALE, or too
+permissive to catch a real outage).
 
 **Scheduled maintenance (Athena cron):** `scripts/attention_loop_decay_digest.py`
 is a standalone script, not a live service loop -- install on the host that runs

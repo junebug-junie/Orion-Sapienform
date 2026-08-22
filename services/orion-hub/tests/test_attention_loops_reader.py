@@ -125,3 +125,37 @@ def test_latest_salience_for_theme_string_features(monkeypatch):
 def test_latest_salience_for_theme_no_row(monkeypatch):
     monkeypatch.setattr(store, "_engine", lambda: _Engine([]))
     assert store.latest_salience_for_theme("missing") == (0.0, {})
+
+
+def test_latest_trace_for_theme_reads_scope_in_the_same_query(monkeypatch):
+    rows = [{"salience": 0.8, "features": {"evidence_strength": 0.5}, "scope": "reverie"}]
+    monkeypatch.setattr(store, "_engine", lambda: _Engine(rows))
+    trace = store.latest_trace_for_theme("t1")
+    assert trace == {"salience": 0.8, "features": {"evidence_strength": 0.5}, "scope": "reverie"}
+
+
+def test_latest_trace_for_theme_no_row_defaults_to_unknown_scope(monkeypatch):
+    # 'unknown' (not 'chat') so card_kind_for_scope routes an unresolvable
+    # lookup to the safe/restrictive chronic_pressure branch by default.
+    monkeypatch.setattr(store, "_engine", lambda: _Engine([]))
+    assert store.latest_trace_for_theme("missing") == {"salience": 0.0, "features": {}, "scope": "unknown"}
+
+
+class _BoomEngine:
+    def connect(self):
+        raise RuntimeError("db unreachable")
+
+
+def test_latest_trace_for_theme_db_failure_defaults_to_unknown_scope(monkeypatch):
+    monkeypatch.setattr(store, "_engine", lambda: _BoomEngine())
+    assert store.latest_trace_for_theme("t1") == {"salience": 0.0, "features": {}, "scope": "unknown"}
+
+
+def test_card_kind_for_scope_allowlists_only_chat():
+    assert store.card_kind_for_scope("chat") == "resolvable"
+    assert store.card_kind_for_scope("reverie") == "chronic_pressure"
+    # Schema-documented but not-yet-produced third scope value -- must default
+    # to the safe branch, not silently fall through to resolvable.
+    assert store.card_kind_for_scope("broadcast") == "chronic_pressure"
+    assert store.card_kind_for_scope("unknown") == "chronic_pressure"
+    assert store.card_kind_for_scope("") == "chronic_pressure"

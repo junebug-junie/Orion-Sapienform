@@ -8472,16 +8472,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderCognitiveLoopCard(card) {
-    const isChronic = card.card_kind === 'chronic_pressure';
+    // Chronic-vs-resolvable branching lives in cognitive-loop-card.js (pure,
+    // unit-tested without a DOM harness) -- this function only builds DOM from
+    // that view model. Server also rejects Resolve/Dismiss on a chronic_pressure
+    // loop with 409 (see attention_loops_routes.py); this is the UI half.
+    const vm = window.OrionCognitiveLoopCard.cognitiveLoopCardViewModel(card);
     const el = document.createElement('div');
-    el.className = `p-2 rounded border ${isChronic ? 'border-amber-800' : 'border-purple-800'} bg-gray-900`;
+    el.className = `p-2 rounded border ${vm.borderClass} bg-gray-900`;
     const header = document.createElement('div');
     header.className = 'flex items-center justify-between gap-2';
     const title = document.createElement('div');
     title.className = 'text-xs font-semibold text-purple-200';
     title.textContent = card.title;
     header.appendChild(title);
-    if (isChronic) {
+    if (vm.showChronicBadge) {
       const badge = document.createElement('span');
       badge.className = 'text-[9px] px-1.5 py-0.5 rounded-full uppercase bg-amber-900/60 text-amber-300';
       badge.textContent = 'Sustained pressure';
@@ -8496,15 +8500,13 @@ document.addEventListener("DOMContentLoaded", () => {
     el.appendChild(header);
     el.appendChild(why);
     el.appendChild(feats);
-    if (isChronic) {
-      // Reverie/substrate-broadcast loops are re-selected every tick by design --
-      // Resolve/Dismiss here would falsely mark still-live system pressure as
-      // closed (server also rejects it with 409; see attention_loops_routes.py).
+    if (vm.chronicNoteText) {
       const note = document.createElement('div');
       note.className = 'text-[10px] text-amber-500/80 mt-2 italic';
-      note.textContent = `Recurring ${card.recurrence_count || 0}x -- ongoing system state, not a pending decision.`;
+      note.textContent = vm.chronicNoteText;
       el.appendChild(note);
-    } else {
+    }
+    if (vm.showActions) {
       const actions = document.createElement('div');
       actions.className = 'flex gap-2 mt-2';
       const resolveBtn = document.createElement('button');

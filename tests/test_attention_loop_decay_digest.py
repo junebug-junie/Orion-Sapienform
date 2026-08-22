@@ -47,10 +47,26 @@ class FakeConn:
         self.closed = True
 
 
-def _rows(loop_id: str, times: list[datetime]) -> list[dict]:
+def _rows(loop_id: str, times: list[datetime], *, theme_key: str | None = None) -> list[dict]:
     return [
-        {"theme_key": loop_id, "loop_id": loop_id, "salience": 0.3, "features": {}, "created_at": t}
+        {"theme_key": theme_key or loop_id, "loop_id": loop_id, "salience": 0.3, "features": {}, "created_at": t}
         for t in times
+    ]
+
+
+def test_build_observations_uses_the_row_theme_key_not_the_loop_id():
+    now = datetime.now(timezone.utc)
+    rows = _rows("loop-a", [now], theme_key="theme-different-from-loop-id")
+    observations = digest.build_observations(rows, [])
+    assert observations == [
+        digest.LoopObservation(
+            loop_id="loop-a",
+            theme_key="theme-different-from-loop-id",
+            trace_times=[now],
+            last_salience=0.3,
+            last_features={},
+            existing_verdict=None,
+        )
     ]
 
 

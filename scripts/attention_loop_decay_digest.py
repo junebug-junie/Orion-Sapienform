@@ -138,10 +138,15 @@ async def _run_digest(
     return report
 
 
-async def _apply_decisions(
-    conn, trace_rows: list[dict[str, Any]], verdict_rows: list[dict[str, Any]], *,
-    now: datetime, min_silence: timedelta, dry_run: bool,
-) -> DigestReport:
+def build_observations(
+    trace_rows: list[dict[str, Any]], verdict_rows: list[dict[str, Any]]
+) -> list[LoopObservation]:
+    """Shared by this digest AND check_attention_loop_decay_liveness.py -- the
+    liveness gate needs the identical grouping to measure the same eligibility
+    this script acts on, not a hand-reimplemented copy. Review caught a real bug
+    from the first hand-reimplemented copy: it built `theme_key=loop_id` instead
+    of reading the row's actual `theme_key` column (dormant today only because
+    every current producer happens to set them equal)."""
     existing_verdict: dict[str, str] = {r["loop_id"]: r["verdict"] for r in verdict_rows}
 
     by_loop: dict[str, dict[str, Any]] = {}
@@ -163,7 +168,7 @@ async def _apply_decisions(
                 features = {}
         entry["last_features"] = dict(features or {})
 
-    observations = [
+    return [
         LoopObservation(
             loop_id=loop_id,
             theme_key=entry["theme_key"],
@@ -175,20 +180,37 @@ async def _apply_decisions(
         for loop_id, entry in by_loop.items()
     ]
 
-    verdicts = derive_implicit_verdicts(observations, now=now, min_silence=min_silence)
-    # derive_implicit_verdicts() deliberately keeps decayed_unattended out of its
-    # own TERMINAL_VERDICTS -- a real design choice for the label stream (a
-    # loop CAN be re-derived as decayed_unattended indefinitely if it stays
-    # silent; see that function's own docstring). Left unfiltered here, a
-    # repeat digest run would re-report (though not re-INSERT -- outcome_id is
-    # idempotent, see _outcome_id) every already-decayed loop as "decayed"
-    # forever, which is misleading in a cron log and is exactly what made
-    # check_attention_loop_decay_liveness.py falsely report STALE right after
-    # a successful run (confirmed live 2026-08-21). A loop only needs writing
-    # once per silence episode -- skip anything that already has any outcome.
-    verdicts = [v for v in verdicts if existing_verdict.get(v.loop_id) is None]
 
-    last_seen_by_loop = {loop_id: max(entry["times"]) for loop_id, entry in by_loop.items()}
+def eligible_verdicts(
+    observations: list[LoopObservation], *, now: datetime, min_silence: timedelta
+) -> list:
+    """derive_implicit_verdicts() results, further restricted to loops that have
+    NEVER received any outcome at all -- shared by this digest and the liveness
+    gate so both agree on "eligible" the same way.
+
+    derive_implicit_verdicts() deliberately keeps decayed_unattended out of its
+    own TERMINAL_VERDICTS -- a real design choice for the label stream (a loop
+    CAN be re-derived as decayed_unattended indefinitely if it stays silent; see
+    that function's own docstring). Left unfiltered here, a repeat digest run
+    would re-report (though not re-INSERT -- outcome_id is idempotent, see
+    _outcome_id) every already-decayed loop as "decayed" forever, which is
+    misleading in a cron log and is exactly what made
+    check_attention_loop_decay_liveness.py falsely report STALE right after a
+    successful run (confirmed live 2026-08-21). A loop only needs writing once
+    per silence episode -- skip anything that already has any outcome.
+    """
+    existing = {o.loop_id: o.existing_verdict for o in observations}
+    verdicts = derive_implicit_verdicts(observations, now=now, min_silence=min_silence)
+    return [v for v in verdicts if existing.get(v.loop_id) is None]
+
+
+async def _apply_decisions(
+    conn, trace_rows: list[dict[str, Any]], verdict_rows: list[dict[str, Any]], *,
+    now: datetime, min_silence: timedelta, dry_run: bool,
+) -> DigestReport:
+    observations = build_observations(trace_rows, verdict_rows)
+    verdicts = eligible_verdicts(observations, now=now, min_silence=min_silence)
+    last_seen_by_loop = {o.loop_id: max(o.trace_times) for o in observations}
 
     decayed: list[dict[str, Any]] = []
     if not dry_run:

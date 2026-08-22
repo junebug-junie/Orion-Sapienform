@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import perf_counter
 import math
 import random
 from collections import deque
@@ -893,6 +894,21 @@ class ExecutionDispatchRuntimeWorker:
         route = self._policy.proposal_kind_to_cortex.get(candidate.dispatch_kind or "")
         route_timeout = route.rpc_timeout_sec if route is not None else None
 
+        # THE COST MEASUREMENT. Taken here, around the send, rather than read
+        # off the verb's own report -- for a budget this is the right quantity
+        # and the only reliable one. Right: it is the wall-clock the action
+        # actually occupied on the motor path, queueing and transport included,
+        # which is what spending it costs. Reliable: it does not depend on a
+        # verb choosing to report anything, and skills.runtime.* verbs report
+        # nothing.
+        #
+        # Before this, `latency_ms` existed as a schema field on
+        # ActionOutcomeRecordV1, a column on substrate_action_outcomes, and a
+        # `_latencies()` reader in the feedback runtime -- and was populated on
+        # 0 of 5,739 rows in 6 hours, because nothing ever wrote it. There was
+        # no per-action cost anywhere in the system, which is what stopped the
+        # decision budget being buildable at all: value with no denominator.
+        send_started = perf_counter()
         try:
             payload = await client.dispatch(
                 verb=candidate.cortex_verb or "",
@@ -902,6 +918,11 @@ class ExecutionDispatchRuntimeWorker:
                 timeout_sec=route_timeout,
             )
         except Exception as exc:
+            # A failed send still consumed real time -- often the whole rpc
+            # timeout, which is the most expensive outcome there is. Recording
+            # it as absent would make failure look free and bias any
+            # cost-weighted comparison toward whatever fails fastest.
+            latency_ms = (perf_counter() - send_started) * 1000.0
             logger.warning(
                 "execution_dispatch_send_failed dispatch_id=%s error=%s", candidate.dispatch_id, exc
             )
@@ -910,8 +931,13 @@ class ExecutionDispatchRuntimeWorker:
                 dispatch_id=candidate.dispatch_id,
                 frame_id=frame.frame_id,
                 status="failed",
-                result_json={"error": str(exc)[:2000], "evidence_refs": [result_id]},
+                result_json={
+                    "error": str(exc)[:2000],
+                    "evidence_refs": [result_id],
+                    "latency_ms": latency_ms,
+                },
                 raw_len=0,
+                latency_ms=latency_ms,
             )
             self._recent_dispatch_statuses.append("failed")
             await self._emit_action_outcome(
@@ -940,6 +966,7 @@ class ExecutionDispatchRuntimeWorker:
         # "failed: Command 'docker builder prune' timed out after 600 seconds".
         plan_status, plan_reason = plan_execution_status(payload)
         if is_failed_plan_status(plan_status):
+            latency_ms = (perf_counter() - send_started) * 1000.0
             reason = plan_reason or f"plan status={plan_status}"
             logger.warning(
                 "execution_dispatch_plan_failed dispatch_id=%s plan_status=%s reason=%s",
@@ -968,8 +995,10 @@ class ExecutionDispatchRuntimeWorker:
                         extract_final_text(payload)
                     )["structured_result"],
                     "evidence_refs": [result_id],
+                    "latency_ms": latency_ms,
                 },
                 raw_len=0,
+                latency_ms=latency_ms,
             )
             self._recent_dispatch_statuses.append("failed")
             await self._emit_action_outcome(
@@ -991,6 +1020,7 @@ class ExecutionDispatchRuntimeWorker:
                 }
             )
 
+        latency_ms = (perf_counter() - send_started) * 1000.0
         final_text = extract_final_text(payload)
         observation_data = parse_structured_observation(final_text)
         raw_len = len(observation_data["observation"])
@@ -1015,8 +1045,13 @@ class ExecutionDispatchRuntimeWorker:
             dispatch_id=candidate.dispatch_id,
             frame_id=frame.frame_id,
             status=status,
-            result_json={**observation_data, "evidence_refs": [result_id]},
+            result_json={
+                **observation_data,
+                "evidence_refs": [result_id],
+                "latency_ms": latency_ms,
+            },
             raw_len=raw_len,
+            latency_ms=latency_ms,
         )
         self._recent_dispatch_statuses.append(status)
         logger.info(

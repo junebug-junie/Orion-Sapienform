@@ -485,6 +485,7 @@ class ExecutionDispatchRuntimeStore:
         status: str,
         result_json: dict,
         raw_len: int,
+        latency_ms: float | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -492,14 +493,17 @@ class ExecutionDispatchRuntimeStore:
                 text(
                     """
                     INSERT INTO substrate_dispatch_results (
-                        result_id, dispatch_id, frame_id, status, result_json, raw_len, created_at
+                        result_id, dispatch_id, frame_id, status, result_json, raw_len,
+                        latency_ms, created_at
                     ) VALUES (
-                        :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len, :created_at
+                        :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len,
+                        :latency_ms, :created_at
                     )
                     ON CONFLICT (result_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         result_json = EXCLUDED.result_json,
-                        raw_len = EXCLUDED.raw_len
+                        raw_len = EXCLUDED.raw_len,
+                        latency_ms = EXCLUDED.latency_ms
                     """
                 ),
                 {
@@ -509,6 +513,7 @@ class ExecutionDispatchRuntimeStore:
                     "status": status,
                     "result_json": Json(result_json),
                     "raw_len": raw_len,
+                    "latency_ms": latency_ms,
                     "created_at": now,
                 },
             )

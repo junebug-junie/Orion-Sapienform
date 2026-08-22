@@ -119,6 +119,46 @@ def test_single_bare_word_person_or_place_survives() -> None:
     ]
 
 
+def test_single_bare_word_in_an_uncased_script_survives() -> None:
+    # Regression (code review, 3rd pass): the capitalization check must use
+    # `not phrase[:1].islower()`, NOT `phrase[:1].isupper()` -- isupper() is
+    # False for every uncased script (CJK, Arabic, Hebrew, Thai, ...), which
+    # would wrongly drop a real bare name in one of those scripts even though
+    # islower() is equally False there (no case distinction exists at all).
+    # The pre-this-diff code never had this bug -- it only checked type_hint.
+    raw = json.dumps(
+        [{"phrase": "東京", "type": "place"}, {"phrase": "محمد", "type": "person"}]
+    )
+    parsed = parse_current_turn_llm_signals(raw)
+    assert parsed == [
+        {"phrase": "東京", "type": "place"},
+        {"phrase": "محمد", "type": "person"},
+    ]
+
+
+def test_bare_word_name_acceptance_is_logged_at_info_for_auditability(caplog) -> None:
+    # Disclosed, not fixed (review, 2026-08-22): a capitalized interjection
+    # mistyped person/place would still sail through this floor -- not yet
+    # observed live, so no denylist was built on spec. This INFO log (louder
+    # than the DEBUG drop-case log) is the instrumentation-first substitute:
+    # every bare-word acceptance is greppable so a real occurrence of that
+    # failure mode is auditable instead of invisible.
+    with caplog.at_level(logging.INFO, logger="orion.cortex.current_turn_llm_signals"):
+        parse_current_turn_llm_signals('[{"phrase": "Sarah", "type": "person"}]')
+    assert any("current_turn_llm_signal_bare_word_name_accepted" in r.message for r in caplog.records)
+
+
+def test_single_bare_lowercase_word_mistyped_person_or_place_is_still_dropped() -> None:
+    # Confirmed live 2026-08-22, hours after the type-carve-out floor shipped:
+    # "bus" got through again because the model classified it "place" that
+    # time instead of "concept"/"other" -- the word itself never changed, only
+    # the model's own (unreliable) classification did. A genuine name/place is
+    # capitalized by ordinary convention ("Sarah", "Paris" above); requiring
+    # that on top of the type check is a second, independent signal.
+    raw = '[{"phrase": "bus", "type": "place"}, {"phrase": "glad", "type": "person"}]'
+    assert parse_current_turn_llm_signals(raw) == []
+
+
 def test_multi_word_phrase_survives_regardless_of_type() -> None:
     raw = '[{"phrase": "the reactor rollout plan", "type": "plan"}, {"phrase": "context compaction", "type": "concept"}]'
     assert parse_current_turn_llm_signals(raw) == [

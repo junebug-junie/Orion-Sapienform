@@ -105,3 +105,22 @@ def test_load_seed_concept_nodes_malformed_yaml_degrades_gracefully(tmp_path: Pa
 
 def test_default_seed_concepts_path_exists() -> None:
     assert DEFAULT_SEED_CONCEPTS_PATH.exists()
+
+
+def test_golden_subject_anchor_node_ids_match_real_seed_fixture() -> None:
+    # orion/substrate/adapters/concept_induction.py hardcodes
+    # _GOLDEN_SUBJECT_ANCHOR_NODE_IDS (ConceptProfile.subject ->
+    # golden node_id) rather than reading seed_concepts.yaml on every chat
+    # turn. This test is the drift guard: if the fixture's keys/node_ids
+    # ever change, this fails loudly instead of the adapter silently
+    # emitting associated_with edges to node_ids that no longer exist.
+    from orion.substrate.adapters.concept_induction import _GOLDEN_SUBJECT_ANCHOR_NODE_IDS
+
+    nodes, _edges = load_seed_concept_nodes()
+    real_node_ids = {n.node_id for n in nodes}
+
+    for subject, expected_node_id in _GOLDEN_SUBJECT_ANCHOR_NODE_IDS.items():
+        assert expected_node_id in real_node_ids, (
+            f"_GOLDEN_SUBJECT_ANCHOR_NODE_IDS[{subject!r}] = {expected_node_id!r} "
+            "does not match any node_id the real seed fixture produces"
+        )

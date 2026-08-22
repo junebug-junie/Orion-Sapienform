@@ -52,6 +52,55 @@ def test_concept_adapter_maps_profile_and_preserves_scope_subject_and_provenance
     assert concept_nodes[0].provenance.source_kind == "concept_induction.profile"
 
 
+def test_concept_adapter_links_induced_concept_to_its_golden_subject_anchor() -> None:
+    # The fix for real induced concepts being permanently zero-degree
+    # (2026-08-22): a concept induced from subject "orion"'s window gets a
+    # real associated_with edge from Orion's own golden seed node
+    # (orion/substrate/seed_concepts.yaml), not a fabricated relationship --
+    # ConceptProfile.subject is a structural fact already carried by the
+    # profile, not an inference.
+    profile = _concept_profile()  # subject="orion"
+    out = map_concept_profile_to_substrate(profile=profile, anchor_scope="orion")
+    concept_node_id = next(n.node_id for n in out.nodes if n.node_kind == "concept")
+    anchor_edges = [
+        e
+        for e in out.edges
+        if e.source.node_id == "sub-concept-seed-orion" and e.target.node_id == concept_node_id
+    ]
+    assert len(anchor_edges) == 1
+    assert anchor_edges[0].predicate == "associated_with"
+    assert anchor_edges[0].source.node_kind == "concept"
+    assert anchor_edges[0].target.node_kind == "concept"
+
+
+def test_concept_adapter_skips_subject_anchor_edge_for_unrecognized_subject() -> None:
+    # ConceptProfile.subject is a plain str (not a schema-enforced Literal --
+    # see its own field description). An unrecognized value must degrade to
+    # no anchor edge, never a fabricated reference to a node we can't
+    # confirm exists.
+    now = datetime.now(timezone.utc)
+    evidence = ConceptEvidenceRef(message_id=uuid4(), timestamp=now, channel="orion:test")
+    profile = ConceptProfile(
+        subject="some_unknown_subject",
+        window_start=now - timedelta(hours=1),
+        window_end=now,
+        concepts=[
+            ConceptItem(
+                concept_id="c-unknown",
+                label="orphan",
+                type="motif",
+                confidence=0.5,
+                salience=0.5,
+                evidence=[evidence],
+            )
+        ],
+    )
+    out = map_concept_profile_to_substrate(profile=profile, anchor_scope="world")
+    assert not any(
+        e.predicate == "associated_with" and e.source.node_id.startswith("sub-concept-seed-") for e in out.edges
+    )
+
+
 def test_concept_adapter_seeds_activation_and_half_life_from_salience() -> None:
     # Regression: signals.activation used to be left at the schema default
     # (activation=0.0, decay_half_life_seconds=None), making Hub's decay

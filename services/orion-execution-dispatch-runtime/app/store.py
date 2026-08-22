@@ -486,6 +486,8 @@ class ExecutionDispatchRuntimeStore:
         result_json: dict,
         raw_len: int,
         latency_ms: float | None = None,
+        dispatch_kind: str | None = None,
+        target_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -494,16 +496,18 @@ class ExecutionDispatchRuntimeStore:
                     """
                     INSERT INTO substrate_dispatch_results (
                         result_id, dispatch_id, frame_id, status, result_json, raw_len,
-                        latency_ms, created_at
+                        latency_ms, dispatch_kind, target_id, created_at
                     ) VALUES (
                         :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len,
-                        :latency_ms, :created_at
+                        :latency_ms, :dispatch_kind, :target_id, :created_at
                     )
                     ON CONFLICT (result_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         result_json = EXCLUDED.result_json,
                         raw_len = EXCLUDED.raw_len,
-                        latency_ms = EXCLUDED.latency_ms
+                        latency_ms = EXCLUDED.latency_ms,
+                        dispatch_kind = EXCLUDED.dispatch_kind,
+                        target_id = EXCLUDED.target_id
                     """
                 ),
                 {
@@ -514,9 +518,53 @@ class ExecutionDispatchRuntimeStore:
                     "result_json": Json(result_json),
                     "raw_len": raw_len,
                     "latency_ms": latency_ms,
+                    "dispatch_kind": dispatch_kind,
+                    "target_id": target_id,
                     "created_at": now,
                 },
             )
+
+    def load_action_cost_estimates(self, lookback_hours: int = 24) -> dict[tuple[str, str], float]:
+        """Median motor-seconds per (dispatch_kind, target_id), from history.
+
+        The allocator's denominator. A global p50 would make cost uniform and
+        collapse ranking back to raw information -- and the spread is real:
+        measured live, `maintain host:docker_containers` is 890ms against
+        `summarize self:current` at 5,362ms, a 6x difference.
+
+        MEDIAN, not mean. One 92-second outlier was already observed in the
+        first hour of cost data; a mean would let a single hung dispatch
+        permanently price its whole action out of the budget.
+
+        Reads substrate_dispatch_results, NOT substrate_action_outcomes.
+        The outcome ledger has dispatch_kind and target_id but only contains
+        actions that DECLARED A SIGNAL -- 32.3% of dispatch volume. Sourcing
+        cost from it made the allocator refuse `no_cost_estimate` on 7 of 12
+        live pending actions whose cost was sitting in dispatch_results the
+        whole time. A result row only exists for an action that actually ran,
+        so there is no blocked-candidate NULL to filter out here.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT dispatch_kind, target_id,
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_ms
+                      FROM substrate_dispatch_results
+                     WHERE latency_ms IS NOT NULL
+                       AND dispatch_kind IS NOT NULL
+                       AND target_id IS NOT NULL
+                       AND created_at > now() - make_interval(hours => :hours)
+                     GROUP BY 1, 2
+                    """
+                ),
+                {"hours": lookback_hours},
+            ).all()
+        return {
+            (r[0], r[1]): float(r[2]) / 1000.0
+            for r in rows
+            if r[2] is not None and float(r[2]) > 0
+        }
 
     def sum_motor_seconds_for_day(self, day_start, day_end) -> float:
         """Motor-seconds actually spent in a UTC day.

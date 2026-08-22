@@ -14,9 +14,14 @@ from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.autonomy.allocator import Candidate, allocate, candidate_from_dispatch
 from orion.autonomy.budget import budget_state, day_elapsed_fraction
-from orion.autonomy.contrast import TreatedCellKey
-from orion.autonomy.prediction import EffectPosterior
+from orion.autonomy.contrast import TreatedCellKey, pooled_treated_mean
+from orion.autonomy.prediction import (
+    DEFAULT_OBSERVATION_VARIANCE,
+    DEFAULT_PRIOR_VARIANCE,
+    EffectPosterior,
+)
 from orion.execution_dispatch.builder import (
     build_execution_dispatch_frame,
     build_stale_discard_execution_dispatch_frame,
@@ -487,6 +492,81 @@ class ExecutionDispatchRuntimeWorker:
             logger.warning("execution_dispatch_effect_posterior_load_failed", exc_info=True)
             return {}
 
+    def _log_allocator_preview(self, frame: ExecutionDispatchFrameV1, motor) -> None:
+        """Report the allocation that WOULD have happened, against the one
+        that did. Advisory: changes nothing, decides the flip.
+
+        Comparing the two sets is the whole output. "The allocator agrees with
+        priority order" and "the allocator would drop 4 of 5 every tick" are
+        very different findings and only one of them justifies enforcing.
+        """
+        # frame.dispatched_candidates is always empty here -- see the note in
+        # the log call below.
+        pending = list(frame.candidates)
+        if not pending:
+            return
+
+        costs = self._store.load_action_cost_estimates()
+        posteriors = self._load_effect_posteriors()
+
+        candidates: list[Candidate] = []
+        for item in pending:
+            effect = item.expected_effect
+            signal = effect.signal_id if effect is not None else None
+            # Per-BIN variances, volume weighted. The next observation lands
+            # in one baseline bin, so a pooled-across-bins figure is the wrong
+            # prior -- and wrong in the direction that reads a well-travelled
+            # action as better known than it is.
+            cells = (
+                [
+                    (post.variance, post.n)
+                    for key, post in posteriors.items()
+                    if key[0] == item.dispatch_kind
+                    and key[1] == item.target_id
+                    and key[2] == signal
+                    and post.n > 0
+                ]
+                if signal
+                else []
+            )
+            candidates.append(
+                candidate_from_dispatch(
+                    dispatch_id=item.dispatch_id,
+                    dispatch_kind=item.dispatch_kind,
+                    target_id=item.target_id,
+                    signal_id=signal,
+                    claimed_direction=effect.direction if effect is not None else None,
+                    cell_variances_by_volume=cells,
+                    cost_sec=costs.get((item.dispatch_kind, item.target_id)),
+                    cold_variance=DEFAULT_PRIOR_VARIANCE,
+                )
+            )
+
+        allocation = allocate(
+            candidates,
+            allowance_sec=motor.remaining_sec,
+            min_nats_per_sec=self._settings.orion_dispatch_min_nats_per_sec,
+        )
+        # `agree=` used to be logged here as if it compared the allocator's
+        # choice against what actually dispatched. It could not: the admitted
+        # set is a SUBSET of pending by construction, so agree == would_admit
+        # on every line, and frame.dispatched_candidates is always empty at
+        # this call site (execution_dispatch/builder.py never sets that
+        # status; worker._send_prepared_candidates fills it later). It was a
+        # tautology dressed as the metric the enforce flip gets decided on.
+        # Removed rather than fixed here -- a real comparison has to happen
+        # after the send loop, which is a separate change.
+        logger.info(
+            "motor_allocator_preview pending=%d would_admit=%d would_drop=%d "
+            "nats=%.4f cost_sec=%.1f refusals=%s",
+            len(pending),
+            len(allocation.admitted),
+            len(pending) - len(allocation.admitted),
+            allocation.admitted_nats,
+            allocation.spent_sec,
+            allocation.refusals_by_reason() or "{}",
+        )
+
     def _derive_motor_budget(self, frame_generated_at: datetime):
         """The real daily ceiling: motor-seconds spent against an operator-set
         allowance.
@@ -508,10 +588,29 @@ class ExecutionDispatchRuntimeWorker:
         try:
             spent = self._store.sum_motor_seconds_for_day(day_start, day_end)
         except Exception:
-            # A budget that cannot read its own spend must not silently behave
-            # as though nothing has been spent -- that reads as a full
-            # allowance and permits everything. Absent budget, not empty one.
+            # A budget that cannot read its own spend must not behave as
+            # though nothing has been spent. The first version returned None
+            # here with a comment saying exactly that -- and the caller's
+            # `if motor is not None:` then skipped the whole block INCLUDING
+            # the enforce branch, so a transient database error removed the
+            # ceiling entirely. The comment asserted the opposite of what the
+            # code did.
+            #
+            # Fail CLOSED when enforcing: an unknown spend is treated as a
+            # spent allowance, so a broken meter stops dispatch rather than
+            # uncapping it. Advisory keeps returning None, because there is
+            # nothing to fail closed on and a fabricated "exhausted" line
+            # would poison the very would-refuse counts the flip is decided
+            # on.
             logger.warning("motor_budget_spend_read_failed", exc_info=True)
+            if self._settings.orion_dispatch_motor_budget_enforce:
+                allowance = self._settings.orion_dispatch_motor_budget_sec_per_day
+                return budget_state(
+                    allowance_sec=allowance,
+                    spent_sec=allowance,
+                    elapsed_fraction=day_elapsed_fraction(frame_generated_at, day_start),
+                    enforcing=True,
+                )
             return None
 
         return budget_state(
@@ -651,18 +750,16 @@ class ExecutionDispatchRuntimeWorker:
         # the evidence the enforce flip gets decided on.
         motor = self._derive_motor_budget(frame.generated_at)
         if motor is not None:
-            pending = list(frame.candidates) + list(frame.dispatched_candidates)
-            typical_cost_sec = self._settings.orion_dispatch_motor_typical_cost_sec
-            would_refuse = 0
-            running = motor.spent_sec
-            for _ in pending:
-                if (running + typical_cost_sec) > motor.allowance_sec:
-                    would_refuse += 1
-                running += typical_cost_sec
+            pending = list(frame.candidates)
+            # The flat-p50 would_refuse projection that used to live here is
+            # retired: the allocator three lines below computes the same thing
+            # from each action's OWN measured cost, and two estimates that can
+            # disagree, logged adjacently, is the defect this repo's contract
+            # names directly ("when a metric is replaced by a better one,
+            # retire the old one completely").
             logger.info(
                 "motor_budget mode=%s spent_sec=%.1f allowance_sec=%.1f "
-                "remaining_sec=%.1f pace=%.2fx projected_day_h=%.1f "
-                "pending=%d would_refuse=%d",
+                "remaining_sec=%.1f pace=%.2fx projected_day_h=%.1f pending=%d",
                 motor.mode,
                 motor.spent_sec,
                 motor.allowance_sec,
@@ -670,8 +767,21 @@ class ExecutionDispatchRuntimeWorker:
                 motor.pace,
                 motor.projected_day_sec / 3600.0,
                 len(pending),
-                would_refuse,
             )
+            # STEP 3, ADVISORY: what would an allocator have chosen?
+            # Scored on expected information per motor-second -- the epistemic
+            # term of expected free energy, which is the only one that
+            # discriminates when every action's measured effect sits inside its
+            # own error bar. Pragmatic value is a GATE (confidently harmful ->
+            # refused), never converted into the score, because inventing that
+            # exchange rate is how risk_score happened.
+            try:
+                self._log_allocator_preview(frame, motor)
+            except Exception:
+                # An advisory readout must never be able to stall a real
+                # dispatch tick.
+                logger.warning("motor_allocator_preview_failed", exc_info=True)
+
             if motor.mode == "enforcing" and motor.exhausted:
                 logger.info("motor_budget_exhausted sending nothing this tick")
                 return frame.model_copy(update=baseline_fields)
@@ -1007,6 +1117,8 @@ class ExecutionDispatchRuntimeWorker:
                 },
                 raw_len=0,
                 latency_ms=latency_ms,
+                dispatch_kind=candidate.dispatch_kind,
+                target_id=candidate.target_id,
             )
             self._recent_dispatch_statuses.append("failed")
             await self._emit_action_outcome(
@@ -1068,6 +1180,8 @@ class ExecutionDispatchRuntimeWorker:
                 },
                 raw_len=0,
                 latency_ms=latency_ms,
+                dispatch_kind=candidate.dispatch_kind,
+                target_id=candidate.target_id,
             )
             self._recent_dispatch_statuses.append("failed")
             await self._emit_action_outcome(
@@ -1121,6 +1235,8 @@ class ExecutionDispatchRuntimeWorker:
             },
             raw_len=raw_len,
             latency_ms=latency_ms,
+            dispatch_kind=candidate.dispatch_kind,
+            target_id=candidate.target_id,
         )
         self._recent_dispatch_statuses.append(status)
         logger.info(

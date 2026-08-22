@@ -189,7 +189,14 @@ class AttachmentRefV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
-    kind: Literal["image"] = "image"
+    # "percept" is a camera frame, not a user upload. The distinction is
+    # load-bearing at the gateway, which resolves the two from DIFFERENT
+    # content-addressed stores: user uploads from Hub's chat attachment store,
+    # percepts from orion-percept-store, which has its own short retention and
+    # does not share a process with the docker socket. Widening this Literal is
+    # backward compatible -- "image" remains the default and every existing
+    # producer keeps working unchanged.
+    kind: Literal["image", "percept"] = "image"
     sha256: str = Field(..., description="Content address of the stored bytes; also the storage key.")
     mime: str = Field(..., description="Concrete media type, e.g. 'image/png'.")
     # ge=1, not ge=0: a zero-byte image is meaningless, and a ref declaring 0

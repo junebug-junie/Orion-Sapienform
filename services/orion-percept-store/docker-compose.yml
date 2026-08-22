@@ -1,0 +1,34 @@
+services:
+  percept-store:
+    build:
+      context: ../..
+      dockerfile: services/orion-percept-store/Dockerfile
+    container_name: ${PROJECT}-percept-store
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - SERVICE_NAME=${SERVICE_NAME:-percept-store}
+      - PERCEPT_STORE_DIR=${PERCEPT_STORE_DIR:-/mnt/orion-percepts}
+      - PERCEPT_RETENTION_SECONDS=${PERCEPT_RETENTION_SECONDS:-3600}
+      - PERCEPT_SWEEP_INTERVAL_SECONDS=${PERCEPT_SWEEP_INTERVAL_SECONDS:-300}
+      - PERCEPT_MAX_BYTES=${PERCEPT_MAX_BYTES:-8388608}
+      - PERCEPT_ALLOWED_MIMES=${PERCEPT_ALLOWED_MIMES:-image/jpeg,image/png,image/webp}
+      - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
+
+    volumes:
+      # Its own root, deliberately not Hub's HUB_CHAT_ATTACHMENT_DIR.
+      - ${PERCEPT_STORE_DIR:-/mnt/orion-percepts}:${PERCEPT_STORE_DIR:-/mnt/orion-percepts}
+
+    ports:
+      - "${HOST_PORT:-8021}:8000"
+
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

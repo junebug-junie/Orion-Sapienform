@@ -2836,6 +2836,73 @@ async def _run_agent_claude_http(
     }
 
 
+async def _augment_thin_history_from_persisted(
+    *,
+    session_id: str,
+    user_messages: List[Dict[str, Any]],
+    max_turns: int,
+) -> List[Dict[str, Any]]:
+    """Prepend persisted ``chat_history_log`` turns when the caller-supplied
+    ``user_messages`` carries no real prior thread.
+
+    Exists because of a real gap (confirmed live 2026-08-22): the WebSocket
+    path already restores persisted history at connect time
+    (``chat_history_rehydrate.rehydrate_history``, wired in
+    ``websocket_handler.py``), but this HTTP handler had no equivalent. The
+    frontend's own WebSocket-down fallback (``app.js``'s ``waitForWebSocketOpen``
+    timeout path) sends ``messages: [{"role": "user", "content": value}]`` --
+    literally just the current turn, no history -- because the browser holds
+    no client-side message array of its own; the real conversation state
+    lives server-side in the WebSocket connection's in-memory ``history``,
+    which a stateless HTTP POST cannot see. Without this, a turn sent during
+    exactly that reconnect window (e.g. the first message after a long idle
+    gap, when the tab's old socket has died and reconnect hasn't finished
+    within the 5s budget) reads as a first-ever message regardless of how
+    long the session's real thread is, and Orion greets fresh mid-conversation
+    -- confirmed live via ``chat_history_log``: session ``orion_journal`` had
+    12+ hours of same-day history, but the turn sent right after a long idle
+    gap arrived with zero of it and Orion answered as if meeting Juniper for
+    the first time.
+
+    Restore-only, same intent as ``rehydrate_history``: only fires when
+    ``user_messages`` has at most one real (user/assistant) turn -- i.e. it
+    looks like "just the current prompt", not an already-populated thread
+    (the WebSocket path's own payload, which legitimately holds many turns,
+    is left untouched). Best-effort: any failure here must never break chat.
+    """
+    if not bool(getattr(settings, "HUB_HISTORY_REHYDRATE_ENABLED", True)):
+        return user_messages
+    real_turns = [
+        m for m in user_messages
+        if isinstance(m, dict) and str(m.get("role") or "").strip().lower() in {"user", "assistant"}
+    ]
+    if len(real_turns) > 1 or not str(session_id or "").strip():
+        return user_messages
+    try:
+        from scripts.chat_history_rehydrate import fetch_recent_rows, rows_to_history_messages
+
+        rows = await asyncio.to_thread(
+            fetch_recent_rows,
+            str(session_id),
+            max_turns=max_turns,
+            max_age_hours=float(getattr(settings, "HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS", 48.0)),
+        )
+        restored = rows_to_history_messages(rows, max_turns=max_turns)
+    except Exception:
+        logger.warning(
+            "http_chat_thin_history_rehydrate_failed session_id=%s", session_id, exc_info=True
+        )
+        return user_messages
+    if not restored:
+        return user_messages
+    logger.info(
+        "http_chat_thin_history_rehydrated session_id=%s restored=%d",
+        session_id,
+        len(restored),
+    )
+    return restored + list(user_messages)
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -2910,8 +2977,13 @@ async def handle_chat_request(
         # actually thread it into; now that it does, this parity gap would
         # silently starve HTTP-driven orion-mode turns of history.
         context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+        effective_messages = await _augment_thin_history_from_persisted(
+            session_id=session_id,
+            user_messages=user_messages,
+            max_turns=context_turns,
+        )
         continuity_messages = build_continuity_messages(
-            history=user_messages,
+            history=effective_messages,
             latest_user_prompt=user_prompt,
             turns=context_turns,
         )
@@ -2953,8 +3025,13 @@ async def handle_chat_request(
     # ─── Substrate effect deferred until after CortexChatRequest is built ──
 
     context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+    effective_messages = await _augment_thin_history_from_persisted(
+        session_id=session_id,
+        user_messages=user_messages,
+        max_turns=context_turns,
+    )
     continuity_messages = build_continuity_messages(
-        history=user_messages,
+        history=effective_messages,
         latest_user_prompt=user_prompt,
         turns=context_turns,
     )

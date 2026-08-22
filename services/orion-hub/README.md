@@ -1709,23 +1709,34 @@ config, tune the other to match — nothing enforces agreement beyond this note;
 a mismatch makes the gate measure the wrong threshold (false STALE, or too
 permissive to catch a real outage).
 
-**Scheduled maintenance (Athena cron):** `scripts/attention_loop_decay_digest.py`
-is a standalone script, not a live service loop -- install on the host that runs
-the Hub stack (`crontab -e` as the operating user), same pattern as
-`concept_relation_digest.py` (see `services/orion-memory-consolidation/README.md`'s
-"Scheduled maintenance" section):
+**Scheduled maintenance (Athena cron, installed 2026-08-22):**
+`scripts/attention_loop_decay_digest.py` is a standalone script, not a live
+service loop. Installed on the Hub host's crontab, same PATH/POSTGRES_URI
+pattern as `concept_relation_digest.py`'s own entry (see
+`services/orion-memory-consolidation/README.md`'s "Scheduled maintenance"
+section) -- the explicit `PATH=.../venv/bin:$PATH` prefix is load-bearing, not
+decorative: cron's own minimal default PATH cannot resolve `python`/`make` on
+this host, confirmed live 2026-07-14 for the concept-relation digest and
+re-confirmed 2026-08-22 for this one (an earlier version of this doc used
+`cd ... &&` without the PATH prefix, which would have failed the same way):
 
 ```cron
-# Attention-loop implicit-decay digest -- labels loops silent 24h+ with no human
-# verdict as decayed_unattended and suppresses them out of the Hub's
-# pending-attention panel (never out of live reverie selection). Idempotent
-# (outcome_id is episode-scoped), safe to run frequently. Requires POSTGRES_URI
-# in the shell environment or a sourced .env; see services/orion-hub/.env.
-*/30 * * * * cd /mnt/scripts/Orion-Sapienform && POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' services/orion-hub/.env | cut -d= -f2-) make attention-loop-decay-digest >> /mnt/scripts/Orion-Sapienform/logs/orion-attention-loop-decay-digest.log 2>&1
+# Attention-loop implicit-decay digest -- labels chat-scope loops silent 24h+
+# with no human verdict as decayed_unattended and suppresses them out of the
+# Hub's pending-attention panel (never touches reverie-scope/chronic_pressure
+# loops -- see the script's own docstring for why). Idempotent (outcome_id is
+# episode-scoped), safe to run frequently.
+*/30 * * * * PATH=/mnt/scripts/Orion-Sapienform/venv/bin:$PATH POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' /mnt/scripts/Orion-Sapienform/services/orion-hub/.env | cut -d= -f2-) make -C /mnt/scripts/Orion-Sapienform attention-loop-decay-digest >> /mnt/scripts/Orion-Sapienform/logs/orion-attention-loop-decay-digest.log 2>&1
+
+# Fail-safe for the digest above -- fails if the most-overdue decay-eligible
+# chat-scope loop exceeds its own 24h silence threshold by more than 3h, which
+# only happens if the cron entry above died or the job is crashing. Offset
+# 7/37 (not 0/30) so it checks just after each digest run completes.
+7,37 * * * * PATH=/mnt/scripts/Orion-Sapienform/venv/bin:$PATH POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' /mnt/scripts/Orion-Sapienform/services/orion-hub/.env | cut -d= -f2-) make -C /mnt/scripts/Orion-Sapienform check-attention-loop-decay-liveness >> /mnt/scripts/Orion-Sapienform/logs/orion-attention-loop-decay-liveness.log 2>&1
 ```
 
-If this cron entry dies or is dropped after a host migration, nothing else
-notices on its own -- `make check-attention-loop-decay-liveness` is the
-fail-safe (queries the real overshoot past each loop's own decay threshold, not
-a heartbeat file); run it by hand any time you suspect the digest stopped
-running.
+Both lines smoke-tested live under a minimal `env -i PATH=... sh -c '...'`
+(mimicking cron's own bare environment) before being installed -- not just
+syntax-checked. Run `make check-attention-loop-decay-liveness` by hand any
+time you suspect either entry stopped running (queries the real overshoot
+past each loop's own decay threshold, not a heartbeat file).

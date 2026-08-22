@@ -518,6 +518,44 @@ class ExecutionDispatchRuntimeStore:
                 },
             )
 
+    def sum_motor_seconds_for_day(self, day_start, day_end) -> float:
+        """Motor-seconds actually spent in a UTC day.
+
+        Deliberately reads the RESULT table, not the frame table. The daily
+        risk cap re-derives its state by scanning substrate_execution_dispatch
+        _frames, and that single pattern is 49.8% of this database's entire
+        buffer traffic (pg_stat_statements, 2026-08-20). This is a sum over a
+        narrow, time-indexed column on a much smaller table
+        (substrate_dispatch_results_latency_idx is partial on
+        latency_ms IS NOT NULL).
+
+        Absent latency contributes NOTHING rather than zero. Those are the
+        same number here and not the same claim: a NULL means "this action's
+        cost was never recorded", and counting it as free would make the
+        budget systematically under-count spend and over-permit -- exactly
+        backwards for a ceiling.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT coalesce(sum(latency_ms), 0) / 1000.0 AS motor_sec,
+                           count(*) FILTER (WHERE latency_ms IS NULL) AS uncosted
+                      FROM substrate_dispatch_results
+                     WHERE created_at >= :day_start AND created_at < :day_end
+                    """
+                ),
+                {"day_start": day_start, "day_end": day_end},
+            ).first()
+        if row is None:
+            return 0.0
+        if row[1]:
+            logger.warning(
+                "motor_budget_uncosted_dispatches count=%d -- budget under-counts spend",
+                row[1],
+            )
+        return float(row[0] or 0.0)
+
     def load_dispatch_result_by_dispatch_id(self, dispatch_id: str) -> dict | None:
         with self._engine.connect() as conn:
             row = (

@@ -52,9 +52,9 @@ class Settings(BaseSettings):
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
     # existing single-frame capture_loop, this is a distinct on-demand path
-    # triggered via POST /capture/clip. UNVERIFIED against real hardware
-    # (see clip_capture.py module docstring) -- defaults are a starting
-    # point, not confirmed-correct for carbon's actual devices.
+    # triggered via POST /capture/clip or the bus RPC twin. Defaults below
+    # are live-verified correct for carbon's actual devices, 2026-08-22 (see
+    # clip_capture.py module docstring).
     RETINA_CLIP_ENABLED: bool = False
     # Shared-secret gate for POST /capture/clip, same convention as
     # orion-percept-store's PERCEPT_STORE_TOKEN. Added after review

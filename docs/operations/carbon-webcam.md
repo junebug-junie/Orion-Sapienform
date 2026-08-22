@@ -142,9 +142,28 @@ A second, separate HTTP surface on this same service:
 (v4l2) and audio (pulse/PipeWire mic) **concurrently**, uploads both to
 `orion-percept-store` (now accepts `audio/wav`/`video/mp4`, not just
 images), and returns their sha256 refs. See
-`services/orion-vision-retina/README.md` for the full contract —
-**UNVERIFIED against real hardware**, written without access to carbon,
-must be checked live before being trusted.
+`services/orion-vision-retina/README.md` for the full contract.
+
+**Live-verified on carbon, 2026-08-22**: real h264/PCM, correct durations,
+sha256 round-trips confirmed byte-for-byte against percept-store by fetching
+both blobs back and re-hashing. First real run also surfaced and fixed a
+genuine `/dev/video0` contention bug against the continuous presence loop
+(`pause_device()`, see the vision-retina README) -- not something a mock or
+fixture could have caught. A same-session dark/quiet capture was a real
+room condition (camera covered), not a pipeline bug, ruled out by checking
+individual frame brightness across the whole clip.
+
+**Bus-reachable twin, same day**: `orion:exec:request:RetinaClipCaptureService`
+(reply on `orion:retina:clip:reply:<corr_id>`) does the identical capture
+over the bus instead of HTTP, for a caller with no network path to carbon at
+all -- which is every caller except one on this exact tailnet segment, since
+"nothing needs to reach carbon inbound" (above) is the whole security
+posture. This is how Hub's "Affect check" button reaches carbon: Hub calls
+`orion-juniper-affective-state` (circe), which bus-RPCs retina, fetches the
+resulting blobs from percept-store, and hands them to `orion-affectgpt-worker`
+-- see that service's README for the full chain. **This IS now consumable
+end-to-end** via that path; the HTTP route's sha256 refs alone are still not
+(no local worker fetch-by-hash from a bare curl).
 
 This is a materially different, more sensitive capability than the presence
 frames above (see the amended "No facial affect" bullet below) — off by

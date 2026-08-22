@@ -389,8 +389,9 @@ app = FastAPI(title="Orion Vision Retina", version="0.2.0", lifespan=lifespan)
 
 @app.post("/capture/clip")
 async def capture_clip_endpoint(request: Request):
-    """On-demand video+audio clip capture for AffectGPT. See
-    app/clip_capture.py module docstring: UNVERIFIED against real hardware.
+    """On-demand video+audio clip capture for AffectGPT. Live-verified
+    against real hardware, 2026-08-22 -- see app/clip_capture.py module
+    docstring for what that run found and fixed.
 
     HTTP path for an operator on the same host/tailnet as this port (carbon's
     venv/systemd deploy binds 127.0.0.1 only). Callers with no network path

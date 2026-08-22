@@ -4,14 +4,16 @@ sources.py's WebcamFrameSource: OpenCV's VideoCapture has no audio support
 at all, so a genuinely new capture path was needed rather than an extension
 of the existing single-frame one.
 
-**UNVERIFIED against real hardware.** This was written without access to
-carbon (tailnet policy blocks SSH there for this session, same as the
-percept-store/webcam wiring before it) -- no webcam, no microphone, no
-ffmpeg build to test against. The subprocess construction and error handling
-are tested (tests/test_clip_capture.py, mocked ffmpeg), but the actual
-capture -- real device names, real audio backend, real timing -- has not
-been exercised live. Must be verified on carbon before anything is built on
-top of it. See README "Live verification needed".
+**Live-verified against real hardware, 2026-08-22.** Originally written
+without access to carbon (tailnet policy blocks SSH there for a Claude
+session, same as the percept-store/webcam wiring before it), so this used to
+carry an UNVERIFIED disclaimer. Superseded by a real run: real device names,
+real PulseAudio backend, real ffmpeg output confirmed byte-for-byte via
+percept-store round-trip. That run also found the `/dev/video0` contention
+bug against the continuous presence loop -- see `RetinaService.pause_device`
+in `app/main.py`. `tests/test_vision_retina_clip_capture.py` (mocked ffmpeg)
+still covers the subprocess construction/error-handling layer in CI, where
+no camera exists.
 
 Nothing is written to disk beyond a TemporaryDirectory that is always
 cleaned up -- same "no spool on a personal laptop" principle as

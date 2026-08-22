@@ -78,7 +78,15 @@ def _temporal(observed_at=None):
 
 
 def _concept_node(
-    node_id, label, *, anchor_scope="orion", promotion_state="proposed", activation=0.0, decay_floor=0.0, observed_at=None
+    node_id,
+    label,
+    *,
+    anchor_scope="orion",
+    promotion_state="proposed",
+    activation=0.0,
+    decay_floor=0.0,
+    observed_at=None,
+    metadata=None,
 ):
     from orion.core.schemas.cognitive_substrate import ConceptNodeV1, SubstrateActivationV1, SubstrateSignalBundleV1
 
@@ -94,6 +102,7 @@ def _concept_node(
             salience=0.5,
             activation=SubstrateActivationV1(activation=activation, decay_floor=decay_floor),
         ),
+        metadata=metadata or {},
     )
 
 
@@ -227,6 +236,88 @@ def test_summary_at_risk_excludes_freshly_born_low_salience_node(
     assert body["at_risk"] == []
 
 
+# --- graph=aitown query param (2026-08-20) -----------------------------------
+# AI Town's own concept graph (SUBSTRATE_SEMANTIC_STORE_AITOWN) was written
+# by the scheduler but reachable by zero GET route before this -- these
+# tests confirm ?graph=aitown actually switches which store is read, per the
+# design spec's own "first cut" suggestion, rather than always resolving to
+# Orion's store regardless of the param.
+
+
+def test_summary_graph_param_defaults_to_orion_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+
+    orion_store = _build_store()
+    aitown_store = _build_store()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+
+    r = client.get("/api/substrate/concepts/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "orion"
+
+
+def test_summary_graph_param_aitown_switches_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    orion_store = _build_store()  # 3 seeded nodes
+    aitown_store = InMemorySubstrateGraphStore()  # empty
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+
+    r = client.get("/api/substrate/concepts/summary", params={"graph": "aitown"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "aitown"
+    assert body["total_concepts"] == 0  # aitown_store is empty, orion_store is not
+
+
+def test_summary_graph_param_unrecognized_value_degrades_to_orion(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import concept_atlas_routes
+
+    orion_store = _build_store()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+
+    r = client.get("/api/substrate/concepts/summary", params={"graph": "not-a-real-graph"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "orion"
+    assert body["total_concepts"] == 3
+
+
+def test_network_graph_param_aitown_switches_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    orion_store = _build_store()
+    aitown_store = InMemorySubstrateGraphStore()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+
+    r = client.get("/api/substrate/concepts/network", params={"graph": "aitown"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "aitown"
+    assert body["nodes"] == []
+
+
+def test_network_graph_param_defaults_to_orion_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+
+    orion_store = _build_store()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["graph"] == "orion"
+    assert len(body["nodes"]) == 3
+
+
 # --- network -----------------------------------------------------------------
 
 
@@ -240,6 +331,7 @@ def test_network_empty_store_degrades_gracefully(client: TestClient, monkeypatch
     assert body["available"] is False
     assert body["nodes"] == []
     assert body["edges"] == []
+    assert body["component_count"] == 0
 
 
 def test_network_god_node_flag_on_highest_degree_node(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -285,21 +377,24 @@ def test_network_canonical_node_is_always_god_node_regardless_of_degree(
     # (orion/substrate/seed_concepts.yaml) behind whatever topic-foundry
     # cluster racked up the most same-day co_occurs_with edges -- an
     # artifact of day-bucket co-occurrence rewarding vocabulary ubiquity, not
-    # a real signal of what's load-bearing to Orion's identity. A canonical
-    # node must be a god node even with zero edges; a non-canonical
-    # high-degree node must still fill any remaining top-N slots.
+    # a real signal of what's load-bearing to Orion's identity. Independent
+    # of the 2026-08-20 landmark-connection design (which fixed these nodes'
+    # isolation, giving them real degree) -- this fixes ranking still being
+    # pure-degree once connected. A canonical node must be a god node even
+    # with zero edges; a non-canonical high-degree node must still fill any
+    # remaining top-N slots.
     from scripts import concept_atlas_routes
     from orion.substrate.store import InMemorySubstrateGraphStore
 
-    # _GOD_NODE_TOP_N is 5: 1 canonical node here leaves 4 remaining slots
-    # for non-canonical nodes, ranked strictly by degree -- so 5 non-canonical
-    # spokes at distinct, deterministic degrees (via distinct edge salience)
-    # guarantees the weakest one is left out, proving the cutoff still
-    # applies to everything that isn't canonical.
     store = InMemorySubstrateGraphStore()
     golden = _concept_node("concept-golden", "Orion", promotion_state="canonical")
     store.upsert_node(identity_key="concept:golden", node=golden)
 
+    # _GOD_NODE_TOP_N is 5: 1 canonical node here leaves 4 remaining slots
+    # for non-canonical nodes, ranked strictly by degree -- so 6 non-canonical
+    # contenders (hub + 5 spokes) at distinct, deterministic degrees (via
+    # distinct edge salience) guarantees the weakest one is left out, proving
+    # the cutoff still applies to everything that isn't canonical.
     hub = _concept_node("concept-noisy-hub", "topic_7", promotion_state="proposed")
     store.upsert_node(identity_key="concept:noisy-hub", node=hub)
     for i, salience in enumerate([0.9, 0.7, 0.5, 0.3, 0.1]):
@@ -328,10 +423,10 @@ def test_network_canonical_node_is_always_god_node_regardless_of_degree(
     # non-canonical, highest-degree spoke -> fills one of the 3 remaining
     # slots left after the hub takes one of the 4.
     assert nodes_by_id["concept-spoke-0"]["god_node"] is True
-    # non-canonical, weakest real degree -> 5 non-canonical contenders (hub +
-    # 5 spokes) for only 4 remaining slots, so the weakest loses out. The
-    # cutoff still applies to real organic hubs; it just no longer applies to
-    # canonical golden anchors.
+    # non-canonical, weakest real degree -> 6 non-canonical contenders for
+    # only 4 remaining slots, so the weakest loses out. The cutoff still
+    # applies to real organic hubs; it just no longer applies to canonical
+    # golden anchors.
     assert nodes_by_id["concept-spoke-4"]["god_node"] is False
     # non-canonical, zero degree -> never a god node.
     assert nodes_by_id["concept-isolate-2"]["god_node"] is False
@@ -346,26 +441,19 @@ def test_network_topic_foundry_synthetic_label_flagged_honestly(
     # so the UI can render it honestly instead of indistinguishable from a
     # real named concept.
     from scripts import concept_atlas_routes
-    from orion.core.schemas.cognitive_substrate import ConceptNodeV1, SubstrateSignalBundleV1
     from orion.substrate.store import InMemorySubstrateGraphStore
 
     store = InMemorySubstrateGraphStore()
-    synthetic = ConceptNodeV1(
-        node_id="concept-synthetic",
-        label="topic_7",
+    synthetic = _concept_node(
+        "concept-synthetic",
+        "topic_7",
         anchor_scope="world",
-        temporal=_temporal(),
-        provenance=_provenance(),
-        signals=SubstrateSignalBundleV1(confidence=0.5, salience=0.3),
         metadata={"source": "orion-topic-foundry", "topic_id": 7},
     )
-    real = ConceptNodeV1(
-        node_id="concept-real",
-        label="autonomy",
+    real = _concept_node(
+        "concept-real",
+        "autonomy",
         anchor_scope="orion",
-        temporal=_temporal(),
-        provenance=_provenance(),
-        signals=SubstrateSignalBundleV1(confidence=0.7, salience=0.6),
         metadata={"concept_id": "c-1"},
     )
     store.upsert_node(identity_key="concept:synthetic", node=synthetic)
@@ -380,6 +468,69 @@ def test_network_topic_foundry_synthetic_label_flagged_honestly(
     assert nodes_by_id["concept-synthetic"]["synthetic_label"] is True
     assert nodes_by_id["concept-real"]["origin"] == "concept"
     assert nodes_by_id["concept-real"]["synthetic_label"] is False
+
+
+def test_network_connected_components_grouped_and_counted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Readability gap from the 2026-08-18 design spec: cose's layout gives
+    disconnected components no visual grouping. component_id/component_count
+    are computed fresh per request (union-find over the same filtered
+    node/edge lists the rest of the response is built from), not sourced
+    from any precomputed job -- reuses the hub-and-spoke-plus-isolate shape
+    already seeded for the god-node test above."""
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    hub = _concept_node("concept-orion", "Orion")
+    store.upsert_node(identity_key="concept:orion", node=hub)
+    for i in range(2):
+        spoke = _concept_node(f"concept-spoke-{i}", f"Spoke {i}")
+        store.upsert_node(identity_key=f"concept:spoke-{i}", node=spoke)
+        store.upsert_edge(
+            identity_key=f"edge:orion-spoke-{i}",
+            edge=_edge(f"edge-orion-spoke-{i}", "concept-orion", f"concept-spoke-{i}"),
+        )
+    isolate = _concept_node("concept-isolate", "Isolate")
+    store.upsert_node(identity_key="concept:isolate", node=isolate)
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    nodes_by_id = {n["id"]: n for n in body["nodes"]}
+
+    hub_component = nodes_by_id["concept-orion"]["component_id"]
+    assert nodes_by_id["concept-spoke-0"]["component_id"] == hub_component
+    assert nodes_by_id["concept-spoke-1"]["component_id"] == hub_component
+    assert nodes_by_id["concept-isolate"]["component_id"] != hub_component
+    assert body["component_count"] == 2
+
+
+def test_network_passes_through_topic_foundry_cluster_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """topic_id lives in ConceptNodeV1.metadata (orion/substrate/adapters/topic_foundry.py
+    writes it there, no dedicated schema field exists) -- confirm the network
+    route surfaces it for a tagged node and reports None for an untagged one,
+    rather than silently discarding it the way it did before this patch."""
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    tagged = _concept_node("concept-tagged", "Tagged", metadata={"topic_id": "cluster-7"})
+    untagged = _concept_node("concept-untagged", "Untagged")
+    store.upsert_node(identity_key="concept:tagged", node=tagged)
+    store.upsert_node(identity_key="concept:untagged", node=untagged)
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    nodes_by_id = {n["id"]: n for n in body["nodes"]}
+    assert nodes_by_id["concept-tagged"]["topic_id"] == "cluster-7"
+    assert nodes_by_id["concept-untagged"]["topic_id"] is None
 
 
 def test_network_malformed_query_params_do_not_500(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -449,6 +600,130 @@ def test_network_surfaces_degraded_backend_result(client: TestClient, monkeypatc
     assert body["available"] is True
     assert body["degraded"] is True
     assert body["degraded_error"] == "sparql_timeout"
+
+
+# --- entity-node hydration, added 2026-08-20 -------------------------------
+# docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md
+# store.query_concept_region() only ever returns concept-kind nodes; an edge
+# to an off-slice non-concept node (most commonly an EntityNodeV1 mention)
+# used to be silently dropped by the route's own AND-based edge filter --
+# these tests cover the hydration pass that fixes it (and, as a side effect,
+# makes the landmark-connection edges from topic_foundry.py actually visible).
+
+
+def _entity_node(node_id, label, *, anchor_scope="world"):
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1, SubstrateSignalBundleV1
+
+    return EntityNodeV1(
+        node_id=node_id,
+        label=label,
+        anchor_scope=anchor_scope,
+        promotion_state="proposed",
+        temporal=_temporal(),
+        provenance=_provenance(),
+        signals=SubstrateSignalBundleV1(confidence=0.6, salience=0.0),
+    )
+
+
+def _entity_edge(edge_id, source_concept_id, target_entity_id, *, predicate="associated_with"):
+    from orion.core.schemas.cognitive_substrate import NodeRefV1, SubstrateEdgeV1
+
+    return SubstrateEdgeV1(
+        edge_id=edge_id,
+        source=NodeRefV1(node_id=source_concept_id, node_kind="concept"),
+        target=NodeRefV1(node_id=target_entity_id, node_kind="entity"),
+        predicate=predicate,
+        temporal=_temporal(),
+        confidence=0.6,
+        salience=0.0,
+        provenance=_provenance(),
+    )
+
+
+def test_network_hydrates_off_slice_entity_node_reached_by_edge(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    concept = _concept_node("concept-orion", "Orion", anchor_scope="orion")
+    entity = _entity_node("entity-mention-orion", "Orion")
+    store.upsert_node(identity_key="concept:orion", node=concept)
+    store.upsert_node(identity_key="entity:orion-mention", node=entity)
+    store.upsert_edge(
+        identity_key="edge:concept-entity",
+        edge=_entity_edge("edge-concept-entity", "concept-orion", "entity-mention-orion"),
+    )
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    nodes_by_id = {n["id"]: n for n in body["nodes"]}
+
+    # Without hydration this node would never appear -- store.query_concept_region()
+    # never returns entity-kind nodes in `nodes` to begin with.
+    assert "entity-mention-orion" in nodes_by_id
+    assert nodes_by_id["entity-mention-orion"]["node_kind"] == "entity"
+
+    edge_pairs = {(e["source"], e["target"]) for e in body["edges"]}
+    assert ("concept-orion", "entity-mention-orion") in edge_pairs
+
+    # The whole point: the concept and its formerly-invisible entity mention
+    # now share one connected component instead of the edge being dropped.
+    assert nodes_by_id["concept-orion"]["component_id"] == nodes_by_id["entity-mention-orion"]["component_id"]
+
+
+def test_network_hydration_never_readmits_a_scope_filtered_concept_node(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concept node the explicit ?scope= filter excluded must stay
+    excluded -- hydration only ever adds non-concept nodes, never smuggles a
+    deliberately-filtered concept node back in via its edge."""
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    orion_scope_concept = _concept_node("concept-orion", "Orion", anchor_scope="orion")
+    world_scope_concept = _concept_node("concept-world-topic", "World Topic", anchor_scope="world")
+    store.upsert_node(identity_key="concept:orion", node=orion_scope_concept)
+    store.upsert_node(identity_key="concept:world-topic", node=world_scope_concept)
+    store.upsert_edge(
+        identity_key="edge:orion-world",
+        edge=_edge("edge-orion-world", "concept-orion", "concept-world-topic"),
+    )
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network", params={"scope": "world"})
+    assert r.status_code == 200
+    body = r.json()
+    node_ids = {n["id"] for n in body["nodes"]}
+    assert node_ids == {"concept-world-topic"}  # concept-orion stays excluded, not hydrated back in
+
+
+def test_network_hydration_bounded_by_cap(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    concept = _concept_node("concept-hub", "Hub")
+    store.upsert_node(identity_key="concept:hub", node=concept)
+    over_cap = concept_atlas_routes._NETWORK_HYDRATION_MAX_EXTRA_NODES + 10
+    for i in range(over_cap):
+        entity = _entity_node(f"entity-{i}", f"Entity {i}")
+        store.upsert_node(identity_key=f"entity:{i}", node=entity)
+        store.upsert_edge(
+            identity_key=f"edge:hub-entity-{i}",
+            edge=_entity_edge(f"edge-hub-entity-{i}", "concept-hub", f"entity-{i}"),
+        )
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
+    r = client.get("/api/substrate/concepts/network")
+    assert r.status_code == 200
+    body = r.json()
+    entity_nodes = [n for n in body["nodes"] if n["node_kind"] == "entity"]
+    assert len(entity_nodes) == concept_atlas_routes._NETWORK_HYDRATION_MAX_EXTRA_NODES
 
 
 def test_network_store_error_degrades_gracefully(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

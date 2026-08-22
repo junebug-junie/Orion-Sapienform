@@ -8,6 +8,7 @@ good intentions.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -42,6 +43,10 @@ def _diag():
 def _no_real_db(monkeypatch):
     """Never touch a database from these tests."""
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)
+    # Every existing test that reaches the "ok" path now also calls
+    # fetch_presence -- without this default, they would attempt a real
+    # Postgres connection the moment presence fusion was added.
+    monkeypatch.setattr(situation_mod, "fetch_presence", lambda stream_id: None)
 
 
 # --- provider states -------------------------------------------------------
@@ -147,7 +152,12 @@ def _brief(perception: PerceptionContextV1) -> SituationBriefV1:
     return SituationBriefV1(
         generated_at=NOW,
         time=time_ctx,
-        conversation_phase=situation_mod._build_conversation_phase({}, time_ctx, NOW),
+        # _build_conversation_phase is now async (Redis-backed session turn
+        # state, see session_turn_phase.py) -- these tests only care about
+        # perception rendering, so no bus is bound here and the call
+        # fails open to phase="unknown" (an unbound-bus WARNING is expected
+        # and harmless in this file's test output).
+        conversation_phase=asyncio.run(situation_mod._build_conversation_phase({}, time_ctx, NOW)),
         place=situation_mod._build_place_context(cfg),
         perception=perception,
     )
@@ -217,3 +227,125 @@ def test_percepts_are_session_only_by_default() -> None:
 def test_extra_fields_are_rejected() -> None:
     with pytest.raises(Exception):
         PerceptionContextV1(frame_path="/mnt/telemetry/vision/frames/x.jpg")
+
+
+# --- presence fusion --------------------------------------------------------
+
+
+def _with_percept(monkeypatch, text: str = "Three chairs and a door are visible."):
+    monkeypatch.setattr(
+        situation_mod, "fetch_latest_percept",
+        lambda: {"scene_summary": text, "observed_at": NOW},
+    )
+
+
+def test_present_prefixes_a_duration_fragment(monkeypatch) -> None:
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "present", "since_sec": 10800.0, "subject": "unknown"},
+    )
+    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    assert ctx.scene_summary.startswith("Someone has been in view for about 3 hours.")
+    assert ctx.scene_summary.endswith("Three chairs and a door are visible.")
+    assert ctx.presence_state == "present"
+    assert ctx.presence_since_sec == 10800.0
+
+
+def test_recent_uses_stepped_out_phrasing(monkeypatch) -> None:
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "recent", "since_sec": 45.0, "subject": "unknown"},
+    )
+    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    assert "stepped out of view" in ctx.scene_summary
+    assert ctx.presence_state == "recent"
+
+
+def test_absent_adds_no_fragment_and_no_noise(monkeypatch) -> None:
+    """An empty room is the default expectation, not news."""
+    _with_percept(monkeypatch, "Two chairs and a table are visible.")
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "absent", "since_sec": 3000.0, "subject": "none"},
+    )
+    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    assert ctx.scene_summary == "Two chairs and a table are visible."
+    assert ctx.presence_state == "absent"
+
+
+def test_no_presence_row_is_a_normal_no_op(monkeypatch) -> None:
+    """A stream with no presence row yet (e.g. brand new) must not error."""
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(situation_mod, "fetch_presence", lambda stream_id: None)
+    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    assert ctx.scene_summary == "Three chairs and a door are visible."
+    assert ctx.presence_state is None
+
+
+def test_presence_read_failure_fails_open(monkeypatch) -> None:
+    """Same fail-open contract as the percept reader itself."""
+    _with_percept(monkeypatch)
+
+    def _boom(stream_id):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(situation_mod, "fetch_presence", _boom)
+    with pytest.raises(RuntimeError):
+        _build_perception_context(_cfg(perception_enabled=True), _diag())
+
+
+def test_presence_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> None:
+    """Presence is an enrichment of an already-valid percept, not an
+    independent availability path. A room not seen recently must not surface
+    'someone was there three hours ago' as if it were current."""
+    called = {"n": 0}
+
+    def _spy(stream_id):
+        called["n"] += 1
+        return {"state": "present", "since_sec": 10.0, "subject": "unknown"}
+
+    monkeypatch.setattr(situation_mod, "fetch_presence", _spy)
+    monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)  # unavailable
+    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    assert ctx.available is False
+    assert called["n"] == 0, "fetch_presence must not be called for an unavailable percept"
+
+
+# --- duration formatting, hand-computed -------------------------------------
+
+
+@pytest.mark.parametrize(
+    "seconds,expected_substring",
+    [
+        (0.0, "0 seconds"),
+        (45.0, "45 seconds"),
+        (89.0, "89 seconds"),          # just under the 90s -> minutes cutover
+        (90.0, "2 minutes"),           # 90s = 1.5min -> round(1.5) = 2 (banker's: half-to-even)
+        (150.0, "2 minutes"),          # 150s = 2.5min -> round(2.5) = 2, NOT 3 (half-to-even
+                                        # again; Python's round() is not "round half up", and a
+                                        # first draft of this fixture assumed it was)
+        (3599.0, "60 minutes"),        # just under 60min, still rendered in minutes
+        (5400.0 - 1, "90 minutes"),    # 89min59s: under the 90min hour-cutover, minutes
+        (5400.0, "about 2 hours"),     # exactly 90min = 1.5h: `hours < 1.5` EXCLUDES 1.5 itself,
+                                        # so the cutover to "about an hour" sits strictly below
+                                        # this value, not AT it -- a first draft of this fixture
+                                        # assumed the boundary was inclusive and was wrong
+        (7200.0, "about 2 hours"),     # 2h exactly
+        (10800.0, "about 3 hours"),    # 3h -- the value used in the live test above
+    ],
+)
+def test_coarse_duration_boundaries(seconds, expected_substring) -> None:
+    from app.situation import _coarse_duration
+
+    assert _coarse_duration(seconds) == expected_substring
+
+
+def test_negative_or_none_since_sec_produces_no_fragment() -> None:
+    from app.situation import _presence_fragment
+
+    assert _presence_fragment("present", None) is None
+    assert _presence_fragment("present", -5.0) is None
+    assert _presence_fragment("absent", 100.0) is None
+    assert _presence_fragment(None, 100.0) is None

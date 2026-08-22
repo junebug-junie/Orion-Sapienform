@@ -6,35 +6,187 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
+from app.db import engine as default_engine
 from app.db import grammar_engine
 from app.settings import get_settings
 
 logger = logging.getLogger("sql-writer.grammar_truth")
 
-_BATCH_DELETE_EVENTS = text(
-    """
-    DELETE FROM grammar_events
-    WHERE event_id IN (
-        SELECT event_id
-        FROM grammar_events
-        WHERE created_at < :cutoff
-        ORDER BY created_at ASC, event_id ASC
-        LIMIT :batch_size
+
+def _batch_delete_sql(table: str, id_column: str) -> Any:
+    # Table/column names are hardcoded call-site constants below, never caller
+    # input -- an f-string here is not a SQL-injection surface.
+    return text(
+        f"""
+        DELETE FROM {table}
+        WHERE {id_column} IN (
+            SELECT {id_column}
+            FROM {table}
+            WHERE created_at < :cutoff
+            ORDER BY created_at ASC, {id_column} ASC
+            LIMIT :batch_size
+        )
+        """
     )
+
+
+def _count_debt_sql(table: str) -> Any:
+    return text(f"SELECT COUNT(*)::bigint FROM {table} WHERE created_at < :cutoff")
+
+
+# grammar_events is not an archive -- it is a cursor-driven consumption queue. Five reducer
+# lanes walk it forward (services/orion-substrate-runtime/app/store.py:352-390), each with
+# its OWN filter, and each committing its position to substrate_reduction_cursor.
+#
+# WHAT THIS FLOOR ASKS, AND WHY THE OBVIOUS VERSION IS WRONG.
+# The first version of this asked "where is the oldest cursor" -- MIN(last_event_created_at)
+# -- and clamped the retention cutoff to it. That is the wrong question, and code review
+# caught it before deploy with live data.
+#
+# A cursor advances only when its lane consumes a MATCHING row. So a cursor sitting still
+# means "this lane's source has emitted nothing lately", which is indistinguishable from
+# "this reducer is stalled". chat_grammar_consumer reads source_service='orion-hub' with
+# trace_id LIKE 'hub.chat:%' -- literally Juniper talking to Orion. Measured live: that lane
+# went silent for 1 day 19.6 hours (2026-08-16 -> 2026-08-18) while the system was healthy
+# and ingesting ~400-500k grammar_events/day, and it sat 14m57s behind while the other four
+# were inside 9 seconds. Against a 3-day window that is a 1.65x margin on ORDINARY BEHAVIOUR.
+# A quiet weekend would have pinned retention at the chat cursor and stopped pruning, and
+# (before the debt fix below) reported remaining_debt=0 while doing it.
+#
+# The right question is not "where is the cursor" but "does this lane have unconsumed rows
+# below the cutoff". A silent lane has none -- everything older than its cursor is consumed
+# and nothing newer exists -- so it correctly imposes NO floor. A genuinely stalled lane has
+# real rows sitting above its cursor and below the cutoff, and those are exactly the rows
+# that must survive.
+#
+# Consequence when a reducer IS stuck: disk grows instead of events disappearing. That is
+# the correct trade -- growing disk is observable and recoverable, silently-skipped events
+# are neither.
+#
+# LANE TABLE. Deliberately duplicated here rather than imported from
+# orion/substrate/*/constants.py: importing those executes orion/substrate/__init__.py,
+# which pulls the graph-DB store, materializer and reconciler into this thin writer. That
+# exact mistake crash-looped two services on 2026-08-19. Drift is caught by a test instead
+# (tests/test_grammar_retention_periodic.py::TestTheLaneTableMatchesTheRealConsumers), which
+# imports the real constants at test time where heavy imports cost nothing.
+# NOTE the execution lane covers THREE source services, not one. Live grammar_events shows
+# orion-harness-governor writing cortex.exec: traces alongside orion-cortex-exec (528 vs
+# 125,179 rows/day), and EXECUTION_SOURCE_SERVICES also includes orion-hub. A first draft of
+# this table guessed ("orion-cortex-exec",) and would have under-protected exactly the lane
+# it was meant to protect -- the floor probe would have missed unconsumed governor/hub rows
+# and reported the lane clear. Caught by looking at live data, not by reading the code.
+GRAMMAR_LANES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("biometrics_grammar_consumer", ("orion-biometrics",), "biometrics.node:"),
+    (
+        "execution_grammar_reducer",
+        ("orion-cortex-exec", "orion-harness-governor", "orion-hub"),
+        "cortex.exec:",
+    ),
+    ("transport_grammar_reducer", ("orion-bus",), "bus.transport:"),
+    ("chat_grammar_consumer", ("orion-hub",), "hub.chat:"),
+    ("route_grammar_consumer", ("orion-cortex-orch",), "orch.route:"),
+)
+
+_LANE_UNCONSUMED_SQL = text(
+    """
+    SELECT MIN(created_at)
+      FROM grammar_events
+     WHERE created_at > :cursor_ts
+       AND created_at < :time_cutoff
+       AND source_service = ANY(:sources)
+       AND trace_id LIKE :trace_like
     """
 )
 
-_COUNT_DEBT = text(
-    """
-    SELECT COUNT(*)::bigint
-    FROM grammar_events
-    WHERE created_at < :cutoff
-    """
+_CURSOR_ROWS_SQL = text(
+    "SELECT cursor_name, last_event_created_at FROM substrate_reduction_cursor"
 )
+
+
+def _grammar_events_cursor_floor(
+    conn: Any, time_cutoff: datetime
+) -> tuple[datetime | None, bool]:
+    """Oldest row still owed to some reducer lane, as (floor, resolved).
+
+    The two failure modes must not be conflated:
+
+      (None, True)   every lane is fully consumed below `time_cutoff` -- nothing is owed,
+                     so the time cutoff governs and retention proceeds normally.
+      (None, False)  the answer could not be determined (table unreachable, timeout,
+                     unexpected shape). The caller must SKIP the prune, not fall back to
+                     the time cutoff.
+
+    That second case is why this returns a pair. Falling back when the answer is unknown
+    would delete rows that may be unconsumed -- the exact silent loss this prevents.
+    Skipping costs one 60-second cycle; guessing costs events no reducer will see again.
+
+    A lane with a NULL cursor imposes no floor on purpose: substrate-runtime seeds a new
+    lane at the TAIL (store.py:184-190), never at the beginning of time, so it never wants
+    historical rows.
+    """
+    try:
+        rows = conn.execute(_CURSOR_ROWS_SQL).mappings().all()
+    except Exception as exc:
+        logger.warning("grammar_events_cursor_rows_unavailable err=%s", exc)
+        return None, False
+
+    positions: dict[str, Any] = {}
+    for row in rows:
+        try:
+            positions[row["cursor_name"]] = row["last_event_created_at"]
+        except Exception as exc:
+            logger.warning("grammar_events_cursor_row_unreadable err=%s", exc)
+            return None, False
+
+    floor: datetime | None = None
+    for cursor_name, sources, trace_prefix in GRAMMAR_LANES:
+        cursor_ts = positions.get(cursor_name)
+        if cursor_ts is None:
+            # No row for this lane, or a tail-seeded NULL. Nothing owed either way.
+            continue
+        if not isinstance(cursor_ts, datetime):
+            logger.warning(
+                "grammar_events_cursor_unexpected_type lane=%s type=%s",
+                cursor_name,
+                type(cursor_ts).__name__,
+            )
+            return None, False
+        if cursor_ts.tzinfo is None:
+            cursor_ts = cursor_ts.replace(tzinfo=timezone.utc)
+        try:
+            oldest = conn.execute(
+                _LANE_UNCONSUMED_SQL,
+                {
+                    "cursor_ts": cursor_ts,
+                    "time_cutoff": time_cutoff,
+                    "sources": list(sources),
+                    "trace_like": f"{trace_prefix}%",
+                },
+            ).scalar()
+        except Exception as exc:
+            logger.warning("grammar_events_lane_probe_failed lane=%s err=%s", cursor_name, exc)
+            return None, False
+        if oldest is None:
+            continue  # this lane owes nothing below the cutoff
+        if not isinstance(oldest, datetime):
+            logger.warning("grammar_events_lane_probe_unexpected_type lane=%s", cursor_name)
+            return None, False
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        logger.warning(
+            "grammar_events_lane_owed lane=%s oldest_unconsumed=%s -- reducer is behind",
+            cursor_name,
+            oldest.isoformat(),
+        )
+        if floor is None or oldest < floor:
+            floor = oldest
+    return floor, True
+
 
 _VERIFY_INCOMING_FK = text(
     """
@@ -43,7 +195,7 @@ _VERIFY_INCOMING_FK = text(
     JOIN pg_class ref ON ref.oid = c.confrelid
     JOIN pg_namespace n ON n.oid = ref.relnamespace
     WHERE n.nspname = 'public'
-      AND ref.relname = 'grammar_events'
+      AND ref.relname = :table
       AND c.contype = 'f'
       AND c.conrelid <> ref.oid
     """
@@ -65,41 +217,212 @@ class GrammarRetentionState:
     fk_delete_verification_note: str | None = None
     capped_by_startup_limit: bool = False
     capped_by_elapsed_limit: bool = False
+    cursor_floor_at: datetime | None = None
+    cursor_floor_applied: bool = False
+    debt_count_failed_reason: str | None = None
     batch_size: int = 0
     max_batches_per_startup: int = 0
+    # The elapsed cap this run was actually handed. Differs from the configured
+    # *_MAX_ELAPSED_SEC whenever the cycle budget's fair share is the smaller number, which
+    # is the normal case. None means the table has not run yet this process.
+    effective_max_elapsed_sec: float | None = None
 
 
 _retention_state = GrammarRetentionState()
+# grammar_events keeps the original single-slot global above (retention_state()
+# and _retention_truth_block() already report on it by name in the health
+# snapshot -- preserved as-is rather than reshaped, so that existing contract
+# doesn't change). grammar_edges/grammar_atoms/substrate_organ_emissions are new
+# as of this patch and get their own slots here instead, keyed by table name.
+_extra_retention_state: dict[str, GrammarRetentionState] = {}
 
 
 def retention_state() -> GrammarRetentionState:
     return _retention_state
 
 
+def extra_retention_state(table: str) -> GrammarRetentionState | None:
+    return _extra_retention_state.get(table)
+
+
 def reset_retention_state_for_tests() -> None:
     global _retention_state
     _retention_state = GrammarRetentionState()
+    _extra_retention_state.clear()
 
 
-def _verify_grammar_events_delete_safe(conn) -> tuple[bool, str]:
-    incoming = int(conn.execute(_VERIFY_INCOMING_FK).scalar_one())
+def _verify_delete_safe(conn, *, table: str) -> tuple[bool, str]:
+    """No table in this repo has ever had a real ON DELETE CASCADE from grammar_events/
+    grammar_edges/grammar_atoms/substrate_organ_emissions (confirmed live 2026-08-19:
+    zero rows in pg_constraint for any of them) -- but that could change, so this stays
+    a runtime check rather than a one-time assumption baked into the retention code."""
+    incoming = int(conn.execute(_VERIFY_INCOMING_FK, {"table": table}).scalar_one())
     if incoming != 0:
-        return False, f"unexpected_incoming_fk_to_grammar_events:{incoming}"
-    return (
-        True,
-        "grammar_events_delete_is_child_safe;"
-        " derived_tables_reference_grammar_traces_not_events;"
-        " no ON DELETE CASCADE on grammar_events",
-    )
+        return False, f"unexpected_incoming_fk_to_{table}:{incoming}"
+    return True, f"{table}_delete_is_child_safe; no incoming FK constraints found"
 
 
-def apply_grammar_events_retention(retention_days: int) -> GrammarRetentionState:
-    """Bounded startup retention for grammar_events older than retention_days."""
-    global _retention_state
-    settings = get_settings()
-    batch_size = max(1, int(settings.grammar_events_retention_batch_size))
-    max_batches = max(1, int(settings.grammar_events_retention_max_batches_per_startup))
-    max_elapsed_sec = max(1.0, float(settings.grammar_events_retention_max_elapsed_sec))
+# substrate_proposal_frames is not an archive either -- it is the FIRST stage of a four-stage
+# pipeline, and three later stages can still reach back into it by frame_id long after the row
+# was written:
+#
+#   proposal -> policy decision -> execution dispatch -> feedback
+#
+# Each hop has its own pending marker and partial index, added by
+# services/orion-sql-db/manual_migration_substrate_pending_markers.sql (2026-08-19). That
+# migration's own header records why a TIME window is the wrong instrument here, and says so in
+# capitals: a time bound was attempted first and reverted. Measured over 7 days at the time, the
+# dispatch->feedback hop ran p50 34.6 hours and max 11.3 DAYS behind, with 8 of 30 days entirely
+# in that regime. Any "recent rows only" cutoff strands the backlog, and strands it permanently
+# once fresh work keeps the fast path busy. Retention must not re-introduce the exact bound that
+# migration removed.
+#
+# So the floor asks the markers, not the clock: what is the oldest PROPOSAL row any stage still
+# owes work on? Everything at or above that timestamp stays, no matter how old it is.
+#
+# EACH PROBE RESOLVES BACK TO THE PROPOSAL ROW, NOT TO THE PENDING ROW'S OWN TIMESTAMP.
+# This is the part the first version of this code got wrong, and code review caught it with
+# live data before merge. The delete below removes substrate_proposal_frames rows by their own
+# created_at. A pending row in a DOWNSTREAM table is always NEWER than the proposal it needs --
+# it is a child, written later -- so flooring at the child's timestamp leaves the parent below
+# the floor and deletable, which is precisely backwards from the safety being claimed. Measured
+# live 2026-08-20 over 3 days: dispatch rows are created a mean 123.2s and max 920.2s AFTER
+# their parent proposal, and 0 of 55,573 were created before it. The join through
+# source_proposal_frame_id is what makes "a row still owed work survives" actually true.
+# (This is the same parent/child clock trap that produced an inverted docstring on the
+# grammar_traces patch one day earlier. Second occurrence; check the direction, every time.)
+#
+# THE `OFFSET 0` IS LOAD-BEARING, NOT NOISE.
+# Written plainly as `SELECT MIN(created_at) ... WHERE dispatch_pending`, Postgres rewrites the
+# min-aggregate into `ORDER BY created_at LIMIT 1` over the FULL created_at index and applies
+# the marker as a filter. Because pending rows are always the NEWEST rows, the ascending scan
+# discards the entire table first. Measured live: 490 ms, 102,343 buffers, "Rows Removed by
+# Filter: 474,708" -- every 60 seconds, on a host with a known I/O ceiling. Worse, that cost is
+# highest when the pipeline is CAUGHT UP and falls as a backlog develops, so it would never have
+# looked like a backlog problem. `OFFSET 0` is an optimisation fence: it forces the pending set
+# to be materialised through the partial index first, then aggregates over those few rows.
+# Same three probes with the fence: 0.18 ms / 5.4 ms / 1.6 ms.
+#
+# WHY A PENDING MARKER IS SAFE TO FLOOR ON, WHERE A REDUCTION CURSOR WAS NOT.
+# The grammar cursor floor above deliberately does NOT ask "where is the oldest cursor", because
+# a cursor stops moving when its SOURCE goes quiet, which is indistinguishable from a stall. A
+# pending marker has much less ambiguity: it is set at insert and cleared in the same
+# transaction as the downstream write, so a pending row is unconsumed work by construction, and
+# a quiet source produces no pending rows at all rather than a stuck floor.
+#
+# Two residual hazards, both real:
+#   1. A LEAKED MARKER pins retention forever. That is why a binding floor logs at WARNING with
+#      how far back it reaches.
+#   2. There is a THIRD writer of policy_pending, not just insert-and-clear:
+#      services/orion-policy-runtime/app/store.py's reconcile_policy_pending() re-sets the
+#      marker to TRUE, on a 900s timer, for any proposal with no matching policy decision frame,
+#      with NO time bound. It can only ADD work. Today that is harmless. It becomes a trap the
+#      moment substrate_policy_decision_frames itself gets retention: pruning a decision frame
+#      makes its proposal look unprocessed, reconcile re-flags it, this floor pins at the oldest
+#      re-flagged row, and proposal retention stops permanently while policy-runtime reprocesses
+#      hundreds of thousands of ancient proposals. Anyone extending retention to that table must
+#      bound reconcile's anti-join first. See the README's known-gap section.
+#
+# Live 2026-08-20, all three stages were current: 1 / 96 / 15 pending rows, all under four
+# minutes old.
+_SUBSTRATE_CHAIN_PENDING: tuple[tuple[str, str], ...] = (
+    (
+        "proposal->policy",
+        """
+        SELECT MIN(s.created_at)
+          FROM (
+                SELECT created_at
+                  FROM substrate_proposal_frames
+                 WHERE policy_pending
+                OFFSET 0
+               ) s
+        """,
+    ),
+    (
+        "policy->dispatch",
+        """
+        SELECT MIN(p.created_at)
+          FROM (
+                SELECT source_proposal_frame_id
+                  FROM substrate_policy_decision_frames
+                 WHERE dispatch_pending
+                OFFSET 0
+               ) d
+          JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id
+        """,
+    ),
+    (
+        "dispatch->feedback",
+        """
+        SELECT MIN(p.created_at)
+          FROM (
+                SELECT source_proposal_frame_id
+                  FROM substrate_execution_dispatch_frames
+                 WHERE feedback_pending
+                OFFSET 0
+               ) d
+          JOIN substrate_proposal_frames p ON p.frame_id = d.source_proposal_frame_id
+        """,
+    ),
+)
+
+
+def _substrate_chain_floor(conn: Any, time_cutoff: datetime) -> tuple[datetime | None, bool]:
+    """Oldest PROPOSAL row any downstream substrate stage still owes work on, as (floor, resolved).
+
+    Same two-value contract as _grammar_events_cursor_floor: (None, True) means every stage is
+    caught up and the time cutoff governs; (None, False) means the question could not be
+    answered and the caller must refuse to prune.
+
+    Every probe returns a substrate_proposal_frames.created_at -- the same table and the same
+    column the delete predicate keys on. Not the pending row's own timestamp (it is a child,
+    written later), and not generated_at (a different clock: measured live, the two diverge by
+    up to 724s, and 24 policy rows have created_at strictly BEFORE generated_at). Comparing a
+    floor from one clock or one table against a cutoff on another is how you delete the rows you
+    meant to keep.
+
+    Verified live 2026-08-20 with EXPLAIN (ANALYZE, BUFFERS): 0.18 ms / 5.4 ms / 1.6 ms.
+    """
+    floor: datetime | None = None
+    for stage, sql in _SUBSTRATE_CHAIN_PENDING:
+        try:
+            oldest = conn.execute(text(sql)).scalar()
+        except Exception:  # noqa: BLE001 - unresolved is a distinct outcome from "no floor"
+            logger.exception(
+                "substrate_chain_floor_probe_failed stage=%s -- refusing to prune", stage
+            )
+            return None, False
+        if oldest is None:
+            continue
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        if floor is None or oldest < floor:
+            floor = oldest
+    return floor, True
+
+
+def _apply_bounded_table_retention(
+    *,
+    engine: Engine,
+    table: str,
+    id_column: str,
+    retention_days: int,
+    batch_size: int,
+    max_batches: int,
+    max_elapsed_sec: float,
+    respect_cursor_floor: bool = False,
+    floor_resolver: Callable[[Any, datetime], tuple[datetime | None, bool]] | None = None,
+) -> GrammarRetentionState:
+    """Bounded startup retention for `table`, rows older than retention_days.
+
+    Shared implementation behind apply_grammar_events_retention() and its three
+    siblings below -- same batched-delete/FK-safety-check/elapsed-and-batch-cap
+    shape for all four tables, since none of them need genuinely different
+    retention logic, just different (engine, table, id_column) targets.
+    """
+    batch_size = max(1, int(batch_size))
+    max_batches = max(1, int(max_batches))
+    max_elapsed_sec = max(1.0, float(max_elapsed_sec))
 
     state = GrammarRetentionState(
         enabled=retention_days > 0,
@@ -107,50 +430,88 @@ def apply_grammar_events_retention(retention_days: int) -> GrammarRetentionState
         batch_size=batch_size,
         max_batches_per_startup=max_batches,
     )
-
     if retention_days <= 0:
-        _retention_state = state
         return state
 
     started = time.monotonic()
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    time_cutoff = cutoff
+    # respect_cursor_floor is the grammar lane's spelling of the same idea; keeping it as a
+    # named flag rather than folding it into floor_resolver keeps every existing call site and
+    # its test unchanged.
+    resolve_floor = floor_resolver
+    if respect_cursor_floor and resolve_floor is None:
+        resolve_floor = _grammar_events_cursor_floor
+    if resolve_floor is not None:
+        with engine.connect() as conn:
+            floor, resolved = resolve_floor(conn, time_cutoff)
+        state.cursor_floor_at = floor
+        if not resolved:
+            # Fail safe: no floor, no prune. Retention runs every cycle, so skipping one
+            # is cheap; deleting rows we cannot prove were consumed is not recoverable.
+            state.failure_reason = "cursor_floor_unresolved"
+            state.last_run_at = datetime.now(timezone.utc)
+            state.elapsed_sec = time.monotonic() - started
+            logger.warning(
+                "%s_retention_skipped cursor floor unresolved -- refusing to prune a "
+                "cursor-consumed table without knowing what has been consumed",
+                table,
+            )
+            return state
+        if floor is not None and floor < cutoff:  # a lane is genuinely behind
+            # A reducer is further behind than the retention window. Delete only up to
+            # where it has actually consumed, and say so -- this is the difference between
+            # "retention cannot keep up" and "a reducer is stuck", which look identical
+            # from disk usage alone.
+            state.cursor_floor_applied = True
+            logger.warning(
+                "%s_retention_cursor_floor_binds time_cutoff=%s cursor_floor=%s "
+                "reducer_behind_sec=%.0f -- deleting only up to the cursor",
+                table,
+                cutoff.isoformat(),
+                floor.isoformat(),
+                (cutoff - floor).total_seconds(),
+            )
+            cutoff = floor
+
     state.cutoff_at = cutoff
     total_deleted = 0
     batches = 0
+    delete_sql = _batch_delete_sql(table, id_column)
+    debt_sql = _count_debt_sql(table)
 
     try:
-        with grammar_engine.connect() as conn:
-            safe, note = _verify_grammar_events_delete_safe(conn)
+        with engine.connect() as conn:
+            safe, note = _verify_delete_safe(conn, table=table)
             state.fk_delete_verified = safe
             state.fk_delete_verification_note = note
             if not safe:
                 state.failure_reason = note
                 state.last_run_at = datetime.now(timezone.utc)
                 state.elapsed_sec = time.monotonic() - started
-                _retention_state = state
-                logger.error("grammar_retention_aborted fk_check_failed note=%s", note)
+                logger.error("%s_retention_aborted fk_check_failed note=%s", table, note)
                 return state
 
         while batches < max_batches:
             if (time.monotonic() - started) >= max_elapsed_sec:
                 state.capped_by_elapsed_limit = True
                 logger.warning(
-                    "grammar_retention_elapsed_cap reached elapsed_sec=%.2f cap=%.2f batches=%s",
+                    "%s_retention_elapsed_cap reached elapsed_sec=%.2f cap=%.2f batches=%s",
+                    table,
                     time.monotonic() - started,
                     max_elapsed_sec,
                     batches,
                 )
                 break
-            with grammar_engine.begin() as conn:
-                result = conn.execute(
-                    _BATCH_DELETE_EVENTS,
-                    {"cutoff": cutoff, "batch_size": batch_size},
-                )
+            with engine.begin() as conn:
+                result = conn.execute(delete_sql, {"cutoff": cutoff, "batch_size": batch_size})
                 deleted = int(result.rowcount or 0)
             total_deleted += deleted
             batches += 1
             logger.info(
-                "grammar_retention_batch batch=%s deleted=%s cutoff=%s",
+                "%s_retention_batch batch=%s deleted=%s cutoff=%s",
+                table,
                 batches,
                 deleted,
                 cutoff.isoformat(),
@@ -158,8 +519,32 @@ def apply_grammar_events_retention(retention_days: int) -> GrammarRetentionState
             if deleted < batch_size:
                 break
 
-        with grammar_engine.connect() as conn:
-            state.remaining_debt = int(conn.execute(_COUNT_DEBT, {"cutoff": cutoff}).scalar_one())
+        # Diagnostics only, and deliberately non-fatal. Live 2026-08-19:
+        # substrate_organ_emissions' debt COUNT exceeded the 10s grammar statement_timeout
+        # (SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS) and raised, which logged the whole run
+        # as `retention_failed` and reported remaining_debt=None -- even though all 100,000
+        # deletes had already committed. A reporting query must not be able to mask a
+        # successful prune as a failure, nor hide the debt number that tells you whether
+        # retention is converging.
+        # Measured against `time_cutoff`, NOT the possibly-clamped `cutoff`. Using the
+        # clamped value makes the debt instrument read 0 in exactly the state where it must
+        # scream: the floor pinned retention, nothing was pruned, and millions of rows sit
+        # above the floor. The number has to mean "rows past the retention window", not
+        # "rows I was allowed to touch this cycle".
+        try:
+            with engine.connect() as conn:
+                state.remaining_debt = int(
+                    conn.execute(debt_sql, {"cutoff": time_cutoff}).scalar_one()
+                )
+        except Exception as exc:
+            state.remaining_debt = None
+            state.debt_count_failed_reason = str(exc)
+            logger.warning(
+                "%s_retention_debt_count_failed (prune itself succeeded, rows_pruned=%s) err=%s",
+                table,
+                total_deleted,
+                exc,
+            )
 
         if state.remaining_debt and state.remaining_debt > 0:
             state.capped_by_startup_limit = batches >= max_batches
@@ -170,8 +555,9 @@ def apply_grammar_events_retention(retention_days: int) -> GrammarRetentionState
         state.elapsed_sec = time.monotonic() - started
 
         logger.info(
-            "grammar_retention_complete cutoff=%s rows_pruned=%s batches=%s "
+            "%s_retention_complete cutoff=%s rows_pruned=%s batches=%s "
             "elapsed_sec=%.2f remaining_debt=%s capped_batches=%s capped_elapsed=%s",
+            table,
             cutoff.isoformat(),
             total_deleted,
             batches,
@@ -187,13 +573,272 @@ def apply_grammar_events_retention(retention_days: int) -> GrammarRetentionState
         state.rows_pruned_last_run = total_deleted
         state.batches_attempted = batches
         logger.exception(
-            "grammar_retention_failed cutoff=%s rows_pruned=%s batches=%s",
+            "%s_retention_failed cutoff=%s rows_pruned=%s batches=%s",
+            table,
             cutoff.isoformat(),
             total_deleted,
             batches,
         )
 
+    return state
+
+
+def apply_grammar_events_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded startup retention for grammar_events older than retention_days."""
+    global _retention_state
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=grammar_engine,
+        table="grammar_events",
+        id_column="event_id",
+        respect_cursor_floor=True,
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
     _retention_state = state
+    return state
+
+
+def apply_grammar_edges_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded startup retention for grammar_edges older than retention_days.
+
+    Reuses the grammar_events batch/cap knobs (settings.py comment explains why) --
+    only the retention_days value is independently configurable per table.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=grammar_engine,
+        table="grammar_edges",
+        id_column="edge_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["grammar_edges"] = state
+    return state
+
+
+def apply_grammar_atoms_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded startup retention for grammar_atoms older than retention_days."""
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=grammar_engine,
+        table="grammar_atoms",
+        id_column="atom_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["grammar_atoms"] = state
+    return state
+
+
+def apply_substrate_organ_emissions_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded startup retention for substrate_organ_emissions older than retention_days.
+
+    Uses the plain `engine` (not `grammar_engine`) -- this table is biometrics/substrate
+    data, not part of the grammar lane, same reasoning as goal_provenance_streak_ticks'
+    retention above using `engine` too. Already has idx_substrate_organ_emissions_created
+    (created_at DESC) from its original table definition, so no new index is needed for
+    this one, unlike the three grammar_* tables.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=default_engine,
+        table="substrate_organ_emissions",
+        id_column="emission_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["substrate_organ_emissions"] = state
+    return state
+
+
+def apply_substrate_proposal_frames_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for substrate_proposal_frames older than retention_days.
+
+    THE ONLY UNPRUNED TABLE IN THE SUBSTRATE PIPELINE THAT HAD NO BOUND AT ALL. Live
+    2026-08-20: 474,230 rows / 1,758 MB, oldest 2026-07-23, growing ~27k rows and ~105 MB a
+    day with nothing to stop it.
+
+    Uses the plain `engine` (not `grammar_engine`), same as
+    apply_substrate_organ_emissions_retention above -- this is substrate data, not a grammar
+    lane.
+
+    Floored on the pipeline's pending markers via _substrate_chain_floor, NOT on time alone.
+    See the long comment on that function for why: three later stages reach back into this
+    table by frame_id, and the migration that introduced the markers explicitly reverted a
+    time-bounded version of this same idea. A row still owed to any stage survives regardless
+    of age.
+
+    No new index needed: idx_substrate_proposal_frames_created_at (created_at DESC) already
+    exists from manual_migration_substrate_frames_created_at_index.sql, and a DESC btree
+    serves a `created_at < :cutoff` range scan fine. Confirmed live with EXPLAIN (ANALYZE,
+    BUFFERS): Incremental Sort over a backward index scan, 4.97 ms for a 2000-row batch.
+
+    CAVEAT ON _verify_delete_safe FOR THIS TABLE. It will report
+    "substrate_proposal_frames_delete_is_child_safe; no incoming FK constraints found", and
+    that is literally true -- pg_constraint has zero rows with confrelid pointing here. But
+    that check was written for the grammar tables, which genuinely have no children. This
+    table has THREE referencing tables; they store source_proposal_frame_id as a plain text
+    column with no FK declared. So "no incoming FK" means the database will not TELL you when
+    you orphan something, not that nothing can be orphaned. The chain floor above is the
+    actual safety here. Do not read the FK note as a second, independent confirmation.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=default_engine,
+        table="substrate_proposal_frames",
+        id_column="frame_id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+        floor_resolver=_substrate_chain_floor,
+    )
+    _extra_retention_state["substrate_proposal_frames"] = state
+    return state
+
+
+def apply_grammar_traces_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for grammar_traces older than retention_days.
+
+    THE PARENT ROW, NOT A LEAF. Every other table here is a leaf: pruning it removes
+    exactly its own rows. grammar_traces is the row the Grammar Atlas lists and then
+    expands (orion/grammar/query.py::list_traces -> get_trace), so leaving it out of
+    retention did not just waste disk -- it produced hollow cognition surfaces. Measured
+    live 2026-08-20, before this function existed: 487,970 traces, oldest 2026-07-23,
+    205,465 of them (42%) with zero atoms. That is a UI panel rendered with no real
+    backing artifact, which CLAUDE.md names as an invalid success state outright.
+
+    THE CURSOR FLOOR IS ON, AND THE OBVIOUS REASON FOR IT IS WRONG. An earlier version of
+    this docstring said "a trace's created_at is <= the created_at of every event under it,
+    so the same floor keeps the parent alive at least as long as its owed children". Code
+    review falsified that on live data: 3,627 of 3,627 sampled traces (100%) violate it,
+    and the claim is self-contradictory anyway -- a SMALLER created_at is deleted SOONER.
+
+    The two columns are on different clocks. ledger.py:71 stamps grammar_traces.created_at
+    with wall-clock WRITE time; ledger.py:117 stamps grammar_events.created_at with
+    OCCURRENCE time (observed_at or emitted_at). Occurrence precedes write, so a trace row
+    is consistently NEWER than its own earliest event -- measured lag 0.15s to 9.4s.
+
+    What that actually buys, precisely: a trace outlives its EARLIEST event by
+    construction. It does NOT guarantee the trace outlives every LATER unconsumed event,
+    and the floor does not close that gap either -- the floor is MIN(created_at) over
+    unconsumed events, so a trace whose first event was already consumed can sit below the
+    floor and be deleted while a later sibling event survives. Measured at the live 3-day
+    cutoff: 4 such events, 8.6s of lag, gone on the next 60s cycle.
+
+    The floor stays on anyway, for the case it was built for: a genuinely stalled lane,
+    where it holds trace rows back by hours or days rather than seconds. Nothing reads
+    across the seam in the meantime -- reducers key on grammar_events and never join
+    grammar_traces, and the Atlas keys on grammar_traces -- so a briefly parentless event
+    is inert. Do not upgrade this to a correctness guarantee it does not provide.
+
+    There are no FK constraints to enforce any of this: the checked-in
+    manual_migration_grammar_atlas.sql declares `references grammar_traces(trace_id)` on
+    six child tables, but the live database has ZERO foreign keys touching any grammar_*
+    table (verified 2026-08-20 against pg_constraint) -- the tables were created by
+    SQLAlchemy metadata first, and the migration's FK clauses never took effect. So
+    _verify_delete_safe passes here, and ordering is a correctness argument this code has
+    to make for itself rather than one the database will make for it.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=grammar_engine,
+        table="grammar_traces",
+        id_column="trace_id",
+        respect_cursor_floor=True,
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["grammar_traces"] = state
     return state
 
 
@@ -271,31 +916,56 @@ def _latest_events_by_source() -> list[dict[str, Any]]:
 
 
 def _grammar_index_valid() -> dict[str, Any]:
+    # idx_grammar_events_created_at is what apply_grammar_events_retention()'s batched
+    # DELETE actually needs (WHERE created_at < cutoff ORDER BY created_at, event_id) --
+    # idx_grammar_events_source_created can't serve that scan without a source_service
+    # predicate. Confirmed live 2026-08-19: retention failed on every startup with
+    # `QueryCanceled: canceling statement due to statement timeout` until this index
+    # existed. Both are reported so a missing *either* one is visible, not just the one
+    # this snapshot originally tracked.
     with grammar_engine.connect() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             text(
                 """
-                SELECT indexname, indexdef
+                SELECT tablename, indexname, indexdef
                 FROM pg_indexes
-                WHERE tablename = 'grammar_events'
-                  AND indexname = 'idx_grammar_events_source_created'
+                WHERE (tablename, indexname) IN (
+                    ('grammar_events', 'idx_grammar_events_source_created'),
+                    ('grammar_events', 'idx_grammar_events_created_at'),
+                    ('grammar_edges', 'idx_grammar_edges_created_at'),
+                    ('grammar_atoms', 'idx_grammar_atoms_created_at')
+                )
                 """
             ),
-        ).mappings().first()
+        ).mappings().all()
+    by_name = {row["indexname"]: row["indexdef"] for row in rows}
     return {
-        "idx_grammar_events_source_created": row is not None,
-        "indexdef": row["indexdef"] if row else None,
+        "idx_grammar_events_source_created": "idx_grammar_events_source_created" in by_name,
+        "idx_grammar_events_created_at": "idx_grammar_events_created_at" in by_name,
+        "idx_grammar_edges_created_at": "idx_grammar_edges_created_at" in by_name,
+        "idx_grammar_atoms_created_at": "idx_grammar_atoms_created_at" in by_name,
+        "indexdef": by_name.get("idx_grammar_events_source_created"),
     }
 
 
-def _retention_truth_block(settings) -> dict[str, Any]:
-    rs = _retention_state
+def _retention_block(rs: GrammarRetentionState, *, configured_days: int, batch_size: int,
+                      max_batches: int, max_elapsed_sec: float) -> dict[str, Any]:
     return {
-        "enabled": rs.enabled or settings.grammar_events_retention_days > 0,
-        "configured_days": settings.grammar_events_retention_days,
-        "batch_size": settings.grammar_events_retention_batch_size,
-        "max_batches_per_startup": settings.grammar_events_retention_max_batches_per_startup,
-        "max_elapsed_sec": settings.grammar_events_retention_max_elapsed_sec,
+        "enabled": rs.enabled or configured_days > 0,
+        "configured_days": configured_days,
+        "batch_size": batch_size,
+        # RENAMED 2026-08-20 to stop advertising a bound that governs nothing. The startup
+        # retention pass was deleted, so *_MAX_BATCHES_PER_STARTUP / *_MAX_ELAPSED_SEC are
+        # now only defaults on functions that production never calls without arguments --
+        # the periodic loop always passes GRAMMAR_RETENTION_PERIODIC_* instead. Reporting
+        # them as the operative caps had /grammar/truth stating config truth on the endpoint
+        # whose entire purpose is runtime truth: live it showed max_elapsed_sec 120.0 next to
+        # elapsed_sec 1.08 against a real cap of 7.5.
+        "configured_max_batches_unused_startup_default": max_batches,
+        "configured_max_elapsed_sec_unused_startup_default": max_elapsed_sec,
+        # What this run was ACTUALLY handed, after the cycle budget's fair share. This is the
+        # number to read alongside capped_by_elapsed_limit.
+        "effective_max_elapsed_sec": rs.effective_max_elapsed_sec,
         "cutoff_at": rs.cutoff_at.isoformat() if rs.cutoff_at else None,
         "last_run_at": rs.last_run_at.isoformat() if rs.last_run_at else None,
         "rows_pruned_last_run": rs.rows_pruned_last_run,
@@ -307,6 +977,81 @@ def _retention_truth_block(settings) -> dict[str, Any]:
         "fk_delete_verification_note": rs.fk_delete_verification_note,
         "capped_by_startup_limit": rs.capped_by_startup_limit,
         "capped_by_elapsed_limit": rs.capped_by_elapsed_limit,
+        # Added 2026-08-20. Without these, a pinned floor is indistinguishable on /health
+        # from "healthy, nothing to do": rows_pruned=0, failure_reason=null, neither cap
+        # set. cursor_floor_applied is the only field that says "a reducer is behind and
+        # retention is deliberately holding back".
+        "cursor_floor_at": rs.cursor_floor_at.isoformat() if rs.cursor_floor_at else None,
+        "cursor_floor_applied": rs.cursor_floor_applied,
+        "debt_count_failed_reason": rs.debt_count_failed_reason,
+    }
+
+
+def _retention_truth_block(settings) -> dict[str, Any]:
+    return _retention_block(
+        _retention_state,
+        configured_days=settings.grammar_events_retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=settings.grammar_events_retention_max_batches_per_startup,
+        max_elapsed_sec=settings.grammar_events_retention_max_elapsed_sec,
+    )
+
+
+_EXTRA_RETENTION_TABLES = (
+    "grammar_edges",
+    "grammar_atoms",
+    "substrate_organ_emissions",
+    "grammar_traces",
+    "substrate_proposal_frames",
+)
+
+
+# Tables whose retention window could not be read from Settings on the last snapshot.
+# Surfaced as a degraded reason rather than an exception -- see the comment inside.
+_retention_window_config_missing: set[str] = set()
+
+
+def _other_retention_truth_blocks(settings) -> dict[str, dict[str, Any]]:
+    # Derived from _EXTRA_RETENTION_TABLES rather than hand-listed. The hand-written dict
+    # this replaces raised KeyError and took the ENTIRE /health snapshot down the moment a
+    # table was added to _EXTRA_RETENTION_TABLES without also being added here -- caught by
+    # tests when grammar_traces was added, but it is a trap that would fire again.
+    # getattr with a hard failure, not a silent default: a 0 here reads as "retention
+    # disabled for this table", which is exactly the wrong thing to invent from a typo.
+    # DEGRADE, DO NOT RAISE. build_grammar_truth_snapshot() is called from /health with no
+    # try/except (main.py), so raising here returns 500 for the WHOLE endpoint -- the exact
+    # blast radius of the KeyError this replaced, just with a different exception name. A
+    # missing window is reported as a degraded reason on the table it belongs to instead.
+    # The real gate against this drift is a test that binds _EXTRA_RETENTION_TABLES to the
+    # live Settings class (tests/test_grammar_retention_periodic.py); this branch is the
+    # runtime backstop for when that test is wrong, not the primary defence.
+    days_by_table: dict[str, int] = {}
+    missing: list[str] = []
+    for table in _EXTRA_RETENTION_TABLES:
+        attr = f"{table}_retention_days"
+        value = getattr(settings, attr, None)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            missing.append(table)
+            logger.error(
+                "%s is in _EXTRA_RETENTION_TABLES but Settings has no usable %s -- "
+                "reporting it as unconfigured; retention for it is NOT running",
+                table,
+                attr,
+            )
+            days_by_table[table] = 0
+            continue
+        days_by_table[table] = int(value)
+    _retention_window_config_missing.clear()
+    _retention_window_config_missing.update(missing)
+    return {
+        table: _retention_block(
+            _extra_retention_state.get(table, GrammarRetentionState()),
+            configured_days=days_by_table[table],
+            batch_size=settings.grammar_events_retention_batch_size,
+            max_batches=settings.grammar_events_retention_max_batches_per_startup,
+            max_elapsed_sec=settings.grammar_events_retention_max_elapsed_sec,
+        )
+        for table in _EXTRA_RETENTION_TABLES
     }
 
 
@@ -334,6 +1079,12 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
     index_info = _grammar_index_valid()
     if not index_info["idx_grammar_events_source_created"]:
         degraded_reasons.append("grammar_source_created_index_missing")
+    if not index_info["idx_grammar_events_created_at"]:
+        degraded_reasons.append("grammar_events_created_at_index_missing")
+    if not index_info["idx_grammar_edges_created_at"]:
+        degraded_reasons.append("grammar_edges_created_at_index_missing")
+    if not index_info["idx_grammar_atoms_created_at"]:
+        degraded_reasons.append("grammar_atoms_created_at_index_missing")
 
     if rs.failure_reason:
         degraded_reasons.append("grammar_retention_failed")
@@ -341,6 +1092,17 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
         degraded_reasons.append("grammar_retention_debt_remaining")
     if settings.grammar_events_retention_days > 0 and rs.last_run_at is None:
         degraded_reasons.append("grammar_retention_not_run")
+
+    other_retention = _other_retention_truth_blocks(settings)
+    for table, block in other_retention.items():
+        if block["failure_reason"]:
+            degraded_reasons.append(f"{table}_retention_failed")
+        if block["remaining_debt"] and block["remaining_debt"] > 0:
+            degraded_reasons.append(f"{table}_retention_debt_remaining")
+        if block["configured_days"] > 0 and block["last_run_at"] is None:
+            degraded_reasons.append(f"{table}_retention_not_run")
+        if table in _retention_window_config_missing:
+            degraded_reasons.append(f"{table}_retention_window_unconfigured")
 
     return {
         "ok": not degraded_reasons,
@@ -354,13 +1116,18 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
         "latest_by_source_service": _latest_events_by_source(),
         "grammar_index": index_info,
         "grammar_retention": _retention_truth_block(settings),
+        "other_table_retention": other_retention,
         "known_risks": {
-            "retention_prunes_grammar_events_only": (
-                "Retention deletes grammar_events rows only; orphan grammar_traces and derived "
-                "storage may remain until a future pruner."
+            "retention_skips_derived_grammar_tables": (
+                "grammar_events/grammar_edges/grammar_atoms/grammar_traces/"
+                "substrate_organ_emissions all have bounded periodic retention. "
+                "grammar_temporal_hops/grammar_compactions/grammar_projections still do "
+                "not -- deliberately: all three are effectively unwritten (16-24 kB each "
+                "live 2026-08-20, versus 143 MB - 18 GB for the managed tables), so a "
+                "pruner for them would be ceremony, not a fix. Revisit if they ever grow."
             ),
             "retention_debt_requires_restarts": (
-                "Remaining retention debt may require repeated startups or a future background pruner."
+                "Retention runs every GRAMMAR_RETENTION_INTERVAL_SEC seconds (app/grammar_retention_loop.py); remaining_debt is measured against the retention window, not the possibly-clamped cutoff. While a table still carries debt, the Grammar Atlas can list traces older than the window whose events/atoms were pruned first -- 42% of traces were already hollow when grammar_traces retention was added."
             ),
             "publish_orion_bus_grammar_default_off": (
                 "PUBLISH_ORION_BUS_GRAMMAR remains false in orion-bus code default; enable in deployed env."
@@ -379,3 +1146,149 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
             "grammar_events_retention_days": settings.grammar_events_retention_days,
         },
     }
+
+
+# Retention runs on a timer, not only at boot.
+#
+# WHY THIS EXISTS. Measured live 2026-08-19/20, from the service's own logs and
+# pg_stat_user_tables, before this patch:
+#
+#   arrival      1,117,440 rows/day across the four tables (2.42 GB/day)
+#   deletion       365,000 rows per PROCESS START, then exactly 0 until the next one
+#   debt         5,352,878 rows already past the cutoff, and climbing
+#
+# Every startup ran to its cap and stopped: grammar_events and grammar_atoms hit the
+# 100-batch cap, grammar_edges hit the 120s wall at batch 65, substrate_organ_emissions
+# hit both the cap and a statement timeout on its own debt query. The instrumentation was
+# never the problem -- each run logged `remaining_debt` correctly. Nothing ever ran again
+# to act on it, because the only trigger was process start.
+#
+# A startup-triggered job cannot converge against continuous arrival, no matter how its
+# caps are tuned: it would need roughly three restarts a day just to break even, and about
+# fifteen more on top of that to clear the standing debt. The fix is not a bigger cap.
+#
+# ORDER IS DELIBERATE but SMALL: grammar_traces runs LAST, after every table that hangs
+# off it. Nothing in the database enforces this -- there are no live FK constraints on
+# grammar_* -- so it is an argument this list has to make for itself.
+#
+# Do not overstate it. Intra-cycle ordering buys microseconds. What actually governs how
+# long a child row can point at a deleted parent is per-table debt versus drain rate, and
+# on deploy that is DAYS. Measured 2026-08-20, with the periodic caps (3 batches x 1000
+# rows x 1440 cycles/day = 4.32M rows/day of capacity per table):
+#
+#   table                      debt past cutoff   arrival/hr   converges in
+#   grammar_traces                      417,966        1,714   ~2.4 hours
+#   grammar_atoms                     1,768,239       15,337   ~0.45 days
+#   grammar_edges                     2,021,469       15,282   ~0.5 days
+#   grammar_events                    6,227,497       34,135   ~1.8 days
+#
+# grammar_traces reaches its cutoff ~18x faster than grammar_events, so for roughly the
+# first two days after deploy there are millions of events whose parent trace is already
+# gone. That is inert -- reducers key on grammar_events and never join grammar_traces, and
+# the Atlas keys on grammar_traces -- but it is the real shape of the window, not the
+# microsecond one this ordering controls.
+GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
+    ("grammar_events", apply_grammar_events_retention),
+    ("grammar_edges", apply_grammar_edges_retention),
+    ("grammar_atoms", apply_grammar_atoms_retention),
+    ("substrate_organ_emissions", apply_substrate_organ_emissions_retention),
+    ("grammar_traces", apply_grammar_traces_retention),
+    # Independent of the grammar tables above -- different engine, different floor, no
+    # ordering relationship with them. Placed last only because it is newest.
+    ("substrate_proposal_frames", apply_substrate_proposal_frames_retention),
+)
+
+
+def run_one_retention_cycle(
+    *,
+    days_for: dict[str, int],
+    max_batches: int,
+    max_elapsed_sec: float,
+    max_cycle_elapsed_sec: float | None = None,
+    stop: Any = None,
+) -> dict[str, GrammarRetentionState]:
+    """One bounded pass over every retention-managed table. Synchronous by design.
+
+    Callers on an event loop MUST run this in a worker thread -- it uses blocking
+    SQLAlchemy connections, and sql-writer's event loop is also draining the bus.
+
+    `max_elapsed_sec` bounds ONE TABLE. `max_cycle_elapsed_sec` bounds the whole cycle, and
+    without it the two are not the same number: six tables x a 20s per-table cap is a 120s
+    cycle on a 60s timer.
+
+    The budget is split as a FAIR SHARE (remaining budget / remaining eligible tables), not
+    first-come, because first-come starves and the order here is FIXED. Whichever table sits
+    earliest in GRAMMAR_RETENTION_TABLES and has debt would consume a first-come budget every
+    cycle, and the tables behind it would silently never run -- which reads as "retention is
+    working" in the logs, because the first table's own numbers look fine.
+
+    That is not hypothetical. Measured live 2026-08-20 during substrate_proposal_frames' own
+    backfill: it carried 109,585 rows of debt and took 8.21s in a cycle where grammar_events
+    took 1.08-3.33s and the other four took 0.01-0.30s. It is LAST in the tuple, so under a
+    first-come budget it is exactly the table that would have been starved -- by a table
+    ahead of it that was itself working perfectly correctly.
+
+    Do NOT restate this as "only table X has debt". Debt is transient, and an earlier version
+    of this docstring said exactly that and was wrong within the hour: grammar_events was the
+    only backlogged table when this was written, substrate_proposal_frames had 109,585 rows
+    an hour later, and both were at 0 by evening. The argument rests on the fixed ORDERING,
+    not on which table happens to be behind today.
+
+    Fair share rather than rotation because the ORDER is a correctness constraint, not a
+    preference: grammar_traces must be pruned after the children that reference it.
+
+    A non-positive `max_cycle_elapsed_sec` means NO CYCLE BUDGET, not "skip every table".
+    Getting that backwards turns a config typo into silently-disabled retention whose only
+    symptom is a WARNING per table per minute that reads like a transient squeeze.
+    """
+    out: dict[str, GrammarRetentionState] = {}
+    cycle_started = time.monotonic()
+    eligible = [
+        (table, fn)
+        for table, fn in GRAMMAR_RETENTION_TABLES
+        if int(days_for.get(table, 0) or 0) > 0
+    ]
+    remaining_tables = len(eligible)
+    for table, fn in eligible:
+        # Cooperative stop. asyncio.to_thread is NOT cancellable once the callable has
+        # started, so without this the event loop reports a clean shutdown while this
+        # thread keeps deleting -- and Python joins the executor thread at interpreter
+        # exit, blocking the process for up to 4 tables x (elapsed cap + one in-flight
+        # batch). Docker's default 10s stop grace would then SIGKILL every restart.
+        if stop is not None and stop.is_set():
+            logger.info("grammar_retention_cycle_stopping before table=%s", table)
+            break
+        days = int(days_for.get(table, 0) or 0)
+        table_cap = float(max_elapsed_sec)
+        if max_cycle_elapsed_sec is not None and float(max_cycle_elapsed_sec) > 0:
+            spent = time.monotonic() - cycle_started
+            remaining_budget = float(max_cycle_elapsed_sec) - spent
+            if remaining_budget <= 0:
+                # Never silently skip. A table dropped from a cycle with no log line is
+                # indistinguishable from a table with no debt.
+                logger.warning(
+                    "grammar_retention_cycle_budget_exhausted skipping table=%s "
+                    "spent_sec=%.1f budget_sec=%.1f",
+                    table,
+                    spent,
+                    max_cycle_elapsed_sec,
+                )
+                remaining_tables -= 1
+                continue
+            table_cap = min(table_cap, remaining_budget / remaining_tables)
+        remaining_tables -= 1
+        try:
+            state = fn(days, max_batches=max_batches, max_elapsed_sec=table_cap)
+            # The cap this run ACTUALLY got, which is not necessarily the configured one.
+            # Without it, an operator who raises the batch cap sees capped_by_elapsed_limit
+            # sitting next to the settings value and has no way to discover the real bound
+            # was the fair share -- config truth contradicting runtime truth on the endpoint
+            # whose entire job is runtime truth.
+            state.effective_max_elapsed_sec = table_cap
+            out[table] = state
+        except Exception:
+            # One table failing must not stop the others -- they are independent tables
+            # with independent debt, and the whole point of the loop is that it keeps
+            # running. _apply_bounded_table_retention already logs the detail.
+            logger.exception("%s_retention_cycle_failed", table)
+    return out

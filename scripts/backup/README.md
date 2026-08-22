@@ -193,6 +193,21 @@ file copy:
 | Chroma | `docker stop`, plain copy of the host bind-mount path, `docker start` | Chroma's per-collection index segments mutate on write with no CLI-accessible checkpoint API available here; an earlier version of this tool tried a live `sqlite3 .backup` for the metadata file only and left the segment files raw-copied, which doesn't actually solve the consistency problem for those files (and can leave a stale `-wal`/`-shm` sidecar next to a `.backup` output, corrupting restore) -- stopping for the copy window is simple and actually consistent |
 | Convex | Same stop/copy/start treatment, against the resolved Docker volume mountpoint (`docker volume inspect ... --format '{{.Mountpoint}}'`) | Same reason -- confirmed live that a raw copy of Convex's `db.sqlite3` tears mid-write ("file changed as we read it"), and its data directory also mixes in live RocksDB-style segment files that have no safe online-backup API exposed to this tool either |
 
+**Postgres orphan cleanup:** before every dump attempt, and again if the dump
+times out, the script runs `SELECT pg_terminate_backend(pid) FROM
+pg_stat_activity WHERE application_name IN ('pg_dump', 'pg_dumpall') ...`
+inside the container. This exists because `subprocess.run(cmd,
+timeout=POSTGRES_DUMP_TIMEOUT_SEC)` only kills the local `docker exec` client
+on timeout -- `docker exec` does not forward that signal into the container,
+so the server-side dump backend kept running orphaned, holding
+`AccessShareLock` on every table well past the script's own declared failure.
+Confirmed live 2026-08-16/17/18: three consecutive nights left an orphan
+running for 1+ hour, blocking all schema-init DDL repo-wide and, via
+Postgres's FIFO lock-queue fairness, every plain read queued behind that DDL
+too. If you're debugging an unrelated Postgres issue and notice this script's
+log lines mention terminating a backend, that's expected routine cleanup, not
+a sign of a new bug.
+
 Chroma and Convex are non-critical services (an internal vector store and an
 AI-town simulation backend, not user-facing production data paths), so the
 downtime during the 03:45 backup window is an acceptable trade for actual
@@ -277,8 +292,10 @@ PYTHONPATH=. ./venv/bin/python -m pytest tests/test_orion_backup_databases.py -q
 - **convex (orion-ai-town)**: removed 2026-07-29 when ai-town moved from
   athena to atlas -- this tool's targets all assume the container lives on
   the same host the nightly timer runs on (athena), which no longer holds
-  for ai-town. Needs a dedicated atlas-side backup mechanism (this tool
-  running there too, or a standalone script) as a follow-up; in the
-  meantime `services/orion-ai-town/scripts/compact_convex_data.sh` still
+  for ai-town. UPDATE 2026-08-21: atlas itself is now decommissioned, and
+  ai-town's actual current host (if any) is unconfirmed -- see
+  `services/orion-ai-town/README.md`. The "dedicated backup mechanism"
+  follow-up needs a real host target before it can be scoped, not just
+  re-pointed at atlas. In the meantime `services/orion-ai-town/scripts/compact_convex_data.sh` still
   captures a pre-compaction `db.sqlite3` snapshot on every compaction run,
   which is partial coverage, not a substitute.

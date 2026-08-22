@@ -157,6 +157,12 @@ from orion.schemas.social_chat import (
     SocialRoomTurnStoredV1,
     SocialRoomTurnV1,
 )
+from orion.schemas.room_claude import (
+    ExternalRoomResponderV1,
+    RoomClaudeRequestV1,
+    RoomClaudeUtteranceV1,
+    RoomTranscriptEntryV1,
+)
 from orion.schemas.social_bridge import (
     CallSyneRoomMessageV1,
     ExternalRoomMessageV1,
@@ -448,7 +454,7 @@ from orion.schemas.self_study import (
 )
 from orion.schemas.telemetry.inner_state import InnerFeatureV1, InnerStateFeaturesV1
 from orion.schemas.telemetry.mood_arc import MoodArcCorpusRowV1, MoodArcEncoderManifestV1
-from orion.schemas.telemetry.phi_encoder import PhiEncoderManifestV1, PhiIntrinsicRewardV1
+from orion.schemas.telemetry.phi_encoder import PhiEncoderManifestV1
 from orion.schemas.telemetry.reasoning import ReasoningActivityV1, ReasoningCallV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
@@ -472,8 +478,15 @@ from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
+from orion.schemas.world_model import (
+    WorldModelFeatureGroupV1,
+    WorldModelPredictionPayload,
+    WorldModelTaskRequestPayload,
+    WorldModelTrajectoryStepV1,
+)
 from orion.schemas.vision import (
     VisionArtifactPayload,
+    VisionSceneInventoryV1,
     VisionCouncilRequestPayload,
     VisionCouncilResultPayload,
     VisionEdgeActivityPayload,
@@ -551,6 +564,7 @@ from orion.schemas.reverie import (
     ReverieRefractoryEntry,
     SpontaneousThoughtV1,
 )
+from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualChainV1
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
     GroundingCapsuleV1,
@@ -763,7 +777,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MoodArcCorpusRowV1": MoodArcCorpusRowV1,
     "MoodArcEncoderManifestV1": MoodArcEncoderManifestV1,
     "PhiEncoderManifestV1": PhiEncoderManifestV1,
-    "PhiIntrinsicRewardV1": PhiIntrinsicRewardV1,
     "ReasoningCallV1": ReasoningCallV1,
     "ReasoningActivityV1": ReasoningActivityV1,
     "SparkCandidateV1": SparkCandidateV1,
@@ -811,6 +824,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionArtifactPayload": VisionArtifactPayload,
     "VisionEdgeArtifact": VisionEdgeArtifact,
     "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
+    "VisionSceneInventoryV1": VisionSceneInventoryV1,
+    # Pre-existing gap surfaced by test_registry_and_schema_registry_agree:
+    # registered in SCHEMA_REGISTRY, carried on a real channel
+    # (orion/bus/channels.yaml:2790) and published by
+    # scripts/self_study_enrichment_hook.py, but absent here -- so any
+    # consumer calling resolve() on it raised "Unknown schema_id".
+    "SelfStudyEnrichmentRequestV1": SelfStudyEnrichmentRequestV1,
     "VisionEdgeHealth": VisionEdgeHealth,
     "VisionEdgeError": VisionEdgeError,
     "VisionEventPayload": VisionEventPayload,
@@ -834,6 +854,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionScribeResultPayload": VisionScribeResultPayload,
     "VisionGuardSignal": VisionGuardSignal,
     "VisionGuardAlert": VisionGuardAlert,
+    "WorldModelFeatureGroupV1": WorldModelFeatureGroupV1,
+    "WorldModelTrajectoryStepV1": WorldModelTrajectoryStepV1,
+    "WorldModelTaskRequestPayload": WorldModelTaskRequestPayload,
+    "WorldModelPredictionPayload": WorldModelPredictionPayload,
     "CortexChatRequest": CortexChatRequest,
     "CortexChatResult": CortexChatResult,
     "RecallDirective": RecallDirective,
@@ -880,6 +904,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SocialRedactionScoreV1": SocialRedactionScoreV1,
     "SocialRoomTurnV1": SocialRoomTurnV1,
     "SocialRoomTurnStoredV1": SocialRoomTurnStoredV1,
+    "RoomClaudeRequestV1": RoomClaudeRequestV1,
+    "RoomClaudeUtteranceV1": RoomClaudeUtteranceV1,
+    "RoomTranscriptEntryV1": RoomTranscriptEntryV1,
+    "ExternalRoomResponderV1": ExternalRoomResponderV1,
     "SocialCommitmentV1": SocialCommitmentV1,
     "SocialCommitmentResolutionV1": SocialCommitmentResolutionV1,
     "SocialBridgeSummaryV1": SocialBridgeSummaryV1,
@@ -1277,6 +1305,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CompactionRequestV1": CompactionRequestV1,
     "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
     "ResonanceAlertV1": ResonanceAlertV1,
+    "ReverieVisualChainV1": ReverieVisualChainV1,
+    "ReverieVisualArtifactV1": ReverieVisualArtifactV1,
     "StanceReactRequestV1": StanceReactRequestV1,
     "GrammarReceiptV1": GrammarReceiptV1,
     "HarnessDraftMoleculeV1": HarnessDraftMoleculeV1,
@@ -1303,6 +1333,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # 2026-08-12-substrate-action-perception-design.md option B(2)). Registered
     # in BOTH this dict and `_REGISTRY` above -- they are separate maps and a
     # schema present in only one is half-registered.
+    # Claude as a third social-room participant (2026-08-14, design doc
+    # hub-social-room-claude-companion.md). Only these two carry a message
+    # kind; RoomTranscriptEntryV1 and ExternalRoomResponderV1 are nested
+    # payload models, so they live in `_REGISTRY` alone by design.
+    "RoomClaudeRequestV1": SchemaRegistration(
+        model=RoomClaudeRequestV1,
+        kind="room.claude.request.v1",
+    ),
+    "RoomClaudeUtteranceV1": SchemaRegistration(
+        model=RoomClaudeUtteranceV1,
+        kind="room.claude.utterance.v1",
+    ),
     "SubstrateReadQueryV1": SchemaRegistration(
         model=SubstrateReadQueryV1,
         kind="substrate_read.query.v1",
@@ -1327,10 +1369,6 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=PhiEncoderManifestV1,
         kind="self.phi_encoder.manifest.v1",
     ),
-    "PhiIntrinsicRewardV1": SchemaRegistration(
-        model=PhiIntrinsicRewardV1,
-        kind="self.phi_reward.v1",
-    ),
     "ReasoningCallV1": SchemaRegistration(
         model=ReasoningCallV1,
         kind="cognition.reasoning_call.v1",
@@ -1342,6 +1380,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "VisionEdgeActivityPayload": SchemaRegistration(
         model=VisionEdgeActivityPayload,
         kind="vision.edge.activity.v1",
+    ),
+    "VisionSceneInventoryV1": SchemaRegistration(
+        model=VisionSceneInventoryV1,
+        kind="vision.scene.inventory.v1",
     ),
     "CoalitionSnapshotV1": SchemaRegistration(
         model=CoalitionSnapshotV1,
@@ -1386,6 +1428,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "MemoryCompactionDeltaV1": SchemaRegistration(
         model=MemoryCompactionDeltaV1,
         kind="dream.compaction.delta.v1",
+    ),
+    "ReverieVisualChainV1": SchemaRegistration(
+        model=ReverieVisualChainV1,
+        kind="reverie.visual.chain.v1",
+    ),
+    "ReverieVisualArtifactV1": SchemaRegistration(
+        model=ReverieVisualArtifactV1,
+        kind="reverie.visual.artifact.v1",
     ),
     "ResonanceAlertV1": SchemaRegistration(
         model=ResonanceAlertV1,
@@ -1505,6 +1555,19 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SelfStudyEnrichmentRequestV1": SchemaRegistration(
         model=SelfStudyEnrichmentRequestV1,
         kind="self_study.enrichment.request.v1",
+    ),
+    # orion-world-model (2026-08-20, scaffold patch -- see module docstring in
+    # orion/schemas/world_model.py). Only the request/prediction pair carries
+    # a message kind; WorldModelFeatureGroupV1/WorldModelTrajectoryStepV1 are
+    # nested payload models, so they live in `_REGISTRY` alone by design
+    # (same split as VisionArtifactOutputs/VisionObject etc. in vision.py).
+    "WorldModelTaskRequestPayload": SchemaRegistration(
+        model=WorldModelTaskRequestPayload,
+        kind="world_model.task.request",
+    ),
+    "WorldModelPredictionPayload": SchemaRegistration(
+        model=WorldModelPredictionPayload,
+        kind="world_model.prediction",
     ),
 }
 

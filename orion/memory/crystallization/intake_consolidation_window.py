@@ -82,6 +82,31 @@ def _window_summary(turns: list[dict[str, Any]]) -> str:
     return "Consolidated chat window"
 
 
+def _window_source_platform(turns: list[dict[str, Any]]) -> str | None:
+    """The external platform this whole window came from, or None.
+
+    Unanimity is required, and it is required in both directions:
+
+      - Every turn must name the same non-empty platform. One dissenting turn
+        (including one whose platform is None, i.e. a direct conversation with
+        Juniper) makes the window "mixed" and returns None.
+      - None is the safe answer, because None routes the window down the normal
+        governor-queue path. The failure mode this avoids is auto-activating a
+        window that contains Juniper's own words without her ever seeing it;
+        the reverse failure (an all-NPC window landing in her queue) is merely
+        the status quo she is already asking us to fix.
+
+    An empty turn list is not external.
+    """
+    if not turns:
+        return None
+    platforms = {str(t.get("source_platform")) if t.get("source_platform") else None for t in turns}
+    if len(platforms) != 1:
+        return None
+    only = platforms.pop()
+    return only or None
+
+
 def _kind_for_gate(gate: ConsolidationGateResult, turns: list[dict[str, Any]]) -> str:
     if gate.dominant_shift:
         return _KIND_FOR_SHIFT.get(gate.dominant_shift, "episode")
@@ -113,7 +138,7 @@ def build_crystallization_from_window(
                 note=_evidence_note_for_turn(turn),
             )
         )
-    grammar_ids = list(gate.grammar_event_ids)
+    grammar_ids = list(dict.fromkeys(gate.grammar_event_ids))
     for event_id in grammar_ids:
         evidence.append(
             CrystallizationEvidenceRefV1(
@@ -122,6 +147,20 @@ def build_crystallization_from_window(
                 strength=0.6,
             )
         )
+
+    # Defense in depth: collapse to one entry per (source_kind, source_id),
+    # keeping the LAST occurrence so a chat turn's freshest reclassification
+    # note wins. WindowStore.append_turn no longer appends a second entry for a
+    # reclassified turn, but a window already open when that fix ships still
+    # carries whatever it accumulated before then, and this is also the only
+    # place that would ever catch a future producer making the same mistake.
+    # dict preserves first-seen key position even when a later value overwrites
+    # it, so ordering is unaffected.
+    deduped_evidence: dict[tuple[str, str], CrystallizationEvidenceRefV1] = {}
+    for ev in evidence:
+        deduped_evidence[(ev.source_kind, ev.source_id)] = ev
+    evidence = list(deduped_evidence.values())
+
     kind = _kind_for_gate(gate, turns)
     planning_effects, retrieval_affordances = _planning_and_retrieval_for_kind(kind, summary)
     return MemoryCrystallizationV1(
@@ -148,6 +187,7 @@ def build_crystallization_from_window(
             "window_novelty_max": gate.window_novelty_max,
             "window_significance_max": gate.window_significance_max,
             "gate_reasons": gate.reasons,
+            "source_platform": _window_source_platform(turns),
         },
         created_at=now,
         updated_at=now,

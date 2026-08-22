@@ -15,6 +15,40 @@ The **Biometrics** service collects hardware telemetry (CPU, memory, GPU usage, 
 | `orion:spark:signal` | `SPARK_SIGNAL_CHANNEL` | `spark.signal.v1` | Bounded resource signal from cluster strain (hub mode). |
 | `orion:grammar:event` | `GRAMMAR_EVENT_CHANNEL` | `grammar.event.v1` | Node-scoped grammar trace (one trace per observed node per tick). |
 
+### Which "how loaded is it" number to read
+
+There are now three, they disagree on purpose, and picking the wrong one is how a saturated
+machine goes unnoticed. Measured live on athena 2026-08-15, all at the same instant:
+
+| field | value | what it answers |
+| :--- | :--- | :--- |
+| `composites.strain` | `0.11` | mean of **7 of the 11** pressures |
+| `constraint` | `NONE` | peak channel's *name*, but only above 0.7 and only for the 8 channels in `CONSTRAINTS` |
+| `peak_pressure` / `_channel` / `_node` | `1.00` `power` `athena` | the binding constraint: max over **all 11** |
+
+athena's `power` was pegged at 1.000 and the first two both read "fine". Two independent
+reasons:
+
+- **`strain` is a mean.** One saturated channel is averaged away by six calm ones.
+- **`strain` omits `gpu_mem`, `swap`, `disk_capacity` and `fan`** — which are the highest
+  channel on two of three nodes. On 2026-08-15 athena's peak was `disk_capacity` at 0.772,
+  over the alarm threshold, reported as `constraint=NONE` because that key is not in
+  `CONSTRAINTS`.
+
+**Read `peak_pressure` when you want to know whether something is about to stop.** Read
+`strain` only if you specifically want the average, and know that it cannot see saturation.
+
+`strain` is deliberately **not** fixed in place. It is written straight into the field
+lattice's `cpu_pressure` channel (`orion-field-digester/app/ingest/state_deltas.py:125`,
+`mode="replace"`) and feeds the substrate prediction-error diff, so changing its formula moves
+Orion's substrate rather than a readout. `peak_pressure` was added alongside it instead —
+nothing downstream of `strain` moved. See `_peak_pressure` in
+`orion/telemetry/biometrics_pipeline.py`.
+
+At cluster level `peak_pressure` is a **max across nodes**, never the role-weighted mean the
+`pressures` dict uses — one saturated machine must not be smeared across three — and
+`peak_pressure_node` travels with it so the number can be acted on.
+
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
@@ -26,7 +60,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `BIOMETRICS_INDUCTION_CHANNEL` | `orion:biometrics:induction` | Induction publish channel. |
 | `BIOMETRICS_CLUSTER_CHANNEL` | `orion:biometrics:cluster` | Cluster publish channel (hub mode). |
 | `BIOMETRICS_MODE` | `agent` | `agent` (node), `hub` (aggregate), or `both`. |
-| `CLUSTER_ROLE_WEIGHTS` | `{"atlas":0.7,"athena":0.3,"other":0.5}` | Role weighting for cluster aggregate. |
+| `CLUSTER_ROLE_WEIGHTS` | `{"circe":0.7,"athena":0.3,"other":0.5}` | Role weighting for cluster aggregate. circe inherited atlas's weight 2026-08-21 (atlas decommissioned; circe is now the fleet's dominant, always-up GPU node). |
 | `THERMAL_MIN_C` | `50.0` | Temperature floor for normalization. |
 | `THERMAL_MAX_C` | `85.0` | Temperature ceiling for normalization. |
 | `DISK_BW_MBPS` | `200.0` | Disk bandwidth scale (MB/s). |
@@ -139,6 +173,12 @@ block turns into lattice `Perturbation`s:
 | :--- | :--- | :--- |
 | `body_state` (composite `strain`) | `strain` | `cpu_pressure` |
 | `gpu_pressure_signal` | `gpu` | `gpu_pressure` |
+<!-- The `strain` row is why `strain`'s formula is frozen: `mode="replace"` means the composite
+     IS the lattice's `cpu_pressure` value, so redefining it moves Orion's substrate, not a
+     readout. `peak_pressure` was added beside it rather than changing it. Note also that a
+     whole-body composite feeding a channel named `cpu_pressure` is a pre-existing mislabel,
+     independent of that. -->
+
 | `memory_pressure_signal` | `memory_pressure` | `memory_pressure` |
 | `thermal_pressure_signal` | `thermal_pressure` | `thermal_pressure` |
 | `disk_pressure_signal` | `disk_pressure` | `disk_pressure` |
@@ -189,6 +229,55 @@ sitting exactly at their post-decay ceiling (`1.0 * BIOMETRICS_FIELD_DECAY_RATE`
 independent `strain`/`gpu` hints. Both signatures match repeated
 re-saturation from add-mode duplicate deltas, not real, independent CPU/GPU
 utilization, so `strain`/`gpu` were switched to `mode="replace"` too.
+
+### Where each node's power actually comes from
+
+Three instruments, and which one answers for a node depends on what that node has:
+
+| node | `chassis_watts` from | also reports | why |
+| :--- | :--- | :--- | :--- |
+| athena | **iLO** (RedFish, BMC) | `pdu_watts`, `cpu_watts_total` (RAPL) | has both, as of 2026-08-21 — inherited atlas's old chassis/PDU spot when atlas was decommissioned; the PDU cross-checks the BMC |
+| circe | **PDU** (SNMP, per-outlet) | `pdu_watts` | **no reachable BMC** — the PDU is the only source |
+
+**`chassis_watts` holds exactly one value per node.** iLO wins wherever it exists; the PDU fills
+in only when the BMC produced nothing. That ordering is deliberate and tested — the two disagree
+instantaneously whenever load is moving (iLO polls on a 60 s cadence, the SNMP read is
+instantaneous; measured 737 W vs 484 W on atlas mid-burst), so without fixed precedence whichever
+wrote last would win at random.
+
+**Never sum `chassis_watts` with `pdu_watts`.** On atlas they are two meters on the same watts.
+Likewise `cpu_watts_total` and `gpu_watts_total` are *contained within* `chassis_watts`, not
+additional to it — see the containment block in `orion/telemetry/biometrics_pipeline.py`.
+
+**Multi-PSU machines span outlets.** A node's PDU draw is the SUM of its outlets, and the
+outlet→node map is physical cabling that SNMP cannot report (the device's outlet names are
+generic and not editable on this firmware). It lives in `PDU_OUTLETS`, per node, and **re-cabling
+means editing it — nothing detects a change.** Traced by hand 2026-08-15:
+
+```text
+circe   PDU_OUTLETS=19,25,31   3 PSUs   ~419 W
+atlas   PDU_OUTLETS=34,35      2 PSUs   ~266 W
+athena  PDU_OUTLETS=           not on this PDU; empty disables the poller
+```
+
+RE-CABLED 2026-08-21: atlas is decommissioned (see `config/biometrics/node_catalog.yaml`).
+athena's disks now run from that chassis, so athena's own `PDU_OUTLETS` is 34,35 (self-polled,
+no longer empty) — confirmed live at 238 W chassis vs 235 W PDU. circe was separately relocated
+to this PDU's bank B1, now outlets 1,7,13 (~669 W) — also confirmed live via `snmpget` and the
+fleet cluster event's `measurements_proxied`.
+
+That confirmation was blocked for a while by something unrelated to outlet numbers: this PDU's
+SNMP Manager allow-list only had a stale athena address (an old DHCP lease from 2026-08-14, see
+`app/metrics.py`'s `_carrying_interfaces` docstring), not athena's current one. An unauthorized
+source IP is silently dropped by this device rather than refused — indistinguishable from the
+PDU being down, since it answered ICMP and HTTPS the whole time. Fixed in the PDU's own admin
+panel by adding athena's current address to the Manager list.
+
+A mismatch is detectable: on atlas, `pdu_watts` and `chassis_watts` should agree at steady state.
+They read 291 W and 291 W when this was validated.
+
+**The PDU is read-only, deliberately.** The device is outlet-*switched* — a write community can
+power off circe and atlas. Only SNMP GETs are ever issued.
 
 ## Running & Testing
 

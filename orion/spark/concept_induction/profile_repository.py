@@ -33,7 +33,7 @@ from .store import LocalProfileStore
 logger = logging.getLogger("orion.spark.concept.profile_repository")
 
 AvailabilityKind = Literal["available", "empty", "unavailable"]
-RepositoryBackendKind = Literal["local", "graph", "shadow"]
+RepositoryBackendKind = Literal["local", "graph", "shadow", "substrate"]
 
 
 @dataclass(frozen=True)
@@ -484,6 +484,16 @@ def build_concept_profile_repository(
     backend: RepositoryBackendKind = backend_override or getattr(cfg, "concept_profile_repository_backend", "local")
     if backend == "local":
         return local_repo
+
+    if backend == "substrate":
+        # Deferred import: keeps orion.substrate (FalkorDB client, schemas) an
+        # opt-in dependency of this module rather than a hard one for callers
+        # who only ever use the local/graph/shadow backends -- same
+        # deliberate-decoupling precedent as orion/substrate/reconcile.py's
+        # own comment about not coupling orion.substrate <-> this package.
+        from .substrate_repository import SubstrateConceptProfileRepository
+
+        return SubstrateConceptProfileRepository()
 
     graph_repo = GraphConceptProfileRepository(
         endpoint=getattr(cfg, "concept_profile_graphdb_endpoint", ""),

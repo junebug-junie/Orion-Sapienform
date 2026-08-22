@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     # Intake channel (hub or orch -> exec)
     channel_exec_request: str = Field("orion:cortex:exec:request", alias="CHANNEL_EXEC_REQUEST")
     exec_lane: str = Field("legacy", alias="EXEC_LANE")
+    # ROADMAP A3. When true, a step the lane resolver already classifies as low-priority
+    # (Orion's own initiative: introspect_spark, dream_cycle, dream_synthesis,
+    # log_orion_metacognition, reverie_narrate) that would otherwise route to `quick` goes to
+    # `quick_background` instead -- same upstream and model, but behind the gateway's
+    # background admission gate, so Orion waits rather than Juniper.
+    #
+    # This is the roadmap's kill gate: set false to restore the previous behaviour exactly.
+    # Nothing else needs redeploying and there is no migration.
+    exec_autonomous_background_routing: bool = Field(
+        True, alias="EXEC_AUTONOMOUS_BACKGROUND_ROUTING"
+    )
     # Allow parallel plan execution on this lane (harness finalize must not queue behind chat_general).
     exec_concurrent_handlers: bool = Field(True, alias="EXEC_CONCURRENT_HANDLERS")
 
@@ -100,6 +111,19 @@ class Settings(BaseSettings):
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
     atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
+    cortex_chat_return_logprobs: bool = Field(
+        False,
+        alias="CORTEX_CHAT_RETURN_LOGPROBS",
+        description=(
+            "Request per-token logprob/top1-margin telemetry on real chat-turn (route=chat) "
+            "replies. Rides the existing OpenAI-compat gateway call (llm_backend.py's "
+            "_execute_openai_chat) -- no endpoint switch, no response_format set, no separate "
+            "probe request. Feeds chat_history_log.llm_* columns via "
+            "_forward_llm_uncertainty_metadata's existing spark_meta merge. Distinct from "
+            "CORTEX_METACOG_RETURN_LOGPROBS, which gates MetacogDraftService's own separate "
+            "native-completion probe and never touches the user-facing reply."
+        ),
+    )
     cortex_metacog_return_logprobs: bool = Field(False, alias="CORTEX_METACOG_RETURN_LOGPROBS")
     cortex_metacog_logprob_probe_mode: str = Field(
         default="",
@@ -192,6 +216,24 @@ class Settings(BaseSettings):
     cortex_exec_llm_gateway_url: str = Field(
         "http://llm-gateway:8210", alias="CORTEX_EXEC_LLM_GATEWAY_URL"
     )
+    # ROADMAP A5: read orion-llm-gateway's GET /admission and put "was my background thinking
+    # made to wait, and for how long" into the metacog cue. Default ON, but the cue key is
+    # simply absent whenever the gateway cannot be read -- unknown never renders as calm.
+    # Set false to remove both the fetch and the key.
+    cortex_exec_admission_cue_enabled: bool = Field(
+        True, alias="CORTEX_EXEC_ADMISSION_CUE_ENABLED"
+    )
+    # 6h. Long enough that a lane which fills a few times a day is visible in a single pass,
+    # short enough that yesterday's contention does not read as current.
+    cortex_exec_admission_cue_window_s: float = Field(
+        21600.0, alias="CORTEX_EXEC_ADMISSION_CUE_WINDOW_S"
+    )
+    cortex_exec_admission_cue_ttl_sec: float = Field(
+        60.0, alias="CORTEX_EXEC_ADMISSION_CUE_TTL_SEC"
+    )
+    cortex_exec_admission_cue_timeout_sec: float = Field(
+        2.0, alias="CORTEX_EXEC_ADMISSION_CUE_TIMEOUT_SEC"
+    )
     orion_situation_runtime_probe_timeout_sec: float = Field(
         2.0, alias="ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC"
     )
@@ -253,6 +295,30 @@ class Settings(BaseSettings):
     # PageIndex query provenance includes enriched journal trigger/stance/facet metadata.
     journal_pageindex_service_url: str = Field("http://orion-pageindex:8360", alias="JOURNAL_PAGEINDEX_SERVICE_URL")
     biometrics_http_timeout_sec: float = Field(5.0, alias="BIOMETRICS_HTTP_TIMEOUT_SEC")
+    # skills.perception.look_at_camera.v1 -- reads orion-vision-window's already-
+    # projected current-window snapshot (GET /api/vision-window/current). Does
+    # NOT trigger a fresh capture; that would need a direct vision-host RPC, out
+    # of scope for this first cut. Internal container port (8000), not the
+    # host-mapped VISION_WINDOW_HTTP_PORT (8019 by convention).
+    vision_window_service_url: str = Field(
+        "http://orion-athena-vision-window:8000", alias="VISION_WINDOW_SERVICE_URL"
+    )
+    vision_window_http_timeout_sec: float = Field(5.0, alias="VISION_WINDOW_HTTP_TIMEOUT_SEC")
+    # skills.perception.ask_camera.v1 -- the "direct vision-host RPC" the
+    # comment above named as out of scope for look_at_camera's first cut.
+    # Posts task_type=vqa straight to vision-host's own HTTP endpoint,
+    # bypassing orion-vision-window/orion-vision-council entirely (real
+    # on-demand VQA, not a read of the passive pipeline's last projection).
+    # Internal container port (6600, per orion-vision-host's own Dockerfile
+    # EXPOSE), not any host-mapped port.
+    vision_host_service_url: str = Field(
+        "http://orion-athena-vision-host:6600", alias="VISION_HOST_SERVICE_URL"
+    )
+    # Generous relative to vision_window's 5s default -- a cold vlm_vqa
+    # profile lazy-loads its own model on first real request (see
+    # services/orion-vision-host/app/runner.py::_run_vlm_vqa), which is
+    # meaningfully slower than reading an already-warm projection.
+    vision_host_http_timeout_sec: float = Field(30.0, alias="VISION_HOST_HTTP_TIMEOUT_SEC")
     endogenous_runtime_enabled: bool = Field(False, alias="ENDOGENOUS_RUNTIME_ENABLED")
     endogenous_runtime_surface_chat_reflective_enabled: bool = Field(
         False,
@@ -322,6 +388,14 @@ class Settings(BaseSettings):
         alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",
     )
     repair_pressure_probe_route: str = Field("quick", alias="REPAIR_PRESSURE_PROBE_ROUTE")
+    # Same-turn LLM novelty/salience judgment for the chat-scoped attention/
+    # curiosity pipeline (app/current_turn_llm_signals.py), replacing the
+    # deleted LegacyRegexSignalDetector's "any capitalized word" regex.
+    # Quick-lane classification call, not a generation call -- see that
+    # module's docstring for the full rationale.
+    current_turn_signal_probe_route: str = Field("quick", alias="CURRENT_TURN_SIGNAL_PROBE_ROUTE")
+    current_turn_signal_probe_timeout_sec: float = Field(3.0, alias="CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC")
+    current_turn_signal_probe_max_tokens: int = Field(80, alias="CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS")
     enable_pre_turn_appraisal_handler: bool = Field(
         True,
         alias="ENABLE_PRE_TURN_APPRAISAL_HANDLER",

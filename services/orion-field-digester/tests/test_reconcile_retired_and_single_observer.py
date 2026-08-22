@@ -6,7 +6,11 @@ Both were found live on 2026-08-14, three weeks after the 2026-07-24 renames.
 from datetime import datetime, timedelta, timezone
 
 from app.graph.lattice import load_lattice
-from app.tensor.channels import RETIRED_NODE_CHANNELS, SINGLE_OBSERVER_NODE_CHANNELS
+from app.tensor.channels import (
+    RETIRED_LATTICE_NODES,
+    RETIRED_NODE_CHANNELS,
+    SINGLE_OBSERVER_NODE_CHANNELS,
+)
 from app.tensor.reconcile import reconcile_field_state_with_lattice
 from orion.schemas.field_state import FieldStateV1
 
@@ -102,3 +106,32 @@ def test_single_observer_owners_are_real_and_not_retired() -> None:
     for channel, owner in SINGLE_OBSERVER_NODE_CHANNELS.items():
         assert channel not in RETIRED_NODE_CHANNELS
         assert owner.startswith("node:")
+
+
+def test_retired_lattice_node_is_dropped_entirely() -> None:
+    """Live 2026-08-21: node:atlas was removed from orion_field_topology.v1.yaml
+    in PR #1799 but kept sitting in substrate_field_state, fully decayed to ~0
+    on every channel, because _ensure_node_vector() only ever runs for
+    lattice.nodes -- an off-lattice node never gets touched, retired-channel
+    pruned, or single-observer pruned again. A retired lattice node needs the
+    whole node_vectors entry gone, not just its channels tidied."""
+    state = _state(
+        {
+            "node:atlas": {"cpu_pressure": 0.0, "gpu_pressure": 0.0, "availability": 1.0},
+            "node:athena": {"cpu_pressure": 0.4},
+        },
+        {"node:atlas": {"cpu_pressure": NOW - timedelta(seconds=90)}},
+    )
+    out = reconcile_field_state_with_lattice(state, lattice=_lattice())
+    assert "node:atlas" not in out.node_vectors
+    assert "node:atlas" not in out.node_vector_updated_at
+    # Untouched: a currently-real lattice node must not get caught by this.
+    assert out.node_vectors["node:athena"]["cpu_pressure"] == 0.4
+
+
+def test_retired_lattice_nodes_are_not_currently_in_the_lattice() -> None:
+    """Sanity guard: a name cannot be both retired and a live lattice node --
+    that would mean reconcile seeds it via _ensure_node_vector() and then
+    immediately deletes it every tick, i.e. it could never actually reconcile."""
+    lattice_nodes = set(_lattice().nodes)
+    assert not (RETIRED_LATTICE_NODES & lattice_nodes)

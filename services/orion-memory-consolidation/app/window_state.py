@@ -14,18 +14,32 @@ class WindowStore:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
-    async def _get_open_window(self) -> asyncpg.Record | None:
+    async def _get_open_window(self, source_platform: str | None = None) -> asyncpg.Record | None:
+        """The open window for one platform. NULL platform = direct conversation.
+
+        This used to select the single global open window with no partitioning
+        at all, so ai-town NPC turns and Juniper's own turns appended to the same
+        window -- 26 windows were confirmed mixed on live data (2026-08-14). An
+        episode is meant to be one coherent stretch of conversation, so that was
+        a correctness bug independent of the review queue.
+
+        `IS NOT DISTINCT FROM` rather than `=` because the direct-conversation
+        partition is keyed by NULL, and `NULL = NULL` is NULL, which would make
+        every direct turn open a brand-new window and never find its own.
+        """
         return await self._pool.fetchrow(
             """
             SELECT * FROM memory_consolidation_windows
             WHERE status = 'open'
+              AND source_platform IS NOT DISTINCT FROM $1
             ORDER BY created_at ASC
             LIMIT 1
-            """
+            """,
+            source_platform,
         )
 
     async def append_turn(self, turn: MemoryTurnPersistedV1, *, scores: dict[str, Any]) -> None:
-        row = await self._get_open_window()
+        row = await self._get_open_window(turn.source_platform)
         phase_change = (turn.spark_meta.get("conversation_phase") or {}).get("phase_change")
         appraisal = scores.get("turn_change_appraisal")
         spark_meta: dict[str, Any] = {}
@@ -43,27 +57,71 @@ class WindowStore:
             "phase_change": phase_change,
             "memory_classify_ts": scores.get("memory_classify_ts"),
             "spark_meta": spark_meta,
+            # Still carried per-turn even though the cursor is now partitioned by
+            # platform, for two reasons: windows created before that partitioning
+            # can genuinely hold turns from more than one platform, and
+            # _window_source_platform()'s unanimity rule is what keeps those
+            # legacy mixed windows out of the auto-activate path. Belt and braces
+            # -- the partitioning prevents new mixing, the unanimity check refuses
+            # to trust any window that mixed anyway.
+            "source_platform": turn.source_platform,
         }
         if row is None:
             window_id = str(uuid4())
             await self._pool.execute(
                 """
                 INSERT INTO memory_consolidation_windows
-                  (memory_window_id, status, turn_correlation_ids, created_at)
-                VALUES ($1, 'open', $2::jsonb, $3)
+                  (memory_window_id, status, turn_correlation_ids, created_at, source_platform)
+                VALUES ($1, 'open', $2::jsonb, $3, $4)
                 """,
                 window_id,
                 json.dumps([turn_entry]),
                 datetime.now(timezone.utc),
+                turn.source_platform,
             )
             return
 
         turns = json.loads(row["turn_correlation_ids"]) if row["turn_correlation_ids"] else []
-        if isinstance(turns, list):
-            turns.append(turn_entry)
-        else:
-            turns = [turn_entry]
-        corr_ids = [t.get("correlation_id") for t in turns if isinstance(t, dict)]
+        if not isinstance(turns, list):
+            turns = []
+        # orion:memory:turn:persisted can be published more than once for the
+        # same correlation_id -- confirmed against the real producer
+        # (services/orion-sql-writer/app/worker.py): a "chat.history" envelope
+        # write emits it directly, and a separate, independent branch emits it
+        # again for the matching "chat.history.message.v1" (assistant-role)
+        # envelope via _maybe_emit_memory_turn_from_row(). Neither branch
+        # reclassifies anything -- this is a producer-side double-publish, not
+        # a legitimate two-phase classify design. A blind append here built up
+        # two window entries for one real turn, which then made
+        # fetch_grammar_evidence_for_window() query the same grammar trace_id
+        # twice and build_crystallization_from_window() mint two evidence rows
+        # citing the same source_id. Confirmed live 2026-08-20: 571 duplicate
+        # memory_crystallization_sources groups (55 chat_turn + 516
+        # grammar_event), every pair sharing one insert timestamp -- i.e. minted
+        # together from one already-duplicated evidence list, not two separate
+        # writes. This is a consumer-side guard, not a fix for the double
+        # publish itself -- any other future consumer of this channel needs its
+        # own dedup too; see the PR description for the sql-writer follow-up.
+        #
+        # Collapse ALL existing entries for this correlation_id (not just the
+        # first) into the fresh one, keeping the position of the first
+        # occurrence. A window already carrying legacy duplicates from before
+        # this fix shipped must not have a still-stale second entry survive
+        # sitting after the fresh replacement -- build_crystallization_from_window's
+        # own dedup keeps the LAST occurrence it sees, so a leftover stale
+        # entry positioned after the fresh one would silently win instead.
+        new_turns: list[dict[str, Any]] = []
+        replaced = False
+        for existing in turns:
+            if isinstance(existing, dict) and existing.get("correlation_id") == turn.correlation_id:
+                if not replaced:
+                    new_turns.append(turn_entry)
+                    replaced = True
+                continue
+            new_turns.append(existing)
+        if not replaced:
+            new_turns.append(turn_entry)
+        turns = new_turns
         await self._pool.execute(
             """
             UPDATE memory_consolidation_windows
@@ -74,8 +132,19 @@ class WindowStore:
             json.dumps(turns),
         )
 
-    async def close_current_window(self, closing_correlation_id: str) -> dict[str, Any]:
-        row = await self._get_open_window()
+    async def close_current_window(
+        self, closing_correlation_id: str, *, source_platform: str | None
+    ) -> dict[str, Any]:
+        """`source_platform` is REQUIRED (keyword, no default) even though None is
+        a legal value.
+
+        None is a real partition -- Juniper's direct conversation -- not a
+        sentinel meaning "any". A default would make a forgotten kwarg silently
+        close and reseed HER window instead of the intended one, with nothing in
+        the signature, the types, or the runtime to make the omission visible.
+        Passing None must be a decision, not an oversight.
+        """
+        row = await self._get_open_window(source_platform)
         if row is None:
             return {"memory_window_id": str(uuid4()), "turn_correlation_ids": [], "turns": []}
 
@@ -104,16 +173,30 @@ class WindowStore:
             (t for t in turns if isinstance(t, dict) and t.get("correlation_id") == closing_correlation_id),
             None,
         )
+        # The closing turn is carried into the next window as its first turn (it
+        # is the boundary, and it belongs to both sides of it). Before the cursor
+        # was partitioned this was a real leak: a direct turn from Juniper seeded
+        # the next window, making it permanently "mixed" no matter how many
+        # ai-town turns followed, so a burst of NPC dialogue right after she
+        # spoke still landed in the review queue. Now the closing turn is by
+        # construction from this partition, so it can only seed its own.
         next_turns = [closing_turn] if closing_turn else []
+        # dict(row).get, not row["source_platform"]: asyncpg Records raise
+        # KeyError for an absent column, and the closing turn's own platform is
+        # the more specific answer anyway -- the row is only the fallback.
+        carried_platform = (
+            closing_turn.get("source_platform") if isinstance(closing_turn, dict) else None
+        ) or dict(row).get("source_platform")
         await self._pool.execute(
             """
             INSERT INTO memory_consolidation_windows
-              (memory_window_id, status, turn_correlation_ids, created_at)
-            VALUES ($1, 'open', $2::jsonb, $3)
+              (memory_window_id, status, turn_correlation_ids, created_at, source_platform)
+            VALUES ($1, 'open', $2::jsonb, $3, $4)
             """,
             new_window_id,
             json.dumps(next_turns),
             now,
+            carried_platform,
         )
         return {
             "memory_window_id": row["memory_window_id"],

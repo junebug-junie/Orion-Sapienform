@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     BIOMETRICS_MODE: str = Field(default="agent")
     CLUSTER_PUBLISH_INTERVAL: int = Field(default=15)
     role_weights: Dict[str, float] = Field(
-        default_factory=lambda: {"atlas": 0.7, "athena": 0.3, "other": 0.5},
+        default_factory=lambda: {"circe": 0.7, "athena": 0.3, "other": 0.5},
         alias="CLUSTER_ROLE_WEIGHTS",
     )
     SPARK_SIGNAL_TTL_MS: int = Field(default=15000)
@@ -102,6 +102,50 @@ class Settings(BaseSettings):
     ILO_POLL_INTERVAL_SEC: float = Field(default=60.0)
     ILO_REQUEST_TIMEOUT_SEC: float = Field(default=8.0)
 
+    # Rack PDU per-outlet power (SNMP, read-only GETs). PER-NODE, exactly like ILO_HOST above.
+    #
+    # PDU_OUTLETS is THIS node's own outlets, and a multi-PSU server spans several -- its
+    # chassis draw is their sum. The mapping is physical cabling that SNMP cannot report (the
+    # device's outlet names are generic and not editable on this firmware), so it lives in
+    # config and re-cabling means editing it. Traced by hand 2026-08-15:
+    #     circe   PDU_OUTLETS=19,25,31   (3 PSUs)
+    #     atlas   PDU_OUTLETS=34,35      (2 PSUs)
+    # athena is not on this PDU and leaves it empty, which disables the poller entirely.
+    #
+    # RE-CABLED 2026-08-21. atlas is decommissioned (see node_catalog.yaml); its old outlets
+    # 34,35 are now athena's own reading (238 W chassis vs 235 W PDU, confirmed live). circe
+    # was separately relocated to this PDU's bank B1, now outlets 1,7,13 (~669 W, confirmed
+    # live via snmpget and the fleet cluster event's measurements_proxied). The SNMP outage
+    # blocking that confirmation was unrelated to outlet numbers: this PDU's SNMP Manager
+    # allow-list only had a stale athena address (an old DHCP lease), so athena's real queries
+    # were silently dropped -- fixed in the PDU's own admin panel, not in this repo.
+    #
+    # This is the only source of chassis power for a node with no BMC, which is the whole
+    # reason it exists: circe has never reported watts, and every fleet total to date has
+    # carried `measurements_missing: {"chassis_watts": ["circe"]}`.
+    PDU_HOST: str = Field(default="")
+    PDU_OUTLETS: str = Field(default="")
+    PDU_SNMP_COMMUNITY: str = Field(default="public")
+    PDU_SNMP_PORT: int = Field(default=161)
+    # A PDU's controller is weaker than a BMC's AND shared by every node plugged into it, so
+    # several nodes polling fast is several times the load on one small processor.
+    PDU_POLL_INTERVAL_SEC: float = Field(default=60.0)
+    PDU_REQUEST_TIMEOUT_SEC: float = Field(default=5.0)
+
+    # Outlets this node polls ON BEHALF OF another node, as JSON: {"circe": [19,25,31]}
+    #
+    # HUB ONLY, and only for nodes that cannot reach the PDU themselves. circe's NIC is dead --
+    # it reaches the bus over Tailscale but has no LAN path to 192.168.1.39, so its own poller
+    # fails every 65 s. athena can reach it.
+    #
+    # Also strictly better than self-polling for circe: the outlets report its draw whether
+    # circe is powered or not, so a shut-down circe reads a true ~0 W instead of disappearing
+    # into measurements_missing.
+    #
+    # A proxied reading is published with provenance (`measurements_proxied`) and never
+    # overwrites a node's own reading.
+    PDU_PROXY_OUTLETS: str = Field(default="")
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:
@@ -111,10 +155,10 @@ class Settings(BaseSettings):
             try:
                 data = json.loads(value)
             except json.JSONDecodeError:
-                return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+                return {"circe": 0.7, "athena": 0.3, "other": 0.5}
             if isinstance(data, dict):
                 return {str(k): float(v) for k, v in data.items()}
-        return {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+        return {"circe": 0.7, "athena": 0.3, "other": 0.5}
 
     @field_validator("DISK_CAPACITY_MOUNTS", mode="before")
     @classmethod
@@ -153,4 +197,4 @@ settings = Settings()
 try:
     settings.role_weights = json.loads(settings.CLUSTER_ROLE_WEIGHTS)
 except Exception:
-    settings.role_weights = {"atlas": 0.7, "athena": 0.3, "other": 0.5}
+    settings.role_weights = {"circe": 0.7, "athena": 0.3, "other": 0.5}

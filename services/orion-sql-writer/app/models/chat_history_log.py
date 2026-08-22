@@ -12,6 +12,15 @@ class ChatHistoryLogSQL(Base):
     prompt = Column(Text)
     response = Column(Text)
     user_id = Column(String, nullable=True)
+    # The identity that produced `response` -- the served model-card name
+    # (e.g. "qwen-36-instruct", "claude-sonnet-5") for an LLM turn, or a
+    # human-readable responder name (e.g. "Claude") when that's all a
+    # producer has. `user_id` stays the prompt-side identity untouched; this
+    # is additive so every existing reader of user_id is unaffected. Only
+    # ever set on assistant-authored rows -- see
+    # orion-sql-writer/app/worker.py::_ensure_chat_history_from_message and
+    # orion-hub/scripts/chat_history.py::build_chat_turn_envelope.
+    response_identity = Column(String, nullable=True)
     session_id = Column(String, nullable=True)
     spark_meta = Column(JSONB, nullable=True)
     memory_status = Column(String, index=True, nullable=True)

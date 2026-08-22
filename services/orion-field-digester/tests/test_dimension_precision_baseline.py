@@ -75,17 +75,60 @@ def test_second_tick_produces_a_real_zscore_matching_compute_ewma_update() -> No
 
 
 def test_only_dimensions_present_this_tick_are_updated() -> None:
-    """A tick that only produces a reading for one of the four
-    PRESSURE_DIMENSIONS must not fabricate baselines for the other three."""
+    """A tick that only produces a reading for one of the four channel-merge
+    PRESSURE_DIMENSIONS must not fabricate baselines for the other three.
+
+    2026-08-16: `deviation_pressure` is a 5th PRESSURE_DIMENSIONS entry, but
+    it is NOT a channel-merge dimension -- it is a derived scalar
+    (orion.field.pressure.field_pressures_with_provenance()) that is always
+    present, at 0.0 on a quiet/untouched field, never absent. So it (and its
+    baseline) is real and expected here even though this tick's
+    node_vectors never mention it -- that is the honest "nothing admitted"
+    reading, not the same "no channel mapped this tick" absence the other 3
+    dimensions can have.
+
+    2026-08-18: `sustained_load_pressure` is a 6th entry but, UNLIKE
+    deviation_pressure, is NOT always present -- see
+    test_sustained_load_pressure_only_scores_on_the_tick_it_actually_
+    recomputed below for why and its own dedicated coverage. This bare
+    fixture never calls the real producer (app/digestion/significance.py),
+    so sustained_load_computed_at stays None and the dimension is correctly
+    absent here, same as the original 2026-08-16 expectation.
+    """
     state = _empty_state("tick_0")
     state.node_vectors["node:athena"] = {"execution_pressure": 0.3}
     update_dimension_precision_baseline(state)
     pressures = field_pressures(state)
-    assert set(pressures) == {"execution_pressure"}
-    assert state.dimension_precision_ewma_n == {"execution_pressure": 1}
+    assert set(pressures) == {"execution_pressure", "deviation_pressure"}
+    assert state.dimension_precision_ewma_n == {"execution_pressure": 1, "deviation_pressure": 1}
     assert "resource_pressure" not in state.dimension_precision_ewma_n
     assert "reasoning_pressure" not in state.dimension_precision_ewma_n
     assert "reliability_pressure" not in state.dimension_precision_ewma_n
+    assert "sustained_load_pressure" not in state.dimension_precision_ewma_n
+
+
+def test_sustained_load_pressure_only_scores_on_the_tick_it_actually_recomputed() -> None:
+    """Code review, 2026-08-18: sustained_load_pressure is throttled (a real
+    Postgres window read, not an O(1) update), so most ticks only CARRY
+    FORWARD the last real computation unchanged. If it were unconditionally
+    present like deviation_pressure, precision tracking would feed the
+    identical float into the per-tick EWMA as a "fresh" observation on
+    every carried-forward tick -- a duplicated-sample bias. Fixed: present
+    in field_pressures() ONLY on the tick where
+    sustained_load_computed_at == generated_at (the actual recompute)."""
+    recomputed = _empty_state("tick_recompute")
+    recomputed.sustained_load_pressure = 0.77
+    recomputed.sustained_load_computed_at = BASE  # matches generated_at=BASE
+    update_dimension_precision_baseline(recomputed)
+    assert "sustained_load_pressure" in field_pressures(recomputed)
+    assert recomputed.dimension_precision_ewma_n["sustained_load_pressure"] == 1
+
+    carried_forward = _empty_state("tick_carried_forward")
+    carried_forward.sustained_load_pressure = 0.77
+    carried_forward.sustained_load_computed_at = datetime(2026, 7, 28, 11, 59, 0, tzinfo=timezone.utc)
+    update_dimension_precision_baseline(carried_forward)
+    assert "sustained_load_pressure" not in field_pressures(carried_forward)
+    assert "sustained_load_pressure" not in carried_forward.dimension_precision_ewma_n
 
 
 def test_upgrade_from_persisted_row_without_precision_fields_degrades_safely() -> None:

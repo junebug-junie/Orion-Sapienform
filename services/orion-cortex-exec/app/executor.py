@@ -22,6 +22,7 @@ from jinja2 import Environment
 
 from pydantic import BaseModel
 
+from orion.llm.routes import LLM_ROUTE_ALIASES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
@@ -84,10 +85,6 @@ from .recall_utils import (
 )
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
-from .spark_narrative import (
-    spark_embodiment_hint,
-    spark_embodiment_narrative,
-)
 from .chat_stance import (
     build_chat_stance_debug_payload,
     build_chat_stance_inputs,
@@ -98,6 +95,7 @@ from .chat_stance import (
     parse_chat_stance_brief_with_debug,
     suppress_chat_general_speech_identity_priming,
 )
+from .admission_cue import admission_cue_for_settings
 from .situation import build_situation_for_ctx
 from .world_context import fetch_latest_world_context_capsule
 from .world_context_capsule_cache import get_world_context_capsule_cache
@@ -182,7 +180,6 @@ _SYSTEM_TELEMETRY_KEYS = {
 _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "context_summary",
     "spark_state_json",
-    "spark_embodiment_narrative",
     "turn_effect_json",
     "recent_turn_effect_alerts_json",
     "turn_effect_policy_json",
@@ -437,6 +434,19 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     # Unified turn 5b/5c return strict JSON; default 512 truncates mid-object (finish_reason=length).
     if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_harness_finalize"
+
+    # stance_react (unified-turn stance evaluation, ThoughtEventV1 strict JSON): same
+    # disease as the four verbs above, discovered alongside the 2026-08-20 llm_route
+    # gap fix (this verb was ALSO missing from that mapping, silently defaulting to
+    # `None` -> gateway's "quick" fallback route). Live-confirmed same incident: even
+    # after the route fix, corr=3cafe6db-36b4-476d-9e62-11f88c6c34b8 still hit
+    # finish_reason=length/emitted_chars=0 at the 512-token default -- the strict-JSON
+    # ThoughtEventV1 payload was truncated mid-object before it could close, so
+    # extract_stance_react_payload() (services/orion-thought/app/bus_listener.py) found
+    # nothing usable in any checked field and the turn deferred. Same fix as its four
+    # siblings above, not a bespoke budget.
+    if step.verb_name == "stance_react":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_stance_react"
 
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
@@ -766,12 +776,42 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any]) -> str:
         absent = missing.get("chassis_watts") if isinstance(missing, dict) else None
         if absent:
             draft_payload["fleet_watts_partial"] = list(absent)
+    # The binding constraint, and where. `strain` in this same cue is the MEAN of seven
+    # pressures, so it reports 0.44 on a node whose `power` is pegged at 1.000 -- Orion reading
+    # only that would conclude its body is fine while a resource is full. This is the max over
+    # all eleven, with the channel and node named so the number can be acted on rather than
+    # just felt. `strain` is left in place and unchanged; the two are different reductions of
+    # the same pressures and both are shown.
+    peak = cluster.get("peak_pressure")
+    if isinstance(peak, (int, float)) and not isinstance(peak, bool):
+        draft_payload["peak"] = round(float(peak), 2)
+        channel = cluster.get("peak_pressure_channel")
+        node = cluster.get("peak_pressure_node")
+        if isinstance(channel, str) and channel:
+            draft_payload["peak_at"] = f"{node}.{channel}" if isinstance(node, str) and node else channel
+    # ROADMAP A5: the one number in this cue that is not about the body -- whether Orion's own
+    # background thinking was made to wait for a slot, and for how long. Every other signal here
+    # is a hardware pressure; this is the opportunity cost, which is what Juniper actually pays
+    # (roadmap §2A). `of` ships beside `n` on purpose: "asked 294 times, never waited" and
+    # "made no background requests" are different facts and would otherwise be the same zero.
+    # The key is absent when the gateway could not be read -- see admission_cue.py.
+    admission = ctx.get("admission")
+    if isinstance(admission, dict) and admission:
+        draft_payload["waited"] = admission
     freshness_s = _metacog_cue_freshness_s(biometrics)
     if freshness_s is not None:
         draft_payload["freshness_s"] = freshness_s
     cue = json.dumps(draft_payload, separators=(",", ":"))
     if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
+        # `waited` survives the overrun fallback, unlike `peak`/`fleet_watts`/`freshness_s`.
+        # Not favouritism: an ABSENT `waited` key is a load-bearing signal in its own right --
+        # admission_cue.py defines it as "the gateway could not be read". Dropping a
+        # successfully-read, possibly non-zero deferral count here would manufacture a false
+        # "unknown" with no trace, where dropping `peak` merely omits a number. It is also the
+        # smallest key in the payload, so it is the cheapest one to keep.
         minimal: Dict[str, Any] = {"status": status, **composites}
+        if isinstance(admission, dict) and admission:
+            minimal["waited"] = admission
         cue = json.dumps(minimal, separators=(",", ":"))
     if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
         cue = json.dumps({"status": status}, separators=(",", ":"))
@@ -1428,8 +1468,6 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
         "trigger_upstream_json": "{}",
         "context_summary": "Context missing.",
         "spark_state_json": "{}",
-        "spark_embodiment_narrative": "",
-        "embodiment_hint": None,
     }
     for k, v in defaults.items():
         if k not in render_ctx:
@@ -1833,7 +1871,44 @@ def _journal_pageindex_query(user_text: str) -> bool:
 # to "agent" for a normal chat_general turn), so the selection had no effect.
 # Confirmed live 2026-08-14: Hub Mode: Quick + Compute: Agent produced a response
 # but nothing reached Circe's dedicated agent worker -- traced to this allowlist.
-_ACCEPTED_LLM_ROUTE_OVERRIDES = frozenset({"chat", "quick", "metacog", "quick_background", "agent"})
+
+
+def _apply_autonomous_background_route(
+    *,
+    route: Optional[str],
+    override: Optional[str],
+    lane_priority: Optional[str],
+    enabled: bool,
+) -> Tuple[Optional[str], bool]:
+    """ROADMAP A3: send Orion's own low-priority `quick` work to `quick_background`.
+
+    Returns (route, was_backgrounded).
+
+    Extracted rather than inlined so the decision is directly testable. The inline version of
+    this was three `and` clauses in the middle of a 60-line block, which is exactly the shape
+    that gets tested by a copy of itself and then drifts.
+
+    Every clause is load-bearing:
+
+    - `enabled`  -- the roadmap's kill gate. EXEC_AUTONOMOUS_BACKGROUND_ROUTING=false restores
+      the previous behaviour exactly, with no migration and nothing else to redeploy.
+    - `override is None` -- a caller that named a lane is never second-guessed.
+    - `route == "quick"` -- ONLY the contended lane. `chat` is Juniper's conversation and is
+      never demoted; `metacog` measured 0.00% all-busy over 27.74 h (A2) so moving it would be
+      ceremony; `None` falls through to the gateway's own choice.
+    - `lane_priority == "low"` -- reuses the classification `resolve_llm_lane_for_step` already
+      makes. `low` is precisely Orion-initiated work (introspect_spark plus _BACKGROUND_VERBS).
+      A parallel "is_autonomous" flag would be a second answer to an answered question, and the
+      two would drift.
+    """
+    if (
+        enabled
+        and override is None
+        and route == "quick"
+        and lane_priority == "low"
+    ):
+        return "quick_background", True
+    return route, False
 
 
 def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -1845,7 +1920,7 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
 
     Returns (accepted, attempted):
     - accepted: the value to actually route with, or None if no override was
-      supplied or it was outside _ACCEPTED_LLM_ROUTE_OVERRIDES -- callers fall
+      supplied or it was outside `orion.llm.routes.ACCEPTED_LLM_ROUTES` -- callers fall
       through to their own verb-based default mapping in that case, rather
       than forwarding an unrecognized route key.
     - attempted: the normalized value the caller asked for, or None only when
@@ -1859,13 +1934,123 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
     raw = ctx.get("llm_route") or (
         (ctx.get("options") or {}).get("llm_route") if isinstance(ctx.get("options"), dict) else None
     )
-    override = str(raw or "").strip().lower()
-    if override in {"chat_quick", "quick_chat", "chat_kids_story"}:
-        override = "quick"
-    attempted = override or None
-    if override in _ACCEPTED_LLM_ROUTE_OVERRIDES:
-        return override, attempted
-    return None, attempted
+    # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
+    # override stays visible in the llm_route_selected log line (see docstring).
+    resolved = str(raw or "").strip().lower()
+    resolved = LLM_ROUTE_ALIASES.get(resolved, resolved)
+    attempted = resolved or None
+    accepted = normalize_llm_route(raw)
+    return accepted, attempted
+
+
+# The exact (verb_name, step_name) pairs whose LLM call output becomes the text Juniper
+# actually reads -- NOT everything that resolves to llm_route == "chat" below. That bucket
+# is a worker/context-budget grouping (DEEP lane, Circe), shared with harness_finalize_reflect
+# and orion_voice_finalize, whose own docstring notes their "chat" llm_route is vestigial:
+# real dispatch for both goes through an explicit llm_lane ("agent"/"background") that
+# ignores body_route entirely, so they never reach Circe via this value -- but options set
+# here (e.g. return_logprobs) still ride along on whatever call they do make. Keyed on
+# identity, not the shared route, so CORTEX_CHAT_RETURN_LOGPROBS below can never leak onto
+# those internal calls.
+_REAL_CHAT_REPLY_STEPS = frozenset(
+    {
+        ("stance_react", "llm_stance_react"),
+        ("chat_general", "llm_chat_general"),
+    }
+)
+
+
+def _should_request_chat_reply_logprobs(step: Any, gateway_options: Dict[str, Any]) -> bool:
+    """Real, user-facing reply telemetry (CORTEX_CHAT_RETURN_LOGPROBS). Keyed on exact
+    (verb, step) identity via _REAL_CHAT_REPLY_STEPS, not the shared llm_route == "chat"
+    bucket -- see that constant's comment for why. Deliberately does NOT set
+    logprob_probe_mode -- that would route the gateway to the native-completion endpoint
+    switch (services/orion-llm-gateway/app/llm_backend.py's
+    _should_use_native_llamacpp_completion), which exists to dodge JSON-grammar entropy
+    collapse for structured calls. This reply is plain text, so the existing OpenAI-compat
+    call already supports return_logprobs natively (llm_backend.py:1135-1140) -- same
+    endpoint, same request, no new round trip.
+
+    Must be called with a fully-built `gateway_options` (i.e. after the structured_output_*
+    forwarding loop, not before -- an earlier version of this patch had it before) and checks
+    every field the gateway can build a response_format from: response_format itself,
+    return_json (llm_backend.py:1116-1117 turns this into response_format too), and
+    structured_output_schema/structured_output_method (structured_output.py). A
+    JSON-constrained reply must never get the near-zero-entropy logprobs mind's synthesis
+    calls avoid by using native completion instead of piggybacking here.
+    """
+    if (step.verb_name, step.step_name) not in _REAL_CHAT_REPLY_STEPS:
+        return False
+    if gateway_options.get("response_format"):
+        return False
+    if gateway_options.get("return_json"):
+        return False
+    if gateway_options.get("structured_output_schema"):
+        return False
+    if gateway_options.get("structured_output_method"):
+        return False
+    return bool(getattr(settings, "cortex_chat_return_logprobs", False))
+
+
+def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional[str], mode: Optional[str]) -> Optional[str]:
+    """The verb-based `llm_route` default, used only when no caller override
+    (`_resolve_llm_route_override`) was supplied.
+
+    Extracted 2026-08-20 from an inline if/elif chain so this mapping is unit-
+    testable in isolation -- the bug this extraction was made to fix
+    (`stance_react` missing from the chain entirely, silently falling to
+    `None`) went unnoticed precisely because nothing exercised this logic
+    without spinning up the full executor.
+
+    Default lane mapping:
+    - harness_finalize_reflect / orion_voice_finalize: DEEP lane ("chat" /
+      Circe) — fat prompts exceed quick/fast ctx (400). NOTE: this llm_route
+      value is vestigial for both verbs today. Both set an explicit top-level
+      llm_lane in their own context builder (orion/harness/finalize.py's
+      build_finalize_reflect_context -> "agent", build_voice_finalize_context
+      -> "background"), and the gateway's resolve_llm_lane_route ignores
+      body_route entirely for both the "background" and "agent" llm_lane
+      branches -- so this "chat" value never actually reaches the wire for
+      either verb. Do not read "chat-lane contention is not a risk" as true
+      of harness_finalize_reflect anymore: it was, until a live incident
+      2026-08-16 (corr=d9c3a9fc-0bc3-4e42-86cc-622613dfedbd) showed the two
+      verbs actually contend with EACH OTHER on `background`/atlas-worker-2
+      when the governor abandons a timed-out RPC without cancelling it -- see
+      finalize.py for the fix.
+    - stance_react (orion-thought's ThoughtClient.react, the real
+      stance-evaluation step of every unified turn): DEEP lane ("chat" /
+      Circe). Confirmed missing from this chain entirely until 2026-08-20 --
+      fell through to `else: None`, and the gateway's own default-route
+      fallback for an unset route is "quick" (atlas-worker-fast-1, a
+      512-token payload budget). Live-confirmed same-day, corr=
+      8d2d2600-8aec-49d3-a42f-71510a5b86de: a real stance_react prompt is
+      16,416 chars (~4-5k tokens) and the gateway logged "[LLM-GW ctx]
+      overflow on route=quick and no larger lane exists -- returning error",
+      which orion-thought's bus_listener.py then surfaced to the user as a
+      deferred turn ("stance_react exec result missing thought payload") --
+      every real stance_react call failed deterministically, not flakily,
+      until this fix. Exact same "fat prompts exceed quick/fast ctx" failure
+      shape already named above for harness_finalize_reflect/orion_voice_
+      finalize, just never given the same treatment.
+    - chat_general stance brief: FAST lane ("quick")
+    - chat_general final response: DEEP lane ("chat")
+    - chat_quick single-pass: FAST lane ("quick")
+    - introspect_spark internal analysis: FAST lane ("quick")
+    - metacog mode: METACOG lane
+    """
+    if verb_name in {"harness_finalize_reflect", "orion_voice_finalize", "stance_react"}:
+        return "chat"
+    if verb_name == "chat_general" and step_name == "synthesize_chat_stance_brief":
+        return "quick"
+    if verb_name == "chat_general" and step_name == "llm_chat_general":
+        return "chat"
+    if verb_name in FAST_SINGLE_PASS_CHAT_VERBS or verb_name == "introspect_spark":
+        return "quick"
+    if verb_name == "memory_graph_suggest":
+        return "quick"
+    if mode == "metacog":
+        return "metacog"
+    return None
 
 
 def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
@@ -2489,6 +2674,27 @@ def _plan_request_from_step_ctx(
                     len(ut),
                     ut[:200],
                 )
+    # Same gap, third occurrence (review finding, 2026-08-21, caught before
+    # shipping this time instead of after a live miss like the two cases
+    # above): ask_camera is capability_backed/requires_capability_selector,
+    # so a real chat turn routes through capability_bridge's nested call
+    # exactly like docker_prune/notify_chat_message do -- the user's actual
+    # question lives on ctx (raw_user_text/messages), not
+    # plan.metadata.skill_args, unless injected here. Without this,
+    # AskCameraVerb's own skill_args.get("question") always saw empty and
+    # returned missing_question regardless of what the user actually asked.
+    if "ask_camera" in verb_n:
+        if not str(skill_args.get("question") or "").strip():
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["question"] = ut
+                logger.info(
+                    "ask_camera_skill_args_injected corr=%s verb=%s question_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
+                )
     extra: Dict[str, Any] = {}
     if skill_args:
         extra["skill_args"] = skill_args
@@ -2831,7 +3037,7 @@ async def call_step_services(
                     md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
                     if isinstance(md.get("presence_context"), dict):
                         ctx["presence_context"] = md.get("presence_context")
-                situation_brief, situation_fragment = build_situation_for_ctx(ctx, settings)
+                situation_brief, situation_fragment = await build_situation_for_ctx(ctx, settings)
                 if situation_brief:
                     ctx["situation_brief"] = situation_brief
                     ctx["presence_context"] = situation_brief.get("presence")
@@ -3635,8 +3841,6 @@ async def call_step_services(
 
                             if spark_snap:
                                 # Provide prompt-ready vars
-                                ctx["embodiment_hint"] = spark_embodiment_hint(spark_snap)
-                                ctx["spark_embodiment_narrative"] = spark_embodiment_narrative(spark_snap)
                                 ctx["spark_state_json"] = spark_snap.model_dump_json()
 
                                 metadata = spark_snap.metadata if isinstance(spark_snap.metadata, dict) else {}
@@ -3751,6 +3955,11 @@ async def call_step_services(
                 # question 5.
                 ctx["trigger_upstream_json"] = json.dumps(trigger.upstream or {}, indent=2, default=str)
                 ctx["context_summary"] = summary_text
+                # ROADMAP A5. Fetched here rather than inside the cue builder so that builder
+                # stays a pure function of ctx and can be tested without a live gateway.
+                # TTL-cached and fail-quiet: on any failure this is None and the cue omits the
+                # key entirely, because "could not read" must never render as "nothing waited".
+                ctx["admission"] = admission_cue_for_settings(settings)
                 ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx)
                 from app.substrate_felt_state_reader import hydrate_felt_state_ctx
                 from orion.substrate.metacog_trigger_signals import (
@@ -3921,7 +4130,7 @@ async def call_step_services(
                 )
 
                 # Keep lane selection explicit by internal flow, with optional caller override.
-                # Accepted override values: see _ACCEPTED_LLM_ROUTE_OVERRIDES.
+                # Accepted override values: see `orion.llm.routes.ACCEPTED_LLM_ROUTES`.
                 # quick_background: same upstream/model as quick, gated by the gateway's
                 # background-priority admission (services/orion-llm-gateway/app/
                 # priority_admission.py) so a caller opting into it never makes other
@@ -3930,33 +4139,53 @@ async def call_step_services(
                 if llm_route_override is not None:
                     llm_route = llm_route_override
                 else:
-                    # Default lane mapping:
-                    # - harness_finalize_reflect / orion_voice_finalize: DEEP lane
-                    #   ("chat" / Circe) — fat prompts exceed quick/fast ctx (400);
-                    #   runs after FCC motor on the same turn (sequential; one Hub
-                    #   chat at a time, so chat-lane contention is not a risk).
-                    # - chat_general stance brief: FAST lane ("quick")
-                    # - chat_general final response: DEEP lane ("chat")
-                    # - chat_quick single-pass: FAST lane ("quick")
-                    # - introspect_spark internal analysis: FAST lane ("quick")
-                    # - metacog mode: METACOG lane
-                    llm_route = (
-                        "chat"
-                        if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}
-                        else "quick"
-                        if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
-                        else "chat"
-                        if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
-                        else "quick"
-                        if step.verb_name in FAST_SINGLE_PASS_CHAT_VERBS or step.verb_name == "introspect_spark"
-                        else "quick"
-                        if step.verb_name == "memory_graph_suggest"
-                        else "metacog"
-                        if ctx.get("mode") == "metacog"
-                        else None
+                    llm_route = _default_llm_route_for_step(
+                        verb_name=step.verb_name, step_name=step.step_name, mode=ctx.get("mode")
                     )
+                lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
+
+                # ROADMAP A3: Orion's own thinking yields the lane to Juniper's.
+                #
+                # Until this, a metacog tick, a reverie or a dream competed for atlas's 4 `quick`
+                # slots on exactly equal terms with an interactive chat turn. Measured over
+                # 27.74 h (A2): that lane is completely full 4.01% of the time and blocks 174x
+                # more than Poisson arrivals would, because work arrives in batches. So the
+                # contention is real and Orion is a large part of it.
+                #
+                # `quick_background` is the SAME upstream and model as `quick`. The only
+                # difference is the gateway's admission gate (orion-llm-gateway/app/
+                # priority_admission.py), which holds `reserved_free_slots` free for foreground
+                # callers -- so a background request waits instead of making Juniper wait.
+                #
+                # WHY THIS REUSES `lane_opts["priority"]` RATHER THAN ASKING "IS THIS
+                # AUTONOMOUS": the classification already exists. `resolve_llm_lane_for_step`
+                # sorts every step into chat (priority high), spark (low), background (low) or
+                # agent (normal). `low` is precisely Orion-initiated work -- introspect_spark
+                # plus _BACKGROUND_VERBS (dream_cycle, dream_synthesis,
+                # log_orion_metacognition, reverie_narrate). Inventing a parallel
+                # "is_autonomous" flag would be a second answer to a question already answered,
+                # and the two would drift.
+                #
+                # DELIBERATELY NARROW. Only `quick` is redirected:
+                #   - an explicit caller override always wins, so nothing that asked for a lane
+                #     is second-guessed;
+                #   - `chat` is Juniper's conversation and is never demoted;
+                #   - `metacog` is untouched because A2 measured that lane at 0.00% all-busy
+                #     over 27.74 h -- it never fills, so moving it would be ceremony.
+                #
+                # KILL GATE (roadmap): if interactive latency regresses, set
+                # EXEC_AUTONOMOUS_BACKGROUND_ROUTING=false. One env key, no redeploy of
+                # anything else, and the fallback is exactly the previous behaviour.
+                llm_route, autonomous_backgrounded = _apply_autonomous_background_route(
+                    route=llm_route,
+                    override=llm_route_override,
+                    lane_priority=lane_opts.get("priority"),
+                    enabled=getattr(settings, "exec_autonomous_background_routing", True),
+                )
+
                 logger.info(
-                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s override_attempted=%s",
+                    "llm_route_selected corr_id=%s mode=%s verb=%s step=%s route=%s override=%s "
+                    "override_attempted=%s autonomous_backgrounded=%s lane_priority=%s",
                     correlation_id,
                     ctx.get("mode"),
                     step.verb_name,
@@ -3964,8 +4193,9 @@ async def call_step_services(
                     llm_route,
                     llm_route_override,
                     llm_route_override_attempted,
+                    autonomous_backgrounded,
+                    lane_opts.get("priority"),
                 )
-                lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
                 logger.info(
                     "exec_llm_lane_decision corr=%s trace_id=%s execution_lane=%s llm_lane=%s verb=%s step=%s priority=%s allow_chat_fallback=%s",
                     correlation_id,
@@ -4023,6 +4253,9 @@ async def call_step_services(
                         gateway_options[_fwd_key] = ctx_options[_fwd_key]
                     elif _fwd_key in ctx and ctx.get(_fwd_key) is not None:
                         gateway_options[_fwd_key] = ctx[_fwd_key]
+
+                if _should_request_chat_reply_logprobs(step, gateway_options):
+                    gateway_options["return_logprobs"] = True
 
                 request_object = ChatRequestPayload(
                     model=req_model,

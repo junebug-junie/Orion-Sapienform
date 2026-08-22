@@ -153,6 +153,70 @@ class FieldStateV1(BaseModel):
     dimension_precision_ewma_var: dict[str, float] = Field(default_factory=dict)
     dimension_precision_ewma_n: dict[str, int] = Field(default_factory=dict)
     dimension_precision_zscore: dict[str, float] = Field(default_factory=dict)
+    # Field deviation tension (2026-08-16, docs/superpowers/specs/2026-08-16-
+    # tension-driven-mutating-dispatch-design.md): per-(node_id, channel) EWMA
+    # baseline for orion.attention.tension.DeviationGate, carried tick-to-tick
+    # exactly like dimension_precision_ewma* above (same backward-compat
+    # contract -- a key absent here is cold start, not a fabricated 0.0).
+    # Flat-keyed as f"{node_id}\x1f{channel}" (0x1f, ASCII unit separator:
+    # real node_ids already contain colons and dots, e.g.
+    # "node:substrate.route", ruling those out). Bounded cardinality (4 nodes
+    # x 33 channels = 132 keys, live 2026-08-14) -- NOT unbounded per-event
+    # growth like the evidence_event_ids TOAST incident CLAUDE.md records;
+    # a new node or channel adds a bounded number of keys, ticks do not.
+    # Written by services/orion-field-digester/app/digestion/tension.py.
+    tension_baseline_mu: dict[str, float] = Field(default_factory=dict)
+    tension_baseline_var: dict[str, float] = Field(default_factory=dict)
+    tension_baseline_n: dict[str, int] = Field(default_factory=dict)
+    # This tick's admitted-deviation scalar (orion.attention.tension.
+    # competition.deviation_pressure), in [0, 1]. 0.0 is a real "nothing
+    # admitted this tick" reading, never a fabricated absence -- see that
+    # function's own docstring. Consumed by orion.field.pressure.
+    # field_pressures() as the "deviation_pressure" PRESSURE_DIMENSIONS entry.
+    tension_deviation_pressure: float = 0.0
+    # This tick's Borda-winning target (orion.attention.tension.competition
+    # .TickResult.winner) -- a node_id (e.g. "node:athena"), or None on a
+    # quiet tick where nothing was admitted. Deliberately NOT wired into
+    # orion/proposals/builder.py's target_binding when tension_deviation_
+    # pressure first shipped (docs/superpowers/specs/2026-08-16-tension-
+    # driven-mutating-dispatch-design.md's own non-goals -- no real consumer
+    # yet, and CLAUDE.md 0A's keyword-cathedral rule requires one in the same
+    # patch that adds a new concept). Added now because a real consumer
+    # exists: Hub's endogenous-outreach trigger (services/orion-hub/scripts/
+    # tension_outreach_trigger.py) needs identity, not just magnitude, to
+    # honestly claim "I noticed X changing" rather than a content-free "I'm
+    # reaching out" wrapped around an unrelated number.
+    tension_borda_winner_target_id: str | None = None
+    # Level-aware significance (2026-08-18, docs/superpowers/specs/2026-08-16-
+    # level-aware-significance-design.md): the axis `tension_deviation_pressure`
+    # structurally cannot see. DeviationGate is a change-detector -- a channel
+    # steadily overloaded for hours re-centers its own EWMA baseline and reads
+    # calm, by design. `orion.field.significance.sustained_load_pressure`
+    # instead reads `orion.field.regime.channel_regime()` (level + dispersion
+    # as SEPARATE axes, no adaptive baseline at all) over a real window, and
+    # only counts a channel that is currently BOTH high level AND low
+    # dispersion (`loaded_steady`) -- not `loaded_volatile`, which a
+    # change-detector or the reconstruction-loss anomaly scorer
+    # (app/anomaly_scorer.py) can plausibly already catch; voting on that too
+    # would blur this metric back into redundancy with what already exists
+    # (see significance.py's own module docstring for the full independence
+    # argument). 0.0 is a real "nothing loaded_steady right now" reading,
+    # never a fabricated absence -- same convention `tension_deviation_
+    # pressure` uses for its own quiet-tick 0.0. Consumed by orion.field.
+    # pressure.field_pressures() as the "sustained_load_pressure"
+    # PRESSURE_DIMENSIONS entry. Written by services/orion-field-digester/
+    # app/digestion/significance.py, throttled (not every hot tick -- the
+    # window read is a real Postgres query, not an O(1) EWMA update) via
+    # `sustained_load_computed_at` below.
+    sustained_load_pressure: float = 0.0
+    # When `sustained_load_pressure` was last actually RECOMPUTED (not just
+    # carried forward unchanged from the prior tick). Compared against `now`
+    # each hot tick to decide whether this tick's real window-read is due yet
+    # -- persisted here (round-tripped through Postgres every tick like
+    # `tension_baseline_mu` above) rather than held on the worker process
+    # instance, so the throttle survives a restart instead of firing on every
+    # tick for the first `check_interval_sec` after one.
+    sustained_load_computed_at: datetime | None = None
     topology_id: str | None = None
     topology_version: str | None = None
     topology_loaded_from: str | None = None

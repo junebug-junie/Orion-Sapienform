@@ -10,7 +10,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.settings import settings
 from app.utils import collect_gpu_stats
@@ -271,6 +271,56 @@ class BiometricsCollector:
             return None
         return found
 
+    def _routed_interfaces(self) -> Optional[Set[str]]:
+        """Interface names present in the host IPv4 routing table. None if unreadable.
+
+        `/proc/net/route` is the kernel's own answer to "can traffic leave by this NIC" -- an
+        interface with no address has no route entry and therefore carries nothing.
+        """
+        path = self._host_path("proc", "1/net/route")
+        if not path:
+            return None
+        names: Set[str] = set()
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                next(fh, None)  # header
+                for line in fh:
+                    parts = line.split()
+                    if parts:
+                        names.add(parts[0])
+        except OSError:
+            return None
+        return names or None
+
+    def _carrying_interfaces(self) -> Optional[List[str]]:
+        """Up physical NICs that can ACTUALLY carry traffic.
+
+        `_physical_interfaces` answers "is there a link"; this answers "can bytes leave by it",
+        and the two came apart the moment a second NIC was brought up on athena 2026-08-14:
+
+            eno1  up  1000 Mb/s   192.168.1.193/24, default route   <- carries everything
+            eno6  up 10000 Mb/s   SLAAC IPv6 only, NO IPv4 route    <- carries nothing
+
+        Summing both gave a denominator of 11,000 Mb/s against a numerator that could only ever
+        travel over 1,000 -- understating `net_pressure` 11-fold, and doing it silently, at the
+        exact moment someone thought they had improved the network. A dark 10 Gb port is not
+        headroom. Capacity you cannot route to is not capacity.
+
+        Falls back to every up physical NIC when the route table is unreadable, since "I could
+        not check" must not become "this node has no network".
+        """
+        physical = self._physical_interfaces()
+        if physical is None:
+            return None
+        routed = self._routed_interfaces()
+        if routed is None:
+            return physical
+        carrying = [n for n in physical if n in routed]
+        # Every physical NIC unrouted would mean the host has no IPv4 connectivity at all --
+        # far more likely that this kernel routes v6-only or the file moved. Report the links
+        # rather than claim zero capacity.
+        return carrying or physical
+
     def _link_speed_mbps(self, interfaces: List[str]) -> Optional[float]:
         """Summed link speed of the given NICs, in Mb/s, read from the kernel.
 
@@ -299,7 +349,7 @@ class BiometricsCollector:
 
     def _collect_network(self, errors: List[str], dt: Optional[float]) -> Dict[str, Any]:
         try:
-            interfaces = self._physical_interfaces()
+            interfaces = self._carrying_interfaces()
             host_netdev = self._host_path("proc", "1/net/dev")
             # PID 1 on the host is the host init, so its /proc/<pid>/net/dev is the HOST network
             # namespace -- the one where the real NICs live. The container's own /proc/net/dev is

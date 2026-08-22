@@ -94,8 +94,6 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
         # --- live runtime projection: computed this tick by a substrate/biometrics/turn-effect engine ---
         _entry("biometrics", "live_runtime_projection", "Live biometrics substrate reading."),
         _entry("biometrics_json", "live_runtime_projection", "JSON-rendered biometrics reading."),
-        _entry("embodiment_hint", "live_runtime_projection", "Live embodiment hint."),
-        _entry("spark_embodiment_narrative", "live_runtime_projection", "Narrative rendering of live embodiment state."),
         _entry("spark_state_json", "live_runtime_projection", "JSON-rendered spark engine state."),
         _entry("turn_effect", "live_runtime_projection", "Live turn-effect engine output."),
         _entry("turn_effect_json", "live_runtime_projection", "JSON-rendered turn-effect output."),

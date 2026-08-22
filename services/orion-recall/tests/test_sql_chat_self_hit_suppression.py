@@ -46,6 +46,32 @@ def test_fetch_chat_history_pairs_suppresses_active_prompt(monkeypatch):
     assert "older prompt" in out[0].text
 
 
+def test_fetch_chat_history_pairs_unions_the_aitown_table(monkeypatch):
+    """AI Town chat-history table split (docs/superpowers/specs/2026-08-19-
+    aitown-table-split-phase2-recall-migration-design.md): without this,
+    AI-Town-originated turns (physically in aitown_chat_history_log since
+    the Track B cutover) would be silently invisible to this fetcher."""
+    captured: dict = {}
+
+    class _CapturingConn:
+        async def fetch(self, query):
+            captured["query"] = query
+            return []
+
+        async def close(self):
+            return None
+
+    async def _connect(_dsn):
+        return _CapturingConn()
+
+    monkeypatch.setattr(sql_chat, "asyncpg", type("_AsyncPg", (), {"connect": _connect}))
+
+    asyncio.run(sql_chat.fetch_chat_history_pairs(limit=5, since_minutes=60))
+
+    assert "aitown_chat_history_log" in captured["query"]
+    assert "union all" in captured["query"].lower()
+
+
 def test_fetch_chat_messages_suppresses_user_echo(monkeypatch):
     rows = [
         {"role": "user", "text": "Teddy loves Addy", "created_at": 1},

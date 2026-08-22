@@ -14,16 +14,15 @@ class MoodArcCorpusRowV1(BaseModel):
     state autoencoder (roadmap item 2). REHEARSAL status -- no cognition
     consumer by design, see orion/inner_state_registry.py.
 
-    dominant_node was null only on ticks where the phi encoder didn't run
-    (disabled/degraded/failed), via _dominant_hardware_node() inside the
-    former handle_self_state()'s encoder-success branch (Phase 2/3). Both
-    were removed 2026-07-22 (SelfStateV1 burn): their only input,
-    SelfStateV1.dominant_attention_target_details, no longer exists, and no
-    FieldAttentionFrameV1-native replacement has been built yet. dominant_node
-    is unconditionally null on every row now -- a disclosed regression, not a
-    per-tick encoder-health signal anymore. See
-    services/orion-spark-introspector/app/worker.py's dated note above
-    run_inner_state_tick for the full disclosure.
+    dominant_node was removed 2026-08-21. It was null only on ticks where the
+    phi encoder didn't run (disabled/degraded/failed), via
+    _dominant_hardware_node() inside the former handle_self_state()'s
+    encoder-success branch (Phase 2/3), and had already been unconditionally
+    null on every row since 2026-07-22 (SelfStateV1 burn removed its only
+    input, dominant_attention_target_details, with no FieldAttentionFrameV1-
+    native replacement built). orion-spark-introspector -- the field's sole
+    producer -- was retired outright 2026-07-28, so the column is dropped
+    rather than left as a permanent null.
 
     Rotation (2026-07-13): the sink this writes through
     (InnerStateCorpusSink, shared with INNER_FEATURES_CORPUS_PATH) now
@@ -52,7 +51,6 @@ class MoodArcCorpusRowV1(BaseModel):
     novelty: float
     valence: float
     valence_source: Literal["proxy", "heuristic"]
-    dominant_node: Optional[str] = None
 
 
 class MoodArcEncoderManifestV1(BaseModel):

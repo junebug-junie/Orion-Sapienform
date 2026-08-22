@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from orion.memory.crystallization.dynamics import seed_weak_dynamics
-from orion.memory.crystallization.formation_policy import FormationPolicy, resolve_formation_policy
+from orion.memory.crystallization.formation_policy import (
+    DEFAULT_DISCARD_PLATFORMS,
+    FormationPolicy,
+    resolve_formation_policy,
+)
 from orion.memory.crystallization.schemas import MemoryCrystallizationV1
 from orion.memory.crystallization.validator import validate_proposal
 
@@ -21,8 +25,15 @@ def auto_activate(
     *,
     actor: str = "system:formation_policy",
     encode_ratio: float = 0.4,
+    discard_platforms: frozenset[str] = DEFAULT_DISCARD_PLATFORMS,
 ) -> tuple[MemoryCrystallizationV1, dict]:
-    policy, reasons = resolve_formation_policy(crystallization)
+    # Forwarded rather than left to the default: this function re-resolves the
+    # policy independently of the caller's own resolve_formation_policy() call, so
+    # a caller-supplied platform set that is not passed through here would be
+    # silently ignored on exactly the path that decides activation.
+    policy, reasons = resolve_formation_policy(
+        crystallization, discard_platforms=discard_platforms
+    )
     if policy != FormationPolicy.AUTO_ACTIVATE:
         raise GovernorPathRequired("; ".join(reasons) or policy.value)
     validation = validate_proposal(crystallization)

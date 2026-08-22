@@ -18,6 +18,7 @@ from app.vision import (
 )
 from orion.core.bus.async_service import OrionBusAsync
 
+from . import ctx_overflow
 from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
@@ -150,6 +151,76 @@ def _load_route_targets() -> Dict[str, RouteTarget]:
 
 def get_route_targets() -> Dict[str, RouteTarget]:
     return _load_route_targets()
+
+
+# --- ROADMAP A4 follow-up: context-overflow escalation -------------------------------------
+# Orion's journaling ran on circe's 131k lane to carry a 1,749-token median prompt (measured,
+# 90 samples/24h). Moving it to atlas is right for 97.8% of it; the 2.2% tail (max 4,966 vs a
+# 4,096 window) must not silently fail. On overflow, retry on the smallest lane that is
+# genuinely larger -- ladder discovered from each upstream's real n_ctx, so raising metacog's
+# context makes it the fallback with no code change. Capped at ctx_overflow.MAX_ATTEMPTS.
+_CTX_LADDER: Optional[List[Tuple[str, int]]] = None
+
+
+def _ctx_ladder() -> List[Tuple[str, int]]:
+    """Lanes ordered by real context size. Probed once, then cached for the process."""
+    global _CTX_LADDER
+    if _CTX_LADDER is None:
+        targets = get_route_targets() or {}
+        _CTX_LADDER = ctx_overflow.build_escalation_ladder(
+            {route: t.url for route, t in targets.items() if getattr(t, "url", None)}
+        )
+        logger.info("[LLM-GW ctx] escalation ladder=%s", _CTX_LADDER)
+    return _CTX_LADDER
+
+
+def _post_with_ctx_escalation(client, url: str, payload: dict, route: str, corr: Any):
+    """POST, and on a context overflow retry on a lane that can hold the prompt.
+
+    Returns (response, final_route, final_url). Only a CONTEXT OVERFLOW escalates -- every
+    other status is returned to the caller untouched, so this changes nothing for the 97.8%
+    that fits, and nothing at all for non-overflow errors.
+    """
+    attempts = 1
+    while True:
+        r = client.post(url, json=payload)
+        if attempts >= ctx_overflow.MAX_ATTEMPTS:
+            return r, route, url
+        try:
+            body = r.json()
+        except Exception:  # noqa: BLE001 -- a non-JSON body is not an overflow signal
+            return r, route, url
+        if not ctx_overflow.is_context_overflow(r.status_code, body):
+            return r, route, url
+        nxt = ctx_overflow.next_larger_route(_ctx_ladder(), route)
+        if not nxt:
+            logger.warning(
+                "[LLM-GW ctx] corr=%s overflow on route=%s and no larger lane exists -- returning error",
+                corr, route,
+            )
+            return r, route, url
+        target = (get_route_targets() or {}).get(nxt)
+        if not target or not getattr(target, "url", None):
+            return r, route, url
+        new_url = url.replace(_base_of(url), _base_of(target.url), 1) if _base_of(url) else target.url
+        logger.warning(
+            "[LLM-GW ctx] corr=%s context overflow on route=%s attempt=%d -> escalating to route=%s",
+            corr, route, attempts, nxt,
+        )
+        route, url = nxt, new_url
+        attempts += 1
+
+
+def _base_of(url: str) -> str:
+    """scheme://host:port of a full endpoint URL, so the path is preserved on escalation."""
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def _resolve_route(body: ChatBody) -> Tuple[str, Optional[RouteTarget], bool, str]:
@@ -1082,7 +1153,7 @@ def _execute_openai_chat(
 
     try:
         with _common_http_client(body) as client:
-            r = client.post(url, json=payload)
+            r, route, url = _post_with_ctx_escalation(client, url, payload, route, body.trace_id)
 
             if r.status_code == 404:
                 return {
@@ -1415,6 +1486,14 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
             route_target,
             poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
             max_wait_sec=settings.llm_gateway_background_max_wait_sec,
+            # ROADMAP A5: the ledger is keyed by route so a deferral can be attributed to a
+            # lane. This is the bus path, and as of 2026-08-19 it carries 100% of live
+            # background traffic (openai_passthrough logged zero background requests in 4h).
+            route_key=str(route or ""),
+            # This path is orion-cortex-exec's bus RPC and orion-embodiment's speech -- Orion.
+            # The OpenAI passthrough on the same route key is AI Town's NPC dialogue, which is
+            # not. The cue makes a first-person claim, so it must be able to tell them apart.
+            via="bus",
         )
 
     route_url: Optional[str] = None

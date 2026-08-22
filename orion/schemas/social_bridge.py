@@ -11,7 +11,14 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-RoomPlatform = Literal["callsyne"]
+# Widened 2026-08-14 from Literal["callsyne"]. That single value never
+# described reality: services/orion-hub/scripts/social_room.py:86 has always
+# emitted platform="hub" for the Hub-direct social room, and the live
+# social_room_continuity table holds 67 rows at platform="aitown" written by
+# orion-embodiment. Both were invalid against this contract while being the
+# only platforms with real traffic -- CallSyne itself has zero live rows
+# (external_room_messages and external_room_participants are both empty).
+RoomPlatform = Literal["callsyne", "hub", "aitown"]
 ParticipantKind = Literal["peer_ai", "human", "system"]
 RoomDirection = Literal["inbound", "outbound", "skipped"]
 

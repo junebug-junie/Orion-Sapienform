@@ -12,7 +12,7 @@ from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, Optional, Tuple, Type
 
-from sqlalchemy import func, inspect, update
+from sqlalchemy import func, inspect, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.types import DateTime, String, Text
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +26,7 @@ from app.models import (
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
     ChatHistoryLogSQL,
+    AitownChatHistoryLogSQL,
     ChatGptLogSQL,
     ChatGptMessageSQL,
     ChatGptImportRunSQL,
@@ -77,12 +78,12 @@ from app.models import (
     WorldPulseWorthWatchingSQL,
     MindRunSQL,
     VisionEventSQL,
+    VisionSceneInventorySQL,
     ActionOutcomeSQL,
     DominanceStreakTickSQL,
     DevEconomicsLedgerSQL,
     DocSemanticDriftSQL,
     JuniperAffectiveStateSQL,
-    PhiRewardSQL,
     GrammarEventSQL,
     EquilibriumServiceTransitionSQL,
     HarnessTurnTraceSQL,
@@ -149,9 +150,8 @@ from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionReco
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 from orion.schemas.evidence_index import EvidenceUnitV1
 from orion.schemas.mind.artifact import MindRunArtifactV1
-from orion.schemas.vision import VisionEventBundleItem
+from orion.schemas.vision import VisionEventBundleItem, VisionSceneInventoryV1
 from orion.schemas.grammar import GrammarEventV1
-from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 from orion.schemas.telemetry.system_health import EquilibriumServiceTransitionV1
 from orion.schemas.world_pulse import (
     ClaimRecordV1,
@@ -463,12 +463,12 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
     "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
+    "VisionSceneInventorySQL": (VisionSceneInventorySQL, VisionSceneInventoryV1),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
     "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
     "DocSemanticDriftSQL": (DocSemanticDriftSQL, DocSemanticDriftV1),
     "JuniperAffectiveStateSQL": (JuniperAffectiveStateSQL, JuniperAffectiveStateV1),
-    "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
     "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),
 }
 
@@ -748,9 +748,10 @@ def _merge_spark_meta(
 
 
 def _chat_history_conflict_updates(
-    cols: Iterable[str], stmt: Any, *, incoming_wins: bool
+    cols: Iterable[str], stmt: Any, *, incoming_wins: bool, model_cls: type = ChatHistoryLogSQL
 ) -> dict[str, Any]:
-    """Per-column ON CONFLICT rule for chat_history_log.
+    """Per-column ON CONFLICT rule for chat_history_log (or its AI Town
+    mirror, ``AitownChatHistoryLogSQL`` -- see ``model_cls`` below).
 
     ``chat_history_log`` is not append-only -- one row is assembled from three
     separate bus events (user message, assistant message, turn), each carrying a
@@ -779,8 +780,15 @@ def _chat_history_conflict_updates(
     declares ``prompt``/``response`` as required ``str``: the turn event always
     carries both keys and either can legitimately be the empty string, which must
     not overwrite real text.
+
+    ``model_cls``: defaults to ``ChatHistoryLogSQL``. ``AitownChatHistoryLogSQL``
+    is column-for-column identical (see that model's own docstring), so the
+    same merge policy applies unchanged when routing (see
+    ``_resolve_chat_history_model_cls`` below) sends a row to the AI Town
+    mirror table instead -- one implementation of this concurrency-critical
+    logic, not two hand-kept-in-sync copies.
     """
-    table = ChatHistoryLogSQL.__table__
+    table = model_cls.__table__
     updates: dict[str, Any] = {}
     for name in cols:
         if name == "id":
@@ -797,9 +805,12 @@ def _chat_history_conflict_updates(
 
 
 def upsert_chat_history_row(
-    sess: Any, values: dict[str, Any], *, incoming_wins: bool = True
+    sess: Any, values: dict[str, Any], *, incoming_wins: bool = True, model_cls: type = ChatHistoryLogSQL
 ) -> None:
-    """Atomically merge one event's contribution into a chat_history_log row.
+    """Atomically merge one event's contribution into a chat_history_log row
+    (or, when ``model_cls=AitownChatHistoryLogSQL``, its AI Town mirror --
+    see that model's docstring and ``_resolve_chat_history_model_cls``
+    below, which decides which table a given row's writes belong to).
 
     Replaces a SELECT-then-INSERT/merge. That pattern was not safe here: the
     three events for a single turn are dispatched as independent chassis tasks
@@ -823,14 +834,126 @@ def upsert_chat_history_row(
     """
     if not values.get("id"):
         raise ValueError("chat_history_log upsert requires an id")
-    stmt = pg_insert(ChatHistoryLogSQL).values(**values)
+    stmt = pg_insert(model_cls).values(**values)
     stmt = stmt.on_conflict_do_update(
-        index_elements=[ChatHistoryLogSQL.id],
+        index_elements=[model_cls.id],
         set_=_chat_history_conflict_updates(
-            values.keys(), stmt, incoming_wins=incoming_wins
+            values.keys(), stmt, incoming_wins=incoming_wins, model_cls=model_cls
         ),
     )
     sess.execute(stmt)
+
+
+# AI Town chat-history table split (docs/superpowers/specs/
+# 2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
+# Phase 1 (PR #1734, 2026-08-19) shipped an ADDITIVE dual-write -- every
+# AI-Town row landed in both chat_history_log and aitown_chat_history_log,
+# off by default, explicitly built as a bridge for a live-AI-Town world.
+# Retired the same day: with AI Town's Convex backend confirmed dead
+# (orion.embodiment.aitown_client.AitownClientError: Connection refused,
+# last real chat_history_log write 18 days stale) there is zero concurrent-
+# write risk, so the dual-write bridge was pure unneeded complexity --
+# CLAUDE.md's "kill means kill, no fallback to the thing being killed"
+# applied to retiring dual-write itself, not just the metric it replaced.
+# Routing (below) replaces it: an AI-Town row now lands in EXACTLY ONE
+# table, chosen once, never duplicated.
+_AITOWN_PLATFORM_TAG = "aitown"
+# Value must match services/orion-recall/app/chat_source_tagging.py's
+# AITOWN_TAG constant exactly -- reimplemented locally rather than
+# cross-imported, matching this repo's service-boundary convention
+# (CLAUDE.md section 5) and the same choice
+# services/orion-hub/scripts/concept_atlas_routes.py's own
+# _AITOWN_PLATFORM_TAG already made for the same signal.
+
+
+def _is_aitown_client_meta(client_meta: Any) -> bool:
+    """The canonical AI Town detection signal: ``client_meta.external_room.platform
+    == 'aitown'`` -- not the ``source`` column, which is only a coincidentally
+    correlated proxy (100% correlated as of 2026-08-18, but not the sanctioned
+    signal the rest of the codebase, e.g. the crystallization gate, builds
+    around).
+    """
+    if not isinstance(client_meta, dict):
+        return False
+    external_room = client_meta.get("external_room")
+    if not isinstance(external_room, dict):
+        return False
+    return external_room.get("platform") == _AITOWN_PLATFORM_TAG
+
+
+def _lock_chat_history_row(sess: Any, row_id: str) -> None:
+    """Serialize concurrent contributors to the same chat_history_log row
+    across separate sessions/transactions.
+
+    Code review (2026-08-19) found a real race in
+    ``_resolve_chat_history_model_cls``'s fallback lookup: the turn-path
+    write and the message-path fill-only write for the same id run in
+    SEPARATE sessions (``_write_row``'s ``get_session()`` vs.
+    ``_ensure_chat_history_from_message``'s own ``session_factory()``,
+    deliberately isolated per that function's own docstring), each its own
+    transaction, dispatched as independent chassis tasks with no
+    serialization point (``orion/core/bus/bus_service_chassis.py``). If the
+    message-path's fallback SELECT against ``aitown_chat_history_log.id``
+    runs before the turn-path's INSERT into that table COMMITS, it misses
+    under READ COMMITTED and routes to ``ChatHistoryLogSQL`` instead --
+    splitting one turn's contributions across both tables, exactly the
+    failure mode ``_resolve_chat_history_model_cls`` exists to prevent.
+    Dormant today only because AI Town's backend is confirmed dead (no
+    concurrent writers to race), not because the code closes the gap.
+
+    ``pg_advisory_xact_lock`` is the standard fix for this shape: it's
+    session-scoped but respects cross-connection contention (a second
+    session's lock request for the same key blocks until the first
+    session's transaction ends), and auto-releases at COMMIT/ROLLBACK --
+    no matching unlock call needed. Acquired on the row's own id (hashed to
+    a bigint key) before routing+writing, so a second contributor for the
+    SAME id blocks until the first's transaction (and therefore its
+    routing decision AND its write) is fully visible; different ids never
+    contend.
+    """
+    sess.execute(text("SELECT pg_advisory_xact_lock(hashtext(:row_id)::bigint)"), {"row_id": row_id})
+
+
+def _resolve_chat_history_model_cls(sess: Any, values: dict[str, Any]) -> type:
+    """Which table THIS write belongs to -- ``ChatHistoryLogSQL`` or
+    ``AitownChatHistoryLogSQL``. Never both.
+
+    Prefers this event's own ``client_meta`` when present (the turn event
+    always carries it -- ``ChatHistoryTurnV1`` declares it, and
+    ``_write_row``'s turn-path call site passes it straight through).
+
+    Falls back to checking whether a row with this ``id`` already exists in
+    ``aitown_chat_history_log`` when ``client_meta`` is absent from this
+    specific event -- the message-path fill-only contribution
+    (``_ensure_chat_history_from_message``) only sets ``client_meta`` when
+    the incoming chat.message event happens to carry one, and can arrive
+    after the turn event already routed this row to the mirror table. Route
+    the wrong way here on a missing signal and the message's fields insert
+    as a stray, wrongly-tabled duplicate row instead of merging into the
+    row the turn event already created -- the ON CONFLICT merge only
+    catches a collision within the SAME table, never across the two. This
+    lookup is what makes "route once" safe for a row assembled from
+    multiple partial-info events, the way the old additive dual-write never
+    had to worry about (it always wrote *something* to chat_history_log
+    regardless, so a partial contribution never had a wrong-table risk).
+
+    Callers MUST hold ``_lock_chat_history_row(sess, values["id"])`` before
+    calling this -- see that function's docstring for the cross-session
+    race this lookup alone does not close.
+    """
+    if not settings.sql_writer_aitown_routing_enabled:
+        return ChatHistoryLogSQL
+    if _is_aitown_client_meta(values.get("client_meta")):
+        return AitownChatHistoryLogSQL
+    row_id = values.get("id")
+    if row_id and (
+        sess.query(AitownChatHistoryLogSQL.id)
+        .filter(AitownChatHistoryLogSQL.id == row_id)
+        .first()
+        is not None
+    ):
+        return AitownChatHistoryLogSQL
+    return ChatHistoryLogSQL
 
 
 def _apply_spark_meta_patch(payload: dict) -> bool:
@@ -838,18 +961,68 @@ def _apply_spark_meta_patch(payload: dict) -> bool:
     corr = str(patch.correlation_id)
     sess = get_session()
     try:
+        # .with_for_update(): closes a pre-existing lost-update race this
+        # SELECT-then-UPDATE shape has always had (flagged, but left
+        # unfixed on this primary-table side, in PR #1734's own review --
+        # two concurrent patches for the same correlation_id could each
+        # read the same starting spark_meta and the second UPDATE would
+        # clobber the first's merged keys). Closed now while this function
+        # was already being touched for routing, rather than leaving it as
+        # a standing follow-up.
+        #
+        # _lock_chat_history_row(): code review on #1743 (2026-08-19)
+        # caught that this function never acquired it, despite
+        # _resolve_chat_history_model_cls's own docstring saying callers
+        # MUST hold it -- without it, a patch racing a concurrent turn-path
+        # write for the same row could find "existing is None" in BOTH
+        # tables (the turn event hasn't committed yet) and silently drop
+        # the patch (spark_meta_patch_missing_row) instead of applying it
+        # once the row lands. Every current producer sets id ==
+        # correlation_id (see upsert_chat_history_row's own docstring), so
+        # correlation_id is the correct lock key here.
+        #
+        # Deliberately UNCONDITIONAL, not gated on
+        # sql_writer_aitown_routing_enabled -- a second review pass
+        # (2026-08-19) caught that an earlier version of this patch gated
+        # it, reasoning "no routing decision to protect when routing is
+        # off." That reasoning missed that this lock does double duty: the
+        # turn-path and message-path writer sites (_write_row,
+        # _ensure_chat_history_from_message) acquire this SAME lock
+        # unconditionally, regardless of the routing flag, and hold it
+        # until their transaction commits -- so it also serializes "does
+        # the row exist yet" against an in-flight write, independent of
+        # which table ends up holding it. Gating only the reader side
+        # broke that symmetry: with routing disabled, a writer still locks
+        # and blocks, but a gated reader would skip its own lock and race
+        # the writer's uncommitted insert anyway -- reintroducing the exact
+        # bug this whole fix exists to close. Do not re-add this gate
+        # without also gating every writer-side lock call the same way.
+        _lock_chat_history_row(sess, corr)
+        model_cls = ChatHistoryLogSQL
         existing = (
             sess.query(ChatHistoryLogSQL)
             .filter(ChatHistoryLogSQL.correlation_id == corr)
+            .with_for_update()
             .first()
         )
+        if existing is None and settings.sql_writer_aitown_routing_enabled:
+            # The row may live in the AI Town table instead -- routing puts
+            # a row in exactly one table, so a miss here isn't automatically
+            # "row doesn't exist," it might just be in the other one.
+            existing = (
+                sess.query(AitownChatHistoryLogSQL)
+                .filter(AitownChatHistoryLogSQL.correlation_id == corr)
+                .with_for_update()
+                .first()
+            )
+            model_cls = AitownChatHistoryLogSQL
         if existing is None:
             logger.error("spark_meta_patch_missing_row correlation_id=%s", corr)
             return False
         merged = _merge_spark_meta(getattr(existing, "spark_meta", None), patch.spark_meta)
         sess.execute(
-            update(ChatHistoryLogSQL)
-            .where(ChatHistoryLogSQL.correlation_id == corr)
+            update(model_cls)
+            .where(model_cls.correlation_id == corr)
             .values(spark_meta=merged)
         )
         sess.commit()
@@ -1046,6 +1219,27 @@ def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], ra
     candidate_id = filtered_data.get("id") or filtered_data.get("correlation_id") or raw_data.get("correlation_id")
     if not candidate_id:
         return incoming
+    # _lock_chat_history_row(): code review follow-up (2026-08-19) caught
+    # this function's caller doesn't acquire it until well after this SELECT
+    # runs (_write_row's own lock, ~160 lines later in the same function) --
+    # so this read raced a concurrent turn-path write for the same id with
+    # nothing serializing it, same failure shape _apply_spark_meta_patch was
+    # fixed for. Self-contained here rather than relying on caller ordering,
+    # matching _apply_spark_meta_patch/_back_populate_chat_spark_meta_from_
+    # telemetry's own pattern.
+    #
+    # Deliberately UNCONDITIONAL -- see _apply_spark_meta_patch's own
+    # comment on this exact point (a second review pass, 2026-08-19, caught
+    # that gating this on routing_enabled reopens the race, because the
+    # writer-side locks this serializes against are themselves
+    # unconditional). Yes, this means a chat turn write now acquires this
+    # same advisory lock twice in one call (once here, once again at
+    # _write_row's own pre-existing call site further down) -- confirmed
+    # harmless: pg_advisory_xact_lock is reentrant per session/transaction,
+    # both calls target the same row id, and the redundant round trip is
+    # accepted as the cost of not having to reason about call-order
+    # coupling between this function and its caller.
+    _lock_chat_history_row(sess, str(candidate_id))
     existing = (
         sess.query(ChatHistoryLogSQL)
         .filter(
@@ -1054,10 +1248,104 @@ def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], ra
         )
         .first()
     )
+    # Not routing-aware before this fix (code review on the substrate-purge
+    # branch, 2026-08-19): a row already routed to aitown_chat_history_log
+    # (PR #1743) was invisible here, so an existing AI-Town thought_process
+    # was silently dropped in favor of the incoming value on every merge.
+    if existing is None and settings.sql_writer_aitown_routing_enabled:
+        existing = (
+            sess.query(AitownChatHistoryLogSQL)
+            .filter(
+                (AitownChatHistoryLogSQL.id == str(candidate_id))
+                | (AitownChatHistoryLogSQL.correlation_id == str(candidate_id))
+            )
+            .first()
+        )
     existing_thought = _normalized_text(getattr(existing, "thought_process", None)) if existing is not None else None
     if existing_thought:
         return existing_thought
     return incoming
+
+
+def _back_populate_chat_spark_meta_from_telemetry(sess: Any, corr_id: Any, filtered_data: dict[str, Any]) -> bool:
+    """SparkTelemetrySQL writes back-populate the corresponding chat_history_log
+    row's spark_meta ("Bi-Directional Metadata Sync"). Extracted to its own
+    function (code review on the substrate-purge branch, 2026-08-19) so the
+    routing-awareness fix below is directly unit-testable: this branch used
+    to only ever query ChatHistoryLogSQL, so telemetry for a correlation_id
+    already routed to aitown_chat_history_log (PR #1743) silently
+    back-populated nothing -- no error, just a missed spark_meta merge.
+
+    Callers MUST hold `_lock_chat_history_row(sess, corr_id)` before calling
+    this if their session hasn't already acquired it for this row (this
+    function does so itself) -- same race `_apply_spark_meta_patch` and
+    `_resolve_chat_history_model_cls` guard against: a concurrent turn-path
+    write for the same row.
+
+    Deliberately UNCONDITIONAL, not gated on
+    sql_writer_aitown_routing_enabled -- see _apply_spark_meta_patch's own
+    comment for why an earlier version of this gate was wrong (a second
+    review pass, 2026-08-19, caught that it reopens the very race this
+    fix exists to close, since the writer-side locks stay unconditional).
+    Accepted cost: on the common miss case (a telemetry tick whose
+    correlation_id has no matching chat row at all -- background/non-chat
+    telemetry), this now pays for a lock round trip plus up to 2
+    `with_for_update()` SELECTs instead of 1 unlocked SELECT. Not optimized
+    away because there is currently no cheap way to distinguish "this will
+    be a miss" from "this could race a concurrent write" ahead of taking
+    the lock.
+
+    Returns True if a chat_history_log row was found and updated.
+    """
+    _lock_chat_history_row(sess, str(corr_id))
+    meta_for_chat = _spark_meta_minimal(filtered_data)
+    chat_model_cls = ChatHistoryLogSQL
+    # .with_for_update(): review follow-up (2026-08-19) -- this is a
+    # read-modify-write of spark_meta (merge below, then UPDATE) with the
+    # same lost-update shape _apply_spark_meta_patch's own review finding
+    # already fixed on its side: two concurrent telemetry writes for the
+    # same correlation_id could each read the same starting spark_meta and
+    # the second UPDATE would clobber the first's merged keys. Added here
+    # for parity rather than left as an unexplained asymmetry between two
+    # near-identical patterns added in the same commit.
+    existing_chat = (
+        sess.query(ChatHistoryLogSQL)
+        .filter(ChatHistoryLogSQL.correlation_id == corr_id)
+        .with_for_update()
+        .first()
+    )
+    if existing_chat is None and settings.sql_writer_aitown_routing_enabled:
+        existing_chat = (
+            sess.query(AitownChatHistoryLogSQL)
+            .filter(AitownChatHistoryLogSQL.correlation_id == corr_id)
+            .with_for_update()
+            .first()
+        )
+        if existing_chat is not None:
+            chat_model_cls = AitownChatHistoryLogSQL
+    if existing_chat is None:
+        # debug, not error: unlike a spark_meta *patch* (which always names
+        # a specific row that's expected to exist), a telemetry tick's
+        # correlation_id commonly has no matching chat_history_log row at
+        # all (background/non-chat telemetry) -- that's an expected miss,
+        # not an operator-actionable failure. Logged at all only because
+        # review (2026-08-19) found this branch previously gave zero
+        # signal distinguishing "nothing to do" from a real routing miss.
+        logger.debug("spark_telemetry_chat_backfill_missing_row correlation_id=%s", corr_id)
+        return False
+    merged = _merge_spark_meta(
+        getattr(existing_chat, "spark_meta", None),
+        meta_for_chat,
+        source="telemetry",
+    )
+    stmt = (
+        update(chat_model_cls)
+        .where(chat_model_cls.correlation_id == corr_id)
+        .values(spark_meta=merged)
+    )
+    sess.execute(stmt)
+    sess.commit()
+    return True
 
 
 def _map_spark_to_telemetry_row(
@@ -1142,6 +1430,8 @@ def _ensure_chat_history_from_message(
     memory_status: str | None,
     memory_tier: str | None,
     client_meta: Any,
+    model: str | None = None,
+    speaker: str | None = None,
 ) -> None:
     """Merge a single chat message into its turn's chat_history_log row.
 
@@ -1163,6 +1453,16 @@ def _ensure_chat_history_from_message(
         values["prompt"] = content
     elif role == "assistant":
         values["response"] = content
+        # `model`/`speaker` were already present on ChatHistoryMessageV1 and
+        # already reaching this function's caller (room_claude_relay sets
+        # `model`, everything sets `speaker`) but were silently dropped here --
+        # never forwarded into `values`, so `response_identity` stayed unset on
+        # every message-path row regardless of what the producer sent. Prefer
+        # the real served model-card name; fall back to a human-readable
+        # responder name (e.g. "Orion", "Claude") when no model is known.
+        response_identity = str(model or speaker or "").strip()
+        if response_identity:
+            values["response_identity"] = response_identity
     else:
         return
     if session_id:
@@ -1182,7 +1482,9 @@ def _ensure_chat_history_from_message(
     try:
         # Fill-only: a message must never overwrite what the turn event already
         # wrote. Reproduces the old per-field `if not existing.<col>` guards.
-        upsert_chat_history_row(own_sess, values, incoming_wins=False)
+        _lock_chat_history_row(own_sess, values["id"])
+        model_cls = _resolve_chat_history_model_cls(own_sess, values)
+        upsert_chat_history_row(own_sess, values, incoming_wins=False, model_cls=model_cls)
         own_sess.commit()
     except Exception:
         own_sess.rollback()
@@ -1297,25 +1599,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             corr_id = filtered_data.get("correlation_id")
             if corr_id:
                 try:
-                    meta_for_chat = _spark_meta_minimal(filtered_data)
-                    existing_chat = (
-                        sess.query(ChatHistoryLogSQL)
-                        .filter(ChatHistoryLogSQL.correlation_id == corr_id)
-                        .first()
-                    )
-                    if existing_chat is not None:
-                        merged = _merge_spark_meta(
-                            getattr(existing_chat, "spark_meta", None),
-                            meta_for_chat,
-                            source="telemetry",
-                        )
-                        stmt = (
-                            update(ChatHistoryLogSQL)
-                            .where(ChatHistoryLogSQL.correlation_id == corr_id)
-                            .values(spark_meta=merged)
-                        )
-                        sess.execute(stmt)
-                        sess.commit()
+                    _back_populate_chat_spark_meta_from_telemetry(sess, corr_id, filtered_data)
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
             return True
@@ -1352,6 +1636,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                         memory_status=memory_status,
                         memory_tier=memory_tier,
                         client_meta=client_meta,
+                        model=data.get("model"),
+                        speaker=data.get("speaker"),
                     )
             except Exception as ex:
                 # Its own session now, so this really is contained: the
@@ -1406,7 +1692,9 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 # The turn event is the only one carrying `source`, so it was the
                 # reliable casualty -- hence every corrupted row having
                 # source IS NULL and exactly one of prompt/response.
-                upsert_chat_history_row(sess, filtered_data)
+                _lock_chat_history_row(sess, filtered_data["id"])
+                model_cls = _resolve_chat_history_model_cls(sess, filtered_data)
+                upsert_chat_history_row(sess, filtered_data, model_cls=model_cls)
                 sess.commit()
                 return True
             sess.merge(sql_model_cls(**filtered_data))
@@ -1566,15 +1854,6 @@ def _normalize_calibration_profile_audit_payload(payload: Any) -> Dict[str, Any]
         "details": event.details,
         "payload": event.model_dump(mode="json"),
         "recorded_at": event.recorded_at,
-    }
-
-
-def _normalize_phi_reward_payload(payload: Any, *, correlation_id: str | None) -> Dict[str, Any]:
-    event = PhiIntrinsicRewardV1.model_validate(payload)
-    return {
-        "correlation_id": str(correlation_id) if correlation_id else str(uuid.uuid4()),
-        "generated_at": event.generated_at,
-        "payload": event.model_dump(mode="json"),
     }
 
 
@@ -1761,6 +2040,31 @@ async def _persist_grammar_event_envelope(
             )
 
 
+def _chat_source_platform(client_meta: Any) -> str | None:
+    """external_room.platform from a chat.history payload / chat_history_log row.
+
+    Deliberately a thin local reader rather than an import of orion-recall's
+    chat_source_tagging.chat_source_platform(): sql-writer does not depend on
+    that service's package, and this needs only the platform half (no participant
+    name, no text rendering). Handles the dict form (psycopg2 jsonb) and the
+    JSON-string form (asyncpg / raw bus payloads) the same way that helper does.
+    Returns None for direct hub conversations and for every row predating the
+    field -- callers treat None as "not external", the correct default.
+    """
+    if isinstance(client_meta, str):
+        try:
+            client_meta = json.loads(client_meta)
+        except Exception:
+            return None
+    if not isinstance(client_meta, dict):
+        return None
+    external_room = client_meta.get("external_room")
+    if not isinstance(external_room, dict):
+        return None
+    platform = external_room.get("platform")
+    return str(platform) if platform else None
+
+
 def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
     if not corr_id:
         return None
@@ -1771,6 +2075,24 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             .filter(ChatHistoryLogSQL.correlation_id == corr_id)
             .first()
         )
+        # Not routing-aware before this fix (code review follow-up,
+        # 2026-08-19): a 4th primary-table-only blind spot found in the
+        # same pass that fixed the other three. For a turn already routed
+        # to aitown_chat_history_log (PR #1743), this returned None
+        # silently and the caller (_maybe_emit_memory_turn_from_row) just
+        # returned without logging -- dropping that turn from memory
+        # consolidation (services/orion-memory-consolidation, a real
+        # downstream consumer of orion:memory:turn:persisted) with zero
+        # trace. Read-only, no lock: called only after the row's own write
+        # has already completed (a "turn completes" precondition of the
+        # caller), so there is no cross-session commit-visibility race to
+        # guard against here, unlike the write/patch-side functions above.
+        if row is None and settings.sql_writer_aitown_routing_enabled:
+            row = (
+                sess.query(AitownChatHistoryLogSQL)
+                .filter(AitownChatHistoryLogSQL.correlation_id == corr_id)
+                .first()
+            )
         if row is None:
             return None
         prompt = str(getattr(row, "prompt", "") or "").strip()
@@ -1789,6 +2111,7 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
             "response": response,
             "spark_meta": spark_meta,
             "session_id": getattr(row, "session_id", None),
+            "source_platform": _chat_source_platform(getattr(row, "client_meta", None)),
         }
     finally:
         sess.close()
@@ -1820,6 +2143,7 @@ async def _emit_memory_turn_persisted(
         response=str(turn["response"]),
         spark_meta=turn.get("spark_meta") if isinstance(turn.get("spark_meta"), dict) else {},
         session_id=turn.get("session_id"),
+        source_platform=turn.get("source_platform"),
     )
     out_env = parent_env.derive_child(
         kind=MEMORY_TURN_PERSISTED_KIND,
@@ -2304,12 +2628,6 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
             elif sql_model is CalibrationProfileAuditSQL:
                 normalized = _normalize_calibration_profile_audit_payload(data_to_process)
                 write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
-            elif sql_model is PhiRewardSQL:
-                normalized = _normalize_phi_reward_payload(
-                    data_to_process,
-                    correlation_id=extra_sql_fields.get("correlation_id"),
-                )
-                write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
             elif sql_model is HarnessTurnTraceSQL:
                 # extra_fields={}: the generic extra_sql_fields dict (node,
                 # source_message_id, envelope-level correlation_id) would
@@ -2434,6 +2752,14 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                                 if isinstance(data_to_process.get("spark_meta"), dict)
                                 else {},
                                 "session_id": data_to_process.get("session_id"),
+                                # Read from `payload`, not `data_to_process`: several
+                                # routes above rebind data_to_process to a projected
+                                # row dict, so it is not a reliable source for a raw
+                                # envelope field. `payload` is what
+                                # extra_sql_fields["client_meta"] is populated from in
+                                # this same scope, so this reads the identical value
+                                # that gets written to chat_history_log.client_meta.
+                                "source_platform": _chat_source_platform(payload.get("client_meta")),
                             },
                         )
                     elif corr:

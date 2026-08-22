@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 from orion.schemas.state_delta import StateDeltaV1
 
-GPU_NODES = {"atlas", "circe"}
+# atlas removed 2026-08-21 (decommissioned; its GPUs moved to circe, along
+# with athena's old P100 -- see config/biometrics/node_catalog.yaml). athena
+# itself has no GPU now.
+GPU_NODES = {"circe"}
 
 
 @dataclass(frozen=True)

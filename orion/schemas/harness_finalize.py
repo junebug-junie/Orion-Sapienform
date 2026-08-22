@@ -6,7 +6,18 @@ from pydantic import BaseModel, Field
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.context_exec import ContextExecPermissionV1
+from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
+
+# Bounded cap for HarnessRunRequestV1.recent_turns -- reused, not invented:
+# matches PreTurnAppraisalOptionsV1.max_turns's existing default (orion/schemas/
+# pre_turn_appraisal.py) and orion.substrate.appraisal.turn_window.build_turn_window's
+# default max_turns, the same normalize+cap helper turn_orchestrator.py already
+# calls one line above where recent_turns is built. Enforced here too (not just
+# at the call site) so the invariant holds regardless of caller -- see
+# CLAUDE.md's evidence_event_ids unbounded-growth precedent for why a turn-scoped
+# list needs its own ceiling instead of trusting every producer to remember one.
+HARNESS_RECENT_TURNS_MAX = 8
 
 
 class GrammarReceiptV1(BaseModel):
@@ -75,6 +86,28 @@ class FinalizeReflectionV1(BaseModel):
     quick_lane_skipped_llm: bool = False
     finalize_changed: bool = False
 
+    # Loop-back tool-recall retry (see orion/harness/finalize.py::
+    # maybe_run_finalize_tool_retry). Populated when alignment_verdict is
+    # "misaligned" for a reason a specific, already-reviewed tool would fix,
+    # OR when world_contact_opportunity is true (see below) -- the reflect
+    # prompt is constrained to a small allowlist, so an unrecognized value
+    # here is dropped by the harness, never dispatched.
+    recommended_tool: str | None = None
+    recommended_tool_reason: str | None = Field(default=None, max_length=300)
+
+    # Independent of alignment_verdict: true when the user asked what is
+    # currently visible/in the room right now, no matching tool was called
+    # this turn, and the user did not instruct Orion not to use tools this
+    # turn. An honest "I can't see, I'd need to check" draft can still set
+    # this true -- honesty and having-a-live-tool-opportunity are unrelated
+    # questions, and conflating them (the pre-2026-08-18 design) meant the
+    # tool-recall retry could never fire for its own intended purpose: 3 live
+    # turns confirmed a genuinely honest non-hallucinating draft is always
+    # "aligned," so gating the retry on misalignment alone left it
+    # structurally unreachable for a benign "what do you see" ask. See
+    # orion/harness/finalize.py::maybe_run_finalize_tool_retry.
+    world_contact_opportunity: bool = False
+
 
 class HarnessVerdictMoleculeV1(BaseModel):
     schema_version: Literal["harness.verdict.molecule.v1"] = "harness.verdict.molecule.v1"
@@ -102,6 +135,19 @@ class HarnessTurnOutcomeMoleculeV1(BaseModel):
     failure_reason: str | None = Field(default=None, max_length=500)
     draft_text_excerpt: str | None = Field(default=None, max_length=300)
 
+    # Loop-back tool-recall retry. When true, this turn's grammar_event_ids
+    # legitimately includes one event from a finalize-stage correction, not
+    # only motor-stage tool calls -- HarnessRunV1.step_count/grammar_event_ids
+    # (published earlier, before finalize runs) do NOT reflect it, so a
+    # retried turn's outcome-stage tool count can exceed its run-stage count.
+    # That asymmetry is expected. Consumers reading grammar_event_ids as
+    # evidence of deliberate motor tool-use (e.g. orion/memory/crystallization/
+    # intake_autonomy_episode.py) should check this flag to tell "the motor
+    # reached for this tool" apart from "finalize corrected a gap after the
+    # fact" -- both are real evidence, but of different things.
+    finalize_loop_retried: bool = False
+    finalize_loop_tool: str | None = None
+
 
 class HarnessPostTurnClosureV1(BaseModel):
     schema_version: Literal["harness.post_turn.closure.v1"] = "harness.post_turn.closure.v1"
@@ -124,6 +170,29 @@ class HarnessRepairOverlayV1(BaseModel):
     finalize_overlay: str = ""
 
 
+class HarnessAttachmentV1(BaseModel):
+    """An image already staged into the FCC sandbox, addressed by path.
+
+    Deliberately a *path*, not an ``AttachmentRefV1``: the harness-governor
+    container cannot see ``/mnt/orion-chat-attachments`` at all (verified live
+    2026-08-15 -- only the Hub mounts the attachment store), so a store
+    reference would be unresolvable on the side that actually runs ``claude``.
+    The Hub stages a copy into the shared sandbox and passes where it landed.
+
+    The path is what lets Orion's *own* model look at the image with its own
+    Read tool, first-person, rather than being handed a description produced by
+    some other model. That distinction is the whole point -- see the rejected
+    "captioner" option in
+    ``docs/superpowers/specs/2026-08-14-hub-chat-vision-and-rendering-design.md``.
+    """
+
+    schema_version: Literal["harness.attachment.v1"] = "harness.attachment.v1"
+    path: str = Field(..., description="Absolute path inside the FCC sandbox.")
+    mime: str
+    sha256: str
+    filename: str | None = None
+
+
 class HarnessRunRequestV1(BaseModel):
     schema_version: Literal["harness.run.request.v1"] = "harness.run.request.v1"
     correlation_id: str
@@ -133,6 +202,28 @@ class HarnessRunRequestV1(BaseModel):
     answer_contract: AnswerContract
     repair_pressure_contract: dict[str, Any] | None = None
     fcc_model_label: str | None = None
+    attachments: list[HarnessAttachmentV1] = Field(
+        default_factory=list,
+        description=(
+            "Images staged into the sandbox for this turn. Empty for every "
+            "text-only turn, which keeps the harness prompt byte-identical to "
+            "its pre-attachment form."
+        ),
+    )
+    recent_turns: list[TurnWindowMessageV1] = Field(
+        default_factory=list,
+        max_length=HARNESS_RECENT_TURNS_MAX,
+        description=(
+            "Bounded recent user/assistant history for THIS session, oldest "
+            "first, rendered into the harness prompt as a 'RECENT CONVERSATION' "
+            "section (orion/harness/prefix.py::compile_harness_prefix). Empty "
+            "for a genuinely fresh session -- never fabricated. Distinct from "
+            "the single current `user_message` field: before this field "
+            "existed, every unified-turn (mode='orion') `claude -p` prompt "
+            "carried zero prior-turn history, so each turn was answered in "
+            "isolation regardless of how long the conversation had run."
+        ),
+    )
 
 
 class HarnessRunCancelV1(BaseModel):
@@ -173,3 +264,9 @@ class HarnessRunV1(BaseModel):
     grammar_event_ids: list[str] = Field(default_factory=list)
     recall_debug: dict[str, Any] | None = None
     memory_digest: str | None = None
+    # Real backend model discovered from the CLI's own stream-json "assistant"
+    # events (see orion/harness/fcc_motor.py's _served_model_from_assistant),
+    # distinct from HarnessRunRequestV1.fcc_model_label -- that's just the
+    # ~/.fcc/.env route alias requested (e.g. "MODEL_SONNET"), which cannot
+    # distinguish backends sharing one route. None when discovery never fired.
+    fcc_served_model: str | None = None

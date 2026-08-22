@@ -46,7 +46,12 @@ class _FakeSession:
     def merge(self, obj):
         self.row = obj
 
-    def execute(self, stmt):
+    def execute(self, stmt, params=None):
+        # _lock_chat_history_row's advisory-lock text() statement passes a
+        # params dict as a second positional arg -- not the real
+        # chat_history_log write this fake exists to capture, so skip it.
+        if params is not None:
+            return
         # compile().params exposes the bound INSERT values without a live DB.
         self.values = dict(stmt.compile().params)
 

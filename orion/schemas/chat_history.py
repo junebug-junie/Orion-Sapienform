@@ -133,6 +133,15 @@ class ChatHistoryTurnV1(BaseModel):
     thinking_source: Optional[str] = None
     reasoning_trace: Optional[MetacognitiveTraceV1] = None
     user_id: Optional[str] = Field(default=None)
+    response_identity: Optional[str] = Field(
+        default=None,
+        description=(
+            "The identity that produced `response` -- the served model-card "
+            "name (e.g. 'qwen-36-instruct') when known, else a human-readable "
+            "responder name. `user_id` stays the prompt-side identity; this is "
+            "additive and never overwrites it."
+        ),
+    )
     session_id: Optional[str] = Field(default=None)
     spark_meta: Optional[Dict[str, Any]] = Field(default=None)
     memory_status: Optional[MemoryStatus] = None

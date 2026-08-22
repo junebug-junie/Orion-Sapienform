@@ -373,6 +373,102 @@ def test_mention_edge_label_truncated_to_max_length() -> None:
     assert len(entity_nodes[0].label) == MAX_ENTITY_LABEL_LENGTH
 
 
+# --- landmark_concept_ids -> extra associated_with edge to a golden seed
+# concept, added 2026-08-20 (see
+# docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md) ---
+
+
+def test_landmark_match_produces_extra_edge_to_landmark_node_id() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-a", "object": "Orion", "confidence": 0.6}],
+        segment_topic_id_map={"seg-a": 0},
+        landmark_concept_ids={"orion": "sub-concept-seed-orion", "juniper": "sub-concept-seed-juniper"},
+    )
+    entity_nodes = [n for n in out.nodes if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1
+
+    associated_edges = [e for e in out.edges if e.predicate == "associated_with"]
+    assert len(associated_edges) == 2  # topic -> entity, entity -> landmark
+    landmark_edges = [e for e in associated_edges if e.target.node_id == "sub-concept-seed-orion"]
+    assert len(landmark_edges) == 1
+    assert landmark_edges[0].source.node_id == entity_nodes[0].node_id
+    assert landmark_edges[0].target.node_kind == "concept"
+
+
+def test_landmark_match_is_case_insensitive() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-a", "object": "  ORION  ", "confidence": 0.6}],
+        segment_topic_id_map={"seg-a": 0},
+        landmark_concept_ids={"orion": "sub-concept-seed-orion"},
+    )
+    landmark_edges = [
+        e for e in out.edges if e.predicate == "associated_with" and e.target.node_id == "sub-concept-seed-orion"
+    ]
+    assert len(landmark_edges) == 1
+
+
+def test_no_landmark_match_produces_no_extra_edge() -> None:
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-a", "object": "some other entity", "confidence": 0.6}],
+        segment_topic_id_map={"seg-a": 0},
+        landmark_concept_ids={"orion": "sub-concept-seed-orion", "juniper": "sub-concept-seed-juniper"},
+    )
+    associated_edges = [e for e in out.edges if e.predicate == "associated_with"]
+    assert len(associated_edges) == 1  # topic -> entity only
+
+
+def test_landmark_concept_ids_none_is_a_complete_no_op() -> None:
+    # Absent (default None) must be zero behavior change vs. omitting the
+    # param entirely -- regression guard for every existing caller.
+    out_default = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-a", "object": "Orion", "confidence": 0.6}],
+        segment_topic_id_map={"seg-a": 0},
+    )
+    out_explicit_none = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[{"segment_id": "seg-a", "object": "Orion", "confidence": 0.6}],
+        segment_topic_id_map={"seg-a": 0},
+        landmark_concept_ids=None,
+    )
+    assert len(out_default.edges) == len(out_explicit_none.edges)
+    assert [e.predicate for e in out_default.edges] == [e.predicate for e in out_explicit_none.edges]
+
+
+def test_landmark_edge_deduplicated_across_repeated_mentions_of_same_entity() -> None:
+    # Same entity mentioned via two different segments resolving to two
+    # different (accepted) topics -- the landmark edge is topic-independent
+    # and must still appear exactly once per run, not once per topic pairing.
+    out = map_topic_foundry_run_to_substrate(
+        run_id="run-1",
+        topics=_topics(),
+        keywords_by_topic=_keywords_by_topic(),
+        mention_edges=[
+            {"segment_id": "seg-a", "object": "Orion", "confidence": 0.6},
+            {"segment_id": "seg-b", "object": "Orion", "confidence": 0.6},
+        ],
+        segment_topic_id_map={"seg-a": 0, "seg-b": 1},
+        landmark_concept_ids={"orion": "sub-concept-seed-orion"},
+    )
+    landmark_edges = [
+        e for e in out.edges if e.predicate == "associated_with" and e.target.node_id == "sub-concept-seed-orion"
+    ]
+    assert len(landmark_edges) == 1
+
+
 def test_mention_edge_confidence_out_of_range_is_clamped() -> None:
     out = map_topic_foundry_run_to_substrate(
         run_id="run-1",

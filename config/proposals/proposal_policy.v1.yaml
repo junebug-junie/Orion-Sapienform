@@ -3,7 +3,19 @@ policy_id: proposal_policy.v1
 
 limits:
   max_candidates: 10
-  max_suppressed: 10
+  # 2026-08-16: 10 -> 20. This patch takes proposal_templates from 13 to 16;
+  # `suppressed_candidates` exists precisely so a quiet tick's non-dispatched
+  # candidates stay inspectable ("Quiet, not lost", orion/proposals/
+  # builder.py's own comment) rather than silently truncated -- 10 was
+  # already tight against 13 templates + any external (reverie/cognitive-hop)
+  # producer, and this patch's own test suite caught it going stale
+  # (test_gate_also_suppresses_external_candidates started dropping its
+  # fixture candidate off the recorded list, not because anything broke, but
+  # because 3 more real templates legitimately outranked it for a fixed 10
+  # slots). 20 gives headroom for all 16 templates plus several external
+  # producers on one tick; revisit against real post-deploy suppressed-list
+  # sizes, same discipline as every other disclosed constant in this arc.
+  max_suppressed: 20
 
 thresholds:
   min_priority: 0.10
@@ -36,10 +48,24 @@ dimension_weights:
   resource_pressure: 0.25
   reasoning_pressure: 0.15
   reliability_pressure: 0.35
+  # 2026-08-16: disclosed, uncalibrated starting value -- mid-pack against
+  # the 4 above, not tuned against real post-deploy dispatch data yet (same
+  # discipline as every other first-cut weight in this file). See
+  # orion/proposals/scoring.py::PRESSURE_DIMENSIONS' own comment for the
+  # metric-gate evidence that earned deviation_pressure a place here at all.
+  deviation_pressure: 0.30
 
 proposal_templates:
   inspect_execution_pressure:
     kind: inspect
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: execution_pressure
+    expected_direction: no_change
     target_kind: capability
     target_id: capability:orchestration
     proposed_effect: increase_observability
@@ -52,6 +78,14 @@ proposal_templates:
 
   summarize_loaded_state:
     kind: summarize
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: resource_pressure
+    expected_direction: no_change
     target_kind: self_state
     target_id: self:current
     proposed_effect: increase_observability
@@ -69,6 +103,14 @@ proposal_templates:
 
   watch_reliability:
     kind: observe
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: reliability_pressure
+    expected_direction: no_change
     target_kind: capability
     target_id: capability:orchestration
     proposed_effect: preserve_stability
@@ -81,6 +123,14 @@ proposal_templates:
 
   request_policy_review_for_action:
     kind: request_policy_review
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: execution_pressure
+    expected_direction: no_change
     target_kind: system
     target_id: policy:execution
     proposed_effect: prepare_for_policy_gate
@@ -95,6 +145,14 @@ proposal_templates:
 
   inspect_transport_status:
     kind: inspect
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: reliability_pressure
+    expected_direction: no_change
     target_kind: capability
     target_id: capability:transport
     proposed_effect: increase_observability
@@ -163,6 +221,14 @@ proposal_templates:
 
   defer_due_to_low_readiness:
     kind: defer
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: reliability_pressure
+    expected_direction: no_change
     target_kind: self_state
     target_id: self:current
     proposed_effect: preserve_stability
@@ -177,8 +243,19 @@ proposal_templates:
 
   inspect_node_resource_pressure:
     kind: inspect
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: resource_pressure
+    expected_direction: no_change
     target_kind: node
-    target_id: node:atlas
+    # atlas decommissioned 2026-08-21 (config/biometrics/node_catalog.yaml);
+    # circe is now the fleet's dominant GPU node and inherits this target,
+    # same reasoning as orion-biometrics' CLUSTER_ROLE_WEIGHTS fix.
+    target_id: node:circe
     proposed_effect: increase_observability
     required_policy_gate: read_only
     base_priority: 0.34
@@ -272,6 +349,17 @@ proposal_templates:
   # real Docker daemon at execution time).
   prune_build_cache:
     kind: maintain
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # A MUTATING template, so unlike the read-only ones this declares a real
+    # directional effect: freeing disk should lower resource_pressure. That
+    # claim is the one most at risk of a fabricated confirmation -- this
+    # action fires BECAUSE resource_pressure is high, and high pressure falls
+    # on its own, so the raw post-action delta flatters it badly (review
+    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
+    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
+    # Magnitude is NEVER declared here; it comes from the measured posterior.
+    expected_signal: resource_pressure
+    expected_direction: decrease
     target_kind: system
     target_id: host:docker_build_cache
     proposed_effect: preserve_stability
@@ -301,3 +389,115 @@ proposal_templates:
     base_priority: 0.34
     dimensions:
       resource_pressure: 0.50
+
+  # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+  # dispatch-design.md): tension-driven templates. deviation_pressure is the
+  # first PRESSURE_DIMENSIONS entry with an admission gate designed to reach
+  # a real 0.0 rest point AND fire on real recurring deviation (see that
+  # dimension's own metric-gate comment in orion/proposals/scoring.py) --
+  # these 3 templates are its first consumers.
+  #
+  # Fixed targets, not attention-bound: `target_binding` only recognizes
+  # ATTENTION_FIRST_TARGET_BINDING today (orion/proposals/builder.py), and
+  # binding these to the tension Borda winner is real, separate follow-up
+  # work (a second binding literal + a resolver change), not needed for
+  # deviation_pressure to already be a real, scoreable dimension. Deferred
+  # rather than built speculatively.
+  #
+  # observe_tension_via_camera is read-only (required_policy_gate: read_only,
+  # allowed_scope: inspect_only in execution_dispatch_policy.v1.yaml) --
+  # skills.perception.look_at_camera.v1 reads orion-vision-window's existing
+  # passive projection, it does not trigger a fresh capture. Named by the
+  # perception ladder's own verb, not reimplemented -- see that skill's own
+  # yaml. This is the "use the video work as a consumer of tension" wiring:
+  # the camera-look competes harder when the field is genuinely deviating,
+  # nothing about the perception ladder itself is touched.
+  observe_tension_via_camera:
+    kind: inspect
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # Read-only kinds declare no_change because their own constraint set
+    # (read_only / no_file_writes / no_external_side_effects) entails it --
+    # confirming it repeatedly drives Bayesian surprise to ~0, which is how
+    # a tic proves itself. Magnitude is NEVER declared here; it comes from
+    # the measured posterior (see orion/schemas/action_prediction.py).
+    expected_signal: deviation_pressure
+    expected_direction: no_change
+    target_kind: system
+    target_id: host:camera_perception
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.30
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      deviation_pressure: 0.55
+
+  # The 2nd and 3rd mutating templates (prune_build_cache above was the
+  # first). Same division of labour and same risk reasoning as
+  # prune_build_cache's own comment: base_risk reflects what this action
+  # actually costs when wrong (both targets are Docker-regenerable), not a
+  # "this is serious" label -- the safety comes from the three independent
+  # gates in execution_dispatch_policy.v1.yaml (mode.allow_mutating_dispatch,
+  # the maintenance_bounded scope check, and dispatch_mode/dry_run handling
+  # common to every route here), not from this number.
+  #
+  # DISCLOSED ASYMMETRY (2026-08-16, code review): the two skills below do
+  # NOT have equivalent gates. image_prune (services/orion-cortex-exec/app/
+  # verb_adapters.py) declines with `declined_nothing_to_reclaim` unless disk
+  # is genuinely >=75% AND there are genuinely dangling images to remove --
+  # a real measured threshold. docker_prune_stopped_containers has NO such
+  # count or resource-pressure floor: in execute mode it prunes every exited,
+  # non-label-protected container it finds (optionally age-filtered by
+  # `until`), gated only by SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING and
+  # label/age filters -- it does not decline when little or nothing is wrong,
+  # it always acts on whatever matches. An earlier version of this comment
+  # claimed parity ("its own dry-run/execute gate") that does not exist;
+  # corrected rather than left to imply a safety property this route does
+  # not have.
+  prune_dangling_images:
+    kind: maintain
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # A MUTATING template, so unlike the read-only ones this declares a real
+    # directional effect: freeing disk should lower resource_pressure. That
+    # claim is the one most at risk of a fabricated confirmation -- this
+    # action fires BECAUSE resource_pressure is high, and high pressure falls
+    # on its own, so the raw post-action delta flatters it badly (review
+    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
+    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
+    # Magnitude is NEVER declared here; it comes from the measured posterior.
+    expected_signal: resource_pressure
+    expected_direction: decrease
+    target_kind: system
+    target_id: host:docker_images
+    proposed_effect: preserve_stability
+    required_policy_gate: read_only
+    base_priority: 0.32
+    base_risk: 0.12
+    reversibility: 1.0
+    dimensions:
+      deviation_pressure: 0.35
+      resource_pressure: 0.35
+
+  prune_stopped_containers:
+    kind: maintain
+    # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.
+    # A MUTATING template, so unlike the read-only ones this declares a real
+    # directional effect: freeing disk should lower resource_pressure. That
+    # claim is the one most at risk of a fabricated confirmation -- this
+    # action fires BECAUSE resource_pressure is high, and high pressure falls
+    # on its own, so the raw post-action delta flatters it badly (review
+    # finding 1, 2026-08-21). Scoring it honestly needs the control arm in
+    # docs/superpowers/specs/2026-08-21-action-value-control-arm-design.md.
+    # Magnitude is NEVER declared here; it comes from the measured posterior.
+    expected_signal: resource_pressure
+    expected_direction: decrease
+    target_kind: system
+    target_id: host:docker_containers
+    proposed_effect: preserve_stability
+    required_policy_gate: read_only
+    base_priority: 0.28
+    base_risk: 0.10
+    reversibility: 1.0
+    dimensions:
+      deviation_pressure: 0.35
+      resource_pressure: 0.25

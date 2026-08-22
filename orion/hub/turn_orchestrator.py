@@ -10,7 +10,13 @@ from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
-from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
+from orion.harness.attachment_staging import prune_staging, stage_attachments
+from orion.schemas.harness_finalize import (
+    HARNESS_RECENT_TURNS_MAX,
+    HarnessAttachmentV1,
+    HarnessRunRequestV1,
+    HarnessRunV1,
+)
 from orion.schemas.pre_turn_appraisal import (
     PreTurnAppraisalOptionsV1,
     PreTurnAppraisalRequestV1,
@@ -238,7 +244,9 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
     return base
 
 
-def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str, Any]]:
+def _success_frames(
+    run: HarnessRunV1, *, correlation_id: str, fcc_model_label: str | None = None
+) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
     if run.substrate_appraisal is not None:
         frames.append(
@@ -267,6 +275,24 @@ def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
     }
+    if fcc_model_label:
+        # The identity that actually produced this response -- previously not
+        # exposed on the frame at all, so callers that consume frames
+        # directly instead of relying on _publish_unified_turn_chat_history's
+        # own persistence (e.g. endogenous_outreach.py, which sets
+        # no_write=True and does its own publish from the frame) had no
+        # identity to report at all.
+        #
+        # NOTE this key is dual-purpose by caller intent, not by accident:
+        # callers of _success_frames pass execute_unified_turn's
+        # `resolved_model_label` (run.fcc_served_model when discovery fired,
+        # else harness_req.fcc_model_label as fallback -- see that
+        # computation above), so this value is USUALLY the real backend
+        # model, not the small fixed set of ~/.fcc/.env route aliases
+        # (e.g. "MODEL_SONNET") that HarnessRunRequestV1.fcc_model_label
+        # itself always holds. Any new consumer reading this key off a frame
+        # must not assume it is one of those aliases.
+        final_frame["fcc_model_label"] = fcc_model_label
     if is_context_overflow_text(run.final_text or ""):
         final_frame["context_overflow"] = True
     if run.recall_debug is not None:
@@ -462,10 +488,80 @@ async def execute_unified_turn(
         settings=cfg,
     )
 
+    # Stage any attached images into the FCC sandbox BEFORE dispatch. The Hub is
+    # the only container that mounts both the attachment store and the sandbox --
+    # the harness-governor, which actually runs `claude`, cannot see the store at
+    # all. So if this does not happen here, it cannot happen at all.
+    staged_attachments: list[HarnessAttachmentV1] = []
+    # Tracked separately from the list above: if model construction throws after
+    # the copies already landed, `staged_attachments` is empty but there ARE
+    # files on disk, and pruning on the empty list would leak them forever.
+    staging_attempted = False
+    raw_attachments = payload.get("attachments") or []
+    if raw_attachments:
+        staging_attempted = True
+        try:
+            # to_thread: shutil.copyfile of up to HUB_CHAT_ATTACHMENT_MAX_PER_TURN
+            # x HUB_CHAT_ATTACHMENT_MAX_BYTES is real blocking I/O, and this Hub
+            # serves every WebSocket client from one event loop.
+            staged = await asyncio.to_thread(
+                stage_attachments, raw_attachments, correlation_id=correlation_id
+            )
+            staged_attachments = [
+                HarnessAttachmentV1(
+                    path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename
+                )
+                for item in staged
+            ]
+        except Exception:  # noqa: BLE001 -- staging must never take the turn down
+            logger.exception("attachment staging failed corr=%s", correlation_id)
+            staged_attachments = []
+        if not staged_attachments:
+            # Say it out loud. A turn that quietly loses the image Juniper
+            # attached is the exact failure this feature exists to prevent.
+            logger.error(
+                "attachments present but none staged corr=%s count=%s",
+                correlation_id,
+                len(raw_attachments),
+            )
+        else:
+            logger.info(
+                "unified turn carrying %s attachment(s) corr=%s",
+                len(staged_attachments),
+                correlation_id,
+            )
+
+    # Reuses build_turn_window (already the appraisal call above's normalizer)
+    # rather than passing continuity_messages through raw -- caps to the last
+    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
+    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
+    # future caller forgets to cap. No synthetic single-message fallback here
+    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
+    # continuity_messages should render as a genuinely empty recent_turns, not
+    # a fabricated one-line "history".
+    #
+    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
+    # messages(history=user_messages, ...) and websocket_handler.py's history
+    # list) both include THIS turn's own message as the trailing entry --
+    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
+    # last item duplicates user_message, so compile_harness_prefix would render
+    # the current question twice (once under RECENT CONVERSATION, once as
+    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
+    # alone -- that RPC may legitimately want the current message included.
+    history_only = list(continuity_messages or [])
+    if history_only:
+        last = history_only[-1]
+        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
+        if last_content is not None and last_content == user_message.strip():
+            history_only = history_only[:-1]
+    recent_turns = build_turn_window(history_only, max_turns=HARNESS_RECENT_TURNS_MAX)
+
     harness_req = HarnessRunRequestV1(
         correlation_id=correlation_id,
         thought_event=thought,
         user_message=user_message,
+        attachments=staged_attachments,
+        recent_turns=recent_turns,
         permissions=ContextExecPermissionV1(
             read_memory=True,
             read_graph=True,
@@ -486,17 +582,34 @@ async def execute_unified_turn(
         if harness_step_relay is not None
         else None
     )
+    _harness_run_completed = False
     try:
         run = await HarnessGovernorClient(harness_bus).run(
             harness_req,
             correlation_id=correlation_id,
             liveness_check=liveness_check,
         )
+        # `run is None` means an RPC timeout with no cancel published -- the
+        # motor may still be mid-turn, so this stays False and we leave the
+        # staged files alone rather than yanking them from a live reader.
+        _harness_run_completed = run is not None
     finally:
         if harness_step_relay is not None and harness_step_queue is not None:
             harness_step_relay.unregister_queue(correlation_id, harness_step_queue)
         if harness_step_relay is not None:
             harness_step_relay.forget(correlation_id)
+        # Staged images are per-turn scratch; without cleanup they accumulate in
+        # the sandbox forever. The bytes still live in the content-addressed
+        # store, so a follow-up turn about the same image just re-stages it.
+        #
+        # Only prune when the run actually COMPLETED. This finally also fires on
+        # an RPC timeout (HarnessGovernorClient.run returns None without
+        # publishing a cancel) and on CancelledError from
+        # run_awaitable_cancel_on_ws_disconnect -- in both cases the governor's
+        # claude process is still going, and deleting the directory out from
+        # under it turns a not-yet-issued Read into file-not-found.
+        if staging_attempted and _harness_run_completed:
+            await asyncio.to_thread(prune_staging, correlation_id)
     if run is None:
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         return [
@@ -508,6 +621,15 @@ async def execute_unified_turn(
                 "error": "harness_rpc_timeout",
             }
         ]
+    # Prefer the real backend model HarnessRunner discovered from the CLI's own
+    # stream-json events (run.fcc_served_model -- see orion/harness/fcc_motor.py's
+    # _served_model_from_assistant) over the requested ~/.fcc/.env route alias
+    # (harness_req.fcc_model_label, e.g. "MODEL_SONNET"). The alias is the only
+    # thing known before dispatch, but confirmed live 2026-08-19 that MODEL_SONNET
+    # and MODEL_OPUS both point at the identical llamacpp/chat route, so it can't
+    # tell backends apart. Falls back to the alias when discovery never fired
+    # (e.g. the motor failed before any assistant turn).
+    resolved_model_label = run.fcc_served_model or harness_req.fcc_model_label
     if run.finalize_degraded_reason and run.final_text:
         await _publish_unified_turn_chat_history(
             bus=bus,
@@ -518,13 +640,17 @@ async def execute_unified_turn(
             payload=payload,
             run=run,
             source_label=str(payload.get("chat_history_source") or "hub_orion"),
+            fcc_model_label=resolved_model_label,
         )
         degraded_frame = {
             "type": "turn_degraded",
             "correlation_id": correlation_id,
             "reason": run.finalize_degraded_reason,
         }
-        return [degraded_frame, *_success_frames(run, correlation_id=correlation_id)]
+        return [
+            degraded_frame,
+            *_success_frames(run, correlation_id=correlation_id, fcc_model_label=resolved_model_label),
+        ]
     if not run.finalize_ran or not run.final_text:
         return [_harness_error_frame(run, correlation_id=correlation_id)]
     await _publish_unified_turn_chat_history(
@@ -536,8 +662,9 @@ async def execute_unified_turn(
         payload=payload,
         run=run,
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
+        fcc_model_label=resolved_model_label,
     )
-    return _success_frames(run, correlation_id=correlation_id)
+    return _success_frames(run, correlation_id=correlation_id, fcc_model_label=resolved_model_label)
 
 
 async def _publish_unified_turn_chat_history(
@@ -550,6 +677,7 @@ async def _publish_unified_turn_chat_history(
     payload: dict[str, Any],
     run: HarnessRunV1,
     source_label: str = "hub_orion",
+    fcc_model_label: str | None = None,
 ) -> None:
     """Orion capability: unified-turn persistence after successful handoff.
 
@@ -630,6 +758,7 @@ async def _publish_unified_turn_chat_history(
             session_id=session,
             correlation_id=correlation_id,
             speaker=hub_settings.SERVICE_NAME,
+            model=fcc_model_label,
             tags=[mode_tag],
             message_id=f"{correlation_id}:assistant",
             reasoning_trace=reasoning_trace,
@@ -643,6 +772,7 @@ async def _publish_unified_turn_chat_history(
         session_id=session,
         correlation_id=correlation_id,
         user_id=str(user_id) if user_id else None,
+        response_identity=fcc_model_label,
         source_label=source_label,
         spark_meta=spark_meta,
         turn_id=correlation_id,

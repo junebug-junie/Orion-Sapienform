@@ -1,0 +1,36 @@
+name: ask_camera
+label: Ask Camera
+description: >
+  Ask a specific question about what the camera currently shows -- "is the
+  door open?", "how many monitors are on the desk?", "is anyone in the
+  room?". Use when the user asks a targeted question about the current
+  physical scene, not a general "what do you see" (use look_at_camera for
+  that). Answer quality is honest but limited -- the loaded model is a
+  small captioner, not an instruction-tuned VQA model.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 40000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - perception
+side_effect_level: none
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

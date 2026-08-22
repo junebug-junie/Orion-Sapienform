@@ -1137,3 +1137,65 @@ def test_hub_direct_social_room_forces_chat_social_room_verb_over_selected_verbs
     )
     assert req.verb == "chat_social_room"
     assert debug["social_room_mode"] == "hub_direct"
+
+
+def _route_of(llm_route: str | None) -> str | None:
+    payload = {"mode": "brain"}
+    if llm_route is not None:
+        payload["llm_route"] = llm_route
+    req, _, _ = hub_builder.build_chat_request(
+        payload=payload,
+        session_id="sid-route",
+        user_id="user-route",
+        trace_id="trace-route",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Hello",
+    )
+    return (req.options or {}).get("llm_route")
+
+
+def test_quick_background_reaches_the_executor_instead_of_being_dropped() -> None:
+    """Found by review 2026-08-18. This builder carried a private allow-list of
+    {chat, quick, agent, metacog} and simply never set the key for anything else -- the same
+    silent-drop bug that sent orion-actions' journal traffic to circe's 131k lane, here on the
+    highest-traffic route-setting path in the fleet (POST /api/chat)."""
+    assert _route_of("quick_background") == "quick_background"
+
+
+def test_every_shared_route_survives_the_builder() -> None:
+    """Behavioural drift guard against the shared set, driving the real builder.
+
+    SYSTEM_LLM_ROUTES (`harness`, 2026-08-20) is excluded on purpose -- see
+    test_harness_route_is_not_settable_via_the_api below for that half.
+    """
+    from orion.llm.routes import ACCEPTED_LLM_ROUTES, SYSTEM_LLM_ROUTES
+
+    for route in sorted(ACCEPTED_LLM_ROUTES - SYSTEM_LLM_ROUTES):
+        assert _route_of(route) == route, route
+
+
+def test_harness_route_is_not_settable_via_the_api() -> None:
+    """Review caught this live 2026-08-20: a raw `POST /api/chat` body with
+    `{"llm_route": "harness"}` -- not just Hub's own dropdown, which the picker-side fix in
+    app.js does not gate -- would otherwise have been accepted here and forwarded to
+    cortex-exec, dispatching an ordinary chat turn onto the lane reserved for FCC/Claude Code
+    CLI harness turns. Must leave the key unset, exactly like an unrecognized route."""
+    assert _route_of("harness") is None
+
+
+def test_legacy_aliases_resolve_rather_than_being_dropped() -> None:
+    """`orion/llm/routes.py` promises these keep working because live config still carries
+    them. This builder previously dropped all three."""
+    for alias in ("chat_quick", "quick_chat", "chat_kids_story"):
+        assert _route_of(alias) == "quick", alias
+
+
+def test_an_unrecognized_route_still_leaves_the_key_unset() -> None:
+    """Unchanged behaviour: the builder must not invent a route for a value it does not know."""
+    assert _route_of("bogus_lane") is None
+
+
+def test_the_default_is_still_quick_when_nothing_is_named() -> None:
+    assert _route_of(None) == "quick"

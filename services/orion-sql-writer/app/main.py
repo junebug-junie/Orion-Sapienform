@@ -101,6 +101,12 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_uncertainty_available BOOLEAN;"
             )
             conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS aitown_chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
+            )
+            conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
             )
             conn.exec_driver_sql(
@@ -132,6 +138,7 @@ async def lifespan(app: FastAPI):
                     target_turn_id TEXT NULL,
                     target_message_id TEXT NULL,
                     target_correlation_id TEXT NULL,
+                    target_artifact_ref TEXT NULL,
                     target_key TEXT NULL,
                     session_id TEXT NULL,
                     user_id TEXT NULL,
@@ -750,6 +757,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
 
+    # Deliberately NOT inside the long bootstrap transaction above (review
+    # finding). That block runs ~700 statements under one engine.begin() with a
+    # single swallowing handler, so any earlier statement failing rolls the
+    # whole thing back -- including this ALTER -- while
+    # app/models/chat_response_feedback.py has ALREADY declared the column. The
+    # ORM would then put target_artifact_ref in every INSERT, Postgres would
+    # raise UndefinedColumn, only IntegrityError is handled downstream, and ALL
+    # chat feedback persistence would stop with a green health check and one
+    # warning line among hundreds. Its own transaction, its own handler.
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_response_feedback "
+                "ADD COLUMN IF NOT EXISTS target_artifact_ref TEXT NULL;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_artifact_ref "
+                "ON chat_response_feedback (target_artifact_ref);"
+            )
+    except Exception as e:
+        logger.warning("chat_response_feedback artifact_ref migration warning: %s", e)
+
     # drive_audits retention startup job removed 2026-08-13 (same patch that
     # fully untangled DriveAuditSQL's write path) -- the table and its boot
     # DDL are both gone, so a DELETE against it was dead weight even guarded
@@ -772,25 +801,29 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("goal_provenance_streak_ticks retention startup failed (continuing boot): %s", exc)
 
-    grammar_retention_days = int(getattr(settings, "grammar_events_retention_days", 0) or 0)
-    if grammar_retention_days > 0:
-        try:
-            from app.grammar_truth import apply_grammar_events_retention
-
-            retention_result = apply_grammar_events_retention(grammar_retention_days)
-            logger.info(
-                "🧹 grammar_events retention cutoff=%s rows_pruned=%s batches=%s "
-                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
-                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
-                retention_result.rows_pruned_last_run,
-                retention_result.batches_attempted,
-                retention_result.remaining_debt,
-                retention_result.elapsed_sec,
-                retention_result.failure_reason,
-            )
-        except Exception as exc:
-            logger.exception("grammar_events retention startup failed (continuing boot): %s", exc)
-
+    # NO STARTUP RETENTION PASS. Deliberate, 2026-08-20 -- this used to be four synchronous
+    # blocking blocks here (grammar_events, grammar_edges, grammar_atoms,
+    # substrate_organ_emissions), each with 100-batch/120s caps.
+    #
+    # Three problems, all measured live:
+    #   1. It ran on the event loop, before `svc.start()` below, so it delayed not just
+    #      readiness but the BUS SUBSCRIPTION, which is a far worse failure than retention
+    #      starting a minute late. The ~260s figure is carried forward from
+    #      docs/superpowers/pr-reports/2026-08-20-grammar-retention-periodic-pr.md ("observed
+    #      ~260s across four tables"), not re-measured here -- the old container is gone. What
+    #      IS measured on this branch: boot is now 4.6s (container start 17:34:15.209 ->
+    #      "Application startup complete" 17:34:19.844).
+    #   2. It could not converge anyway. Retention that runs only at process start deletes a
+    #      fixed amount per restart against continuous arrival; that is the entire reason
+    #      app/grammar_retention_loop.py exists.
+    #   3. It was drifting out of step with the periodic path. It hand-listed four tables
+    #      while GRAMMAR_RETENTION_TABLES had six, so grammar_traces and
+    #      substrate_proposal_frames were startup-exempt by omission and the divergence had to
+    #      be pinned by a test rather than being impossible.
+    #
+    # The periodic loop reaches the same steady state within one interval of boot and, with
+    # the cycle budget below, is strictly more capable than the startup pass ever was. One
+    # retention path, not two.
     task: asyncio.Task | None = None
     if settings.orion_bus_enabled:
         svc = build_hunter()
@@ -814,10 +847,40 @@ async def lifespan(app: FastAPI):
             "(SQL_WRITER_FALLBACK_WATCH_ENABLED=false); unrouted events will accumulate silently"
         )
 
+    # Periodic retention. Retention itself already existed and worked per-run; its only
+    # trigger was process start, so it could never converge against continuous arrival.
+    # See app/grammar_retention_loop.py for the measured numbers.
+    retention_task: asyncio.Task | None = None
+    if float(getattr(settings, "grammar_retention_interval_sec", 0.0) or 0.0) > 0:
+        from app.grammar_retention_loop import grammar_retention_loop
+
+        retention_task = asyncio.create_task(grammar_retention_loop(settings))
+    else:
+        logger.warning(
+            "periodic grammar retention DISABLED (GRAMMAR_RETENTION_INTERVAL_SEC=0); "
+            "retention runs only at startup, which cannot keep up with arrival"
+        )
+
+    # Object-permanence sweep -- see app/vision_object_permanence.py. Timer-
+    # driven because a departure is a non-event: nothing frame-triggered can
+    # ever detect one.
+    vision_permanence_task: asyncio.Task | None = None
+    if float(getattr(settings, "vision_permanence_sweep_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_object_permanence_loop import vision_object_permanence_loop
+
+        vision_permanence_task = asyncio.create_task(vision_object_permanence_loop(settings))
+    else:
+        logger.info(
+            "vision object-permanence sweep DISABLED (VISION_PERMANENCE_SWEEP_INTERVAL_SEC=0)"
+        )
+
     try:
         yield
     finally:
-        pending = [t for t in (task, watch_task) if t is not None]
+        pending = [
+            t for t in (task, watch_task, retention_task, vision_permanence_task)
+            if t is not None
+        ]
         for background in pending:
             background.cancel()
         if pending:

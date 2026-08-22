@@ -12,8 +12,10 @@ from PIL import Image
 
 import torch
 
+from orion.vision.caption_echo import strip_echoed_prompt_prefix
+
 from .artifacts import merge_result_inputs
-from .caption_sanitize import CAPTION_PROMPT, sanitize_caption
+from .caption_sanitize import CAPTION_PROMPT, sanitize_answer, sanitize_caption
 from .detections import cap_by_score, nms
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
@@ -26,17 +28,104 @@ settings = Settings()
 _safe_when = safe_when
 
 
+def _resolve_latest_frame_path() -> Path:
+    """The "on-demand capture" primitive P1's design doc calls for --
+    docs/superpowers/specs/2026-08-12-perception-frontier-design.md names
+    this explicitly as separate, larger work from the passive window/
+    council pipeline ("bypassing window/council... a direct vision-host
+    RPC"). Doesn't trigger a NEW capture (vision-edge already captures
+    continuously regardless of any downstream consumer, confirmed live at
+    ~5s cadence) -- resolves to whatever it captured most recently, which
+    for a slow-moving room is the practical equivalent of "look now" without
+    inventing a second capture path. Raises (not a fabricated/empty result)
+    if the frames directory is empty or unreadable -- an honest "nothing to
+    look at" is the caller's problem to handle, not this function's to hide.
+    """
+    frames_dir = Path(settings.VISION_FRAMES_DIR)
+    if not frames_dir.is_dir():
+        raise FileNotFoundError(f"frames directory not found: {frames_dir}")
+    candidates = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise FileNotFoundError(f"no frames found in: {frames_dir}")
+    return candidates[0]
+
+
+_SHA256_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
+
+
+def _load_image_from_percept_store(sha256: str) -> Image.Image:
+    """Fetch a content-addressed frame from orion-percept-store.
+
+    This is the leg that lets a second machine feed this pipeline at all --
+    before it, capture had to share a filesystem with this host.
+
+    The digest is regex-validated before it becomes part of a URL: it is the
+    only caller-supplied component of that URL, and keeping it to 64 hex chars
+    is what stops it being a path or an authority. Same reasoning as the LLM
+    gateway's own attachment resolver.
+
+    urllib rather than a new dependency (AGENTS.md section 10); this runs on a
+    worker thread already.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    if not _SHA256_RE.match(sha256):
+        raise ValueError(f"percept_sha256 must be 64 lowercase hex chars, got {sha256[:16]!r}")
+    base = str(getattr(settings, "VISION_PERCEPT_STORE_URL", "") or "").strip().rstrip("/")
+    if not base:
+        raise ValueError(
+            "percept_sha256 supplied but VISION_PERCEPT_STORE_URL is unset; "
+            "this host cannot resolve content-addressed frames"
+        )
+    url = f"{base}/{sha256}"
+    token = str(getattr(settings, "VISION_PERCEPT_STORE_TOKEN", "") or "")
+    req = urllib.request.Request(url, method="GET")
+    if token:
+        req.add_header("X-Orion-Percept-Token", token)
+    try:
+        with urllib.request.urlopen(
+            req, timeout=float(getattr(settings, "VISION_PERCEPT_TIMEOUT_SEC", 10.0))
+        ) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, OSError) as exc:
+        raise FileNotFoundError(f"percept {sha256[:12]} not retrievable from {base}: {exc}") from exc
+    if not data:
+        raise FileNotFoundError(f"percept {sha256[:12]} came back empty")
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
 def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
     """
     We do NOT ship frames over Redis. We take a pointer.
-    Required:
+    Required (one of):
       request.image_path (preferred)
-    Optional aliases:
-      request.frame_path
+      request.frame_path (alias)
+      request.use_latest_frame: true -- resolves to the most recently
+        captured frame instead of a caller-supplied path (see
+        _resolve_latest_frame_path). Opt-in, not a silent fallback when
+        image_path is merely absent -- every existing caller that relies on
+        the prior "image_path is required" error for a genuinely missing
+        pointer keeps that exact behavior unless it explicitly asks for the
+        latest-frame resolution instead.
     """
     path = request.get("image_path") or request.get("frame_path")
     if not path:
-        raise ValueError("request.image_path is required (do not send raw frames over bus)")
+        sha = str(request.get("percept_sha256") or "").strip()
+        if sha:
+            # A frame captured on a node that shares no filesystem with us.
+            # Fetched, never spooled: the bytes go straight into PIL and the
+            # percept store expires its own copy on its own schedule.
+            return _load_image_from_percept_store(sha)
+        if request.get("use_latest_frame"):
+            p = _resolve_latest_frame_path()
+            img = Image.open(p).convert("RGB")
+            return img
+        raise ValueError(
+            "request needs image_path or percept_sha256 "
+            "(do not send raw frames over bus)"
+        )
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"image_path not found: {path}")
@@ -52,6 +141,8 @@ class VisionRunner:
       - kind=embedding via SigLIP2 (fallback SigLIP)
       - kind=detect_open_vocab via GroundingDINO
       - kind=caption_frame via VLM
+      - kind=vlm (VQA -- a caller-supplied question, not a fixed caption
+        prompt, against the same VLM family; see _run_vlm_vqa)
     """
 
     DEFAULT_EMBED_MODEL = "google/siglip2-so400m-patch14-384"
@@ -96,7 +187,7 @@ class VisionRunner:
         for name, p in self.profiles.profiles.items():
             if not self._is_enabled(name) or not p.enabled or not p.warm_on_start:
                 continue
-            if p.kind not in ("embedding", "detect_open_vocab", "caption_frame"):
+            if p.kind not in ("embedding", "detect_open_vocab", "caption_frame", "vlm"):
                 continue
             try:
                 self._warm_profile_backend(p, device)
@@ -131,6 +222,32 @@ class VisionRunner:
                 model_id=model_id,
             )
         elif p.kind == "caption_frame":
+            model_id = settings.VISION_VLM_MODEL_ID
+            if p.model_id and not p.model_id.startswith("REPLACE_ME"):
+                model_id = p.model_id
+            self.models.load_vlm_captioner(
+                profile_name=p.name,
+                device=device,
+                dtype=dtype,
+                model_id=model_id,
+            )
+        elif p.kind == "vlm":
+            # Same loader as caption_frame (both are "a VLM, generic
+            # transformers Vision2Seq/BLIP prompting" -- see
+            # _run_vlm_vqa/_run_caption_frame) -- keyed by this profile's own
+            # `p.name` ("vlm_vqa"), same per-profile caching convention every
+            # other kind above uses, so it loads as its own resident model
+            # rather than silently sharing vlm_caption's. `vlm_vqa` ships
+            # with `warm_on_start: false`, so this branch is currently dead
+            # code -- reachable only if BOTH gates in `warm_profiles()`'s own
+            # loop agree: `p.warm_on_start` (this one) AND `p.kind` being in
+            # that loop's own separate kind-allowlist tuple (review finding,
+            # 2026-08-21: "vlm" was missing from that tuple too, so flipping
+            # warm_on_start alone would silently still not warm this profile
+            # -- fixed there in the same patch as this branch, not a second
+            # thing left for later). Real requests already lazy-load via
+            # `_run_vlm_vqa`'s own `load_vlm_captioner` call regardless of
+            # whether this warm path ever runs.
             model_id = settings.VISION_VLM_MODEL_ID
             if p.model_id and not p.model_id.startswith("REPLACE_ME"):
                 model_id = p.model_id
@@ -298,6 +415,9 @@ class VisionRunner:
         if p.kind == "caption_frame":
             return self._run_caption_frame(p, request, device, warnings)
 
+        if p.kind == "vlm":
+            return self._run_vlm_vqa(p, request, device, warnings)
+
         # Everything else remains contract-only for now (no fake inference).
         warnings.append(f"kind not implemented yet: {p.kind}")
         return {
@@ -371,6 +491,13 @@ class VisionRunner:
                 "ref": ref,
                 "path": str(npy_path),
                 "dim": int(vec.shape[0]),
+                # 2026-08-19 (P2 wire-contract patch, orion/schemas/vision.py
+                # VisionEmbedding.vector): inlined so a bus consumer can score
+                # this vector without a filesystem seam into this service's
+                # own model-cache volume. `vec` is already L2-normalized above
+                # when normalize=true (the profile default) -- consumers doing
+                # cosine similarity get a real unit vector, not a raw one.
+                "vector": [float(x) for x in vec.tolist()],
             }
         }
 
@@ -584,8 +711,10 @@ class VisionRunner:
 
         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
-        # Clean up prompt from output if needed (model dependent)
-        cleaned = generated_text.replace(text_prompt, "").strip()
+        # Case-insensitive prefix strip -- see strip_echoed_prompt_prefix's
+        # own docstring for why the plain str.replace() this used to be
+        # silently failed to strip a lowercased echo of a mixed-case prompt.
+        cleaned = strip_echoed_prompt_prefix(generated_text, prompt=text_prompt)
         caption_text, ok, reason = sanitize_caption(cleaned)
         if not ok:
             warnings.append(f"caption_rejected:{reason}")
@@ -601,4 +730,97 @@ class VisionRunner:
                 "text": caption_text,
                 "confidence": 1.0 # Placeholder
             }
+        }
+
+    # ------------------------
+    # Real VQA (VLM, caller-supplied question)
+    # ------------------------
+    def _run_vlm_vqa(
+        self,
+        p: ProfileDef,
+        request: Dict[str, Any],
+        device: str,
+        warnings: List[str],
+    ) -> Dict[str, Any]:
+        """Movement/`look()`'s "active vision" primitive from
+        docs/superpowers/specs/2026-08-12-perception-frontier-design.md --
+        ``request.question`` is the caller's real question ("is that door
+        open?"), not the fixed caption prompt. Same VLM family and
+        prompt->generate->decode mechanics as ``_run_caption_frame`` (BLIP's
+        "conditional generation" is exactly text-conditioned image
+        description, which is what VQA is), deliberately not a separate
+        code path -- the only real difference is which text goes in.
+
+        Loads its own model under this profile's own name (``vlm_vqa``, kept
+        separate from ``vlm_caption``'s), matching every other kind's
+        per-profile caching convention above rather than special-casing a
+        cross-profile share -- confirmed live before shipping that there is
+        real VRAM headroom for a second small VLM instance (~4.2GB free of
+        7.68GB on the P4 serving this host at the time of writing), not
+        assumed.
+        """
+        question = str(request.get("question") or "").strip()
+        if not question:
+            raise ValueError("request.question is required for VQA (task_type=vqa)")
+
+        img = _load_image_from_request(request)
+
+        model_id = settings.VISION_VLM_MODEL_ID
+        if p.model_id and not p.model_id.startswith("REPLACE_ME"):
+            model_id = p.model_id
+
+        dtype = self._resolve_dtype(p)
+
+        model, processor = self.models.load_vlm_captioner(
+            profile_name=p.name,
+            device=device,
+            dtype=dtype,
+            model_id=model_id,
+        )
+
+        inputs = processor(images=img, text=question, return_tensors="pt")
+
+        if device.startswith("cuda"):
+            model_dtype = next(model.parameters()).dtype
+            inputs = {
+                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
+                for k, v in inputs.items()
+            }
+
+        # This profile's own declared params, not the caption profile's
+        # global settings.VISION_VLM_MAX_TOKENS/TEMPERATURE -- vlm_vqa's
+        # config already declares its own max_tokens/temperature (see
+        # config/vision_profiles.yaml) and answers have different length
+        # needs than captions; falls back to the caption settings only if a
+        # profile is somehow missing its own params.
+        max_tokens = int(p.params.get("max_tokens", settings.VISION_VLM_MAX_TOKENS))
+        temperature = float(p.params.get("temperature", settings.VISION_VLM_TEMPERATURE))
+
+        with torch.inference_mode():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+                do_sample=(temperature > 0)
+            )
+
+        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        cleaned = strip_echoed_prompt_prefix(generated_text, prompt=question)
+        answer_text, ok, reason = sanitize_answer(cleaned, question)
+        if not ok:
+            warnings.append(f"answer_rejected:{reason}")
+            answer_text = ""
+
+        return {
+            "configured": True,
+            "implemented": True,
+            "kind": "vlm",
+            "model_id": model_id,
+            "device": device,
+            "vqa": {
+                "question": question,
+                "answer": answer_text,
+                "confidence": 1.0,  # Placeholder -- same convention _run_caption_frame uses.
+            },
         }

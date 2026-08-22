@@ -172,6 +172,18 @@ class Settings(BaseSettings):
             "deliberately NOT used. Empty means refuse to fetch attachments at all."
         ),
     )
+    llm_gateway_percept_base_url: str = Field(
+        default="",
+        alias="LLM_GATEWAY_PERCEPT_BASE_URL",
+        description=(
+            "Trusted base for attachments with kind='percept' -- camera frames, "
+            "served by orion-percept-store. Separate from the chat attachment base "
+            "on purpose: percepts are frames of a private home with their own short "
+            "retention, and the chat store is served by Hub, which also holds the "
+            "docker socket. Empty means refuse to fetch percepts; it must NOT fall "
+            "back to the chat base."
+        ),
+    )
     llm_gateway_attachment_allowed_hosts: str = Field(
         default="",
         alias="LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS",

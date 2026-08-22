@@ -100,6 +100,12 @@ def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
     """Insert one spontaneous thought. Returns True on write, False on any miss.
 
     Never raises — a persistence failure must not break the tick.
+
+    `expectation`/`expectation_checkable_by` are written as real columns (not
+    just inside `thought_json`) so `load_pending_expectations` below can scan
+    them directly. `expectation_verdict`/`expectation_scored_at` are always
+    NULL at insert time -- they are only ever written later, in place, by
+    `persist_expectation_verdict`.
     """
     try:
         from sqlalchemy import text
@@ -111,10 +117,11 @@ def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
                     """
                     INSERT INTO substrate_reverie_thought
                         (thought_id, correlation_id, created_at, salience,
-                         interpretation, thought_json)
+                         interpretation, thought_json, expectation, expectation_checkable_by)
                     VALUES
                         (:thought_id, :correlation_id, :created_at, :salience,
-                         :interpretation, CAST(:thought_json AS jsonb))
+                         :interpretation, CAST(:thought_json AS jsonb),
+                         :expectation, :expectation_checkable_by)
                     ON CONFLICT (thought_id) DO NOTHING
                     """
                 ),
@@ -125,6 +132,8 @@ def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
                     "salience": float(thought.salience),
                     "interpretation": thought.interpretation,
                     "thought_json": json.dumps(thought.model_dump(mode="json")),
+                    "expectation": thought.expectation,
+                    "expectation_checkable_by": thought.expectation_checkable_by,
                 },
             )
         return True
@@ -133,8 +142,128 @@ def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
         return False
 
 
+# --- Movement III: expectation scoring (default-off; ORION_REVERIE_EXPECTATION_
+# SCORING_ENABLED) -----------------------------------------------------------
+
+# Matches vision_reader.py's bound: a slow database must degrade to "no pending
+# expectations" rather than stall the reverie tick's shared event loop. A
+# dedicated engine, not the shared `_get_engine()` write pool above --
+# vision_reader.py's own docstring explains why this module doesn't reuse a
+# single lazily-built engine across readers with different timeout
+# requirements: statement_timeout only takes effect on first-use engine
+# construction for a given DSN, so sharing one would silently let whichever
+# caller constructs it first decide the GUC for both.
+_EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS = 1500
+_expectation_read_engine = None
+_expectation_read_engine_url: str | None = None
+
+
+def _get_expectation_read_engine():
+    global _expectation_read_engine, _expectation_read_engine_url
+    url = _database_url()
+    if _expectation_read_engine is None or _expectation_read_engine_url != url:
+        from sqlalchemy import create_engine
+
+        _expectation_read_engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            connect_args={
+                "options": f"-c statement_timeout={_EXPECTATION_QUERY_STATEMENT_TIMEOUT_MS}"
+            },
+        )
+        _expectation_read_engine_url = url
+    return _expectation_read_engine
+
+
+def load_pending_expectations(limit: int = 1) -> list[dict[str, Any]]:
+    """Most-overdue-first thoughts with an open, closed-window expectation.
+
+    Bounded (default 1 -- score at most one per tick, same boundedness
+    discipline as `MAX_FINALIZE_LOOP_RETRIES` in `orion/harness/finalize.py`).
+    Fail-open: [] on any error or non-positive limit, so a lookup failure never
+    breaks a reverie tick. All filtering (non-null expectation, unresolved
+    verdict, window closed) lives in the SQL WHERE clause before LIMIT/ORDER BY
+    -- nothing is re-filtered in Python after the row set comes back.
+
+    Returns [{"thought_id": str, "expectation": str, "expectation_checkable_by":
+    datetime}], ordered `expectation_checkable_by ASC` -- the row whose window
+    closed longest ago (most overdue) sorts first.
+    """
+    limit = max(0, int(limit))
+    if limit == 0:
+        return []
+    try:
+        from sqlalchemy import text
+
+        engine = _get_expectation_read_engine()
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT thought_id, expectation, expectation_checkable_by "
+                        "FROM substrate_reverie_thought "
+                        "WHERE expectation IS NOT NULL "
+                        "AND expectation_verdict IS NULL "
+                        "AND expectation_checkable_by IS NOT NULL "
+                        "AND expectation_checkable_by <= now() "
+                        "ORDER BY expectation_checkable_by ASC "
+                        "LIMIT :limit"
+                    ),
+                    {"limit": limit},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.debug("pending expectation load failed: %s", exc)
+        return []
+
+
+def persist_expectation_verdict(thought_id: str, verdict: str, scored_at: datetime) -> None:
+    """Update-in-place: stamp one reverie thought's scoring verdict.
+
+    Fail-open — logs and swallows any failure, never raises into the reverie
+    tick. No-op (but never raises) on an empty thought_id.
+    """
+    if not thought_id:
+        return
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE substrate_reverie_thought
+                    SET expectation_verdict = :verdict,
+                        expectation_scored_at = :scored_at
+                    WHERE thought_id = :thought_id
+                    """
+                ),
+                {"thought_id": thought_id, "verdict": verdict, "scored_at": scored_at},
+            )
+    except Exception as exc:
+        logger.warning(
+            "expectation verdict persist failed id=%s verdict=%s err=%s",
+            thought_id,
+            verdict,
+            exc,
+        )
+
+
 def persist_salience_trace(trace) -> bool:
-    """Persist one salience trace row. Never raises; idempotent on trace_id."""
+    """Persist one salience trace row. Never raises; idempotent on trace_id.
+
+    Requires services/orion-sql-db/manual_migration_attention_salience_trace.sql
+    applied (adds why_it_matters/target_type, 2026-08-21) -- if this service is
+    redeployed before the migration runs, EVERY insert here raises "column ...
+    does not exist" and the except-block below swallows it as a WARNING,
+    silently dropping ALL reverie-scope attention_salience_trace writes (not
+    just the two new columns) until someone reads the logs and runs the
+    migration. Apply the migration BEFORE deploying this file's changes.
+    """
     try:
         from sqlalchemy import text
 
@@ -144,11 +273,11 @@ def persist_salience_trace(trace) -> bool:
                 text(
                     """
                     INSERT INTO attention_salience_trace
-                        (trace_id, loop_id, theme_key, description, correlation_id, salience,
-                         weights_version, scope, features, created_at)
+                        (trace_id, loop_id, theme_key, description, why_it_matters, target_type,
+                         correlation_id, salience, weights_version, scope, features, created_at)
                     VALUES
-                        (:trace_id, :loop_id, :theme_key, :description, :correlation_id, :salience,
-                         :weights_version, :scope, CAST(:features AS jsonb), :created_at)
+                        (:trace_id, :loop_id, :theme_key, :description, :why_it_matters, :target_type,
+                         :correlation_id, :salience, :weights_version, :scope, CAST(:features AS jsonb), :created_at)
                     ON CONFLICT (trace_id) DO NOTHING
                     """
                 ),
@@ -157,6 +286,8 @@ def persist_salience_trace(trace) -> bool:
                     "loop_id": trace.loop_id,
                     "theme_key": trace.theme_key,
                     "description": trace.description,
+                    "why_it_matters": getattr(trace, "why_it_matters", "") or "",
+                    "target_type": getattr(trace, "target_type", "other") or "other",
                     "correlation_id": trace.correlation_id,
                     "salience": float(trace.salience),
                     "weights_version": trace.weights_version,

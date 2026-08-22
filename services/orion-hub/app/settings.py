@@ -3,8 +3,30 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Live-queried 2026-08-19 against this deployment's pinned hdbscan==0.8.41 /
+# scikit-learn>=1.6,<1.7 (services/orion-topic-foundry/requirements.txt):
+# sklearn.neighbors.KDTree.valid_metrics | BallTree.valid_metrics, the full
+# set HDBSCAN's real clusterer (app/services/training.py::_build_clusterer,
+# algorithm="best") could possibly dispatch to depending on the chosen
+# metric/dimensionality. "cosine" is deliberately absent -- confirmed live
+# it raises ValueError("Unrecognized metric 'cosine'") outright, the exact
+# bug SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC's own default fixes. This does
+# not claim every listed metric produces *good* clusters for text
+# embeddings, only that it is a real distance metric hdbscan/sklearn
+# recognize -- "euclidean" is this deployment's only
+# live-verified-to-cluster-well value.
+_VALID_HDBSCAN_METRICS = frozenset(
+    {
+        "braycurtis", "canberra", "chebyshev", "cityblock", "dice",
+        "euclidean", "hamming", "haversine", "infinity", "jaccard",
+        "l1", "l2", "mahalanobis", "manhattan", "minkowski", "p",
+        "pyfunc", "rogerstanimoto", "russellrao", "seuclidean",
+        "sokalmichener", "sokalsneath",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -121,6 +143,28 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_REPL_ENABLED",
     )
     # --- Hub Agent Claude (FCC harness in chat) ---
+    # ── Room companion (Claude as a third social-room participant) ────
+    # Hub publishes an invite and relays the reply; it never spawns `claude`
+    # and never holds the Claude credential -- that lives in
+    # orion-room-companion. See services/orion-room-companion/README.md for
+    # why the credential is deliberately NOT in this container.
+    HUB_ROOM_CLAUDE_ENABLED: bool = Field(default=False)
+    HUB_ROOM_CLAUDE_ROOM_ID: str = Field(default="hub-direct")
+    HUB_ROOM_CLAUDE_PARTICIPANT_NAME: str = Field(default="Claude")
+    HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS: int = Field(default=12)
+    # Auto-invite Claude after each Orion turn instead of only on a click.
+    # This is what makes the room feel like a room rather than a summoning
+    # ritual -- but it also REMOVES the property that made v1 safe without a
+    # spend cap (spend was bounded by human clicks). Every Orion turn now costs
+    # a Claude call even when Claude passes, so the advisory cap / watchdog
+    # stops being optional once this is on.
+    HUB_ROOM_CLAUDE_AUTO_RESPOND: bool = Field(default=False)
+    # Minimum seconds between auto-invites, so a burst of rapid turns does not
+    # become a burst of billed Claude calls.
+    HUB_ROOM_CLAUDE_AUTO_MIN_GAP_SEC: float = Field(default=8.0)
+    CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
+    CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
+
     HUB_AGENT_CLAUDE_ENABLED: bool = Field(
         default=False,
         alias="HUB_AGENT_CLAUDE_ENABLED",
@@ -246,8 +290,13 @@ class Settings(BaseSettings):
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")
     BIOMETRICS_NO_SIGNAL_AFTER_SEC: float = Field(default=600.0, alias="BIOMETRICS_NO_SIGNAL_AFTER_SEC")
+    # circe inherited atlas's weight 2026-08-21: atlas is decommissioned
+    # (config/biometrics/node_catalog.yaml), circe is now the fleet's
+    # dominant GPU node. Exact-match lookup (biometrics_cache.py's
+    # role_weights.get(node, 1.0)), not substring -- a node missing from
+    # this dict silently gets the 1.0 fallback, not 0.0.
     BIOMETRICS_ROLE_WEIGHTS_JSON: str = Field(
-        default='{"atlas":0.6,"athena":0.4}',
+        default='{"circe":0.6,"athena":0.4}',
         alias="BIOMETRICS_ROLE_WEIGHTS_JSON",
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
@@ -309,7 +358,7 @@ class Settings(BaseSettings):
     NOTIFY_BASE_URL: str = Field(default="http://orion-notify:7140", alias="NOTIFY_BASE_URL")
     NOTIFY_API_TOKEN: str = Field(default="", alias="NOTIFY_API_TOKEN")
 
-    # --- Endogenous outreach (Orion speaks first; stub random trigger) ---
+    # --- Endogenous outreach (Orion speaks first; real deviation-tension trigger) ---
     # See scripts/endogenous_outreach.py. The only path by which Orion emits
     # chat text nobody asked for. Enabled in .env_example / the live .env; this
     # Field default stays False so an absent key fails closed rather than
@@ -318,13 +367,61 @@ class Settings(BaseSettings):
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )
     # How often the loop wakes to consider reaching out.
+    #
+    # 300s (the original default) was root-caused live, 2026-08-19, as the
+    # reason outreach had NEVER fired since it shipped (2026-08-16): a
+    # qualifying persistence run (MIN_RUN_LENGTH=8 consecutive ticks) lasts
+    # only ~18-27s in wall-clock time at the field-digester's real ~2.1s tick
+    # cadence, and the "catchable window" -- from the tick where the run
+    # first CROSSES 8 to the tick where it ends -- is often just 0-8
+    # seconds. Simulating the real poll loop against 6h of real
+    # substrate_field_state history (scripts/tension_outreach_trigger.py's
+    # own query, replayed offline): 300s caught 0 of 9 real qualifying
+    # episodes (0%); 30s caught ~9%; 15s ~18%; 10s ~33%; the 5.0 floor caught
+    # ~56% -- that floor is enforced by the CONSUMER, not this Field:
+    # `EndogenousOutreach.__init__` (scripts/endogenous_outreach.py) does
+    # `self.tick_interval_sec = max(5.0, float(tick_interval_sec))`; this
+    # raw setting itself carries no floor and would happily accept e.g. 0.5.
+    # 10.0 is a deliberate middle ground, not the theoretical best (5.0
+    # would catch more) -- the query is cheap (`EXPLAIN`'d live against the
+    # real query text, 2026-08-19: a Bitmap Heap Scan off
+    # idx_substrate_field_state_generated, cost ~323 -- NOT an index-only
+    # scan, since `field_json` itself isn't indexed and still needs a heap
+    # fetch per matching row; corrected after an earlier version of this
+    # comment wrongly claimed "index-only", conflating this query with an
+    # unrelated bare COUNT(*) EXPLAIN that legitimately was) -- but this
+    # shares the same Postgres instance as every other service, so this
+    # does not poll at the floor "because it can."
+    # DISCLOSED, not silently accepted: even at the floor, catch rate tops
+    # out around ~56% on this sample -- polling faster narrows but does not
+    # close the gap, because many real episodes' catchable window is under
+    # 5 seconds. Fully closing it needs a wall-clock-persistence redesign
+    # (track "was there a qualifying run since last checked", not "is one
+    # happening at this exact instant") -- real, separate follow-up work,
+    # not done here. See docs/superpowers/specs/2026-08-16-tension-driven-
+    # outreach-design.md's "Poll-cadence root cause" section for the full
+    # account and replay numbers.
     HUB_ENDOGENOUS_OUTREACH_TICK_SEC: float = Field(
-        default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
+        default=10.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
     )
-    # STUB trigger: chance per tick that Orion considers speaking. Replaced by a
-    # real endogenous signal when autonomy provides one.
-    HUB_ENDOGENOUS_OUTREACH_PROBABILITY: float = Field(
-        default=0.15, alias="HUB_ENDOGENOUS_OUTREACH_PROBABILITY"
+    # 2026-08-16: HUB_ENDOGENOUS_OUTREACH_PROBABILITY removed -- the coin-flip
+    # stub it configured is gone (scripts/endogenous_outreach.py::
+    # _should_roll() now calls scripts/tension_outreach_trigger.py's real
+    # trigger, which has its own derived-from-data constants, not an
+    # operator-tunable probability). Kill means kill, per CLAUDE.md 0A: no
+    # fallback to the removed mechanism.
+    #
+    # This one constant IS operator-tunable, unlike the trigger's other
+    # internals: MIN_RUN_LENGTH=8 is derived from a one-time 2-hour replay of
+    # live history (see scripts/tension_outreach_trigger.py's module
+    # docstring) against one FieldTensionCompetition tuning snapshot. If that
+    # tuning drifts later, the natural run-length distribution the "~1st
+    # percentile" bar rests on drifts with it -- an operator needs to be able
+    # to retune the bar from real post-deploy firing data without a code
+    # change/deploy. Default matches the derived value; changing this does
+    # not change what MIN_RUN_LENGTH means, only where the bar sits.
+    HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH: int = Field(
+        default=8, alias="HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH"
     )
     HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC: float = Field(
         default=2700.0, alias="HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC"
@@ -349,12 +446,34 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_TZ: str = Field(
         default="UTC", alias="HUB_ENDOGENOUS_OUTREACH_TZ"
     )
-    # LLM gateway compute lane for generation: "quick" or "metacog".
-    HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE: str = Field(
-        default="quick", alias="HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE"
-    )
+    # 2026-08-19: HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE removed -- killed, not
+    # deprecated. Generation now goes through orion.hub.turn_orchestrator.
+    # execute_unified_turn (see endogenous_outreach.py's own docstring), the
+    # SAME harness-governed pipeline a real client_mode=="orion" turn uses.
+    # Route selection is the harness governor's decision, identically for
+    # outreach and real chat -- Hub has no separate route to configure here
+    # any more.
+    #
+    # 60.0 (the old default, sized for a bare quick-lane LLM call) is too
+    # short for this pipeline -- confirmed live, 2026-08-19: the FIRST real
+    # test after this switch timed out at 60s with the ThoughtClient.react()
+    # stance-evaluation step ALONE still in flight at ~33s elapsed, before
+    # the harness governor's own fcc-motor/finalize run had even started.
+    # Real turns have no hard Hub-side ceiling at all (the harness governor's
+    # own RPC wait is a soft HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC=960s,
+    # liveness-extendable to a hard HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC=
+    # 3600s) -- Juniper's UI just shows "thinking" for as long as it takes.
+    # 300.0 is a reasoned, NOT yet a measured-from-a-real-distribution,
+    # middle ground: generous enough to plausibly cover Thought react + a
+    # normal-speed harness run for a short, tool-free outreach message,
+    # while still bounding how long one attempt can hold this module's own
+    # `_send_lock` (a stuck attempt delays, not blocks, later ticks -- gates
+    # just report "already_sending"). Re-derive from real observed
+    # elapsed_sec once outreach has actually fired successfully a few times
+    # -- same "don't trust a guess longer than necessary" discipline
+    # MIN_RUN_LENGTH's own derivation already used.
     HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC: float = Field(
-        default=60.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
+        default=300.0, alias="HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC"
     )
     # Session used for chat-history persistence when no live socket has
     # reported one (session_id lives in browser localStorage).
@@ -468,6 +587,17 @@ class Settings(BaseSettings):
     FALKORDB_SUBSTRATE_GRAPH: str = Field(
         default="orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH"
     )
+    # NOTE: no Settings field for FALKORDB_AITOWN_SUBSTRATE_GRAPH (AI Town's
+    # own concept graph name) on purpose -- unlike FALKORDB_SUBSTRATE_GRAPH
+    # above, nothing in this codebase reads that value off the Settings
+    # object today (no operator-tab-style consumer exists for the AI Town
+    # graph yet, the way attention_organ_routes.py reads this field). The
+    # real, load-bearing resolution is the direct os.getenv() read inside
+    # orion/substrate/falkor_store.py::build_aitown_falkor_substrate_store_from_env().
+    # A settings-level mirror with no reader is dead config -- review
+    # finding 2026-08-20, removed rather than left in place. Add it back
+    # here (with a real consumer in the same patch) if/when one exists,
+    # per CLAUDE.md's "no keyword cathedral" gate.
 
     # --- Attention organ operator tab (read-only) ---
     # orion-heartbeat's debug HTTP surface. Hub runs on the host network in
@@ -698,6 +828,22 @@ class Settings(BaseSettings):
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED: bool = Field(
         default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED"
     )
+    # Own kill switch for AI Town's own concept-graph step-group, separate
+    # from the flag above -- review finding 2026-08-20: without this, an
+    # operator who wants to pause the experimental, interpretability-only
+    # AI Town pipeline (bad clustering, unwanted LLM enrichment spend,
+    # hammering topic-foundry) could not do so without also disabling
+    # Orion's own production concept-graph pipeline. Rides on the same tick
+    # interval/timing as the flag above (still ships inside the same
+    # SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED loop, just skips the AI Town
+    # step-group when this is false) -- independent CADENCE was raised as a
+    # real open question by the design spec's own "Missing questions" and
+    # deliberately deferred (no real AI-Town cluster-quality data yet to
+    # tune a second interval against); independent ENABLE is a simpler,
+    # already-justified need (a kill switch) and is not deferred.
+    SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED: bool = Field(
+        default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED"
+    )
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
         default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"
     )
@@ -708,6 +854,65 @@ class Settings(BaseSettings):
         default="http://orion-athena-vector-host:8320/embedding",
         alias="SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL",
     )
+    # HDBSCAN model_spec fields for the scheduler's own model (get-or-create,
+    # see concept_atlas_routes.py::_ensure_topic_foundry_dataset_and_model).
+    # min_cluster_size=15 (this module's hardcoded literal until 2026-08-19)
+    # is flagged by topic-foundry's own 2026-07-21 incident note
+    # (app/models.py::ModelSpec) as producing 1-2 degenerate clusters on a
+    # 676-document corpus, and produced 0 clusters on the real, much smaller
+    # ~60-160 document AI-Town-filtered corpus (live-verified 2026-08-18/19).
+    # min_cluster_size=8 is that incident's own confirmed-live fix.
+    #
+    # metric: NOT "cosine" despite ModelSpec's own field default and this
+    # deployment's TOPIC_FOUNDRY_HDBSCAN_METRIC=euclidean env value already
+    # disagreeing with each other -- confirmed live 2026-08-19 that the
+    # installed `hdbscan` library's real clusterer (used by the actual
+    # /runs/train path, app/services/training.py::_build_clusterer) does not
+    # support "cosine" at all: `HDBSCAN(metric="cosine").fit(...)` raises
+    # `ValueError("Unrecognized metric 'cosine'")` outright, so a training
+    # run with this file's initial fix (min_cluster_size=8, metric="cosine",
+    # model "orion-hub-autonomous-v3") failed immediately with that exact
+    # error instead of clustering anything. "cosine" is also topic-foundry's
+    # own UMAP-stage metric (topic_foundry_umap_metric), a different,
+    # unrelated setting -- easy to conflate but not interchangeable.
+    # "euclidean" is what topic-foundry's TOPIC_FOUNDRY_HDBSCAN_METRIC has
+    # actually defaulted to the whole time and is what a live retrain
+    # confirmed actually clusters (cluster_count=3 on 62 real documents).
+    #
+    # Exposed as env (not just fixed inline) because topic-foundry's
+    # model-create API is create-only -- retuning requires a fresh model
+    # name either way, which concept_atlas_routes.py now derives
+    # automatically from a fingerprint of these settings (see
+    # _TOPIC_FOUNDRY_MODEL_NAME there) instead of depending on a human
+    # remembering to hand-bump a version suffix -- exactly the mistake
+    # code review already caught once for the dataset's where_sql field
+    # (see the drift-warning branch in that file), and a mistake with no
+    # equivalent warning possible on the model side (topic-foundry's
+    # GET /models returns ModelSummary, not model_spec, so there is
+    # nothing to compare against after creation).
+    SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE: int = Field(
+        default=8, alias="SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE"
+    )
+    SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC: str = Field(
+        default="euclidean", alias="SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC"
+    )
+
+    # Fail fast at Hub startup, not deep inside a background training task
+    # that only surfaces the mistake after topic-foundry has already
+    # accepted the model creation (POST /models has no metric validation of
+    # its own -- ModelSpec.metric in app/models.py is an unconstrained str).
+    @field_validator("SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC")
+    @classmethod
+    def _validate_topic_foundry_hdbscan_metric(cls, value: str) -> str:
+        if value not in _VALID_HDBSCAN_METRICS:
+            raise ValueError(
+                f"SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC={value!r} is not a metric "
+                f"sklearn's KDTree/BallTree recognize (checked against hdbscan==0.8.41's "
+                f"real dependency) -- it would create a topic-foundry model successfully "
+                f"and only fail later, deep in a background training task. Valid: "
+                f"{sorted(_VALID_HDBSCAN_METRICS)}"
+            )
+        return value
     # Own gate, separate from SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED above --
     # ships disabled by default, matching this repo's established convention
     # for a new dispatch path with a real side effect (LLM enrichment calls

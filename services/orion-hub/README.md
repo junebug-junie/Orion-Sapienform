@@ -225,19 +225,87 @@ nobody asked for. **Enabled** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=true` in
 `False`, so a deploy that loses the key fails closed rather than silently
 reaching out.
 
-**The trigger is a deliberate stub.** Orion has no endogenous "I want to speak
-now" signal yet, so a randomized timer stands in: every
-`HUB_ENDOGENOUS_OUTREACH_TICK_SEC` the loop rolls
-`HUB_ENDOGENOUS_OUTREACH_PROBABILITY`. When a real signal exists, replace
-`EndogenousOutreach._should_roll()` — nothing else in the module assumes a
-timer. Only the trigger is stubbed: the message itself is generated from live
-substrate signals and real chat history, and lands on the same rails a normal
-turn uses.
+**The trigger is real** (2026-08-16, replacing a randomized-timer stub).
+Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` (default **10s**, see caveat below)
+the loop asks `scripts/tension_outreach_trigger.py::current_run()`: has the
+same node been winning `orion.attention.tension`'s live Borda competition for
+a sustained, unbroken run of real ticks right now — not a single blip. See
+that module's own docstring for the full account, including why the
+persistence bar (`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default 8) is
+derived from a real replay of live history rather than guessed — it stays
+operator-tunable from real post-deploy firing-rate data, unlike the trigger's
+other internals. The message itself is generated from live substrate signals
+and real chat history, and lands on the same rails a normal turn uses — that
+part never changed.
+
+**Poll cadence root-caused live, 2026-08-19** — Orion had never once reached
+out since this shipped. Two stacked causes: (1) the trigger's own query was
+broken 2026-08-16→2026-08-18 (the `make_interval` bug PR #1715 fixed — see
+that module's docstring); (2) even after that fix, the original 300s poll
+interval almost never observed a qualifying run — a real run lasts only
+~18-27s wall-clock, and replaying 6h of real history against the actual poll
+loop caught 0 of 9 real qualifying episodes at 300s. `HUB_ENDOGENOUS_
+OUTREACH_TICK_SEC` was lowered to 10s (data-derived episode catch rate ~33%
+on that sample) as a deliberate middle ground, not the class's own 5.0s
+floor (~56% catch) — the query is cheap, but this shares one Postgres
+instance with every other service. **Disclosed, not silently accepted: this
+remains a partial fix** — even the floor tops out around ~56% catch on the
+measured sample, because several real episodes' catchable window is under 5
+seconds. Full closure needs a wall-clock-persistence redesign ("was there a
+qualifying run since last checked", not "is one happening right now"), not
+done here — see `docs/superpowers/specs/2026-08-16-tension-driven-outreach-
+design.md`'s "Poll-cadence root cause" section for the full replay numbers.
+
+**Level-aware, not just change-aware** (2026-08-19). The trigger's reason
+object now also carries `sustained_load_pressure`
+(`orion.field.significance`, PR #1718) — the LATEST tick's read of whether
+*something, somewhere* in the field is genuinely `loaded_steady` right now
+(high level, low dispersion, no adaptive baseline), globally, not scoped to
+the same node the deviation run names. When it's nonzero,
+`build_outreach_prompt` states it as a second, separate real fact alongside
+the deviation-run fact — it does not put a feeling ("worried"/"concerned")
+in Orion's mouth; that judgment is left to generation, grounded in both real
+numbers. `GET .../status` reports both `peak_deviation_pressure` and
+`sustained_load_pressure` on `last_tension_reason` so an operator can see
+which fact(s) actually drove a given outreach.
+
+**Through the real unified turn, not a lookalike (2026-08-19).** Generation
+used to call `CortexGatewayClient.chat()` directly — a bare bus RPC to
+`orion-cortex-gateway` that never reached `orion-harness-governor` at all:
+no fcc motor, no substrate appraisal/reflect/voice finalize beats, no
+post-turn learning closure, no audit artifact, and (root-caused the same
+day) a verb-less default (`chat_general`) whose hidden internal
+`synthesize_chat_stance_brief` pre-step sent a ~15.7k-char system prompt
+while requesting 8000 completion tokens on the `quick` route with no larger
+fallback lane — overflowing context on every single attempt. Juniper's call
+once this was traced: "if orion is going to reach out to me, it needs to be
+real and not bullshit." Generation now calls
+`orion.hub.turn_orchestrator.execute_unified_turn` — the SAME function
+`websocket_handler.py` calls for a real `client_mode == "orion"` turn, not
+a cheaper substitute. This is a bigger change than swapping which client
+generates text: `execute_unified_turn` records the outreach prompt into
+Orion's real observation stream (`emit_observation()`) and runs it through a
+real `ThoughtClient.react()` stance evaluation that can `defer`/`refuse` the
+turn — accepted deliberately, since there is no shallower entry point
+(`HarnessRunRequestV1` requires a `thought_event`), and Thought's own
+defer/refuse is now the honest "something else is happening" signal for an
+unsolicited turn, not just an infrastructure-availability check. Permissions
+are no longer this module's decision either: `execute_unified_turn`
+hard-codes every unified turn's `ContextExecPermissionV1` to read-only
+(every write/mutate/network/shell flag stays `False`), stricter than the
+old direct-call path's own options ever were. `payload={"no_write": True}`
+suppresses only the governor's OWN chat-history persistence — this module's
+three delivery rails below (unchanged) remain the sole persistence path, so
+an outreach turn keeps its `endogenous_outreach` tag instead of landing as
+an untagged duplicate. `HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE` is gone (killed,
+not deprecated) — route selection is the harness governor's call now,
+identically for outreach and real chat.
 
 Pipeline:
 
 ```text
-tick -> gates -> grounding read -> quick/metacog cortex call -> 3 delivery rails
+tick -> gates -> grounding read -> execute_unified_turn (real observation +
+  Thought stance + harness governor + fcc motor + finalize chain) -> 3 delivery rails
 ```
 
 Grounding (a tick with none of this is skipped, never filled with placeholder
@@ -290,7 +358,8 @@ Three details that are easy to get wrong and are enforced by tests:
   `note_busy()`/`note_idle()` are called for every inbound message regardless of
   mode.
 - **The gate is re-checked immediately before delivery.** Generation is a bus
-  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 60s), and a turn
+  RPC bounded by `HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC` (default 300s — raised
+  from 60s 2026-08-19, see "Through the real unified turn" above), and a turn
   can start inside that window. A tick that becomes blocked mid-generation is
   dropped with reason `<gate>_after_generation`.
 - **Quiet hours and the daily-cap reset use `HUB_ENDOGENOUS_OUTREACH_TZ`,** not
@@ -301,12 +370,14 @@ Three details that are easy to get wrong and are enforced by tests:
   under the old `UTC` value the same window silenced 17:00–02:00 Mountain — the
   whole evening — while leaving outreach open across the working day.
 
-Generation pins `tool_execution_policy` and `action_execution_policy` to `none`
-and sets `no_write_active`, which are the keys `orion-cortex-exec`'s supervisor
-actually reads — a bare `options["no_write"]` is inert on this path, since only
-`cortex_request_builder` translates it and it reads it as a top-level payload
-key. Recall is disabled via the typed `recall` field (`RecallDirective`), not an
-option; leaving it unset would fire full default recall on every outreach.
+Generation is read-only by construction (2026-08-19), not by an option this
+module sets: `execute_unified_turn` hard-codes every unified turn's
+`ContextExecPermissionV1` with every write/mutate/network/shell flag at its
+safe `False` default — true for real turns too, not a special carve-out for
+outreach. `payload={"no_write": True}` still gets set explicitly, but only to
+suppress the governor's own chat-history persistence step so this module's
+own tagged rails stay the sole persistence path (see "Through the real
+unified turn" above).
 
 Every failure is swallowed and logged; no chat turn, websocket, or bus consumer
 is affected.
@@ -585,6 +656,37 @@ records mention-edge ingestion writes are real and generically visible to any co
 iterates the full substrate node set (e.g. `orion/substrate/endogenous_curiosity.py`), but
 they will not appear in the Concept Atlas Hub UI's network/god-node views until those routes
 are widened to include entity nodes — a separate follow-up, not done here.
+
+**AI Town's own concept graph (added 2026-08-20):** a second, fully parallel
+instance of the same pipeline above, reading `aitown_chat_history_log` (the
+AI-Town-only table post-cutover, PR #1734) instead of `chat_history_log`,
+writing into a second FalkorDB graph (`FALKORDB_AITOWN_SUBSTRATE_GRAPH`,
+default `orion_substrate_aitown`, same instance) instead of `orion_substrate`.
+Interpretability-only — never feeds `orion-cortex-exec`'s chat-stance producer
+or any other Orion cognition consumer
+(`docs/superpowers/specs/2026-08-18-aitown-concept-graph-split-and-atlas-
+readability-design.md`, "AI Town's own concept graph" / Non-goals).
+
+- **Scheduler**: same tick as the Orion pipeline above (`main.py`'s
+  `substrate_topic_foundry_scheduler_task`, same
+  `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED`/`_INTERVAL_SEC`), gains a second
+  trigger/enrich/ingest step-group gated by its own
+  `SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED` (default `true`) — set
+  `false` to pause AI Town ingestion without touching Orion's own pipeline.
+- **Manual ingestion**: `POST /api/substrate/concepts/ingest-topic-foundry-aitown`
+  (`concept_atlas_ingest_topic_foundry_aitown()`), same operator-triggered,
+  no-flag shape as the Orion route above.
+- **Reading it**: `GET /api/substrate/concepts/summary` and `.../network`
+  both take an optional `?graph=aitown` query param (default/unrecognized
+  values resolve to Orion's graph) — the "first cut" read path the design
+  spec's own "Missing questions" named as sufficient before a dedicated AI
+  Town Concept Atlas UI page is worth building. No such page exists yet;
+  the Hub tab's Cytoscape view still only ever renders Orion's graph.
+- **Dataset/model**: `orion-hub-aitown-dataset-v1`/`orion-hub-aitown-v1-<fingerprint>`
+  in topic-foundry, distinct from Orion's `orion-hub-autonomous-dataset-v2`/
+  `orion-hub-autonomous-v4-<fingerprint>` — no `where_sql` filter (the source
+  table is already AI-Town-only by construction, unlike Orion's dataset which
+  excludes AI Town rows via `where_sql`).
 
 **Surfaced into live cognition two ways**, not as permanent context bloat — only when
 salient:
@@ -1544,3 +1646,97 @@ Flag: `ORION_ATTENTION_PENDING_CARDS_ENABLED` (default-off). API:
 `attention_loop_outcome`, and suppress the loop via `substrate_reverie_refractory`.
 
 Migration: `psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_attention_loop_outcome.sql`
+
+**`card_kind` (2026-08-21):** every card is `"resolvable"` (chat-derived, a discrete
+turn-scoped candidate a human can actually close) or `"chronic_pressure"`
+(reverie/substrate-broadcast, re-selected every tick by design — the same 7
+substrate nodes recurring indefinitely is expected, not stuck). The split is
+architectural, keyed off the underlying trace row's `scope`, not a heuristic —
+see `orion/schemas/attention_salience.py`'s `PendingCardKindV1` docstring and
+`attention_loops_store.py::card_kind_for_scope`. The Hub UI renders
+`chronic_pressure` cards without Resolve/Dismiss buttons; the API also rejects
+those verbs on one with `409` (defense in depth against a stale client). The
+badge/button-suppression branching itself is pure logic in
+`static/js/cognitive-loop-card.js` (`cognitiveLoopCardViewModel`), unit-tested
+without a DOM harness: `node --test static/js/cognitive-loop-card.test.js`.
+
+**Why every card used to show the same sentence:** `why_it_matters`/`target_type`
+were computed on every loop (`orion/substrate/attention/scoring.py`) but never
+survived into `attention_salience_trace` — both producers dropped them before
+storage, so the Hub's fallback text (`build_pending_card`'s
+`f"This {target_type} has stayed active without resolution."`, `target_type`
+always defaulting to `"other"`) was the *only* text any card ever showed. Fixed
+2026-08-21: both columns are now persisted (see
+`manual_migration_attention_salience_trace.sql`) and both producers
+(`chat_attention_salience_trace.py`, `orion-thought`'s `reverie.py`) carry them
+through. The old sentence is now a true last-resort fallback.
+
+**Deploy order matters:** apply `manual_migration_attention_salience_trace.sql`
+*before* deploying orion-cortex-exec/orion-thought with these changes, not
+after. Both producers now INSERT `why_it_matters`/`target_type` unconditionally;
+without the migration every insert fails with "column ... does not exist" and
+the fail-open contract on both write paths swallows it as a WARNING log --
+silently dropping ALL `attention_salience_trace` persistence (both scopes, not
+just the two new columns) until someone reads the logs and runs the migration.
+
+**Implicit decay (2026-08-21):** the panel previously had no expiry at all — a
+loop left it only via a human's Resolve/Dismiss click, forever, even for a
+one-off chat candidate nobody was ever going to act on again.
+`scripts/attention_loop_decay_digest.py` (cron, same pattern as
+`concept_relation_digest.py`) now labels a loop `decayed_unattended` once it's
+gone silent for 24h+ with no human verdict, and suppresses it out of this panel
+the same way a Dismiss does.
+
+**Chat-scope only, deliberately.** The digest never touches `chronic_pressure`
+(`scope='reverie'`) loops — a second review pass caught that its own
+suppression write lands in `substrate_reverie_refractory`, which
+`services/orion-thought/app/chain.py` ALSO reads (by deliberate pre-existing
+design) to gate real reverie-chain reignition. A human's explicit Resolve/
+Dismiss is meant to carry that consequence; this digest's implicit,
+machine-driven decay is not the same kind of act, and letting it auto-suppress
+a still-possibly-live reverie signal would be the exact false-closure failure
+`card_kind` exists to prevent, one layer removed from the Hub's 409 guard. A
+`chronic_pressure` card that's gone quiet just... stays on the panel, framed as
+sustained pressure, until a real trace row arrives again or the underlying
+mechanism changes — that's intended, not a gap.
+Liveness fail-safe: `make check-attention-loop-decay-liveness` (see
+`scripts/check_attention_loop_decay_liveness.py`).
+
+`--min-silence-hours` is an independent CLI default on both the digest and the
+liveness gate (both default to the same 24h constant,
+`implicit_outcome.DEFAULT_MIN_SILENCE`). If you ever tune one on its cron/host
+config, tune the other to match — nothing enforces agreement beyond this note;
+a mismatch makes the gate measure the wrong threshold (false STALE, or too
+permissive to catch a real outage).
+
+**Scheduled maintenance (Athena cron, installed 2026-08-22):**
+`scripts/attention_loop_decay_digest.py` is a standalone script, not a live
+service loop. Installed on the Hub host's crontab, same PATH/POSTGRES_URI
+pattern as `concept_relation_digest.py`'s own entry (see
+`services/orion-memory-consolidation/README.md`'s "Scheduled maintenance"
+section) -- the explicit `PATH=.../venv/bin:$PATH` prefix is load-bearing, not
+decorative: cron's own minimal default PATH cannot resolve `python`/`make` on
+this host, confirmed live 2026-07-14 for the concept-relation digest and
+re-confirmed 2026-08-22 for this one (an earlier version of this doc used
+`cd ... &&` without the PATH prefix, which would have failed the same way):
+
+```cron
+# Attention-loop implicit-decay digest -- labels chat-scope loops silent 24h+
+# with no human verdict as decayed_unattended and suppresses them out of the
+# Hub's pending-attention panel (never touches reverie-scope/chronic_pressure
+# loops -- see the script's own docstring for why). Idempotent (outcome_id is
+# episode-scoped), safe to run frequently.
+*/30 * * * * PATH=/mnt/scripts/Orion-Sapienform/venv/bin:$PATH POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' /mnt/scripts/Orion-Sapienform/services/orion-hub/.env | cut -d= -f2-) make -C /mnt/scripts/Orion-Sapienform attention-loop-decay-digest >> /mnt/scripts/Orion-Sapienform/logs/orion-attention-loop-decay-digest.log 2>&1
+
+# Fail-safe for the digest above -- fails if the most-overdue decay-eligible
+# chat-scope loop exceeds its own 24h silence threshold by more than 3h, which
+# only happens if the cron entry above died or the job is crashing. Offset
+# 7/37 (not 0/30) so it checks just after each digest run completes.
+7,37 * * * * PATH=/mnt/scripts/Orion-Sapienform/venv/bin:$PATH POSTGRES_URI=$(grep -m1 '^POSTGRES_URI=' /mnt/scripts/Orion-Sapienform/services/orion-hub/.env | cut -d= -f2-) make -C /mnt/scripts/Orion-Sapienform check-attention-loop-decay-liveness >> /mnt/scripts/Orion-Sapienform/logs/orion-attention-loop-decay-liveness.log 2>&1
+```
+
+Both lines smoke-tested live under a minimal `env -i PATH=... sh -c '...'`
+(mimicking cron's own bare environment) before being installed -- not just
+syntax-checked. Run `make check-attention-loop-decay-liveness` by hand any
+time you suspect either entry stopped running (queries the real overshoot
+past each loop's own decay threshold, not a heartbeat file).

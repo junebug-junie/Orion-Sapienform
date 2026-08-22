@@ -57,6 +57,68 @@ pytest tests/test_paradigm_registry.py tests/test_repair_pressure_v2_paradigm.py
 
 **Related:** Hub `ENABLE_REPAIR_PRESSURE_SPEECH_WIRING` + executor `compile_speech_contract()` merge `repair_pressure_contract` into TURN CONTRACT text on the same turn.
 
+### Chat-scoped attention/curiosity frame — current-turn LLM signal probe
+
+`app/chat_stance.py::build_chat_stance_inputs` runs `orion.substrate.attention_frame.build_attention_frame` on every real chat turn when `ORION_CURIOSITY_FRAME_ENABLED=true`. One of its detectors, `CurrentTurnSignalDetector` (`orion/substrate/attention/detectors/current_turn.py`), is a pure, synchronous reader of `ctx["current_turn_llm_signals"]` — a list of `{"phrase", "type"}` candidates populated BEFORE the frame build by a same-turn LLM RPC call (`app/current_turn_llm_signals.py::populate_current_turn_llm_signals`).
+
+This replaces a deleted regex-based detector (`LegacyRegexSignalDetector`) whose "any capitalized word" pattern matched sentence-initial interjections ("Heck" in "Heck yeah!") as fake candidates, with no real filter beyond a 9-word allowlist. The LLM call is a quick-lane classification call (short JSON-array output, tight timeout, small `max_tokens`), fail-open by contract: an unbound bus, RPC failure/timeout, or malformed output all degrade to zero candidates and a distinguishable WARNING log — never a raised exception, never a delayed chat turn beyond the configured timeout.
+
+**Structural floor (2026-08-21, tightened 2026-08-22):** confirmed live, hours
+after the regex detector was already deleted and replaced: the LLM still
+returned bare single words as "concept"/"other" candidates ("bus", "Glad",
+"Compact", "Interesting") — the same class of unactionable garbage as the
+deleted regex's failure mode, one step removed rather than eliminated.
+`parse_current_turn_llm_signals()` dropped any single-token phrase not typed
+`person`/`place` — a floor under the prompt's own filtering instruction, not a
+replacement for it. **Confirmed live again 2026-08-22**, hours after that floor
+shipped: "bus" got through a second time because the model classified it
+`place` instead of `concept` — the word never changed, only the model's own
+(unreliable) classification did. A bare single token now ALSO has to be
+capitalized to survive the person/place carve-out (a real name/place is
+capitalized by ordinary convention; a lowercase word claiming to be one is
+almost always a mistyped common noun) — two independent signals instead of
+trusting the model's type field alone (uses `not phrase[:1].islower()`, not
+`.isupper()` — the latter is False for every uncased script like CJK/Arabic,
+which would wrongly drop a real bare name in one of those). See
+`evals/run_current_turn_signal_eval.py` for the labeled precision fixture this
+threshold is measured against (includes the exact live-garbage strings from
+both incidents as regression cases).
+
+**Disclosed, not fixed:** a sentence-initial interjection is capitalized by
+ordinary English convention too — if the model ever mistypes one of those as
+`person`/`place` instead of `other`/`activity`/`belief` (not yet observed
+live, but this arc's own two incidents already prove the type field is
+unreliable call-to-call for the identical word), it reproduces the deleted
+regex detector's exact known failure mode one layer up. No static interjection
+denylist was built to close this pre-emptively — nothing has been observed
+hitting it yet, and CLAUDE.md's metric-quality-gate calls for a live-data
+sanity check before wiring a new mechanism in, not building one on spec.
+Every bare-word person/place acceptance logs at INFO (`current_turn_llm_signal_bare_word_name_accepted`)
+specifically so this highest-risk path is auditable if it ever does start
+happening.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `CURRENT_TURN_SIGNAL_PROBE_ROUTE` | `quick` | LLM Gateway route for the current-turn signal probe. |
+| `CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC` | `3.0` | Bus RPC wait bound; a slow/dead gateway fails open to zero candidates. |
+| `CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS` | `80` | Completion budget — a few short phrase+type JSON pairs, not a generation call. |
+
+**Tests**
+
+```bash
+cd services/orion-cortex-exec
+pytest tests/test_current_turn_llm_signals.py tests/test_attention_frame.py tests/test_attention_frame_integration.py -q
+
+# Detector unit tests (repo root)
+pytest orion/substrate/tests/test_current_turn_signal_detector.py -q
+```
+
+**Evals**
+
+```bash
+python services/orion-cortex-exec/evals/run_current_turn_signal_eval.py
+```
+
 ### Grammar substrate (shadow observability)
 
 | Channel | Env Var | Kind | Description |
@@ -146,10 +208,11 @@ pytest services/orion-cortex-exec/tests/test_chat_stance_autonomy_v2.py -q
 concepts from the shared FalkorDB substrate graph (`SUBSTRATE_STORE_BACKEND=falkor`,
 `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH=orion_substrate` in `.env` — same instance
 `orion-hub` seeds/decays and `orion-recall` reads from) via `query_concept_region()`,
-filtered to `anchor_scope in ("orion", "relationship", "juniper")` and bucketed into
-`concept_type` (`self` for orion/juniper by default, `relationship` for the relationship
-anchor and for any node with an explicit `metadata["concept_type"]` override — e.g. Claude's
-seed entry sets `relationship` explicitly so it doesn't fall into Orion's own `self` bucket).
+filtered to `anchor_scope in ("orion", "relationship", "juniper", "claude")` and bucketed
+into `concept_type` (`self` for orion/juniper, `relationship` for the relationship anchor
+and for claude — Claude is a Hub collaborator, not part of Orion's own self-identity, and
+`relationship` is the closest fit among `_project_concept_from_beliefs`'s fixed 4 buckets;
+any node's own explicit `metadata["concept_type"]` still wins when present).
 
 Before PR #1128 this adapter read a dead spaCy pipeline
 (`orion.spark.concept_induction.profile_repository`) that always returned `None` — the
@@ -230,6 +293,8 @@ If `self_state` is absent, stale, or fails to parse, metacog-lane scoring falls 
 
 `app/situation.py`'s `build_situation_for_ctx()` assembles a `SituationBriefV1` (`orion/schemas/situation.py`) once per session (cached, TTL-gated) covering time, presence, weather, lab, camera perception, and runtime identity, then compresses it into one `SituationPromptFragmentV1.compact_text` block injected into `chat_general.j2` via `ctx["situation_prompt_fragment"]`. Every sub-context follows the same fail-open shape: a `_build_X_context()` wrapping a `_fetch_X()` in try/except, degrading to `available=False` ("do not infer") on any failure rather than guessing, with `diagnostics.provider_status`/`provider_errors` recording the outcome.
 
+**Conversation phase (`ConversationPhaseContextV1`, Redis-backed since 2026-08-21):** `_build_conversation_phase()` (async) buckets "how long since we last talked" into `same_breath`/`short_pause`/`resumed_thread`/`long_gap`/`next_day`/`stale_thread`, driving reconnection/reassurance framing in replies. The last-user-turn/last-Orion-turn timestamps live in Redis (`app/session_turn_phase.py`, key `orion:cortex-exec:session_turn_phase:{session_id}`, single JSON payload, 7-day TTL), not in an in-process dict — there are four separate `orion-cortex-exec` containers (`-chat`/`-background`/`-spark`/main), each an independent process, and a single chat turn's pipeline can touch more than one of them. `mark_orion_turn()` (`app/router.py`, called at the end of `run_plan`) is the other writer, doing a read-modify-write so it never clobbers the user-turn side of the pair. Both `read_session_turn_state`/`write_session_turn_state` are fail-open (a Redis hiccup degrades to `phase="unknown"`, never raises) and require `bind_session_turn_phase_bus()` to have run at startup (`main.py`); the phase-bucketing thresholds themselves are unaffected by this — only where the timestamps are stored changed.
+
 **Runtime identity (`RuntimeContextV1`, 2026-08-14):** which LLM model is actually serving Orion's chat replies, added because Orion previously had no way to know. `_fetch_runtime_context()` reads `orion-llm-gateway`'s `GET /routes` (see that service's README, "Model identity" section, for where the live model id comes from) for `ORION_SITUATION_RUNTIME_ROUTE`'s (default `chat`) served model, cached `ORION_SITUATION_RUNTIME_TTL_SECONDS` (default `120`). Renders as `"You are currently running on model: <id> (route=<route>)."` or `"Current model: unavailable; do not infer or guess a name."` — never a guessed name.
 
 | Variable | Default (`.env_example`) | Role |
@@ -241,6 +306,102 @@ If `self_state` is absent, stale, or fails to parse, metacog-lane scoring falls 
 | `CORTEX_EXEC_LLM_GATEWAY_URL` | `http://llm-gateway:8210` | Base URL for the probe. `llm-gateway` is the real Docker Compose service key (`scripts/check_service_hostname_refs.py` gates against hardcoding a `services/<dirname>`-shaped hostname like `orion-llm-gateway` instead -- that directory-name pattern has caused a real silent-crash incident before, see that script's docstring); matches `CONTEXT_EXEC_LLM_GATEWAY_URL`/`HUB_LLM_GATEWAY_URL`'s existing convention. |
 
 **Tests:** `tests/test_situation_provider.py` (mocks `urlopen`; covers live-model-reported, gateway-unreachable degrade, route-missing-from-response degrade, disabled-by-default, and TTL caching).
+
+### LLM lane selection, and who yields (ROADMAP A3)
+
+Two orthogonal things decide where a step's LLM call goes, and they are easy to confuse:
+
+| | set by | answers |
+| :--- | :--- | :--- |
+| **route** (`quick`, `chat`, `metacog`, `quick_background`) | `executor.py` default mapping, or a caller override | *which upstream worker* |
+| **lane / priority** (`chat`=high, `agent`=normal, `spark`/`background`=low) | `app/llm_lane.py::resolve_llm_lane_for_step` | *how important is this* |
+
+**A3 connects them.** A step whose priority is `low` — Orion's own initiative — and which would
+otherwise route to `quick` is redirected to **`quick_background`** instead. Same upstream, same
+model; the difference is the gateway's admission gate
+(`orion-llm-gateway/app/priority_admission.py`), which holds `reserved_free_slots` free for
+foreground callers. **So Orion waits rather than Juniper.**
+
+Low priority is exactly: `introspect_spark`, `dream_cycle`, `dream_synthesis`,
+`log_orion_metacognition`, `reverie_narrate`, or anything with `execution_lane == "background"`.
+
+Why this exists: A2 measured the `quick` lane over **27.74 h** at **4.01% completely full**,
+blocking **174x** more than Poisson arrivals would at the same offered load — it is hit in
+batches, not merely busy. Orion was a large part of that contention with no way to yield.
+
+**Deliberately narrow.** An explicit caller override always wins; `chat` is never demoted;
+`metacog` is untouched because A2 measured that lane at **0.00%** all-busy over the same window
+— it never fills, so moving it would be ceremony.
+
+**Kill gate:** `EXEC_AUTONOMOUS_BACKGROUND_ROUTING=false` restores the previous behaviour
+exactly. One env key, no migration, nothing else to redeploy. Use it if interactive latency
+regresses.
+
+**What to look for in the logs:**
+
+```text
+llm_route_selected corr_id=... verb=reverie_narrate route=quick_background
+                   autonomous_backgrounded=True lane_priority=low
+```
+
+`autonomous_backgrounded` and `lane_priority` are on every route decision, so a step that was
+or was not redirected is visible without re-deriving the rule.
+
+### Perceiving the wait — the `waited` cue (ROADMAP A5)
+
+Yielding is only half of it. Orion also has to be able to *notice* that it yielded, or the price
+is paid by a system that cannot feel it. `app/admission_cue.py` reads orion-llm-gateway's
+`GET /admission` and renders one object into the metacog cue Orion already reads each pass,
+beside `strain` / `peak` / `fleet_watts`:
+
+| cue | means |
+| --- | --- |
+| `"waited":{"n":0,"of":294,"h":6.0}` | asked for a background slot 294 times in 6h, **never made to wait** |
+| `"waited":{"n":3,"of":291,"max_s":4.2,"h":6.0}` | made to wait 3 times, longest 4.2s |
+| `"waited":{"n":0,"of":0,"h":6.0}` | made **no** background requests at all — not the same as the first row |
+| `"waited":{"n":0,"of":294,"unk":40,"h":6.0}` | 40 of those 294 were never actually measurable |
+| *key absent* | nothing trustworthy to say — **unknown, not calm** |
+
+`of` separates row 1 from row 3; `unk` stops row 1 from over-claiming; and absence separates all
+of them from the last row. A cue that emitted a bare `0` for every case would let Orion conclude
+nothing is constraining it from an unreachable gateway.
+
+**Three ways the key goes absent**, all meaning *unknown*: the gateway could not be read; the
+payload was malformed (every field must be **present**, not merely defaultable); or `unchecked >=
+checked` — the admission gate fails open, so a window in which llama.cpp's `/slots` was down
+throughout holds 294 requests that were forwarded without ever being measured. "Never observed"
+must not render as "never constrained".
+
+**Two waits are counted, not one.** The gateway's concurrency permit is acquired *before* `/slots`
+is polled, so a second concurrent background request can block there for a whole generation and
+then find room on its first poll. That queue time is recorded and counted; without it the
+mechanism most likely to actually defer Orion would be structurally invisible.
+
+`max_s` ships only when `n > 0` and the duration is genuinely non-zero, and keeps three decimals
+below 0.1s — at rest the gateway's longest "wait" is the `/slots` round trip (0.012–0.091s
+measured live), the cost of *asking* rather than of *waiting*, and `"max_s":0.0` beside `"n":1`
+would be a self-contradiction rather than a reading.
+
+**Scoped to Orion.** The fetch asks for `via=bus`. `quick_background` also carries AI Town's NPC
+dialogue through the gateway's OpenAI passthrough, and this cue is a first-person claim — "I was
+made to wait" must not be counting somebody else's wait.
+
+**What it does not claim.** Not "while *that* ran instead". llama.cpp's `/slots` reports
+occupancy, not ownership, so the competing claim cannot be named without confabulating it. The
+cue says how long Orion waited, not who took the slot.
+
+**Config:** `CORTEX_EXEC_ADMISSION_CUE_ENABLED` (default `true`), `_WINDOW_S` (6h), `_TTL_SEC`
+(60s), `_TIMEOUT_SEC` (2s). Fail-quiet: any fetch error caches `None` for the TTL and omits the
+key, so an unreachable gateway costs one blocking read a minute, not one per pass.
+
+**Honest status, 2026-08-19.** Live over 4h: 294 background admissions, **zero deferrals**, and
+atlas's `quick` lane sampled `0/4` busy. The signal sits at its rest state and has not been
+observed leaving it — because **AI Town is turned off**, and AI Town's NPC dialogue was the load
+on that lane (`quick_background` was created for it; `orion-athena-embodiment` currently logs
+`Convex unreachable`). circe is powered off too, so the single-slot `chat` lane A4 measured is
+gone as well. There is presently nothing for Orion to contend with, which makes
+`"waited":{"n":0,...}` the correct reading rather than a broken one — the path lights up when
+the load returns.
 
 ## Running & Testing
 

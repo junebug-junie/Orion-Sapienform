@@ -130,9 +130,11 @@ def test_priority_empty_dimension_template_still_gets_real_confidence() -> None:
     """Regression guard: an honestly-empty `dimensions: {}` template (post
     PR #1493's dead-dimension fix) must not collapse proposal_priority() to
     base_priority forever just because confidence is gating the signal now.
-    _pressure_dimension_ids()'s shared fallback to PRESSURE_DIMENSIONS means
-    proposal_confidence() reads the same 4 core dimensions proposal_urgency()
-    already falls back to -- a real, non-zero confidence, not the bare 0.0
+    _pressure_dimension_ids()'s shared fallback (2026-08-16:
+    _LEGACY_EMPTY_DIMENSIONS_FALLBACK, decoupled from PRESSURE_DIMENSIONS --
+    see that constant's own comment) means proposal_confidence() reads the
+    same 4 core dimensions proposal_urgency() already falls back to -- a
+    real, non-zero confidence, not the bare 0.0
     the old ungated proposal_confidence() returned for these templates
     (harmless under the old additive formula's independent 0.1 term, would
     have silently zeroed the entire signal under a naive
@@ -157,6 +159,43 @@ def test_priority_empty_dimension_template_still_gets_real_confidence() -> None:
         confidence=confidence,
     )
     assert priority > template.base_priority
+
+
+def test_empty_dimension_template_fallback_excludes_deviation_pressure() -> None:
+    """Code review finding, 2026-08-16: adding deviation_pressure to
+    PRESSURE_DIMENSIONS used to silently widen every empty-`dimensions: {}`
+    template's fallback to include it too (`_pressure_dimension_ids()`'s
+    fallback WAS `list(PRESSURE_DIMENSIONS)` directly) -- an unaudited blast
+    radius onto 5 already-tuned templates. `_LEGACY_EMPTY_DIMENSIONS_FALLBACK`
+    decouples the two; this pins the fix so a future PRESSURE_DIMENSIONS
+    addition cannot silently reopen it."""
+    from orion.proposals.scoring import _LEGACY_EMPTY_DIMENSIONS_FALLBACK, _pressure_dimension_ids
+
+    assert "deviation_pressure" not in _LEGACY_EMPTY_DIMENSIONS_FALLBACK
+    for key in (
+        "inspect_bus_channel_catalog",
+        "summarize_transport_contract_drift",
+        "watch_transport_backpressure",
+        "inspect_field_topology_catalog",
+        "inspect_attended_target",
+    ):
+        template = POLICY.proposal_templates[key]
+        assert template.dimensions == {}
+        dims = _pressure_dimension_ids(template)
+        assert set(dims) == _LEGACY_EMPTY_DIMENSIONS_FALLBACK
+        assert "deviation_pressure" not in dims
+
+
+def test_deviation_pressure_only_scores_templates_that_declare_it() -> None:
+    """The 3 tension-driven templates (this session) DO declare
+    deviation_pressure explicitly -- confirms the fallback fix did not
+    accidentally exclude the templates that are supposed to score on it."""
+    for key in ("observe_tension_via_camera", "prune_dangling_images", "prune_stopped_containers"):
+        template = POLICY.proposal_templates[key]
+        assert "deviation_pressure" in template.dimensions
+        from orion.proposals.scoring import _pressure_dimension_ids
+
+        assert "deviation_pressure" in _pressure_dimension_ids(template)
 
 
 def test_empty_dimension_template_confidence_can_clear_the_real_policy_review_gate() -> None:
@@ -349,6 +388,20 @@ _REAL_MEASURED_MAX = {
     "resource_pressure": 0.9,
     "reliability_pressure": 0.9,
     "reasoning_pressure": 0.045,
+    # deviation_pressure's own real measured max (not that same 2026-07-28
+    # window -- it did not exist yet): the 41,973-tick / 2026-08-16 window
+    # cited in orion/proposals/scoring.py's PRESSURE_DIMENSIONS comment
+    # reports a real max of 1.0 (the saturation ceiling, clamped by
+    # orion.attention.tension.competition.deviation_pressure() itself), not
+    # an approximation.
+    "deviation_pressure": 1.0,
+    # sustained_load_pressure's own real measured max: the 24h/1,395-point/
+    # 34,316-real-row window cited in orion/proposals/scoring.py's
+    # PRESSURE_DIMENSIONS comment (scripts/analysis/measure_sustained_load_
+    # pressure.py, 2026-08-18) reports a real max of 0.7703 -- the ceiling
+    # was set by node:athena's disk_capacity_pressure, the one channel
+    # driving nearly the whole reading over that window.
+    "sustained_load_pressure": 0.7703,
 }
 
 

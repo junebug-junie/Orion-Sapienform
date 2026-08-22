@@ -95,6 +95,66 @@ proposal_kind_to_cortex:
     allowed_scope: maintenance_bounded
     rpc_timeout_sec: 720
 
+# 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+# dispatch-design.md): per-TEMPLATE overrides (orion/execution_dispatch/
+# policy.py::template_to_cortex, live since 2026-08-13, checked before the
+# proposal_kind_to_cortex map above). Without these, every `maintain`
+# proposal -- including prune_dangling_images and prune_stopped_containers
+# below -- would still resolve to skills.runtime.builder_prune.v1, the same
+# one-repertoire cap that field already fixed for future templates but that
+# nothing had yet used a second time.
+template_to_cortex:
+  # Read-only: no new gate needed. allowed_scope=inspect_only is already
+  # unconditionally allowed (orion/execution_dispatch/builder.py's
+  # scope_allowed check), independent of mode.allow_mutating_dispatch.
+  # skills.perception.look_at_camera.v1 reads orion-vision-window's existing
+  # passive projection -- verb yaml timeout_ms=20000, so 40s gives the same
+  # 2x margin discipline as the two mutating routes below without needing
+  # three staggered budgets (there is no long-running subprocess here).
+  observe_tension_via_camera:
+    dispatch_kind: inspect
+    cortex_verb: skills.perception.look_at_camera.v1
+    cortex_mode: brain
+    allowed_scope: inspect_only
+    rpc_timeout_sec: 40
+
+  # Same first two gates as `maintain` above (mode.allow_mutating_dispatch,
+  # maintenance_bounded scope) -- this and prune_stopped_containers now share
+  # that one MAINTENANCE_SCOPE reserved slot (limits.reserved_slots_by_scope
+  # below) with prune_build_cache, competing among themselves for it same as
+  # any other candidates do.
+  #
+  # The THIRD gate is NOT symmetric between the two routes below (2026-08-16,
+  # code review -- see config/proposals/proposal_policy.v1.yaml's
+  # prune_dangling_images comment for the full disclosure). image_prune has
+  # a real measured decline threshold (disk>=75% AND genuinely dangling
+  # images). docker_prune_stopped_containers does not -- it prunes every
+  # matching exited container it finds in execute mode, gated only by its own
+  # env flag and label/age filters, not by a resource-pressure floor.
+  #
+  # Timeout staggering matches skills.runtime.image_prune.v1.yaml's own
+  # comment: subprocess IMAGE_PRUNE_TIMEOUT_SEC=600s < verb timeout_ms=660s <
+  # this rpc budget. Same 720s as builder_prune -- same subprocess ceiling,
+  # same margin reasoning.
+  prune_dangling_images:
+    dispatch_kind: maintain
+    cortex_verb: skills.runtime.image_prune.v1
+    cortex_mode: brain
+    allowed_scope: maintenance_bounded
+    rpc_timeout_sec: 720
+
+  # skills.runtime.docker_prune_stopped_containers.v1.yaml's own verb
+  # timeout_ms is 30000 (30s) -- far smaller than the image/build-cache
+  # prunes, so this gets its own smaller budget rather than inheriting 720s,
+  # same "only routes that actually need a longer budget get one" principle
+  # CortexRouteTemplateV1.rpc_timeout_sec's own docstring states.
+  prune_stopped_containers:
+    dispatch_kind: maintain
+    cortex_verb: skills.runtime.docker_prune_stopped_containers.v1
+    cortex_mode: brain
+    allowed_scope: maintenance_bounded
+    rpc_timeout_sec: 60
+
 hard_blocks:
   - approved_for_execution
   - prepare_action
@@ -138,6 +198,13 @@ limits:
   # mode.allow_mutating_dispatch, the runtime's EXECUTION_DISPATCH_MODE, and
   # the skill's own measured disk >= 75% AND >= 40 GB gate. It removes a
   # capacity race, not a safety gate.
+  #
+  # 2026-08-16: prune_dangling_images and prune_stopped_containers now also
+  # route through this scope (template_to_cortex above) -- 3 templates share
+  # this 1 reserved slot and compete on effective_priority for it same as any
+  # other candidates. Still 1: revisit against real post-deploy contention
+  # data if 3 mutating templates start starving each other for it, same
+  # discipline as every other number in this file.
   reserved_slots_by_scope:
     maintenance_bounded: 1
 

@@ -113,3 +113,68 @@ def test_quick_lane_allowed_when_all_criteria_pass() -> None:
     assert reflection is not None
     assert reflection.reflection_source == "deterministic_quick_gate"
     assert reflection.quick_lane_skipped_llm is True
+
+
+def test_quick_lane_blocked_on_perception_intent() -> None:
+    # A substrate-calm turn (would otherwise pass every other quick-lane
+    # criterion) that explicitly asks Orion to look at something must still
+    # reach the LLM reflector -- otherwise the tool-recall loop can never
+    # even be considered for it.
+    thought, appraisal, overlay = _eligible_inputs()
+    assert quick_lane_block_reason(
+        substrate_appraisal=appraisal,
+        thought=thought,
+        repair_overlay=overlay,
+        user_message="Hey, what do you see right now?",
+    ) == "perception_intent"
+    assert maybe_quick_lane_verdict(
+        correlation_id="c-1",
+        thought=thought,
+        substrate_appraisal=appraisal,
+        repair_overlay=overlay,
+        user_message="Hey, what do you see right now?",
+    ) is None
+
+
+def test_quick_lane_blocked_on_perception_intent_case_insensitive_and_other_phrasings() -> None:
+    thought, appraisal, overlay = _eligible_inputs()
+    for phrase in (
+        "LOOK AROUND for a second",
+        "who's in the room with me?",
+        "who’s in the room right now",  # curly/smart apostrophe
+        "what's happening in the room right now",
+        "can you see me right now",
+        "check the camera please",
+        "look outside the window for me",
+    ):
+        assert (
+            quick_lane_block_reason(
+                substrate_appraisal=appraisal,
+                thought=thought,
+                repair_overlay=overlay,
+                user_message=phrase,
+            )
+            == "perception_intent"
+        ), phrase
+
+
+def test_quick_lane_not_blocked_by_idiomatic_or_figurative_phrases() -> None:
+    # Idiomatic/figurative uses of "see"/"look" must not defeat the throttle
+    # this sits inside of -- the detector is a narrow phrase match, not a
+    # bare "see"/"look" match. Each of these was a confirmed false positive
+    # in an earlier version of the regex.
+    thought, appraisal, overlay = _eligible_inputs()
+    for phrase in (
+        "I see what you mean, thanks for explaining",
+        "can you see it working now?",
+        "let's look outside the box for a solution",
+    ):
+        assert (
+            quick_lane_block_reason(
+                substrate_appraisal=appraisal,
+                thought=thought,
+                repair_overlay=overlay,
+                user_message=phrase,
+            )
+            is None
+        ), phrase

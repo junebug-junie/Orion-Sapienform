@@ -37,7 +37,7 @@ def test_inspect_node_resource_pressure_template_targets_node() -> None:
     tmpl = policy.proposal_templates["inspect_node_resource_pressure"]
     assert tmpl.kind == "inspect"
     assert tmpl.target_kind == "node"
-    assert tmpl.target_id == "node:atlas"
+    assert tmpl.target_id == "node:circe"
     assert "resource_pressure" in tmpl.dimensions
 
 
@@ -72,3 +72,32 @@ def test_other_templates_have_no_target_binding() -> None:
         if key == "inspect_attended_target":
             continue
         assert tmpl.target_binding is None
+
+
+def test_deviation_pressure_dimension_weight_declared() -> None:
+    policy = load_proposal_policy(POLICY_PATH)
+    assert "deviation_pressure" in policy.dimension_weights
+
+
+def test_tension_driven_templates_score_on_deviation_pressure() -> None:
+    policy = load_proposal_policy(POLICY_PATH)
+    for key in ("observe_tension_via_camera", "prune_dangling_images", "prune_stopped_containers"):
+        assert "deviation_pressure" in policy.proposal_templates[key].dimensions
+
+
+def test_mutating_tension_templates_use_read_only_policy_gate_like_prune_build_cache() -> None:
+    """Safety comes from execution_dispatch_policy.v1.yaml's three gates, not
+    this field -- same precedent as prune_build_cache's own comment."""
+    policy = load_proposal_policy(POLICY_PATH)
+    for key in ("prune_dangling_images", "prune_stopped_containers"):
+        tmpl = policy.proposal_templates[key]
+        assert tmpl.kind == "maintain"
+        assert tmpl.required_policy_gate == "read_only"
+        assert tmpl.reversibility == 1.0
+
+
+def test_observe_tension_via_camera_is_read_only() -> None:
+    policy = load_proposal_policy(POLICY_PATH)
+    tmpl = policy.proposal_templates["observe_tension_via_camera"]
+    assert tmpl.kind == "inspect"
+    assert tmpl.required_policy_gate == "read_only"

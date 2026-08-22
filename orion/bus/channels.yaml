@@ -444,6 +444,19 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  # Per-window scene census, written unconditionally so object permanence has
+  # a continuous record to reduce over. Deliberately NOT derived from
+  # orion:vision:events -- the council only re-interprets on a label-set
+  # change (reason=stable_scene otherwise), so a pure count change emits no
+  # event, and a departure is a non-event by nature.
+  - name: "orion:vision:inventory:sql-write"
+    kind: "event"
+    schema_id: "VisionSceneInventoryV1"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-08-21"
+
   - name: "orion:exec:request:VisionWindowService"
     kind: "request"
     schema_id: "VisionWindowRequestPayload"
@@ -516,6 +529,50 @@ channels:
       - "*"
     stability: "experimental"
     since: "2026-05-03"
+
+  # orion-world-model (2026-08-20 scaffold, docs/superpowers/specs/
+  # 2026-08-20-reverie-visual-chain-design.md §3/§8 deferred "whatever
+  # 'world model' turns out to mean" -- this is that follow-up: port/schema/
+  # channel scaffolding only, untrained inference-capable weights, no real
+  # downstream cognition consumer yet. See services/orion-world-model/README.md.
+  - name: "orion:exec:request:WorldModelService"
+    kind: "request"
+    schema_id: "WorldModelTaskRequestPayload"
+    # No real producer service yet -- same honesty as orion:worldmodel:
+    # predictions below (code review, 2026-08-20: an earlier version of this
+    # entry incorrectly self-listed orion-world-model as its own producer).
+    # services/orion-world-model/scripts/publish_test_task.py is the only
+    # current publisher (a documented smoke/tap script, not a registered
+    # service).
+    producer_services: []
+    consumer_services: ["orion-world-model"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-20"
+
+  - name: "orion:worldmodel:reply:*"
+    kind: "result"
+    schema_id: "WorldModelPredictionPayload"
+    message_kind: "world_model.prediction"
+    producer_services: ["orion-world-model"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-08-20"
+
+  - name: "orion:worldmodel:predictions"
+    kind: "event"
+    schema_id: "WorldModelPredictionPayload"
+    message_kind: "world_model.prediction"
+    producer_services: ["orion-world-model"]
+    # No real downstream cognition consumer yet -- flagged honestly per
+    # CLAUDE.md (known repo anti-pattern to avoid hiding, not a reason to
+    # skip registering the channel a real producer already writes to).
+    # services/orion-world-model/scripts/tap_predictions.py is the only
+    # current consumer (a documented smoke/tap script, mirrored on
+    # orion-vision-host's scripts/tap_artifacts.py).
+    consumer_services: ["orion-world-model"]
+    stability: "experimental"
+    since: "2026-08-20"
 
   - name: "orion:collapse:intake"
     kind: "event"
@@ -780,10 +837,13 @@ channels:
   # orion-sql-writer/orion-hub had real reader code (services/orion-sql-
   # writer/app/models/phi_reward.py, worker.py routing) but nothing they
   # read this FOR (spark_embodiment_narrative,
-  # services/orion-cortex-exec/app/spark_narrative.py) survives the sole
-  # producer's deletion either -- not touched here, flagged as a possible
-  # follow-up cleanup, not a live bug (a route with no incoming traffic is
-  # inert, not broken).
+  # services/orion-cortex-exec/app/spark_narrative.py) survived the sole
+  # producer's deletion either. Follow-up done 2026-08-21: dominant_node/
+  # dominant_node_reason removed from PhiIntrinsicRewardV1/SparkStateSnapshotV1/
+  # MoodArcCorpusRowV1, spark_narrative.py deleted, executor.py wiring and the
+  # metacog draft prompt's EMBODIMENT section removed. orion-sql-writer's
+  # worker.py routing for this dead channel is untouched -- a route with no
+  # incoming traffic is inert, not broken, and out of scope for this cleanup.
 
   - name: "orion:cognition:reasoning_call"
     kind: "telemetry"
@@ -1096,6 +1156,37 @@ channels:
     consumer_services: ["orion-sql-writer", "*"]
     stability: "experimental"
     since: "2026-03-22"
+
+  # Claude as a third social-room participant. Two producers as of the
+  # auto-respond feature: a human clicking "Ask Claude" in Hub, and Hub's own
+  # auto-invite after every Orion reply (websocket_handler.py) -- so this is
+  # no longer solely human-driven and spend is not bounded by clicks alone.
+  # No budget enforcement exists yet on either path (design only, see
+  # orion-room-companion/README.md's phase-2 watchdog section). The
+  # credential and the `claude` subprocess live in orion-room-companion,
+  # deliberately NOT in orion-hub --
+  # Hub runs as root with SSH keys, a gh token and the docker socket readable
+  # by Orion's own FCC turns, so a credential there is one Orion could use to
+  # spawn Claude outside the meter. See
+  # docs/architecture/hub-social-room-claude-companion.md.
+  - name: "orion:room:claude:request"
+    kind: "event"
+    schema_id: "RoomClaudeRequestV1"
+    message_kind: "room.claude.request.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-room-companion"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-14"
+
+  - name: "orion:room:claude:utterance"
+    kind: "event"
+    schema_id: "RoomClaudeUtteranceV1"
+    message_kind: "room.claude.utterance.v1"
+    producer_services: ["orion-room-companion"]
+    consumer_services: ["orion-hub", "*"]
+    stability: "experimental"
+    since: "2026-08-14"
 
   - name: "orion:social:participant:continuity"
     kind: "event"

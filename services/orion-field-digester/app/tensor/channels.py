@@ -133,6 +133,34 @@ RETIRED_NODE_CHANNELS: dict[str, str] = {
     "execution_load": "cortex_exec_step_load",
 }
 
+# Node ids that were once real entries in orion_field_topology.v1.yaml's
+# `nodes:` list and have since been permanently removed from it (decommissioned
+# hardware), as opposed to a pseudo-node (node:rpc_timeout, node:substrate.*)
+# that was never in the lattice to begin with.
+#
+# Why this needs its own set rather than "prune any node_vectors key not in
+# lattice.nodes": pseudo-nodes are off-lattice BY DESIGN and must keep
+# reconciling normally (see _prune_every_node_vector's off-lattice channel
+# pruning above, and the SINGLE_OBSERVER_NODE_CHANNELS off-lattice tests) --
+# a blanket "not in lattice.nodes" rule would delete them too. A retired
+# LATTICE node is different: reconcile_field_state_with_lattice() only ever
+# calls _ensure_node_vector() for `lattice.nodes`, so once a node's node_id is
+# removed from the yaml, nothing ever seeds, prunes, or perturbs its
+# node_vectors entry again -- it just sits there decaying toward whatever its
+# last real reading was, forever, because decay/diffusion iterate whatever
+# node_vectors already holds, not the lattice's declared node list.
+#
+# Confirmed live 2026-08-21: atlas was removed from the lattice in PR #1799
+# (chore/atlas-reference-cleanup) but `node:atlas` was still sitting in
+# substrate_field_state fully decayed to ~0 on every channel hours later --
+# inert, not misleading (every value was genuinely zero), but dead weight
+# nobody was pruning. Same shape as RETIRED_NODE_CHANNELS above, one level
+# up: add the node's canonical "node:<name>" id here when it is permanently
+# pulled from the lattice's `nodes:` list.
+RETIRED_LATTICE_NODES: set[str] = {
+    "node:atlas",
+}
+
 DEFAULT_CAPABILITY_VECTOR = {ch: 0.0 for ch in CAPABILITY_CHANNELS}
 DEFAULT_CAPABILITY_VECTOR["confidence"] = 1.0
 DEFAULT_CAPABILITY_VECTOR["available_capacity"] = 1.0

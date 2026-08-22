@@ -1,5 +1,17 @@
 # bus-core cold-standby: cutover / cutback runbook
 
+**BROKEN/UNSET as of 2026-08-21.** Every host reference below (`atlas`,
+`atlas.tail348bbe.ts.net`, `100.121.214.30`-style addressing) points at the
+Atlas mesh node, which was decommissioned 2026-08-21 and no longer exists as
+a physical host -- see `config/biometrics/node_catalog.yaml` and
+`services/orion-bus/README.md`'s cold-standby section. This runbook is
+**not currently executable against any real host**. It is left as-is (not
+rewritten) because the *procedure* -- restore AOF data, verify, cut over
+manually -- is still accurate once a new target node is chosen; only the
+*host* in every step below is stale. Do not run this against `atlas` (it's
+gone) or assume it's safe to run against a different node without first
+re-verifying every step's host-specific assumptions.
+
 Status: operational runbook, manual procedure only. No automation, no
 failover, no leader election. Companion to
 `services/orion-bus/docker-compose.atlas-standby.yml`.

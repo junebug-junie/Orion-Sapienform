@@ -133,12 +133,34 @@ class Settings(BaseSettings):
     # (orion/substrate/prediction_error_trend.py), appended once per
     # attention-broadcast tick (~30s cadence by default) rather than once per
     # ~2s field-lane tick like the offline replay script's own
-    # PREDICTION_ERROR_TREND_WINDOW_TICKS=30 default -- 10 ticks here is a
-    # real-world-time-comparable starting anchor (10 * 30s = 5min), not
-    # independently calibrated. Needs its own live-data check before being
-    # trusted, same as the offline constant's own documented status.
+    # PREDICTION_ERROR_TREND_WINDOW_TICKS=30 default.
+    #
+    # 2026-08-19: calibrated via real TRAIN/TEST validation, closing the gap
+    # this constant's own comment previously flagged ("not independently
+    # calibrated"). Swept {2, 10 (the old default), 30} against real
+    # substrate_attention_self_model biometrics prediction_error history
+    # (19,425 ticks, 7-day span, this exact ~30s cadence -- see
+    # docs/superpowers/pr-reports/2026-08-19-l6-item34-hit-it-all-pr.md for the
+    # full methodology, chronological 70/30 split, held-out TEST results):
+    #   window= 2: TEST reversion accuracy 61.9% (n=4885, z=+16.6 vs 50% null)
+    #   window=10: TEST reversion accuracy 56.4% (n=5300, z=+9.3)  <- old default
+    #   window=30: TEST reversion accuracy 54.2% (n=5293, z=+6.1) <- offline default
+    # window=2 wins on held-out TEST, not just TRAIN it was tuned on (TEST
+    # accuracy is actually slightly *higher* than TRAIN's 59.9% -- not an
+    # overfit result). This is item 4 sub-idea #3's original "hit it all"
+    # deliverable, paused since 2026-07-23 by a Postgres data loss that also
+    # wiped the table this validation used to depend on (substrate_field_state,
+    # since repurposed for unrelated content -- see
+    # project_item4_predicted_shift_reversion_paused_data_loss.md's 2026-08-19
+    # correction). Real trade-off, not a free win: at window=2, mid=1, so the
+    # trend is a single-prior-sample vs single-recent-sample comparison -- very
+    # reactive, no smoothing. Validated on biometrics only (the only domain
+    # with enough real variance, same caveat as the reversion-sign fix itself
+    # -- docs/superpowers/specs/2026-07-23-predicted-shift-reversion-finding.md),
+    # applied uniformly for the same reasoned-extrapolation reason that doc
+    # already accepted for the sign fix.
     attention_self_model_trend_window_ticks: int = Field(
-        10, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS"
+        2, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS"
     )
     # Same 168h (7-day) default as attention_broadcast_log_retention_hours
     # above -- covers this repo's default 48h analysis-window scripts with
@@ -314,6 +336,62 @@ class Settings(BaseSettings):
     # whole point is accumulated history.
     codebase_delta_log_retention_days: float = Field(
         180.0, alias="SUBSTRATE_CODEBASE_DELTA_LOG_RETENTION_DAYS"
+    )
+
+    # Perceptual prediction error (P2, docs/superpowers/specs/2026-08-12-
+    # perception-frontier-design.md): a two-stage 0-1 surprise score per
+    # camera stream (updated 2026-08-19, review finding -- this comment
+    # used to describe only stage 1 and was stale the moment stage 2
+    # shipped the same day). Stage 1: raw magnitude
+    # `1 - cos(frame_embedding, EWMA_embedding)`. Stage 2: that magnitude
+    # z-scored against a second EWMA baseline of the magnitude itself,
+    # saturating at 3-sigma -- see orion/substrate/prediction_error.py::
+    # perception_prediction_error()'s own docstring for why stage 1 alone
+    # (the value this flag published for its first day live) was found
+    # numerically incomparable to every other prediction_error domain's
+    # min_error threshold and migrated to include stage 2. Own explicit
+    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED or
+    # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES -- same domain-independence
+    # convention every tick in this file follows (bus_synaptic vs
+    # vision_channel vs codebase all have their own flags despite
+    # structural similarity). Distinct from node:substrate.vision's P3
+    # channels: perception_staleness measures ARRIVAL TIMING,
+    # perception_yield measures the detector's OBJECT COUNT; this measures
+    # the embedding model's own CONTENT ENCODING of the frame (see
+    # orion/substrate/prediction_error.py's P2 section for the full
+    # independence check).
+    #
+    # This Field's own default stays False (an operator with no .env
+    # override gets the conservative default); Juniper's explicit
+    # go-ahead to flip the live .env to true landed as a separate commit
+    # the same day as the original shadow-only PR (chore(substrate-
+    # runtime): enable P2 shadow tick by default) -- SUBSTRATE_PERCEPTION_
+    # PREDICTION_ERROR_TICK_ENABLED=true is live on this host now, so the
+    # live-data sanity check documented in perception_prediction_error()'s
+    # own docstring is not a future gate, it already ran once (against
+    # stage 1) and needs re-running against stage 2's real output before
+    # a min_error crossing here should be trusted for any consumer
+    # decision.
+    enable_perception_prediction_error_tick: bool = Field(
+        False, alias="SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED"
+    )
+    # Clock-driven companion tick to the event-driven listener above -- writes
+    # node:substrate.perception (prediction_error + embedding_staleness) on a
+    # fixed interval regardless of whether a new embedding arrived this tick.
+    # Not optional: an event-only write would reproduce the node:substrate.
+    # route decay-to-zero incident CLAUDE.md section 0A names -- silence would
+    # mean this node is never rewritten again, and orion-field-digester's
+    # generic per-tick staleness decay would multiply whatever was last
+    # written toward 0.0 forever, indistinguishable from genuine calm. Same
+    # 30s default as bus_synaptic/vision_channel above.
+    perception_prediction_error_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_INTERVAL_SEC"
+    )
+    # Append-only substrate_perception_embedding_baseline retention, same
+    # 30-day convention as codebase_mass_baseline_retention_days above (each
+    # stream's own running EWMA state only needs its latest row functionally).
+    perception_baseline_retention_days: float = Field(
+        30.0, alias="SUBSTRATE_PERCEPTION_BASELINE_RETENTION_DAYS"
     )
 
     # Health monitor -> orion-notify attention alerts. Edge-triggered (fires only

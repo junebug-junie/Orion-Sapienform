@@ -79,12 +79,12 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "grammar.event.v1": "GrammarEventSQL",
     "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
     "vision.event.v1": "VisionEventSQL",
+    "vision.scene.inventory.v1": "VisionSceneInventorySQL",
     "action.outcome.emit.v1": "ActionOutcomeSQL",
     "debug.attention.streak_tick.v1": "DominanceStreakTickSQL",
     "substrate.dev_economics_ledger.v1": "DevEconomicsLedgerSQL",
     "substrate.doc_semantic_drift.v1": "DocSemanticDriftSQL",
     "juniper.affective_state.v1": "JuniperAffectiveStateSQL",
-    "self.phi_reward.v1": "PhiRewardSQL",
     "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
 }
 
@@ -117,6 +117,7 @@ class Settings(BaseSettings):
             "orion:metacog:sql-write",
             "orion:repair_pressure:appraisal",
             "orion:vision:events:sql-write",
+            "orion:vision:inventory:sql-write",
             "orion:chat:history:log",
             "orion:chat:history:turn",
             "orion:chat:social:turn",
@@ -177,7 +178,6 @@ class Settings(BaseSettings):
             "orion:equilibrium:transition",
             "orion:chat:history:spark_meta:patch",
             "orion:autonomy:action:outcome",
-            "orion:self:phi_reward",
             "orion:causal_geometry:snapshot",
             "orion:debug:attention:streak_tick",
             "orion:substrate:dev_economics_ledger",
@@ -215,6 +215,25 @@ class Settings(BaseSettings):
     channel_chat_history_spark_meta_patch: str = Field(
         "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
+    # AI Town chat-history table split (docs/superpowers/specs/
+    # 2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md).
+    # Retired SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED (PR #1734, 2026-08-19) --
+    # that was an additive bridge (every AI-Town row landed in BOTH tables),
+    # built for a live AI Town world. Retired same-day with AI Town's own
+    # backend confirmed dead (Convex connection refused, zero concurrent
+    # writes) -- no fallback to the dual-write it replaced (CLAUDE.md's
+    # "kill means kill"). This flag controls ROUTING instead: an AI-Town
+    # row lands in exactly one table, chosen once
+    # (worker.py::_resolve_chat_history_model_cls), never duplicated.
+    # Defaults True -- unlike the dual-write bridge this replaces, routing
+    # carries no first-time-in-production write-path risk (chat_history_log
+    # itself is untouched for every non-AI-Town row either way), so there is
+    # no reason to ship it off. False is a real rollback path: every row
+    # (AI-Town or not) goes to chat_history_log only, the pre-split
+    # behavior, if routing is ever suspected of picking the wrong table.
+    sql_writer_aitown_routing_enabled: bool = Field(
+        True, alias="SQL_WRITER_AITOWN_ROUTING_ENABLED"
+    )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
     # drive_audits_retention_days removed 2026-08-13: the drive_audits table
     # (and orion-sql-writer's whole write path for it) was fully removed that
@@ -249,15 +268,176 @@ class Settings(BaseSettings):
     sql_writer_grammar_pool_max_overflow: int = Field(4, alias="SQL_WRITER_GRAMMAR_POOL_MAX_OVERFLOW")
     sql_writer_grammar_statement_timeout_ms: int = Field(10_000, alias="SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS")
     sql_writer_grammar_lock_timeout_ms: int = Field(3_000, alias="SQL_WRITER_GRAMMAR_LOCK_TIMEOUT_MS")
-    grammar_events_retention_days: int = Field(30, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
-    grammar_events_retention_batch_size: int = Field(5000, alias="GRAMMAR_EVENTS_RETENTION_BATCH_SIZE")
+    # 2026-08-19: dropped 30->15 days. The 30-day default had never actually been
+    # enforced -- grammar_events retention was silently failing on every startup
+    # (missing index -> full-table scan -> statement timeout, see
+    # idx_grammar_events_created_at below) -- so this is a real policy change, not
+    # just re-enabling what was already the intended live behavior.
+    grammar_events_retention_days: int = Field(3, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
+    # batch_size 5000->1000, max_batches 20->100 (2026-08-19, live-verified): with the
+    # new created_at index, the SELECT half of the batched DELETE is fast (~13ms for
+    # 5000 rows), but the DELETE itself still needs one primary-key-index lookup per
+    # matched row to actually remove it -- on grammar_events (8 indexes, 16GB, poorly
+    # cached at this scale) that's real random I/O, observed at ~4.1ms/row under load
+    # (EXPLAIN ANALYZE: a real 5000-row DELETE took 20.6s, well past the 10s grammar
+    # statement timeout). 1000 rows/batch leaves real margin under that timeout; 100
+    # max batches removes the batch-count cap as the binding constraint so
+    # max_elapsed_sec below is what actually stops a run -- gracefully
+    # (capped_by_elapsed_limit=True, real committed progress, no exception) instead of
+    # occasionally dying mid-batch with a swallowed QueryCanceled and losing whatever
+    # that batch's rows would have been (previous behavior, confirmed live: grammar_edges
+    # committed 25000 rows across 5 successful batches, then batch 6 timed out and the
+    # whole run reported as a failure despite real progress having been made).
+    grammar_events_retention_batch_size: int = Field(1000, alias="GRAMMAR_EVENTS_RETENTION_BATCH_SIZE")
     grammar_events_retention_max_batches_per_startup: int = Field(
-        20,
+        100,
         alias="GRAMMAR_EVENTS_RETENTION_MAX_BATCHES_PER_STARTUP",
     )
     grammar_events_retention_max_elapsed_sec: float = Field(
         120.0,
         alias="GRAMMAR_EVENTS_RETENTION_MAX_ELAPSED_SEC",
+    )
+    # grammar_edges/grammar_atoms/substrate_organ_emissions had NO retention at all
+    # until this patch (confirmed live 2026-08-19: unbounded growth, ~13GB combined,
+    # zero deletes ever). Each gets its own retention_days knob, same precedent as
+    # goal_provenance_streak_ticks_retention_days above, but deliberately reuses the
+    # grammar_events batch/cap knobs above rather than adding a near-duplicate set
+    # per table -- same scale, same startup-bounded-batch shape, nothing about these
+    # three tables needs independently tunable batching.
+    grammar_edges_retention_days: int = Field(3, alias="GRAMMAR_EDGES_RETENTION_DAYS")
+    grammar_atoms_retention_days: int = Field(3, alias="GRAMMAR_ATOMS_RETENTION_DAYS")
+    substrate_organ_emissions_retention_days: int = Field(
+        3, alias="SUBSTRATE_ORGAN_EMISSIONS_RETENTION_DAYS"
+    )
+    # grammar_traces was left out of the patch above and it showed. Its children were
+    # pruned at 3 days while the parent rows lived forever, so the Grammar Atlas listed
+    # traces whose atoms/edges/events no longer existed. Measured live 2026-08-20, BEFORE
+    # this key existed: 487,970 trace rows, and 205,465 of them (42%) already had zero
+    # atoms. Same window as the children on purpose -- a different window here just
+    # re-creates the mismatch in one direction or the other.
+    grammar_traces_retention_days: int = Field(3, alias="GRAMMAR_TRACES_RETENTION_DAYS")
+
+    # substrate_proposal_frames had NO bound at all until 2026-08-20: 474,230 rows / 1,758 MB,
+    # growing ~27k rows and ~105 MB a day.
+    #
+    # 10 days, not 7, and the reason is consumer windows rather than disk. Two live readers
+    # reach back further than a week:
+    #   * orion/autonomy/evals/run_attention_bound_proposal_eval.py:39 WINDOW_DAYS = 7
+    #   * scripts/analysis/measure_proposal_feedback_correlation.py:100
+    #     DEFAULT_WINDOW_HOURS = 200.0, i.e. 8.33 days
+    # A 7-day window ties exactly to the first and sits INSIDE the second, so retention would
+    # be racing both at their oldest edge, and both degrade to "insufficient data" rather than
+    # failing loudly. 10 days clears the longer of the two with a ~1.7-day margin.
+    #
+    # Correctness does not depend on this number at all -- that is held by
+    # _substrate_chain_floor, which refuses to delete any proposal a later pipeline stage still
+    # owes work on regardless of age. This is purely how much history stays inspectable.
+    #
+    # Measured live 2026-08-20 (474,861 rows): 10 days keeps 202,276 rows, 7 days would have
+    # kept 113,060. Costs roughly 105 MB per extra day. NOTE that ~84% of this table's bytes
+    # are TOAST (1,471 MB of 1,760 MB), so pruning frees TOAST chunks, not heap pages.
+    substrate_proposal_frames_retention_days: int = Field(
+        10, alias="SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS"
+    )
+
+    # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
+    #
+    # The window was never the reason these tables were 36 GB -- retention could not run
+    # often enough to enforce ANY window (see grammar_truth.GRAMMAR_RETENTION_TABLES). But
+    # once it does run, 15 days is not a fix either: at the measured 2.42 GB/day arrival,
+    # a 15-day window settles at ~36 GB, which is exactly where the tables already were.
+    # Retention working perfectly would have changed nothing about footprint.
+    #
+    #   window   steady-state footprint (at 2.42 GB/day, measured)
+    #   15 days  ~36 GB   <- previous default; equals the status quo
+    #    7 days  ~17 GB
+    #    3 days   ~7 GB   <- chosen
+    #
+    # Safety of the shorter window is NOT a margin argument. An earlier version of this
+    # comment justified 3 days with "all five cursors are within 13 seconds, a ~20,000x
+    # margin" -- a point-in-time sample presented as a distribution, and wrong: the chat
+    # lane had measurably gone silent for 1 day 19.6 hours on a healthy system, a 1.65x
+    # margin. What actually makes the window safe is that retention refuses to delete rows
+    # any reducer lane still has unconsumed below the cutoff, checked per lane, every
+    # cycle -- see _grammar_events_cursor_floor.
+    #
+    # Reclaiming the ~29 GB this frees is a SEPARATE step: DELETE returns space for reuse
+    # inside the table, not to the OS. Deferred by Juniper until retention is converging.
+
+    # Object permanence sweep -- see app/vision_object_permanence.py and its
+    # loop wrapper. Timer-driven by design: a departure is a non-event, so
+    # nothing frame-triggered can ever detect it.
+    #
+    # 1800s (30 min) default, the middle of the design doc's named 15-30 min
+    # range. Not yet tuned against a real departure/arrival -- there has not
+    # been one to check the cadence against.
+    vision_permanence_sweep_interval_sec: float = Field(
+        1800.0, alias="VISION_PERMANENCE_SWEEP_INTERVAL_SEC"
+    )
+    # Bounds a stream's FIRST-EVER sweep so it does not scan its entire
+    # census history on one tick. 3600s = one hour of census rows, ~700 at
+    # the live ~5s cadence -- comfortably small for a single query.
+    vision_permanence_lookback_ceiling_sec: float = Field(
+        3600.0, alias="VISION_PERMANENCE_LOOKBACK_CEILING_SEC"
+    )
+    vision_permanence_absence_fraction: float = Field(
+        0.1, alias="VISION_PERMANENCE_ABSENCE_FRACTION"
+    )
+    vision_permanence_min_absence_sec: float = Field(
+        3600.0, alias="VISION_PERMANENCE_MIN_ABSENCE_SEC"
+    )
+    vision_permanence_max_absence_sec: float = Field(
+        86400.0, alias="VISION_PERMANENCE_MAX_ABSENCE_SEC"
+    )
+
+    grammar_retention_interval_sec: float = Field(
+        60.0, alias="GRAMMAR_RETENTION_INTERVAL_SEC"
+    )
+    # Per-cycle caps, deliberately much smaller than the startup caps above. Sized from the
+    # measured cost of a delete on these tables (~4.1 ms/row on grammar_events: one
+    # primary-key lookup per row across 8 indexes, poorly cached at this scale).
+    #
+    #   12,000 rows/cycle (3 batches x 1000 x 4 tables)
+    #   effective period ~109s, NOT 60s: the loop sleeps `interval` and THEN works, so the
+    #     interval is a gap between cycles, not a fixed period. 12,000 rows x ~4.1 ms/row
+    #     is ~49s of work on top of the 60s sleep.
+    #   => ~9.5M rows/day of capacity, against 1.1M/day arrival and a ~13.8M one-time drain
+    #   => drain completes in ~1.65 days, then the loop idles
+    #
+    # (An earlier version of this comment claimed 17.3M rows/day and "about a day" by
+    # treating the interval as a fixed period. Code review caught it; the corrected figure
+    # is ~1.8x slower and still comfortably ahead of arrival.)
+    #
+    # A batch that deletes fewer rows than batch_size ends that table's cycle early, so the
+    # steady state costs a handful of empty probes. Keeping each cycle small is the point:
+    # the startup job's full-speed pass was measured driving host I/O stall to ~21%, and
+    # this service shares a disk with everything else on athena.
+    grammar_retention_periodic_max_batches: int = Field(
+        3, alias="GRAMMAR_RETENTION_PERIODIC_MAX_BATCHES"
+    )
+    grammar_retention_periodic_max_elapsed_sec: float = Field(
+        20.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_ELAPSED_SEC"
+    )
+
+    # Bounds the WHOLE cycle, where the two settings above bound one table each. That gap
+    # was a real missing bound: six tables x a 20s per-table cap is a 120s cycle on a 60s
+    # timer, with nothing anywhere saying so. 45s leaves headroom inside the interval.
+    #
+    # run_one_retention_cycle splits this as a fair share across the tables that still have a
+    # window configured, so the first table in the tuple (grammar_events, the only one
+    # carrying real debt) cannot starve the five behind it.
+    #
+    # NOTE the batch cap above is deliberately NOT raised alongside this. At 3 batches
+    # grammar_events uses 1.08-3.33s of its per-table budget (three consecutive live cycles)
+    # and drains its 4.13M-row backlog in ~31 hours net of arrival. Raising it to 10 would
+    # cut that at 3.3x the delete I/O, on a host already I/O-stalled ~22% of wall time and
+    # where this same pass was measured driving stall to ~21%. Converging in a day is not a
+    # problem worth buying with that. Raise it only with an I/O measurement in hand -- and
+    # raise the cycle budget with it: at ~1.11s/batch, 10 batches needs ~11.1s, above the
+    # 7.5s fair share a 45s budget gives the first of six tables. `effective_max_elapsed_sec`
+    # on /grammar/truth is what tells you which cap actually bound.
+    grammar_retention_periodic_max_cycle_sec: float = Field(
+        45.0, alias="GRAMMAR_RETENTION_PERIODIC_MAX_CYCLE_SEC"
     )
     sql_writer_allow_accepted_pressure_ingest: bool = Field(
         False,

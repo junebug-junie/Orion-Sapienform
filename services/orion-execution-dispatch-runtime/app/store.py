@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, time, timedelta, timezone
+# NOT `import time`: this module already imports datetime.time above, and the plain module
+# import loses that race silently -- AttributeError: type object 'datetime.time' has no
+# attribute 'monotonic', at runtime, on the reconciler path only.
+from time import monotonic as _monotonic
 
 from psycopg2.extras import Json
 from pydantic import ValidationError
+from orion.autonomy.contrast import TreatedCellKey
+from orion.autonomy.prediction import EffectPosterior
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -41,13 +47,19 @@ def _coerce_starvation_counts(raw: object) -> dict[str, int]:
 
 
 class ExecutionDispatchRuntimeStore:
-    def __init__(self, postgres_uri: str) -> None:
+    def __init__(self, postgres_uri: str, *, reconcile_interval_sec: float = 900.0) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
             pool_pre_ping=True,
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
+        # Seeded to NOW, not None: otherwise the expensive full-table anti-join in
+        # reconcile_dispatch_pending runs on the first tick of every process start, and a crash
+        # loop would re-run it per restart -- defeating the rate limit that makes it safe to
+        # call every tick.
+        self._reconcile_interval_sec = float(reconcile_interval_sec)
+        self._last_reconcile_mono: float | None = _monotonic()
 
     def _validate_policy_frame_row(
         self, payload: object, *, log_label: str
@@ -100,6 +112,16 @@ class ExecutionDispatchRuntimeStore:
         statistics as an alternative explanation -- ruled out, a fresh
         ANALYZE on both tables left the plan and cost unchanged).
 
+        SUPERSEDED 2026-08-19 (ROADMAP D2): this is no longer a join at all. It reads
+        `p.dispatch_pending` off a PARTIAL index containing only unprocessed rows, so the
+        "huge prefix of already-processed ancient history" the analysis below is about does not
+        exist to be walked. That analysis was correct and is kept because it explains why the
+        obvious `NOT EXISTS` rewrite was NOT the answer -- the marker is. Batching the LIMIT,
+        the actual fix from that patch, is unchanged and still right for reading a backlog in
+        chunks; only the cost of FINDING each chunk changed (829 MB hash join -> index scan).
+        See services/orion-sql-db/manual_migration_policy_dispatch_pending_marker.sql.
+
+        Historical note, still accurate for the join shape it describes:
         Deliberately still the `LEFT JOIN` shape here, not `NOT EXISTS`: a
         `NOT EXISTS` rewrite is dramatically cheaper for the DESC "freshest"
         direction (load_freshest_policy_frame_without_dispatch below,
@@ -124,11 +146,9 @@ class ExecutionDispatchRuntimeStore:
                 conn.execute(
                     text(
                         """
-                        SELECT p.policy_decision_frame_json
+                        SELECT p.policy_decision_frame_json, p.frame_id
                         FROM substrate_policy_decision_frames p
-                        LEFT JOIN substrate_execution_dispatch_frames d
-                          ON d.source_policy_frame_id = p.frame_id
-                        WHERE d.frame_id IS NULL
+                        WHERE p.dispatch_pending
                         ORDER BY p.generated_at ASC
                         LIMIT :limit
                         """
@@ -143,8 +163,11 @@ class ExecutionDispatchRuntimeStore:
             frame = self._validate_policy_frame_row(
                 row["policy_decision_frame_json"], log_label="oldest_batch_lookup"
             )
-            if frame is not None:
-                frames.append(frame)
+            if frame is None:
+                continue
+            if self._already_dispatched(frame.frame_id):
+                continue
+            frames.append(frame)
         return frames
 
     def load_freshest_policy_frame_without_dispatch(self) -> PolicyDecisionFrameV1 | None:
@@ -179,12 +202,9 @@ class ExecutionDispatchRuntimeStore:
                 conn.execute(
                     text(
                         """
-                        SELECT p.policy_decision_frame_json
+                        SELECT p.policy_decision_frame_json, p.frame_id
                         FROM substrate_policy_decision_frames p
-                        WHERE NOT EXISTS (
-                          SELECT 1 FROM substrate_execution_dispatch_frames d
-                          WHERE d.source_policy_frame_id = p.frame_id
-                        )
+                        WHERE p.dispatch_pending
                         ORDER BY p.generated_at DESC
                         LIMIT 1
                         """
@@ -195,9 +215,100 @@ class ExecutionDispatchRuntimeStore:
             )
         if not row:
             return None
-        return self._validate_policy_frame_row(
+        frame = self._validate_policy_frame_row(
             row["policy_decision_frame_json"], log_label="freshest_lookup"
         )
+        if frame is not None and self._already_dispatched(frame.frame_id):
+            return None
+        return frame
+
+    def _already_dispatched(self, policy_frame_id: str) -> bool:
+        """Restores, at the read boundary, the guarantee the anti-join used to give for free.
+
+        `WHERE d.frame_id IS NULL` could not return an already-dispatched frame -- it looked. A
+        marker can be stale-true (every pre-migration row is, until backfilled; so is anything
+        restored from a backup taken mid-migration), and re-dispatching is NOT a harmless
+        repeat: it would run a real cortex action a second time against a policy decision that
+        has already been acted on. Checked here rather than in the two workers' call sites, so
+        both read directions are covered by one guard and neither can be updated without it.
+
+        A stale marker found this way is cleared, in a batch, so the FIFO advances instead of
+        re-selecting the same rows every tick.
+        """
+        if self.load_dispatch_frame_for_policy_frame(policy_frame_id) is None:
+            return False
+        logger.info("dispatch_pending_stale_marker policy_frame_id=%s", policy_frame_id)
+        self.clear_dispatch_pending(policy_frame_id)
+        return True
+
+    def clear_dispatch_pending(self, policy_frame_id: str, *, drain_batch: int = 5000) -> int:
+        """Clear this row's marker, plus a batch of others that already have a dispatch frame.
+
+        The marker defaults to TRUE, so every pre-migration row starts pending. Clearing one at
+        a time would put 423k stale rows ahead of real work under `ORDER BY generated_at ASC`.
+        The batch is the migration's own backfill statement and rides the partial index.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames
+                       SET dispatch_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": policy_frame_id},
+            )
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames u
+                       SET dispatch_pending = false
+                     WHERE u.frame_id IN (
+                           SELECT x.frame_id
+                             FROM substrate_policy_decision_frames x
+                             JOIN substrate_execution_dispatch_frames d
+                               ON d.source_policy_frame_id = x.frame_id
+                            WHERE x.dispatch_pending
+                            LIMIT :batch
+                     )
+                """),
+                {"batch": max(0, int(drain_batch))},
+            )
+        drained = 1 + int(result.rowcount or 0)
+        if drained > 1:
+            logger.info("dispatch_pending_bulk_drained cleared=%s", drained)
+        return drained
+
+    def reconcile_dispatch_pending(self, *, force: bool = False) -> int:
+        """Re-queue any policy frame whose marker was cleared without a dispatch frame existing.
+
+        Only ever sets the marker TRUE -- it can add work, never remove it, so a bug here costs
+        duplicated effort rather than lost effort. It IS the expensive anti-join the marker
+        exists to avoid, hence rate-limited rather than run on every tick.
+        """
+        now = _monotonic()
+        if not force and self._last_reconcile_mono is not None:
+            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
+                return 0
+        self._last_reconcile_mono = now
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames p
+                       SET dispatch_pending = true
+                     WHERE NOT p.dispatch_pending
+                       AND NOT EXISTS (
+                             SELECT 1 FROM substrate_execution_dispatch_frames d
+                              WHERE d.source_policy_frame_id = p.frame_id
+                       )
+                """)
+            )
+        requeued = int(result.rowcount or 0)
+        if requeued:
+            logger.warning(
+                "dispatch_pending_reconciled requeued=%s -- policy frames had their pending "
+                "marker cleared with no dispatch frame present. Work would have been lost.",
+                requeued,
+            )
+        return requeued
 
     def _retire_incompatible_policy_frame(
         self, raw_frame_id: str, raw_proposal_frame_id: str | None
@@ -353,6 +464,17 @@ class ExecutionDispatchRuntimeStore:
                     "created_at": now,
                 },
             )
+            # ROADMAP D2, 2026-08-19. SAME TRANSACTION as the insert: a crash between the two
+            # would otherwise either lose the work (marker cleared, no dispatch frame) or
+            # reprocess it, and only one of those is recoverable.
+            conn.execute(
+                text("""
+                    UPDATE substrate_policy_decision_frames
+                       SET dispatch_pending = false
+                     WHERE frame_id = :frame_id
+                """),
+                {"frame_id": frame.source_policy_frame_id},
+            )
 
     def save_dispatch_result(
         self,
@@ -363,6 +485,9 @@ class ExecutionDispatchRuntimeStore:
         status: str,
         result_json: dict,
         raw_len: int,
+        latency_ms: float | None = None,
+        dispatch_kind: str | None = None,
+        target_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -370,14 +495,19 @@ class ExecutionDispatchRuntimeStore:
                 text(
                     """
                     INSERT INTO substrate_dispatch_results (
-                        result_id, dispatch_id, frame_id, status, result_json, raw_len, created_at
+                        result_id, dispatch_id, frame_id, status, result_json, raw_len,
+                        latency_ms, dispatch_kind, target_id, created_at
                     ) VALUES (
-                        :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len, :created_at
+                        :result_id, :dispatch_id, :frame_id, :status, :result_json, :raw_len,
+                        :latency_ms, :dispatch_kind, :target_id, :created_at
                     )
                     ON CONFLICT (result_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         result_json = EXCLUDED.result_json,
-                        raw_len = EXCLUDED.raw_len
+                        raw_len = EXCLUDED.raw_len,
+                        latency_ms = EXCLUDED.latency_ms,
+                        dispatch_kind = EXCLUDED.dispatch_kind,
+                        target_id = EXCLUDED.target_id
                     """
                 ),
                 {
@@ -387,9 +517,92 @@ class ExecutionDispatchRuntimeStore:
                     "status": status,
                     "result_json": Json(result_json),
                     "raw_len": raw_len,
+                    "latency_ms": latency_ms,
+                    "dispatch_kind": dispatch_kind,
+                    "target_id": target_id,
                     "created_at": now,
                 },
             )
+
+    def load_action_cost_estimates(self, lookback_hours: int = 24) -> dict[tuple[str, str], float]:
+        """Median motor-seconds per (dispatch_kind, target_id), from history.
+
+        The allocator's denominator. A global p50 would make cost uniform and
+        collapse ranking back to raw information -- and the spread is real:
+        measured live, `maintain host:docker_containers` is 890ms against
+        `summarize self:current` at 5,362ms, a 6x difference.
+
+        MEDIAN, not mean. One 92-second outlier was already observed in the
+        first hour of cost data; a mean would let a single hung dispatch
+        permanently price its whole action out of the budget.
+
+        Reads substrate_dispatch_results, NOT substrate_action_outcomes.
+        The outcome ledger has dispatch_kind and target_id but only contains
+        actions that DECLARED A SIGNAL -- 32.3% of dispatch volume. Sourcing
+        cost from it made the allocator refuse `no_cost_estimate` on 7 of 12
+        live pending actions whose cost was sitting in dispatch_results the
+        whole time. A result row only exists for an action that actually ran,
+        so there is no blocked-candidate NULL to filter out here.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT dispatch_kind, target_id,
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_ms
+                      FROM substrate_dispatch_results
+                     WHERE latency_ms IS NOT NULL
+                       AND dispatch_kind IS NOT NULL
+                       AND target_id IS NOT NULL
+                       AND created_at > now() - make_interval(hours => :hours)
+                     GROUP BY 1, 2
+                    """
+                ),
+                {"hours": lookback_hours},
+            ).all()
+        return {
+            (r[0], r[1]): float(r[2]) / 1000.0
+            for r in rows
+            if r[2] is not None and float(r[2]) > 0
+        }
+
+    def sum_motor_seconds_for_day(self, day_start, day_end) -> float:
+        """Motor-seconds actually spent in a UTC day.
+
+        Deliberately reads the RESULT table, not the frame table. The daily
+        risk cap re-derives its state by scanning substrate_execution_dispatch
+        _frames, and that single pattern is 49.8% of this database's entire
+        buffer traffic (pg_stat_statements, 2026-08-20). This is a sum over a
+        narrow, time-indexed column on a much smaller table
+        (substrate_dispatch_results_latency_idx is partial on
+        latency_ms IS NOT NULL).
+
+        Absent latency contributes NOTHING rather than zero. Those are the
+        same number here and not the same claim: a NULL means "this action's
+        cost was never recorded", and counting it as free would make the
+        budget systematically under-count spend and over-permit -- exactly
+        backwards for a ceiling.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT coalesce(sum(latency_ms), 0) / 1000.0 AS motor_sec,
+                           count(*) FILTER (WHERE latency_ms IS NULL) AS uncosted
+                      FROM substrate_dispatch_results
+                     WHERE created_at >= :day_start AND created_at < :day_end
+                    """
+                ),
+                {"day_start": day_start, "day_end": day_end},
+            ).first()
+        if row is None:
+            return 0.0
+        if row[1]:
+            logger.warning(
+                "motor_budget_uncosted_dispatches count=%d -- budget under-counts spend",
+                row[1],
+            )
+        return float(row[0] or 0.0)
 
     def load_dispatch_result_by_dispatch_id(self, dispatch_id: str) -> dict | None:
         with self._engine.connect() as conn:
@@ -715,3 +928,41 @@ class ExecutionDispatchRuntimeStore:
                 {"limit": limit},
             ).mappings().all()
         return [str(row["status"]) for row in rows]
+
+    def load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
+        """Current per-(kind, target, signal, baseline_bin) belief.
+
+        Full read of a tiny, primary-keyed table (tens of rows). Explicitly
+        NOT the newest-row-of-a-big-table pattern used by
+        load_latest_daily_risk_baseline: that pattern, applied to the 2 GB
+        dispatch-frame table, is 49.8% of this database's entire buffer
+        traffic as of 2026-08-20, and repeating it for a value read on every
+        single tick would make the same mistake twice.
+        """
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT dispatch_kind, target_id, signal_id, baseline_bin,
+                               posterior_mean, posterior_variance, posterior_n
+                          FROM substrate_action_effect_posterior
+                        """
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return {
+            (
+                r["dispatch_kind"],
+                r["target_id"],
+                r["signal_id"],
+                int(r["baseline_bin"]),
+            ): EffectPosterior(
+                mean=float(r["posterior_mean"]),
+                variance=float(r["posterior_variance"]),
+                n=int(r["posterior_n"]),
+            )
+            for r in rows
+        }

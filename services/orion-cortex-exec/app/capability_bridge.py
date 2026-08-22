@@ -8,6 +8,17 @@ from pydantic import BaseModel, Field
 from .actions_skill_registry import ActionsSkillRegistry
 
 # One-to-one mapping from planner-visible semantic verbs to concrete skills (avoids family ordering bugs).
+#
+# `look_at_camera` was missing from here despite its own docstring's
+# rationale applying to it exactly -- it only ever resolved correctly by
+# accident, because `skills.perception.look_at_camera.v1` was the sole
+# "perception" family skill for the fallback path below (`candidates[0]`)
+# to land on. Confirmed live 2026-08-21: adding `skills.perception.
+# ask_camera.v1` as a second perception-family skill broke it immediately
+# -- `test_look_at_camera_semantic_verb_resolves_via_capability_bridge`
+# started resolving `look_at_camera` to `ask_camera` instead, a real
+# regression this same patch caused and fixed in the same commit, not a
+# hypothetical. Both perception skills pinned explicitly now.
 _SEMANTIC_VERB_TO_SKILL: dict[str, str] = {
     "answer_current_datetime": "skills.system.time_now.v1",
     "inspect_gpu_status": "skills.gpu.nvidia_smi_snapshot.v1",
@@ -15,6 +26,8 @@ _SEMANTIC_VERB_TO_SKILL: dict[str, str] = {
     "list_biometrics_recent_readings": "skills.biometrics.raw_recent.v1",
     "inspect_docker_container_status": "skills.docker.ps_status.v1",
     "send_operator_notification": "skills.system.notify_chat_message.v1",
+    "look_at_camera": "skills.perception.look_at_camera.v1",
+    "ask_camera": "skills.perception.ask_camera.v1",
 }
 
 

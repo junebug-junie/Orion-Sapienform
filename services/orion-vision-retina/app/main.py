@@ -12,7 +12,12 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.vision import VisionFramePointerPayload
 
 from .envelopes import make_frame_pointer_envelope
-from .frame_store import cleanup_old_frames, save_frame
+from .frame_store import (
+    PerceptUploadError,
+    cleanup_old_frames,
+    save_frame,
+    upload_frame,
+)
 from .health import RetinaMetrics, make_system_health_envelope
 from .settings import Settings, get_settings
 from .sources import create_frame_source
@@ -94,17 +99,45 @@ class RetinaService:
             self.metrics.frames_failed += 1
             self.metrics.last_error = "source read returned no frame"
             return False
-        saved = await asyncio.to_thread(
-            save_frame,
-            result.frame,
-            directory=self.settings.FRAME_STORAGE_DIR,
-            camera_id=self.settings.RETINA_CAMERA_ID,
-            stream_id=self.settings.RETINA_STREAM_ID,
-            ts=result.ts,
-            quality=self.settings.JPEG_QUALITY,
-        )
+        if str(self.settings.RETINA_FRAME_MODE).strip().lower() == "percept_store":
+            if not self.settings.RETINA_PERCEPT_STORE_URL:
+                self.metrics.frames_failed += 1
+                self.metrics.last_error = (
+                    "RETINA_FRAME_MODE=percept_store but RETINA_PERCEPT_STORE_URL is unset"
+                )
+                logger.error(f"[RETINA] {self.metrics.last_error}")
+                return False
+            try:
+                saved = await asyncio.to_thread(
+                    upload_frame,
+                    result.frame,
+                    base_url=self.settings.RETINA_PERCEPT_STORE_URL,
+                    quality=self.settings.JPEG_QUALITY,
+                    token=self.settings.RETINA_PERCEPT_STORE_TOKEN or None,
+                    timeout_sec=self.settings.RETINA_PERCEPT_TIMEOUT_SEC,
+                )
+            except PerceptUploadError as exc:
+                # Drop the frame and try the next one. Deliberately no spooling:
+                # this mode runs on laptops that sleep and roam, and a backlog
+                # of webcam images on a personal machine is a worse failure than
+                # a gap in the record.
+                self.metrics.frames_failed += 1
+                self.metrics.last_error = str(exc)
+                logger.warning(f"[RETINA] {exc}")
+                return False
+        else:
+            saved = await asyncio.to_thread(
+                save_frame,
+                result.frame,
+                directory=self.settings.FRAME_STORAGE_DIR,
+                camera_id=self.settings.RETINA_CAMERA_ID,
+                stream_id=self.settings.RETINA_STREAM_ID,
+                ts=result.ts,
+                quality=self.settings.JPEG_QUALITY,
+            )
         payload = VisionFramePointerPayload(
-            image_path=saved.image_path,
+            image_path=saved.image_path or None,
+            sha256=saved.sha256,
             camera_id=self.settings.RETINA_CAMERA_ID,
             stream_id=self.settings.RETINA_STREAM_ID,
             frame_ts=result.ts,

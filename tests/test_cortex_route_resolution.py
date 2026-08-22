@@ -179,14 +179,20 @@ def test_template_key_treats_absent_or_blank_as_no_template(bad):
     assert candidate_template_key(candidate) is None
 
 
-def test_live_config_declares_no_template_routes_yet():
+def test_live_config_declares_exactly_the_shipped_template_routes():
     """Guard on the real shipped config, not a synthetic one.
 
-    This patch is the seam only. If a route is added to
-    `config/execution_dispatch/execution_dispatch_policy.v1.yaml` it must come
-    with its own tests and its own deploy, so this asserts the shipped file is
-    still inert -- making that a deliberate, visible step rather than something
-    that rides along in an unrelated change.
+    2026-08-13: this asserted `template_to_cortex == {}` -- the seam shipped
+    inert on purpose, so a route landing here would be a deliberate, visible
+    step with its own tests, not something riding along in an unrelated
+    change (see git history for that original docstring).
+
+    2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
+    dispatch-design.md) is exactly that deliberate step: the first two
+    template routes since the seam shipped, both with their own gating tests
+    (see TestTensionRoutesGating below). This test now pins the live file to
+    those three named entries -- still failing loudly if a fourth is ever
+    added without a matching test, same purpose as before, updated contract.
     """
     from pathlib import Path
 
@@ -196,4 +202,23 @@ def test_live_config_declares_no_template_routes_yet():
     policy = load_execution_dispatch_policy(
         repo_root / "config" / "execution_dispatch" / "execution_dispatch_policy.v1.yaml"
     )
-    assert policy.template_to_cortex == {}
+    assert set(policy.template_to_cortex) == {
+        "observe_tension_via_camera",
+        "prune_dangling_images",
+        "prune_stopped_containers",
+    }
+    assert (
+        policy.template_to_cortex["observe_tension_via_camera"].cortex_verb
+        == "skills.perception.look_at_camera.v1"
+    )
+    assert policy.template_to_cortex["observe_tension_via_camera"].allowed_scope == "inspect_only"
+    assert (
+        policy.template_to_cortex["prune_dangling_images"].cortex_verb
+        == "skills.runtime.image_prune.v1"
+    )
+    assert (
+        policy.template_to_cortex["prune_stopped_containers"].cortex_verb
+        == "skills.runtime.docker_prune_stopped_containers.v1"
+    )
+    for key in ("prune_dangling_images", "prune_stopped_containers"):
+        assert policy.template_to_cortex[key].allowed_scope == "maintenance_bounded"

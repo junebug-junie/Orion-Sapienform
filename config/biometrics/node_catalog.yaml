@@ -7,11 +7,19 @@ defaults:
 
 nodes:
   atlas:
+    # DECOMMISSIONED 2026-08-21. The physical chassis is gone as a distinct node: its disks
+    # were pulled and replaced with athena's (athena now boots from that box, inheriting its
+    # iLO at 192.168.1.34 -- see services/orion-biometrics/.env), its 2x V100 16GB moved into
+    # circe, and its old PDU outlets (34,35) are now athena's own reading, not a proxy. This
+    # entry is kept, not deleted, so `atlas` still resolves for any historical trace/lineage
+    # lookup; expected_online:false stops pressure_organ.py from treating its permanent
+    # silence as an unexpected outage (see orion/substrate/biometrics_loop/pressure_organ.py).
+    # It will never report again -- do not re-flip this without a real box behind the name.
     aliases:
       - atlas
       - atlas.tail348bbe.ts.net
     role: inference_gpu
-    expected_online: true
+    expected_online: false
     capabilities:
       local_llm_heavy: true
       local_llm_quick: true

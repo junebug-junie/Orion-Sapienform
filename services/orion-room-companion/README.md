@@ -1,0 +1,298 @@
+# orion-room-companion
+
+Runs Claude as a third participant in Orion's social room.
+
+One bus consumer, one `claude -p` subprocess, one credential. It takes a
+`RoomClaudeRequestV1` off `orion:room:claude:request`, produces one Claude
+turn, and publishes a `RoomClaudeUtteranceV1` on
+`orion:room:claude:utterance`. That is the whole service.
+
+Design doc: `docs/architecture/hub-social-room-claude-companion.md`.
+
+## Why this is a separate service
+
+The obvious build puts the subprocess in `orion-hub`, next to the chat box it
+serves. Don't. Audited live 2026-08-14, the Hub container runs as **root** and
+already exposes readable `/root/.ssh`, `/root/.config/gh`,
+`/var/run/docker.sock`, `/root/.fcc/.env`, and the repo mount — and Orion's own
+FCC turns run *in that container* with `bypassPermissions` and full Bash.
+
+So a Claude credential *stored* in Hub is one Orion can read directly.
+Moving it here removes that, and removes the accident surface with it: no
+config file in the repo tree, nothing in `/mnt/scripts` backups, nothing
+graphify indexes, nothing a stray `docker inspect` on Hub reveals.
+
+**What this does NOT do — stated plainly, because an earlier draft of this
+README claimed otherwise.** This is not an enforcement boundary against a
+Hub-resident agent. `services/orion-hub/docker-compose.yml:62` mounts
+`/var/run/docker.sock` read-write and the Hub image ships the `docker` CLI, so
+an FCC turn with Bash in Hub can simply run:
+
+```bash
+docker exec orion-athena-room-companion env | grep ROOM_COMPANION_CLAUDE_OAUTH_TOKEN
+# or, without even needing exec access:
+docker inspect orion-athena-room-companion --format '{{json .Config.Env}}'
+```
+
+Verified live 2026-08-14 against the credential's previous form (a mounted
+`.credentials.json` file, then readable via `docker exec ... cat`); the
+property is unchanged by the 2026-08-18 switch to an OAuth token env var —
+`docker inspect` reads a container's configured environment without even
+needing `exec`, so this is if anything an easier read than the file was.
+Docker-socket access is root-equivalent on the host, so no arrangement of
+*this* service's mounts or env can close it.
+
+Consequence for v2: a spend cap enforced by owning the credential would be
+**advisory, not enforced**, for exactly as long as Hub holds the docker
+socket. Do not build the v2 budget on the assumption that this container is a
+wall.
+
+Direction settled with Juniper 2026-08-14, so next phase does not re-derive it:
+
+- **Keeping the socket.** It powers `scripts/service_logs.py` (the service-log
+  viewer) and `api_routes.py:1128` (operator container bringup) — both live
+  features. Dropping it is not free.
+- **"Enforce budget somewhere Orion cannot reach" does not work either.** With
+  the docker socket, a Hub-resident agent is root-equivalent on the host, so no
+  software cap is enforceable wherever the logic lives. Real enforcement would
+  mean moving Orion's FCC turns out of the socket-holding container — a much
+  bigger change than this room warrants.
+- **Next-phase shape: advisory cap + reconciliation.** This service is the only
+  legitimate producer of room utterances, and
+  `orion/dev_economics/claude_code_ingest.py` already reads
+  `~/.claude/projects/*.jsonl`. Total observed spend can therefore be
+  reconciled against metered spend and a gap surfaced. Detect; do not pretend
+  to prevent.
+
+What the separation genuinely buys: defense in depth, a much smaller accident
+surface, and a container that is worth nothing to break into on its own — no
+repo mount, no SSH keys, no gh config, no docker socket, no host networking,
+no git, no gh. `tests/test_credential_isolation.py` fails if any of that
+returns.
+
+## Phase 2: the budget watchdog (design, not built)
+
+v1 has no cap by design — meter only, to size the real number. v2 needs one,
+and the enforcement has to live **outside Docker on a cadence** (Juniper,
+2026-08-14). The reasoning matters more than the mechanism:
+
+**The threat model is runaway autonomy, not an adversary.** The risk is a loop,
+a retry storm, or an over-eager plan — not Orion strategically evading
+controls. A host-side watchdog is genuinely effective against that, because a
+runaway loop does not disable its own monitor. Against a deliberate adversary
+holding Hub's docker socket nothing in software helps, and that is fine,
+because that was never the real risk.
+
+Shape: a root `systemd` timer (precedent: `deploy/systemd/`), oneshot, every
+N minutes.
+
+- **Ground truth**: the companion's own transcripts under
+  `/mnt/docker/volumes/${PROJECT}-room-companion-claude/_data/projects/*.jsonl`.
+  Root-only from the host, which a systemd unit already is. Reconcile against
+  the metered `cost_usd` on `orion:room:claude:utterance`; a gap between them
+  is out-of-band usage.
+- **Cap state** lives in a host file the containers cannot write.
+- **On breach**: `docker stop` the companion (immediate, reversible) and
+  notify. Escalation: revoke the token server-side at
+  https://claude.ai/settings/claude-code.
+
+Three things that will bite whoever builds it:
+
+1. **A stopped/removed container is the fast kill switch; `docker stop` still
+   works exactly as described here.** The credential's *form* changed
+   2026-08-18 (OAuth token env var, not a mounted file — see "Credential
+   isolation" below), which retires the specific file-mount trap that used to
+   live here (moving `.credentials.json` on the host didn't cut the container
+   off, because a bind mount holds the old inode). There is no equivalent
+   trick with an env var baked into the container's config — there is nothing
+   to "move" — but there's also no in-place-overwrite escape hatch either;
+   `docker stop`/`docker rm` or the server-side revoke link above are the
+   real options now.
+2. **Absence is not zero.** Missing or unreadable transcripts must read as
+   *unknown spend*, never as *no spend* — an event-triggered stat cannot
+   detect its own silence, and a watchdog that reads "quiet" during an outage
+   is worse than none.
+3. **Hysteresis on the threshold**, or it re-alerts forever once tripped.
+
+And state the limit honestly: a cadence cap is **bounded overshoot, not a hard
+ceiling**. Turns are serialized at ~3s and ~$0.03 each, so a 5-minute window
+allows roughly $3 of overshoot before the watchdog can act. Size the interval
+against that, and do not call it a hard cap.
+
+**Resolved 2026-08-18, see "Credential isolation" below:** `claude
+setup-token` was rejected in phase 1 (a tested mount pattern beat a new one),
+reopened here for its revocability, and then adopted outright once the file
+mount's ~7.5h staleness bug (below) forced the question regardless. Both
+reasons for wanting it converged on the same fix.
+
+## Credential isolation
+
+Identical in shape and rationale to `orion-self-study-enrichment` — read that
+service's "Credential isolation (safety requirement)" section too; it carries
+the incident history. That service still uses the file-mount pattern this one
+retired 2026-08-18; the staleness bug below applies to it identically and is
+unfixed there.
+
+- Authenticates against the operator's **own Claude subscription** via a
+  long-lived (1-year) OAuth token from `claude setup-token`
+  (`ROOM_COMPANION_CLAUDE_OAUTH_TOKEN`, see `.env_example`). Never
+  `ANTHROPIC_API_KEY`, which would open a second pay-per-token billing
+  relationship — same billing relationship as the file-login flow this
+  replaces, just without that flow's refresh cycle.
+- `ROOM_COMPANION_CLAUDE_OAUTH_TOKEN` has **no default in code** —
+  compose uses `:?`, so a missing value fails loudly rather than silently
+  starting with no credential.
+- The token never sits in this container's own environment under its real
+  Claude-Code-recognized name (`CLAUDE_CODE_OAUTH_TOKEN`) — only under the
+  `ROOM_COMPANION_`-prefixed name. `app/main.py`'s `build_subprocess_env()`
+  translates it into the `claude` subprocess's env explicitly, from
+  `Settings`, not from the ambient allowlist path. `_ENV_DENY_PREFIXES` still
+  strips any *ambient* `CLAUDE_CODE_OAUTH_TOKEN` (a leaked host var, a
+  copy-paste mistake) that isn't the one this service was deliberately
+  configured with — see `test_subprocess_env_is_an_allowlist_not_a_denylist`.
+- This service never logs or echoes the token.
+- No `.credentials.json` file or mount exists any more — that specific bug
+  (below) is retired, not patched. `CLAUDE_CONFIG_DIR`'s own
+  interpolation-matching concern is unrelated to the credential and still
+  applies (three literal `${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}`
+  occurrences in `docker-compose.yml` must stay identical, or the session
+  store silently stops persisting) — see the comment in `docker-compose.yml`
+  and `test_compose_claude_config_dir_interpolations_match`.
+
+`build_subprocess_env()` additionally strips `ANTHROPIC_BASE_URL` and
+`ANTHROPIC_AUTH_TOKEN`. Those are what Hub's FCC lane
+(`services/orion-hub/scripts/fcc_claude_bridge.py:262-263`) sets to redirect
+`claude` at a **local** gateway. If either leaked in here, the room would keep
+producing fluent text that was never Claude — the hardest failure in this
+service to catch by eye, and why every utterance records the CLI's own
+reported `model` and `cost_usd`.
+
+### FIXED 2026-08-18: the `:ro` credential mount went stale on token refresh
+
+This section is kept as the incident record; the mount it describes no longer
+exists in this service. **It still applies unfixed to
+`orion-self-study-enrichment`**, which uses the same pattern.
+
+Confirmed live 2026-08-14, and it broke the room roughly every 7.5 hours.
+Claude Code refreshes the OAuth login by **atomic rename**, which creates a
+new inode. A single-file bind mount is bound to the *inode*, not the path, so
+the container kept reading the old file forever. The old token is revoked
+server-side at refresh, so every subsequent turn failed:
+
+```text
+Failed to authenticate. API Error: 401 OAuth access token has been revoked.
+```
+
+Observed directly:
+
+```text
+baseline (morning)   inode=5936136 mtime=1786697381   host == container
+after refresh        host      inode=5936397 mtime=1786725885
+                     container inode=5936136 mtime=1786697381   <- pinned, stale
+```
+
+`orion-self-study-enrichment` was silently in this state too, with the same
+revoked-token error, and had been since the refresh — still is, as of this
+writing, since it has not received this fix.
+
+**Real fix applied**: switched to `claude setup-token`'s long-lived (1-year)
+OAuth token, passed as `CLAUDE_CODE_OAUTH_TOKEN` — see "Credential isolation"
+above. It never refreshes, so there is no rename and nothing to go stale.
+This was the third time this option had surfaced as correct for a different
+reason; it was rejected in phase 1 when the question was "how do we
+authenticate", where a tested mount pattern beat a new one. That reasoning
+does not survive a credential that structurally cannot stay fresh.
+
+The two file-mount alternatives considered and rejected: mounting the whole
+`~/.claude` directory (tracks renames, but drags transcripts/plugins/caches
+into the container — the exposure the single-file mount was built to avoid),
+and re-copying the credential into `CLAUDE_CONFIG_DIR` before each turn (still
+needs a directory mount as its source, so it inherits the same exposure).
+Neither was needed once the credential itself stopped being a file.
+
+## Session continuity
+
+One room is one durable Claude session. The first turn mints a uuid and passes
+`--session-id`; every later turn passes `--resume`. The map lives in
+`ROOM_COMPANION_SESSION_STATE_PATH` on this service's own volume.
+
+That is what makes Claude a *participant* rather than a stateless helper, and
+it means a turn sends only the new message — the transcript in the request is
+first-turn seeding and a recovery path, not the memory mechanism.
+
+If a `--resume` fails because the CLI no longer holds that session, the
+mapping is dropped so the next turn can mint a fresh one. Without that, the
+room would be wedged forever: the same resume would fail identically on every
+retry.
+
+## What Claude receives
+
+Room-native context and nothing from Orion's interior. Specifically:
+
+- The room framing (`SYSTEM_PROMPT` in `app/room_prompt.py`), re-sent as
+  `--append-system-prompt` on **every** turn. Not just the first: `--resume`
+  does not carry it, and a resumed turn without it reverts to Claude Code's
+  default assistant persona (verified live). It also cannot be moved into the
+  user-role text instead — Claude correctly refuses that as a prompt-injection
+  pattern. System framing has to arrive as system framing.
+- The roster and room continuity from the `social_memory` summary, passed
+  through an **allowlist** (`_SUMMARY_KEYS`) rather than wholesale — this is a
+  third-party-bound payload, so "everything we happened to have" is the wrong
+  default.
+- The new message, prefixed with who said it.
+
+Not sent: recall results, self-state, drives, journals, mirrors. Tools are off
+(`--tools ""`), so Claude cannot read a file, the repo, or the network.
+`ROOM_COMPANION_SETTING_SOURCES` is `user` — deliberately not `user,local` —
+so a room conversation does not inherit this repo's own development contract
+as if it were room context.
+
+## Run
+
+```bash
+docker compose \
+  --env-file .env \
+  --env-file services/orion-room-companion/.env \
+  -f services/orion-room-companion/docker-compose.yml \
+  up -d --build
+```
+
+Prefer `scripts/safe_docker_build.sh orion-room-companion up -d --build` — it
+refuses to run from the shared checkout.
+
+**Rotating the token needs `up -d`, not `docker compose restart`.**
+`ROOM_COMPANION_CLAUDE_OAUTH_TOKEN` is read once into `Settings`
+(`@lru_cache`-d, `app/main.py`) at process start, and the container's env is
+fixed at container creation. `restart` reuses the existing container as-is;
+only `up -d` (recreate) re-reads `.env` into a fresh container. This is a real
+difference from the retired file mount, which the `claude` binary re-read
+per-invocation regardless of the container's own lifecycle — a habit worth
+unlearning, not carrying forward.
+
+### Live smoke
+
+The phase-1 acceptance surface. Runs the real subprocess against the real
+credential and prints the real utterance — no UI, no Hub:
+
+```bash
+docker compose -f services/orion-room-companion/docker-compose.yml \
+  exec room-companion python -m scripts.smoke_room_turn
+```
+
+Two turns, because one cannot demonstrate continuity: turn 2 resumes and is
+asked to recall a token only turn 1 was told. It exits non-zero unless both
+turns produced text, turn 2 recalled the token, both share one Claude session,
+cost was metered above zero, and a Claude model served it. An empty or free
+turn is a failure, not a warning.
+
+## Tests
+
+```bash
+cd services/orion-room-companion
+PYTHONPATH=<repo-root>:. pytest tests -q
+```
+
+`tests/test_credential_isolation.py` is the load-bearing one — it asserts on
+the parsed compose file, not on Python settings (adding a docker.sock mount
+makes it fail; so does a bare `CLAUDE_CODE_OAUTH_TOKEN` key appearing in the
+compose environment block instead of the `ROOM_COMPANION_`-prefixed one).

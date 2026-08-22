@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class VisionObject(BaseModel):
@@ -25,6 +26,17 @@ class VisionEmbedding(BaseModel):
     ref: str
     path: str
     dim: int
+    # Additive (2026-08-19, P2, docs/superpowers/specs/2026-08-12-perception-
+    # frontier-design.md). Previously the embedding vector itself lived only
+    # in the on-disk .npy at `path`, inside orion-vision-host's own model
+    # cache volume -- not a documented cross-service seam another service may
+    # reach into (CLAUDE.md section 5). Inlining the vector on the wire is
+    # what lets a bus consumer (e.g. orion-substrate-runtime's perceptual
+    # prediction-error tick) score it without touching vision-host's
+    # filesystem. `ref`/`path`/`dim` are unchanged and still written for the
+    # existing on-disk/reference consumers -- this is a new field, not a
+    # replacement.
+    vector: Optional[List[float]] = None
 
 
 class VisionArtifactOutputs(BaseModel):
@@ -80,8 +92,37 @@ class VisionTaskResultPayload(BaseModel):
 
 
 class VisionFramePointerPayload(BaseModel):
+    """Where a captured frame is, so a consumer can go and read it.
+
+    Carries a POINTER, never bytes -- a frame is ~100KB and this crosses Redis
+    on every capture.
+
+    Two addressing modes, and which one a node uses is a property of the node,
+    not a preference:
+
+    * ``image_path`` -- a path on a filesystem the consumer shares. Cheapest,
+      no copy, and correct for capture running on the same host as the vision
+      host. athena uses this and is unchanged.
+    * ``sha256`` -- a content address in orion-percept-store. The ONLY option
+      for a node with no shared filesystem, which is every node except athena.
+      Until this field existed, a second machine physically could not feed this
+      pipeline no matter what else was configured.
+
+    At least one must be set; a pointer that points nowhere is not a pointer.
+    A frame MAY carry both (uploaded and also on local disk), and consumers
+    should prefer whichever they can actually reach rather than assuming.
+    """
+
     model_config = ConfigDict(extra="forbid")
     image_path: Optional[str] = None
+    # 64-char lowercase hex. Validated here rather than at every consumer,
+    # because it becomes part of a fetch URL downstream and the gateway's
+    # rebuild-from-trusted-base assumes it is exactly this shape.
+    sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description="Content address in orion-percept-store, for nodes with no shared filesystem.",
+    )
     frame_paths: Optional[List[str]] = None
     video_path: Optional[str] = None
     camera_id: Optional[str] = None
@@ -91,6 +132,20 @@ class VisionFramePointerPayload(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     format: Optional[str] = None
+
+
+    @model_validator(mode="after")
+    def _require_an_address(self) -> "VisionFramePointerPayload":
+        """A pointer with neither address is silently undeliverable.
+
+        Without this the failure surfaces far downstream as "task produced no
+        artifact", which is indistinguishable from a detector finding nothing.
+        """
+        if not (self.image_path or self.frame_paths or self.video_path or self.sha256):
+            raise ValueError(
+                "frame pointer needs image_path, frame_paths, video_path or sha256"
+            )
+        return self
 
 
 # Alias for explicit requirement
@@ -230,6 +285,53 @@ class VisionSceneInterpretationV1(BaseModel):
     grammar_projection: VisionGrammarProjectionCandidateV1 | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     raw_model_output: dict[str, Any] | None = None
+
+
+class VisionSceneInventoryV1(BaseModel):
+    """One window's observed inventory of the scene, persisted per window.
+
+    **Why this exists as its own record rather than riding on
+    ``vision_events``.** Object permanence needs a continuous record of what
+    was present, and the event stream cannot supply one: the council's
+    evidence-transition gate only re-interprets on a **label-set** change and
+    logs ``reason=stable_scene`` otherwise, so a pure *count* change (two boxes
+    become one box) produces no event at all. A departure is also a non-event
+    by nature -- nothing fires when a thing stops being there. Both facts mean
+    the inventory has to be written on every window, unconditionally, and read
+    later by a timer-driven reducer.
+
+    ``counts`` is the per-frame **max** from
+    ``orion-vision-window.projection.summarize_items`` -- an estimate of how
+    many are in the room. It is deliberately not the detection tally, which
+    scales with the number of frames in the window and which
+    ``detections`` carries separately under an honest name. The two differed by
+    exactly the frame count until 2026-08-21; see that function's docstring.
+
+    **Privacy.** Labels and counts only. No frame path, no bounding boxes, no
+    caption text, no embedding, and nothing identity-bearing. This is a
+    furniture census, and it should stay one: an inventory table is a poor
+    place to discover that it has quietly started recording people.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["vision.scene.inventory.v1"] = "vision.scene.inventory.v1"
+    window_id: str
+    stream_id: Optional[str] = None
+    camera_id: Optional[str] = None
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    window_start_ts: Optional[float] = None
+    window_end_ts: Optional[float] = None
+    # Frames that actually contributed. A count derived from 0 frames is
+    # absence-of-evidence, not evidence-of-absence, and the reducer must be
+    # able to tell those apart.
+    frame_count: int = Field(default=0, ge=0)
+    # label -> how many are believed to be present (per-frame max).
+    counts: Dict[str, int] = Field(default_factory=dict)
+    # label -> raw detections fired across the window. Frame-rate dependent.
+    detections: Dict[str, int] = Field(default_factory=dict)
+    # Habituated belief set from the window service's SceneBeliefTracker.
+    believed_labels: List[str] = Field(default_factory=list)
 
 
 class VisionScribeAckPayload(BaseModel):

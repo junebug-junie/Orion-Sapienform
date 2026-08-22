@@ -114,6 +114,78 @@ async def test_harness_run_artifact_published() -> None:
 
 
 @pytest.mark.asyncio
+async def test_harness_run_carries_fcc_served_model_from_motor() -> None:
+    """HarnessRunV1.fcc_served_model must come from the motor's own discovery
+    (HarnessMotorResult.fcc_served_model), not the requested route alias --
+    confirmed live 2026-08-19 that MODEL_SONNET/MODEL_OPUS share one route,
+    so the alias alone can't tell backends apart.
+    """
+    from app import bus_listener
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-served-model",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        fcc_model_label="MODEL_SONNET",
+    )
+    appraisal = make_appraisal()
+    reflection = make_reflection()
+    motor = _motor_result(thought)
+    motor.fcc_served_model = "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+
+    async def _fake_finalize_chain(**_: object) -> HarnessFinalizeChainResult:
+        from orion.harness.finalize import emit_turn_outcome_molecule, emit_verdict_molecule
+
+        verdict = await emit_verdict_molecule(
+            correlation_id="c-served-model",
+            reflection=reflection,
+            publish_fn=AsyncMock(),
+        )
+        outcome = await emit_turn_outcome_molecule(
+            correlation_id="c-served-model",
+            thought=thought,
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=verdict,
+            draft_text="internal draft",
+            final_text="final for juniper",
+            finalize_changed=False,
+            publish_fn=AsyncMock(),
+        )
+        return HarnessFinalizeChainResult(
+            final_text="final for juniper",
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=verdict,
+            outcome_molecule=outcome,
+            finalize_changed=False,
+            quick_lane_skipped_5b=True,
+            verdict_molecule_id="verdict-1",
+        )
+
+    bus = AsyncMock()
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(bus_listener, "run_harness_finalize_chain", _fake_finalize_chain), patch.object(
+        bus_listener,
+        "emit_post_turn_closure",
+        AsyncMock(return_value=AsyncMock()),
+    ):
+        run = await bus_listener.handle_harness_run_request(
+            bus,
+            req,
+            reply_to="orion:harness:run:result:c-served-model",
+        )
+
+    assert run.fcc_served_model == "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+
+
+@pytest.mark.asyncio
 async def test_harness_finalize_chain_failure_preserves_draft_and_partial_finalize() -> None:
     from app import bus_listener
     from orion.harness.finalize import (

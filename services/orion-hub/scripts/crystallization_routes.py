@@ -31,6 +31,7 @@ from orion.memory.crystallization.repository import (
     insert_history,
     insert_retrieval_event,
     list_crystallizations,
+    normalize_crystallization_id,
     update_crystallization,
 )
 from orion.memory.crystallization.schemas import CrystallizationLinkV1, MemoryCrystallizationProposeRequestV1, MemoryCrystallizationV1
@@ -200,7 +201,15 @@ async def crystallization_validate_proposal(
         raise HTTPException(status_code=404, detail="proposal_not_found")
 
     result = validate_proposal(row)
-    source_result = await resolve_crystallization_sources(pool, row)
+    try:
+        source_result = await resolve_crystallization_sources(pool, row)
+    except Exception as exc:
+        # Mirrors the 503 pattern used for get_crystallization above. resolve_* can now raise
+        # from a probe failure, and an unhandled exception here would 500 the endpoint AND
+        # leave the proposal's status untouched with no signal -- worse than the honest
+        # "cannot validate right now" this returns.
+        logger.warning("crystallization_validate_sources_failed id=%s: %s", crystallization_id, exc)
+        raise HTTPException(status_code=503, detail="source_resolution_unavailable") from exc
     existing = await list_crystallizations(pool, limit=500)
     detection = merge_detection(
         detect_duplicates(row, existing),
@@ -231,6 +240,12 @@ async def crystallization_validate_proposal(
     return {
         "valid": valid,
         "errors": all_errors,
+        # Grammar refs that did not resolve, and refs that could not be checked at all.
+        # Neither invalidates -- grammar_events is retention-bounded, so absence is expected
+        # -- but an operator looking at a proposal with thin evidence needs to see it. Live
+        # 2026-08-20: 999 of 1,167 refs are absent, across 61 of 124 crystallizations.
+        "absent_grammar_refs": list(source_result.absent_grammar_refs),
+        "unverified_grammar_refs": list(source_result.unverified_grammar_refs),
         "detection": {
             "duplicates": detection.duplicates,
             "contradictions": detection.contradictions,
@@ -319,6 +334,228 @@ async def crystallization_reject_proposal(
     await insert_history(pool, crystallization_id=crystallization_id, op=history["op"], actor=session, before=history.get("before"), after=history.get("after"), reason=reason)
     await emit_crystallization_lifecycle(await _bus(), lifecycle="rejected", crystallization=updated, service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME)
     return updated.model_dump(mode="json")
+
+
+BULK_DECIDE_MAX = 500
+# Approve is an order of magnitude more expensive per item than reject: each one
+# re-runs get/update/history/lifecycle-emit AND (with
+# CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE, default True) a chroma/card projection
+# plus a second update. 500 of those serialized in one request is minutes of I/O
+# with no timeout budget -- the client disconnects while the server keeps
+# writing, so the operator sees a network error over a half-applied batch.
+BULK_APPROVE_MAX = 50
+
+
+@router.post("/api/memory/crystallizations/proposals/bulk")
+async def crystallization_bulk_decide(
+    request: Request,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    """Approve or reject many proposals in one call.
+
+    Path-collision note: the only other route shaped `/proposals/{one_segment}`
+    is a GET, so this POST cannot be captured by it regardless of registration
+    order. If a `POST /proposals/{crystallization_id}` is ever added, it must be
+    registered AFTER this one or "bulk" starts matching as an id.
+
+    Partial success is the contract, not an error: one bad id must not sink the
+    other 199. Every id gets its own result entry with an explicit outcome, so
+    the caller can re-render precisely and never has to guess which half landed.
+    Approve reuses the single-item handler rather than reimplementing it, so the
+    projection/lifecycle-emit side effects cannot drift apart between the two
+    paths.
+    """
+    session = await _need_session(x_orion_session_id)
+    raw_ids = body.get("ids")
+    action = str(body.get("action") or "").strip()
+    reason = body.get("reason")
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="action_must_be_approve_or_reject")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="ids_required")
+    cap = BULK_APPROVE_MAX if action == "approve" else BULK_DECIDE_MAX
+    if len(raw_ids) > cap:
+        raise HTTPException(status_code=400, detail=f"too_many_ids_max_{cap}")
+
+    # Dedup while preserving order -- a double-click on "select all" must not
+    # attempt the same row twice and report a spurious already_decided failure.
+    seen: set[str] = set()
+    ids: List[str] = []
+    for raw in raw_ids:
+        cid = str(raw)
+        if cid not in seen:
+            seen.add(cid)
+            ids.append(cid)
+
+    pool = _pool(request)
+    results: List[Dict[str, Any]] = []
+    for cid in ids:
+        try:
+            row = await get_crystallization(pool, cid)
+            if row is None:
+                results.append({"crystallization_id": cid, "ok": False, "error": "not_found"})
+                continue
+            if row.status not in ("proposed", "quarantined"):
+                results.append(
+                    {"crystallization_id": cid, "ok": False, "error": f"already_{row.status}"}
+                )
+                continue
+            if action == "approve":
+                await crystallization_approve_proposal(
+                    request, cid, x_orion_session_id=x_orion_session_id, body={"reason": reason}
+                )
+            else:
+                updated, history = reject(row, actor=session, reason=reason)
+                await update_crystallization(pool, updated)
+                await insert_history(
+                    pool,
+                    crystallization_id=cid,
+                    op=history["op"],
+                    actor=session,
+                    before=history.get("before"),
+                    after=history.get("after"),
+                    reason=reason,
+                )
+                # Post-commit. The decision is already durable, so a bus outage
+                # must not be reported as a failed decision: the caller would
+                # keep the id selected and every retry would answer
+                # already_rejected, leaving a "N failed" the operator can never
+                # clear except by deselecting by hand.
+                try:
+                    await emit_crystallization_lifecycle(
+                        await _bus(),
+                        lifecycle="rejected",
+                        crystallization=updated,
+                        service_name=_settings().SERVICE_NAME,
+                        node_name=_settings().NODE_NAME,
+                    )
+                except Exception:
+                    logger.exception("crystallization_bulk_reject_emit_failed id=%s", cid)
+                    results.append(
+                        {"crystallization_id": cid, "ok": True, "warning": "lifecycle_emit_failed"}
+                    )
+                    continue
+            results.append({"crystallization_id": cid, "ok": True})
+        except (HTTPException, GovernorError, Exception) as exc:  # noqa: BLE001
+            if not isinstance(exc, (HTTPException, GovernorError)):
+                _http_if_missing_schema(exc)
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+            # Did the decision actually land before the failure? The approve path
+            # writes the row and THEN emits/projects, so a bus or chroma outage
+            # raises after the status is already durable. Reporting that as
+            # failed keeps the id selected and makes every retry answer
+            # already_active -- a "N failed" the operator can never clear.
+            landed = False
+            try:
+                after = await get_crystallization(pool, cid)
+                landed = after is not None and after.status not in ("proposed", "quarantined")
+            except Exception:  # noqa: BLE001
+                landed = False
+            if landed:
+                logger.warning(
+                    "crystallization_bulk_%s_post_commit_failure id=%s error=%s", action, cid, exc
+                )
+                results.append(
+                    {"crystallization_id": cid, "ok": True, "warning": f"post_commit: {detail}"}
+                )
+            else:
+                logger.warning("crystallization_bulk_%s_failed id=%s error=%s", action, cid, exc)
+                results.append(
+                    {
+                        "crystallization_id": cid,
+                        "ok": False,
+                        "error": detail if isinstance(exc, (HTTPException, GovernorError)) else "decide_failed",
+                    }
+                )
+
+    succeeded = sum(1 for r in results if r["ok"])
+    return {
+        "action": action,
+        "requested": len(ids),
+        "succeeded": succeeded,
+        "failed": len(ids) - succeeded,
+        "results": results,
+    }
+
+
+@router.delete("/api/memory/crystallizations/{crystallization_id}/evidence/{source_id}")
+async def crystallization_delete_evidence(
+    request: Request,
+    crystallization_id: str,
+    source_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    """Drop one source turn from a proposal without discarding the whole thing.
+
+    A consolidation window is assembled by a global open-window cursor, so a
+    proposal routinely carries a turn that does not belong to what it is
+    actually about. Before this, the only options were approve-with-the-bad-turn
+    or reject-the-whole-window.
+
+    Deliberately restricted to proposals. An `active` crystallization has already
+    been projected into cards/chroma/graphiti, and silently removing evidence
+    from underneath those projections would leave them citing a source the
+    canonical row no longer claims. Deprecate and re-propose instead.
+
+    Deletes only the sources row; the crystallization's own summary/claims are
+    left alone, because rewriting what Orion concluded is a different, much
+    heavier operation than correcting which turns it cited.
+    """
+    session = await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        row = await get_crystallization(pool, crystallization_id)
+    except Exception as exc:
+        _http_if_missing_schema(exc)
+        raise HTTPException(status_code=503, detail="get_failed") from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="crystallization_not_found")
+    if row.status not in ("proposed", "quarantined"):
+        raise HTTPException(status_code=409, detail=f"not_editable_status_{row.status}")
+
+    remaining = [e for e in row.evidence if e.source_id != source_id]
+    if len(remaining) == len(row.evidence):
+        raise HTTPException(status_code=404, detail="evidence_not_found")
+    if not remaining:
+        raise HTTPException(status_code=409, detail="cannot_remove_last_evidence")
+
+    try:
+        async with pool.acquire() as conn:
+            deleted = await conn.execute(
+                "DELETE FROM memory_crystallization_sources "
+                "WHERE crystallization_id = $1::uuid AND source_id = $2",
+                # Same normalization every other repository helper applies. A
+                # caller passing the crys_<hex32> form new_crystallization_id()
+                # mints clears the lookup and the 404/409 guards above, then
+                # dies on the ::uuid cast without it.
+                normalize_crystallization_id(crystallization_id),
+                source_id,
+            )
+    except Exception as exc:
+        _http_if_missing_schema(exc)
+        logger.warning("crystallization_evidence_delete_failed id=%s src=%s error=%s", crystallization_id, source_id, exc)
+        raise HTTPException(status_code=503, detail="evidence_delete_failed") from exc
+
+    await insert_history(
+        pool,
+        crystallization_id=crystallization_id,
+        op="evidence_removed",
+        actor=session,
+        before={"evidence_count": len(row.evidence)},
+        after={"evidence_count": len(remaining), "removed_source_id": source_id},
+        reason=f"operator removed source turn {source_id}",
+    )
+    logger.info(
+        "crystallization_evidence_removed id=%s src=%s rows=%s remaining=%s actor=%s",
+        crystallization_id,
+        source_id,
+        deleted,
+        len(remaining),
+        session,
+    )
+    refreshed = await get_crystallization(pool, crystallization_id)
+    return (refreshed or row).model_dump(mode="json")
 
 
 @router.post("/api/memory/crystallizations/proposals/{crystallization_id}/quarantine")

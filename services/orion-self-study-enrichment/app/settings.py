@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,14 +31,32 @@ class Settings(BaseSettings):
     # image-baked copy.
     SELF_STUDY_ENRICHMENT_REPO_PATH: str = Field(default="/repo")
 
-    # ── Claude subprocess (authenticates as the host's already-logged-in
-    # `claude` CLI session -- NOT a separate ANTHROPIC_API_KEY billing path.
-    # See README.md's "Credential isolation" section. `CLAUDE_CONFIG_DIR` is
-    # Claude Code's own env var for relocating where it looks for
-    # `.credentials.json` (default `~/.claude`) -- this points it at a
-    # container-local directory that only ever contains a read-only bind
-    # mount of the host's real `.credentials.json`, nothing else from
-    # `~/.claude`.) ──────────────────────────────────────────────────────
+    # ── Claude subprocess credential (2026-08-21: switched from a
+    # file-mount of the host's `.credentials.json` to a `claude setup-token`
+    # long-lived OAuth token, same fix and same rationale as
+    # orion-room-companion's identical switch on 2026-08-18 -- see that
+    # service's README "FIXED 2026-08-18" section for the incident this
+    # retires: the file-mount credential silently went stale on Claude
+    # Code's ~7.5h internal refresh cycle, since nothing re-wrote the
+    # bind-mounted file inside the container. Still authenticates against
+    # the operator's own Claude subscription, NOT a separate
+    # ANTHROPIC_API_KEY pay-per-token billing path -- see README.md's
+    # "Credential isolation" section. `CLAUDE_CONFIG_DIR` is still set (see
+    # main.py) so the one-shot `claude -p` subprocess has a config dir to
+    # write into, but it no longer needs to be a persistent/mounted
+    # directory -- there is nothing left in it that must survive between
+    # calls, since the OAuth token is supplied fresh from Settings every
+    # time, not read from a file Claude Code expects to find there.
+    # SecretStr so the value never appears in a repr/log by accident; the
+    # validator strips whitespace a manual paste of `claude setup-token`'s
+    # output commonly introduces.) ──────────────────────────────────────
+    SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN: Optional[SecretStr] = Field(default=None)
+
+    @field_validator("SELF_STUDY_ENRICHMENT_CLAUDE_OAUTH_TOKEN", mode="before")
+    @classmethod
+    def _strip_pasted_token(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
     SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR: str = Field(default="/root/.claude")
     SELF_STUDY_ENRICHMENT_CLAUDE_BIN: str = Field(default="claude")
     SELF_STUDY_ENRICHMENT_MODEL: str = Field(default="claude-sonnet-5")

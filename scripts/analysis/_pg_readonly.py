@@ -8,44 +8,27 @@ for the new streak-distribution probe would have made that four independent copi
 in sync by hand. This module stops the count growing further; it does not migrate the
 three pre-existing copies (a separate, larger cleanup, out of scope for this patch).
 
-Read-only-session enforcement: refuses to return a connection unless
-`default_transaction_read_only` is actually `on` for the session -- a defense against a
-probe script accidentally being pointed at write credentials and mutating real data.
+Moved to `orion/db_readonly.py` 2026-08-19 (review finding on
+`orion/metrics/liveness.py`, phase 5 of the metric semantic layer): that
+module needed this exact contract but couldn't import from `scripts/`
+without inverting this repo's layering, so it grew its own copy instead --
+the same duplication this file exists to prevent, one layer down. This is
+now a thin re-export so `measure_goal_provenance_streak_distribution.py`'s
+existing `from _pg_readonly import open_readonly_connection` keeps working
+unchanged.
 """
 
 from __future__ import annotations
 
-import logging
+import sys
+from pathlib import Path
 
-logger = logging.getLogger("orion.analysis.pg_readonly")
+# This module's own callers only put scripts/analysis/ on sys.path (see e.g.
+# measure_goal_provenance_streak_distribution.py's own comment on why), never
+# repo root -- add it here so the re-export below resolves regardless of how
+# the caller was invoked.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-
-def open_readonly_connection(dsn: str):
-    try:
-        import psycopg2
-    except Exception:  # pragma: no cover
-        logger.error("psycopg2 unavailable; cannot open DB session")
-        return None
-    try:
-        conn = psycopg2.connect(dsn)
-    except Exception:
-        logger.error("failed to connect to postgres", exc_info=True)
-        return None
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("SET default_transaction_read_only = on;")
-            cur.execute("SHOW default_transaction_read_only;")
-            value = cur.fetchone()
-        if not value or str(value[0]).lower() != "on":
-            logger.error("refusing to run: session is not read-only (got %r)", value)
-            conn.close()
-            return None
-    except Exception:
-        logger.error("failed to enforce read-only session", exc_info=True)
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return None
-    return conn
+from orion.db_readonly import open_readonly_connection  # noqa: E402, F401

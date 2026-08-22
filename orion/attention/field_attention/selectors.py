@@ -6,6 +6,7 @@ from orion.attention.field_attention.candidate_precision_weighted import (
     NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
     PrecisionEwmaBaseline,
     PrecisionWeightedSalienceResult,
+    cross_domain_variance_floor,
     normalize_across_targets,
     precision_weighted_salience_from_baseline,
 )
@@ -292,8 +293,18 @@ def select_node_targets(
     raw_scores: dict[str, float] = {}
     for target_id in PREDICTION_ERROR_NATIVE_TARGETS:
         baseline = prediction_error_baselines.get(target_id, PrecisionEwmaBaseline())
+        # 2026-08-20 fix (Sentience Striving Program item 4): the variance floor
+        # is no longer a single constant applied uniformly to every domain -- see
+        # `cross_domain_variance_floor()`'s own docstring for the live incident
+        # (`node:substrate.route` winning goal-provenance dominance by
+        # construction) this replaces.
+        min_variance = cross_domain_variance_floor(
+            prediction_error_baselines,
+            target_id,
+            min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
+        )
         result = precision_weighted_salience_from_baseline(
-            baseline, min_variance=NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE
+            baseline, min_variance=min_variance
         )
         if result.n_samples == 0:
             continue

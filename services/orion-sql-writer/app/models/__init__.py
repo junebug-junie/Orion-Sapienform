@@ -3,6 +3,7 @@ from .collapse_mirror import CollapseMirror
 from .metacog_entry import MetacogEntry
 from .repair_pressure_appraisal import RepairPressureAppraisalLog
 from .chat_history_log import ChatHistoryLogSQL
+from .aitown_chat_history_log import AitownChatHistoryLogSQL
 from .chat_gpt_log import ChatGptLogSQL
 from .chat_gpt_message import ChatGptMessageSQL
 from .chat_gpt_import_run import ChatGptImportRunSQL
@@ -61,12 +62,12 @@ from .world_pulse import (
 )
 from .mind_run import MindRunSQL
 from .vision_event import VisionEventSQL
+from .vision_scene_inventory import VisionSceneInventorySQL
 from .action_outcome import ActionOutcomeSQL
 from .dominance_streak_tick import DominanceStreakTickSQL
 from .dev_economics_ledger import DevEconomicsLedgerSQL
 from .doc_semantic_drift import DocSemanticDriftSQL
 from .juniper_affective_state import JuniperAffectiveStateSQL
-from .phi_reward import PhiRewardSQL
 from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
 from .grammar_trace import (
     GrammarAtomSQL,
@@ -85,6 +86,7 @@ __all__ = [
     "MetacogEntry",
     "RepairPressureAppraisalLog",
     "ChatHistoryLogSQL",
+    "AitownChatHistoryLogSQL",
     "ChatGptLogSQL",
     "ChatGptMessageSQL",
     "ChatGptImportRunSQL",
@@ -134,12 +136,12 @@ __all__ = [
     "WorldPulsePublishStatusSQL",
     "MindRunSQL",
     "VisionEventSQL",
+    "VisionSceneInventorySQL",
     "ActionOutcomeSQL",
     "DominanceStreakTickSQL",
     "DevEconomicsLedgerSQL",
     "DocSemanticDriftSQL",
     "JuniperAffectiveStateSQL",
-    "PhiRewardSQL",
     "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",
     "HarnessTurnTraceSQL",

@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 595,
+  "metric_count": 601,
   "_last_change": {
-    "base": "merge base b4a697a9d (origin/main)",
-    "change_count": 1,
-    "high_severity_count": 1,
+    "base": "merge base c98e86414 (origin/main)",
+    "change_count": 0,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/*/orion:spark:signal (declared_consumers: ['orion-state-service'] -> -)"
+      "no definition changes relative to the merge base"
     ]
   },
   "definitions": {
@@ -1576,6 +1576,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:room:claude:request": {
+      "schema_id": "RoomClaudeRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-room-companion"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-hub/orion:stt:intake": {
       "schema_id": "STTRequestPayload",
       "all_producers": [
@@ -1791,6 +1802,18 @@
         "orion-sql-writer"
       ],
       "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-room-companion/orion:room:claude:utterance": {
+      "schema_id": "RoomClaudeUtteranceV1",
+      "all_producers": [
+        "orion-room-companion"
+      ],
+      "declared_consumers": [
+        "*",
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-security-watcher/orion:vision:guard:alert": {
@@ -2714,6 +2737,17 @@
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-vision-window/orion:vision:inventory:sql-write": {
+      "schema_id": "VisionSceneInventoryV1",
+      "all_producers": [
+        "orion-vision-window"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-vision-window/orion:vision:windows": {
       "schema_id": "VisionWindowPayload",
       "all_producers": [
@@ -2743,6 +2777,28 @@
       ],
       "declared_consumers": [
         "orion-hub"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-model/orion:worldmodel:predictions": {
+      "schema_id": "WorldModelPredictionPayload",
+      "all_producers": [
+        "orion-world-model"
+      ],
+      "declared_consumers": [
+        "orion-world-model"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-world-model/orion:worldmodel:reply:*": {
+      "schema_id": "WorldModelPredictionPayload",
+      "all_producers": [
+        "orion-world-model"
+      ],
+      "declared_consumers": [
+        "*"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2977,6 +3033,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:exec:request:WorldModelService": {
+      "schema_id": "WorldModelTaskRequestPayload",
+      "all_producers": [
+        "unknown"
+      ],
+      "declared_consumers": [
+        "orion-world-model"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/unknown/orion:memory:drives:state": {
@@ -3284,6 +3351,11 @@
       "notes": "category=infra_transport level=node,capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
+    "metric://field_channel/orion-field-digester/tension_deviation_pressure": {
+      "meaning": "DERIVED (not a raw pre-merge channel): this IS the PRESSURE_DIMENSIONS 'deviation_pressure' value itself, not a channel that feeds it. This tick's admitted field-deviation tension, in [0, 1]. 0.0 is the expected reading once the producer has been running a while ('nothing admitted' is a real, common state) -- but a row from before the producer existed also reads 0.0 (schema default), indistinguishable in storage. Read verdicts from a window entirely after deploy.",
+      "notes": "category=synthesized_rollup level=field",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
     "metric://field_channel/orion-field-digester/thermal_pressure": {
       "meaning": "Node thermal/temperature pressure.",
       "notes": "category=physical_substrate level=node",
@@ -3320,6 +3392,17 @@
       "notes": "cadence=per_tick composition=unresolved_duplicate",
       "registry_source": "orion/inner_state_registry.py"
     },
+    "metric://inner_state/orion-biometrics/biometrics_cluster.v1#peak_pressure": {
+      "schema_id": "BiometricsClusterV1",
+      "declared_consumers": [
+        "services.orion-cortex-exec.app.executor:_metacog_biometrics_cue"
+      ],
+      "upstream": [
+        "metric://inner_state/orion-biometrics/biometrics_cluster.v1"
+      ],
+      "notes": "scalar field on BiometricsClusterV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
     "metric://inner_state/orion-field-digester/field_channel_corpus.v1": {
       "schema_id": "FieldChannelCorpusRowV1",
       "notes": "cadence=per_tick composition=no_cognition_consumer",
@@ -3347,6 +3430,22 @@
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-field-digester/field_state.v1#recent_perturbation_zscore": {
+      "schema_id": "FieldStateV1",
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#sustained_load_pressure": {
+      "schema_id": "FieldStateV1",
+      "upstream": [
+        "metric://inner_state/orion-field-digester/field_state.v1"
+      ],
+      "notes": "scalar field on FieldStateV1",
+      "registry_source": "orion/inner_state_registry.py"
+    },
+    "metric://inner_state/orion-field-digester/field_state.v1#tension_deviation_pressure": {
       "schema_id": "FieldStateV1",
       "upstream": [
         "metric://inner_state/orion-field-digester/field_state.v1"
@@ -3494,55 +3593,7 @@
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1": {
-      "schema_id": "PhiIntrinsicRewardV1",
-      "declared_consumers": [
-        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
-      ],
       "notes": "cadence=offline_trained composition=composed_into_self_state",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#delta_phi": {
-      "schema_id": "PhiIntrinsicRewardV1",
-      "declared_consumers": [
-        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
-      ],
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
-      ],
-      "notes": "scalar field on PhiIntrinsicRewardV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#delta_recon_error": {
-      "schema_id": "PhiIntrinsicRewardV1",
-      "declared_consumers": [
-        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
-      ],
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
-      ],
-      "notes": "scalar field on PhiIntrinsicRewardV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#phi": {
-      "schema_id": "PhiIntrinsicRewardV1",
-      "declared_consumers": [
-        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
-      ],
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
-      ],
-      "notes": "scalar field on PhiIntrinsicRewardV1",
-      "registry_source": "orion/inner_state_registry.py"
-    },
-    "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1#recon_error": {
-      "schema_id": "PhiIntrinsicRewardV1",
-      "declared_consumers": [
-        "services.orion-cortex-exec.app.spark_narrative:spark_embodiment_narrative"
-      ],
-      "upstream": [
-        "metric://inner_state/orion-spark-introspector/phi_intrinsic_reward.v1"
-      ],
-      "notes": "scalar field on PhiIntrinsicRewardV1",
       "registry_source": "orion/inner_state_registry.py"
     },
     "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1": {

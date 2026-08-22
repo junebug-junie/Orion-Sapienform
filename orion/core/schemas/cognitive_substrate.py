@@ -39,7 +39,7 @@ SubstrateEdgePredicateV1 = Literal[
     "co_occurs_with",
 ]
 SubstratePromotionStateV1 = Literal["proposed", "provisional", "canonical", "deprecated", "rejected"]
-SubstrateAnchorScopeV1 = Literal["orion", "juniper", "relationship", "world", "session"]
+SubstrateAnchorScopeV1 = Literal["orion", "juniper", "claude", "relationship", "world", "session"]
 SubstrateRiskTierV1 = Literal["low", "medium", "high"]
 SubstrateAuthorityV1 = Literal[
     "sensed",

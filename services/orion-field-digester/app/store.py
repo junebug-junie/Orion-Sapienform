@@ -195,6 +195,64 @@ class FieldDigesterStore:
             payload = json.loads(payload)
         return FieldStateV1.model_validate(payload)
 
+    def load_recent_field_json(
+        self, *, window_seconds: float, row_cap: int = 4000
+    ) -> list[dict]:
+        """Raw `field_json` payloads (decoded dicts) from the last
+        `window_seconds`, oldest first -- the real window `orion.field.
+        significance.compute_tick` needs `channel_regime()`-style, which
+        cannot be reduced to an incrementally-updatable running stat the way
+        `tension.py`'s EWMA baseline can (median needs the real values).
+
+        `row_cap` guards the read the way `field_channel_glossary_routes.py`'s
+        own `row_cap=6000` already does for its 1/6/24h Hub panel queries --
+        that guard exists precisely because this service's own live cadence
+        (~0.4 rows/sec, confirmed 2026-08-18) means even a modest window is
+        several hundred rows; a caller passing an unexpectedly large window
+        must not turn this into an unbounded query. `secs`, not `mins`/
+        `hours`: `make_interval`'s `mins`/`hours` args are integer-typed in
+        real Postgres, so a float there raises `UndefinedFunction` -- fixed
+        live 2026-08-18 in `services/orion-hub/scripts/tension_outreach_
+        trigger.py` after it silently broke that module for its entire
+        deployed lifetime; `secs` is `double precision` and takes a float
+        directly.
+
+        `ORDER BY ... DESC LIMIT :row_cap` then reversed in Python, NOT
+        `ASC LIMIT` -- an ASC-ordered LIMIT keeps the OLDEST rows and drops
+        the newest ones the instant truncation actually triggers, silently
+        handing the caller a window that ends in the past rather than now.
+        Code review, 2026-08-18: this exact fix already exists in
+        `field_channel_glossary_routes.py`'s own query, with its own comment
+        explaining precisely this failure mode ("an ASC LIMIT would silently
+        classify the panel from the stalest slice... the same staleness
+        failure mode this feature exists to replace") -- this function
+        originally copied the unfixed ASC form instead of that established
+        pattern. Currently masked in practice (900s at ~0.4 rows/sec is
+        ~360 rows, well under the 4000 default), but `FIELD_SIGNIFICANCE_
+        WINDOW_SECONDS` is an exposed, unbounded operator env knob -- raising
+        it, or a cadence increase, would have silently corrupted
+        `sustained_load_pressure` with zero error or log.
+        """
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT field_json FROM substrate_field_state
+                        WHERE generated_at > now() - make_interval(secs => :secs)
+                        ORDER BY generated_at DESC
+                        LIMIT :row_cap
+                        """
+                    ),
+                    {"secs": float(window_seconds), "row_cap": row_cap},
+                )
+                .scalars()
+                .all()
+            )
+        payloads = [json.loads(r) if isinstance(r, str) else r for r in rows]
+        payloads.reverse()
+        return payloads
+
     def save_field(self, state: FieldStateV1) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:

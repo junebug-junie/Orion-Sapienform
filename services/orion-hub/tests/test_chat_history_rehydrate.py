@@ -13,8 +13,11 @@ import asyncio
 
 import pytest
 
+import inspect
+
 import scripts.chat_history_rehydrate as rehydrate_mod
 from scripts.chat_history_rehydrate import (
+    fetch_recent_rows,
     history_is_empty,
     rehydrate_history,
     rows_to_history_messages,
@@ -23,6 +26,33 @@ from scripts.chat_history_rehydrate import (
 
 def _system() -> list[dict]:
     return [{"role": "system", "content": "you are orion"}]
+
+
+def _sql_where_clause(source: str) -> str:
+    """The literal SQL text inside fetch_recent_rows's ``text(...)`` call --
+    isolated from the surrounding docstring/comments so a check against it
+    can't be satisfied by prose alone."""
+    start = source.index('SELECT prompt, response')
+    end = source.index('"""', start)
+    return source[start:end]
+
+
+def test_fetch_recent_rows_excludes_room_claude_turns() -> None:
+    """Claude's room replies are persisted with client_meta.room_claude set
+    (see room_claude_relay.py's _publish_history) and role="assistant", same
+    shape as a genuine Orion turn. Without this exclusion they come back
+    through rehydration labeled plain "assistant" and get fed into Orion's own
+    continuity context as if Orion had said them.
+
+    No live Postgres in this test env, so this asserts the actual SQL clause
+    text -- not the surrounding docstring, which would pass even with the
+    clause deleted -- same level the existing 'unsolicited' exclusion would
+    need if it were tested at all.
+    """
+    where = _sql_where_clause(inspect.getsource(fetch_recent_rows))
+    assert "client_meta->>'room_claude'" in where, "the SQL must exclude room_claude-tagged rows"
+    assert "= ''" in where
+    assert "client_meta->>'unsolicited'" in where, "the existing outreach exclusion must still be present"
 
 
 # --------------------------------------------------------------------------

@@ -249,6 +249,52 @@ SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
 SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
 
 
+def _build_aitown_substrate_store_from_env() -> Any:
+    """AI Town's own organically-clustered concept graph -- a second,
+    independently-named FalkorDB graph (docs/superpowers/specs/2026-08-18-
+    aitown-concept-graph-split-and-atlas-readability-design.md, "AI Town's
+    own concept graph"). Interpretability-only, per that spec's Non-goals --
+    never fed into concept_induced/chat_stance or any other Orion cognition
+    consumer, only read by concept_atlas_routes.py's AI Town ingestion/query
+    path.
+
+    Deliberately falkor-only, NOT routed through the full multi-backend
+    build_substrate_store_from_env() dispatcher above -- unlike that
+    dispatcher, this does NOT build a real store for "routed"/"sparql"/
+    "graphdb" backends; every one of those degrades to in-memory here, same
+    as an unset/unrecognized backend (review finding 2026-08-20: an earlier
+    draft's docstring falsely claimed full parity with the primary
+    dispatcher for "every other backend" -- it does not, and the live
+    deployment's own SUBSTRATE_STORE_BACKEND=falkor never exercises this
+    gap, but a future non-falkor deployment silently losing every AI Town
+    write on restart is a real risk worth being loud about instead of
+    silent about).
+    """
+    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
+    if backend in {"falkor", "falkordb"}:
+        from orion.substrate.falkor_store import build_aitown_falkor_substrate_store_from_env
+
+        return build_aitown_falkor_substrate_store_from_env()
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    if backend and backend not in {"in_memory", "memory", "mem", "local"}:
+        # Loud, not silent: the primary store builds a REAL durable store
+        # for "routed"/"sparql"/"graphdb" via build_substrate_store_from_env()
+        # above -- this function does not, so an operator on one of those
+        # backends needs to see that the AI Town graph specifically degraded
+        # to in-memory (durable for the primary store, ephemeral for this
+        # one), not assume both stores behave identically.
+        logger.warning(
+            "aitown_substrate_store_backend_unsupported backend=%s -- falling back to in-memory "
+            "(AI Town's concept graph is falkor-only today; every write is lost on restart)",
+            backend,
+        )
+    return InMemorySubstrateGraphStore()
+
+
+SUBSTRATE_SEMANTIC_STORE_AITOWN = _build_aitown_substrate_store_from_env()
+
+
 def seed_golden_concepts_at_startup() -> int:
     """Load the 4 golden concepts (Orion, Juniper, Claude, relationship) into
     SUBSTRATE_SEMANTIC_STORE. Idempotent (fixed node_ids), safe to call on
@@ -510,6 +556,21 @@ class ChatMessageReceiptRequest(BaseModel):
 
 class ChatTurnCancelRequest(BaseModel):
     connection_id: str
+
+
+class RoomClaudeInviteRequest(BaseModel):
+    """Operator-triggered invite. Originally the ONLY producer of
+    orion:room:claude:request; auto-respond (websocket_handler.py) added a
+    second, non-human-click producer -- see that module's comment for why
+    spend is no longer bounded by clicks alone."""
+
+    prompt: str
+    session_id: Optional[str] = None
+    invited_by: str = "Juniper"
+    # From the WS "connection_ready" frame (app.js's activeConnectionId).
+    # Pins the reply to this exact socket -- see room_claude_relay.py's
+    # _push() for why session_id alone can broadcast to every open tab.
+    connection_id: Optional[str] = None
 
 
 class PreferencesResolveProxyRequest(BaseModel):
@@ -1993,6 +2054,104 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
 
 
+@router.post("/api/room/claude/invite")
+async def api_room_claude_invite(payload: RoomClaudeInviteRequest):
+    """Ask Claude for one turn in the room.
+
+    Returns as soon as the request is on the bus. The reply is asynchronous and
+    arrives over the WebSocket as a `room_claude_utterance` frame -- Hub does
+    not block on Claude, and does not hold the credential that talks to it (see
+    services/orion-room-companion/README.md).
+    """
+    from .main import room_claude_relay
+    from scripts.settings import settings
+
+    if room_claude_relay is None or not room_claude_relay.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Room companion is disabled (HUB_ROOM_CLAUDE_ENABLED=false)",
+        )
+
+    prompt = str(payload.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=422, detail="prompt required")
+
+    session_id = (payload.session_id or "").strip() or None
+    transcript = await _recent_room_transcript(session_id, settings.HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS)
+
+    try:
+        request = await room_claude_relay.invite(
+            prompt=prompt,
+            invited_by=payload.invited_by or "Juniper",
+            session_id=session_id,
+            room_id=settings.HUB_ROOM_CLAUDE_ROOM_ID,
+            transcript=transcript,
+            connection_id=(payload.connection_id or "").strip() or None,
+        )
+    except Exception as exc:
+        logger.exception("room_claude_invite_failed")
+        raise HTTPException(status_code=502, detail="Failed to invite Claude") from exc
+
+    return {
+        "ok": True,
+        "request_id": request.request_id,
+        "correlation_id": request.correlation_id,
+        "room_id": request.room_id,
+        "transcript_turns": len(request.transcript),
+    }
+
+
+async def _recent_room_transcript(session_id: Optional[str], limit: int) -> list[dict]:
+    """Recent conversation for Claude's FIRST turn of a session.
+
+    Not the memory mechanism -- the companion holds the conversation on
+    Claude's side via --resume and ignores this on later turns. This is seeding
+    so Claude arrives knowing where it is, plus a recovery path if the CLI
+    session is ever lost.
+
+    Best-effort by design: a room invite is worth more than perfect history, so
+    a rehydrate failure degrades to no transcript rather than failing the
+    invite.
+    """
+    if not session_id or limit <= 0:
+        return []
+    try:
+        from scripts.chat_history_rehydrate import rehydrate_history
+        from scripts.settings import settings as _settings
+
+        history: list[dict] = []
+        await rehydrate_history(
+            history,
+            session_id=session_id,
+            max_turns=limit,
+            max_age_hours=float(getattr(_settings, "HUB_HISTORY_REHYDRATE_MAX_AGE_HOURS", 48.0)),
+            enabled=True,
+        )
+    except Exception:
+        logger.debug("room_claude_transcript_rehydrate_failed", exc_info=True)
+        return []
+
+    out: list[dict] = []
+    for row in history[-(limit * 2):]:
+        role = str(row.get("role") or "")
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            speaker_id, speaker_name, kind = "juniper", "Juniper", "human"
+        elif role == "assistant":
+            speaker_id, speaker_name, kind = "orion", "Or\u00edon", "peer_ai"
+        else:
+            continue
+        out.append({
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "speaker_kind": kind,
+            "text": content,
+        })
+    return out
+
+
 @router.post("/api/chat/turn/cancel")
 async def api_chat_turn_cancel(payload: ChatTurnCancelRequest):
     """Stop/kill whichever turn the caller's WS connection currently has in flight
@@ -2254,6 +2413,18 @@ def _producer_pressure_events_from_chat_result(
 
 
 def _producer_pressure_events_from_feedback(feedback: ChatResponseFeedbackV1) -> list[MutationPressureEvidenceV1]:
+    # 2026-08-21: artifact ratings are NOT chat-lane evidence. Verified live in
+    # review that an artifact-targeted thumbs-down carrying
+    # missed_relevant_context + wrong_tool_wrong_routing_wrong_mode emitted 3
+    # MutationPressureEvidenceV1 events with correlation_id=None, filed under
+    # invocation_surface="chat_reflective_lane". Two things wrong with that,
+    # both material: a rating of a journal entry is not a recall miss in a
+    # conversation that never happened, and routing it here feeds the human
+    # verdict straight back into the same self-graded mutation-pressure
+    # machinery this outcome exists to sit OUTSIDE of -- counting one opinion
+    # twice, through two mechanisms, with different provenance.
+    if feedback.target_artifact_ref:
+        return []
     categories = {str(item or "").strip() for item in feedback.categories}
     corr = feedback.target_correlation_id
     source_event_id = feedback.feedback_id
@@ -2642,12 +2813,29 @@ async def handle_chat_request(
         from .main import bus, harness_step_relay, rpc_bus
         from orion.hub.turn_orchestrator import execute_unified_turn
 
+        # Parity fix: the sibling (non-orion) branch below builds
+        # continuity_messages from the client-supplied history before
+        # dispatch; this branch previously did not, so execute_unified_turn's
+        # continuity_messages arg was always None for every HTTP orion-mode
+        # turn (the WebSocket path -- the real Hub UI -- already built it
+        # correctly at websocket_handler.py). Was inert either way until
+        # HarnessRunRequestV1.recent_turns existed for the orchestrator to
+        # actually thread it into; now that it does, this parity gap would
+        # silently starve HTTP-driven orion-mode turns of history.
+        context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+        continuity_messages = build_continuity_messages(
+            history=user_messages,
+            latest_user_prompt=user_prompt,
+            turns=context_turns,
+        )
+
         frames = await execute_unified_turn(
             bus=bus,
             correlation_id=corr_id,
             session_id=session_id,
             user_message=user_prompt,
             payload=payload,
+            continuity_messages=continuity_messages,
             harness_rpc_bus=rpc_bus or bus,
             harness_step_relay=harness_step_relay,
         )
@@ -3179,6 +3367,7 @@ async def api_chat(
                 session_id=session_id,
                 correlation_id=final_corr_id,
                 user_id=payload.get("user_id"),
+                response_identity=spark_meta.get("model"),
                 source_label="hub_http",
                 spark_meta=spark_meta,
                 turn_id=final_corr_id,

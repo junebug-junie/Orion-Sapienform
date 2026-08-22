@@ -275,6 +275,146 @@ first place. Full reasoning and phased detail:
    producer would be an empty/dead panel row, not a real reading. Same measure-before-minting
    order every domain in this section has followed: producers and scoring measured and tested
    first, service/consumer wiring (and any UI surfacing) a separate, later patch.
+   **Re-checked, 2026-08-19 (punch-list item 3, full re-run of `measure_ast_hot_reducer.py
+   --window-hours 170`, 98,785 real field-lane ticks, 19,428 real `substrate_attention_
+   broadcast_log` rows, 2026-08-12 → 2026-08-19): Phase 1's acceptance check still reads
+   NOT MET as originally scoped** (superseded the next day -- see the 2026-08-20
+   metric-quality-gate correction below, which splits this into a MET reducer-correctness
+   half and a separate non-blocking research question; read that entry for the current
+   status). Zero ticks across the entire available post-rebuild history (170h, not just
+   the ~16.7h window checked 2026-07-24) carry a real `voluntary_override`. This is a
+   materially stronger negative result than the prior check, not just "still waiting" —
+   the same finding held over 10x the ticks and 10x the wall-clock. Attention_reason
+   distribution over the full window: `bottom_up_salience` 100.0% (98,784/98,785),
+   `field_salience_only` 0.0% (1 tick), `top_down_override` **0.0% (0 ticks)**.
+   Followed the trail past "insufficient accumulated history" to a live, load-bearing,
+   disclosed-not-fixed candidate root cause: `_apply_voluntary_attention()`
+   (`orion/substrate/attention_broadcast.py`) — the only place a real override can be
+   recorded — gates on `get_active_goal()` (`orion/substrate/attention/goal_context.py`)
+   returning non-`None`. Confirmed live: `ORION_ATTENTION_TOPDOWN_ENABLED=true` in the real
+   producing container (`orion-athena-substrate-runtime`, re-confirmed 2026-08-19, not just
+   trusting the 2026-07-24 note), and `orion-athena-attention-runtime` (the real
+   `FieldGoalProvenanceV1` producer, `services/orion-attention-runtime/app/worker.py`) is
+   actively, continuously publishing goals — `field_goal_provenance_published` fired roughly
+   every ~13s in a live 15-minute log sample, so `get_active_goal()` should rarely be `None`
+   in practice. The goals themselves, however, show one consistent shape worth flagging: every
+   sampled emission targets `field_target_id=node:substrate.route`, `salience=1.000` exactly
+   (pinned at ceiling), with a monotonically climbing `streak` counter (47→66+ across the
+   sample) — the same saturated-at-1.0, single-target shape as the two prior monoculture
+   pathologies this same charter already found and fixed (`field:recent_perturbations`'
+   pre-fix `min(1.0, count/10.0)` cap, and `bus_synaptic_prediction_error`'s calm-floor bug).
+   **Not yet confirmed as a bug** — item 3 below is already mid-migration on exactly this
+   `node:substrate.route` domain (`route_prediction_error()`), so a sustained, real, elevated
+   routing-tension streak is a plausible genuine explanation, not automatically an artifact;
+   whether `TopDownBiasCombiner.apply()`'s `relevance(goal, loop)` ever produces a nonzero
+   match against this goal's real `frame.open_loops` (the actual second gate a saturated-
+   priority goal must still clear before it can flip a winner) was not checked in this pass.
+   **Open question, not decided here**: is the true blocker "no voluntary_override has
+   occurred yet" (accumulation-time framing, the 2026-07-24 read) or "voluntary_override is
+   structurally near-unreachable because this goal's target never has real overlap with live
+   open loops, or because `relevance()`/`priority` interact with the saturated salience in a
+   way that keeps `bias_by_id` too small to beat bottom-up" (a mechanism-shaped question, not
+   a patience question) — this connects directly to item 4 below (`drive_origin`/goal-
+   provenance retirement) and should be investigated together with it, not treated as
+   "just needs more time" without checking.
+   **Metric-quality-gate correction, 2026-08-20 (Juniper: "is this the right metric to
+   define before we go into deep dive diagnosis"): Phase 1's acceptance check was bundling
+   two independent questions into one pass/fail gate, and only one of them is what this
+   item was actually built to verify.** Question A: does `reduce_attention_self_model()`
+   correctly narrate a real `top_down_override` when one is present? Question B: does a
+   real `top_down_override` ever occur in production at all? The check as originally
+   written required a real Postgres-replay sighting of a live override before it could
+   read MET, which conflates A (a reducer-correctness question, this item's actual scope)
+   with B (a question about a different system: goal production and `relevance()` matching
+   in `orion/substrate/attention/top_down.py` and `orion-attention-runtime`).
+   **A is now MET, decided independently of B:** `TestVoluntaryOverridePresent`
+   (`orion/substrate/tests/test_attention_self_model.py`) already proves the reducer's
+   why-branching and narrative are correct against the real production `VoluntaryOverrideV1`
+   schema, and this same 2026-08-20 replay independently proved the replay script's own
+   real-data mechanics (parsing `substrate_attention_frames`/`substrate_field_state`/
+   `substrate_attention_broadcast_log`, nearest-preceding-timestamp joins, calling the real
+   production reducer function) are sound across 98,785 real ticks on the two branches that
+   do occur live. One narrow thing is still genuinely unverified: whether the replay
+   script's own JSON deserialization of a real `voluntary_override` blob from
+   `projection_json` round-trips cleanly (datetime formatting, key casing) -- low risk given
+   the other two branches parse cleanly from the same column, but disclosed rather than
+   silently assumed away.
+   **B is reframed as its own standalone open question, not a blocker for this item's
+   completion:** whether a real `top_down_override` ever fires live is a real, worthwhile
+   question about the goal-provenance/top-down-bias mechanism itself -- the saturated
+   `node:substrate.route` streak noted above is exactly that thread -- but it belongs with
+   item 4's goal-provenance investigation, not gating item 2's Phase 1 sign-off.
+   **Phase 1 status: MET** (reducer-correctness scope), with B tracked as a separate,
+   ongoing, non-blocking research thread under item 4.
+   **The replacement metric itself, built and run 2026-08-20 (Juniper: "give me a metric
+   that properly addresses #3, not just a narrower scope"):** the split above named A as
+   MET but rested on pre-existing unit tests alone -- real work, not yet done, was
+   building an actual measurable metric for A that runs against real data. Two pieces,
+   both now real and run against the live system:
+   1. **Correctness cross-check on the branch that actually fires**
+      (`scripts/analysis/measure_ast_hot_reducer.py`, new "Correctness cross-check"
+      section): `top_down_override` is structurally rare (item 4's open question), but
+      `bottom_up_salience` fires on effectively 100% of real ticks -- that is the branch
+      a real correctness metric can actually run against, every time, not just when a
+      rare event happens to occur. For each `bottom_up_salience` tick, independently
+      recompute the real `select_actions()` winner from the broadcast row's own
+      `frame.open_loops` and check it against what the reducer reports as
+      `broadcast_selected_open_loop_id` -- two independently-derived values from the
+      same persisted row, not the reducer grading its own homework.
+      **Code review (same day) caught a real bug in the first version of this check
+      before its numbers were trusted:** it had no eligibility floor (production's
+      `select_actions()`, `orion/substrate/attention/policy.py`, only lets a loop win if
+      `already_known` or `salience >= 0.35` -- everything else is real production's
+      `action_type="none"`, `selected_open_loop_id=None`) and used the wrong tie-break
+      (ascending loop id, copied from a different function -- `TopDownBiasCombiner`,
+      which only runs on the top-down path -- instead of production's actual stable-sort/
+      build-order tie-break). That means the first run's "100% agreement" number could
+      have been true by accident (the window happening not to contain a tie or a
+      below-floor tick), not because the check would actually catch a real disagreement.
+      **Fixed same day**: `_argmax_open_loop_salience()` now applies the real floor
+      (`already_known` OR `salience >= 0.35`) and uses `max()` over the row's own list
+      order, which matches Python's stable-sort-first-on-tie behavior exactly -- verified
+      against the real `select_actions()` source, not re-guessed. **Corrected real
+      result, 170h/99,668-tick replay (2026-08-20, re-run after the fix):
+      7,330/7,330 checkable ticks agree (100.00%)**, with 3 distinct real winners and 3
+      distinct narratives across those ticks -- real variation, not stuck fallback text.
+      Disclosed honestly, not smoothed over: only 7,330/99,668 (7.35%) of
+      `bottom_up_salience` ticks had any open loops at all that tick to check against
+      (92,338 had zero -- correctly excluded as "nothing to disagree with" rather than
+      miscounted as agreement) -- this metric's real coverage is 7% of ticks, not 100%,
+      and that 93%-empty-open-loops rate is itself a fact about production worth someone
+      eventually asking about, separately from this item.
+   2. **Live-fire round-trip drill for the branch that doesn't fire**
+      (`scripts/analysis/verify_voluntary_override_pipeline.py`, new script): the one
+      narrow thing the 2026-08-19 entry above flagged as genuinely unverified --
+      whether a real `voluntary_override` blob round-trips cleanly through actual
+      Postgres JSONB persistence (not just the pure-function unit test, which never
+      touches the database) -- doesn't have to wait for a rare live event to check.
+      This script builds one real `VoluntaryOverrideV1`-bearing
+      `AttentionBroadcastProjectionV1`, writes it into the real
+      `substrate_attention_broadcast_log` table with the exact INSERT the production
+      writer uses, reads it back through a fresh connection, deserializes it, and runs
+      it through the real `reduce_attention_self_model()` -- then deletes the row in a
+      `finally` block. **Run live 2026-08-20 (`--yes`, real Postgres): PASS.** Real
+      INSERT -> real SELECT -> real JSON deserialize -> real reducer all correctly
+      narrated `attention_reason=top_down_override` with both loop IDs named; cleanup
+      verified (0 residual rows via direct query immediately after). Safety: fixed
+      sentinel `log_id` (`synthetic-probe-voluntary-override-verify-v1`, not the
+      production hash format, so it can never collide with a real row), gated behind
+      `--yes`, exposure window is the single run's own insert-to-delete span.
+   Both pieces have unit tests (`scripts/analysis/tests/test_measure_ast_hot_reducer.py`,
+   9 new cases for the cross-check, including two added by the same-day fix above
+   specifically to pin the floor/tie-break correction against production's real
+   `select_actions()` semantics, not just re-assert the old behavior; the drill script's
+   builder is exercised by its own `--yes` live run above, which is the actual claim
+   being made -- a mocked-DB unit test would not prove the real round trip). This is the
+   metric item 3 needed: a real, replayable-on-every-run correctness signal on the
+   branch that fires, plus a real (not synthetic-only) proof the rare branch's
+   persistence path works when exercised. **Also disclosed, not hidden**: the first
+   version of this metric shipped with a real bug in the same session it was built --
+   worth remembering next time "we built a real metric" is claimed as done; catching it
+   took a full code review pass, not just running the script once and reading a clean
+   number.
 3. **Route existing tension producers directly onto `FieldStateV1` channels**, retiring the
    bucket-vote layer — collapses the redundant reimplementation named in §7's finding.
    Reframed as prediction-error-native (extending the already-live
@@ -369,6 +509,77 @@ first place. Full reasoning and phased detail:
    synthetic stub, untouched by this patch (a different consumer of the old schema, not
    `goal_context`'s) — Objective 6 remains gated on item 2's reducer being *proven*, unaffected
    by this item shipping.
+   **Root cause found and fixed, 2026-08-20 (item 4 of the punch list, spun off item 2's
+   observation that `voluntary_override` structurally never fires in production — every
+   sampled goal targeted `node:substrate.route` with `salience=1.000` pinned).** Confirmed
+   live: `substrate_node_prediction_error_baseline` showed all five native domains had
+   ample real observations (9.4K-121K each, all above the confidence floor), so this was
+   not a thin-data artifact. The real cause: `node:substrate.route`'s prediction-error
+   signal (`route_prediction_error()`, a categorical decision-mismatch rate) is genuinely,
+   organically near-constant — its last 30 real receipts were all exactly `0.0003`, its
+   persisted EWMA `variance` had underflowed to `~2.9e-39`. That is real data, not a decay
+   artifact (CLAUDE.md's metric-quality-gate #4 distinction, checked explicitly). But
+   `precision_weighted_salience_from_baseline()` floors every domain's variance through
+   the same single global constant (`NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE = 1e-5`,
+   `orion/attention/field_attention/candidate_precision_weighted.py`), which is
+   ~1,270x-19,300x smaller than the other four domains' real organic variance
+   (0.0127-0.193, confirmed live same day). Since precision = 1/variance and
+   `normalize_across_targets()` is rank-preserving min-max (not magnitude-correcting —
+   see that function's own docstring), route's raw score was the tick's maximum
+   essentially every tick by construction, not because its current error was genuinely
+   more surprising than its competitors'.
+   **Fix**: `cross_domain_variance_floor()` (new function, same module) replaces the
+   single global floor with one derived live, per tick, per target, from the median real
+   variance of that target's OTHER competing domains this tick (target excluded from its
+   own floor). No new hand-picked constant — matches `normalize_across_targets()`'s own
+   "no free parameter" discipline, cited in that function's docstring, applied one step
+   earlier. Falls back to the original global constant when there is no live sibling data
+   to derive a better floor from (cold start). The global constant itself is not removed,
+   only demoted from "the only floor" to "the floor of last resort." Compresses genuine
+   precision differentiation too, not just the pathological outlier — a domain quieter
+   than its siblings' median loses some of the precision advantage it legitimately
+   earned; accepted as the intended cost of "no domain can claim more precision than its
+   real siblings currently show."
+   **Correlated-degeneracy guard (added in code review, same day):** a plain median over
+   the other siblings would itself degrade back to the original pathology if a *majority*
+   of those siblings are simultaneously degenerate (at/below the global floor) at the same
+   tick — the same near-constant-signal mechanism that flattened route can flatten any
+   domain during a correlated quiet period (e.g. a deploy freeze), and with only 4 possible
+   siblings this is a real, not hypothetical, case. Guarded explicitly: real siblings must
+   form a strict majority of the real competitor set, or the floor falls back to the global
+   constant rather than trust a degenerate-majority median.
+   **Live-data proof, not just synthetic tests** (metric-quality-gate #4): re-ran both the
+   old and new formula against the real, currently-live `substrate_node_prediction_error_
+   baseline` row set. Old floor: route normalized to `0.876` (2nd-highest of 5, structurally
+   guaranteed to win most ticks). New floor: route's raw salience dropped ~10,000x
+   (30.0 → 0.0031) and normalized to `0.0` (lowest of 5) on the same live snapshot — a real
+   domain (`node:substrate.execution`) won instead. 65 unit tests pass in the two directly
+   touched files (`tests/test_attention_candidate_precision_weighted.py`,
+   `tests/test_attention_field_selectors.py`; 8 new, pinning the fix — 5 against the exact
+   live values recovered during this investigation, 3 against the code-review-added
+   correlated-degeneracy guard — not idealized round numbers).
+   **Blast radius, checked directly (grep-verified call graph, not the whole-repo semantic
+   graph query, which false-matched on an unrelated "route" naming collision in
+   `orion-llm-gateway`):** `select_node_targets()` has exactly one caller
+   (`orion/attention/field_attention/builder.py::build_attention_frame()`), which itself
+   has exactly one live caller (`services/orion-attention-runtime/app/worker.py`). Real
+   downstream consumers of the changed salience values: `goal_provenance.py` (this item's
+   intended target), `orion/consolidation/motif.py` (membership-only, unaffected by
+   magnitude), `orion/substrate/attention_self_model.py` — item 2's own AST/HOT reducer —
+   whose `field_salient_target_ids` and `field_salience_only` narrative read
+   `dominant_targets` (branch-classification logic itself is untouched; which targets get
+   *named* in the narrative can shift), and `orion/proposals/builder.py`
+   (`ATTENTION_FIRST_TARGET_BINDING = "attention.dominant_targets[0]"`, a real
+   decision-binding). Whether route was ever winning the frame-level `dominant_targets[0]`
+   slot (versus just the node-only subset this fix targets) is `UNVERIFIED` — goal_
+   provenance.py's own docstring notes host/capability targets already usually win that
+   slot post-Candidate-B, so exposure is believed small but not traced.
+   **Disclosed, not hidden**: this is a single live snapshot, not a multi-day replay —
+   whether route's dominance actually breaks in sustained live operation (rather than one
+   good-looking point-in-time check) is `UNVERIFIED` pending real post-deploy observation
+   of `substrate_goal_provenance_streak` and whether `voluntary_override` ever fires. That
+   observation is the real acceptance check for this fix, not this session's live snapshot
+   alone.
 4. **Stand up read-only measurement for the remaining consciousness-theory instruments** (§9)
    — RPT/Lamme and predictive processing are already live (items 2-3 build on them directly,
    not duplicate them); IIT continues independently via the mood-arc encoder, not gated by
@@ -450,10 +661,14 @@ first place. Full reasoning and phased detail:
    `generated_at >= 2026-07-28T21:58:00Z` in the same run's `ticks.csv` artifact gives
    `field:recent_perturbations` winning top-1 in **11.13%** of post-fix ticks (1,257/11,293),
    down from the pre-fix 99.98%. `node:athena` now wins the remaining 88.87% — the monoculture
-   pathology this item named is broken, but note this trades one single-target dominance pattern
-   for another; whether `node:athena`'s 88.87% is genuine (real, warranted elevated pressure) or
-   itself an artifact worth investigating is an open question this patch didn't examine, separate
-   from the recent_perturbations fix itself.
+   pathology this item named is broken.
+   **Closed, not open (Juniper, repeated direction, most recently 2026-08-20): `node:athena`
+   winning most ticks is a real architectural asymmetry, not a bug.** Athena is the host
+   Orion's substrate actually runs on — it is structurally the busiest, most-instrumented,
+   highest-signal-volume node in the system by design, not an artifact of a saturating
+   formula the way `field:recent_perturbations`' old `/10.0` cap was. Do not reopen this as
+   an investigation thread; if a future session's data makes it look surprising again, check
+   this line and the git history around it before re-litigating.
 6. **Revisit `capability_policy.py`'s coupling to live salience** — only after item 3 closes
    the `drive_origin` dependency and item 2's field-native attention is proven, not assumed.
    At this point the actual mechanism is a real open choice, not a given: a salience-to-
@@ -489,7 +704,119 @@ first place. Full reasoning and phased detail:
    done: calibrating `ORION_GOAL_PROVENANCE_MIN_STREAK` against real accumulated
    data, and generalizing Hub's Substrate Lattice UI to show real goal-provenance
    ticks (Part H).
+   **Part F done (2026-08-11, PR #1553 + review-fix follow-up 335806fae, both merged
+   before this line was next updated):** `dedupe_goal_headlines_by_drive_origin` was
+   confirmed provably unreachable in production (not "close to a no-op" as the design
+   doc above guessed) and deleted along with `AutonomyGoalHeadlineV1.drive_origin`,
+   `AutonomyActiveGoalV1.drive_origin`, `GoalProposalV1.drive_origin`, and
+   `_merge_orion_goals_into_state`'s one call site. The review follow-up caught and
+   fixed two more real consumers the first commit missed: a mandatory (non-`OPTIONAL`)
+   SPARQL triple pattern that would silently break future goal matching, and a real
+   live Hub UI consumer (`drives_analytics_queries.py`/`drives-analytics.js`).
+   **Left deliberately, not zombie debt**: `SubstrateEpisodeIntentV1.drive_origin` /
+   `policy_act.py::resolve_episode_intent` (a real store slot-key convention, not a
+   taxonomy value) and `AutonomyGoalPlannedV1.drive_origin` /
+   `AutonomyGoalExecuteInputV1.drive_origin` (real bus schema fields, disclosed as a
+   separate scope decision in that commit, not overlooked). This item's `drive_origin`
+   retirement is closed.
+   **`ORION_GOAL_PROVENANCE_MIN_STREAK` calibration, run 2026-08-20** against the real
+   `goal_provenance_streak_ticks` telemetry Part H shipped (9.2 days of history,
+   342,078 rows, 5,516 reconstructed dominance runs — `scripts/analysis/
+   measure_goal_provenance_streak_distribution.py`, unchanged from its 2026-08-11
+   build). The live default (`min_streak=3`) clears **93.38%** of real completed runs
+   — it filters almost exactly the momentary single/double-tick flips it exists to
+   debounce (streak lengths 1-2 are 6.62% of all completed runs combined) without
+   meaningfully blocking genuine sustained dominance. Not obviously mis-set in either
+   direction; no change recommended. **Separately disclosed, not this item's scope to
+   fix**: the same run surfaced several real multi-thousand-tick mega-streaks —
+   `node:substrate.chat` reaching max streak lengths of 16,036 / 12,458 / 5,010 /
+   4,611 / 3,454 ticks between 2026-08-13 and 2026-08-19 — unrelated to the
+   `node:substrate.route` variance-floor bug fixed same-day above (different target,
+   different mechanism, and these predate that fix). Not investigated further here;
+   plausibly a genuine quiet period for a domain with real, infrequent activity
+   (`node:substrate.chat` had only ~121 real observations as of the route
+   investigation, far fewer than the other four native domains), the same shape as
+   `node:athena`'s settled-architectural dominance rather than a new bug — but that is
+   an inference, not confirmed against live data the way the route bug was. A real next
+   step if picked up: check whether `node:substrate.chat`'s own variance during those
+   windows was genuinely near-constant (calm, thin data) or itself degenerate/floored.
+   **Still not done, genuinely unbuilt (confirmed live 2026-08-20: zero references to
+   `goal_provenance`/`FieldGoalProvenanceV1`/`substrate_goal_provenance` anywhere under
+   `services/orion-hub/`)**: generalizing Hub's Substrate Lattice UI to show real
+   goal-provenance ticks (Part H's UI half). Real, separate-scope build (a new debug
+   panel), not done in this patch.
 7. **Re-evaluate integration** only after 4 and 5 produce real, comparable data — not before.
+   **Design-mode pass, 2026-08-20: not yet — items 4 and 5 have not actually produced the
+   data this gate asks for, so there is no integrate-vs-stay-separate decision to make yet.**
+   Full deliverable:
+   `docs/superpowers/specs/2026-08-20-objective-7-integration-reevaluation-design.md`.
+   Three concrete gaps found, not asserted: (1) item 5's emergent-clustering probe's only
+   real run (2026-07-21) is now stale relative to two salience-formula fixes that postdate
+   it — the 2026-07-28 `recent_perturbations` EWMA z-score fix and the 2026-08-20
+   `cross_domain_variance_floor()` fix (PR #1774) — and its own literal acceptance check
+   already read AMBIGUOUS even before those fixes (one surviving stable pair,
+   `capability:llm_inference` <-> `node:atlas`, out of 21 checkable pairs). (2) item 4 has
+   never produced its own dedicated acceptance evidence — its one-line status only points at
+   items 2/3's existing artifacts. (3) O3 (§5) — "a blind rater... can distinguish [an
+   instrument's output] from noise and describe what it appears to track" — is the literal
+   falsifiable bar this whole objective exists to serve, and has never been run for any
+   instrument in this program, despite being cheap and read-only (confirmed via full-text
+   search of this document). **Recommendation: do not build any fused/shared consumer or
+   cross-theory legibility surface yet, and do not close item 7 as "answered: stay separate"
+   either — both would be deciding without the data §7's own "integration is decided from
+   data, later" rule requires.** Smallest real next patch, per the design doc: re-run
+   `measure_emergent_clustering_probe.py` fresh against current live data, and build one
+   small blind-rater harness against the AST/HOT reducer's real narrative output (the one
+   instrument already MET on reducer-correctness per this item's own 2026-08-20 note above),
+   modeled on the existing "compare, don't fuse" precedent
+   (`scripts/analysis/measure_candidate_a_vs_b_head_to_head.py`). No schema, registry, or new
+   consumer proposed by this pass. Two constraints carried forward for whatever integration
+   discussion eventually does happen: `node:athena` dominating attention/salience data is
+   architectural (the host node), settled, not an open question (§6 item 5's 2026-07-29 entry
+   above, closed for real in the separate `docs/athena-dominance-doc-correction` doc pass);
+   and any future proposal to fuse/weight salience-like signals *across* theory-instruments
+   should assume the same "one domain's organic scale dwarfs another's" failure mode that
+   `cross_domain_variance_floor()` (PR #1774) already fixed once *within* one competition —
+   fusing across theories is strictly more exposed to it, not less.
+   **The recommended next patch was run, same day, 2026-08-20 — real decision follows.**
+   1. **`measure_emergent_clustering_probe.py` re-run** (`--window-hours 24 --gap-hours 12`,
+      post both salience fixes): still **AMBIGUOUS** on the literal clustering bar (same
+      classification as 2026-07-21, now over a much richer 18-target universe — up from 9 —
+      with 153 checkable pairs instead of 21). One pair still clears `corr >= 0.5` in both
+      windows (`capability:vision` <-> `node:substrate.vision`, Jaccard 1.0), but
+      correlation-of-correlations across all 153 pairs dropped to **0.3948** (was 0.9940 on
+      the earlier, sparser 21-pair check) — a wider universe finds real structure less
+      stable, not more. Full-history (104,778 real ticks) top-1-winner concentration is
+      **36.31%** (`node:substrate.bus_synaptic`) — in the same range as the killed drives
+      system's own documented *post-fix* concentration (31.65%), not clearly better than
+      what this program already replaced.
+   2. **O3 blind-rater check attempted, and found not meaningfully runnable as scoped.**
+      Pulled every real `reason_narrative` ever persisted to `substrate_attention_self_model`
+      (19,417 rows, full history): **only 5 distinct strings exist in the entire table**, and
+      `attention_reason` has only ever been `bottom_up_salience` (0 real `top_down_override`
+      or `field_salience_only` rows — consistent with everything else found this session).
+      88% of ticks are the single fixed fallback string ("Pure bottom-up dispatch: 'None'
+      selected..."); the remainder cycle through 4 template variants differing only by a
+      substituted, non-descriptive `open-loop-<hex>` id. This is real, not fabricated — item
+      3 already proved the id substitution is correct — but it is a fixed template with one
+      slot, not free-form content. Running a formal blind-rater trial on 5 known template
+      shapes would trivially "pass" (any rater can separate 5 templates from noise) without
+      testing what O3 actually asks — whether a rater can find *meaning* in the content.
+      Not run, to avoid reporting a misleading PASS. Real, disclosed gap: the reducer's
+      underlying selection logic is proven correct, but its narrative layer is currently too
+      impoverished to support a real legibility claim.
+   **Decision: do not integrate further. Real reasons, not caution for its own sake:**
+   monoculture concentration is not demonstrably better than what was killed, and the one
+   instrument (AST/HOT) that's actually proven correct produces output too template-thin for
+   the legibility bar this whole re-evaluation was gated on. Building a fused consumer or
+   wider `capability_policy.py` gate on top of this now would repeat the exact mistake this
+   program exists to correct — formalizing before validating. This is a real "no," backed by
+   two real measurements, not the earlier "not ripe yet" (missing data). **Objective 7 is
+   closed as: integration not warranted by current data.** Named, concrete path back open if
+   this is ever revisited: (a) close the concentration gap (`bus_synaptic`'s 36.31% share
+   itself, not yet root-caused the way `route`'s was), (b) enrich the AST/HOT reducer's
+   narrative generation beyond a single-slot template before re-attempting O3, (c) only then
+   re-run both checks.
 
 ## 7. Processes — how this program actually operates
 
@@ -599,6 +926,22 @@ named smallest probe.
    reverie/dream substrate instead of a cron job.
 2. **Society-of-Mind competition** — multiple independent salience scorers bidding, not one
    formula.
+   **Design-mode pass, 2026-08-20 (supersedes two same-day intermediate attempts, both
+   real progress but at the wrong layer — a habituation-only design, and a first cut of
+   a multi-item `concern_state.py` that code review caught mixing two non-cross-normalized
+   scales before it was committed).** The actual pattern, named directly: the killed
+   drives system's 96% monoculture, `compute_salience()`'s hand-tuned weights,
+   `node:substrate.route`'s variance-floor bug (PR #1774), a `node:substrate.chat`
+   mega-streak found the same day, and `concern_state.py`'s own scale-mixing mistake are
+   the same root cause in five costumes: comparing raw cardinal numbers across domains
+   never guaranteed to share a scale. The fix already half-exists and has sat unused a
+   month: `orion.attention.rank_aggregation` (Borda count) compares by rank, not
+   magnitude — scale-invariant by construction, closing the whole bug class at once
+   instead of patching each instance. Proposes making rank-aggregation the mandatory
+   substrate for any cross-domain comparison, finally closing Candidate B's own
+   never-validated three-scorer gap as the first real acceptance check. Design mode only;
+   no code committed. Full deliverable:
+   `docs/superpowers/specs/2026-08-20-rank-native-comparability-substrate-design.md`.
 3. **Free-energy/active-inference reframing** — `capability_policy` as literal expected-
    free-energy action selection.
 4. **φ-gated meta-competition** — use the orphaned Causal Geometry v1 φ metric to widen or

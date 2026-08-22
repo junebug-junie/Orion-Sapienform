@@ -77,6 +77,20 @@ class SpontaneousThoughtV1(BaseModel):
     motif_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
     episode_summary_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
 
+    # Phase E expectation scoring — additive, optional; set only when the thought
+    # narrates from a real percept (ORION_REVERIE_PERCEPTION_ENABLED) and states one
+    # concrete, falsifiable claim about the room (Movement III, docs/superpowers/
+    # specs/2026-08-12-perception-frontier-design.md). `expectation_verdict` stays
+    # None until a later scoring pass (ORION_REVERIE_EXPECTATION_SCORING_ENABLED)
+    # resolves it against a fresh percept. Never fabricate confirmed/disconfirmed
+    # once the checkable window has closed with no fresh percept available — write
+    # "unscored" instead. Same honesty discipline as PerceptionContextV1's
+    # staleness gate (P4).
+    expectation: str | None = Field(default=None, max_length=200)
+    expectation_checkable_by: datetime | None = None
+    expectation_verdict: Literal["confirmed", "disconfirmed", "unscored"] | None = None
+    expectation_scored_at: datetime | None = None
+
     def grounding_ids(self) -> set[str]:
         """The set of coalition ids that legitimately anchor this thought."""
         if self.coalition is None:

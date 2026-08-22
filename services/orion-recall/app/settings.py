@@ -94,6 +94,23 @@ class Settings(BaseSettings):
     RECALL_SQL_CHAT_ID_COL: str = Field(
         default="id", validation_alias=AliasChoices("RECALL_SQL_CHAT_ID_COL")
     )
+    # AI Town chat-history table split (docs/superpowers/specs/
+    # 2026-08-18-aitown-concept-graph-split-and-atlas-readability-design.md,
+    # docs/superpowers/specs/2026-08-19-aitown-table-split-phase2-recall-migration-design.md).
+    # AI-Town rows physically live here, column-for-column identical to
+    # RECALL_SQL_CHAT_TABLE. NOT yet guaranteed to hold an id at most once
+    # across the two tables as of 2026-08-19 -- orion-sql-writer's Phase 1
+    # dual-write (additive, both tables, gated by
+    # SQL_WRITER_AITOWN_DUAL_WRITE_ENABLED) is still the live write path on
+    # `main`; a separate, not-yet-merged cutover PR retires it for routing
+    # (exactly one table, real historical-row move). Every function in
+    # sql_chat.py/sql_timeline.py/storage/sql_adapter.py that reads
+    # RECALL_SQL_CHAT_TABLE for chat content also unions this table in --
+    # see each call site for how it handles that (two-query merge for
+    # id-batch lookups, accepted bounded duplicate risk for recency scans).
+    RECALL_SQL_AITOWN_CHAT_TABLE: str = Field(
+        default="aitown_chat_history_log", validation_alias=AliasChoices("RECALL_SQL_AITOWN_CHAT_TABLE")
+    )
     # RDF chat-turn recall carries no usable graph timestamp (turns are written without one),
     # so it ignored the per-profile time window and surfaced months-old turns into reflective
     # recall. When enabled, RDF chat-turn candidates are joined back to chat_history_log and

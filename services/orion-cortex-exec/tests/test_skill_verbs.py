@@ -32,6 +32,22 @@ spec.loader.exec_module(verb_adapters)
 
 _GITHUB_RECENT_PRS_EXECUTE = verb_adapters.GithubRecentPullRequestsVerb.execute
 
+spec = importlib.util.spec_from_file_location(
+    f"{APP_PACKAGE_NAME}.actions_skill_registry", APP_DIR / "actions_skill_registry.py"
+)
+actions_skill_registry = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+sys.modules[spec.name] = actions_skill_registry
+spec.loader.exec_module(actions_skill_registry)
+
+spec = importlib.util.spec_from_file_location(
+    f"{APP_PACKAGE_NAME}.capability_bridge", APP_DIR / "capability_bridge.py"
+)
+capability_bridge = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+sys.modules[spec.name] = capability_bridge
+spec.loader.exec_module(capability_bridge)
+
 REPO_ROOT = SERVICE_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -140,6 +156,432 @@ def test_biometrics_snapshot_maps_mock_http(monkeypatch):
     assert data["status"] == "OK"
     assert data["constraint"] == "GPU_MEM"
     assert data["cluster"]["composite"]["strain"] == 0.62
+
+
+def _vision_window_envelope(**overrides):
+    envelope = {
+        "window_id": "w-1",
+        "stream_id": "cam-front",
+        "start_ts": 1000.0,
+        "end_ts": 1005.0,
+        "summary": {
+            "object_counts": {"door": 1, "chair": 3},
+            "top_labels": [["chair", 3], ["door", 1]],
+            "item_count": 4,
+            "captions": ["a room with chairs and a door"],
+            "label_counts": {"door": 1, "chair": 3},
+            "detection_count": 4,
+            "evidence": {"hard_labels": ["door", "chair"]},
+        },
+        "artifact_ids": ["art-1"],
+        "artifact_uris": ["/mnt/telemetry/vision/frames/art-1.jpg"],
+        "upstream_event_ids": ["evt-1"],
+        "meta": {"internal": "plumbing"},
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+def test_normalize_vision_window_current_drops_raw_frame_paths():
+    """Privacy contract: artifact_uris/upstream_event_ids/meta (raw frame paths,
+    bus correlation plumbing) must never survive normalization -- same contract
+    PerceptionContextV1 already establishes for the situation brief."""
+    payload = {
+        "status": "ok",
+        "source": "live_state",
+        "snapshot_id": "w-1",
+        "stream_id": "cam-front",
+        "generated_at": 1005.0,
+        "age_ms": 250,
+        "envelope": _vision_window_envelope(),
+    }
+
+    result = verb_adapters._normalize_vision_window_current(payload)
+
+    assert result["available"] is True
+    assert result["status"] == "ok"
+    assert result["window_id"] == "w-1"
+    assert result["stream_id"] == "cam-front"
+    assert result["item_count"] == 4
+    assert result["detection_count"] == 4
+    assert result["top_labels"] == [["chair", 3], ["door", 1]]
+    assert result["captions"] == ["a room with chairs and a door"]
+    assert "artifact_uris" not in result
+    assert "upstream_event_ids" not in result
+    assert "meta" not in result
+    assert "/mnt/telemetry" not in json.dumps(result)
+
+
+def test_normalize_vision_window_current_caps_captions_and_labels():
+    envelope = _vision_window_envelope(
+        summary={
+            "object_counts": {},
+            "top_labels": [["a", 5], ["b", 4], ["c", 3], ["d", 2], ["e", 1], ["f", 1]],
+            "item_count": 1,
+            "captions": ["one", "two", "three", "four"],
+            "label_counts": {},
+            "detection_count": 0,
+            "evidence": {},
+        }
+    )
+    payload = {
+        "status": "ok",
+        "snapshot_id": "w-2",
+        "stream_id": None,
+        "generated_at": 1005.0,
+        "age_ms": 0,
+        "envelope": envelope,
+    }
+
+    result = verb_adapters._normalize_vision_window_current(payload)
+
+    assert len(result["top_labels"]) == 5
+    assert len(result["captions"]) == 3
+
+
+def test_normalize_vision_window_current_empty_status():
+    result = verb_adapters._normalize_vision_window_current(
+        {"status": "empty", "source": "none", "snapshot_id": None, "stream_id": None}
+    )
+    assert result["available"] is False
+    assert result["status"] == "empty"
+    assert result["captions"] == []
+
+
+def test_normalize_vision_window_current_stale_still_available():
+    """Regression: 'stale' means aged, not absent -- orion-vision-window's own
+    http_current_stale_check only flips the status field, the envelope's real
+    captions/labels stay populated. A caller must not read stale as no-data."""
+    payload = {
+        "status": "stale",
+        "snapshot_id": "w-3",
+        "stream_id": "cam-front",
+        "generated_at": 1005.0,
+        "age_ms": 400000,
+        "envelope": _vision_window_envelope(),
+    }
+
+    result = verb_adapters._normalize_vision_window_current(payload)
+
+    assert result["available"] is True
+    assert result["status"] == "stale"
+    assert result["captions"] == ["a room with chairs and a door"]
+
+
+def test_normalize_vision_window_current_skips_malformed_top_label_entries():
+    """Schema-drift defense: a top_labels entry that isn't a [label, count] pair
+    (e.g. legacy recovery-store record, or a plain string) must be dropped, not
+    raise -- this function runs outside LookAtCameraVerb's HTTP try/except."""
+    envelope = _vision_window_envelope(
+        summary={
+            "object_counts": {},
+            "top_labels": ["not_a_pair", ["door", 2], 42, None, ["chair"]],
+            "item_count": 1,
+            "captions": [],
+            "label_counts": {},
+            "detection_count": 2,
+            "evidence": {},
+        }
+    )
+    payload = {"status": "ok", "snapshot_id": "w-4", "stream_id": None, "envelope": envelope}
+
+    result = verb_adapters._normalize_vision_window_current(payload)
+
+    assert result["top_labels"] == [["door", 2]]
+
+
+def test_look_at_camera_stream_id_is_url_quoted(monkeypatch):
+    """A stream_id containing reserved URL characters must be percent-encoded,
+    not interpolated raw into the path."""
+    seen_urls = []
+
+    def _fake_get(url, timeout_sec):
+        seen_urls.append(url)
+        return {"status": "empty", "source": "none", "snapshot_id": None, "stream_id": None}
+
+    monkeypatch.setattr(verb_adapters, "_http_json_get", _fake_get)
+    req = _plan_request(
+        "skills.perception.look_at_camera.v1", skill_args={"stream_id": "cam/front?x=1"}
+    )
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    asyncio.run(verb_adapters.LookAtCameraVerb().execute(ctx, req))
+
+    assert seen_urls == [
+        "http://orion-athena-vision-window:8000/api/vision-window/streams/cam%2Ffront%3Fx%3D1/current"
+    ]
+
+
+def test_look_at_camera_semantic_verb_resolves_via_capability_bridge():
+    """End-to-end: the look_at_camera semantic verb's preferred_skill_families
+    actually resolves to skills.perception.look_at_camera.v1 through the same
+    resolve_capability_decision() path bound_capability_exec.py uses -- not
+    just that the classifier functions agree in isolation."""
+    registry = actions_skill_registry.ActionsSkillRegistry(verbs_dir=verb_adapters.VERBS_DIR)
+
+    decision = capability_bridge.resolve_capability_decision(
+        verb="look_at_camera",
+        preferred_skill_families=["perception"],
+        registry=registry,
+    )
+
+    assert decision.selected_skill == "skills.perception.look_at_camera.v1"
+    assert decision.skill_family == "perception"
+    assert decision.observational is True
+
+
+def test_look_at_camera_maps_mock_http(monkeypatch):
+    payload = {
+        "status": "ok",
+        "source": "live_state",
+        "snapshot_id": "w-1",
+        "stream_id": "cam-front",
+        "generated_at": 1005.0,
+        "age_ms": 250,
+        "envelope": _vision_window_envelope(),
+    }
+    seen_urls = []
+
+    def _fake_get(url, timeout_sec):
+        seen_urls.append(url)
+        return payload
+
+    monkeypatch.setattr(verb_adapters, "_http_json_get", _fake_get)
+    req = _plan_request("skills.perception.look_at_camera.v1")
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.LookAtCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is True
+    data = json.loads(out.final_text)
+    assert data["available"] is True
+    assert data["captions"] == ["a room with chairs and a door"]
+    assert seen_urls == ["http://orion-athena-vision-window:8000/api/vision-window/current"]
+
+
+def test_look_at_camera_uses_stream_scoped_endpoint_when_requested(monkeypatch):
+    seen_urls = []
+
+    def _fake_get(url, timeout_sec):
+        seen_urls.append(url)
+        return {"status": "empty", "source": "none", "snapshot_id": None, "stream_id": "cam-back"}
+
+    monkeypatch.setattr(verb_adapters, "_http_json_get", _fake_get)
+    req = _plan_request("skills.perception.look_at_camera.v1", skill_args={"stream_id": "cam-back"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, _ = asyncio.run(verb_adapters.LookAtCameraVerb().execute(ctx, req))
+
+    assert out.ok is False  # empty window -- honest failure, not empty-shell success
+    assert seen_urls == [
+        "http://orion-athena-vision-window:8000/api/vision-window/streams/cam-back/current"
+    ]
+
+
+def test_look_at_camera_never_raises_on_http_failure(monkeypatch):
+    def _boom(url, timeout_sec):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(verb_adapters, "_http_json_get", _boom)
+    req = _plan_request("skills.perception.look_at_camera.v1")
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.LookAtCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is False
+    assert out.error is not None
+
+
+def test_look_at_camera_skill_family_and_risk_class():
+    assert actions_skill_registry._family_for_skill("skills.perception.look_at_camera.v1") == "perception"
+    risk_class, read_only, idempotent = actions_skill_registry._risk_for_skill(
+        "skills.perception.look_at_camera.v1"
+    )
+    assert risk_class == "read_only"
+    assert read_only is True
+    assert idempotent is True
+
+
+def test_look_at_camera_registered_in_manifest_with_correct_family():
+    """End-to-end: the real skills.perception.look_at_camera.v1.yaml is
+    auto-discovered by ActionsSkillRegistry's glob and classified correctly --
+    not just that the classifier functions work in isolation."""
+    registry = actions_skill_registry.ActionsSkillRegistry(verbs_dir=verb_adapters.VERBS_DIR)
+    entry = next(
+        (e for e in registry.list() if e.skill_id == "skills.perception.look_at_camera.v1"), None
+    )
+    assert entry is not None
+    assert entry.family == "perception"
+    assert entry.read_only is True
+    assert entry.observational is True
+    assert entry.requires_confirmation is False
+    assert entry.requires_execute_opt_in is False
+
+
+def test_ask_camera_posts_vqa_task_with_use_latest_frame(monkeypatch):
+    """Confirms the real request shape reaches vision-host: task_type=vqa,
+    request.use_latest_frame=true (the on-demand-capture opt-in, not a
+    caller-supplied image_path), request.question passed through."""
+    seen = {}
+
+    def _fake_post(url, *, body, timeout_sec):
+        seen["url"] = url
+        seen["body"] = body
+        return {
+            "ok": True,
+            "artifacts": {
+                "model_id": "Salesforce/blip-image-captioning-base",
+                "vqa": {"question": "is the door open?", "answer": "yes", "confidence": 1.0},
+            },
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "is the door open?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is True
+    assert seen["url"] == "http://orion-athena-vision-host:6600/v1/vision/task"
+    assert seen["body"] == {
+        "task_type": "vqa",
+        "request": {"use_latest_frame": True, "question": "is the door open?"},
+    }
+    data = json.loads(out.final_text)
+    assert data["available"] is True
+    assert data["status"] == "ok"
+    assert data["answer"] == "yes"
+
+
+def test_ask_camera_requires_a_question(monkeypatch):
+    """Never even calls vision-host without a real question -- validation
+    happens before any HTTP call, same convention runner.py's own
+    _run_vlm_vqa uses on the vision-host side."""
+    called = {"hit": False}
+
+    def _fake_post(url, *, body, timeout_sec):
+        called["hit"] = True
+        return {}
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert called["hit"] is False
+    assert effects == []
+    assert out.ok is False
+    assert out.error is not None
+
+
+def test_ask_camera_no_answer_is_ok_not_error(monkeypatch):
+    """A weak/empty VQA answer is a real, honest outcome (the model just
+    didn't have a real answer), not a call failure -- must not be
+    surfaced as ok=False."""
+    def _fake_post(url, *, body, timeout_sec):
+        return {
+            "ok": True,
+            "artifacts": {"model_id": "Salesforce/blip-image-captioning-base", "vqa": {"question": "?", "answer": "", "confidence": 1.0}},
+            "warnings": ["answer_rejected:empty"],
+        }
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "how many chairs?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is True
+    data = json.loads(out.final_text)
+    assert data["status"] == "no_answer"
+    assert data["answer"] == ""
+    assert data["warnings"] == ["answer_rejected:empty"]
+
+
+def test_ask_camera_surfaces_vision_host_task_failure_honestly(monkeypatch):
+    """A real vision-host rejection (e.g. gpu_hard_floor) must be a real
+    ok=False failure with the actual error code, not swallowed into a
+    generic success or a fabricated answer."""
+    def _fake_post(url, *, body, timeout_sec):
+        return {
+            "ok": False,
+            "error": "No GPU available above hard floor (VRAM pressure).",
+            "meta": {"error_code": "gpu_hard_floor"},
+        }
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _fake_post)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "is the door open?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is False
+    data = json.loads(out.final_text)
+    assert data["status"] == "gpu_hard_floor"
+    assert data["available"] is False
+
+
+def test_ask_camera_never_raises_on_http_failure(monkeypatch):
+    def _boom(url, *, body, timeout_sec):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(verb_adapters, "_http_json_post", _boom)
+    req = _plan_request("skills.perception.ask_camera.v1", skill_args={"question": "is the door open?"})
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+
+    out, effects = asyncio.run(verb_adapters.AskCameraVerb().execute(ctx, req))
+
+    assert effects == []
+    assert out.ok is False
+    assert out.error is not None
+
+
+def test_ask_camera_semantic_verb_resolves_via_capability_bridge():
+    """End-to-end: the ask_camera semantic verb resolves to
+    skills.perception.ask_camera.v1 specifically -- not just "some
+    perception-family skill" (the exact ordering bug this same patch found
+    and fixed in _SEMANTIC_VERB_TO_SKILL for look_at_camera)."""
+    registry = actions_skill_registry.ActionsSkillRegistry(verbs_dir=verb_adapters.VERBS_DIR)
+
+    decision = capability_bridge.resolve_capability_decision(
+        verb="ask_camera",
+        preferred_skill_families=["perception"],
+        registry=registry,
+    )
+
+    assert decision.selected_skill == "skills.perception.ask_camera.v1"
+    assert decision.skill_family == "perception"
+    assert decision.observational is True
+
+
+def test_ask_camera_skill_family_and_risk_class():
+    assert actions_skill_registry._family_for_skill("skills.perception.ask_camera.v1") == "perception"
+    risk_class, read_only, idempotent = actions_skill_registry._risk_for_skill(
+        "skills.perception.ask_camera.v1"
+    )
+    assert risk_class == "read_only"
+    assert read_only is True
+    assert idempotent is True
+
+
+def test_ask_camera_registered_in_manifest_with_correct_family():
+    registry = actions_skill_registry.ActionsSkillRegistry(verbs_dir=verb_adapters.VERBS_DIR)
+    entry = next(
+        (e for e in registry.list() if e.skill_id == "skills.perception.ask_camera.v1"), None
+    )
+    assert entry is not None
+    assert entry.family == "perception"
+    assert entry.read_only is True
+    assert entry.observational is True
+    assert entry.requires_confirmation is False
+    assert entry.requires_execute_opt_in is False
 
 
 def test_tailscale_json_parsing_and_active_nodes():

@@ -48,17 +48,34 @@ class TopicFoundryClientError(Exception):
     """
 
 
-def fetch_latest_completed_run(base_url: str, *, timeout: float = DEFAULT_TIMEOUT_SEC) -> dict[str, Any]:
+def fetch_latest_completed_run(
+    base_url: str, *, model_name: str | None = None, timeout: float = DEFAULT_TIMEOUT_SEC
+) -> dict[str, Any]:
     """Return the most recently completed run's summary dict (``RunListItem`` shape).
+
+    ``model_name`` scopes the lookup to one model's runs
+    (``services/orion-topic-foundry/app/routers/runs.py``'s ``GET /runs``
+    already supports this query param). Without it, this returns the
+    globally-latest completed run across *every* model topic-foundry knows
+    about -- correctness bug caught by code review 2026-08-18 on the PR that
+    introduced a second, filtered model
+    (``orion-hub-autonomous-v2``) alongside the pre-existing, unfiltered
+    ``orion-hub-autonomous``: unscoped, this call could keep resolving to the
+    old model's (AI-Town-polluted) runs indefinitely, silently defeating the
+    point of adding the new model. Every caller in this codebase should pass
+    the specific model it cares about.
 
     Raises ``TopicFoundryClientError`` on any network/HTTP/parse failure, or
     if no completed run exists yet.
     """
     url = f"{base_url.rstrip('/')}/runs"
+    params: dict[str, Any] = {"format": "wrapped", "status": "complete", "limit": 1}
+    if model_name:
+        params["model_name"] = model_name
     try:
         resp = requests.get(
             url,
-            params={"format": "wrapped", "status": "complete", "limit": 1},
+            params=params,
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -403,10 +420,15 @@ def fetch_mention_edges_for_run(
 def fetch_run_topics_and_keywords(
     base_url: str,
     *,
+    model_name: str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SEC,
     max_topics_for_keywords: int = MAX_TOPICS_FOR_KEYWORDS,
 ) -> dict[str, Any]:
     """Orchestrate the 3-call sequence: latest run -> topics -> per-topic keywords.
+
+    ``model_name``, when given, scopes "latest run" to that model only --
+    see ``fetch_latest_completed_run``'s docstring for why this matters
+    whenever more than one model exists in topic-foundry.
 
     Raises ``TopicFoundryClientError`` only for the two calls that make the
     whole result unusable (no completed run, or the topics list itself is
@@ -417,7 +439,7 @@ def fetch_run_topics_and_keywords(
     Returns:
         ``{"run_id": str, "run": dict, "topics": list[dict], "keywords_by_topic": {int: [str]}}``
     """
-    run = fetch_latest_completed_run(base_url, timeout=timeout)
+    run = fetch_latest_completed_run(base_url, model_name=model_name, timeout=timeout)
     run_id = str(run["run_id"])
     topics = fetch_topics_for_run(base_url, run_id, timeout=timeout)
 

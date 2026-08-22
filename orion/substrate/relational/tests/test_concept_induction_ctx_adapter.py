@@ -84,6 +84,12 @@ def _populated_store() -> InMemorySubstrateGraphStore:
             concept_type="tension",
         ),
     )
+    # Claude (anchor_scope="claude", orion/substrate/seed_concepts.yaml's 4th
+    # golden seed) must surface too, not be silently dropped by _SUBJECTS.
+    store.upsert_node(
+        identity_key="concept|claude|companion",
+        node=_make_concept(node_id="c-claude-1", anchor_scope="claude", label="claude:companion"),
+    )
     return store
 
 
@@ -95,8 +101,8 @@ def test_populated_store_produces_record_with_bucketed_nodes():
     assert record is not None
     assert record.anchor_scope == "orion"
     node_ids = {n.node_id for n in record.nodes}
-    # world-scoped node filtered out (not in orion/relationship/juniper).
-    assert node_ids == {"c-orion-1", "c-rel-1", "c-juniper-1", "c-orion-2"}
+    # world-scoped node filtered out (not in orion/relationship/juniper/claude).
+    assert node_ids == {"c-orion-1", "c-rel-1", "c-juniper-1", "c-orion-2", "c-claude-1"}
 
     by_id = {n.node_id: n for n in record.nodes}
     # anchor_scope="orion" defaults to concept_type="self".
@@ -108,6 +114,12 @@ def test_populated_store_produces_record_with_bucketed_nodes():
     assert by_id["c-juniper-1"].metadata["concept_type"] == "self"
     # Pre-set concept_type is preserved, not clobbered by the anchor_scope default.
     assert by_id["c-orion-2"].metadata["concept_type"] == "tension"
+    # Regression, confirmed live 2026-08-22: anchor_scope="claude" was
+    # entirely absent from _SUBJECTS, so Claude's golden node was silently
+    # dropped -- never merely misbucketed, never reaching chat_stance's
+    # concept summary at all. Defaults to "relationship" (a collaborator,
+    # not part of Orion's own self-identity), not "self".
+    assert by_id["c-claude-1"].metadata["concept_type"] == "relationship"
 
 
 def test_tier_rank_stamped_on_every_node():

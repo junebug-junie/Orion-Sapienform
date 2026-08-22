@@ -68,7 +68,13 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
         embedding = VisionEmbedding(
             ref=artifacts["embedding"].get("ref", ""),
             path=artifacts["embedding"].get("path", ""),
-            dim=artifacts["embedding"].get("dim", 0)
+            dim=artifacts["embedding"].get("dim", 0),
+            # 2026-08-19 (P2 wire-contract patch): pass the inline vector
+            # through when the runner produced one. `.get(...)` (not a
+            # required key) so an older/alternate embedding profile that
+            # never populates it still builds a valid artifact -- vector
+            # stays None, exactly like today's behavior.
+            vector=artifacts["embedding"].get("vector"),
         )
 
     outputs = VisionArtifactOutputs(

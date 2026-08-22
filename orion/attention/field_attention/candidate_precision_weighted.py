@@ -479,3 +479,106 @@ def precision_weighted_salience_from_baseline(
         n_samples=baseline.observation_count,
         variance_floored=variance_floored,
     )
+
+
+def cross_domain_variance_floor(
+    baselines: dict[str, PrecisionEwmaBaseline],
+    target_id: str,
+    *,
+    min_variance: float,
+) -> float:
+    """Per-tick, per-target variance floor derived from this tick's OTHER real
+    competing domains, replacing a single hand-picked absolute constant applied
+    uniformly to every target regardless of that target's own natural error scale.
+
+    **The live incident this fixes (found 2026-08-20, Sentience Striving Program
+    item 4 investigation):** ``node:substrate.route``'s prediction-error signal
+    (``route_prediction_error()``, a categorical decision-mismatch rate) is
+    genuinely, organically near-constant -- confirmed live: the 30 most recent
+    real receipts at investigation time were all exactly ``0.0003``, and the
+    persisted EWMA baseline's ``variance`` had underflowed to ``~2.9e-39``. That is
+    real data, not a decay artifact (CLAUDE.md's metric-quality-gate #4
+    distinction). But feeding it through the single global
+    ``NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE = 1e-5`` floor gave route a
+    precision of ``1/1e-5 = 100,000`` -- roughly 1,270x-19,300x every other native
+    domain's own *organic* variance-derived precision (confirmed live same day:
+    biometrics/bus_synaptic/execution/chat variances ranged 0.0127-0.193,
+    precision ~5-79). Since ``normalize_across_targets()`` is min-max
+    (rank-preserving, not magnitude-correcting -- see that function's own
+    docstring), route's raw score was the tick's maximum essentially every tick,
+    so it won goal-provenance dominance by construction -- not because its
+    current error was genuinely more surprising, but because its variance floor
+    was orders of magnitude looser relative to its own error scale than everyone
+    else's. This is the confirmed root cause of the ``voluntary_override`` branch
+    structurally never firing (Sentience Striving Program README, item 4).
+
+    **Fix, and why this shape specifically:** a single global floor cannot be
+    "right" for every domain at once when domains have genuinely different
+    organic noise scales by design (a categorical decision-mismatch rate vs. a
+    continuous physiological/execution magnitude). Rather than hand-pick a new
+    per-domain constant -- which would repeat the same mistake with more
+    constants instead of one, calibrated numbers that do not transfer across
+    domains -- this floor is read live from the OTHER real domains competing in
+    the *same tick*: the median real ``variance`` among every other target with
+    ``observation_count > 0`` this tick. A target cannot claim more precision
+    than the median of what its real, currently-live siblings are actually
+    showing. No new tunable is introduced (matching ``normalize_across_
+    targets()``'s own "no free parameter" discipline, cited above) -- this is
+    min-max's same principle applied one step earlier, to the floor instead of
+    the final score.
+
+    **Disclosed trade-off (code review, 2026-08-20):** this compresses genuine
+    precision differentiation between domains, not just the pathological
+    outlier -- any target whose real variance sits below the sibling median
+    (in the live snapshot above, ``bus_synaptic``/``biometrics``) gets floored
+    up too, losing some of the precision advantage it legitimately earned by
+    being quieter. That is an accepted, intended consequence of "no domain can
+    claim more precision than its real siblings currently show," not a bug.
+
+    ``target_id`` is excluded from its own floor computation -- a domain's floor
+    must come from its *competitors*, not partly from itself, or a target could
+    (marginally, but non-zero) suppress its own floor by being unusually quiet.
+
+    **Correlated-degeneracy guard (code review, 2026-08-20):** a plain median
+    over the other siblings degrades back to the exact pathology this function
+    exists to fix if a *majority* of those siblings are themselves at/below
+    ``min_variance`` at the same tick (e.g. 3 of 4 siblings underflow
+    simultaneously -- a real possibility, not hypothetical: the same
+    near-constant-signal mechanism that flattened ``route`` can flatten any
+    domain during a correlated quiet period). In that case the median itself
+    would be degenerate, and ``max(min_variance, degenerate_median)`` would
+    just reproduce the original ``100,000``-precision bug for every affected
+    domain at once. Guarded explicitly: real (non-degenerate) siblings must
+    form a strict majority of the real competitor set, or this falls back to
+    ``min_variance`` instead of trusting a degenerate-majority median.
+
+    Falls back to ``min_variance`` (the original global constant, unchanged and
+    still the ultimate backstop) when fewer than one other real competitor
+    exists this tick (e.g. cold start, every other target has zero
+    observations) or when the majority-non-degenerate guard above fails. That
+    constant is not being removed, only demoted from "the only floor" to "the
+    floor of last resort when there is no trustworthy live sibling data to
+    derive a better one from."
+    """
+    other_variances = sorted(
+        baseline.variance
+        for other_id, baseline in baselines.items()
+        if other_id != target_id and baseline.observation_count > 0
+    )
+    if not other_variances:
+        return min_variance
+    non_degenerate_count = sum(1 for v in other_variances if v > min_variance)
+    degenerate_count = len(other_variances) - non_degenerate_count
+    if non_degenerate_count <= degenerate_count:
+        # Real siblings are not a trustworthy majority this tick -- see
+        # "Correlated-degeneracy guard" above. Do not derive a floor from
+        # mostly-degenerate data; fall back to the global constant.
+        return min_variance
+    n = len(other_variances)
+    mid = n // 2
+    median = (
+        other_variances[mid]
+        if n % 2 == 1
+        else (other_variances[mid - 1] + other_variances[mid]) / 2.0
+    )
+    return max(min_variance, median)

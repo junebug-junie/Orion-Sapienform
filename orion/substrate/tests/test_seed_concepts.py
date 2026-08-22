@@ -11,6 +11,9 @@ from orion.substrate.store import InMemorySubstrateGraphStore
 
 
 def test_load_seed_concepts_into_store_writes_four_canonical_concepts() -> None:
+    # Claude added 2026-08-20 as the fixture's 4th seed (see
+    # docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md)
+    # alongside Orion/Juniper/their relationship.
     store = InMemorySubstrateGraphStore()
 
     written = load_seed_concepts_into_store(store)
@@ -20,24 +23,10 @@ def test_load_seed_concepts_into_store_writes_four_canonical_concepts() -> None:
     assert result.query_kind == "concept_region"
 
     labels = {node.label for node in result.slice.nodes}
-    assert labels == {"Orion", "Juniper", "Claude", "Orion-Juniper relationship"}
+    assert labels == {"Orion", "Juniper", "Orion-Juniper relationship", "Claude"}
 
-    # Claude deliberately reuses anchor_scope="orion" (see seed_concepts.yaml's
-    # comment on the claude entry) rather than introducing a new
-    # SubstrateAnchorScopeV1 value, so the scope set is unchanged from before.
     scopes = {node.anchor_scope for node in result.slice.nodes}
-    assert scopes == {"orion", "juniper", "relationship"}
-
-    subject_refs = {node.subject_ref for node in result.slice.nodes}
-    assert "claude" in subject_refs
-
-    # Review-caught: without an explicit metadata override, downstream
-    # anchor_scope->concept_type fallback (concept_induction_ctx.py) would
-    # bucket anchor_scope="orion" nodes as "self" -- contradicting Claude's
-    # own definition ("not Orion itself"). Confirms the override survives
-    # the full seed round-trip, not just the yaml parse.
-    claude_node = next(n for n in result.slice.nodes if n.subject_ref == "claude")
-    assert claude_node.metadata.get("concept_type") == "relationship"
+    assert scopes == {"orion", "juniper", "claude", "relationship"}
 
     assert len(result.slice.nodes) == 4
     for node in result.slice.nodes:
@@ -76,16 +65,8 @@ def test_load_seed_concepts_into_store_wires_relationship_edges() -> None:
         "sub-concept-seed-juniper",
         "associated_with",
     ) in edge_pairs
-    assert (
-        "sub-concept-seed-claude",
-        "sub-concept-seed-orion",
-        "associated_with",
-    ) in edge_pairs
-    assert (
-        "sub-concept-seed-claude",
-        "sub-concept-seed-juniper",
-        "associated_with",
-    ) in edge_pairs
+    assert ("sub-concept-seed-claude", "sub-concept-seed-orion", "associated_with") in edge_pairs
+    assert ("sub-concept-seed-claude", "sub-concept-seed-juniper", "associated_with") in edge_pairs
 
 
 def test_load_seed_concept_nodes_missing_file_degrades_gracefully() -> None:

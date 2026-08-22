@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -19,6 +20,7 @@ from orion.harness.fcc_motor import (
     expand_env_path,
     extract_result_output_tokens,
     load_fcc_env,
+    probe_current_served_model,
     resolve_auth_token,
     run_fcc_turn,
     summarize_harness_step,
@@ -31,6 +33,7 @@ from orion.harness.grammar_emit import (
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
+from orion.harness.attachment_staging import describe_for_prompt
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
@@ -42,6 +45,7 @@ from orion.schemas.harness_finalize import (
     HarnessRepairOverlayV1,
     HarnessRunRequestV1,
 )
+from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
 
 logger = logging.getLogger("orion.harness.runner")
@@ -83,10 +87,32 @@ class HarnessMotorResult:
     # This is a soft audit signal, not a motor failure -- never repurpose
     # grounding_status for it.
     tool_provenance_audit: str | None = None
+    # Real backend model the CLI's stream-json "assistant" events echoed back
+    # (see fcc_motor.py's _served_model_from_assistant), distinct from the
+    # ~/.fcc/.env route alias in HarnessRunRequestV1.fcc_model_label -- that
+    # label alone can't distinguish MODEL_SONNET from MODEL_OPUS when both
+    # point at the same route. None when discovery never fired (e.g. a
+    # fast-fail before any assistant turn).
+    fcc_served_model: str | None = None
 
 
 def _default_harness_node_name() -> str:
     return os.environ.get("HARNESS_NODE_NAME", "athena")
+
+
+def _served_model_from_metadata(meta: object) -> str | None:
+    """Read fcc_motor.py's fcc_served_model out of a "final"/"error" event's
+    metadata dict, if present. Shared by both branches below so the
+    extraction rule (and its stripping) can't drift between a clean turn and
+    a degraded/partial one.
+    """
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("fcc_served_model")
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    return raw or None
 
 
 def _record_recall_gate_from_debug(
@@ -125,6 +151,9 @@ def build_harness_prompt(
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
+    attachments: list[Any] | None = None,
+    current_served_model: str | None = None,
+    recent_turns: list[TurnWindowMessageV1] | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -133,14 +162,20 @@ def build_harness_prompt(
         answer_contract=answer_contract,
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
         prior_tool_fetch_names=prior_tool_fetch_names,
+        current_served_model=current_served_model,
+        recent_turns=recent_turns,
     )
     instruction = harness_motor_instruction(
         thought=thought,
         answer_contract=answer_contract,
     )
+    # Appended last so it sits closest to the instruction, and only when there
+    # is something to say -- a text-only turn's prompt is unchanged byte for
+    # byte, which is what keeps this safe for every existing turn.
+    attachment_block = describe_for_prompt(attachments or [])
     if user_message.strip():
-        return f"{prefix}\n\n{instruction}"
-    return prefix
+        return f"{prefix}\n\n{instruction}{attachment_block}"
+    return f"{prefix}{attachment_block}"
 
 
 def build_draft_molecule(
@@ -205,12 +240,14 @@ class HarnessRunner:
         fcc_runner: FccRunner | None = None,
         fcc_timeout_sec: float = 120.0,
         node_name: str | None = None,
+        served_model_probe: Callable[..., Awaitable[str | None]] | None = None,
     ) -> None:
         self.bus = bus
         self.grammar_channel = grammar_channel
         self.step_channel = step_channel
         self.fcc_runner = fcc_runner or default_fcc_runner
         self.fcc_timeout_sec = fcc_timeout_sec
+        self.served_model_probe = served_model_probe or probe_current_served_model
         self.node_name = node_name or _default_harness_node_name()
 
     async def run(
@@ -239,7 +276,29 @@ class HarnessRunner:
         overlay = repair_overlay or map_repair_pressure_contract(request.repair_pressure_contract)
         coalition = coalition_snapshot or build_coalition_snapshot(thought)
 
-        prior_tool_fetch = await read_last_tool_fetch(self.bus, session_id=thought.session_id)
+        async def _probe_served_model() -> str | None:
+            # Best-effort self-context: which real backend is about to serve
+            # this turn (see fcc_motor.probe_current_served_model).
+            # Belt-and-suspenders try/except on top of that function's own
+            # internal fail-open -- a self-context probe must never be the
+            # reason a turn doesn't start, regardless of what's injected
+            # here in tests or added later.
+            try:
+                return await self.served_model_probe(request.fcc_model_label)
+            except Exception:
+                logger.warning(
+                    "served_model_probe failed corr=%s", request.correlation_id, exc_info=True
+                )
+                return None
+
+        # Independent reads (bus lookup, gateway probe) -- run concurrently
+        # rather than serially so a slow/unreachable orion-llm-gateway (the
+        # probe has its own timeout, default 2s) doesn't add to the bus
+        # round-trip on top of its own latency.
+        prior_tool_fetch, current_served_model = await asyncio.gather(
+            read_last_tool_fetch(self.bus, session_id=thought.session_id),
+            _probe_served_model(),
+        )
         prior_tool_fetch_names = (prior_tool_fetch or {}).get("tool_names")
 
         prompt = build_harness_prompt(
@@ -249,6 +308,9 @@ class HarnessRunner:
             answer_contract=request.answer_contract,
             workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
             prior_tool_fetch_names=prior_tool_fetch_names,
+            attachments=list(getattr(request, "attachments", None) or []),
+            current_served_model=current_served_model,
+            recent_turns=list(getattr(request, "recent_turns", None) or []),
         )
 
         collector = HarnessGrammarCollector(
@@ -264,6 +326,7 @@ class HarnessRunner:
         step_count = 0
         draft_text = ""
         exit_code: int | None = None
+        fcc_served_model: str | None = None
         compliance_verdict = "completed"
         grounding_status = "grounded"
         motor_failed = False
@@ -362,11 +425,17 @@ class HarnessRunner:
                     raw_exit = meta.get("exit_code")
                     if isinstance(raw_exit, int):
                         exit_code = raw_exit
+                seen_served_model = _served_model_from_metadata(meta)
+                if seen_served_model:
+                    fcc_served_model = seen_served_model
             elif etype == "error":
                 error_path_taken = True
                 partial = str(event.get("llm_response") or "").strip()
                 error_code = str(event.get("error_code") or "").strip()
                 error_msg = str(event.get("error") or "").strip()
+                seen_served_model = _served_model_from_metadata(event.get("metadata"))
+                if seen_served_model:
+                    fcc_served_model = seen_served_model
                 if partial:
                     draft_text = apply_context_overflow_hint(partial)
                     compliance_verdict = "partial"
@@ -475,6 +544,7 @@ class HarnessRunner:
                 reasoning_output_tokens=reasoning_output_tokens,
                 context_gathering_step_count=context_gathering_step_count,
                 execution_step_count=execution_step_count,
+                fcc_served_model=fcc_served_model,
             )
 
         await _publish_motor_lifecycle(
@@ -532,4 +602,5 @@ class HarnessRunner:
             reasoning_output_tokens=reasoning_output_tokens,
             context_gathering_step_count=context_gathering_step_count,
             execution_step_count=execution_step_count,
+            fcc_served_model=fcc_served_model,
         )

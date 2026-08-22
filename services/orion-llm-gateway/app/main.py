@@ -23,6 +23,9 @@ from .llm_backend import get_route_targets, run_llm_chat
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
 from .route_catalog import get_routes_payload
+import math
+
+from .admission_ledger import get_ledger
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .settings import settings
@@ -108,6 +111,28 @@ async def ready() -> JSONResponse:
 @app.get("/routes")
 async def routes_catalog() -> Dict[str, Any]:
     return await get_routes_payload()
+
+
+# ROADMAP A5. The read side of the admission ledger: how often background dispatch was actually
+# made to wait, and for how long. This is what cortex-exec reads to put the wait into Orion's
+# own context, and it is deliberately the whole picture rather than only the deferrals --
+# `checked` is the denominator, so a caller can tell "asked 294 times, never waited" apart from
+# "nothing asked", which are different facts and would otherwise be the same zero.
+#
+# Read-only, no content, no identity. See admission_ledger.py's docstring.
+@app.get("/admission")
+async def admission_snapshot(
+    window_s: float = 21600.0,
+    via: Optional[str] = None,
+) -> Dict[str, Any]:
+    # isfinite first: min/max PROPAGATE a leading NaN rather than clamping it, so a
+    # `?window_s=nan` would sail through the clamp, make every `ts >= cutoff` comparison False,
+    # and return a confident `checked: 0` -- "nothing was ever asked" fabricated from a
+    # malformed query string. It would also serialise as a bare NaN token, which is not valid
+    # JSON but which Python's own json.loads accepts, so the consumer would not notice either.
+    raw = float(window_s)
+    window = 21600.0 if not math.isfinite(raw) else min(max(raw, 60.0), 86400.0)
+    return get_ledger().snapshot(window_s=window, via=via)
 
 
 def _cfg() -> ChassisConfig:

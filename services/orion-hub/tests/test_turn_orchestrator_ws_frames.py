@@ -225,6 +225,136 @@ async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_threads_continuity_messages_into_recent_turns() -> None:
+    """Regression for the missing-conversation-history gap: continuity_messages
+    was already accepted as a param and fed into the pre-turn appraisal RPC,
+    but never reached the actual HarnessRunRequestV1 sent to the harness
+    governor -- so the compiled `claude -p` prompt never carried prior-turn
+    history regardless of what the caller (WebSocket/HTTP) built. This asserts
+    it now reaches the request object, not just the appraisal call."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    continuity_messages = [
+        {"role": "user", "content": "what's the weather like?"},
+        {"role": "assistant", "content": "I don't have live weather access."},
+    ]
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="ok what about tomorrow?",
+            payload={},
+            continuity_messages=continuity_messages,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    assert [m.model_dump() for m in req.recent_turns] == continuity_messages
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_recent_turns_strips_trailing_current_message() -> None:
+    """Regression for a live-confirmed review finding (2026-08-20): both real
+    callers of continuity_messages -- services/orion-hub/scripts/api_routes.py's
+    build_continuity_messages(history=user_messages, ...) and
+    websocket_handler.py's `history` list -- include THIS turn's own message
+    as the trailing entry (history.append(...) happens before continuity_
+    messages is built). Without stripping it, recent_turns' last item
+    duplicates user_message and compile_harness_prefix renders the current
+    question twice: once under RECENT CONVERSATION, once as 'User message:'.
+    This asserts the trailing duplicate is dropped and only the real prior
+    turns survive into recent_turns."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    current_message = "ok what about tomorrow?"
+    # Shape exactly matching build_continuity_messages(history=user_messages, ...):
+    # the current turn's own message is the trailing entry.
+    continuity_messages = [
+        {"role": "user", "content": "what's the weather like?"},
+        {"role": "assistant", "content": "I don't have live weather access."},
+        {"role": "user", "content": current_message},
+    ]
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message=current_message,
+            payload={},
+            continuity_messages=continuity_messages,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    assert [m.model_dump() for m in req.recent_turns] == continuity_messages[:-1]
+    assert not any(m.content == current_message for m in req.recent_turns)
+
+    from orion.harness.runner import build_harness_prompt
+    from orion.schemas.harness_finalize import HarnessRepairOverlayV1
+
+    prompt = build_harness_prompt(
+        thought=req.thought_event,
+        user_message=req.user_message,
+        repair_overlay=HarnessRepairOverlayV1(),
+        recent_turns=req.recent_turns,
+    )
+    assert prompt.count(current_message) == 1, "current message must not be duplicated in the compiled prompt"
+    assert "2 prior message(s)" in prompt
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_recent_turns_empty_when_no_continuity_messages() -> None:
+    """A fresh session (continuity_messages=None) must produce an empty
+    recent_turns, not a fabricated single-message fallback (unlike
+    _run_pre_turn_appraisal's turn_window, which does synthesize a fallback
+    for the appraisal RPC only -- that fallback must not leak into the
+    harness prompt's history section)."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            payload={},
+            continuity_messages=None,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    assert req.recent_turns == []
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_publishes_chat_history_on_success() -> None:
     harness_run = HarnessRunV1(
         correlation_id=_CORR_ID,
@@ -256,6 +386,102 @@ async def test_turn_orchestrator_publishes_chat_history_on_success() -> None:
     assert frames[-1]["type"] == "final"
     publish_history.assert_awaited_once()
     publish_turn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_chat_history_carries_fcc_model_label() -> None:
+    """Regression for a live-confirmed gap (2026-08-19): the response side of a
+    real Hub 'orion'-mode turn (the dominant chat path, not the mode='brain'
+    fallback) had no identity at all in chat_history_log.response_identity --
+    _publish_unified_turn_chat_history built its envelopes without ever
+    forwarding the fcc_model_label already known at request time (the same
+    request object HarnessGovernorClient.run() is called with, asserted by
+    test_turn_orchestrator_defaults_fcc_model_label above). Confirmed live:
+    the actual served identity is available, it just was not threaded the
+    ~15 lines from where the request is built to where the response gets
+    persisted."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="final answer",
+        finalize_ran=True,
+        step_count=2,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    bus.enabled = True
+    publish_history = AsyncMock()
+    publish_turn = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_run)
+    with patches[0], patches[1], patches[2], patch(
+        "scripts.chat_history.publish_chat_history", publish_history
+    ), patch(
+        "scripts.chat_history.publish_chat_turn", publish_turn
+    ):
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="user asks",
+            payload={"fcc_model_label": "MODEL_HAIKU"},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    turn_envelope = publish_turn.await_args.args[1]
+    assert turn_envelope.payload.response_identity == "MODEL_HAIKU"
+
+    history_envelopes = publish_history.await_args.args[1]
+    assistant_envelope = next(e for e in history_envelopes if e.payload.role == "assistant")
+    assert assistant_envelope.payload.model == "MODEL_HAIKU"
+    user_envelope = next(e for e in history_envelopes if e.payload.role == "user")
+    assert user_envelope.payload.model is None
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_prefers_fcc_served_model_over_requested_label() -> None:
+    """Regression for the follow-up gap found live 2026-08-19 testing the fix
+    above: fcc_model_label (e.g. "MODEL_SONNET") only names the ~/.fcc/.env
+    route alias requested, and MODEL_SONNET/MODEL_OPUS both point at the
+    identical llamacpp/chat route -- the label alone can't distinguish real
+    backends. HarnessRunV1.fcc_served_model carries what the CLI's own
+    stream-json events actually echoed back (see orion/harness/fcc_motor.py's
+    _served_model_from_assistant) and must win over the requested label
+    whenever it's present.
+    """
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="final answer",
+        finalize_ran=True,
+        step_count=2,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+        fcc_served_model="/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+    )
+    bus = MagicMock()
+    bus.enabled = True
+    publish_history = AsyncMock()
+    publish_turn = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_run)
+    with patches[0], patches[1], patches[2], patch(
+        "scripts.chat_history.publish_chat_history", publish_history
+    ), patch(
+        "scripts.chat_history.publish_chat_turn", publish_turn
+    ):
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="user asks",
+            payload={"fcc_model_label": "MODEL_SONNET"},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    turn_envelope = publish_turn.await_args.args[1]
+    assert turn_envelope.payload.response_identity == "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
+
+    history_envelopes = publish_history.await_args.args[1]
+    assistant_envelope = next(e for e in history_envelopes if e.payload.role == "assistant")
+    assert assistant_envelope.payload.model == "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf"
 
 
 @pytest.mark.asyncio
@@ -578,6 +804,34 @@ def test_success_frames_final_omits_recall_when_absent() -> None:
     final_frame = next(frame for frame in frames if frame["type"] == "final")
     assert "recall_debug" not in final_frame
     assert "memory_digest" not in final_frame
+
+
+def test_success_frames_final_includes_fcc_model_label_when_provided() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    frames = _success_frames(run, correlation_id="corr-1", fcc_model_label="MODEL_SONNET")
+    final_frame = next(frame for frame in frames if frame["type"] == "final")
+    assert final_frame["fcc_model_label"] == "MODEL_SONNET"
+
+
+def test_success_frames_final_omits_fcc_model_label_when_absent() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    frames = _success_frames(run, correlation_id="corr-1")
+    final_frame = next(frame for frame in frames if frame["type"] == "final")
+    assert "fcc_model_label" not in final_frame
 
 
 @pytest.mark.asyncio

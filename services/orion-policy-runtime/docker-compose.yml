@@ -20,6 +20,8 @@ services:
       - POSTGRES_URI=${POSTGRES_URI}
       - SUBSTRATE_POLICY_PATH=${SUBSTRATE_POLICY_PATH:-/app/config/policy/substrate_policy.v1.yaml}
       - POLICY_POLL_INTERVAL_SEC=${POLICY_POLL_INTERVAL_SEC:-2.0}
+      # ROADMAP D2: pending-marker reconciler cadence. 0 = every poll (do not).
+      - POLICY_RECONCILE_INTERVAL_SEC=${POLICY_RECONCILE_INTERVAL_SEC:-900}
       - ENABLE_POLICY_RUNTIME=${ENABLE_POLICY_RUNTIME:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 

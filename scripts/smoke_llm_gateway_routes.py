@@ -8,6 +8,7 @@ from typing import Dict
 import httpx
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.llm.routes import ACCEPTED_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, normalize_llm_route
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 
 
@@ -16,7 +17,29 @@ DEFAULT_ROUTE_SERVERS = {
     "agent": "atlas-worker-1",
     "metacog": "atlas-worker-2",
     "quick": "atlas-worker-fast-1",
+    # Same llama.cpp process as `quick` under a background admission policy -- one worker, two
+    # routes. Without this entry, widening the dispatch loop below to the full route set raised
+    # a bare KeyError in `_expected_served_by`.
+    "quick_background": "atlas-worker-fast-1",
+    # `harness` (2026-08-20): interim alias of `chat`'s own worker -- same reasoning as
+    # `quick_background` above. Caught by this file's own documented failure mode: adding
+    # `harness` to LLM_ROUTE_DISPLAY_ORDER without an entry here would have raised the exact
+    # bare KeyError `_expected_served_by`'s docstring warns about, the first time this smoke
+    # ran against a route table that actually configures `harness`.
+    #
+    # `circe-worker-1`, NOT the atlas-flavoured default the other entries above use: unlike
+    # `chat`/`agent` (whose "NOT fixed here" note below is deliberately left as pre-existing
+    # debt), `harness` was introduced by this same patch, so there is no excuse for its own
+    # default to repeat that stale placeholder. It aliases `chat`'s real, documented
+    # served_by (services/orion-llm-gateway/README.md's "harness split off chat" section) --
+    # get this wrong and the smoke false-fails against a correctly configured deployment.
+    "harness": "circe-worker-1",
 }
+
+# NOT fixed here, but do not trust the two entries above: `chat` and `agent` actually run on
+# CIRCE (`circe-worker-1` / `circe-worker-agent-1`), not atlas. These defaults only apply when
+# LLM_ROUTE_<ROUTE>_SERVED_BY is unset AND the live route table omits served_by, which is not
+# the current deployment -- see the "latent trap" note in the scarcity roadmap's A2 section.
 
 
 def _load_route_urls() -> Dict[str, str]:
@@ -45,7 +68,17 @@ def _load_route_urls() -> Dict[str, str]:
 
 def _expected_served_by(route: str) -> str:
     override = os.getenv(f"LLM_ROUTE_{route.upper()}_SERVED_BY")
-    return override or DEFAULT_ROUTE_SERVERS[route]
+    if override:
+        return override
+    try:
+        return DEFAULT_ROUTE_SERVERS[route]
+    except KeyError:
+        # A bare KeyError here reads as a smoke crash; it is actually "a route exists that this
+        # file has never heard of", which is the drift this whole patch is about.
+        raise AssertionError(
+            f"route {route!r} has no expected served_by: add it to DEFAULT_ROUTE_SERVERS "
+            f"or set LLM_ROUTE_{route.upper()}_SERVED_BY"
+        ) from None
 
 
 async def _rpc_chat(
@@ -98,20 +131,66 @@ async def _verify_routes_http(gateway_url: str, timeout_sec: float) -> None:
         response = await client.get(url)
         response.raise_for_status()
         payload = response.json()
-    if payload.get("default_route") != "chat":
-        raise AssertionError(f"default_route={payload.get('default_route')} expected chat")
+    # Assert the default is a REAL route, not a specific name. This hardcoded `!= "chat"` until
+    # 2026-08-19 while both the live gateway and `services/orion-llm-gateway/.env_example` have
+    # said `LLM_ROUTE_DEFAULT=quick` -- so the smoke could only ever pass against a
+    # configuration nobody runs. Which lane is default is an operator choice; a default that is
+    # not a route at all is the actual bug, and that is what this now guards.
+    default_route = str(payload.get("default_route") or "")
+    if normalize_llm_route(default_route) is None:
+        raise AssertionError(
+            f"default_route={default_route!r} is not a recognised route "
+            f"(accepted: {sorted(ACCEPTED_LLM_ROUTES)})"
+        )
     routes = payload.get("routes") or []
     ids = [str(r.get("id")) for r in routes if isinstance(r, dict)]
-    for route_id in ("chat", "quick", "agent", "metacog"):
+    # Every accepted route, not a hardcoded four. Until 2026-08-19 this asserted a list that
+    # omitted `quick_background` -- so the smoke passed green for months while the lane Orion's
+    # own journalling runs on was absent from the catalog entirely.
+    for route_id in LLM_ROUTE_DISPLAY_ORDER:
         if route_id not in ids:
             raise AssertionError(f"GET /routes missing route id={route_id}")
+    # And assert the background lane declares itself as one. `priority` is what the Hub filters
+    # its picker on; a background route reporting no priority is indistinguishable from an
+    # interactive one and would be offered to a human as a normal lane.
+    bg = next((r for r in routes if isinstance(r, dict) and r.get("id") == "quick_background"), None)
+    if bg is not None and bg.get("status") != "not_configured":
+        if bg.get("priority") != "background":
+            raise AssertionError(
+                f"quick_background priority={bg.get('priority')!r} expected 'background'"
+            )
+        # `reserved_free_slots` is genuinely OPTIONAL: priority_admission falls back to
+        # _DEFAULT_RESERVED_FREE_SLOTS when it is unset, so a route table entry carrying only
+        # `"priority": "background"` is a correctly-working background lane. Assert the type
+        # only when a value is present -- and exclude bool, which isinstance(x, int) accepts.
+        reserved = bg.get("reserved_free_slots")
+        if reserved is not None and (isinstance(reserved, bool) or not isinstance(reserved, int)):
+            raise AssertionError(
+                f"quick_background reserved_free_slots={reserved!r} expected an int or absent"
+            )
+    # Same check, `harness` (2026-08-20): it is never a human's Compute choice either, and the
+    # failure mode is the same one this whole block exists to catch -- an operator's route-table
+    # entry carrying no `priority` key at all (easy: neighbouring `chat`/`agent` entries in the
+    # same JSON blob carry none) would report `priority=None` and slip past Hub's picker filter
+    # as an ordinary interactive lane. Unlike `quick_background`, the expected value is
+    # `"system"`, not `"background"` -- `harness` must dispatch immediately, never wait for slot
+    # slack, so the two priority values are deliberately not interchangeable here.
+    harness = next((r for r in routes if isinstance(r, dict) and r.get("id") == "harness"), None)
+    if harness is not None and harness.get("status") != "not_configured":
+        if harness.get("priority") != "system":
+            raise AssertionError(
+                f"harness priority={harness.get('priority')!r} expected 'system'"
+            )
     for entry in routes:
         if not isinstance(entry, dict):
             continue
         for key in ("id", "served_by", "backend", "status", "latency_ms", "last_checked_at"):
             if key not in entry:
                 raise AssertionError(f"route entry missing key={key}: {entry}")
-    print(f"[ok] GET /routes default_route=chat routes={ids}")
+    # Print the value that was actually read. This said "default_route=chat" literally,
+    # regardless of the response -- so the smoke reported the fact it was asserting rather
+    # than the fact it observed, which is how the stale assertion above stayed invisible.
+    print(f"[ok] GET /routes default_route={default_route} routes={ids}")
 
 
 async def _main_async(args: argparse.Namespace) -> None:
@@ -123,7 +202,10 @@ async def _main_async(args: argparse.Namespace) -> None:
         if not route_urls.get(route):
             raise RuntimeError(f"Route '{route}' is not configured (missing URL)")
 
-    routes_to_test = ["chat", "agent", "metacog", "quick"]
+    # Every route, not a hardcoded four. The GET /routes check above proves a route is
+    # CATALOGUED; only this loop proves it actually SERVES traffic, and `quick_background` --
+    # the lane Orion's own journalling runs on -- was exercised by neither.
+    routes_to_test = list(LLM_ROUTE_DISPLAY_ORDER)
 
     for route in routes_to_test:
         await _rpc_chat(

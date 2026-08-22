@@ -1,5 +1,6 @@
 # scripts/main.py
 
+import functools
 import html
 import json
 import logging
@@ -34,6 +35,8 @@ from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from scripts.endogenous_outreach import EndogenousOutreach
+import scripts.tension_outreach_trigger as tension_outreach_trigger
+from scripts.room_claude_relay import RoomClaudeRelay
 from scripts.agent_step_relay import AgentStepRelay
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
@@ -77,13 +80,27 @@ def _discover_git_sha() -> str:
 
 
 def _ui_asset_mtime_token() -> str:
-    """Best-effort mtime token so uncommitted UI edits bust browser caches."""
+    """Best-effort mtime token so uncommitted UI edits bust browser caches.
+
+    Globs rather than naming files. The previous hardcoded four-file list
+    silently excluded every other module the template loads -- confirmed
+    2026-08-14 when an edit to memory-crystallization-ui.js produced no new ?v=,
+    so a browser with the old file cached would keep running it. A list like
+    that goes stale on the exact patch that needed it, and the failure is
+    invisible: the server is serving new code, the browser just never asks for
+    it.
+
+    rglob, not glob("js/*.js"): a first pass at this fix still missed
+    static/js/vendor/ and every template except index.html, which is the same
+    bug one directory down. Templates are globbed too because the standalone
+    pages (causal_geometry, concept_atlas, substrate, substrate_atlas) are
+    served with the same token. sorted() keeps the token stable for a given set
+    of mtimes.
+    """
     candidates = [
-        STATIC_DIR / "js" / "app.js",
-        STATIC_DIR / "js" / "memory-graph-draft-ui.js",
-        STATIC_DIR / "js" / "organ-signals-graph-ui.js",
-        STATIC_DIR / "js" / "workflow-ui.js",
-        TEMPLATES_DIR / "index.html",
+        *sorted(STATIC_DIR.rglob("*.js")),
+        *sorted(STATIC_DIR.rglob("*.css")),
+        *sorted(TEMPLATES_DIR.glob("*.html")),
     ]
     mtimes: list[int] = []
     for path in candidates:
@@ -258,6 +275,7 @@ biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 endogenous_outreach: Optional[EndogenousOutreach] = None
+room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -359,7 +377,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -424,23 +442,52 @@ async def startup_event():
             )
             await bus_synaptic_trigger_notifier.start(bus)
 
-            # Orion speaks first (stub random trigger). Off unless explicitly
+            # Orion speaks first, on a real trigger (2026-08-16 -- see
+            # scripts/tension_outreach_trigger.py). Off unless explicitly
             # enabled -- see scripts/endogenous_outreach.py for the safety gates.
+            # min_run_length is operator-tunable (settings.py's own comment on
+            # HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH explains why); everything
+            # else about the trigger's internals stays fixed.
             endogenous_outreach = EndogenousOutreach(
                 enabled=settings.HUB_ENDOGENOUS_OUTREACH_ENABLED,
                 tick_interval_sec=settings.HUB_ENDOGENOUS_OUTREACH_TICK_SEC,
-                probability=settings.HUB_ENDOGENOUS_OUTREACH_PROBABILITY,
                 min_cooldown_sec=settings.HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC,
                 daily_cap=settings.HUB_ENDOGENOUS_OUTREACH_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
-                llm_route=settings.HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE,
                 timeout_sec=settings.HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC,
                 notify_channel=settings.NOTIFY_IN_APP_CHANNEL,
                 fallback_session_id=settings.HUB_ENDOGENOUS_OUTREACH_FALLBACK_SESSION_ID,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                trigger_evaluator=functools.partial(
+                    tension_outreach_trigger.current_run,
+                    min_run_length=settings.HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH,
+                ),
             )
-            await endogenous_outreach.start(bus, cortex_client)
+            # 2026-08-19: generation now goes through the real
+            # orion.hub.turn_orchestrator.execute_unified_turn pipeline (see
+            # endogenous_outreach.py's own docstring), the same
+            # harness-governed path `websocket_handler.py` uses for a real
+            # client_mode == "orion" turn -- not the bare CortexGatewayClient
+            # call this used before. harness_rpc_bus mirrors that call
+            # site's own `harness_rpc_bus=rpc_bus or bus` convention.
+            await endogenous_outreach.start(bus, harness_rpc_bus=rpc_bus)
+
+            # Claude as a third room participant. Hub only publishes the
+            # invite and relays the reply -- orion-room-companion owns the
+            # credential and the subprocess.
+            room_claude_relay = RoomClaudeRelay(
+                request_channel=settings.CHANNEL_ROOM_CLAUDE_REQUEST,
+                utterance_channel=settings.CHANNEL_ROOM_CLAUDE_UTTERANCE,
+                participant_name=settings.HUB_ROOM_CLAUDE_PARTICIPANT_NAME,
+                auto_respond=settings.HUB_ROOM_CLAUDE_AUTO_RESPOND,
+                auto_min_gap_sec=settings.HUB_ROOM_CLAUDE_AUTO_MIN_GAP_SEC,
+                service_name=settings.SERVICE_NAME,
+                service_version=settings.SERVICE_VERSION,
+                node_name=settings.NODE_NAME,
+                enabled=settings.HUB_ROOM_CLAUDE_ENABLED,
+            )
+            await room_claude_relay.start(bus)
 
             agent_step_relay = AgentStepRelay(channel=settings.HUB_CONTEXT_EXEC_EVENT_CHANNEL)
             await agent_step_relay.start(bus)
@@ -675,6 +722,69 @@ async def startup_event():
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_topic_foundry_scheduler_ingest_error error=%s", exc)
 
+                # AI Town's own concept graph (docs/superpowers/specs/2026-08-18-
+                # aitown-concept-graph-split-and-atlas-readability-design.md,
+                # "AI Town's own concept graph") -- same three-step shape as
+                # Orion's above, riding on the same tick interval (independent
+                # CADENCE was raised as a real open question by that spec's own
+                # "Missing questions" and deliberately deferred -- no real
+                # AI-Town cluster-quality data yet to tune a second interval
+                # against). Independent ENABLE, unlike cadence, is a real,
+                # already-justified need (an operator kill switch that doesn't
+                # also disable Orion's own production pipeline) -- review
+                # finding 2026-08-20, not deferred. Writes into a different
+                # FalkorDB graph (FALKORDB_AITOWN_SUBSTRATE_GRAPH) and a
+                # different topic-foundry dataset/model
+                # (source_table=aitown_chat_history_log) -- interpretability-
+                # only, never feeds Orion's own cognition.
+                if settings.SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED:
+                    try:
+                        aitown_trigger_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.trigger_topic_foundry_aitown_training_run
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_aitown_scheduler_trigger_tick triggered=%s run_id=%s status=%s reason=%s",
+                            aitown_trigger_summary.get("triggered"),
+                            aitown_trigger_summary.get("run_id"),
+                            aitown_trigger_summary.get("status"),
+                            aitown_trigger_summary.get("reason"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_aitown_scheduler_trigger_error error=%s", exc)
+
+                    try:
+                        aitown_enrich_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.trigger_topic_foundry_aitown_enrichment
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_aitown_scheduler_enrich_tick triggered=%s run_id=%s status=%s reason=%s "
+                            "enriched_count=%s failed_count=%s",
+                            aitown_enrich_summary.get("triggered"),
+                            aitown_enrich_summary.get("run_id"),
+                            aitown_enrich_summary.get("status"),
+                            aitown_enrich_summary.get("reason"),
+                            aitown_enrich_summary.get("enriched_count"),
+                            aitown_enrich_summary.get("failed_count"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_aitown_scheduler_enrich_error error=%s", exc)
+
+                    try:
+                        aitown_ingest_summary = await asyncio.to_thread(
+                            concept_atlas_routes_runtime.concept_atlas_ingest_topic_foundry_aitown
+                        )
+                        logger.info(
+                            "substrate_topic_foundry_aitown_scheduler_ingest_tick available=%s run_id=%s concepts_written=%s entities_written=%s edges_written=%s typed_edges_written=%s",
+                            aitown_ingest_summary.get("available"),
+                            aitown_ingest_summary.get("run_id"),
+                            aitown_ingest_summary.get("concepts_written"),
+                            aitown_ingest_summary.get("entities_written"),
+                            aitown_ingest_summary.get("edges_written"),
+                            aitown_ingest_summary.get("typed_edges_written"),
+                        )
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_topic_foundry_aitown_scheduler_ingest_error error=%s", exc)
+
         substrate_topic_foundry_scheduler_task = asyncio.create_task(
             _run_substrate_topic_foundry_scheduler(),
             name="hub-substrate-topic-foundry-scheduler",
@@ -746,7 +856,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -797,6 +907,12 @@ async def shutdown_event() -> None:
         except Exception:
             pass
         endogenous_outreach = None
+    if room_claude_relay is not None:
+        try:
+            await room_claude_relay.stop()
+        except Exception:
+            pass
+        room_claude_relay = None
     if agent_step_relay is not None:
         try:
             await agent_step_relay.stop()

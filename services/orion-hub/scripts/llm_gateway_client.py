@@ -7,11 +7,22 @@ from typing import Any
 
 import aiohttp
 
+from orion.llm.routes import (
+    ACCEPTED_LLM_ROUTES,
+    BACKGROUND_LLM_ROUTES,
+    LLM_ROUTE_DISPLAY_ORDER,
+    SYSTEM_LLM_ROUTES,
+    normalize_llm_route,
+)
+
 from scripts.settings import settings
 
 logger = logging.getLogger("orion-hub.llm-gateway")
 
-VALID_ROUTE_IDS = frozenset({"chat", "quick", "agent", "metacog"})
+# Derived, not re-typed -- see orion/llm/routes.py. Hardcoding this set is what dropped
+# `quick_background` on the floor here: the gateway would report it and this client silently
+# filtered it out of every payload the Hub ever saw.
+VALID_ROUTE_IDS = ACCEPTED_LLM_ROUTES
 
 
 class LlmGatewayClientError(Exception):
@@ -45,9 +56,36 @@ async def fetch_routes() -> dict[str, Any]:
         raise LlmGatewayClientError("LLM gateway /routes unreachable") from exc
     if not isinstance(payload, dict):
         raise LlmGatewayClientError("LLM gateway /routes returned non-object payload")
-    default_route = str(payload.get("default_route") or "chat").strip().lower()
-    if default_route not in VALID_ROUTE_IDS:
-        default_route = "chat"
+    return _normalize_routes_payload(payload)
+
+
+def _priority_for(route_id: str, reported: Any) -> str | None:
+    """Reported priority, or the route's definitional one -- whichever says 'background'/'system'.
+
+    Fail-safe rather than fail-open: `priority` is what the composer filters its picker on, and
+    a background lane that arrives without it (older gateway, route absent from the route
+    table) would otherwise be offered as an ordinary interactive lane. `system` (harness,
+    2026-08-20) is the same fail-safe for a route that must dispatch immediately -- not a
+    yielding lane -- but is still never a human's Compute choice.
+    """
+    value = str(reported or "").strip().lower() or None
+    if value == "background" or route_id in BACKGROUND_LLM_ROUTES:
+        return "background"
+    if value == "system" or route_id in SYSTEM_LLM_ROUTES:
+        return "system"
+    return value
+
+
+def _normalize_routes_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """The pure half of `fetch_routes`: gateway payload in, Hub payload out.
+
+    Split out so the route-set behaviour is testable without HTTP. That matters here
+    specifically: the bug this module carried was not in the fetch, it was in the reassembly
+    below, and a test that could only reach it through aiohttp would not have been written.
+    """
+    # normalize_llm_route resolves aliases too, so a gateway reporting a legacy alias as its
+    # default no longer silently collapses to "chat" here.
+    default_route = normalize_llm_route(payload.get("default_route")) or "chat"
     routes_raw = payload.get("routes") or []
     routes: list[dict[str, Any]] = []
     if isinstance(routes_raw, list):
@@ -65,6 +103,11 @@ async def fetch_routes() -> dict[str, Any]:
                     "status": str(item.get("status") or "unknown"),
                     "latency_ms": item.get("latency_ms"),
                     "last_checked_at": item.get("last_checked_at"),
+                    # Passed through so the composer can filter its picker on what a route IS
+                    # rather than on a name list that drifts. "background" means the lane
+                    # yields, so a human choosing it would just get worse latency.
+                    "priority": _priority_for(route_id, item.get("priority")),
+                    "reserved_free_slots": item.get("reserved_free_slots"),
                     # True/False from the worker's own /props; None means the
                     # probe could not answer. The composer greys out its attach
                     # button on anything that is not True.
@@ -72,7 +115,12 @@ async def fetch_routes() -> dict[str, Any]:
                 }
             )
     by_id = {r["id"]: r for r in routes}
-    for route_id in ("chat", "quick", "agent", "metacog"):
+    # These were TWO more hardcoded ("chat", "quick", "agent", "metacog") tuples, and they --
+    # not VALID_ROUTE_IDS -- were the ones actually dropping `quick_background`: the filter
+    # above let it through and this backfill-then-reorder quietly reassembled the payload from
+    # a four-name list, so widening the filter alone changed nothing visible. Verified live
+    # 2026-08-19: the gateway returned 5 routes and the Hub still served 4.
+    for route_id in LLM_ROUTE_DISPLAY_ORDER:
         by_id.setdefault(
             route_id,
             {
@@ -83,7 +131,13 @@ async def fetch_routes() -> dict[str, Any]:
                 "latency_ms": None,
                 "last_checked_at": None,
                 "vision": None,
+                # NOT None. This backfill runs when the gateway did not report the route at
+                # all -- an older gateway mid-rolling-deploy, or a route dropped from the route
+                # table. Asserting "no priority" there is what makes the composer offer a
+                # yielding lane to a human, so the definitional answer is used instead.
+                "priority": _priority_for(route_id, None),
+                "reserved_free_slots": None,
             },
         )
-    ordered = [by_id[rid] for rid in ("chat", "quick", "agent", "metacog")]
+    ordered = [by_id[rid] for rid in LLM_ROUTE_DISPLAY_ORDER]
     return {"default_route": default_route, "routes": ordered}

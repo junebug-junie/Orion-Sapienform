@@ -70,6 +70,141 @@ def test_chat_general_final_step_uses_chat_route() -> None:
     assert sent_req.options["max_tokens"] == 768
 
 
+def test_chat_general_final_step_requests_logprobs_when_enabled(monkeypatch) -> None:
+    """CORTEX_CHAT_RETURN_LOGPROBS on: the real user-facing chat=route reply asks the
+    gateway for return_logprobs, riding the existing OpenAI-compat call (no
+    logprob_probe_mode set, so no native-completion endpoint switch)."""
+    import app.executor as executor_mod
+
+    monkeypatch.setattr(executor_mod.settings, "cortex_chat_return_logprobs", True)
+    step = ExecutionStep(
+        step_name="llm_chat_general",
+        verb_name="chat_general",
+        services=["LLMGatewayService"],
+        order=1,
+        prompt_template="{{ raw_user_text }}",
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content="final"))) as llm_chat:
+        result = asyncio.run(
+            call_step_services(
+                bus=MagicMock(),
+                source=source,
+                step=step,
+                ctx=_base_ctx(),
+                correlation_id=str(uuid4()),
+            )
+        )
+
+    assert result.status == "success"
+    sent_req = llm_chat.await_args.kwargs["req"]
+    assert sent_req.route == "chat"
+    assert sent_req.options["return_logprobs"] is True
+    # No explicit top_k: the gateway already defaults logprobs_top_k to
+    # settings.llm_logprob_top_k_default when the key is absent (llm_backend.py:914,
+    # :1138) -- setting it here would just duplicate that default and drift silently
+    # if the gateway's own default is ever retuned.
+    assert "logprobs_top_k" not in sent_req.options
+    assert "logprob_probe_mode" not in sent_req.options
+
+
+def test_chat_general_final_step_no_logprobs_when_disabled(monkeypatch) -> None:
+    """Default (CORTEX_CHAT_RETURN_LOGPROBS off): unchanged, no return_logprobs key."""
+    import app.executor as executor_mod
+
+    monkeypatch.setattr(executor_mod.settings, "cortex_chat_return_logprobs", False)
+    step = ExecutionStep(
+        step_name="llm_chat_general",
+        verb_name="chat_general",
+        services=["LLMGatewayService"],
+        order=1,
+        prompt_template="{{ raw_user_text }}",
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content="final"))) as llm_chat:
+        result = asyncio.run(
+            call_step_services(
+                bus=MagicMock(),
+                source=source,
+                step=step,
+                ctx=_base_ctx(),
+                correlation_id=str(uuid4()),
+            )
+        )
+
+    assert result.status == "success"
+    sent_req = llm_chat.await_args.kwargs["req"]
+    assert not sent_req.options.get("return_logprobs")
+
+
+def test_chat_general_stance_step_never_requests_logprobs_even_when_enabled(monkeypatch) -> None:
+    """Narrow scope: route=quick steps (e.g. the stance-brief pass) never get
+    return_logprobs, even with the flag on -- only the real route=chat reply does."""
+    import app.executor as executor_mod
+
+    monkeypatch.setattr(executor_mod.settings, "cortex_chat_return_logprobs", True)
+    step = ExecutionStep(
+        step_name="synthesize_chat_stance_brief",
+        verb_name="chat_general",
+        services=["LLMGatewayService"],
+        order=0,
+        prompt_template="{{ raw_user_text }}",
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content='{"conversation_frame":"supportive"}'))) as llm_chat:
+        result = asyncio.run(
+            call_step_services(
+                bus=MagicMock(),
+                source=source,
+                step=step,
+                ctx=_base_ctx(),
+                correlation_id=str(uuid4()),
+            )
+        )
+
+    assert result.status == "success"
+    sent_req = llm_chat.await_args.kwargs["req"]
+    assert sent_req.route == "quick"
+    assert not sent_req.options.get("return_logprobs")
+
+
+def test_chat_general_final_step_skips_logprobs_with_response_format(monkeypatch) -> None:
+    """A JSON-constrained chat=route reply skips return_logprobs -- constrained decoding
+    collapses logprob entropy on structured output, same reason mind's synthesis calls
+    use native completion instead of this path rather than piggybacking on it here."""
+    import app.executor as executor_mod
+
+    monkeypatch.setattr(executor_mod.settings, "cortex_chat_return_logprobs", True)
+    step = ExecutionStep(
+        step_name="llm_chat_general",
+        verb_name="chat_general",
+        services=["LLMGatewayService"],
+        order=1,
+        prompt_template="{{ raw_user_text }}",
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+    ctx = _base_ctx()
+    ctx["response_format"] = {"type": "json_object"}
+
+    with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content="{}"))) as llm_chat:
+        result = asyncio.run(
+            call_step_services(
+                bus=MagicMock(),
+                source=source,
+                step=step,
+                ctx=ctx,
+                correlation_id=str(uuid4()),
+            )
+        )
+
+    assert result.status == "success"
+    sent_req = llm_chat.await_args.kwargs["req"]
+    assert not sent_req.options.get("return_logprobs")
+
+
 def test_chat_quick_step_uses_quick_route() -> None:
     step = ExecutionStep(
         step_name="llm_chat_quick",

@@ -486,9 +486,46 @@ def field_pressures_with_provenance(
     goes through proposal mode, not through this patch.
     """
     channel_pressures, channel_provenance = collect_field_channel_pressures(field)
-    return map_channels_to_dimensions_with_provenance(
+    dims, detail = map_channels_to_dimensions_with_provenance(
         channel_pressures, channel_provenance
     )
+    # deviation_pressure (2026-08-16, docs/superpowers/specs/2026-08-16-
+    # tension-driven-mutating-dispatch-design.md) is NOT a raw channel routed
+    # through CHANNEL_DIMENSION_MAP -- it is a derived, stateful scalar
+    # (orion.attention.tension.competition.deviation_pressure), already
+    # computed once per digestion tick and carried on `field` itself. Same
+    # "add a derived key directly, outside the generic per-channel merge"
+    # precedent as `recent_perturbation_count` above. No `detail` entry: it
+    # has no channel-merge provenance to report, and
+    # orion/field/commensurability.py's consumer already tolerates a
+    # dimension absent from `detail` (iterates `detail.items()`, does not
+    # assume every PRESSURE_DIMENSIONS key is present).
+    dims["deviation_pressure"] = clamp01(field.tension_deviation_pressure)
+    # sustained_load_pressure (2026-08-18, docs/superpowers/specs/2026-08-16-
+    # level-aware-significance-design.md): same "derived, stateful scalar
+    # carried on `field` itself" shape as deviation_pressure directly above,
+    # but NOT unconditionally present the way deviation_pressure is --
+    # deviation_pressure is genuinely recomputed every real digestion tick,
+    # so "always present" is an honest reading of ITS freshness.
+    # sustained_load_pressure is throttled (a real Postgres window read, not
+    # an O(1) update -- see app/digestion/significance.py), so most ticks
+    # only CARRY FORWARD the last real computation unchanged. Exposing the
+    # carried-forward value here on every one of those ticks would feed the
+    # identical float into update_dimension_precision_baseline()'s per-tick
+    # EWMA as a "fresh" observation ~15x for every one real observation --
+    # code review, 2026-08-18: artificially deflates this one dimension's
+    # measured variance/z-score between real recomputes, then jumps at the
+    # tick that actually refreshes it, a duplicated-sample bias none of the
+    # other PRESSURE_DIMENSIONS members have. Present ONLY on the tick that
+    # actually recomputed it (`sustained_load_computed_at == generated_at`,
+    # set together in that same call) -- absent otherwise, same "a dimension
+    # absent from field_pressures() this tick" convention the original 4
+    # channel-merge dimensions and this module's own consumers
+    # (dimension_score()'s `.get(..., 0.0)`, precision.py's own docstring)
+    # already support. No `detail` entry, same reason as deviation_pressure.
+    if field.sustained_load_computed_at == field.generated_at:
+        dims["sustained_load_pressure"] = clamp01(field.sustained_load_pressure)
+    return dims, detail
 
 
 def field_pressures(field: FieldStateV1) -> dict[str, float]:
@@ -502,3 +539,45 @@ def field_pressures(field: FieldStateV1) -> dict[str, float]:
     0.0 before this burn)."""
     dims, _detail = field_pressures_with_provenance(field)
     return dims
+
+
+def winning_write_time(
+    state: FieldStateV1, source_id: str | None, channel: str
+) -> datetime | None:
+    """The producer write time behind one channel's MERGED value, or None.
+
+    Moved from services/orion-hub/scripts/field_channel_glossary_routes.py
+    (R2 of the phase-5 roadmap) into this shared module so a second consumer
+    -- orion/field/credit_integrity.py's R5 rebuild -- does not need its own
+    copy: two implementations of "which write proves this value" is exactly
+    the kind of definition drift the rest of this arc exists to catch.
+
+    The merged value is one source's reading (R1's provenance dict names
+    which), so the only honest timestamp for it is that winner's own
+    `node_vector_updated_at` entry -- not the newest stamp across all
+    sources, which would credit the merged value with a freshness no
+    contributor had.
+
+    Capability winners return None, and the guard is EXPLICIT rather than
+    incidental. `collect_field_channel_pressures` resolves capability
+    provenance through `capability_provenance`, which
+    `FieldStateV1.capability_provenance` documents as "the edge source_id (a
+    node_id like `node:atlas`)" -- so it CAN collide with a real node key by
+    design. A bare dict lookup would then return that node's own node-vector
+    write time and attribute it to a capability-vector value that
+    accumulates across ticks via diffusion: wrong provenance, silently.
+
+    Zero collisions in live data (775 capability-path provenance occurrences
+    over 400 ticks, none a key in `node_vector_updated_at`) -- an
+    observation, not a guarantee, hence the membership check rather than
+    trusting it by construction.
+
+    Capability vectors carry no write timestamps at all (confirmed again
+    2026-08-16 against 3000 live ticks: 0 of 3000 resolve for
+    execution_pressure/pressure, both entirely capability-routed today), so
+    None is the correct answer and the caller's fallback -- never a
+    fabricated timestamp.
+    """
+    if not source_id or source_id not in state.node_vectors:
+        return None
+    return state.node_vector_updated_at.get(source_id, {}).get(channel)

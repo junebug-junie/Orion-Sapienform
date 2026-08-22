@@ -279,6 +279,16 @@ def test_ingest_normal_run_writes_concepts_excludes_outlier_and_below_floor(
     assert all("/topics/-1/" not in url for url in keyword_call_urls)
     assert len(keyword_call_urls) == 3  # topics 0, 1, 2 (adapter drops 2 later, but client fetches before filtering)
 
+    # Code review 2026-08-18: the "latest completed run" lookup must be
+    # scoped to this scheduler's own model, or ingestion can silently keep
+    # reading a *different* model's runs (e.g. an old, unfiltered one).
+    from scripts import concept_atlas_routes as car
+
+    runs_calls = [params for url, params in calls if url.endswith("/runs")]
+    assert runs_calls, "expected at least one /runs lookup"
+    assert runs_calls[0] is not None
+    assert runs_calls[0].get("model_name") == car._TOPIC_FOUNDRY_MODEL_NAME
+
 
 def test_ingest_is_idempotent_on_repeated_calls(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Re-running ingestion for the same run must upsert, not duplicate, nodes/edges."""
@@ -648,6 +658,63 @@ def test_ingest_topic_foundry_base_url_not_configured_degrades_honestly(
     body = r.json()
     assert body["available"] is False
     assert body["reason"] == "topic_foundry_base_url_not_configured"
+
+
+# --- AI Town's own concept graph (2026-08-20) --------------------------------
+# ingest-topic-foundry-aitown is the same _ingest_topic_foundry_run logic as
+# the Orion route above, parameterized over which store/model it reads --
+# these tests confirm it's actually wired to the AI Town store/model, not a
+# copy-pasted duplicate that quietly points at the Orion ones.
+
+
+def test_ingest_aitown_substrate_store_unavailable_degrades_honestly(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: None)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry-aitown")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is False
+    assert body["reason"] == "substrate_store_unavailable"
+    assert body["concepts_written"] == 0
+
+
+def test_ingest_aitown_route_writes_into_aitown_store_not_orion_store(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The load-bearing guarantee this whole feature exists for: AI Town
+    ingestion must land in the AI Town store, not silently fall through to
+    (or also write into) the Orion store -- and must scope its topic-foundry
+    fetch to the AI Town model_name, not Orion's."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+    from scripts import concept_atlas_routes
+
+    orion_store = InMemorySubstrateGraphStore()
+    aitown_store = InMemorySubstrateGraphStore()
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+
+    fake_get, calls = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry-aitown")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["concepts_written"] > 0
+    assert len(orion_store.snapshot().nodes) == 0
+    assert len(aitown_store.snapshot().nodes) > 0
+
+    runs_calls = [params for (url, params) in calls if url.endswith("/runs")]
+    assert runs_calls, "expected at least one GET /runs call"
+    assert all(
+        (params or {}).get("model_name") == concept_atlas_routes._TOPIC_FOUNDRY_AITOWN_MODEL_NAME
+        for params in runs_calls
+    )
 
 
 # --- client-layer unit tests -------------------------------------------------
@@ -1109,6 +1176,139 @@ def test_ingest_mention_edges_produce_entity_nodes_and_associated_with_edges(
     assert len(associated_edges) == 1
     assert associated_edges[0].source.node_id == f"sub-concept-topicfoundry-{FAKE_RUN_ID}-0"
     assert associated_edges[0].target.node_id == entity_nodes[0].node_id
+    # "Juniper Feld" does not exact-match the "juniper" seed landmark label ->
+    # no second (landmark) associated_with edge should appear here. Covered
+    # explicitly (not just by the count above) by the landmark tests below.
+
+
+# --- landmark connection (golden seed concepts), added 2026-08-20 ---
+# docs/superpowers/specs/2026-08-20-concept-graph-landmark-connection-design.md
+
+
+def _kg_edges_payload_mentions_landmark(object_text: str, run_id: str = FAKE_RUN_ID) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "items": [
+            {
+                "edge_id": "55555555-5555-5555-5555-555555555555",
+                "segment_id": "seg-0a",
+                "subject": "m",
+                "predicate": "mentions",
+                "object": object_text,
+                "confidence": 0.7,
+                "created_at": "2026-07-15T09:00:01Z",
+            }
+        ],
+        "limit": 500,
+        "offset": 0,
+    }
+
+
+def test_ingest_mention_exact_matching_seed_label_produces_landmark_edge(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mention whose text exact-matches a golden seed concept's label
+    (case-insensitively) gets a *second* associated_with edge straight to
+    that seed node's real node_id, in addition to the normal topic-owned
+    mention edge -- the core of the landmark-connection design."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, _calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=_segments_payload_same_day(),
+        kg_edges_payload=_kg_edges_payload_mentions_landmark("orion"),  # lowercase -- must still match
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["entities_written"] == 1
+
+    snapshot = store.snapshot()
+    entity_nodes = [n for n in snapshot.nodes.values() if n.node_kind == "entity"]
+    assert len(entity_nodes) == 1
+
+    associated_edges = [e for e in snapshot.edges.values() if e.predicate == "associated_with"]
+    # One topic -> entity edge, one entity -> landmark edge.
+    assert len(associated_edges) == 2
+    landmark_edges = [e for e in associated_edges if e.target.node_id == "sub-concept-seed-orion"]
+    assert len(landmark_edges) == 1
+    assert landmark_edges[0].source.node_id == entity_nodes[0].node_id
+
+    # The seed node itself was never written by this ingestion (it's not
+    # part of the topic-foundry record) -- the edge points at its literal
+    # node_id and would attach correctly once/if the seed fixture is loaded
+    # into this same store; that's covered by
+    # test_landmark_concept_ids_matches_real_seed_fixture_labels below and
+    # the network-route hydration tests in test_concept_atlas_routes.py.
+    assert store.get_node_by_id("sub-concept-seed-orion") is None
+
+
+def test_ingest_mention_not_matching_any_seed_label_produces_no_landmark_edge(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, _calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=_segments_payload_same_day(),
+        kg_edges_payload=_kg_edges_payload_mentions_landmark("some random entity"),
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    snapshot = store.snapshot()
+    associated_edges = [e for e in snapshot.edges.values() if e.predicate == "associated_with"]
+    assert len(associated_edges) == 1  # topic -> entity only, no landmark edge
+
+
+def test_ingest_aitown_route_never_wires_landmark_concept_ids(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AI Town has no golden seed concepts written into its own store (see
+    the design doc's non-goals) -- confirm the AI Town ingestion route never
+    produces a landmark edge even for a mention that would match one of
+    Orion's seed labels, since it never passes landmark_concept_ids."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    aitown_store = InMemorySubstrateGraphStore()
+    fake_get, _calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=_segments_payload_same_day(),
+        kg_edges_payload=_kg_edges_payload_mentions_landmark("orion"),
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_aitown_substrate_store", lambda: aitown_store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry-aitown")
+    assert r.status_code == 200
+    snapshot = aitown_store.snapshot()
+    associated_edges = [e for e in snapshot.edges.values() if e.predicate == "associated_with"]
+    assert len(associated_edges) == 1  # topic -> entity only, no landmark edge
+
+
+def test_landmark_concept_ids_matches_real_seed_fixture_labels() -> None:
+    """_landmark_concept_ids() must read the real seed_concepts.yaml fixture
+    (not a hardcoded Orion/Juniper pair) -- this is what makes adding Claude
+    as a 4th seed 'just work' with zero adapter code changes."""
+    from scripts.concept_atlas_routes import _landmark_concept_ids
+
+    landmarks = _landmark_concept_ids()
+    assert landmarks.get("orion") == "sub-concept-seed-orion"
+    assert landmarks.get("juniper") == "sub-concept-seed-juniper"
+    assert landmarks.get("claude") == "sub-concept-seed-claude"
 
 
 def test_ingest_cross_run_same_entity_label_merges_to_one_durable_entity(

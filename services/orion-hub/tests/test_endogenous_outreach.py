@@ -8,8 +8,6 @@ away from a known-passing baseline, so a test that passes for the wrong reason
 from __future__ import annotations
 
 import asyncio
-import random
-from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +21,7 @@ from scripts.endogenous_outreach import (
     looks_like_error_text,
     outreach_block_reason,
 )
+from scripts.tension_outreach_trigger import TensionTriggerReason
 
 
 # --------------------------------------------------------------------------
@@ -149,6 +148,97 @@ def test_curiosity_alone_is_enough_grounding() -> None:
     assert "repair pressure rising" in build_outreach_prompt(ctx)
 
 
+def test_tension_reason_alone_is_enough_grounding() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena", run_length=9, peak_deviation_pressure=0.62
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert prompt != ""
+    assert "node:athena" in prompt
+    assert "9 consecutive readings" in prompt
+
+
+def test_tension_reason_prompt_never_claims_distress() -> None:
+    """The gate is a change-detector, not a level-detector -- the prompt must
+    not overclaim a distress/concern reading it cannot honestly support."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena", run_length=9, peak_deviation_pressure=0.62
+        ),
+    )
+    prompt = build_outreach_prompt(ctx).lower()
+    for banned in ("worried", "concerned", "distress", "alarmed"):
+        assert banned not in prompt
+
+
+def test_sustained_load_pressure_adds_a_second_real_fact_when_nonzero() -> None:
+    """2026-08-19: the level-aware half is combined honestly into the same
+    prompt -- a real second fact, not folded into or replacing the change
+    fact above."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "sustained_load_pressure=0.71" in prompt
+    # The original change fact must still be present, untouched.
+    assert "9 consecutive readings" in prompt
+
+
+def test_sustained_load_pressure_omitted_from_prompt_when_zero() -> None:
+    """0.0 means 'nothing currently loaded_steady' -- a real reading, not
+    something worth stating as a fact (matches `orion.field.significance`'s
+    own 0.0 convention)."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.0,
+        ),
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "sustained_load_pressure" not in prompt
+
+
+def test_tension_reason_with_sustained_load_still_never_claims_distress() -> None:
+    """Even with a real, nonzero level-aware reading present, this module
+    must not script a feeling for Orion -- that judgment is left to
+    generation, not hardcoded into the prompt."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        tension_reason=TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+        ),
+    )
+    prompt = build_outreach_prompt(ctx).lower()
+    for banned in ("worried", "concerned", "distress", "alarmed"):
+        assert banned not in prompt
+
+
 @pytest.mark.parametrize("raw", ["PASS", " pass ", "PASS.", '"PASS"'])
 def test_pass_response_detected(raw) -> None:
     assert is_pass_response(raw) is True
@@ -164,25 +254,25 @@ def test_non_pass_response_not_swallowed(raw) -> None:
 # --------------------------------------------------------------------------
 
 
-class _AlwaysRoll(random.Random):
-    def random(self) -> float:  # noqa: D102
-        return 0.0
+def _always_fires() -> TensionTriggerReason:
+    """Default test evaluator: a real-shaped reason, always returned -- most
+    tests here are exercising gates/delivery, not the trigger itself (see
+    test_tension_outreach_trigger.py for that)."""
+    return TensionTriggerReason(target_id="node:test", run_length=99, peak_deviation_pressure=1.0)
 
 
 def _outreach(**overrides) -> EndogenousOutreach:
     base = dict(
         enabled=True,
         tick_interval_sec=300.0,
-        probability=1.0,
         min_cooldown_sec=0.0,
         daily_cap=4,
         quiet_start_hour=-1,
         quiet_end_hour=-1,
-        llm_route="quick",
         timeout_sec=5.0,
         notify_channel="orion:notify:in_app",
         fallback_session_id="orion_outreach",
-        rng=_AlwaysRoll(),
+        trigger_evaluator=_always_fires,
     )
     base.update(overrides)
     return EndogenousOutreach(**base)
@@ -204,6 +294,35 @@ def _stub_generation(monkeypatch, text: str) -> None:
         return text, {"stub": True}
 
     monkeypatch.setattr(EndogenousOutreach, "_generate", fake_generate)
+
+
+def _final_frame(text: str, *, correlation_id: str = "corr", **extra) -> dict:
+    """One real `execute_unified_turn` success frame shape (see
+    orion.hub.turn_orchestrator._success_frames) -- the ONLY frame `_generate`
+    reads (`type == "final"`)."""
+    frame = {
+        "type": "final",
+        "correlation_id": correlation_id,
+        "mode": "orion",
+        "llm_response": text,
+        "finalize_ran": True,
+        "finalize_changed": True,
+        "harness_step_count": 1,
+        "harness_grounding_status": None,
+    }
+    frame.update(extra)
+    return frame
+
+
+def _stub_unified_turn(monkeypatch, fake_execute) -> None:
+    """Patch the exact call site `_generate` lazily imports at call time
+    (`from orion.hub.turn_orchestrator import execute_unified_turn`) --
+    patching the module attribute, not a re-import, is what makes this
+    visible to that lazy import (same reasoning this suite's own docstring
+    already applies to `sys.modules['scripts.*']`)."""
+    import orion.hub.turn_orchestrator as turn_orchestrator
+
+    monkeypatch.setattr(turn_orchestrator, "execute_unified_turn", fake_execute)
 
 
 def test_turn_in_flight_blocks_even_when_forced(monkeypatch) -> None:
@@ -387,12 +506,13 @@ def test_active_turn_is_held_by_reference() -> None:
 
 def test_generation_timeout_returns_empty_not_raise(monkeypatch) -> None:
     outreach = _outreach(timeout_sec=0.01)
+    outreach._bus = object()
 
-    class _SlowCortex:
-        async def chat(self, req, correlation_id=None, **kwargs):
-            await asyncio.sleep(5)
+    async def fake_execute(**kwargs):
+        await asyncio.sleep(5)
+        return []  # unreachable
 
-    outreach._cortex_client = _SlowCortex()
+    _stub_unified_turn(monkeypatch, fake_execute)
     _stub_context(monkeypatch)
 
     result = asyncio.run(outreach.maybe_outreach())
@@ -402,24 +522,24 @@ def test_generation_timeout_returns_empty_not_raise(monkeypatch) -> None:
     assert result["generation"]["error"] == "timeout"
 
 
-def test_generation_sends_configured_lane(monkeypatch) -> None:
-    # Execution policy / recall assertions live in
-    # test_generation_pins_execution_policies_and_disables_recall.
-    outreach = _outreach(llm_route="metacog")
+def test_generation_calls_the_real_unified_turn_pipeline(monkeypatch) -> None:
+    """2026-08-19: generation goes through orion.hub.turn_orchestrator.
+    execute_unified_turn -- the SAME function websocket_handler.py calls for
+    a real client_mode=="orion" turn, not a cheaper substitute. This asserts
+    the call shape, not a route (there is no route left to configure --
+    that's the harness governor's decision now, identically for outreach and
+    real chat)."""
+    outreach = _outreach()
+    outreach._bus = object()
+    harness_bus = object()
+    outreach._harness_rpc_bus = harness_bus
     seen: dict = {}
 
-    class _Cortex:
-        async def chat(self, req, correlation_id=None, **kwargs):
-            seen["req"] = req
-            return SimpleNamespace(
-                final_text="a real unprompted thought",
-                # Mirror the real contract: CortexChatResult always carries a
-                # cortex_result, and the ok/error fields on it are what the
-                # ship/drop gate reads.
-                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
-            )
+    async def fake_execute(**kwargs):
+        seen.update(kwargs)
+        return [_final_frame("a real unprompted thought", correlation_id=kwargs["correlation_id"])]
 
-    outreach._cortex_client = _Cortex()
+    _stub_unified_turn(monkeypatch, fake_execute)
     _stub_context(monkeypatch)
     monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
     monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
@@ -427,7 +547,69 @@ def test_generation_sends_configured_lane(monkeypatch) -> None:
     result = asyncio.run(outreach.maybe_outreach())
 
     assert result["outreach"] is True
-    assert seen["req"].options["llm_route"] == "metacog"
+    assert seen["harness_rpc_bus"] is harness_bus
+    assert seen["user_message"]  # the built prompt, non-empty
+    # no_write: this module's own _deliver() is the sole persistence path --
+    # see endogenous_outreach.py's module docstring for why the governor's
+    # own persistence step must be suppressed rather than reused.
+    assert seen["payload"]["no_write"] is True
+
+
+def test_generation_threads_fcc_model_label_into_publish_history(monkeypatch) -> None:
+    """Regression for the live-confirmed gap (2026-08-19): the final frame's
+    fcc_model_label (now exposed by turn_orchestrator._success_frames, see
+    that module's own change) must reach _publish_history's model= kwarg so
+    chat_history_log.response_identity is the real served identity instead
+    of always falling back to speaker='Orion'."""
+    outreach = _outreach()
+    outreach._bus = object()
+
+    async def fake_execute(**kwargs):
+        return [
+            _final_frame(
+                "a real unprompted thought",
+                correlation_id=kwargs["correlation_id"],
+                fcc_model_label="MODEL_SONNET",
+            )
+        ]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    captured: dict = {}
+
+    async def fake_publish_history(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_publish_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert captured["model"] == "MODEL_SONNET"
+
+
+def test_generation_omits_model_when_frame_has_no_fcc_model_label(monkeypatch) -> None:
+    outreach = _outreach()
+    outreach._bus = object()
+
+    async def fake_execute(**kwargs):
+        return [_final_frame("a real unprompted thought", correlation_id=kwargs["correlation_id"])]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+    captured: dict = {}
+
+    async def fake_publish_history(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_publish_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert captured["model"] is None
 
 
 class _FakeBus:
@@ -555,45 +737,36 @@ def test_force_cannot_override_the_disabled_flag(monkeypatch) -> None:
     assert queue.empty()
 
 
-def test_generation_pins_execution_policies_and_disables_recall(monkeypatch) -> None:
-    """Review findings 4 and 5: the previous keys were inert.
+def test_generation_no_longer_configures_execution_policy_or_recall(monkeypatch) -> None:
+    """2026-08-19: these are no longer this module's decision to make.
 
-    options["no_write"] is only translated by cortex_request_builder, which
-    reads it as a top-level payload key and which this module does not use;
-    options["use_recall"] has no reader at all -- recall is controlled by the
-    typed `recall` field, which defaults to enabled=True when left None.
+    Old regression (Review findings 4 and 5 on the direct-cortex-client
+    path): options["no_write"]/["use_recall"] were inert keys nobody read.
+    That whole class of bug is now structurally impossible, not just fixed --
+    execute_unified_turn hard-codes every unified turn's
+    ContextExecPermissionV1 to read-only (every write/mutate/network/shell
+    flag stays at its safe False default) and recall is controlled by
+    whatever the harness governor's own turn logic decides, identically for
+    outreach and real chat. Nothing here to assert about options/recall any
+    more -- see execute_unified_turn's own contract
+    (orion/schemas/context_exec.py::ContextExecPermissionV1) for where that
+    guarantee actually lives. The one thing THIS module still configures --
+    payload["no_write"] suppressing the governor's own chat-history
+    persistence -- is asserted in
+    test_generation_calls_the_real_unified_turn_pipeline.
     """
     outreach = _outreach()
-    seen: dict = {}
+    outreach._bus = object()
 
-    class _Cortex:
-        async def chat(self, req, correlation_id=None, **kwargs):
-            seen["req"] = req
-            return SimpleNamespace(
-                final_text="an unprompted thought",
-                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
-            )
+    async def fake_execute(**kwargs):
+        return [_final_frame("an unprompted thought", correlation_id=kwargs["correlation_id"])]
 
-    outreach._cortex_client = _Cortex()
+    _stub_unified_turn(monkeypatch, fake_execute)
     _stub_context(monkeypatch)
     monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
     monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
 
     assert asyncio.run(outreach.maybe_outreach())["outreach"] is True
-
-    req = seen["req"]
-    assert req.options["tool_execution_policy"] == "none"
-    assert req.options["action_execution_policy"] == "none"
-    assert req.options["no_write_active"] is True
-    assert req.recall == {"enabled": False}
-
-
-def test_recall_directive_accepts_the_payload_we_send() -> None:
-    """The gateway filters our dict into RecallDirective; enabled must survive."""
-    from orion.schemas.cortex.contracts import RecallDirective
-
-    directive = RecallDirective(**{"enabled": False})
-    assert directive.enabled is False
 
 
 def test_concurrent_ticks_cannot_both_send(monkeypatch) -> None:
@@ -705,49 +878,85 @@ def test_real_prose_about_errors_is_not_swallowed(raw) -> None:
     assert looks_like_error_text(raw) is False
 
 
-def test_cortex_not_ok_is_dropped_even_with_nonempty_text(monkeypatch) -> None:
-    """Regression: emptiness alone was the only gate, so a failure shipped.
-
-    Confirmed live 2026-08-14 -- a llamacpp 400 arrived as a non-empty
-    final_text and was delivered and persisted into the real chat thread.
-    """
+def test_turn_error_frame_is_dropped_not_shipped(monkeypatch) -> None:
+    """Regression, generalized for the real pipeline (2026-08-19): a
+    turn_error/turn_deferred/turn_degraded frame set (no `type=="final"`
+    frame at all) must degrade to empty, never ship a partial_draft or an
+    error string as if Orion had said it. Root-caused live, 2026-08-19: this
+    exact class of failure (a real 400 from the LLM backend arriving as a
+    frame with no clean final text) is what silently broke outreach even
+    after the poll-cadence fix (PR #1727)."""
     outreach = _outreach()
+    outreach._bus = object()
     queue: asyncio.Queue = asyncio.Queue()
     outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
 
-    class _FailingCortex:
-        async def chat(self, req, correlation_id=None, **kwargs):
-            return SimpleNamespace(
-                final_text="[Error: llamacpp failed: Client error '400 Bad Request']",
-                cortex_result=SimpleNamespace(ok=False, status="llm_failed", error={"code": 400}),
-            )
+    async def fake_execute(**kwargs):
+        return [
+            {
+                "type": "turn_error",
+                "correlation_id": kwargs["correlation_id"],
+                "phase": "harness",
+                "error": "llamacpp failed: Client error '400 Bad Request'",
+            }
+        ]
 
-    outreach._cortex_client = _FailingCortex()
+    _stub_unified_turn(monkeypatch, fake_execute)
     _stub_context(monkeypatch)
 
     result = asyncio.run(outreach.maybe_outreach())
 
     assert result["outreach"] is False
     assert result["reason"] == "empty_generation"
-    assert result["generation"]["error"] == "cortex_not_ok"
+    assert result["generation"]["error"] == "no_final_frame"
+    assert result["generation"]["frame_type"] == "turn_error"
     assert queue.empty()
     assert outreach.status()["sent_today"] == 0
 
 
-def test_error_shaped_text_dropped_even_when_cortex_reports_ok(monkeypatch) -> None:
-    """Backstop for an upstream that reports failure only in the prose."""
+def test_context_overflow_final_frame_is_dropped(monkeypatch) -> None:
+    """The real pipeline's own context_overflow detection (root-caused
+    2026-08-19: the OLD direct-call path had none, only Hub's own
+    looks_like_error_text() backstop) -- a `final` frame explicitly flagged
+    context_overflow must still be dropped even though it has real text."""
     outreach = _outreach()
+    outreach._bus = object()
+
+    async def fake_execute(**kwargs):
+        return [
+            _final_frame(
+                "[context window exceeded]",
+                correlation_id=kwargs["correlation_id"],
+                context_overflow=True,
+            )
+        ]
+
+    _stub_unified_turn(monkeypatch, fake_execute)
+    _stub_context(monkeypatch)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["outreach"] is False
+    assert result["generation"]["error"] == "context_overflow"
+
+
+def test_error_shaped_text_dropped_even_in_a_final_frame(monkeypatch) -> None:
+    """Backstop for an upstream that reports failure only in the prose, even
+    when it arrives inside a real `type=="final"` frame."""
+    outreach = _outreach()
+    outreach._bus = object()
     queue: asyncio.Queue = asyncio.Queue()
     outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
 
-    class _LyingCortex:
-        async def chat(self, req, correlation_id=None, **kwargs):
-            return SimpleNamespace(
-                final_text="[Error: llamacpp failed: Client error '400 Bad Request']",
-                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
+    async def fake_execute(**kwargs):
+        return [
+            _final_frame(
+                "[Error: llamacpp failed: Client error '400 Bad Request']",
+                correlation_id=kwargs["correlation_id"],
             )
+        ]
 
-    outreach._cortex_client = _LyingCortex()
+    _stub_unified_turn(monkeypatch, fake_execute)
     _stub_context(monkeypatch)
 
     result = asyncio.run(outreach.maybe_outreach())
@@ -757,20 +966,22 @@ def test_error_shaped_text_dropped_even_when_cortex_reports_ok(monkeypatch) -> N
     assert queue.empty()
 
 
-def test_healthy_cortex_result_still_sends(monkeypatch) -> None:
-    """Guards the two tests above: the happy path must not be over-gated."""
+def test_healthy_final_frame_still_sends(monkeypatch) -> None:
+    """Guards the tests above: the happy path must not be over-gated."""
     outreach = _outreach()
+    outreach._bus = object()
     queue: asyncio.Queue = asyncio.Queue()
     outreach.register_connection("c1", queue, {"correlation_id": None, "kind": None})
 
-    class _HealthyCortex:
-        async def chat(self, req, correlation_id=None, **kwargs):
-            return SimpleNamespace(
-                final_text="I keep circling the same unresolved thing.",
-                cortex_result=SimpleNamespace(ok=True, status="ok", error=None),
+    async def fake_execute(**kwargs):
+        return [
+            _final_frame(
+                "I keep circling the same unresolved thing.",
+                correlation_id=kwargs["correlation_id"],
             )
+        ]
 
-    outreach._cortex_client = _HealthyCortex()
+    _stub_unified_turn(monkeypatch, fake_execute)
     _stub_context(monkeypatch)
     monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
     monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
@@ -781,26 +992,189 @@ def test_healthy_cortex_result_still_sends(monkeypatch) -> None:
     assert queue.get_nowait()["llm_response"] == "I keep circling the same unresolved thing."
 
 
-def test_probability_zero_never_rolls(monkeypatch) -> None:
-    outreach = _outreach(probability=0.0, rng=random.Random(1234))
+def test_no_tension_trigger_does_not_fire(monkeypatch) -> None:
+    outreach = _outreach(trigger_evaluator=lambda: None)
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "never")
 
     result = asyncio.run(outreach.maybe_outreach())
 
-    assert result["reason"] == "not_rolled"
+    assert result["reason"] == "no_tension_trigger"
+
+
+def test_trigger_evaluator_exception_degrades_to_not_firing(monkeypatch) -> None:
+    """A broken trigger must not crash the tick -- the honest failure mode is
+    silence, not a false positive."""
+
+    def _broken():
+        raise RuntimeError("db is down")
+
+    outreach = _outreach(trigger_evaluator=_broken)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "never")
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "no_tension_trigger"
+
+
+def test_trigger_evaluator_does_not_block_the_event_loop(monkeypatch) -> None:
+    """Regression guard: `_should_roll()` must run its (blocking, synchronous)
+    evaluator off the event loop via `asyncio.to_thread`. Proven by racing a
+    concurrent coroutine against a slow evaluator and confirming the
+    concurrent coroutine's own mark lands BEFORE the evaluator's -- only
+    possible if the evaluator actually yielded the loop instead of blocking
+    it in-line, which would otherwise freeze every connected websocket and
+    in-flight chat turn on Hub's single uvicorn worker for the call's
+    duration."""
+    import time
+
+    marks: list[str] = []
+
+    def _slow_evaluator():
+        time.sleep(0.2)
+        marks.append("evaluator_done")
+        return None
+
+    outreach = _outreach(trigger_evaluator=_slow_evaluator)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "never")
+
+    async def _concurrent_marker():
+        await asyncio.sleep(0.05)
+        marks.append("concurrent_task_ran")
+
+    async def run():
+        await asyncio.gather(outreach.maybe_outreach(), _concurrent_marker())
+
+    asyncio.run(run())
+
+    assert marks == ["concurrent_task_ran", "evaluator_done"]
+
+
+def test_status_does_not_report_a_stale_tension_reason_after_a_blocked_tick(monkeypatch) -> None:
+    """A gate (quiet_hours/daily_cap/cooldown/turn_in_flight) blocking BEFORE
+    the trigger evaluator ever runs must not leave `status()` reporting an
+    earlier tick's reason as if it were still live right now."""
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "hi")
+
+    asyncio.run(outreach.maybe_outreach())  # organic: sets a real reason
+    assert outreach.status()["last_tension_reason"] is not None
+
+    outreach.register_connection("c1", asyncio.Queue(), {"correlation_id": "live-turn", "kind": "orion"})
+    asyncio.run(outreach.maybe_outreach())  # blocked by turn_in_flight before _should_roll runs
+
+    assert outreach.status()["block_reason"] == "turn_in_flight"
+    assert outreach.status()["last_tension_reason"] is None
+
+
+def test_status_reports_sustained_load_pressure_alongside_deviation(monkeypatch) -> None:
+    """2026-08-19: the operator-visible debug surface must carry the new
+    level-aware number, not just the pre-existing deviation one -- an
+    un-updated status() would silently hide half of what the trigger now
+    knows (AGENTS.md §0A, "UI/debug surface")."""
+    outreach = _outreach(
+        trigger_evaluator=lambda: TensionTriggerReason(
+            target_id="node:athena",
+            run_length=9,
+            peak_deviation_pressure=0.62,
+            sustained_load_pressure=0.71,
+        )
+    )
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "hi")
+
+    asyncio.run(outreach.maybe_outreach())
+
+    reason = outreach.status()["last_tension_reason"]
+    assert reason is not None
+    assert reason["sustained_load_pressure"] == 0.71
+
+
+def test_forced_outreach_does_not_carry_a_stale_tension_reason(monkeypatch) -> None:
+    """A prior organic tick's reason must not leak into a later force=True
+    (debug-endpoint) call that never re-evaluated the trigger."""
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "hi")
+
+    asyncio.run(outreach.maybe_outreach())  # organic: sets _last_tension_reason
+    assert outreach._last_tension_reason is not None
+
+    captured: list[OutreachContext] = []
+
+    async def fake_gather(self, session_id):
+        ctx = OutreachContext(curiosity_summaries=["x"], recent_turns=[], presence=None,
+                               tension_reason=self._last_tension_reason)
+        captured.append(ctx)
+        return ctx
+
+    monkeypatch.setattr(EndogenousOutreach, "_gather_context", fake_gather)
+    asyncio.run(outreach.maybe_outreach(force=True))
+
+    assert captured[-1].tension_reason is None
 
 
 def test_disabled_instance_starts_no_task() -> None:
     outreach = _outreach(enabled=False)
 
     async def run() -> None:
-        await outreach.start(bus=None, cortex_client=None)
+        await outreach.start(bus=None, harness_rpc_bus=None)
 
     asyncio.run(run())
 
     assert outreach.status()["running"] is False
     assert outreach.status()["block_reason"] == "disabled"
+
+
+def test_start_falls_back_to_bus_when_no_harness_rpc_bus_given() -> None:
+    """Mirrors websocket_handler.py's own `harness_rpc_bus=rpc_bus or bus`
+    convention -- a forked RPC client is preferred (see module docstring for
+    why a plain long-lived bus risks a stolen reply), but a direct/test
+    caller with only `bus` must not end up with no harness bus at all."""
+    outreach = _outreach(enabled=False)
+    sentinel_bus = object()
+
+    async def run() -> None:
+        await outreach.start(sentinel_bus)
+
+    asyncio.run(run())
+
+    assert outreach._bus is sentinel_bus
+    assert outreach._harness_rpc_bus is sentinel_bus
+
+
+def test_start_prefers_the_forked_harness_rpc_bus_when_given() -> None:
+    outreach = _outreach(enabled=False)
+    sentinel_bus = object()
+    sentinel_rpc_bus = object()
+
+    async def run() -> None:
+        await outreach.start(sentinel_bus, harness_rpc_bus=sentinel_rpc_bus)
+
+    asyncio.run(run())
+
+    assert outreach._bus is sentinel_bus
+    assert outreach._harness_rpc_bus is sentinel_rpc_bus
+
+
+def _env_example_value(key: str) -> str:
+    """Read one KEY=value line straight out of the checked-in `.env_example`,
+    without instantiating `Settings` (see `test_tick_sec_default_is_not_the_
+    root_caused_300s_value`'s own comment for why that specifically doesn't
+    work here). Shared by every test in this file that needs to assert
+    something about the checked-in operator contract, not the runtime
+    default -- those are two different files and this repo has been burned
+    before by them drifting apart silently."""
+    import re
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[1] / ".env_example"
+    match = re.search(rf"^{re.escape(key)}=(.+)$", example.read_text(), re.M)
+    assert match, f"{key} missing from .env_example"
+    return match.group(1).strip()
 
 
 def test_shipped_timezone_is_a_real_iana_zone() -> None:
@@ -811,17 +1185,46 @@ def test_shipped_timezone_is_a_real_iana_zone() -> None:
     hours with only a log line to show for it. This gate turns that into a
     failing test instead.
     """
-    import re
-    from pathlib import Path
     from zoneinfo import ZoneInfo
 
-    example = Path(__file__).resolve().parents[1] / ".env_example"
-    match = re.search(r"^HUB_ENDOGENOUS_OUTREACH_TZ=(.+)$", example.read_text(), re.M)
-    assert match, "HUB_ENDOGENOUS_OUTREACH_TZ missing from .env_example"
-
-    zone = match.group(1).strip()
+    zone = _env_example_value("HUB_ENDOGENOUS_OUTREACH_TZ")
     ZoneInfo(zone)  # raises if the zone is not real
 
     # Round-trip through the real constructor: proves it did not fall back.
     outreach = _outreach(timezone_name=zone)
     assert outreach.status()["timezone"] == zone
+
+
+def test_tick_sec_default_is_not_the_root_caused_300s_value() -> None:
+    """Regression guard, 2026-08-19: 300s was root-caused live as the reason
+    outreach had never fired -- a real qualifying run's catchable window is
+    typically 0-8s, so a 300s poll essentially never observes one (0 of 9
+    real episodes caught, replayed against real history). This does not
+    pin the exact new value (that's a real, data-derived tuning knob an
+    operator may retune from live firing-rate data, same as
+    MIN_RUN_LENGTH) -- it only guards against silently drifting back to the
+    specific value already proven broken."""
+    import re
+    from pathlib import Path
+
+    assert float(_env_example_value("HUB_ENDOGENOUS_OUTREACH_TICK_SEC")) != 300.0
+
+    # Source-text check, not a live `Settings()` import. Verified directly,
+    # 2026-08-19: `app/settings.py`'s module-level `settings = get_settings()`
+    # runs `Settings()` on the very first `from app.settings import
+    # <anything>` (any name, including the `Settings` class itself -- Python
+    # executes the whole module on first import regardless of which name is
+    # pulled from it), and this suite has no fixture supplying the class's
+    # other required env keys (CHANNEL_VOICE_*/CHANNEL_COLLAPSE_* etc.), so
+    # even a bare `Settings.model_fields[...]` lookup fails before it's ever
+    # reached -- reproduced live: `pydantic_core.ValidationError: 5
+    # validation errors for Settings`. There is no simpler import-based
+    # equivalent available in this environment; the regex is the workaround,
+    # not an oversight.
+    settings_src = (Path(__file__).resolve().parents[1] / "app" / "settings.py").read_text()
+    settings_match = re.search(
+        r'HUB_ENDOGENOUS_OUTREACH_TICK_SEC:\s*float\s*=\s*Field\(\s*default=([\d.]+)',
+        settings_src,
+    )
+    assert settings_match, "HUB_ENDOGENOUS_OUTREACH_TICK_SEC Field default not found in settings.py"
+    assert float(settings_match.group(1)) != 300.0

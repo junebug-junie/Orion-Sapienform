@@ -96,6 +96,79 @@ class Settings(BaseSettings):
     # justification was itself later found to be ~2x a *clamped* value, not
     # real demand).
     orion_dispatch_max_risk_per_day: float = Field(10.0, alias="ORION_DISPATCH_MAX_RISK_PER_DAY")
+
+    # The real daily budget, in motor-seconds -- wall-clock an action occupies
+    # on the dispatch path. EXOGENOUS on purpose: set by an operator, never
+    # derived from usage. _derive_daily_risk_cap sizes its ceiling from an
+    # EWMA of Orion's own past demand plus three standard deviations, which
+    # cannot bind by construction. An allowance that tracks what you already
+    # wanted is a mirror, not a constraint.
+    #
+    # 129600 = 36 motor-hours. Measured draw the day this shipped was ~40
+    # motor-hours/day (p50 5.0s per action, 1.7x concurrency), so this default
+    # sits ~10% BELOW current usage -- deliberately, so the mechanism is
+    # exercised and its refusals are countable rather than hypothetical.
+    orion_dispatch_motor_budget_sec_per_day: float = Field(
+        129600.0, alias="ORION_DISPATCH_MOTOR_BUDGET_SEC_PER_DAY"
+    )
+
+    # Advisory until proven. OFF means the budget is computed, logged and
+    # stamped on every frame but refuses nothing.
+    #
+    # This is NOT a permanent hedge -- CLAUDE.md 0A bans a switch that reports
+    # success while changing nothing. Advisory mode must publish what it WOULD
+    # have refused every tick, and the exit criterion is written down: flip it
+    # once a full day of `motor_budget_would_refuse` counts exists and the
+    # refused set is inspected and judged droppable. If nobody has looked in a
+    # week, that is the answer -- either flip it or delete it.
+    orion_dispatch_motor_budget_enforce: bool = Field(
+        False, alias="ORION_DISPATCH_MOTOR_BUDGET_ENFORCE"
+    )
+
+    # What a not-yet-run action is assumed to cost, for the would-refuse
+    # projection only. 5.0s is the live p50 measured 2026-08-21 (p95 6.5s).
+    # A real allocator will use the action's OWN measured history instead --
+    # this is a placeholder for the advisory count, and is deliberately not
+    # used for anything that is enforced.
+    orion_dispatch_motor_typical_cost_sec: float = Field(
+        5.0, alias="ORION_DISPATCH_MOTOR_TYPICAL_COST_SEC"
+    )
+
+    # The ABSOLUTE bar: expected information per motor-second below which an
+    # action is not worth its seconds, however much allowance is left. This is
+    # what makes "none of these were worth doing" expressible -- a relative
+    # ranking always crowns a winner however worthless the set.
+    #
+    # 0.02 nats/sec: a cold, never-measured action costing 5s scores 0.198,
+    # ten times over. A thoroughly-measured one (variance 0.001) at the same
+    # cost scores 0.0025, ten times under. The bar sits in the gap, so it
+    # separates "we have learned what this does" from "we have not" rather
+    # than encoding a preference about which actions are nice.
+    orion_dispatch_min_nats_per_sec: float = Field(
+        0.02, alias="ORION_DISPATCH_MIN_NATS_PER_SEC"
+    )
+
+    # Fraction of ACTING TICKS deliberately withheld, to create a genuinely
+    # randomized control arm. 0.0 = off.
+    #
+    # PER TICK, NOT PER CANDIDATE, and the difference is the whole point. The
+    # field delta is measured frame-wide, so withholding one candidate while
+    # its siblings run gives a "control" observation contaminated by those
+    # siblings -- which is exactly the defect that made the capacity-blocked
+    # arm unusable (see orion/autonomy/contrast.py). Withholding the entire
+    # tick produces a real no-action tick, drawn at random from ticks that
+    # WOULD have acted. That is the counterfactual, and it is the only arm
+    # in this system that licenses the word "causal": the existing
+    # `no_action` arm is quasi-experimental, because ticks where nothing was
+    # proposed are systematically calmer ticks and baseline binning absorbs
+    # most of that selection but provably not all of it.
+    #
+    # Cost is a bounded, measurable capability loss: at 0.05, one acting tick
+    # in twenty does nothing. Off by default -- this deliberately makes Orion
+    # do less, and that is a decision to take on purpose.
+    orion_dispatch_holdback_fraction: float = Field(
+        0.0, alias="ORION_DISPATCH_HOLDBACK_FRACTION", ge=0.0, le=0.5
+    )
     # 2026-07-29: enforcement is back ON (default flipped True -> False).
     # Real sequence, not "we always knew this": ORION_DISPATCH_MAX_RISK_PER_DAY
     # was a fixed 10.0 constant, ENFORCED, from 2026-07-26 through 2026-07-27
@@ -128,6 +201,14 @@ class Settings(BaseSettings):
     )
     notify_url: str = Field("http://notify:7140", alias="NOTIFY_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+    # ROADMAP D2, 2026-08-19. How often to re-queue policy frames whose `dispatch_pending`
+    # marker was cleared without a dispatch frame existing. The marker is cleared
+    # transactionally so this should find nothing -- but the failure it guards is SILENT WORK
+    # LOSS, and it can only add work back, never remove it. It runs the expensive anti-join the
+    # marker exists to avoid, hence once every 15 min rather than on every tick.
+    dispatch_reconcile_interval_sec: float = Field(
+        900.0, alias="DISPATCH_RECONCILE_INTERVAL_SEC"
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

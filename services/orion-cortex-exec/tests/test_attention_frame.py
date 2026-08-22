@@ -38,13 +38,22 @@ def _inputs(**overrides):
 
 
 def test_novel_unresolved_activity_creates_open_loop() -> None:
+    # CurrentTurnSignalDetector no longer extracts phrases from user_text
+    # itself (that was the deleted LegacyRegexSignalDetector's job) -- it
+    # reads pre-populated LLM-judged candidates from
+    # ctx["current_turn_llm_signals"] (populated by
+    # services/orion-cortex-exec/app/current_turn_llm_signals.py, upstream
+    # of build_attention_frame() in the real chat_stance.py flow).
     frame = build_attention_frame(
-        ctx={"user_message": "I am debugging the carrier board bringup around the LVDS rail."},
+        ctx={
+            "user_message": "I am debugging the carrier board bringup around the LVDS rail.",
+            "current_turn_llm_signals": [{"phrase": "carrier board bringup", "type": "activity"}],
+        },
         inputs=_inputs(),
         belief_lineage=["recall:snapshot_ephemeral"],
     )
     assert frame.open_loops
-    assert any("carrier board" in loop.description.lower() or "lvds" in loop.description.lower() for loop in frame.open_loops)
+    assert any("carrier board" in loop.description.lower() for loop in frame.open_loops)
     assert frame.debug["belief_lineage"] == ["recall:snapshot_ephemeral"]
 
 
@@ -57,14 +66,18 @@ def test_generic_reciprocity_is_suppressed() -> None:
 
 def test_already_known_fact_suppresses_redundant_question() -> None:
     frame = build_attention_frame(
-        ctx={"user_message": "Tell me about Project Silver Loom", "memory_digest": "Project Silver Loom is already known."},
+        ctx={
+            "user_message": "Tell me about Project Silver Loom",
+            "memory_digest": "Project Silver Loom is already known.",
+            "current_turn_llm_signals": [{"phrase": "Project Silver Loom", "type": "concept"}],
+        },
         inputs=_inputs(),
     )
     assert any(loop.already_known for loop in frame.open_loops)
     assert any(s.reason == "already_known" for s in frame.suppressions)
 
 
-def test_open_loop_without_autonomy_boost_defers_below_ask_threshold() -> None:
+def test_open_loop_without_autonomy_boost_stays_below_ask_threshold() -> None:
     # Renamed from test_high_value_open_loop_selects_single_ask (2026-07-30,
     # chore/delete-orion-drives): the old assertion relied on
     # AutonomySignalDetector emitting a salience-boosting signal from
@@ -72,14 +85,29 @@ def test_open_loop_without_autonomy_boost_defers_below_ask_threshold() -> None:
     # detector (and its only inputs, AutonomyStateV2.attention_items /
     # AutonomySummaryV1.top_drives/active_tensions) is retired -- nothing
     # produces autonomy-boosted salience anymore, so this open loop now
-    # genuinely scores below the ask threshold and defers instead.
+    # genuinely scores below the ask threshold.
+    #
+    # Renamed again (kill-legacy-regex-attention-detector patch): with a
+    # single LLM-judged candidate (the new detector's real shape -- see
+    # CurrentTurnSignalDetector) rather than the old regex detector's 2-3
+    # overlapping same-message candidates (activity/named/proper_phrase all
+    # firing on one sentence), the Borda rank-aggregated score for a lone
+    # loop lands just above the watch/defer line (0.48) instead of below
+    # it -- see policy.py's own note on select_actions() that these cutoffs
+    # are absolute thresholds against a fundamentally relative rank score,
+    # not yet recalibrated. The material behavior this test protects --
+    # never promoted to "ask" without an autonomy boost -- is unchanged.
     frame = build_attention_frame(
-        ctx={"user_message": "I am planning next week's migration around Zephyr Bridge."},
+        ctx={
+            "user_message": "I am planning next week's migration around Zephyr Bridge.",
+            "current_turn_llm_signals": [{"phrase": "Zephyr Bridge", "type": "concept"}],
+        },
         inputs=_inputs(),
     )
     asks = [a for a in frame.candidate_actions if a.action_type == "ask"]
     assert frame.selected_action is not None
-    assert frame.selected_action.action_type == "defer"
+    assert frame.selected_action.action_type in {"watch", "defer"}
+    assert frame.selected_action.score < 0.65  # below min_ask
     assert len([a for a in asks if a.question_text]) <= 1
 
 
@@ -91,9 +119,13 @@ def test_low_value_open_loop_selects_non_ask() -> None:
 
 
 def test_concept_and_autonomy_pressure_influence_ranking() -> None:
-    low = build_attention_frame(ctx={"user_message": "I am exploring Blue Lattice."}, inputs=_inputs())
+    signals_ctx = {
+        "user_message": "I am exploring Blue Lattice.",
+        "current_turn_llm_signals": [{"phrase": "Blue Lattice", "type": "concept"}],
+    }
+    low = build_attention_frame(ctx=dict(signals_ctx), inputs=_inputs())
     high = build_attention_frame(
-        ctx={"user_message": "I am exploring Blue Lattice."},
+        ctx=dict(signals_ctx),
         inputs=_inputs(
             concept_induction={"self": ["lattice coherence"], "relationship": [], "growth": [], "tension": ["fragmentation"]},
         ),

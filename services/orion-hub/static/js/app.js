@@ -97,7 +97,65 @@ let modeVerbOverride = null;
 /** Hub quick lane: 'fast' = light prep; 'stance' = full brain/stance prep (slower, richer). */
 let chatQuickVariant = 'fast';
 const HUB_COMPUTE_DEFAULT = 'quick';
-const HUB_COMPUTE_ROUTE_IDS = ['chat', 'quick', 'agent', 'metacog'];
+// Fallback ONLY, for a cold boot before GET /routes has answered. The pickable set is
+// normally derived from the catalog by `pickableComputeRouteIds()` below, which filters on each
+// route's own `priority` -- so a new route reaches the picker without editing this file, and a
+// background lane is excluded because of what it IS, not because someone remembered to omit it.
+// This was a hardcoded list until 2026-08-19 and was one of four such copies that between them
+// hid `quick_background` from every operator surface.
+const HUB_COMPUTE_ROUTE_FALLBACK_IDS = ['chat', 'quick', 'agent', 'metacog'];
+
+// Fail-safe floor mirroring BACKGROUND_LLM_ROUTES in orion/llm/routes.py. The browser cannot
+// import Python, and the authoritative answer is the `priority` field that
+// llm_gateway_client._priority_for() now guarantees -- this is belt-and-braces for a page held
+// open across a deploy, or pointed straight at the gateway. Drift here degrades GRACEFULLY: a
+// new background route missing from this list is still excluded by its `priority`, so the worst
+// case is losing the second line of defence, never gaining a wrong answer.
+const HUB_KNOWN_BACKGROUND_ROUTE_IDS = ['quick_background'];
+
+// Same fail-safe floor, mirroring SYSTEM_LLM_ROUTES in orion/llm/routes.py. Caught live
+// 2026-08-20: `harness` (the FCC/Claude Code CLI route) shipped with a comment claiming it was
+// "not human-interactive" and nothing that actually excluded it here -- `isBackgroundRouteEntry`
+// only checks `priority === 'background'`, and harness's priority is `'system'`, a different
+// value on purpose (it must dispatch immediately, never wait for slot slack the way a
+// background lane does). Without this list/check it would have appeared as an ordinary
+// choosable lane in the Compute selector.
+const HUB_KNOWN_SYSTEM_ROUTE_IDS = ['harness'];
+
+/**
+ * Routes a human may select. Background-priority lanes are deliberately excluded: they wait for
+ * slot slack before dispatching, so choosing one interactively buys nothing but latency. They
+ * still appear in the catalog (and in /routes) so their health is visible to an operator.
+ */
+function isBackgroundRouteEntry(entry) {
+  if (!entry) return false;
+  const id = String(entry.id || '').toLowerCase();
+  if (HUB_KNOWN_BACKGROUND_ROUTE_IDS.includes(id)) return true;
+  return String(entry.priority || '').toLowerCase() === 'background';
+}
+
+/**
+ * Routes reserved for an automated/system caller (FCC/Claude Code CLI harness turns), excluded
+ * from the human picker for a different reason than a background lane: not because choosing one
+ * buys nothing but latency, but because it is not a human's turn at all. Kept as a separate
+ * check from `isBackgroundRouteEntry` so a system route's admission behaviour (immediate
+ * dispatch, no slot-slack wait) is never confused with a background lane's.
+ */
+function isSystemRouteEntry(entry) {
+  if (!entry) return false;
+  const id = String(entry.id || '').toLowerCase();
+  if (HUB_KNOWN_SYSTEM_ROUTE_IDS.includes(id)) return true;
+  return String(entry.priority || '').toLowerCase() === 'system';
+}
+
+function pickableComputeRouteIds() {
+  const entries = (llmRouteCatalog && llmRouteCatalog.routes) || [];
+  const ids = entries
+    .filter((entry) => !isBackgroundRouteEntry(entry) && !isSystemRouteEntry(entry))
+    .map((entry) => String(entry.id || '').toLowerCase())
+    .filter(Boolean);
+  return ids.length ? ids : HUB_COMPUTE_ROUTE_FALLBACK_IDS;
+}
 let selectedLlmRoute = localStorage.getItem('orion_llm_route') || HUB_COMPUTE_DEFAULT;
 let llmRouteCatalog = { default_route: HUB_COMPUTE_DEFAULT, routes: [] };
 let llmRoutePollTimer = null;
@@ -6926,7 +6984,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function updateVisionStatusChip() {
     const chip = document.getElementById('visionStatusChip');
     if (!chip) return;
-    if (visionCapableRoute === true) {
+    if (visionCapableRoute === true && modeCarriesAttachments()) {
       // Only shown when it is TRUE and therefore actionable. A permanent
       // "no vision" badge would just be noise on every text turn.
       chip.textContent = 'vision';
@@ -6953,13 +7011,77 @@ document.addEventListener("DOMContentLoaded", () => {
    * composer stays usable and the gateway remains the authority that refuses at
    * send time with a visible error.
    */
+  /**
+   * Can the CURRENT mode's path actually deliver an image to the model?
+   *
+   * Capability is not enough. Gating the attach button on the route's /props
+   * alone advertised vision on paths that carry nothing -- Juniper attached an
+   * image, the turn completed, and Orion never saw it, with no error anywhere
+   * because the LLM gateway's refusal guard is downstream of the drop. Both
+   * halves have to hold: the model can see AND this path can hand it the image.
+   *
+   *   orion -> unified turn stages into the FCC sandbox (orion/hub/turn_orchestrator.py)
+   *   brain -> cortex saga carries AttachmentRefV1 to the gateway
+   *   agent -> neither; nothing threads attachments through that path yet
+   */
+  const MODES_CARRYING_ATTACHMENTS = new Set(['orion', 'brain']);
+  // The route ~/.fcc/.env's MODEL=llamacpp/harness actually names -- not a fallback default.
+  // Was 'chat' until 2026-08-20: `harness` split off `chat` as its own route (see
+  // orion/llm/routes.py's ACCEPTED_LLM_ROUTES 2026-08-20 note) specifically so an FCC/Claude
+  // Code CLI turn is no longer indistinguishable from live chat traffic to the gateway. Left at
+  // 'chat' here, this constant would have kept reading the WRONG catalog entry's vision probe
+  // for real Orion-mode turns the instant `harness` stops being an interim alias of `chat`'s
+  // own worker (its current, temporary configuration) -- silently reintroducing the exact
+  // "vision advertised on a path that carries nothing" bug class the comment above this
+  // function describes fixing, just for the opposite direction (disabled when it should be
+  // enabled, or vice versa, depending which worker ends up with a real mmproj).
+  const HUB_ORION_HARNESS_ROUTE_ID = 'harness';
+
+  function modeCarriesAttachments() {
+    // currentMode is already the BACKEND mode ('orion' | 'brain' | 'agent'),
+    // set from spec.mode in applyHubModeSelection -- not the UI key. Do not
+    // run it back through hubModeSpec(), which keys on 'quick'/'story'/etc and
+    // would silently fall back to the orion spec for 'brain'.
+    return MODES_CARRYING_ATTACHMENTS.has(String(currentMode || '').toLowerCase());
+  }
+
+  /**
+   * Which gateway route will actually serve THIS turn?
+   *
+   * Not always the compute dropdown. An Orion-mode turn never uses that lane:
+   * it goes to the harness, whose `claude` reaches the gateway through the
+   * Anthropic passthrough, which resolves the route from the model field --
+   * `~/.fcc/.env`'s MODEL=llamacpp/harness names `harness` explicitly, not a
+   * fallback. Gating Orion mode on `selectedLlmRoute` meant a fresh page
+   * load -- compute dropdown at its 'quick' default, a lane with no mmproj --
+   * reported vision=false and DISABLED attach in the exact mode this feature
+   * exists for.
+   */
+  function effectiveVisionRouteId() {
+    if (String(currentMode || '').toLowerCase() === 'orion') return HUB_ORION_HARNESS_ROUTE_ID;
+    return String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
+  }
+
   function refreshVisionCapability() {
-    const rid = String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
+    const rid = effectiveVisionRouteId();
     const entry = (llmRouteCatalog.routes || [])
       .find((r) => String(r.id || '').toLowerCase() === rid);
     visionCapableRoute = entry && typeof entry.vision === 'boolean' ? entry.vision : null;
     updateVisionStatusChip();
-    if (chatAttachmentsController) chatAttachmentsController.refreshButton();
+    if (chatAttachmentsController) {
+      chatAttachmentsController.refreshButton();
+      // Disabling the button is not enough. Images attached while the mode
+      // still carried them stay in `pending`, stay rendered as chips, and
+      // submitExplicitChatText would still put them in the payload -- where the
+      // new path drops them silently. That is the same lying-affordance bug one
+      // step later, so drop them and say so.
+      if (!modeCarriesAttachments()) {
+        const dropped = chatAttachmentsController.discardPending(
+          'This mode cannot send images — attachments cleared.'
+        );
+        if (dropped) console.warn(`[chat] dropped ${dropped} attachment(s): mode cannot carry them`);
+      }
+    }
   }
 
   function initChatAttachments() {
@@ -6973,7 +7095,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pasteTarget: document.getElementById('chatInput'),
       // Unknown capability is treated as usable; the gateway refuses loudly at
       // send time if the route really cannot see, and that error is visible.
-      visionAvailable: () => visionCapableRoute !== false,
+      visionAvailable: () => visionCapableRoute !== false && modeCarriesAttachments(),
       onOpenViewer: openImageLightbox,
       options: { endpoint: ATTACHMENT_ENDPOINT },
     });
@@ -7019,7 +7141,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (corr) backfillLatestUserTurnIdForGraph(conversationDiv, corr);
     }
     const div = document.createElement('div');
-    const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
+    // Claude is a third participant, not a system notice: its own colour, and
+    // an assistant role so it is not styled like an error banner.
+    const color = sender === 'You'
+      ? 'text-blue-300'
+      : (sender === 'Claude' ? 'text-amber-300' : 'text-green-300');
     const turnIdForGraph = canonicalTurnIdForMemoryGraph(meta);
     if (turnIdForGraph) div.dataset.turnId = turnIdForGraph;
     else if (sender === 'You') {
@@ -7028,7 +7154,7 @@ document.addEventListener("DOMContentLoaded", () => {
         : `u${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
       div.dataset.turnId = `hub-utterance:${uuid}`;
     }
-    div.dataset.role = sender === 'Orion' ? 'assistant' : (sender === 'You' ? 'user' : 'system');
+    div.dataset.role = (sender === 'Orion' || sender === 'Claude') ? 'assistant' : (sender === 'You' ? 'user' : 'system');
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     const workflowOnlyTurn = Boolean(
       sender === 'Orion'
@@ -7051,7 +7177,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const body = document.createElement('p');
     body.dataset.messageBody = '1';
     let renderedMarkdown = null;
-    if (sender === 'Orion' && window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function') {
+    if ((sender === 'Orion' || sender === 'Claude') && window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function') {
       renderedMarkdown = window.ChatMarkdown.renderMarkdown(displayText);
     }
     if (renderedMarkdown) {
@@ -8346,33 +8472,55 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderCognitiveLoopCard(card) {
+    // Chronic-vs-resolvable branching lives in cognitive-loop-card.js (pure,
+    // unit-tested without a DOM harness) -- this function only builds DOM from
+    // that view model. Server also rejects Resolve/Dismiss on a chronic_pressure
+    // loop with 409 (see attention_loops_routes.py); this is the UI half.
+    const vm = window.OrionCognitiveLoopCard.cognitiveLoopCardViewModel(card);
     const el = document.createElement('div');
-    el.className = 'p-2 rounded border border-purple-800 bg-gray-900';
+    el.className = `p-2 rounded border ${vm.borderClass} bg-gray-900`;
+    const header = document.createElement('div');
+    header.className = 'flex items-center justify-between gap-2';
     const title = document.createElement('div');
     title.className = 'text-xs font-semibold text-purple-200';
     title.textContent = card.title;
+    header.appendChild(title);
+    if (vm.showChronicBadge) {
+      const badge = document.createElement('span');
+      badge.className = 'text-[9px] px-1.5 py-0.5 rounded-full uppercase bg-amber-900/60 text-amber-300';
+      badge.textContent = 'Sustained pressure';
+      header.appendChild(badge);
+    }
     const why = document.createElement('div');
     why.className = 'text-[11px] text-gray-400 mt-1';
     why.textContent = card.why_it_matters;
     const feats = document.createElement('div');
     feats.className = 'text-[10px] text-gray-500 mt-1';
     feats.textContent = (Array.isArray(card.top_contributing_features) ? card.top_contributing_features : []).join(' \u00b7 ');
-    const actions = document.createElement('div');
-    actions.className = 'flex gap-2 mt-2';
-    const resolveBtn = document.createElement('button');
-    resolveBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-green-700 text-white';
-    resolveBtn.textContent = 'Resolve';
-    resolveBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'resolve');
-    const dismissBtn = document.createElement('button');
-    dismissBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-gray-700 text-gray-200';
-    dismissBtn.textContent = 'Dismiss';
-    dismissBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'dismiss');
-    actions.appendChild(resolveBtn);
-    actions.appendChild(dismissBtn);
-    el.appendChild(title);
+    el.appendChild(header);
     el.appendChild(why);
     el.appendChild(feats);
-    el.appendChild(actions);
+    if (vm.chronicNoteText) {
+      const note = document.createElement('div');
+      note.className = 'text-[10px] text-amber-500/80 mt-2 italic';
+      note.textContent = vm.chronicNoteText;
+      el.appendChild(note);
+    }
+    if (vm.showActions) {
+      const actions = document.createElement('div');
+      actions.className = 'flex gap-2 mt-2';
+      const resolveBtn = document.createElement('button');
+      resolveBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-green-700 text-white';
+      resolveBtn.textContent = 'Resolve';
+      resolveBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'resolve');
+      const dismissBtn = document.createElement('button');
+      dismissBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-gray-700 text-gray-200';
+      dismissBtn.textContent = 'Dismiss';
+      dismissBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'dismiss');
+      actions.appendChild(resolveBtn);
+      actions.appendChild(dismissBtn);
+      el.appendChild(actions);
+    }
     return el;
   }
 
@@ -9012,6 +9160,56 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const askClaudeButton = document.getElementById('askClaudeButton');
+  const askClaudeStatusChip = document.getElementById('askClaudeStatusChip');
+
+  function setAskClaudeBusy(busy) {
+    if (askClaudeButton) askClaudeButton.disabled = Boolean(busy);
+    if (askClaudeStatusChip) askClaudeStatusChip.classList.toggle('hidden', !busy);
+  }
+
+  async function askClaude() {
+    const value = (chatInput && chatInput.value ? chatInput.value : '').trim();
+    // Falls back to the last thing said when the composer is empty, so "Ask
+    // Claude" works as "weigh in on this" without retyping the question.
+    const prompt = value || lastUserOrOrionText() || 'What do you make of the conversation so far?';
+    setAskClaudeBusy(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/room/claude/invite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          session_id: orionSessionId || null,
+          connection_id: activeConnectionId || null,
+        }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        appendMessage('System', `Could not invite Claude (${res.status}): ${detail}`, 'text-red-300');
+        setAskClaudeBusy(false);
+        return;
+      }
+      if (value && chatInput) chatInput.value = '';
+      // Busy stays on until the room_claude_utterance frame arrives; the reply
+      // is asynchronous over the socket, not in this response.
+    } catch (err) {
+      appendMessage('System', `Could not invite Claude: ${err}`, 'text-red-300');
+      setAskClaudeBusy(false);
+    }
+  }
+
+  function lastUserOrOrionText() {
+    if (!conversationDiv) return '';
+    const nodes = conversationDiv.querySelectorAll('[data-message-body="1"]');
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      const text = (nodes[i].textContent || '').trim();
+      if (text) return text;
+    }
+    return '';
+  }
+
+  if (askClaudeButton) askClaudeButton.addEventListener('click', askClaude);
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (stopButton) stopButton.addEventListener('click', stopCurrentTurn);
   if (chatInput) {
@@ -9334,6 +9532,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (spec.mode === 'brain' && spec.verb === 'chat_quick') {
       chatQuickVariant = 'fast';
     }
+    // Switching modes can switch between a path that carries images and one
+    // that does not, so the attach affordance has to re-evaluate here too --
+    // not only when the compute route changes.
+    if (typeof refreshVisionCapability === 'function') refreshVisionCapability();
     if (hubModeSelect && hubModeSelect.value !== key) {
       hubModeSelect.value = key;
     }
@@ -9377,14 +9579,15 @@ document.addEventListener("DOMContentLoaded", () => {
       byId[String(entry.id || '').toLowerCase()] = entry;
     });
     hubComputeSelect.innerHTML = '';
-    HUB_COMPUTE_ROUTE_IDS.forEach((routeId) => {
+    const pickable = pickableComputeRouteIds();
+    pickable.forEach((routeId) => {
       const entry = byId[routeId] || { id: routeId, status: 'unknown', served_by: null, backend: null };
       const opt = document.createElement('option');
       opt.value = routeId;
       opt.textContent = formatComputeRouteLabel(entry, { selected: routeId === previous });
       hubComputeSelect.appendChild(opt);
     });
-    hubComputeSelect.value = HUB_COMPUTE_ROUTE_IDS.includes(previous) ? previous : HUB_COMPUTE_DEFAULT;
+    hubComputeSelect.value = pickable.includes(previous) ? previous : HUB_COMPUTE_DEFAULT;
     const selectedEntry = byId[hubComputeSelect.value] || { id: hubComputeSelect.value };
     const selectedOpt = hubComputeSelect.selectedOptions[0];
     if (selectedOpt) {
@@ -9394,7 +9597,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function syncComputeSelection(routeId) {
     const rid = String(routeId || HUB_COMPUTE_DEFAULT).toLowerCase();
-    selectedLlmRoute = HUB_COMPUTE_ROUTE_IDS.includes(rid) ? rid : HUB_COMPUTE_DEFAULT;
+    selectedLlmRoute = pickableComputeRouteIds().includes(rid) ? rid : HUB_COMPUTE_DEFAULT;
     localStorage.setItem('orion_llm_route', selectedLlmRoute);
     renderComputeDropdown();
     // Switching lanes can switch between a sighted and a blind model, so the
@@ -10506,6 +10709,37 @@ document.addEventListener("DOMContentLoaded", () => {
           const d = JSON.parse(e.data);
           if (d.type === 'connection_ready') {
             activeConnectionId = d.connection_id || null;
+            return;
+          }
+          if (d.kind === 'room_claude_utterance') {
+            // Claude's turn in the room. Handled before the generic assistant
+            // branch and returns early for the same reason orion_outreach does:
+            // that branch runs updateMemoryPanelFromResponse(), which would
+            // blank the recall panel still showing the last real Orion turn.
+            // A room reply is not an Orion turn and must not overwrite its
+            // debug surfaces.
+            const claudeText = String(d.llm_response || '').trim();
+            const claudeOk = d.ok !== false;
+            setAskClaudeBusy(false);
+            if (claudeText) {
+              // A failed turn (outage, revoked credential) must not look like
+              // Claude casually speaking -- same red styling askClaude()'s own
+              // fetch-failure branch uses, not the normal white bubble.
+              appendMessage(String(d.speaker || 'Claude'), claudeText, claudeOk ? 'text-white' : 'text-red-300', {
+                correlationId: d.correlation_id,
+                messageId: d.message_id || null,
+                turnId: d.correlation_id,
+                mode: 'room_claude',
+                unsolicited: true,
+                roomClaude: {
+                  requestId: d.request_id || null,
+                  model: d.model || null,
+                  costUsd: typeof d.cost_usd === 'number' ? d.cost_usd : null,
+                  durationMs: d.duration_ms || null,
+                  ok: claudeOk,
+                },
+              });
+            }
             return;
           }
           if (d.kind === 'orion_outreach') {

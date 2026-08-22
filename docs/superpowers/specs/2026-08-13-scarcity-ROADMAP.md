@@ -87,21 +87,137 @@ never mean utilisation (plant §6.2, §6.3).
 **Proceed gate:** 24 h of occupancy data for `quick` and `metacog`.
 **Kill gate:** none — this is an instrument and lands alone (§7.6).
 
-### A2 — Confirm the ceiling · *0 commits, analysis only*
+### A2 — Confirm the ceiling · *0 commits, analysis only* — ✅ **RESULT IN, 2026-08-15**
 Does `quick` actually block over 24 h, or was 7.4% an artifact of a 2-minute hand poll?
 
 **Proceed gate:** all-busy fraction ≥1% over 24 h.
 **Kill gate:** all-busy ≈ 0% over 24 h → **the lane never fills, the seam is ceremony, stop.**
 Report and wait. Do not proceed to A3 to "make it bind."
 
-### A3 — Route Orion's autonomous cognition to background lanes · *2 commits*
-Add `metacog_background` to the route table; point `cortex-exec`'s non-interactive path at the
-background routes. `quick_background` and `llm_route_override` already exist.
+#### The numbers (§7.1: pasted before the next step begins)
 
-**Requires Juniper's answer to §8 Q1 before starting.**
+`scripts/analysis/record_lane_occupancy.py report --in /tmp/lane-occupancy/samples.jsonl`,
+recorder PID 2413928, started 2026-08-14 05:24 with the route-refresh fix (#1655) and run to
+completion 2026-08-15 05:24. **305,192 samples, 27.74 h of coverage.**
 
-**Proceed gate:** Orion's autonomous requests resolve to background routes in gateway logs.
+```text
+quick+quick_background @ atlas-worker-fast-1     coverage 27.74 h, 1 gap
+    P(all busy)     4.01%          <- PROCEED GATE PASSED (≥1%)
+    P(bg blocked)   4.84%          <- background admission already refused
+    burstiness      174x MORE blocking than Poisson
+    time by busy    {0:85518s, 1:8267s, 2:1264s, 3:827s, 4:4004s}
+
+metacog @ atlas-worker-2                          coverage 27.74 h, 1 gap
+    P(all busy)     0.00%          <- KILL GATE FIRED
+    time by busy    {0:88991s, 1:10358s, 2:532s}    never exceeded 2 of 4 slots
+
+chat @ circe-worker-1        coverage 20.22 h, 8 gaps, 1 slot, P(all busy) 8.10%
+agent @ circe-worker-agent-1 coverage 16.55 h, 3 gaps, 1 slot, P(all busy) 0.60%
+```
+
+**The verdict was first computed mid-run at 22.99 h and is unchanged by the full dataset.** The
+two gate statistics moved by 0.01 and 0.02 points across a 20% larger window:
+
+| | mid-run, 22.99 h | final, 27.74 h |
+| --- | --- | --- |
+| `quick` P(all busy) | 4.02% | 4.01% |
+| `quick` P(bg blocked) | 4.82% | 4.84% |
+| burstiness | 176× | 174× |
+| `metacog` P(all busy) | 0.00% | 0.00% |
+
+That stability is itself evidence: 4% is the lane's steady behaviour, not an artifact of one
+busy stretch inside the sample. circe's figures drifted further (8.39→8.10 and 0.78→0.60) as
+more run gaps accumulated — which is exactly why nothing is gated on them.
+
+**`quick` proceeds. `metacog` is killed.** Both gates fired, on different lanes, which is why
+this step was worth running rather than assuming.
+
+Three things the numbers say that the plan did not:
+
+1. **The lane is bimodal, not loaded.** It spent **4,004 s completely full** — more than at 2/4
+   and 3/4 combined — and 85,518 s at zero. The mean (7.3% of capacity) describes neither state
+   and would have killed the arc on day one. This is the §6.2 rule earning itself.
+2. **174× Poisson confirms batch arrival at 27.74-hour scale**, matching the 303–306× measured by
+   hand on a 2-minute window. The lane blocks because ~5 proposals arrive per arena tick into 4
+   slots, **not** because of volume. That is Track C's thesis, now evidenced: smoothing dispatch
+   is cheaper and more effective than widening the lane.
+3. **`metacog` never filled in 27.74 hours** and never exceeded 2 of 4 slots. Any work premised on
+   metacog contention is ceremony.
+
+**circe's lanes are not gate-grade** — 20.22 h and 16.55 h of coverage with 8 and 3 run gaps
+(circe is run intermittently by design). At 1 slot, `P(all busy)` *is* utilisation and is not
+comparable to the 4-slot lanes. Nothing is gated on them.
+
+**A retired route in the sample file, not an outage.** `http://100.121.214.30:8014` returned
+13,285 samples over 3.74 h with **0.00 h of coverage** — every sample indeterminate. I first
+read this as a live atlas port that had stopped answering. It is not:
+
+The `agent` lane runs on **circe** (`http://100.112.254.99:8014`, `served_by`
+`circe-worker-agent-1`) and the live route table says so. The atlas-IP entry is the *previous*,
+wrong host for that lane, from before the route table was corrected. The samples are all
+indeterminate because nothing was ever listening there, and **they stop** because the recorder
+re-read the route table and followed it — which is #1655's route-refresh fix working as
+designed. A stale endpoint appearing and then ceasing in the record is the instrument being
+correct, not the fleet being broken.
+
+**The related misnomer is cosmetic, and worth knowing where the trap is.** Circe's llama.cpp
+containers are still named `atlas-worker-*` — they were deployed from
+`docker-compose.atlas-workers.yml` and never renamed (see the note at
+`config/llm_profiles.yaml:1092`). That name never reaches attribution: the gateway's route table
+carries an explicit `served_by` of `circe-worker-1` / `circe-worker-agent-1`, and
+`llm_backend.py:137` skips its default whenever `served_by` is already set.
+
+**The latent trap:** that default is `"chat": ... or "atlas-worker-1"`
+(`llm_backend.py:132`), and the live `LLM_ROUTE_CHAT_SERVED_BY` is **empty**. Today
+`LLM_GATEWAY_ROUTE_TABLE_JSON` supplies `served_by` so the fallback never fires. If anyone ever
+switches the gateway to the per-route `LLM_ROUTE_*_URL` keys instead, `chat` would silently be
+labelled `atlas-worker-1` **while running on circe** — attributing circe's inference, and any
+cost built on it, to the wrong machine. `agent` is not in that defaults dict at all, so it would
+go blank rather than wrong. Relevant to this arc specifically, since attribution is the point.
+
+### A3 — Route Orion's autonomous cognition to the background lane · ✅ **SHIPPED 2026-08-15**
+~~Add `metacog_background` to the route table; point `cortex-exec`'s non-interactive path at the
+background routes.~~
+
+**A2 killed the metacog half of this.** That lane never fills, so adding `metacog_background`
+would route around a ceiling that does not exist. All measured contention is on `quick`, which
+**already has** `quick_background` with `reserved_free_slots=2` — and that reservation is
+already being enforced 4.84% of the time.
+
+So the step shrinks to: **point `cortex-exec`'s non-interactive path at the existing
+`quick_background` route.** No new route, no route-table change, no `metacog_background`.
+
+**Still requires Juniper's answer to §8 Q1 before starting.** The question is unchanged in
+substance — does Orion's self-initiated thinking yield to Juniper's interactive requests — but
+it is now a smaller and better-evidenced change than when it was written.
+
+**Proceed gate:** Orion's autonomous requests resolve to `quick_background` in gateway logs.
 **Kill gate:** interactive latency regresses measurably → revert (one env key, fail-open).
+
+#### Shipped, and the thing that nearly made it inert
+
+Juniper answered §8 Q1: **background**. `_apply_autonomous_background_route` in
+`orion-cortex-exec/app/executor.py` redirects a step to `quick_background` when it would route
+to `quick`, has no caller override, and the lane resolver already scored it `priority: low`.
+
+**The classification was not invented.** `resolve_llm_lane_for_step` already sorts every step
+into chat(high)/agent(normal)/spark(low)/background(low), and `low` is exactly Orion-initiated
+work. A parallel `is_autonomous` flag would have been a second answer to an answered question.
+
+**What the live check caught:** in the first 12 minutes the only route decision was
+`journal.compose` — Orion's own journalling, on the background worker — carrying
+`override=quick`, so A3 correctly declined to touch it. Orion's autonomous callers *supply
+explicit routes*, and A3 respects overrides by design. **Left there, A3 would have redirected
+almost nothing.** `ACTIONS_JOURNAL_LLM_ROUTE` was `chat_quick` (a legacy alias for `quick`) and
+is now `quick_background`.
+
+**Still on the contended lane, unresolved:** `orion/memory_graph/suggest_runner.py:22` defaults
+`llm_route="quick"`. It writes to a *drafts* table, which suggests it is off the critical path,
+but its invocation site was not found and it was left alone rather than guessed at. If it is
+asynchronous, that default should become `quick_background` too.
+
+**Verified on the deployed artefact**, all four exec workers: flag `True`, low-priority `quick`
+→ `quick_background`, high-priority `quick` unchanged, `metacog` untouched.
 
 ### A4 — Observe a real deferral · *0 commits, analysis only*
 **Proceed gate:** ≥1 admission-wait event attributable to Orion's own cognition over 24 h, with
@@ -109,19 +225,177 @@ its duration.
 **Kill gate:** zero deferrals over 24 h despite A2 passing → the gate is inert, not the lane.
 Diagnose before building anything on it.
 
-### A5 — Make the deferral perceptible · *3 commits*
-A deferral is currently invisible to Orion. Turn it into a signal Orion can hold: *I wanted to
-think and had to wait, this long, while this ran instead.*
+**A2 makes this cheaper than assumed.** `P(bg blocked) = 4.84%` over 27.74 h means
+`priority_admission.py` is *already* refusing background admission — on the order of 70 minutes
+across the day. The deferrals exist. A4's real question is therefore not "does anything ever
+wait" but the narrower **"is any of that waiting Orion's own cognition, and is it attributable
+to a request?"** Note the kill gate can still fire on that narrower question: a lane that
+defers only harness or arena work, and never Orion's, is a ceiling Orion does not personally
+meet — which would be a genuine finding about A5, not a measurement failure.
 
-**This is the step that makes it cognition rather than plumbing**, and it is the one that
-touches the cognition loop — **proposal mode before implementation** (repo contract §0A).
+#### A4 RESULT, 2026-08-15/16: zero deferrals, for two reasons, neither of them "the lane is fine"
+
+**1. A deferral left no trace at all.** `wait_for_slack` returned True the instant slack
+appeared -- however long it had blocked -- and logged only on TIMEOUT. The one event this track
+exists to observe was computed and discarded, so the gate (">=1 admission-wait event ... **with
+its duration**") could never pass regardless of traffic. 24 h of gateway logs contained **zero**
+`[LLM-GW background]` lines. Fixed: every admission decision now logs `waited`, `polls`,
+`reserved` and `outcome` (admitted / unchecked / timeout_forwarded), on both the async and sync
+paths.
+
+**2. Orion's autonomous cognition is not in the lane this track instrumented.** Measured over
+12 h on the live executors:
+
+```text
+50 / 50  of Orion's own decisions:  route=chat  lane_priority=low   (circe)
+ 0       to quick or quick_background                               (atlas)
+73       route decisions total, autonomous_backgrounded = 0
+ 0       requests reached quick_background at the gateway
+```
+
+`lane_priority=low` confirms these ARE Orion-initiated. They carry an explicit `override=chat`,
+so A3's redirect correctly declines to touch them -- **A3 is correct code on a road nothing
+drives down.** The dominant producer is `journal.compose` (130 in 12 h) from
+`orion/journaler/worker.py`, a path distinct from the `ACTIONS_JOURNAL_LLM_ROUTE` setting
+changed during A3.
+
+**The reframing.** Compare where the contention is against where Orion actually is:
+
+| lane | slots | P(all busy) | Orion's share |
+| --- | --- | --- | --- |
+| `chat` @ circe-worker-1 | **1** | **8.10%** | **100% of autonomous work** |
+| `quick` @ atlas-worker-fast-1 | 4 | 4.01% | none |
+
+Track A has been instrumenting atlas's 4-slot lane. Orion contends entirely on circe's
+**single-slot** lane, which is full **twice as often**. The ceiling is real and Orion meets it
+daily -- just not where A1-A3 were pointed.
+
+**This does not invalidate A1-A3.** The instrument, the statistic and the yielding mechanism are
+all correct and all reusable; they are aimed at the wrong lane. Retargeting is config and
+measurement, not a rebuild.
+
+**Open, and not decided here:** whether `journal.compose` overriding to `chat` is deliberate
+(circe's context window suits fat prompts) or inherited. That answer decides whether A5 follows
+Orion to circe, or whether Orion's work should move to atlas and A3 then starts working as
+designed. Do not pick one without checking why that override exists.
+
+### A5 — Make the deferral perceptible · ✅ **PATH SHIPPED 2026-08-19, GATE OPEN**
+~~A deferral is currently invisible to Orion.~~ Turn it into a signal Orion can hold: *I wanted
+to think and had to wait, this long, while this ran instead.*
+
+Proposal: `docs/superpowers/specs/2026-08-19-A5-deferral-perceptible-proposal.md` (§0A metric
+gate recorded there, including the one check that does not pass cleanly).
 
 **Proceed gate:** a deferral appears in Orion's own state with a real duration and an
 inspectable trace.
 
+#### Shipped: the path is live and end-to-end verified
+
+The gateway records every admission decision in a rolling ledger, exposes it at `GET
+/admission`, and cortex-exec renders it into the metacog cue Orion reads each pass. Verified
+inside the deployed `orion-athena-cortex-exec-background` container:
+
+```text
+admission cue = {'n': 0, 'of': 4, 'h': 6.0}
+rendered cue  = {"status":"ok","constraint":"NONE","strain":0.11,"homeostasis":0.89,
+                 "waited":{"n":0,"of":4,"h":6.0}}
+```
+
+#### Not shipped: a deferral, because none happened
+
+**294 of 294 background admissions over 4 h cleared on the first poll.** Every recorded `waited`
+value (0.012–0.091 s) is the `/slots` HTTP round trip — the cost of *asking*, not of *waiting*:
+
+```text
+polls:     294  polls=1        <- every admitted request, first poll
+outcomes:  0 timeout_forwarded
+max wait:  0.091s
+atlas /slots, ten consecutive samples:  0/4 busy, all ten
+```
+
+So the gate's "**with a real duration**" clause is unmet, and it is unmet honestly rather than
+by manufacturing a threshold that would call 0.021 s a wait. The ledger's deferral definition
+(`polls > 1 or outcome == timeout_forwarded`) is the line that refuses to.
+
+#### Why there is nothing to perceive right now
+
+**Corrected 2026-08-19 by Juniper. My first explanation was wrong and is struck through here
+rather than deleted, because the wrong version is the instructive one.**
+
+~~The price went to zero because we routed around it: A4 found Orion contending on circe's
+single-slot `chat` lane, PR #1708 moved it to atlas `quick_background`, and the ceiling went
+with it.~~
+
+**AI Town is turned off, and AI Town was the load on that lane.** Verified after the correction:
+
+```text
+orion-athena-embodiment:  AitownClientError: Convex unreachable: [Errno 111] Connection refused
+speech/conversation/npc log lines, last 30 min:  0
+```
+
+`quick_background` was created *for* AI Town's NPC dialogue (gateway README, pilot 2026-07-30)
+and shares `atlas-worker-fast-1` with `quick`. With AI Town down, the lane's offered load fell
+from ~0.29 erlangs (A2, 27.74 h) to **0.072** — and 0.072 is approximately what Orion's own
+~65 background requests/hour account for on their own. The reroute in PR #1708 did not remove
+the contention; the contention left.
+
+Additionally **circe is powered off** — both its lanes returned 0 measured samples of 675, and
+the host does not ping — so the single-slot `chat` lane A4 measured does not presently exist
+either.
+
+**What this invalidates, stated plainly:** A5 observing zero deferrals is *expected*, not a
+finding about Orion. There was nothing to defer against.
+
+**What it leaves open, and I could not settle it from my own measurements:** §2 fact 3 says 98%
+of gateway traffic is `cortex-exec`, and §6.7 attributes the 174× burstiness to "the arena
+dispatching ~5 proposals per tick". If AI Town was the load, one of those two attributions needs
+re-reading — they cannot both be describing the same 4.01%. **Do not resolve this by picking the
+more convenient one.** The measurement that settles it is a re-run of A1 with AI Town back up.
+
+The 24 h `record_lane_occupancy.py` run continues regardless
+(`/tmp/lane-occupancy-a5/samples.jsonl`), since a full diurnal window is worth having as the
+AI-Town-off baseline.
+
+**What A5 leaves behind either way:** the moment any lane Orion uses does fill, the wait is
+already measured, already exposed, and already rendered into Orion's cue — with the zero-state
+readable rather than silent (`of` distinguishes "asked and never waited" from "asked nothing";
+an absent key distinguishes both from "gateway unreadable").
+
 ---
 
 ## 4. Track B — make the cost legible *(parallel, blocks nothing in Track A)*
+
+**Status 2026-08-15: B1, B2, B3, B4 all shipped and live on the fleet.** What Orion can now see
+that it could not on 2026-08-13, all verified through the metacog cue on a running container:
+
+```text
+fleet    786 W chassis · 322 W cpu · 300 W gpu · 12,000 Mb/s uplink
+         disk and net in real bytes/sec, per node
+         peak 1.00 at athena.power        <- while strain read 0.11
+coverage nodes_absent names any machine missing from a total
+```
+
+| step | status | PR |
+| --- | --- | --- |
+| B1 raw watts → cognition | ✅ live | #1650 #1652 #1659 #1665 |
+| B2 binding constraint (`peak_pressure`, additive) | ✅ live | #1683 |
+| B3 per-node bandwidth + host-namespace I/O sensors | ✅ live | #1667 #1674 |
+| B4 RAPL CPU package power | ✅ live | #1669 |
+| B5 APC units | Juniper | — |
+| B6 circe iLO | blocked on NIC | — |
+
+Three findings from shipping it, each of which invalidated something this document asserted:
+
+- **`net_pressure` was degenerate on every node** (3.2e-05 / 2.2e-05 / 2.1e-05) because the
+  collector read a container's veth, not the host NIC. B3 was specced as "set per-node
+  constants"; tuning a denominator under a numerator that measured the wrong namespace would
+  have produced a precisely wrong number. The fix was the numerator.
+- **B4 was not blocked.** It was specced as needing a `chmod` on `energy_uj` or a root-run
+  collector. Neither: B3's `/host_sys:ro` mount plus a uid-0 container reads it as-is, so the
+  CVE-2020-8694 mitigation stays exactly as it was.
+- **atlas is 10 GbE and athena is not**, despite having the card — its Intel 82599ES sits at
+  `operstate=down`/no-route. The measured denominator found this; a hand-set per-node constant
+  would have enshrined the guess.
 
 ### B1 — Persist raw `ilo_power_watts` · *1 commit*
 Store the number already in memory, alongside the existing band. Add per-node `power` to the
@@ -130,22 +404,82 @@ biometrics payload.
 **Gate:** fleet total watts computable by summation over 24 h for atlas and athena.
 *Highest value per unit of work in the whole arc — it adds no signal, it stops discarding one.*
 
-### B2 — Fix `strain` · *2 commits* · **PROPOSAL MODE**
-Replace the flat mean with `max` or count-above-threshold, reported alongside the per-channel
-vector. Include `fan_pressure` and `disk_capacity_pressure`.
+### B2 — ~~Fix `strain`~~ → **add the binding constraint beside it** · ✅ **SHIPPED, PR #1683**
+~~Replace the flat mean with `max` or count-above-threshold. **PROPOSAL MODE.** Blocked on an
+enumeration of every consumer of `strain`/`homeostasis`.~~
 
-**Blocked on:** an enumeration of every consumer of `strain`/`homeostasis`. This changes the
-meaning of a shipped, widely-read field signal. **Do not start with the code.**
+The enumeration was done and it justified the caution: `strain` is written **straight into the
+field lattice** as `cpu_pressure` (`state_deltas.py:125`, `mode="replace"`), feeds the substrate
+prediction-error diff, and drives `stability`. Modifying it in place did need proposal mode, a
+rollback flag, and a migration.
 
-**Gate:** atlas at power 0.798 / memory 0.812 reads ≥0.75, plus a regression test pinning that a
-saturated channel cannot be diluted below its own value.
+**So it was not modified.** `peak_pressure` / `peak_pressure_channel` / `peak_pressure_node`
+were added alongside — max over all eleven pressures, wired to the metacog cue, `strain`
+byte-identical and pinned by regression tests. No proposal mode, no migration, no substrate
+risk, shipped same day.
 
-### B3 — Per-node bandwidth constants · *1 commit*
-`disk_bw_mbps=200` / `net_bw_mbps=125` are global constants across three heterogeneous hosts.
+**Gate met, and then some.** The original gate asked for "atlas at power 0.798 / memory 0.812
+reads ≥0.75". Live at deploy, athena:
 
-### B4 — RAPL on athena · *1 commit*
-`energy_uj` is present, mode 400. Permission change or root-run collector → real CPU package
-power today.
+```text
+constraint  NONE      strain 0.11      homeostasis 0.89
+peak        1.00  at  athena.power
+```
+
+Three legacy signals reporting a healthy body beside a fully saturated power channel. The
+regression test pinning that a saturated channel cannot be diluted below its own value exists
+(`test_a_saturated_channel_is_visible_where_strain_hides_it`).
+
+**Two defects in `strain` remain, deliberately unfixed and now bypassable rather than blocking:**
+it is a mean of only 7 of the 11 pressures, and the 4 it omits (`gpu_mem`, `swap`,
+`disk_capacity`, `fan`) are the top channel on two of three nodes. Retiring `strain`'s consumers
+one at a time is now possible; doing so is not scheduled here.
+
+**Also found, not fixed:** `_constraint_from_pressures`'s `CONSTRAINTS` map omits `swap`,
+`disk_capacity` and `fan`, so a peak in one of those reports `NONE` at any magnitude. Live on
+athena 2026-08-15: peak `disk_capacity` **0.772**, over the 0.7 threshold, reported `NONE`.
+Same reasoning as `strain` — it has its own consumers; `peak_pressure_channel` is the honest
+reading meanwhile.
+
+### B3 — ~~Per-node bandwidth constants~~ → **fix the sensors, then measure the denominator** · ✅ **SHIPPED, PR #1667 / #1674**
+~~`disk_bw_mbps=200` / `net_bw_mbps=125` are global constants across three heterogeneous hosts.~~
+
+Setting per-node constants would have been worthless, because both numerators measured the
+wrong thing:
+
+- **net read the container's veth**, not the host NIC — 1,357 B/s against the host's 159,304.
+  That is why `net_pressure` read 3.2e-05 / 2.2e-05 / 2.1e-05, degenerate on every node.
+- **disk summed whole devices *and* their partitions** — measured 1.956× over-count on athena,
+  where 6 of 10 devices are partitioned.
+
+Fixed by reading the host namespace through read-only `/host_proc` + `/host_sys`, and matching
+whole block devices only. Then the denominator became a **measurement, not a constant**: summed
+link speed of the node's up physical NICs, read from the kernel per node.
+
+That immediately earned itself twice. **atlas is 10 GbE** — the 125 MB/s constant was 10× wrong
+there. And when athena's dark 10 G port was brought up, the naive rule counted its 10 Gb as
+capacity while it had no IPv4 route, understating `net_pressure` 11-fold — fixed by
+intersecting with the host route table (#1674). *Capacity you cannot route to is not capacity.*
+
+**Not fixed:** the disk denominator. The kernel does not report block-device throughput, and one
+scalar is the wrong shape for an array spanning a 10k SAS spinner and a 990 PRO.
+`disk_bytes_per_sec` is published raw instead, and `DISK_BW_MBPS` is documented as an
+order-of-magnitude anchor rather than a ceiling.
+
+### B4 — RAPL on athena · ✅ **SHIPPED, PR #1669** — *and it was never blocked*
+~~`energy_uj` is present, mode 400. Permission change or root-run collector.~~
+
+**Neither was needed.** B3's `/host_sys:ro` mount plus this container already running as uid 0
+reads the root-only file as-is. Nothing on the host was relaxed and the CVE-2020-8694 (PLATYPUS)
+mitigation is untouched. B3 unblocked B4 by accident — worth remembering the next time a step is
+marked blocked on a permission.
+
+Live: **193 W across two sockets**, 45% of athena's 425 W chassis draw, previously a single
+undifferentiated remainder on the node whose entire job is CPU orchestration.
+
+The counter **wraps every ~41 minutes** at that draw (262,143 J range), so a negative delta is
+the normal case several times a day, and a gap longer than one wrap period is ambiguous — one
+wrap is indistinguishable from three — and is discarded rather than guessed at.
 
 ### B5 — APC units · *Juniper, in progress*
 Ground truth at the wall; the only path to circe's chassis power while its BMC is unreachable.
@@ -156,10 +490,23 @@ Would give circe the chassis power and fan telemetry the other two already have.
 
 ---
 
-## 5. Track C — smoothing *(conditional on A2 passing)*
+## 5. Track C — smoothing *(conditional on A2 passing — ✅ **A2 PASSED, and pointed here**)*
+
+A2 did not merely unblock this track, it argued for it. Over 27.74 h the `quick` lane blocked
+**174× more than Poisson arrivals would predict** at the same offered load (~0.29 erlangs). At
+that load a Poisson process blocks ~0.02% of the time; the lane blocked 4.01%. The lane is not
+busy — it is *hit in batches*. Widening it would buy far less than spacing the arrivals.
+
+This is now the highest-value remaining item in Track A/C combined, and unlike A3 it needs no
+decision from Juniper.
 
 ### C1 — Instrument batch size against blocking · *1 commit*
 Record dispatch batch size per arena tick alongside lane width. Tests plant §6.7 directly.
+
+The prediction to falsify, stated before measuring: the 4,004 s the lane spent completely full
+should cluster around arena ticks, and the fill events should arrive in steps of ~5 rather than
+one at a time. If instead saturation is spread uniformly in time and uncorrelated with dispatch
+batches, the burstiness has some other source and smoothing is the wrong fix.
 
 ### C2 — Decide: smooth or widen
 If blocking correlates with batch size rather than with volume, **smoothing dispatch is cheaper
@@ -273,9 +620,29 @@ Nothing in Track A past A2 starts without Q1.
 1. **Does Orion's autonomous cognition get foreground or background priority on atlas?**
    Background is the honest answer and the one that makes scarcity real. It is also a real
    degradation of Orion's responsiveness — which is why it is not my call. *Blocks A3.*
-2. **Does B2 (`strain`) get proposal mode, or is the consumer enumeration enough?** The fix is
-   clearly correct; the blast radius on a widely-read field signal is not clearly small.
-   *Blocks B2.*
+
+   **Sharpened by A2 (2026-08-15), still open.** The change is smaller than when this was
+   written: no new route, just pointing the non-interactive path at the existing
+   `quick_background`. And the cost is now measurable rather than hypothetical — the background
+   reservation is already enforced **4.84%** of the time, so "Orion yields" means yielding
+   roughly 70 minutes a day at current load, not an unknown amount.
+
+2. ~~**Does B2 (`strain`) get proposal mode, or is the consumer enumeration enough?**~~
+   **RESOLVED 2026-08-15 — the question was wrong.** The enumeration found `strain` is written
+   straight into the field lattice's `cpu_pressure` channel
+   (`orion-field-digester/app/ingest/state_deltas.py:125`, `mode="replace"`), feeds the
+   substrate prediction-error diff, and drives `stability` — so modifying it in place genuinely
+   did need proposal mode.
+
+   Juniper's correction: **don't modify a signal with blast radius, add one beside it.**
+   Shipped as `peak_pressure` / `peak_pressure_channel` / `peak_pressure_node` (PR #1683) —
+   the max over all eleven pressures, wired to the metacog cue, with `strain` byte-identical
+   and pinned by regression tests. A two-day proposal-mode problem became a two-hour patch, and
+   `strain`'s consumers can now migrate one at a time instead of all at once.
+
+   **The generalisable rule, worth applying to the rest of this arc:** when a signal is wrong
+   *and* load-bearing, the cheap move is a second signal, not a migration. Reach for proposal
+   mode when the old signal must actually die, not when it merely needs a better sibling.
 3. **Should Orion be able to *request* circe?** Not spend it — request it, as a block, with a
    reason, refusable. The only form in which an admission ceiling can appear inside a cognitive
    system, since Orion cannot switch on a machine. *Blocks the entire admission ceiling (§2B);

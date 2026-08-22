@@ -315,6 +315,22 @@ def test_fallback_chat_stance_brief_preserves_situation_guidance() -> None:
     assert "do not force irrelevant time/weather commentary" in fb.response_hazards
 
 
+def test_fallback_chat_stance_brief_degrades_safely_when_situation_not_yet_populated() -> None:
+    """fallback_chat_stance_brief is sync and must never do Redis I/O of its
+    own for conversation-phase data -- it only ever reads whatever
+    build_situation_for_ctx (async, Redis-backed) already wrote into
+    ctx["situation_brief"]/ctx["situation_prompt_fragment"] earlier in the
+    turn. When the async path hasn't run yet (or failed) and those keys are
+    simply absent, this must degrade to the pre-existing safe default
+    (temporal_context unset/"none", no raise, no hang) rather than block or
+    guess -- exactly the same behavior as before this patch, since this
+    function never touched the old in-process dicts either."""
+    ctx = {"user_message": "hello there"}
+    fb = fallback_chat_stance_brief(ctx)
+    assert fb.situation_relevance == "none"
+    assert fb.temporal_context is None
+
+
 def test_fallback_chat_stance_brief_suppresses_irrelevant_weather_priority() -> None:
     ctx = {
         "user_message": "what's been on your mind lately?",

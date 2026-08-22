@@ -119,3 +119,50 @@ def test_window_provenance_persists_gate_scores():
     assert crys.provenance["dominant_shift"] == "STANCE"
     assert crys.evidence[0].note and "memory_sig=0.97" in crys.evidence[0].note
     assert "I'm down today" in (crys.evidence[0].excerpt or "")
+
+
+def test_duplicate_turn_entry_collapses_to_one_evidence_row_keeping_latest_note():
+    """Regression for the live duplicate-evidence bug (2026-08-20): a window
+    whose turn list already carries two entries for the same reclassified
+    correlation_id (the WindowStore.append_turn bug, fixed separately) must
+    still only ever mint ONE evidence row for it here -- this is the second,
+    defense-in-depth layer for windows that were already open when that fix
+    shipped. The later entry's note (the deeper reclassification) wins."""
+    turns = [
+        {
+            "correlation_id": "corr-dup",
+            "prompt": "same turn, first pass",
+            "response": "ack",
+            "memory_significance_score": 0.0,
+            "spark_meta": {"turn_change_appraisal": {"shift_kind": "TOPIC"}},
+        },
+        {
+            "correlation_id": "corr-dup",
+            "prompt": "same turn, first pass",
+            "response": "ack",
+            "memory_significance_score": 0.15,
+            "spark_meta": {"turn_change_appraisal": {"shift_kind": "STANCE"}},
+        },
+    ]
+    gate = ConsolidationGateResult(action="propose", dominant_shift="STANCE")
+    crys = build_crystallization_from_window(memory_window_id="win-dup", turns=turns, gate=gate)
+
+    chat_turn_evidence = [e for e in crys.evidence if e.source_kind == "chat_turn"]
+    assert len(chat_turn_evidence) == 1
+    assert chat_turn_evidence[0].note and "shift=STANCE" in chat_turn_evidence[0].note
+
+
+def test_duplicate_grammar_event_id_collapses_to_one_evidence_row():
+    """The window's turn list can also duplicate the per-turn grammar-event
+    lookup (fetch_grammar_evidence_for_window queries once per turn entry, so a
+    duplicated turn entry doubled its results too) -- gate.grammar_event_ids
+    arriving with a repeat must not mint two evidence rows for the same id."""
+    turns = [{"correlation_id": "corr-1", "prompt": "hi", "response": "ok", "spark_meta": {}}]
+    gate = ConsolidationGateResult(
+        action="propose", dominant_shift="TOPIC", grammar_event_ids=["evt-1", "evt-1"]
+    )
+    crys = build_crystallization_from_window(memory_window_id="win-gram-dup", turns=turns, gate=gate)
+
+    grammar_evidence = [e for e in crys.evidence if e.source_kind == "grammar_event"]
+    assert len(grammar_evidence) == 1
+    assert crys.source_grammar_event_ids == ["evt-1"]

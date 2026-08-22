@@ -14,7 +14,14 @@ from .graphdb_store import (
     SubstrateSparqlBackendUnconfiguredError,
     build_substrate_store_from_env,
 )
-from .store import InMemorySubstrateGraphStore, MaterializedSubstrateGraphState, SubstrateGraphStore, SubstrateNeighborhoodSliceV1, SubstrateQueryResultV1
+from .store import (
+    InMemorySubstrateGraphStore,
+    MaterializedSubstrateGraphState,
+    SubstrateGraphStore,
+    SubstrateNeighborhoodSliceV1,
+    SubstrateQueryResultV1,
+    select_concept_nodes_by_anchor_scope,
+)
 from .frontier_context import FrontierContextPackBuilder, FrontierContextPackV1
 from .frontier_expansion import FrontierExpansionResultV1, FrontierExpansionService
 from .frontier_mapper import FrontierDeltaMapper
@@ -68,6 +75,7 @@ __all__ = [
     "SubstrateGraphStore",
     "SubstrateNeighborhoodSliceV1",
     "SubstrateQueryResultV1",
+    "select_concept_nodes_by_anchor_scope",
     "GraphDBSubstrateStore",
     "GraphDBSubstrateStoreConfig",
     "SparqlSubstrateStore",

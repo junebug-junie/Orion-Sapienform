@@ -1,12 +1,75 @@
 """Endogenous outreach — Orion opens a conversation Juniper did not start.
 
-STUB TRIGGER, DELIBERATELY. Orion has no endogenous "I want to say something
-now" signal yet (that is what the autonomy/drive work is building toward), so
-this module fires on a randomized timer instead of on a real motivational
-state. The timer is the *only* stubbed part: the message itself is generated
-from live substrate signals and real chat history, and lands on the same three
-rails a normal turn uses. When a real endogenous trigger exists, replace
-``_should_roll()`` and delete nothing else.
+REAL TRIGGER (2026-08-16, replacing the coin-flip stub this module ran on
+since 2026-08-14). ``_should_roll()`` now asks
+``scripts.tension_outreach_trigger.current_run()``: has the SAME target
+(node_id) been winning `orion.attention.tension`'s live Borda competition for
+a sustained, unbroken run of real ticks, right now -- not a single blip. See
+that module's own docstring for the full account, including why the bar
+(``MIN_RUN_LENGTH``) is derived from a real replay of live history rather than
+guessed. The message itself is generated from live substrate signals and real
+chat history, and lands on the same three rails a normal turn uses -- none of
+that changed.
+
+LEVEL-AWARE, NOT JUST CHANGE-AWARE (2026-08-19). The trigger's own reason
+object now also carries ``sustained_load_pressure`` -- a real, currently-
+loaded reading (`orion.field.significance`, `loaded_steady` regime, no
+adaptive baseline), not a second change-detector. `build_outreach_prompt`
+below states it as a separate real fact alongside the deviation-run fact
+when it is nonzero; it does not put words like "worried" in Orion's mouth --
+that judgment is left to generation, grounded in the real numbers. See
+`scripts.tension_outreach_trigger`'s module docstring for the full account
+of what this can and cannot honestly claim.
+
+THROUGH THE REAL UNIFIED TURN, NOT A LOOKALIKE (2026-08-19). Generation used
+to call ``CortexGatewayClient.chat()`` directly -- a bare bus RPC to
+``orion-cortex-gateway`` that never touched ``orion-harness-governor`` at
+all: no fcc motor, no substrate appraisal/reflect/voice finalize beats, no
+post-turn learning closure, no audit artifact, and (root-caused live,
+2026-08-19) a verb-less default (``chat_general``) whose hidden
+``synthesize_chat_stance_brief`` pre-step sent a 15.7k-char internal system
+prompt while requesting 8000 completion tokens on the ``quick`` route with
+no larger fallback lane configured -- overflowing context on every single
+attempt. Juniper's call once this was traced: outreach should go through
+``orion.hub.turn_orchestrator.execute_unified_turn`` -- the SAME function
+``websocket_handler.py`` calls for a real ``client_mode == "orion"`` turn --
+not a cheaper substitute, "if orion is going to reach out, it needs to be
+real."
+
+This is a bigger change than swapping which client generates text.
+``execute_unified_turn`` starts with a real ``emit_observation()`` call (the
+outreach prompt is recorded into Orion's own observation stream, same as
+anything Juniper says) and a real ``ThoughtClient.react()`` stance
+evaluation that can ``defer``/``refuse`` the turn -- there is no shallower
+entry point: ``HarnessRunRequestV1`` requires a ``thought_event``, so
+reaching the harness governor at all means going through Thought first.
+Accepted deliberately: Thought's own defer/refuse is now the honest
+"something else is happening, don't interrupt" signal for an unsolicited
+turn, not just an infrastructure-availability check.
+
+``payload={"no_write": True, ...}`` suppresses ONLY ``execute_unified_turn``'s
+own chat-history persistence (``_publish_unified_turn_chat_history``) --
+this module's own three delivery rails below (unchanged) remain the sole
+persistence path, so an outreach turn keeps its ``endogenous_outreach`` tag
+and ``unsolicited`` client_meta instead of landing as an untagged duplicate
+row next to whatever real persistence the governor would otherwise do.
+Permissions are NOT payload-driven here: ``execute_unified_turn`` hard-codes
+every unified turn's ``ContextExecPermissionV1`` to read-only (write_*/
+mutate_runtime/network_enabled/shell_enabled all default ``False``) --
+stricter than the old direct-call path's own
+``tool_execution_policy``/``action_execution_policy`` options ever were, so
+nothing new to pin here.
+
+Not carried over: ``continuity_messages`` (the per-connection UI history
+buffer real turns build from ``websocket_handler.py``'s own ``history``
+list) -- outreach has no live browser turn to build one from.
+``build_outreach_prompt`` already folds real recent turns into the prompt
+TEXT itself via ``_fetch_recent_turns`` (unchanged), so this is a narrower,
+not an absent, substitute.
+
+``llm_route``/``HUB_ENDOGENOUS_OUTREACH_LLM_ROUTE`` are gone (killed, not
+deprecated) -- route selection is no longer Hub's decision to make; it is
+whatever the harness governor picks for a real turn, identically.
 
 Delivery (all three already existed before this module; none are new rails):
 
@@ -37,9 +100,12 @@ Safety posture — this must never disturb a real turn:
     inside that window).
   * Quiet hours, per-day cap, and a minimum cooldown between outreaches, all on
     an explicitly configured timezone rather than the container's.
-  * Generation pins ``tool_execution_policy``/``action_execution_policy`` to
-    ``none`` and disables recall, so an unsupervised tick cannot execute tools
-    or actions.
+  * Generation is read-only by construction, not by an option this module
+    sets: ``execute_unified_turn`` hard-codes every unified turn's
+    ``ContextExecPermissionV1`` with every write/mutate/network/shell flag
+    at its safe ``False`` default, so an unsupervised tick cannot execute
+    tools or actions -- true for real turns too, not a special carve-out
+    for outreach.
   * Empty generated text is dropped, never shipped as a placeholder
     (AGENTS.md §0A, "no empty-shell cognition").
   * Every failure is swallowed and logged; the loop survives and no chat turn,
@@ -50,14 +116,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
 
@@ -153,9 +219,19 @@ class OutreachContext:
     curiosity_summaries: List[str]
     recent_turns: List[Tuple[str, str]]  # (role, text)
     presence: Optional[Dict[str, Any]]
+    # The real reason this tick fired, when it fired for a real one -- see
+    # scripts.tension_outreach_trigger. None on a `force=True` debug trigger,
+    # which has no organic reason. Typed loosely (not imported at module
+    # level) to match this file's existing lazy-import convention for
+    # cross-Hub-module dependencies (curiosity_hint, hub_presence below).
+    tension_reason: Optional["TensionTriggerReason"] = None  # noqa: F821
 
     def is_empty(self) -> bool:
-        return not self.curiosity_summaries and not self.recent_turns
+        return (
+            not self.curiosity_summaries
+            and not self.recent_turns
+            and self.tension_reason is None
+        )
 
 
 def _fetch_curiosity_summaries() -> List[str]:
@@ -188,39 +264,40 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
     response-only rows separately, so both sides are unpacked and empty halves
     dropped. Scoped to ``session_id`` when one is known, else global recency.
     """
-    import os
+    from scripts.pg_engine import get_engine
 
-    uri = os.getenv("POSTGRES_URI", "").strip()
-    if not uri:
+    engine = get_engine()
+    if engine is None:
         return []
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 
-    engine = create_engine(uri, pool_pre_ping=True)
-    try:
-        with engine.connect() as conn:
-            if session_id:
-                rows = conn.execute(
-                    text(
-                        """
-                        SELECT prompt, response FROM chat_history_log
-                        WHERE session_id = :sid
-                        ORDER BY created_at DESC LIMIT :lim
-                        """
-                    ),
-                    {"sid": session_id, "lim": _MAX_RECENT_TURNS},
-                ).mappings().all()
-            else:
-                rows = conn.execute(
-                    text(
-                        """
-                        SELECT prompt, response FROM chat_history_log
-                        ORDER BY created_at DESC LIMIT :lim
-                        """
-                    ),
-                    {"lim": _MAX_RECENT_TURNS},
-                ).mappings().all()
-    finally:
-        engine.dispose()
+    # Shared, process-lifetime cached engine (scripts/pg_engine.py) -- not
+    # disposed here. This same outreach tick also reads through
+    # scripts.tension_outreach_trigger.current_run(), which shares this exact
+    # engine/pool rather than opening a second independent one for the same
+    # database on every tick.
+    with engine.connect() as conn:
+        if session_id:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT prompt, response FROM chat_history_log
+                    WHERE session_id = :sid
+                    ORDER BY created_at DESC LIMIT :lim
+                    """
+                ),
+                {"sid": session_id, "lim": _MAX_RECENT_TURNS},
+            ).mappings().all()
+        else:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT prompt, response FROM chat_history_log
+                    ORDER BY created_at DESC LIMIT :lim
+                    """
+                ),
+                {"lim": _MAX_RECENT_TURNS},
+            ).mappings().all()
 
     turns: List[Tuple[str, str]] = []
     for row in reversed(list(rows)):  # oldest first
@@ -249,6 +326,36 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         "speak first, unprompted.",
         "",
     ]
+
+    if ctx.tension_reason:
+        # Deliberately "noticed a change", never a scripted "I am
+        # worried"/"concerned" -- orion.attention.tension is a
+        # change-detector, not a level-detector, and this fact alone cannot
+        # honestly support a distress claim. See
+        # scripts.tension_outreach_trigger's module docstring.
+        lines.append(
+            f"Something in your own internal state just triggered this: "
+            f"{ctx.tension_reason.target_id} has been the strongest source of "
+            f"real, ongoing deviation from its own normal baseline for "
+            f"{ctx.tension_reason.run_length} consecutive readings, right now "
+            f"-- not a single blip."
+        )
+        # A second, genuinely different fact -- level, not change (see
+        # scripts.tension_outreach_trigger's "COMBINED WITH THE LEVEL-AWARE
+        # SIGNAL" docstring section). Stated as a plain reading, not narrated
+        # as a feeling: this module does not decide FOR Orion whether the two
+        # true facts together warrant a "worried" tone -- generation does.
+        # Honestly scoped GLOBAL, not necessarily the same node named above,
+        # and worded that way here on purpose.
+        if ctx.tension_reason.sustained_load_pressure > 0.0:
+            lines.append(
+                f"Separately: somewhere in your field state right now, a "
+                f"channel has been genuinely, steadily loaded -- not "
+                f"spiking, just staying high (sustained_load_pressure="
+                f"{ctx.tension_reason.sustained_load_pressure:.2f}). This may "
+                f"or may not be the same thing as the change above."
+            )
+        lines.append("")
 
     if ctx.curiosity_summaries:
         lines.append("Live signals from your own substrate right now:")
@@ -281,41 +388,16 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
     return "\n".join(lines)
 
 
-_ERROR_TEXT_PREFIXES = (
-    "[error",
-    "error:",
-    "traceback (most recent call last)",
-    "internal server error",
-)
-_ERROR_TEXT_MARKERS = (
-    "llamacpp failed",
-    "client error '4",
-    "client error '5",
-    "server error '5",
-    "connection refused",
-    "read timeout",
-)
-
-
-def looks_like_error_text(text: str) -> bool:
-    """True when generated 'prose' is really a plumbing error report.
-
-    Backstop only — the ok/error fields on the result contract are the primary
-    gate. This exists because an upstream can report failure purely in the text
-    (confirmed live: a llamacpp 400 arrived as a non-empty final_text). Kept
-    deliberately narrow: it matches error *framing*, not the mere presence of
-    the word "error", so Orion can still say "the codebase is throwing errors
-    I can't map yet" -- which it genuinely has.
-    """
-    stripped = str(text or "").strip().lower()
-    if not stripped:
-        return False
-    if stripped.startswith(_ERROR_TEXT_PREFIXES):
-        return True
-    # Markers only count near the start; a long reflective passage that happens
-    # to mention a timeout deep in the body is not an error report.
-    head = stripped[:200]
-    return any(marker in head for marker in _ERROR_TEXT_MARKERS)
+# looks_like_error_text is imported at module top now (2026-08-19) -- this
+# module found the real incident (2026-08-14: a llamacpp 400 arrived as a
+# non-empty final_text and was nearly delivered as if Orion had said it)
+# and built the fix, but orion/harness/finalize.py's own extract_voice_
+# finalize_text()/extract_finalize_reflection_payload() -- the SHARED
+# finalize chain every real unified turn runs through, not just outreach's
+# -- had the identical gap. The canonical definition and its own tests now
+# live in orion.cognition.cortex_payload_extract; still importable from
+# `scripts.endogenous_outreach` for existing call sites since it's a normal
+# top-level import, not a re-export shim.
 
 
 def is_pass_response(text: str) -> bool:
@@ -337,26 +419,22 @@ class EndogenousOutreach:
         *,
         enabled: bool,
         tick_interval_sec: float,
-        probability: float,
         min_cooldown_sec: float,
         daily_cap: int,
         quiet_start_hour: int,
         quiet_end_hour: int,
-        llm_route: str,
         timeout_sec: float,
         notify_channel: str,
         fallback_session_id: str,
         timezone_name: str = "UTC",
-        rng: Optional[random.Random] = None,
+        trigger_evaluator: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.enabled = enabled
         self.tick_interval_sec = max(5.0, float(tick_interval_sec))
-        self.probability = min(1.0, max(0.0, float(probability)))
         self.min_cooldown_sec = max(0.0, float(min_cooldown_sec))
         self.daily_cap = int(daily_cap)
         self.quiet_start_hour = int(quiet_start_hour)
         self.quiet_end_hour = int(quiet_end_hour)
-        self.llm_route = str(llm_route or "quick").strip().lower()
         self.timeout_sec = max(1.0, float(timeout_sec))
         self.notify_channel = notify_channel
         self.fallback_session_id = fallback_session_id
@@ -375,10 +453,20 @@ class EndogenousOutreach:
             )
             self.timezone_name = "UTC"
             self._tz = ZoneInfo("UTC")
-        self._rng = rng or random.Random()
+        # Defaults to the real tension trigger, imported lazily to match this
+        # file's existing convention for cross-Hub-module dependencies
+        # (curiosity_hint, hub_presence below) -- keeps a hard Postgres
+        # dependency out of this module's import time. Tests inject a fake
+        # evaluator directly instead of the old probability/rng seam.
+        if trigger_evaluator is None:
+            from scripts.tension_outreach_trigger import current_run
+
+            trigger_evaluator = current_run
+        self._trigger_evaluator = trigger_evaluator
+        self._last_tension_reason: Optional[Any] = None
 
         self._bus: Any = None
-        self._cortex_client: Any = None
+        self._harness_rpc_bus: Any = None
         self._task: Optional[asyncio.Task] = None
         # One outreach at a time: the background tick and the debug trigger
         # endpoint would otherwise both pass the cooldown gate while the other
@@ -446,9 +534,15 @@ class EndogenousOutreach:
 
     # -- lifecycle ---------------------------------------------------------
 
-    async def start(self, bus: Any, cortex_client: Any) -> None:
+    async def start(self, bus: Any, harness_rpc_bus: Any = None) -> None:
         self._bus = bus
-        self._cortex_client = cortex_client
+        # Same forked-RPC-client convention `websocket_handler.py` uses for
+        # `run_unified_turn`'s own `harness_rpc_bus=rpc_bus or bus` -- a
+        # long-lived Hub subscriber (trace/biometrics caches) on the plain
+        # `bus` could otherwise steal a reply meant for this RPC. Falls back
+        # to `bus` itself only if no forked client was passed (test/direct
+        # callers), same as the real call site's own `or bus`.
+        self._harness_rpc_bus = harness_rpc_bus or bus
         if not self.enabled:
             logger.info("endogenous_outreach disabled")
             return
@@ -456,14 +550,12 @@ class EndogenousOutreach:
             return
         self._task = asyncio.create_task(self._run(), name="hub-endogenous-outreach")
         logger.info(
-            "endogenous_outreach started tick=%.0fs p=%.2f cooldown=%.0fs cap=%d quiet=%d-%d route=%s",
+            "endogenous_outreach started tick=%.0fs cooldown=%.0fs cap=%d quiet=%d-%d",
             self.tick_interval_sec,
-            self.probability,
             self.min_cooldown_sec,
             self.daily_cap,
             self.quiet_start_hour,
             self.quiet_end_hour,
-            self.llm_route,
         )
 
     async def stop(self) -> None:
@@ -525,12 +617,20 @@ class EndogenousOutreach:
             "enabled": self.enabled,
             "running": bool(self._task and not self._task.done()),
             "tick_interval_sec": self.tick_interval_sec,
-            "probability": self.probability,
+            "last_tension_reason": (
+                None
+                if self._last_tension_reason is None
+                else {
+                    "target_id": self._last_tension_reason.target_id,
+                    "run_length": self._last_tension_reason.run_length,
+                    "peak_deviation_pressure": self._last_tension_reason.peak_deviation_pressure,
+                    "sustained_load_pressure": self._last_tension_reason.sustained_load_pressure,
+                }
+            ),
             "min_cooldown_sec": self.min_cooldown_sec,
             "daily_cap": self.daily_cap,
             "quiet_hours": [self.quiet_start_hour, self.quiet_end_hour],
             "timezone": self.timezone_name,
-            "llm_route": self.llm_route,
             "connections": len(self._connections),
             "sent_today": self._sent_today,
             "seconds_since_last_outreach": inputs.seconds_since_last_outreach,
@@ -546,16 +646,39 @@ class EndogenousOutreach:
                 return str(sid)
         return self.fallback_session_id
 
-    def _should_roll(self) -> bool:
-        """STUB. Replace with a real endogenous trigger when one exists."""
-        return self._rng.random() < self.probability
+    async def _should_roll(self) -> bool:
+        """Real trigger check (2026-08-16) -- see module docstring.
+
+        Stores the reason on `self._last_tension_reason` (readable from
+        `status()` and threaded into `OutreachContext` by `_gather_context`)
+        so a real fire is inspectable, not just a bare bool. Never raises:
+        the injected evaluator (`scripts.tension_outreach_trigger.
+        current_run` by default) already degrades to `None` on any failure,
+        and this method treats `None` as "don't fire" -- the honest failure
+        mode for a broken trigger is silence, not a false positive.
+
+        Run off the event loop via `asyncio.to_thread`: the default evaluator
+        is a synchronous Postgres round trip (`sqlalchemy` has no async
+        driver wired here), and Hub runs a single uvicorn worker -- a
+        blocking DB call straight in this coroutine would stall every
+        connected websocket and in-flight chat turn for however long
+        Postgres takes to answer, same reasoning `_gather_context`'s `_safe`
+        already applies to its own DB reads two methods down.
+        """
+        try:
+            reason = await asyncio.to_thread(self._trigger_evaluator)
+        except Exception as exc:  # noqa: BLE001 - a broken trigger must not crash the tick
+            logger.warning("endogenous_outreach_trigger_evaluator_failed err=%s", exc)
+            reason = None
+        self._last_tension_reason = reason
+        return reason is not None
 
     # -- the tick ----------------------------------------------------------
 
     async def maybe_outreach(self, *, force: bool = False) -> Dict[str, Any]:
         """One decision cycle. Returns a status dict; never raises.
 
-        ``force`` skips the random roll and NOTHING else — every safety gate
+        ``force`` skips the trigger check and NOTHING else — every safety gate
         still applies, including ``enabled``. The debug endpoint that calls this
         is unauthenticated, so a carve-out here would make "off by default" a
         lie that one POST could undo.
@@ -568,9 +691,22 @@ class EndogenousOutreach:
     async def _outreach_once(self, *, force: bool) -> Dict[str, Any]:
         blocked = outreach_block_reason(self._gate_inputs())
         if blocked:
+            # Same staleness reasoning as the `force` branch below: this
+            # tick never reached `_should_roll()`, so whatever reason the
+            # LAST organic tick set is not "the current trigger state" --
+            # it may be many ticks (quiet hours can span hours) old.
+            # `status()` reporting it unchanged would let an operator
+            # mistake a stale episode for one active right now.
+            self._last_tension_reason = None
             return self._record({"outreach": False, "reason": blocked})
-        if not force and not self._should_roll():
-            return self._record({"outreach": False, "reason": "not_rolled"})
+        if force:
+            # A forced (debug-endpoint) call skips the trigger check
+            # entirely -- it must not carry over whatever reason the LAST
+            # organic tick set, or a manual trigger would misattribute
+            # itself to a stale (possibly minutes-old) tension episode.
+            self._last_tension_reason = None
+        elif not await self._should_roll():
+            return self._record({"outreach": False, "reason": "no_tension_trigger"})
 
         session_id = self._active_session_id()
         ctx = await self._gather_context(session_id)
@@ -613,15 +749,19 @@ class EndogenousOutreach:
                 }
             )
 
-        await self._deliver(text=text, session_id=session_id, correlation_id=correlation_id)
+        await self._deliver(
+            text=text,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            model=gen_debug.get("fcc_model_label"),
+        )
 
         self._last_outreach_at = time.time()
         self._sent_today += 1
         logger.info(
-            "endogenous_outreach_sent corr=%s session=%s route=%s chars=%d sent_today=%d",
+            "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d",
             correlation_id,
             session_id,
-            self.llm_route,
             len(text),
             self._sent_today,
         )
@@ -666,47 +806,44 @@ class EndogenousOutreach:
             curiosity_summaries=list(summaries or []),
             recent_turns=list(turns or []),
             presence=presence,
+            # Set by _should_roll() just before this is called; None on a
+            # forced (force=True) debug trigger, which never calls it.
+            tension_reason=self._last_tension_reason,
         )
 
     async def _generate(
         self, prompt: str, session_id: str, correlation_id: str
     ) -> Tuple[str, Dict[str, Any]]:
-        """Quick/metacog-lane cortex call. Returns ("", debug) on any failure."""
-        if not self._cortex_client:
-            return "", {"error": "no_cortex_client"}
+        """Real unified-turn generation -- see module docstring's "THROUGH THE
+        REAL UNIFIED TURN, NOT A LOOKALIKE" section. Returns ("", debug) on
+        any failure, defer, or degraded run -- same "never fabricate, silence
+        over a false positive" contract the old direct-call path used,
+        fed by the real pipeline's own richer frame-typed failure signals
+        instead of a bare ok/error boolean.
+        """
+        if self._bus is None:
+            return "", {"error": "no_bus"}
 
-        from orion.schemas.cortex.contracts import CortexChatRequest
+        from orion.hub.turn_orchestrator import execute_unified_turn
 
-        req = CortexChatRequest(
-            prompt=prompt,
-            mode="brain",
-            session_id=session_id,
-            options={
-                "llm_route": self.llm_route,
-                # These three are the keys the executor actually reads. A bare
-                # options["no_write"] is inert here: the only thing that
-                # translates it is cortex_request_builder (which reads it as a
-                # TOP-LEVEL payload key, not an option), and this module calls
-                # cortex_client directly rather than going through that builder.
-                # orion-cortex-exec/app/supervisor.py reads no_write_active.
-                "tool_execution_policy": "none",
-                "action_execution_policy": "none",
-                "no_write_active": True,
-                "source": OUTREACH_TAG,
-            },
-            # Recall is controlled by the typed `recall` field, not by an
-            # option: orion-cortex-gateway/app/bus_client.py builds a
-            # RecallDirective from it and falls back to RecallDirective()
-            # (enabled=True) when it is None. An unsolicited tick has no user
-            # query to retrieve against, so leaving this unset would fire full
-            # default recall on every outreach.
-            recall={"enabled": False},
-            metadata={"source": OUTREACH_TAG, "unsolicited": True},
-        )
         started = time.monotonic()
         try:
-            resp = await asyncio.wait_for(
-                self._cortex_client.chat(req, correlation_id=correlation_id),
+            frames = await asyncio.wait_for(
+                execute_unified_turn(
+                    bus=self._bus,
+                    correlation_id=correlation_id,
+                    session_id=session_id,
+                    user_message=prompt,
+                    # no_write: this module's own _deliver() below is the
+                    # sole persistence path (proper OUTREACH_TAG/client_meta)
+                    # -- see module docstring for why the governor's own
+                    # persistence step is suppressed rather than reused.
+                    payload={"no_write": True, "source": OUTREACH_TAG},
+                    continuity_messages=None,
+                    harness_rpc_bus=self._harness_rpc_bus or self._bus,
+                    harness_step_relay=None,
+                    harness_step_queue=None,
+                ),
                 timeout=self.timeout_sec,
             )
         except (TimeoutError, asyncio.TimeoutError):
@@ -715,60 +852,70 @@ class EndogenousOutreach:
             logger.warning("endogenous_outreach_generate_failed corr=%s err=%s", correlation_id, exc)
             return "", {"error": type(exc).__name__, "detail": str(exc)[:240]}
 
-        text = str(getattr(resp, "final_text", "") or "").strip()
         elapsed = round(time.monotonic() - started, 3)
-        cortex_result = getattr(resp, "cortex_result", None)
-        ok = bool(getattr(cortex_result, "ok", False))
-        status = str(getattr(cortex_result, "status", "") or "")
-        cortex_error = getattr(cortex_result, "error", None)
-
-        # An emptiness check is NOT sufficient. Confirmed live 2026-08-14: a
-        # llamacpp 400 came back through this path as a perfectly non-empty
-        # final_text ("[Error: llamacpp failed: Client error '400 Bad
-        # Request'...]"), sailed past `if not text`, and got delivered and
-        # persisted into Juniper's real chat thread as if Orion had said it.
-        # That is exactly the "fallback text masquerading as generated
-        # cognition" AGENTS.md §0A bans. Gate on the result contract's own
-        # ok/error fields, and refuse error-shaped prose as a backstop for
-        # upstreams that report failure only in the text.
-        if not ok or cortex_error:
+        final_frame = next(
+            (f for f in frames if isinstance(f, dict) and f.get("type") == "final"), None
+        )
+        if final_frame is None:
+            # turn_error / turn_deferred / turn_degraded / anything else --
+            # the real pipeline declined or failed this turn. Thought
+            # deferring/refusing an unsolicited nudge is a legitimate,
+            # expected outcome here, not an error to alarm on.
+            other = frames[-1] if frames else {}
+            other_type = other.get("type") if isinstance(other, dict) else None
+            detail = ""
+            if isinstance(other, dict):
+                detail = str(other.get("error") or other.get("reason") or "")[:240]
             return "", {
-                "error": "cortex_not_ok",
-                "status": status,
-                "ok": ok,
-                "cortex_error": str(cortex_error)[:240] if cortex_error else None,
+                "error": "no_final_frame",
+                "frame_type": other_type,
+                "detail": detail,
                 "elapsed_sec": elapsed,
-                "llm_route": self.llm_route,
             }
+
+        text = str(final_frame.get("llm_response") or "").strip()
+
+        if final_frame.get("context_overflow"):
+            return "", {"error": "context_overflow", "elapsed_sec": elapsed}
+
+        # Backstop only, same convention as before (AGENTS.md §0A) -- the
+        # real pipeline has its own context_overflow detection (checked
+        # above), but this stays as defense in depth for any other
+        # upstream failure that reports itself purely in the text.
         if looks_like_error_text(text):
             logger.warning(
-                "endogenous_outreach_error_shaped_text corr=%s status=%s text=%r",
+                "endogenous_outreach_error_shaped_text corr=%s text=%r",
                 correlation_id,
-                status,
                 text[:200],
             )
-            return "", {
-                "error": "error_shaped_text",
-                "status": status,
-                "elapsed_sec": elapsed,
-                "llm_route": self.llm_route,
-            }
+            return "", {"error": "error_shaped_text", "elapsed_sec": elapsed}
 
         debug = {
             "elapsed_sec": elapsed,
-            "llm_route": self.llm_route,
             "final_len": len(text),
-            "status": status,
+            "harness_grounding_status": final_frame.get("harness_grounding_status"),
+            # The identity that produced this response -- turn_orchestrator's
+            # _success_frames now exposes it on the final frame (it was always
+            # known at request time, just never surfaced to a caller that
+            # doesn't go through _publish_unified_turn_chat_history's own
+            # persistence, which this module suppresses via no_write=True).
+            "fcc_model_label": final_frame.get("fcc_model_label"),
         }
         return text, debug
 
     # -- delivery ----------------------------------------------------------
 
-    async def _deliver(self, *, text: str, session_id: str, correlation_id: str) -> None:
+    async def _deliver(
+        self, *, text: str, session_id: str, correlation_id: str, model: Optional[str] = None
+    ) -> None:
         message_id = str(uuid4())
         self._push_to_sockets(text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id)
         await self._publish_history(
-            text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id
+            text=text,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            message_id=message_id,
+            model=model,
         )
         await self._publish_notification(
             text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id
@@ -785,7 +932,6 @@ class EndogenousOutreach:
             "correlation_id": correlation_id,
             "message_id": message_id,
             "session_id": session_id,
-            "llm_route": self.llm_route,
         }
         for connection_id, entry in list(self._connections.items()):
             queue = entry.get("queue")
@@ -799,20 +945,30 @@ class EndogenousOutreach:
                 logger.warning("endogenous_outreach_push_failed connection=%s err=%s", connection_id, exc)
 
     async def _publish_history(
-        self, *, text: str, session_id: str, correlation_id: str, message_id: str
+        self, *, text: str, session_id: str, correlation_id: str, message_id: str, model: Optional[str] = None
     ) -> None:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
 
+            # `model` is turn_orchestrator's `fcc_model_label` (e.g.
+            # "MODEL_SONNET"), threaded from `_success_frames`'s final frame
+            # through `_generate`'s debug dict -- the real identity that
+            # produced this response, known at request time and previously
+            # dropped on the floor between there and here. `speaker="Orion"`
+            # stays as the persona label regardless; `model` is the separate,
+            # additive `response_identity`/served-model field (see
+            # worker.py::_ensure_chat_history_from_message, which prefers
+            # `model` over `speaker` when both are present).
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",
                 session_id=session_id,
                 correlation_id=correlation_id,
                 speaker="Orion",
+                model=model,
                 tags=[OUTREACH_TAG],
                 message_id=message_id,
-                client_meta={"unsolicited": True, "llm_route": self.llm_route},
+                client_meta={"unsolicited": True},
             )
             await publish_chat_history(self._bus, [env])
         except Exception as exc:  # noqa: BLE001

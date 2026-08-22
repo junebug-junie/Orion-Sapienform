@@ -4,7 +4,19 @@
 cognition change — but any *fix* to a metric this layer classifies as dead is
 proposal-mode territory per CLAUDE.md §0A and needs its own sign-off.
 
-**Date:** 2026-08-12
+**Date:** 2026-08-12, revised 2026-08-19 once phase 3 (the phase that was
+never built) shipped, revised again 2026-08-19 once a scoped slice of phase 5
+shipped.
+
+**Status:** phases 1, 2, and 4 shipped 2026-08-12/13. **Phase 3 shipped
+2026-08-19** — see its section below for what actually got built. **Phase 5
+partially shipped 2026-08-19/20** — two candidates only (`attention_self_model.v1`
+scalar fields, `l7_l11_ladder` throughput); see "Phase 5 (2026-08-19)" below.
+The general "any surface, any URN" version remains deliberately deferred —
+that per-surface data-source question is still bigger than the two cases
+solved here. **Commit-time enforcement gate shipped 2026-08-20** — see
+"Commit-time enforcement gate" below; requires re-running
+`scripts/install_git_safety_hooks.sh .` after merge to actually take effect.
 
 ## Arsonist summary
 
@@ -261,10 +273,47 @@ has no way to see. It also mechanically re-derives the hand-maintained consumer
 lists in `inner_state_registry.py` and `ORGAN_REGISTRY`, and any disagreement
 between hand-list and discovered-list is an immediate finding.
 
-**Phase 3 — edit-time PreToolUse hook.**
+**Phase 3 — edit-time PreToolUse hook. SHIPPED 2026-08-19.**
 The actual answer to "agents don't trace upstream." Puts the lineage card in
 front of the agent *before* the edit lands, using the same mechanism as the
 graphify nudge that already works in this repo.
+
+`scripts/hooks/metric_lineage_nudge.py`, registered in `.claude/settings.json`
+on the same `Edit|Write|NotebookEdit` matcher as `shared_checkout_edit_guard.py`.
+Fails open throughout (matches RTK's and graphify's own "no match" shape):
+malformed input, no matched token, or a missing cache all just print nothing.
+
+**The one real design problem, solved by not solving it live.**
+`scan_repo()` walks ~3900 files in ~13-14s (measured, both in the original
+design doc and again live building this) — far too slow to run synchronously
+on every Edit/Write. The hook does not call it. `scripts/refresh_metric_lineage_cache.py`
+runs the exact same `build_graph()` + `scan_repo()` calls `check_metric_lineage.py`
+already makes and persists them to `.cache/metric_lineage.json` (gitignored,
+atomic write via temp-file + `os.replace`) instead of discarding the result
+after one CLI invocation. The hook just reads that file — measured at ~65ms
+per call including Python startup, not 14s.
+
+Self-healing, not a hard dependency someone has to remember to run: if the
+cache is missing entirely, or older than an hour, the hook kicks a refresh
+off in the background (`subprocess.Popen(..., start_new_session=True)`, same
+"hand the expensive part to a detached process" shape as
+`scripts/hooks/stop_worktree_wip_snapshot.py`) and returns immediately either
+way — first-ever edit in a fresh worktree shows nothing rather than paying a
+14s synchronous cost, and self-heals within the one background refresh's
+runtime. A cooldown lock (`.cache/metric_lineage.refresh.lock`, 60s) stops a
+burst of edits from spawning a pile of concurrent scans.
+
+Skips FCC subprocess turns (`ORION_FCC_SUBPROCESS`), same convention and same
+reasoning as `graphify_hook_guard_gate.sh`: token-budget-constrained, no
+code-navigation payoff.
+
+Verified live, not just unit-tested: built a real cache against this repo
+(601 nodes, 8,679 hits, 3,877 files, 14.4s) and fed the hook a real edit
+touching `field_coherence_warning` — the exact channel this session's R6
+investigation spent an hour manually running `check_metric_lineage.py` against
+by hand. The hook produced the correct card (URN, meaning, blast radius,
+consumer sites) in 65ms, unprompted. That gap — remembering to run the CLI
+tool by hand — is precisely what phase 3 exists to close.
 
 **Phase 4 — gate + `make` target.** SHIPPED 2026-08-13.
 
@@ -302,10 +351,288 @@ cathedral §0A bans, false-positive noisy, and trivially evaded. Registration is
 enforced by review and by the phase 3 card, not by a heuristic pretending to be
 a gate. Stated so the absence reads as a decision, not an oversight.
 
-**Phase 5 — liveness generalization beyond field channels.**
-Deferred deliberately: it needs a per-surface decision about where the live
-sample comes from (Postgres history, bus window, or a service `/latest`
-endpoint), and that is a bigger question than the first four phases combined.
+**Phase 5 — liveness generalization beyond field channels. PARTIALLY SHIPPED
+2026-08-19** (two candidates only; the general version is still deferred —
+see below).
+
+The general question — "for any URN on any surface, where does the live
+sample come from" — is still bigger than the first four phases combined, and
+is not solved here.
+
+**Correction 2026-08-20** (code review): this section previously credited
+`docs/superpowers/specs/2026-08-13-phase5-liveness-scope.md`'s "R6 section"
+with a systematic 48-URN walk finding "25 of 48 have retired producers".
+Neither claim survived re-verification. That doc's R6 is an unrelated,
+still-open question ("can a metric express rest") and contains no such walk.
+Re-running `check_metric_lineage.py --json` live against current `main`
+(2026-08-20) confirms 48 `inner_state` nodes (15 signals + 33 scalar fields)
+is the real total, but only 3 signals (8 nodes) have a retired producer —
+`self_state.v1`, `drive_state.v1`, `autonomy_state_v2` — not 25. Of the
+remaining 12 signals: 4 were ruled out with a specific documented reason
+(`mood_arc_corpus.v1`/`field_channel_corpus.v1` config-gated,
+`chat_stance_disposition` categorical, `biometrics_cluster.v1` a registry-
+flagged duplicate of `field_state.v1`), 2 were built (below), and 6 —
+`field_state.v1`, `field_attention_frame.v1`,
+`attention_broadcast_projection.v1`, `mood_arc_encoder.v1`,
+`phi_heuristic.valence`, `phi_intrinsic_reward.v1` — were never actually
+investigated in this pass, despite an earlier draft of this doc implying
+full coverage. Named explicitly here rather than left to look covered.
+
+Two had real backing data and a concrete case for building liveness now:
+
+- **`attention_self_model.v1`** — a real live consumer
+  (`orion-equilibrium-service`'s metacog gates), 19,426 rows, ~30s cadence.
+- **`l7_l11_ladder`** — initially dismissed for having "no cognition
+  consumer," which was a category error caught by a direct challenge ("why
+  you sweeping l7 l11 ladder under rug"): it carries a live *mutating* route
+  (`skills.runtime.builder_prune.v1`) that deletes host data, independent of
+  whether anything downstream reads it cognitively. Its own registry notes
+  already flag the `REHEARSAL` classification as stale given that route.
+
+**What got built:** `orion/metrics/liveness.py`. The classifier math is
+never reimplemented — every verdict still comes from the existing
+`channel_glossary.classify_channel_series()`, exactly as designed. Only the
+data source is new, and it's narrow by construction (two hardcoded cases, not
+a generic per-surface resolver):
+
+- `attention_self_model.v1`'s five scalar fields (`confidence`,
+  `prediction_error_confidence`, `field_overall_salience`,
+  `broadcast_lane_age_sec`, `heartbeat_mean_ratio`) are read straight off
+  `substrate_attention_self_model.self_model_json ->> '<field>'`, ordered by
+  `generated_at`, over a 1h window (~120 samples when healthy).
+- `l7_l11_ladder` has no shared scalar — it's a pipeline
+  (`ProposalFrameV1 -> ... -> ConsolidationV1`), not a signal — so it's
+  reframed as **throughput** liveness: rows-per-bucket across each of its 5
+  backing tables, fed into the same classifier. Bucket size is tuned per
+  table's real cadence (measured live 2026-08-19, not assumed): the four
+  ~2.1s-cadence stages use 1-hour windows / 1-minute buckets;
+  `substrate_consolidation_frames` (~96min cadence, confirmed live) uses a
+  48h window / 3h buckets — a 1h bucket would read ~0.6 rows/bucket on a
+  *healthy* table, false "dead" territory. The 5 per-stage verdicts roll up
+  to one via `_worst_of()`, which reuses `channel_glossary.CLEAN_VERDICTS`
+  rather than a hand-invented severity order — **a real bug this caught**:
+  an earlier draft ranked `quiet` above `live`, so 4 live stages + 1
+  expectedly-quiet slow stage rolled up to an overall `QUIET`, which reads as
+  a regression on every healthy tick. Fixed before merge; regression test
+  added (`test_worst_of_live_and_quiet_mix_is_live_not_quiet`).
+
+**Two review rounds found real issues, all fixed before merge** (full
+findings/fixes are in the PR description, not duplicated here). Round 1:
+`open_readonly_connection` had been reimplemented from scratch instead of
+importing the repo's existing `scripts/analysis/_pg_readonly.py` helper —
+moved to `orion/db_readonly.py` so both layers can share it without
+inverting `orion/` -> `scripts/` dependency direction; a query-time DB
+failure (not just a connect-time one) could crash the whole `--metric` CLI
+instead of degrading to UNKNOWN; `LIVE_VARIANCE_THRESHOLD` reused unmodified
+against row-count data trips `ratchet_suspect` on any ordinary busy burst,
+and — caught by a second round of live testing, not assumed fixed —
+normalizing the series to unit scale does NOT actually prevent that (a
+monotonic climb clears the threshold at any scale), so `ratchet_suspect` is
+now explicitly downgraded to `live` for throughput data, since that verdict's
+real meaning has no equivalent for pipeline throughput; and the ladder's
+`sample_count` was counting non-empty buckets (~1 per bucket) instead of real
+rows, understating true volume by ~28x for the fast stages.
+
+Round 2 (against the round-1 fixes) found the single most important issue in
+the whole patch, and it was in this design doc, not the code: a claim that a
+"48-URN systematic walk" was recorded in `2026-08-13-phase5-liveness-scope
+.md`'s R6 section did not check out — that section is about a different,
+unrelated question, and contains no such walk. Re-verified live 2026-08-20;
+see the corrected accounting a few paragraphs up. Also found: the JSON
+`--metric` output couldn't distinguish "DB unreachable" from "no source
+registered" without parsing free text (fixed with a `liveness_status`
+field); `connect_timeout` only bounded the connect phase, not a query
+hanging after connect (fixed with a session-level `statement_timeout`);
+`broadcast_lane_age_sec` — unlike its four `[0,1]`-bounded sibling scalar
+fields — shares the ladder's exact borrowed-threshold exposure and wasn't
+routed through the domain-safe classifier; `has_registered_source()` and
+`liveness_for_node()` independently duplicated the same routing
+conditionals, a silent-drift risk for a future third candidate (fixed with
+one shared `_resolve_source_kind()`); and `ScalarFieldSource`'s row cap
+could silently truncate a window with no visibility into it, unlike the
+existing sibling reader this pattern is modeled on (fixed with a
+`truncated` flag). One finding — `resolve_dsn()`'s env-var priority
+disagreeing with a cited-as-matching precedent — was fixed by correcting the
+docstring's claim rather than the code; the priority order itself
+(`POSTGRES_URI` first) was the right call, matching `.env_example`'s
+canonical key.
+
+Round 3 (against round 2's own fixes) caught a real regression *round 2
+itself introduced*: routing `broadcast_lane_age_sec` through the same
+ratchet-downgrading treatment built for the ladder's row counts. That
+reasoning doesn't transfer — the ladder's counts have no legitimate reason
+to decrease within a window, so a monotonic climb there is a pure
+domain-mismatch false positive. `broadcast_lane_age_sec` is different in
+kind: the schema's own `broadcast_lane_stale` sibling field exists because
+this age is *expected* to reset toward zero on every real broadcast-lane
+refresh (~30s cadence, dozens of resets/hour when healthy). A monotonic
+climb across the whole window means the lane never refreshed once — the
+exact stuck-lane failure this field exists to make legible — and
+downgrading that to `live` was a false-positive-healthy verdict strictly
+worse than the honest `NOT_COMPUTED` this field had before phase 5 shipped
+at all. Reverted: all five `attention_self_model.v1` scalar fields go
+through `classify_channel_series()` unmodified; the unbounded-domain
+treatment (`_classify_unbounded_series()`) stays scoped to the ladder's
+throughput only, where it belongs. Also fixed in round 3: the `truncated`
+flag's `len(rows) >= MAX_ROWS` could not distinguish "exactly MAX_ROWS
+matching rows" from "more than MAX_ROWS" since the fetch itself was capped
+at MAX_ROWS — now fetches one extra row to make the count unambiguous.
+Four more round-3 findings (redundant `has_registered_source` calls in the
+CLI wiring, the ladder's 5 sequential per-stage queries not being batched,
+`_worst_of()`'s severity-rank pattern echoing an unrelated existing one in
+`turn_effect_policy.py`, `ScalarFieldSource`/`ThroughputSource` not sharing
+a base dataclass for their 3 common fields) were judged low-severity —
+acknowledged, not fixed, consistent with the reviewer's own assessment.
+
+Wired into `check_metric_lineage.py --metric <name>` (and `--json`): a node
+with a registered source now prints a real verdict with its sample count and
+provenance string instead of the old blanket "NOT COMPUTED (phase 5)". A
+node without one still prints an honest "NOT COMPUTED — no live data source
+registered", never silently blank. A live-but-unreachable Postgres reports
+`UNKNOWN`, distinct from both — found while testing the failure path itself
+that `psycopg2.connect()` has no default timeout, so a genuinely
+unreachable (not merely refused) host would otherwise hang the whole CLI
+call; fixed with an explicit 5s `connect_timeout`.
+
+Connection contract mirrors this repo's existing precedent
+(`orion/substrate/felt_state_reader.py`,
+`scripts/analysis/measure_attention_self_model_confidence_baseline.py`):
+refuses a session that doesn't confirm `default_transaction_read_only = on`.
+Host default is `postgresql://postgres:postgres@localhost:55432/conjourney`
+(verified live 2026-08-19 — the docker-network hostnames those in-container
+readers use, `orion-athena-sql-db`/`orion-sql-db`, do not resolve from the
+host); `POSTGRES_URI`/`DATABASE_URL`/`ORION_SQL_URL` override, matching
+`scripts/print_recent_turn_effects.py`'s existing fallback chain.
+
+Verified live against real data, not just mocked in tests: `--metric
+confidence` returns `QUIET` for `attention_self_model.v1#confidence` (matches
+the ~0.04%-of-ticks branch-starvation finding already on record for that
+field) and `LIVE` for `broadcast_lane_age_sec`/`heartbeat_mean_ratio`;
+`--metric l7_l11_ladder` returns `LIVE` (4 stages live, consolidation quiet,
+correctly rolled up after the severity-order fix above).
+
+**Still deferred, and not attempted here:** every other surface (field
+channels already have their own live classifier; `organ_signal` and
+`bus_channel` have no liveness source registered at all), the 3 retired-
+producer signals and 4 ruled-out-with-reason signals named above, and the
+**6 signals never investigated in this pass** — `field_state.v1`,
+`field_attention_frame.v1`, `attention_broadcast_projection.v1`,
+`mood_arc_encoder.v1`, `phi_heuristic.valence`, `phi_intrinsic_reward.v1`.
+That last group is a real gap, not a decision — see the 2026-08-20
+correction above.
+
+### Commit-time enforcement gate (2026-08-20)
+
+Phase 3's edit-time nudge (`scripts/hooks/metric_lineage_nudge.py`) is
+informational only, by design — it fails open and never blocks. Real evidence
+that this is not sufficient on its own arrived the same day, from an
+unrelated agent session working item 5 of this same design doc: the
+graphify PreToolUse "MANDATORY" reminder fired on nearly every tool call for
+a whole session, and the agent acted on it exactly once (one `graphify
+query`, an unhelpful result) before falling back to `rg`/`Read` for the rest
+of the investigation and never revisiting `graphify explain`/`graphify path`.
+A reminder that fires constantly becomes noise an agent routes around,
+regardless of how it's worded.
+
+`scripts/check_metric_dead_wiring.py`, wired as Gate 4 in
+`scripts/git_hooks/pre-commit`, does not depend on an agent noticing,
+retrying, or reading a hint. It diffs `git diff --cached`, and if a **new**
+(`+`) line in a non-test file names one of the handful of tokens that
+currently have a registered phase-5 liveness source
+(`orion.metrics.liveness.has_registered_source()`, read live off
+`build_graph()` rather than hand-duplicated), it re-checks that metric's
+liveness against real Postgres right then and **blocks the commit** if the
+verdict isn't clean (`dead` / `never_produced` / `ratchet_suspect` — reusing
+`channel_glossary.CLEAN_VERDICTS`, not a hand-picked subset). Fails open on
+anything it doesn't understand: DB unreachable, no token match (the common
+case — near-zero cost, no DB connection opened), any internal error. Escape
+hatch: `ORION_ALLOW_DEAD_METRIC_WIRE=1`, same convention as this repo's other
+gates. 29 tests in `scripts/test_check_metric_dead_wiring.py`; also
+live-verified end-to-end against real Postgres (token detection, connection
+open/close, block message, escape hatch, and the DB-unreachable fail-open
+path — only the liveness verdict itself was mocked, to force the dead-path
+deterministically without corrupting live data).
+
+**Round 1 review** (before this gate's very first commit) found and fixed:
+raw-text token matching replaced with `orion.metrics.consumers._MetricVisitor`
+(the same AST classifier `scan_repo()` already uses) after review flagged
+that a bare-word regex match on `confidence` — a common attribute name —
+would false-positive on comments, log strings, and docstrings once that
+metric ever actually went unclean; `conn.close()` could itself raise and
+escape uncaught; `--diff-filter=ACM` silently skipped a file that was both
+renamed and modified in the same commit (fixed to `ACMR`, live-verified with
+`git mv`); `--json` printed nothing at all on every early-return path
+instead of valid JSON; two independent hand-copies of the pydantic/psycopg2
+interpreter-fallback chain (one pre-existing in the orion-env-settings-gate,
+one new here) were factored into one shared shell function so a future fix
+can't apply to only one of them.
+
+While live-testing round 1's fixes (not from review — caught by actually
+running the real `sh` hook, not just the Python driver, per the general
+"a crashed check must never block an unrelated commit" contract this whole
+gate exists to uphold), a nested `"""..."""` inside this module's own
+docstring turned out to break the file's parse entirely, and the shell
+wrapper treats any nonzero/crash exit as "the gate found something" — so a
+syntax error in the gate's OWN code was silently blocking every unrelated
+commit. Fixed by removing the nested quoting.
+
+**Round 2 review** found the AST switch from round 1 had accepted every
+`_MetricVisitor` hit kind, including `KIND_LITERAL` (any bare string
+constant) and the `WRITE_KINDS` group (`x["metric"] = ...`,
+`Model(metric=0.5)`, `F(channel="metric")`) — the latter is how you'd
+actually *revive* a dead metric, so blocking on it was backwards, not
+protective; fixed by filtering to
+`orion.metrics.consumers.HIGH_CONFIDENCE_KINDS`, matching this module's own
+docstring claim about what it detects. The hand-rolled `_is_test_path()`
+regex disagreed with `orion.metrics.consumers._is_test_path()` (already
+imported into the same module) on `*_test.py`-suffixed files — removed in
+favor of importing the one `scan_repo()` itself uses. A live drive of the
+real hook also found `build_graph()`'s pydantic import ran on every commit
+with anything staged at all, not just ones touching Python files — fixed
+with a cheap `.py`-file pre-check before the import. And the graph-node/
+token-detection stretch of `main()` had no blanket exception guard (only
+individual known failure points did) — fixed with one wrapping try/except.
+
+**Round 3 review** found the *listing* of staged files itself
+(`_staged_files()`) was still unguarded in `main()` — the one call site the
+round-2 exception wrap didn't reach — fixed the same way. `git rev-parse
+--show-toplevel` was being recomputed up to 5 times per commit across the
+three gates and the shared interpreter-resolver function for the identical
+value; consolidated to one shared variable, computed once. And matching is
+still by bare string value with no type/schema awareness — a genuinely
+unrelated `result.confidence` on some other object still matches — left
+explicitly acknowledged rather than fixed: real type-aware resolution is a
+much larger feature (proper static type inference) than a lightweight
+commit gate should attempt, and the failure direction is the safe one (an
+unnecessary DB round-trip or a wrong block, trivially overridden with the
+escape hatch — never a missed real one).
+
+Three findings across all rounds were judged lower-priority and accepted
+rather than fixed, matching this document's own precedent for the
+underlying liveness module's round-3 review: the
+`ORION_ALLOW_DEAD_METRIC_WIRE=1` escape hatch is all-or-nothing per commit
+rather than scoped to the specific token that triggered it (every other
+gate in this repo's `pre-commit` has the same all-or-nothing shape, so
+scoping just this one would be an inconsistency, not an improvement);
+`build_graph()`'s ~1s cost is not cached per-commit (a correctness-safe
+caching layer would need to track exactly which registry files
+`_resolve_source_kind()` depends on, and is real scope beyond this patch);
+and `find_new_token_references()` spawns 2 git subprocesses per staged
+non-test `.py` file rather than one batched pass (harmless at this repo's
+normal commit size, real only for a mass-rename-style commit).
+
+Deliberately narrow, matching phase 5's own scoping: only the 5
+`attention_self_model.v1` scalar fields and `l7_l11_ladder` can ever trigger
+this today — every other metric name is silently ignored, honestly, not
+asserted clean. Generalizing to all registered metrics is blocked on the same
+"where does the live sample come from" question phase 5 itself deferred.
+
+**Requires an operator action to activate**, not automatic on merge: hooks
+live in git's shared common dir across every worktree of this repo, and only
+get refreshed to a checked-out branch's content when
+`scripts/install_git_safety_hooks.sh .` is re-run. Until that happens after
+this merges, the gate exists in the repo but isn't live for any worktree's
+commits yet.
 
 ### Decisions taken (2026-08-12)
 

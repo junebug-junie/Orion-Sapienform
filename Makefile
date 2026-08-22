@@ -1,4 +1,4 @@
-.PHONY: test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees
+.PHONY: check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet
 
 SERVICE ?=
 ARGS ?=
@@ -61,6 +61,31 @@ check-inner-state-registry:
 #   make check-metric-lineage METRIC=cpu_pressure  # one lineage card
 check-metric-lineage:
 	@$(METRIC_PYTHON) scripts/check_metric_lineage.py $(if $(METRIC),--metric $(METRIC),) $(if $(JSON),--json,)
+
+# Phase 3: edit-time PreToolUse nudge (scripts/hooks/metric_lineage_nudge.py,
+# registered in .claude/settings.json). It reads .cache/metric_lineage.json
+# rather than recomputing the ~13-14s repo scan on every Edit/Write -- this
+# target builds that cache by hand. Gitignored (.cache/), not committed. The
+# hook also self-refreshes it in the background (detached, non-blocking) the
+# first time it's missing or once it's over an hour old, so this target is
+# for forcing a fresh one immediately, not a hard prerequisite.
+check-metric-lineage-cache-refresh:
+	@$(METRIC_PYTHON) scripts/refresh_metric_lineage_cache.py
+
+# The two reports that answer "is this metric safe to retire?" -- the question
+# the blast radius alone gets wrong in both directions.
+#
+#   make check-metric-generic-consumers   # who reads whole vectors, unnamed
+#   make check-metric-unwritten           # declared, with no discovered writer
+#
+# Given their own targets rather than left as CLI flags: the blast-radius
+# surface they correct is the one people actually run, and a flag nobody knows
+# about corrects nothing.
+check-metric-generic-consumers:
+	@$(METRIC_PYTHON) scripts/check_metric_lineage.py --generic-consumers
+
+check-metric-unwritten:
+	@$(METRIC_PYTHON) scripts/check_metric_lineage.py --unwritten
 
 # Phase 4 CI gate over the same layer. Three checks, all provable from repo
 # state -- no naming heuristics:
@@ -158,6 +183,23 @@ check-merge-domination:
 # migration, or the job is crashing. Requires POSTGRES_URI.
 check-concept-relation-digest-liveness:
 	@python scripts/check_concept_relation_digest_liveness.py $(if $(MAX_AGE_HOURS),--max-age-hours $(MAX_AGE_HOURS),)
+
+# Labels attention_salience_trace loops that were scored, never explicitly
+# closed by a human (Resolve/Dismiss in the Hub), and then stopped being
+# re-scored -- writes attention_loop_outcome verdict=decayed_unattended and
+# suppresses the theme out of the Hub's pending-attention panel (never out of
+# live reverie selection -- see the script's own docstring). This is the actual
+# cron entry point; run on a schedule via host crontab, same as
+# concept-relation-digest. Requires POSTGRES_URI.
+attention-loop-decay-digest:
+	@python scripts/attention_loop_decay_digest.py $(if $(DRY_RUN),--dry-run,)
+
+# Fail-safe for the above: fails if the most-overdue decay-eligible loop
+# exceeds its own min-silence threshold by more than --max-overshoot-hours
+# (default 3h), which only happens if the digest cron entry died, was dropped
+# after a host migration, or the job is crashing. Requires POSTGRES_URI.
+check-attention-loop-decay-liveness:
+	@python scripts/check_attention_loop_decay_liveness.py $(if $(MAX_OVERSHOOT_HOURS),--max-overshoot-hours $(MAX_OVERSHOOT_HOURS),)
 
 # Diffs a service's .env_example keys against its docker-compose.yml environment:
 # list. A missing key is a working accident today only if the service's Dockerfile
@@ -269,3 +311,67 @@ worktree-status-stale:
 # scripts/prune_merged_worktrees.py.
 prune-merged-worktrees:
 	@python3 scripts/prune_merged_worktrees.py $(if $(YES),--yes,) $(if $(BASE),--base $(BASE),)
+
+# Field tension report -- admission rate, rank discrimination, channel liveness,
+# and producer liveness over real substrate_field_state history. Read-only:
+# opens a read-only Postgres session, writes nothing, publishes nothing.
+#
+#   make field-tension-report                      # last 24h, human-readable
+#   make field-tension-report HOURS=72             # wider window
+#   make field-tension-report Z=3.5                # tighter admission threshold
+#   make field-tension-report JSON=1               # machine-readable
+#   make field-tension-report LIMIT=10000          # newest N ticks only (fast)
+#
+# POSTGRES_URI defaults to the in-container host; from the host machine pass:
+#   POSTGRES_URI=postgresql://postgres:postgres@localhost:55432/conjourney
+#
+# See orion/attention/tension/README.md for what each number means.
+field-tension-report:
+	@$(METRIC_PYTHON) scripts/analysis/measure_field_tension_admission.py \
+		$(if $(HOURS),--hours $(HOURS),) \
+		$(if $(LIMIT),--limit $(LIMIT),) \
+		$(if $(Z),--z-threshold $(Z),) \
+		$(if $(ALPHA),--alpha $(ALPHA),) \
+		$(if $(JSON),--json,)
+
+# Layer 5 attention input starvation -- is attention choosing between competing
+# inputs, or idling for lack of any? Read-only. Companion to
+# field-tension-report; the two rates are NOT directly comparable (different
+# table, cadence, and kind of event -- the script says so in its own output).
+#
+#   make attention-starvation-report            # last 72h
+#   make attention-starvation-report HOURS=24
+#   make attention-starvation-report JSON=1
+attention-starvation-report:
+	@$(METRIC_PYTHON) scripts/analysis/measure_attention_input_starvation.py \
+		$(if $(HOURS),--hours $(HOURS),) \
+		$(if $(JSON),--json,)
+
+# Attention-loop outcome coverage -- the label half of the salience refit's
+# input/label join, and the outcome measure the drives program never had.
+# Read-only by default; --emit writes derived implicit labels (snapshots first,
+# never overwrites a human verdict, idempotent).
+#
+#   make attention-outcome-coverage             # coverage + derivable labels
+#   make attention-outcome-coverage SWEEP=1     # horizon sensitivity
+#   make attention-outcome-coverage JSON=1
+attention-outcome-coverage:
+	@$(METRIC_PYTHON) scripts/analysis/measure_attention_outcome_coverage.py \
+		$(if $(SWEEP),--sweep,) \
+		$(if $(HOURS),--min-silence-hours $(HOURS),) \
+		$(if $(JSON),--json,)
+
+# Which hand-applied SQL migrations actually reached the live database?
+#
+# services/orion-sql-db/*.sql is applied BY HAND. There is no migration table, no version
+# stamp, and no ordering guarantee, so a migration that was written, reviewed, merged and
+# never applied looks identical in git to one that is live.
+#
+# Needs a reachable Postgres, so this is an operator/agent command rather than a CI gate.
+# Exit 1 = drift found; exit 2 = could not connect (deliberately distinct, so an infra
+# failure cannot be mistaken for a pass).
+check-sql-migrations-applied:
+	python3 scripts/check_sql_migrations_applied.py
+
+check-sql-migrations-applied-quiet:
+	python3 scripts/check_sql_migrations_applied.py --quiet

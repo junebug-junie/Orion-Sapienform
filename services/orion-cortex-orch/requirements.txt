@@ -1,6 +1,9 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-redis>=5.0.4
+# Pinned (not >=): redis-py 8.x dropped redis.commands.graph, which
+# orion.substrate.falkor_store needs for the concept_induction_pass
+# `substrate` backend. Matches services/orion-hub's pin (same FalkorDB graph).
+redis[hiredis]==5.2.1
 pydantic>=2.7.0
 pydantic-settings>=2.2.1
 orjson>=3.10.0

@@ -23,10 +23,30 @@ runtime:
     max_queue: 200
     pick_gpu_metric: free_vram_mb         # free_vram_mb | free_fraction
 
+  # These MUST stay in sync with services/orion-vision-host/.env_example's
+  # VISION_VRAM_{RESERVE,SOFT_FLOOR,HARD_FLOOR}_MB -- the env keys are what
+  # scheduler.py actually enforces (app/main.py:64); this block is read by
+  # nothing and exists only as documentation. Gated by
+  # services/orion-vision-host/tests/test_vram_budget_matches_env_example.py.
+  #
+  # The old values here (3500/2200/1400) took orion-vision-host down for ~21h on
+  # 2026-08-20/21. THE CONFIG DID NOT DRIFT -- THE HARDWARE MOVED. Those were the
+  # originals from the first vision-host commit (626c103ee), written when athena
+  # carried a P100 16GB, and correct there: ~13.1GB free warm - 3500 = ~9.6GB,
+  # far above the 1400 floor. The P100 later moved to circe and athena kept a
+  # Tesla P4 (7.68GB). Nobody re-derived the budget. gpu.py computes
+  # `effective_free = free_mb - reserve_mb` and refuses below hard_floor, so on
+  # the P4 with ~3.2GB warm resident (4191 - 3500 = 691 < 1400) the scheduler
+  # could never pick the GPU again once models loaded. Every task failed
+  # `gpu_hard_floor`, the container stayed `Up` and healthy, and Orion went blind.
+  #
+  # So: this budget is a function of THE CARD, not of the service. Re-derive it
+  # whenever a GPU moves between nodes, and check against the RESIDENT footprint,
+  # never against total VRAM. The test above reads real hardware for this reason.
   vram_budget:
-    reserve_mb: 3500                      # keep this much free for cohabiting llama-cpp spikes
-    soft_floor_mb: 2200                   # degrade when free below this
-    hard_floor_mb: 1400                   # refuse heavy tasks when free below this
+    reserve_mb: 1200                      # headroom kept free for cohabiting spikes
+    soft_floor_mb: 1000                   # degrade when free below this
+    hard_floor_mb: 800                    # refuse heavy tasks when free below this
 
   # -----------------------------------------------------------------
   # NOT ENFORCED by services/orion-vision-host today (documentation-only).
@@ -314,9 +334,16 @@ profiles:
       store_as: reference              # reference|inline
       collection: vision_embeddings
     outputs:
+      # Documentation-only -- app/runner.py never reads this `outputs:` block
+      # (confirmed: zero references to include_ref/include_vector/etc.
+      # anywhere in runner.py; every profile's runner method returns a fixed
+      # shape regardless of what's declared here). Kept accurate anyway:
+      # 2026-08-19 (P2 wire-contract patch, orion/schemas/vision.py's
+      # VisionEmbedding.vector) -- _run_embedding_siglip now always inlines
+      # the vector, so include_vector: false was stale as of that patch.
       embedding:
         include_ref: true
-        include_vector: false
+        include_vector: true
 
   - name: vlm_caption
     enabled: true
@@ -344,12 +371,30 @@ profiles:
         include_rationale: false
 
   - name: vlm_vqa
-    enabled: false
+    # Enabled 2026-08-20 (runner.py's kind=vlm execution shipped the same
+    # day -- was "contract-only, kind not implemented yet" before that).
+    # "Enable later once VRAM coexistence is proven" was this profile's own
+    # original gate; checked live before flipping, not assumed: the P4
+    # serving orion-vision-host had ~4.2GB free (3.49GB/7.68GB used) at the
+    # time, comfortable headroom for a second REPLACE_ME-resolved (BLIP-
+    # class, small) VLM instance alongside the already-warm vlm_caption one.
+    # The `vram_estimate_mb: 5200`/`gpu_class: heavy` below describe the
+    # eventual dedicated-VQA-model target (a real Qwen2-VL/LLaVA-class
+    # model per model_id's own REPLACE_ME), not what actually loads today --
+    # same REPLACE_ME -> VISION_VLM_MODEL_ID fallback vlm_caption uses, so
+    # this loads the same small captioning-class model for now, prompted
+    # differently. Revisit this cost estimate together with model_id once a
+    # dedicated VQA model is actually wired in.
+    enabled: true
     warm_on_start: false
     kind: vlm
     backend: transformers
     description: >
-      Visual Q&A. Expensive. Enable later once VRAM coexistence is proven.
+      Visual Q&A -- a caller-supplied question against the current frame,
+      not a fixed caption. Lazy-loads its own model instance on first real
+      request (warm_on_start left false deliberately: rare, event-driven,
+      not part of the always-on passive pipeline -- see the design doc's
+      Foveal tier).
     model_id: "REPLACE_ME/qwen2-vl_or_llava_next"
     device: auto
     dtype: auto

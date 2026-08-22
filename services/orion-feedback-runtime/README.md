@@ -43,6 +43,10 @@ Bring up with root `.env` so `ORION_BUS_URL` matches the live stack:
 docker compose --env-file ../../.env --env-file .env -f docker-compose.yml up -d --build
 ```
 
+The last one adds the `*_pending` marker this service's work lookup depends on. Skip it and
+every tick raises `UndefinedColumn`, which the poll loop swallows -- `/health` stays green and
+nothing is produced. That file ends with a VERIFY block; run it and read it.
+
 ## Migration
 
 ```bash
@@ -50,6 +54,10 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_feedback_frame_v1.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_feedback_frame_v2_drop_self_state.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_substrate_frames_created_at_index.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_substrate_pending_markers.sql
 ```
 
 ## Run

@@ -12,6 +12,11 @@ class ChatResponseFeedbackSQL(Base):
     target_turn_id = Column(String, index=True, nullable=True)
     target_message_id = Column(String, index=True, nullable=True)
     target_correlation_id = Column(String, index=True, nullable=True)
+    # 2026-08-21: the first non-chat target. An Orion-produced artifact --
+    # journal entry, report, vision description, pull request -- carrying the
+    # dispatch_id of the action that made it, so a human rating can be scored
+    # back onto that action.
+    target_artifact_ref = Column(String, index=True, nullable=True)
     target_key = Column(String, index=True, nullable=True)
     session_id = Column(String, index=True, nullable=True)
     user_id = Column(String, index=True, nullable=True)

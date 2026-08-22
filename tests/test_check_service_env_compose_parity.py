@@ -70,6 +70,37 @@ def test_compose_env_keys_matches_mapping_form():
         path.unlink()
 
 
+def test_compose_env_keys_catches_differently_named_interpolation_in_environment():
+    """2026-08-21 regression: a value in `environment:` can interpolate a
+    .env_example key with a DIFFERENT name than the container-side key it's
+    assigned to -- e.g. orion-self-study-enrichment's
+    `CLAUDE_CONFIG_DIR=${SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR:-/root/.claude}`.
+    Before this fix, `_interpolated_keys` was called with
+    `skip_key="environment"`, which skipped this case entirely (only the
+    left-hand key name "CLAUDE_CONFIG_DIR" was ever counted), producing a
+    false "missing key" for SELF_STUDY_ENRICHMENT_CLAUDE_CONFIG_DIR the
+    moment that service's last non-environment interpolation of the same
+    var was removed (the credentials.json bind mount, retired the same
+    day). This test locks in the fixed behavior directly, independent of
+    that service's own compose file changing further."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        f.write(
+            "services:\n"
+            "  fake:\n"
+            "    environment:\n"
+            "      - CONTAINER_SIDE_NAME=${DIFFERENTLY_NAMED_EXAMPLE_KEY:-/root/.claude}\n"
+        )
+        path = Path(f.name)
+    try:
+        keys, has_env_file = parity._read_compose_env_keys(path, "orion-fake")
+        assert keys == {"CONTAINER_SIDE_NAME", "DIFFERENTLY_NAMED_EXAMPLE_KEY"}
+        assert has_env_file is False
+    finally:
+        path.unlink()
+
+
 def test_compose_env_file_directive_detected_inline():
     import tempfile
 

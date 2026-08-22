@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 from orion.bus.ewma import compute_ewma_update
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
@@ -64,6 +64,27 @@ _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
 # saturation) -- not re-tuned per this domain's future drift, so revisit if
 # execution's real delta scale ever shifts by orders of magnitude.
 _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
+
+# 2026-08-19: same fix, same reasoning, for chat_prediction_error -- found via a
+# live self-model audit (predicted_shift's per-domain argmax, see that function's
+# own docstring in attention_self_model.py): chat had won 0/19,426 ticks over a
+# real 7-day window despite having genuine, non-flat prediction-error deltas. Root
+# cause confirmed live: chat_prediction_error still used the module's fixed
+# `_THRESHOLD = 0.30` divisor -- the exact defect execution_prediction_error was
+# fixed for on 2026-07-28 -- and this instrument's own prior docstring already
+# grouped "execution/chat/route" together as reading near-zero for that reason.
+# Derived chat's real raw-delta scale from live `prediction_error_by_domain.chat`
+# (already-scaled output, nowhere near the 1.0 saturation ceiling so
+# raw = output * 0.30 recovers it exactly): 19,425 real ticks, stddev 0.0024 ->
+# derived raw-delta stddev ~7.24e-4, derived raw variance ~5.24e-7. One order of
+# magnitude below that (same convention as _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE
+# above) is ~5.2e-8; using the round 5e-8 same as that convention's precedent.
+# Same alpha/saturation as execution -- no domain-specific reason found yet to
+# diverge from that already-established real-observation-cadence alpha and the
+# z>=3.0 "anomalous" convention shared by every other z-score domain in this module.
+_CHAT_PREDICTION_ERROR_EWMA_ALPHA = 0.2
+_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
+_CHAT_PREDICTION_ERROR_MIN_VARIANCE = 5e-8
 
 
 # 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 contract
@@ -138,6 +159,45 @@ class _DomainEwmaBaseline:
     n: int = 0
 
 
+def _domain_ewma_baseline_to_json_dict(baseline: _DomainEwmaBaseline) -> dict:
+    return {"ewma": baseline.ewma, "variance": baseline.variance, "n": baseline.n}
+
+
+def _domain_ewma_baseline_from_json_dict(data: Any) -> _DomainEwmaBaseline:
+    """Tolerant parse of one ``_DomainEwmaBaseline``-shaped dict -- missing
+    keys or a missing/non-dict ``data`` default to a cold baseline (no
+    history yet is a real, honest state, not an error); a malformed
+    individual value (e.g. a string where a float belongs) defaults just
+    that field rather than discarding the whole baseline, mirroring every
+    other tolerant-parsing convention in this module.
+
+    Shared by every caller that persists a ``_DomainEwmaBaseline`` inside a
+    larger JSONB blob (review finding, 2026-08-19: ``CodebaseMassBaseline``
+    and ``PerceptionEmbeddingBaseline`` had each hand-rolled their own
+    version of this same parse -- this used to be ``CodebaseMassBaseline.
+    from_json_dict``'s inline ``_sub()`` closure, extracted here once a
+    second caller needed the identical shape. Also closes a real gap in
+    that original version: ``_sub()`` called ``float()``/``int()`` directly
+    with no per-field try/except, so a malformed value (not just a missing
+    key) would raise instead of degrading gracefully -- untested and
+    unnoticed until this extraction).
+    """
+    raw = data if isinstance(data, dict) else {}
+    try:
+        ewma = float(raw.get("ewma", 0.0))
+    except (TypeError, ValueError):
+        ewma = 0.0
+    try:
+        variance = float(raw.get("variance", 0.0))
+    except (TypeError, ValueError):
+        variance = 0.0
+    try:
+        n = int(raw.get("n", 0))
+    except (TypeError, ValueError):
+        n = 0
+    return _DomainEwmaBaseline(ewma=ewma, variance=variance, n=max(0, n))
+
+
 @dataclass(frozen=True)
 class CodebaseMassBaseline:
     """EWMA baseline state for ``codebase_prediction_error``, threaded explicitly by
@@ -161,22 +221,19 @@ class CodebaseMassBaseline:
         ``orion/structural_mass/snapshot_history.py::GraphSnapshotStats`` already
         uses, not a new pattern invented here."""
         return {
-            "git": {"ewma": self.git.ewma, "variance": self.git.variance, "n": self.git.n},
-            "pr": {"ewma": self.pr.ewma, "variance": self.pr.variance, "n": self.pr.n},
-            "graph": {"ewma": self.graph.ewma, "variance": self.graph.variance, "n": self.graph.n},
+            "git": _domain_ewma_baseline_to_json_dict(self.git),
+            "pr": _domain_ewma_baseline_to_json_dict(self.pr),
+            "graph": _domain_ewma_baseline_to_json_dict(self.graph),
         }
 
     @classmethod
     def from_json_dict(cls, data: dict) -> "CodebaseMassBaseline":
-        def _sub(key: str) -> _DomainEwmaBaseline:
-            raw = data.get(key) or {}
-            return _DomainEwmaBaseline(
-                ewma=float(raw.get("ewma", 0.0)),
-                variance=float(raw.get("variance", 0.0)),
-                n=int(raw.get("n", 0)),
-            )
-
-        return cls(git=_sub("git"), pr=_sub("pr"), graph=_sub("graph"))
+        data = data if isinstance(data, dict) else {}
+        return cls(
+            git=_domain_ewma_baseline_from_json_dict(data.get("git")),
+            pr=_domain_ewma_baseline_from_json_dict(data.get("pr")),
+            graph=_domain_ewma_baseline_from_json_dict(data.get("graph")),
+        )
 
 
 @dataclass(frozen=True)
@@ -189,12 +246,25 @@ def _domain_zscore(
     magnitude: float | None,
     baseline: _DomainEwmaBaseline,
     *,
+    alpha: float,
     min_variance: float,
 ) -> tuple[float | None, _DomainEwmaBaseline]:
     """One sub-domain's EWMA update: absent magnitude (this tick carried no real
     delta for this domain) leaves the baseline untouched and contributes no
     z-score -- not a 0.0 "calm" reading, an honest "no observation this tick"
-    (this repo's "no empty-shell cognition" rule, applied per sub-domain)."""
+    (this repo's "no empty-shell cognition" rule, applied per sub-domain).
+
+    ``alpha`` is caller-supplied, not hardcoded to any one domain's constant
+    (review finding, 2026-08-19, while wiring this same helper into
+    ``perception_prediction_error``'s z-score migration below: this
+    function used to hardcode ``_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA``
+    directly, which happened to numerically match every other domain's
+    alpha=0.2 convention so far, but silently coupled every future caller
+    to codebase's own constant specifically -- a caller wanting or needing
+    a different alpha would have silently gotten codebase's instead, with
+    nothing to signal it). ``codebase_prediction_error`` below now passes
+    its own constant explicitly; behavior for that domain is unchanged.
+    """
     if magnitude is None:
         return None, baseline
     update = compute_ewma_update(
@@ -202,7 +272,7 @@ def _domain_zscore(
         prev_variance=baseline.variance,
         prev_count=baseline.n,
         value=magnitude,
-        alpha=_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA,
+        alpha=alpha,
         min_variance=min_variance,
     )
     new_baseline = _DomainEwmaBaseline(
@@ -271,9 +341,15 @@ def codebase_prediction_error(
         else float(abs(graph_delta.node_count_delta) + abs(graph_delta.edge_count_delta))
     )
 
-    git_zscore, new_git = _domain_zscore(git_magnitude, baseline.git, min_variance=_GIT_MIN_VARIANCE)
-    pr_zscore, new_pr = _domain_zscore(pr_magnitude, baseline.pr, min_variance=_PR_MIN_VARIANCE)
-    graph_zscore, new_graph = _domain_zscore(graph_magnitude, baseline.graph, min_variance=_GRAPH_MIN_VARIANCE)
+    git_zscore, new_git = _domain_zscore(
+        git_magnitude, baseline.git, alpha=_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA, min_variance=_GIT_MIN_VARIANCE
+    )
+    pr_zscore, new_pr = _domain_zscore(
+        pr_magnitude, baseline.pr, alpha=_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA, min_variance=_PR_MIN_VARIANCE
+    )
+    graph_zscore, new_graph = _domain_zscore(
+        graph_magnitude, baseline.graph, alpha=_CODEBASE_PREDICTION_ERROR_EWMA_ALPHA, min_variance=_GRAPH_MIN_VARIANCE
+    )
 
     new_baseline = CodebaseMassBaseline(git=new_git, pr=new_pr, graph=new_graph)
     zscores = [z for z in (git_zscore, pr_zscore, graph_zscore) if z is not None]
@@ -296,6 +372,53 @@ def _latest_run(runs) -> Any:
         if best is None or run.last_updated_at > best.last_updated_at:
             best = run
     return best
+
+
+def _score_and_update_ewma_prediction_error(
+    prev: Any,
+    curr: Any,
+    *,
+    raw_mean_delta: float,
+    alpha: float,
+    min_variance: float,
+    zscore_saturation: float,
+) -> float:
+    """Shared EWMA-baseline scoring + update, factored out 2026-08-19 (code
+    review, rule-of-three): `execution_prediction_error`'s 2026-07-28 fix and
+    `chat_prediction_error`'s 2026-08-19 fix had each independently hand-copied
+    this exact "score this tick's raw delta as a z-score against a live EWMA
+    baseline, then update that baseline" sequence, with no shared helper.
+    `biometrics_prediction_error` still uses the old fixed-`_THRESHOLD` divisor
+    and is the next domain that would need this same migration -- not done
+    here, out of scope for this patch (see that function's docstring: its
+    real dynamic range doesn't show the same near-zero-forever symptom chat
+    and execution did, so it wasn't independently confirmed broken).
+
+    `prev`/`curr` are duck-typed: any object exposing
+    `prediction_error_baseline_ewma`/`_var`/`_n` float/int attributes (every
+    projection using this pattern shares those exact field names -- see
+    `ExecutionTrajectoryProjectionV1`/`ChatSessionProjectionV1`'s matching
+    docstrings). Mutates `curr`'s three baseline fields in place -- same
+    contract every caller of this pattern already had before this extraction;
+    **callers remain responsible for persisting `curr` afterward** (this
+    function has no I/O of its own, matching this whole module's "pure
+    function" design) -- see each tick's own `worker.py` wiring for the
+    corresponding save call.
+    """
+    update = compute_ewma_update(
+        prev_ewma=prev.prediction_error_baseline_ewma,
+        prev_variance=prev.prediction_error_baseline_ewma_var,
+        prev_count=prev.prediction_error_baseline_ewma_n,
+        value=raw_mean_delta,
+        alpha=alpha,
+        min_variance=min_variance,
+    )
+    curr.prediction_error_baseline_ewma = update.ewma
+    curr.prediction_error_baseline_ewma_var = update.variance
+    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
+    if update.zscore is None:
+        return 0.0
+    return min(1.0, max(0.0, update.zscore) / zscore_saturation)
 
 
 def execution_prediction_error(
@@ -377,21 +500,14 @@ def execution_prediction_error(
     if not deltas:
         return 0.0
 
-    raw_mean_delta = _mean(deltas)
-    update = compute_ewma_update(
-        prev_ewma=prev.prediction_error_baseline_ewma,
-        prev_variance=prev.prediction_error_baseline_ewma_var,
-        prev_count=prev.prediction_error_baseline_ewma_n,
-        value=raw_mean_delta,
+    return _score_and_update_ewma_prediction_error(
+        prev,
+        curr,
+        raw_mean_delta=_mean(deltas),
         alpha=_EXECUTION_PREDICTION_ERROR_EWMA_ALPHA,
         min_variance=_EXECUTION_PREDICTION_ERROR_MIN_VARIANCE,
+        zscore_saturation=_EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION,
     )
-    curr.prediction_error_baseline_ewma = update.ewma
-    curr.prediction_error_baseline_ewma_var = update.variance
-    curr.prediction_error_baseline_ewma_n = prev.prediction_error_baseline_ewma_n + 1
-    if update.zscore is None:
-        return 0.0
-    return min(1.0, max(0.0, update.zscore) / _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION)
 
 
 # transport_prediction_error() DELETED 2026-07-31.
@@ -510,6 +626,22 @@ def chat_prediction_error(
     to avoid, just one layer down. If this weighting becomes a real problem in practice
     (verified against live data, not asserted), the fix is upstream in
     ``compute_chat_pressure_hints()`` itself, not a silent key-drop here.
+
+    **2026-08-19 baseline fix, same disease and same fix as
+    ``execution_prediction_error``.** Live-confirmed via a real self-model audit:
+    ``predicted_shift``'s per-domain argmax (`attention_self_model.py`) had never
+    once named ``chat`` across 19,426 real ticks over a 7-day window, despite chat
+    having genuine, non-flat deltas -- this function's own fixed ``_THRESHOLD =
+    0.30`` divisor (the exact defect fixed for execution on 2026-07-28) scaled
+    them down to a range execution/biometrics/bus_synaptic's much larger real
+    deltas could never lose to. Fixed the same way: track this domain's own EWMA
+    mean/variance of the raw per-tick ``_mean(deltas)`` (persisted on the
+    projection -- ``prediction_error_baseline_ewma``/``_var``/``_n``, see
+    ``ChatSessionProjectionV1``'s docstring) and score this tick's raw delta as a
+    z-score against that live baseline instead of the fixed divisor. See
+    ``_CHAT_PREDICTION_ERROR_MIN_VARIANCE``'s own comment for the live-data
+    derivation behind its value. Returns 0.0 on the first tick with any real
+    deltas, same reasoning as execution's identical cold-start case.
     """
     deltas: list[float] = []
     prev_fallback = _latest_run(prev.turns)
@@ -525,7 +657,17 @@ def chat_prediction_error(
             pv = prev_hints.get(key, 0.0)
             cv = curr_hints.get(key, 0.0)
             deltas.append(abs(cv - pv))
-    return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
+    if not deltas:
+        return 0.0
+
+    return _score_and_update_ewma_prediction_error(
+        prev,
+        curr,
+        raw_mean_delta=_mean(deltas),
+        alpha=_CHAT_PREDICTION_ERROR_EWMA_ALPHA,
+        min_variance=_CHAT_PREDICTION_ERROR_MIN_VARIANCE,
+        zscore_saturation=_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION,
+    )
 
 
 def route_prediction_error(
@@ -813,3 +955,444 @@ def perceptual_blindness_pressure(
     if len(object_counts) < min_samples:
         return 0.0
     return 1.0 if perceptual_yield(object_counts) <= 0.0 else 0.0
+
+
+# ---------------------------------------------------------------------------
+# node:substrate.perception -- P2, perceptual prediction error
+#
+# 2026-08-19 (docs/superpowers/specs/2026-08-12-perception-frontier-design.md,
+# "P2 -- Perceptual prediction error"). Proposal-mode record (CLAUDE.md
+# section 0A -- memory/identity/cognition-loop changes need it): this patch
+# was authored in the same design-conversation-then-explicit-go-ahead pattern
+# as commit ac633a411 and the Movement III PR, not a separate proposal doc.
+#
+# **Theory anchor** (metric quality gate step 3): predictive-coding / free-
+# energy-style surprise -- deviation of a new observation from a running
+# expectation of "what this stream normally looks like". This is the same
+# family the design doc's own Thesis/Movement sections cite, not a
+# post-hoc label; `bus_synaptic_prediction_error` and every domain above use
+# the identical shape (an EWMA baseline, a real-time deviation from it), just
+# over a scalar rather than a vector.
+#
+# **Independence** (metric quality gate step 2, checked explicitly against
+# every existing perceptual signal, not assumed): distinct causal chain from
+# each of the other three signals a naive reader might conflate this with.
+#   - `node:substrate.vision`'s `perception_staleness`
+#     (``vision_channel_staleness_pressure``) measures ARRIVAL TIMING -- the
+#     age of the newest artifact against a wall clock. It cannot see a
+#     healthy-cadence, content-frozen or content-drifting stream at all.
+#   - `node:substrate.vision`'s `perception_yield`
+#     (``perceptual_yield``) measures the DETECTOR'S OBJECT COUNT -- a
+#     completely different model's discrete label output, unrelated to the
+#     embedding model's continuous feature space this function reads.
+#   - `bus_synaptic_prediction_error` measures MESH-WIDE PUBLISH-LATENCY
+#     anomalies across ~all bus edges -- transport timing, not any single
+#     stream's visual content.
+#   This function is the only one of the four whose input is the embedding
+#   MODEL'S OWN CONTENT ENCODING of a frame. A camera that is perfectly on
+#   schedule (staleness=0), still returning detections (yield>0), on a mesh
+#   with zero anomalous edges (bus_synaptic=0) can still have its visual
+#   content silently change (someone walks into frame, the lighting flips) --
+#   exactly the case none of the other three can see, and the reason this is
+#   additive signal, not a redundant re-derivation of one already in place.
+#
+# **Existing-mechanism check** (metric quality gate step 5): searched the
+# repo for a vector-valued EWMA utility before writing one.
+# ``orion/bus/ewma.py::compute_ewma_update`` and every ``_DomainEwmaBaseline``
+# above are scalar-only (one float mean/variance/z-score per domain); no
+# vector-EWMA exists anywhere in this repo as of this patch. The EWMA below
+# is therefore a fresh, minimal, componentwise mean update over a list of
+# floats -- no numpy dependency added (neither this module nor
+# ``services/orion-substrate-runtime`` had one in ``requirements.txt`` before
+# this patch; a 1152-dim Python list comprehension at this tick's real
+# cadence, one real embedding message every several seconds at most, costs
+# nothing worth a new dependency for).
+#
+# **Correction, 2026-08-19 (same day):** this paragraph originally ended
+# here claiming "no z-score/variance tracking is needed" for this domain,
+# unlike the six scalar domains above. That was wrong, not just an initial
+# simplification -- see ``_PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION``'s
+# own comment for the live numbers that disproved it. The vector-EWMA
+# reasoning above (no numpy dependency, componentwise mean) stands
+# unchanged; a second, ordinary scalar ``_DomainEwmaBaseline`` was added
+# alongside it to z-score the raw cosine-distance magnitude the vector EWMA
+# produces, reusing this module's existing scalar mechanism rather than
+# inventing a second one.
+#
+# **Reversibility** (metric quality gate step 6): shipped shadow-only,
+# default-off (``SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED=false``),
+# wired to no consumer. Trivially reversible -- flip the flag back off, or
+# delete the isolated ``substrate_perception_embedding_baseline`` table this
+# patch adds (single writer, see that table's own migration comment).
+#
+# **Live-data sanity check** (metric quality gate step 4): VERIFIED
+# 2026-08-19 for the raw magnitude, the same day this comment was written --
+# (a) calm rest point confirmed real, not decayed-to-zero: 57 calm-state
+# ticks (one camera stream, ~30 min) hand-pulled from
+# ``substrate_reduction_receipts``, mean 0.0055, variance 2.10e-5, no exact
+# zeros, no flat successive-value ratio; (b) fired on a real transition (a
+# room-occupancy change, ~0.03) and, separately, on a real induced stimulus
+# (the camera physically knocked over mid-session, 0.1219, ~25-sigma against
+# the calm baseline above) and recovered to calm within 3 ticks (90s), not
+# stuck high; (c) ``embedding_staleness`` decay-to-zero ruled out by the same
+# hand-pulled history -- see this domain's live review note in
+# ``orion/substrate/endogenous_curiosity.py`` for the full numbers and the
+# separate finding this check's own result led to (the raw magnitude was
+# real and non-degenerate, but numerically incomparable to every other
+# domain's z-scored ``prediction_error`` -- the reason the z-score migration
+# a few lines below exists).
+#
+# **This check itself needs re-running post-migration, on the z-scored
+# score, before trusting it for any consumer decision** -- same "shadow,
+# wait, verify by hand" two-phase pattern this comment already followed
+# once. The numbers above prove the raw magnitude was well-behaved; they do
+# not by themselves prove ``_PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION``
+# (3.0, copied from every other domain's convention, not independently
+# derived from this domain's own distribution shape) is well-calibrated --
+# a tight, near-zero-mean calm distribution can saturate a 3-sigma bar on
+# ordinary variation more easily than a domain with a wider natural spread.
+# Required before trusting the migrated score for any consumer decision:
+#   (a) pull real z-scored ticks by hand once enough have accumulated
+#       post-deploy and confirm calm ticks clamp to ~0.0 (not a nonzero
+#       floor) and stay there across ordinary room activity, not just the
+#       single knocked-over-camera event already observed;
+#   (b) confirm the raw-magnitude findings above still hold for the new
+#       formula's own inputs -- no decay-to-zero, no permanent stick-high;
+#   (c) if ordinary room activity (not a genuinely dramatic event) is
+#       already crossing ``endogenous_curiosity.py``'s ``min_error=0.55``
+#       regularly, the saturation constant is miscalibrated for this
+#       domain's real skew and needs its own value, not the borrowed 3.0.
+# ---------------------------------------------------------------------------
+
+# Same alpha convention as execution_prediction_error/codebase_prediction_error
+# above (0.2, one real observation per real embedding-bearing artifact, not a
+# fixed wall-clock cadence).
+_PERCEPTION_PREDICTION_ERROR_EWMA_ALPHA = 0.2
+
+# **Correction, 2026-08-19, same day as the live-data check above:** the
+# removed comment that used to sit here claimed "there is no variance floor
+# to calibrate here at all" and shipped `perception_prediction_error()`
+# returning the raw `1 - cos(...)` magnitude directly -- explicitly flagged
+# in that function's own docstring as "the honest crude first version,
+# explicitly deferred... later." That claim was wrong, not just premature:
+# a bounded [0,1] magnitude has exactly as much real variance as any other
+# domain's raw delta: this domain's own live-data check (2026-08-19, 60
+# real ticks/30 min, one camera stream) measured it directly --
+# calm-state mean 0.0055, variance 2.10e-5 (n=57, spike ticks excluded) --
+# and a real stimulus (the camera physically knocked over mid-session)
+# produced 0.1219, a genuine ~25-sigma event against that calm baseline.
+# That is exactly the kind of magnitude execution_prediction_error/
+# codebase_prediction_error already z-score before comparing against
+# min_error, and perception was the one domain in this module skipping
+# that step -- confirmed live (not assumed) to be why it could never
+# cross endogenous_curiosity.py's shared min_error=0.55 threshold: raw
+# cosine-distance surprise and z-scored deltas from other domains were
+# never on the same numeric footing, so the "generic, domain-agnostic"
+# scan (see that module's own docstring) was accidentally domain-blind
+# for exactly this one input scale. Migrated below to the same
+# raw-magnitude -> z-score -> saturate pattern `codebase_prediction_error`
+# uses via `_domain_zscore`, so `min_error` means the same thing here as
+# it does for every other migrated domain.
+#
+# **Correction, 2026-08-20, one day after the floor above was set:** "three
+# orders of magnitude below the measured variance" was the right convention
+# for _CHAT_PREDICTION_ERROR_MIN_VARIANCE/_EXECUTION_PREDICTION_ERROR_MIN_
+# VARIANCE, but wrong for this domain specifically, and shipping it
+# unquestioned here is exactly the mistake
+# ``feedback_borrowed_calibrated_constants_dont_transfer_across_domains``
+# already names -- a convention that held for those domains' own EWMA
+# doesn't automatically transfer to this one's.
+#
+# What's different here: this floor is not just a degenerate/early-tick
+# guard, it is also the only thing standing between a real "calm, no
+# anomaly" tick and a false-positive score, because `compute_ewma_update`
+# only applies `min_variance` to the *z-score denominator* (`max(prev_
+# variance, min_variance)`), never to the *stored* `new_variance` it hands
+# back for next tick -- that stored value is unfloored `alpha * deviation**2
+# + (1 - alpha) * prev_variance`, alpha=0.2 (~5 ticks of effective memory).
+# For a domain whose real variance is already tiny (2e-6, not 2e-5 -- see
+# below), 5 samples is not enough to estimate that variance without a lot of
+# sampling noise: a locally-quieter-than-usual stretch drives the *tracked*
+# variance to whipsaw well below the domain's true steady-state variance,
+# and the next perfectly ordinary-magnitude tick then divides by that
+# artificially small number and reads as a multi-sigma "surprise" that
+# never happened.
+#
+# Confirmed live, not theorized: camera physically static (confirmed by
+# Juniper, not inferred) for an extended window, 2026-08-20, n=240 real
+# ticks, one stream -- raw_surprise mean=0.004174, population variance=
+# 1.933e-6 (note: an order of magnitude *smaller* than the n=57/~30-min
+# estimate the old floor was calibrated against above, itself a case of
+# ``feedback_short_window_distribution_stats_are_artifacts`` -- that
+# earlier sample was too short to trust as a calibration source, exactly
+# the lesson it names). Against the *old* floor (1e-8, ~200x below this
+# true variance), that confirmed-static stream still crossed
+# ``endogenous_curiosity.py``'s ``min_error=0.55`` on 10.0% of ticks and
+# fully saturated the score at 1.0 on 2.9-4.1% of ticks -- a real,
+# confirmed false-positive rate on a scene that never moved, not a
+# hypothetical risk. Replayed the same 240 real raw-magnitude samples
+# through this module's own `compute_ewma_update` (shuffled, various
+# candidate floors) to check the fix before shipping it: raising the floor
+# to sit at (not three orders below) the measured true variance collapses
+# the saturated-score rate from ~4% to ~0.5% -- matching the ~0.3%
+# theoretically expected for a genuine 3-sigma tail -- while leaving
+# real-event sensitivity untouched (the actual camera-knock event this
+# domain was built for, raw_surprise ~0.12-0.19, is still a >80-sigma event
+# against this floor; saturates instantly regardless of which floor in the
+# 1e-8..5e-6 range is chosen). The residual ~7-8% of ticks crossing
+# min_error=0.55 (score > 0.55, i.e. z > 1.65) is the real distribution's
+# own right-skewed tail at that z, not an artifact -- floor changes below
+# the true variance cannot suppress it further without also blunting
+# sensitivity to genuine partial events, so this fix targets the
+# variance-whipsaw floor only, not the saturation constant.
+#
+# 2e-6 chosen: just above the measured 1.933e-6 population variance (not
+# three orders below it, per the correction above), close to the simulated
+# inflection point where the saturated-tick rate drops to its theoretical
+# floor. Guards early-tick/degenerate division exactly as before; the
+# difference is it now also guards every later tick's z-score denominator
+# against a whipsawed-low *tracked* variance, which the old floor never
+# did because it sat far beneath any real value this domain's tracked
+# variance would plausibly take.
+_PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
+_PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE = 2e-6
+
+
+@dataclass(frozen=True)
+class PerceptionEmbeddingBaseline:
+    """Per-stream running EWMA of the embedding vector itself (not a scalar
+    mean/variance like every other domain above) -- ``embedding_ewma`` is
+    componentwise ``alpha * new + (1 - alpha) * prev`` over the whole vector.
+    ``n`` counts real observations folded in, mirroring every other
+    domain's cold-start bookkeeping (``n == 0`` means no baseline yet).
+    """
+
+    embedding_ewma: tuple[float, ...] = ()
+    n: int = 0
+
+    # Second, independent scalar EWMA -- of the raw `1 - cos(...)` surprise
+    # *magnitude* itself, not the embedding vector above. A genuine
+    # `_DomainEwmaBaseline` (this module's existing, validated per-domain
+    # z-score mechanism -- see `codebase_prediction_error` above), not three
+    # flat fields hand-copied from its shape (review finding, 2026-08-19:
+    # composing two independently-reasoned-about baselines, mirroring how
+    # `CodebaseMassBaseline` composes its git/pr/graph sub-baselines, rather
+    # than bolting scalar fields onto a class whose own docstring says it
+    # holds "the embedding vector itself, not a scalar mean/variance").
+    # `surprise.n` deliberately lags `n` by exactly one real comparison: `n`
+    # advances on every real non-degenerate observation including the very
+    # first cold-start seed, which produces no raw surprise value at all --
+    # nothing to fold into `surprise` yet.
+    surprise: "_DomainEwmaBaseline" = field(default_factory=lambda: _DomainEwmaBaseline())
+
+    def to_json_dict(self) -> dict:
+        return {
+            "embedding_ewma": list(self.embedding_ewma),
+            "n": self.n,
+            "surprise": _domain_ewma_baseline_to_json_dict(self.surprise),
+        }
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> "PerceptionEmbeddingBaseline":
+        raw = data.get("embedding_ewma") if isinstance(data, dict) else None
+        vec: tuple[float, ...] = ()
+        if isinstance(raw, list):
+            try:
+                vec = tuple(float(x) for x in raw)
+            except (TypeError, ValueError):
+                vec = ()
+        n_raw = data.get("n", 0) if isinstance(data, dict) else 0
+        try:
+            n = int(n_raw)
+        except (TypeError, ValueError):
+            n = 0
+        # Missing/malformed `surprise` (rows persisted before this
+        # migration, or before the 2026-08-19 z-score migration entirely)
+        # defaults to a cold scalar baseline -- same "no history yet is a
+        # real, honest state" convention as the rest of this class, not an
+        # error. Shared parsing helper (review finding, 2026-08-19): this
+        # used to hand-roll the same three try/except float/int blocks
+        # `CodebaseMassBaseline.from_json_dict`'s own `_sub()` closure
+        # already established for the identical ewma/variance/n shape.
+        surprise_raw = data.get("surprise") if isinstance(data, dict) else None
+        surprise = _domain_ewma_baseline_from_json_dict(surprise_raw)
+        return cls(embedding_ewma=vec, n=max(0, n), surprise=surprise)
+
+
+@dataclass(frozen=True)
+class PerceptionPredictionErrorResult:
+    """``score`` is ``None`` on cold start (no prior baseline for this
+    stream, or a dimension mismatch against a prior one -- e.g. the
+    embedding model changed) -- there is no expectation yet to be surprised
+    against, and reporting 0.0 there would misrepresent "no baseline yet" as
+    "measured, not anomalous" (this repo's "no empty-shell cognition" rule,
+    same convention every EWMA domain above follows via
+    ``compute_ewma_update``'s own ``zscore=None`` first-observation case).
+
+    ``raw_surprise`` is the pre-z-score ``1 - cos(...)`` magnitude. Populated
+    whenever a real cosine comparison against a warm embedding baseline
+    happened -- including the stream's first such comparison, where
+    ``score`` is still ``None`` because the *second* (scalar surprise) EWMA
+    baseline hasn't seen enough observations yet to produce a z-score. Only
+    ``None`` when no comparison was possible at all this tick (empty/
+    zero-norm input, or the embedding baseline itself is cold/dimension-
+    mismatched). Added 2026-08-20 after the z-score migration shipped and
+    went live: the caller only ever had the final saturated ``score`` to log,
+    which made it impossible to tell "the raw magnitude genuinely moved" from
+    "the z-score stage is mis-calibrated" without re-deriving the raw value
+    by hand from ``score * _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION``
+    (which only works for *unsaturated* ticks -- every tick that pinned at
+    1.0 was a dead end). A real debug surface for a metric this repo's own
+    metric quality gate requires live-data sanity-checking, not a throwaway
+    field.
+    """
+
+    score: float | None
+    baseline: PerceptionEmbeddingBaseline
+    raw_surprise: float | None = None
+
+
+def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float | None:
+    """``None`` on a degenerate comparison (mismatched length or a zero-norm
+    vector) rather than raising or returning a fabricated 0.0 -- a zero-norm
+    embedding is itself a malformed-input case, not a legitimate "maximally
+    different" reading.
+    """
+    if len(a) != len(b) or not a:
+        return None
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return None
+    return dot / (norm_a * norm_b)
+
+
+def perception_prediction_error(
+    embedding: Sequence[float],
+    baseline: PerceptionEmbeddingBaseline,
+    *,
+    alpha: float = _PERCEPTION_PREDICTION_ERROR_EWMA_ALPHA,
+) -> PerceptionPredictionErrorResult:
+    """0-1 surprise score for one real embedding-bearing vision artifact,
+    per this stream's own recent normal.
+
+    Two stages, both against this stream's own running state: (1) raw
+    magnitude ``1 - cos(embedding, running_EWMA_embedding)`` -- the design
+    doc's original P2 formula, kept unchanged as the input signal; (2) that
+    magnitude z-scored against a second EWMA baseline of the magnitude
+    itself, saturating at ``_PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION``,
+    same ``_domain_zscore`` mechanism ``codebase_prediction_error`` uses.
+    Stage (1) alone shipped 2026-08-19 as "the honest crude first version" and
+    was the actual returned score for one day; migrated to include stage (2)
+    the same day once live data showed the raw magnitude never approached
+    other domains' numeric scale (see ``_PERCEPTION_PREDICTION_ERROR_
+    ZSCORE_SATURATION``'s own comment for the real numbers).
+
+    Cold start (``baseline.n == 0``) and a dimension mismatch against the
+    prior baseline (e.g. the embedding model was swapped) are treated the
+    same way: seed a fresh baseline from this observation, report no score.
+    A dimension change is not a real optimizer for "how did this frame
+    differ" -- there is no honest way to cosine-compare vectors of different
+    length, so re-seeding (not raising, not silently truncating) is the only
+    behavior that doesn't fabricate a reading. This stream's very first real
+    comparison (embedding baseline warm, scalar surprise baseline still
+    cold) also reports no score, for the identical reason one level up --
+    see ``_domain_zscore``.
+
+    **The dimension-mismatch reseed resets `surprise` too, not just
+    `embedding_ewma` -- a deliberate choice, not an oversight** (review
+    finding, 2026-08-19: the raw `[0, 1]` surprise magnitude's scale
+    doesn't itself depend on embedding dimensionality, so an argument
+    exists for carrying the scalar calibration forward across a dimension
+    change). Kept coupled anyway: a dimension change means the embedding
+    *model* changed, and this repo already has a named lesson for exactly
+    this shape of assumption --
+    ``feedback_borrowed_calibrated_constants_dont_transfer_across_domains``
+    -- generalized here from "across domains" to "across models for the
+    same domain": a different embedding model can plausibly produce a
+    systematically different calm-state surprise distribution (different
+    training objective, different normalization, different sensitivity to
+    real scene change) even though the output magnitude happens to land in
+    the same `[0, 1]` range. Carrying the old model's calibration forward
+    would silently apply it to the new model's readings with no signal
+    that it might not transfer. Re-qualifying (one more stream-specific
+    warm-up window) is the safer default until there's real evidence two
+    models' calm-state distributions actually match closely enough to
+    share a baseline.
+
+    **A zero-norm (all-zero) observation is rejected outright, before the
+    cold-start/reseed check runs, not just on the comparison path** (review
+    finding): seeding a fresh baseline from a zero vector would make every
+    subsequent real observation permanently degenerate too, since
+    ``_cosine_similarity`` already refuses to compare against a zero-norm
+    baseline -- one bad reading at cold start would otherwise silently stall
+    the whole stream (score always ``None``, baseline never updates again)
+    instead of just skipping that one reading and staying genuinely cold
+    until a real observation arrives.
+
+    Cosine similarity of two real (non-degenerate) vectors ranges [-1, 1], so
+    the raw ``1 - cos`` magnitude ranges [0, 2] in principle; clamped to
+    [0, 1] before it ever reaches the z-score stage (SigLIP-style embeddings
+    are L2-normalized and in practice cluster in a positive cone for real
+    photographic frames, so this clamp is a safety bound, not the expected
+    operating point).
+
+    Both EWMA baselines are updated on every real, non-degenerate
+    observation -- including cold-start and dimension-mismatch reseeds --
+    the same "the baseline absorbs this tick's value regardless of whether a
+    score was reported" behavior ``execution_prediction_error`` documents
+    for its own first-tick case.
+    """
+    vec = [float(x) for x in embedding]
+    if not vec:
+        return PerceptionPredictionErrorResult(score=None, baseline=baseline)
+
+    vec_norm = math.sqrt(sum(x * x for x in vec))
+    if vec_norm <= 0.0:
+        # Degenerate on arrival -- do not seed/reseed the baseline from bad
+        # data, and do not report a score for it. Baseline (including a
+        # genuinely cold ``n == 0`` one) is left untouched.
+        return PerceptionPredictionErrorResult(score=None, baseline=baseline)
+
+    if baseline.n == 0 or len(baseline.embedding_ewma) != len(vec):
+        new_baseline = PerceptionEmbeddingBaseline(embedding_ewma=tuple(vec), n=1)
+        return PerceptionPredictionErrorResult(score=None, baseline=new_baseline)
+
+    cos = _cosine_similarity(vec, baseline.embedding_ewma)
+    if cos is None:
+        # Degenerate (zero-norm) input -- do not update the baseline on bad
+        # data, and do not report a score for it either.
+        return PerceptionPredictionErrorResult(score=None, baseline=baseline)
+
+    raw_surprise = max(0.0, min(1.0, 1.0 - cos))
+    new_ewma = tuple(
+        alpha * e + (1.0 - alpha) * b for e, b in zip(vec, baseline.embedding_ewma)
+    )
+
+    # z-score the raw cosine-distance magnitude against this stream's own
+    # recent normal, same pattern codebase_prediction_error uses per
+    # sub-domain -- see _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION's own
+    # comment for why the raw magnitude alone was not comparable across
+    # domains. `None` on this stream's first real comparison (surprise.n
+    # still 0 -- no baseline yet to be surprised against), same "no
+    # empty-shell cognition" convention as the cold-start case above.
+    surprise_zscore, new_surprise_baseline = _domain_zscore(
+        raw_surprise,
+        baseline.surprise,
+        alpha=alpha,
+        min_variance=_PERCEPTION_PREDICTION_ERROR_MIN_VARIANCE,
+    )
+    new_baseline = PerceptionEmbeddingBaseline(
+        embedding_ewma=new_ewma,
+        n=baseline.n + 1,
+        surprise=new_surprise_baseline,
+    )
+    if surprise_zscore is None:
+        return PerceptionPredictionErrorResult(
+            score=None, baseline=new_baseline, raw_surprise=raw_surprise
+        )
+    score = min(1.0, surprise_zscore / _PERCEPTION_PREDICTION_ERROR_ZSCORE_SATURATION)
+    return PerceptionPredictionErrorResult(
+        score=score, baseline=new_baseline, raw_surprise=raw_surprise
+    )

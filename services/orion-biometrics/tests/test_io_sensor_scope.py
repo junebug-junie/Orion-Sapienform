@@ -267,3 +267,103 @@ def test_a_scope_change_drops_the_baseline_instead_of_spiking(collector, tmp_pat
     (proc / "dev").write_text(ATHENA_NETDEV.replace("  eno1: 1000 10", "  eno1: 100000000499 10"))
     out2 = collector._collect_network([], dt=1.0)
     assert out2["rx_bytes_per_sec"] == 500.0
+
+
+# ------------------------------------------------------------ routable capacity
+
+def _route_table(root, ifaces):
+    """Host /proc/1/net/route. An interface with no address has no row here."""
+    d = root / "1" / "net"
+    d.mkdir(parents=True, exist_ok=True)
+    header = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT"
+    rows = [f"{n}\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0" for n in ifaces]
+    (d / "route").write_text("\n".join([header, *rows]) + "\n")
+    return root
+
+
+# The live athena state after eno6 was brought up on 2026-08-14: two up 10G-capable-or-1G
+# physical NICs, but only eno1 holds an IPv4 address and a route.
+ATHENA_AFTER_ENO6_UP = {
+    "eno1": (True, "up", 1000),
+    "eno6": (True, "up", 10000),
+    "docker0": (False, "up", 10000),
+}
+
+
+def test_a_dark_port_contributes_no_capacity(collector, tmp_path, monkeypatch):
+    """THE BUG THIS FIXES. eno6 links at 10 Gb with SLAAC IPv6 only and no IPv4 route, so it
+    carries nothing -- yet summing it gave an 11,000 Mb/s denominator against a numerator that
+    can only travel over 1,000, understating net_pressure 11-fold the instant the port came up."""
+    _fake_sysfs(tmp_path / "sys", ATHENA_AFTER_ENO6_UP)
+    _route_table(tmp_path / "proc", ["eno1", "docker0"])
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(tmp_path / "sys"))
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", str(tmp_path / "proc"))
+
+    assert collector._physical_interfaces() == ["eno1", "eno6"]   # both have a link
+    assert collector._carrying_interfaces() == ["eno1"]           # only one can carry
+    assert collector._link_speed_mbps(collector._carrying_interfaces()) == 1000.0
+
+
+def test_once_the_port_is_addressed_its_capacity_counts(collector, tmp_path, monkeypatch):
+    """The same hardware, after eno6 gets an address: 11 Gb is then real headroom."""
+    _fake_sysfs(tmp_path / "sys", ATHENA_AFTER_ENO6_UP)
+    _route_table(tmp_path / "proc", ["eno1", "eno6"])
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(tmp_path / "sys"))
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", str(tmp_path / "proc"))
+    assert collector._carrying_interfaces() == ["eno1", "eno6"]
+    assert collector._link_speed_mbps(collector._carrying_interfaces()) == 11000.0
+
+
+def test_bridges_in_the_route_table_are_still_excluded(collector, tmp_path, monkeypatch):
+    """docker0 has routes AND a fabricated 10 Gb speed. The physical filter must still apply --
+    routing is an extra constraint on top of it, not a replacement for it."""
+    _fake_sysfs(tmp_path / "sys", ATHENA_AFTER_ENO6_UP)
+    _route_table(tmp_path / "proc", ["eno1", "docker0", "br-6d7d"])
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(tmp_path / "sys"))
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", str(tmp_path / "proc"))
+    assert collector._carrying_interfaces() == ["eno1"]
+
+
+def test_an_unreadable_route_table_falls_back_to_every_link(collector, tmp_path, monkeypatch):
+    """'I could not check' must not become 'this node has no network'."""
+    _fake_sysfs(tmp_path / "sys", ATHENA_AFTER_ENO6_UP)
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(tmp_path / "sys"))
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", "/nonexistent-host-proc")
+    assert collector._carrying_interfaces() == ["eno1", "eno6"]
+
+
+def test_no_physical_nic_routed_falls_back_rather_than_claiming_zero(collector, tmp_path, monkeypatch):
+    """A v6-only host, or a moved procfs. Reporting zero capacity would make net_pressure
+    divide by nothing; reporting the links is the lesser wrong."""
+    _fake_sysfs(tmp_path / "sys", ATHENA_AFTER_ENO6_UP)
+    _route_table(tmp_path / "proc", ["docker0"])
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(tmp_path / "sys"))
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", str(tmp_path / "proc"))
+    assert collector._carrying_interfaces() == ["eno1", "eno6"]
+
+
+def test_an_empty_route_table_is_treated_as_unreadable(collector, tmp_path, monkeypatch):
+    _fake_sysfs(tmp_path / "sys", ATHENA_AFTER_ENO6_UP)
+    _route_table(tmp_path / "proc", [])
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(tmp_path / "sys"))
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", str(tmp_path / "proc"))
+    assert collector._carrying_interfaces() == ["eno1", "eno6"]
+
+
+def test_missing_host_sys_still_returns_none_not_a_partial_answer(collector, monkeypatch):
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", "/nonexistent-host-sys")
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", "/nonexistent-host-proc")
+    assert collector._carrying_interfaces() is None
+
+
+def test_the_numerator_uses_the_same_interface_set_as_the_denominator(collector, tmp_path, monkeypatch):
+    """If they diverge, bytes counted on a NIC excluded from capacity (or vice versa) makes the
+    ratio meaningless. _collect_network must report exactly the carrying set."""
+    _fake_sysfs(tmp_path / "sys", ATHENA_AFTER_ENO6_UP)
+    _route_table(tmp_path / "proc", ["eno1"])
+    (tmp_path / "proc" / "1" / "net" / "dev").write_text(ATHENA_NETDEV)  # created by _route_table
+    monkeypatch.setattr("app.metrics.settings.HOST_SYS_PATH", str(tmp_path / "sys"))
+    monkeypatch.setattr("app.metrics.settings.HOST_PROC_PATH", str(tmp_path / "proc"))
+    out = collector._collect_network([], dt=1.0)
+    assert out["interfaces"] == ["eno1"]
+    assert out["link_mbps"] == 1000.0

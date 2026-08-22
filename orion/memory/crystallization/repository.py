@@ -22,6 +22,26 @@ from orion.memory.crystallization.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Bound how long the synchronous DDL bootstrap (run during service startup)
+# can block on a conflicting lock or a slow statement. Without these, a
+# concurrent migration/COPY holding a relation lock at boot time can hang
+# the whole process indefinitely -- confirmed live 2026-08-22 (~9.5 min
+# orion-athena-hub outage, root-caused to the sibling memory_cards schema
+# apply having no timeout; this function has the same shape).
+#
+# Note: memory_crystallizations.sql runs as one multi-statement
+# cur.execute(sql) call, and Postgres applies statement_timeout per
+# statement in that mode, not as one aggregate budget for the whole file.
+# A future rewrite-heavy ALTER on a large table could legitimately exceed
+# 30s and would then fail loudly instead of completing slowly -- if that
+# happens, raise this constant rather than remove the timeout. Also: this
+# function is called directly (no try/except) by
+# services/orion-memory-crystallizer/app/main.py's lifespan, so a real
+# timeout there now fails fast + lets Docker's restart policy retry,
+# instead of hanging the process forever with no restart trigger at all.
+_SCHEMA_APPLY_LOCK_TIMEOUT_MS = 10_000
+_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS = 30_000
+
 
 def _crystallizations_sql_path() -> Path:
     here = Path(__file__).resolve().parents[2] / "core" / "storage" / "sql" / "memory_crystallizations.sql"
@@ -38,7 +58,11 @@ def apply_memory_crystallizations_schema(dsn: str) -> None:
     if not sql_path.is_file():
         raise FileNotFoundError(f"memory_crystallizations DDL not found at {sql_path}")
     sql = sql_path.read_text(encoding="utf-8")
-    with psycopg2.connect(dsn) as conn:
+    connect_options = (
+        f"-c lock_timeout={_SCHEMA_APPLY_LOCK_TIMEOUT_MS} "
+        f"-c statement_timeout={_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS}"
+    )
+    with psycopg2.connect(dsn, options=connect_options) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(sql)
@@ -275,6 +299,7 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     INSERT INTO memory_crystallization_sources
                         (crystallization_id, source_kind, source_id, excerpt, strength, note)
                     VALUES ($1::uuid, $2, $3, $4, $5, $6)
+                    ON CONFLICT (crystallization_id, source_kind, source_id) DO NOTHING
                     """,
                     stored_id,
                     ev.source_kind,
@@ -351,12 +376,24 @@ async def update_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
         )
 
 
-async def get_crystallization(pool: asyncpg.Pool, crystallization_id: str) -> MemoryCrystallizationV1 | None:
-    cid = crystallization_id
-    if cid.startswith("crys_"):
-        hex_id = cid.replace("crys_", "")
+def normalize_crystallization_id(crystallization_id: str) -> str:
+    """`crys_<hex32>` (what new_crystallization_id() mints) -> dashed UUID.
+
+    Every query binding a crystallization id as $1::uuid must go through this,
+    or a caller passing the crys_ form clears the lookup guards and then dies on
+    the cast. Was duplicated inline in get_crystallization/insert_history;
+    extracted when a third call site (evidence delete) was added without it.
+    Anything that is not the crys_ form is returned unchanged.
+    """
+    if crystallization_id.startswith("crys_"):
+        hex_id = crystallization_id.replace("crys_", "")
         if len(hex_id) == 32:
-            cid = f"{hex_id[:8]}-{hex_id[8:12]}-{hex_id[12:16]}-{hex_id[16:20]}-{hex_id[20:]}"
+            return f"{hex_id[:8]}-{hex_id[8:12]}-{hex_id[12:16]}-{hex_id[16:20]}-{hex_id[20:]}"
+    return crystallization_id
+
+
+async def get_crystallization(pool: asyncpg.Pool, crystallization_id: str) -> MemoryCrystallizationV1 | None:
+    cid = normalize_crystallization_id(crystallization_id)
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -423,11 +460,7 @@ async def insert_history(
     after: dict | None,
     reason: str | None = None,
 ) -> None:
-    cid = crystallization_id
-    if cid.startswith("crys_"):
-        hex_id = cid.replace("crys_", "")
-        if len(hex_id) == 32:
-            cid = f"{hex_id[:8]}-{hex_id[8:12]}-{hex_id[12:16]}-{hex_id[16:20]}-{hex_id[20:]}"
+    cid = normalize_crystallization_id(crystallization_id)
 
     async with pool.acquire() as conn:
         await conn.execute(

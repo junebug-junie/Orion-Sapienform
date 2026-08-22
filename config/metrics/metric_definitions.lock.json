@@ -1,12 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 601,
+  "metric_count": 604,
   "_last_change": {
-    "base": "merge base c98e86414 (origin/main)",
-    "change_count": 0,
+    "base": "merge base 5fa207111 (origin/main)",
+    "change_count": 3,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-affectgpt-worker/orion:affectgpt:reply:*",
+      "medium added metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment",
+      "medium added metric://bus_channel/orion-juniper-affective-state/orion:exec:request:AffectGptWorkerService"
     ]
   },
   "definitions": {
@@ -317,6 +319,17 @@
         "orion-world-pulse"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-affectgpt-worker/orion:affectgpt:reply:*": {
+      "schema_id": "AffectGptAssessResultPayload",
+      "all_producers": [
+        "orion-affectgpt-worker"
+      ],
+      "declared_consumers": [
+        "orion-juniper-affective-state"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-agent-council/orion:agent-council:reply*": {
@@ -1616,6 +1629,28 @@
       ],
       "declared_consumers": [
         "orion-whisper-tts"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {
+      "schema_id": "JuniperMultimodalAffectV1",
+      "all_producers": [
+        "orion-juniper-affective-state"
+      ],
+      "declared_consumers": [
+        "orion-juniper-affective-state"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-juniper-affective-state/orion:exec:request:AffectGptWorkerService": {
+      "schema_id": "AffectGptAssessRequestPayload",
+      "all_producers": [
+        "orion-juniper-affective-state"
+      ],
+      "declared_consumers": [
+        "orion-affectgpt-worker"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

@@ -34,6 +34,11 @@ from orion.core.contracts.recall import (
 )
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
+from orion.schemas.affectgpt import (
+    AffectGptAssessRequestPayload,
+    AffectGptAssessResultPayload,
+    JuniperMultimodalAffectV1,
+)
 from orion.schemas.actions.mesh_ops import (
     DiskHealthDeviceV1,
     DiskHealthSnapshotV1,
@@ -819,6 +824,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfStudyHarnessSummaryV1": SelfStudyHarnessSummaryV1,
     "SelfStudyHarnessResultV1": SelfStudyHarnessResultV1,
     "VisionFramePointerPayload": VisionFramePointerPayload,
+    "AffectGptAssessRequestPayload": AffectGptAssessRequestPayload,
+    "AffectGptAssessResultPayload": AffectGptAssessResultPayload,
+    "JuniperMultimodalAffectV1": JuniperMultimodalAffectV1,
     "VisionTaskRequestPayload": VisionTaskRequestPayload,
     "VisionTaskResultPayload": VisionTaskResultPayload,
     "VisionArtifactPayload": VisionArtifactPayload,
@@ -1329,6 +1337,19 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
 
 # Incremental kind lookup for new schemas; runtime validation still uses resolve() / _REGISTRY.
 SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
+    # orion-affectgpt-worker / orion-juniper-affective-state (2026-08-22).
+    # AffectGptAssessRequestPayload is not registered here -- its envelope
+    # kind is set literally by the producer, same as VisionTaskRequestPayload
+    # above. Registered in BOTH this dict and `_REGISTRY` -- see the note
+    # immediately below.
+    "AffectGptAssessResultPayload": SchemaRegistration(
+        model=AffectGptAssessResultPayload,
+        kind="affectgpt.assess.result",
+    ),
+    "JuniperMultimodalAffectV1": SchemaRegistration(
+        model=JuniperMultimodalAffectV1,
+        kind="affectgpt.juniper_multimodal_affect.v1",
+    ),
     # SubstrateReadService (2026-08-12, design doc
     # 2026-08-12-substrate-action-perception-design.md option B(2)). Registered
     # in BOTH this dict and `_REGISTRY` above -- they are separate maps and a

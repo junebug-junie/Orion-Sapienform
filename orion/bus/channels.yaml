@@ -530,6 +530,54 @@ channels:
     stability: "experimental"
     since: "2026-05-03"
 
+  # orion-affectgpt-worker / orion-juniper-affective-state (2026-08-22).
+  # Real, webcam+mic-derived multimodal affect via AffectGPT (Qwen2.5-7B +
+  # CLIP + HuBERT), running on circe GPU2. DELIBERATELY a different domain
+  # namespace (orion:affectgpt:*) and schema_id family from the existing,
+  # narrower orion:substrate:juniper_affective_state (text-only swear-word
+  # frequency, docs/superpowers/specs/2026-07-30-juniper-affective-state-
+  # signal-proposal.md) -- that proposal explicitly disclaims being "a
+  # general mood-reading feature." This is a materially broader, more
+  # privacy-sensitive capability; keeping the channels/schemas distinct
+  # keeps that scope boundary real instead of accidental. See
+  # services/orion-affectgpt-worker/README.md for the live provenance
+  # (Haar-cascade face-crop substitute for broken OpenFace, no frame-mode
+  # checkpoint exists, non-determinism ceiling from SDPA attention).
+  - name: "orion:exec:request:AffectGptWorkerService"
+    kind: "request"
+    schema_id: "AffectGptAssessRequestPayload"
+    producer_services: ["orion-juniper-affective-state"]
+    consumer_services: ["orion-affectgpt-worker"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-22"
+
+  - name: "orion:affectgpt:reply:*"
+    kind: "result"
+    schema_id: "AffectGptAssessResultPayload"
+    message_kind: "affectgpt.assess.result"
+    producer_services: ["orion-affectgpt-worker"]
+    consumer_services: ["orion-juniper-affective-state"]
+    stability: "experimental"
+    since: "2026-08-22"
+
+  - name: "orion:affectgpt:assessment"
+    kind: "event"
+    schema_id: "JuniperMultimodalAffectV1"
+    message_kind: "affectgpt.juniper_multimodal_affect.v1"
+    producer_services: ["orion-juniper-affective-state"]
+    # No real downstream COGNITION consumer yet -- flagged honestly per
+    # CLAUDE.md, same pattern as orion:worldmodel:predictions below (which
+    # lists itself the same way). The real, live-subscribable consumer is
+    # services/orion-juniper-affective-state/scripts/tap_assessments.py
+    # (mirrors orion-vision-host's tap_artifacts.py /
+    # orion-world-model's tap_predictions.py) -- not a cognition consumer,
+    # but a genuine one, which is what keeps this entry off the
+    # metric-lineage orphan ratchet honestly rather than via a baseline bump.
+    consumer_services: ["orion-juniper-affective-state"]
+    stability: "experimental"
+    since: "2026-08-22"
+
   # orion-world-model (2026-08-20 scaffold, docs/superpowers/specs/
   # 2026-08-20-reverie-visual-chain-design.md §3/§8 deferred "whatever
   # 'world model' turns out to mean" -- this is that follow-up: port/schema/

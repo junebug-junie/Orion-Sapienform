@@ -1338,3 +1338,55 @@ def test_decision_log_hook_failure_does_not_break_the_tick(monkeypatch) -> None:
     result = asyncio.run(outreach.maybe_outreach())
 
     assert result["reason"] == "no_tension_trigger"
+
+
+def test_concurrent_ticks_persist_their_own_forced_flag_not_each_others(monkeypatch) -> None:
+    """Regression, review finding 2026-08-22: an earlier version of this
+    patch stored `forced`/`tension_reason` on unlocked shared instance
+    attributes (`self._last_forced`/`self._last_tension_reason`) read back
+    inside `_record()`. Same interleaving as
+    test_concurrent_ticks_cannot_both_send (the organic tick suspends inside
+    a slow `_generate`; a forced debug call lands on the already_sending
+    branch while it's suspended) -- but THAT test never checked what got
+    persisted. This one does: the organic tick's own decision row must say
+    forced=False and carry its OWN real tension_reason, never the forced
+    call's leftover values, and vice versa."""
+    outreach = _outreach(min_cooldown_sec=2700.0)
+    _stub_context(monkeypatch)
+    released = asyncio.Event()
+
+    async def slow_generate(self, prompt, session_id, correlation_id):
+        await released.wait()
+        return "an unprompted thought", {}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", slow_generate)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+    calls = _patch_record_decision(monkeypatch)
+
+    async def scenario():
+        first = asyncio.create_task(outreach.maybe_outreach())  # organic, force=False
+        await asyncio.sleep(0)  # let `first` reach slow_generate, past _should_roll()
+        second = await outreach.maybe_outreach(force=True)  # hits already_sending
+        released.set()
+        return await first, second
+
+    first_result, second_result = asyncio.run(scenario())
+
+    assert first_result["outreach"] is True
+    assert second_result["reason"] == "already_sending"
+    assert len(calls) == 2
+
+    # Order of _record() calls: the forced already_sending call returns
+    # immediately (never awaits), the organic call's _record only runs after
+    # `released.set()` lets slow_generate return -- so calls[0] is the forced
+    # one, calls[1] is the organic "sent" one.
+    forced_call, organic_call = calls[0], calls[1]
+    assert forced_call["result"]["reason"] == "already_sending"
+    assert forced_call["forced"] is True
+    assert forced_call["tension_reason"] is None
+
+    assert organic_call["result"]["reason"] == "sent"
+    assert organic_call["forced"] is False  # not clobbered by the forced call's True
+    assert organic_call["tension_reason"] is not None
+    assert organic_call["tension_reason"].target_id == "node:test"

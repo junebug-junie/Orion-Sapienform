@@ -1373,23 +1373,18 @@ def api_debug_endogenous_outreach_decisions(limit: int = Query(default=50, ge=1,
         logger.warning("endogenous_outreach_decisions_query_failed err=%s", exc)
         return {"ok": False, "reason": "query_failed"}
 
-    decisions = [
-        {
-            "decision_id": r["decision_id"],
-            "decided_at": r["decided_at"].isoformat() if r["decided_at"] else None,
-            "outreach": r["outreach"],
-            "reason": r["reason"],
-            "forced": r["forced"],
-            "target_id": r["target_id"],
-            "run_length": r["run_length"],
-            "peak_deviation_pressure": r["peak_deviation_pressure"],
-            "sustained_load_pressure": r["sustained_load_pressure"],
-            "correlation_id": r["correlation_id"],
-            "session_id": r["session_id"],
-            "result": r["result_json"],
-        }
-        for r in rows
-    ]
+    # Row -> dict directly rather than re-listing every column by hand (review
+    # finding, 2026-08-22: the original hand-listed form meant a new SELECT
+    # column had to be added a third time here just to reach the response) --
+    # only `decided_at` (timestamp -> isoformat) and `result_json` (renamed to
+    # `result`, matching the field name `_record()`/`record_decision` use)
+    # are actually special-cased.
+    decisions = []
+    for r in rows:
+        d = dict(r)
+        d["decided_at"] = d["decided_at"].isoformat() if d["decided_at"] else None
+        d["result"] = d.pop("result_json")
+        decisions.append(d)
     return {"ok": True, "count": len(decisions), "decisions": decisions}
 
 

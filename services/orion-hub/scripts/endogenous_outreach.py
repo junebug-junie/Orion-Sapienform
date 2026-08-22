@@ -481,12 +481,6 @@ class EndogenousOutreach:
         self._sent_today = 0
         self._counter_day: Optional[date] = None
         self._last_result: Dict[str, Any] = {}
-        # Set at the top of `_outreach_once`, read by `_record` -- see that
-        # method's own comment for why this can't just be the `force`
-        # parameter threaded through (every `_record` call site would need
-        # it, and this is the same "known at the start of the tick" shape
-        # `_last_tension_reason` already uses).
-        self._last_forced = False
 
     # -- connection registry (called from websocket_handler) ---------------
 
@@ -689,13 +683,19 @@ class EndogenousOutreach:
         is unauthenticated, so a carve-out here would make "off by default" a
         lie that one POST could undo.
         """
-        # Set here, not only inside `_outreach_once`: the `already_sending`
-        # early-return below calls `_record` without ever reaching that
-        # method, and `_record` needs this tick's real `forced` value, not
-        # whatever a previous tick left behind.
-        self._last_forced = bool(force)
         if self._send_lock.locked():
-            return self._record({"outreach": False, "reason": "already_sending"})
+            # Never reaches `_outreach_once` -- pass `force` explicitly
+            # rather than reading any shared instance attribute. Review
+            # finding, 2026-08-22: an earlier version of this patch set
+            # `self._last_forced` here for `_record` to read back later, but
+            # that is unlocked shared state -- a concurrent lock-holding
+            # tick's own eventual `_record()` call (after its `_generate`
+            # await resumes) could read THIS call's leftover value instead
+            # of its own, persisting the wrong `forced` flag. Passing it as
+            # a parameter removes the shared-state read entirely.
+            return self._record(
+                {"outreach": False, "reason": "already_sending"}, forced=force, tension_reason=None
+            )
         async with self._send_lock:
             return await self._outreach_once(force=force)
 
@@ -709,21 +709,43 @@ class EndogenousOutreach:
             # `status()` reporting it unchanged would let an operator
             # mistake a stale episode for one active right now.
             self._last_tension_reason = None
-            return self._record({"outreach": False, "reason": blocked})
+            return self._record({"outreach": False, "reason": blocked}, forced=force, tension_reason=None)
+
+        # Captured into a LOCAL variable, not read back from
+        # `self._last_tension_reason` at each `_record()` call below --
+        # review finding, 2026-08-22: `self._last_tension_reason` is
+        # unlocked shared state, and this coroutine is about to `await`
+        # several times (`_gather_context`, `_generate`) during which a
+        # concurrent tick (the periodic loop, or the unauthenticated debug
+        # trigger) can reassign it. A local snapshot taken right here is
+        # immune to that -- it belongs to this call's own stack frame, not
+        # the shared instance.
+        tension_reason: Optional[Any] = None
         if force:
             # A forced (debug-endpoint) call skips the trigger check
             # entirely -- it must not carry over whatever reason the LAST
             # organic tick set, or a manual trigger would misattribute
             # itself to a stale (possibly minutes-old) tension episode.
             self._last_tension_reason = None
-        elif not await self._should_roll():
-            return self._record({"outreach": False, "reason": "no_tension_trigger"})
+        else:
+            fired = await self._should_roll()
+            tension_reason = self._last_tension_reason
+            if not fired:
+                return self._record(
+                    {"outreach": False, "reason": "no_tension_trigger"},
+                    forced=force,
+                    tension_reason=tension_reason,
+                )
 
         session_id = self._active_session_id()
         ctx = await self._gather_context(session_id)
         prompt = build_outreach_prompt(ctx)
         if not prompt:
-            return self._record({"outreach": False, "reason": "no_grounding_context"})
+            return self._record(
+                {"outreach": False, "reason": "no_grounding_context"},
+                forced=force,
+                tension_reason=tension_reason,
+            )
 
         correlation_id = str(uuid4())
         raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
@@ -733,11 +755,15 @@ class EndogenousOutreach:
         text = str(raw_text or "").strip()
         if not text:
             return self._record(
-                {"outreach": False, "reason": "empty_generation", "generation": gen_debug}
+                {"outreach": False, "reason": "empty_generation", "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
             )
         if is_pass_response(text):
             return self._record(
-                {"outreach": False, "reason": "orion_passed", "generation": gen_debug}
+                {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
+                forced=force,
+                tension_reason=tension_reason,
             )
 
         # Re-gate immediately before delivery. Generation is a bus RPC bounded
@@ -757,7 +783,9 @@ class EndogenousOutreach:
                     "outreach": False,
                     "reason": f"{blocked_now}_after_generation",
                     "generation": gen_debug,
-                }
+                },
+                forced=force,
+                tension_reason=tension_reason,
             )
 
         await self._deliver(
@@ -784,10 +812,14 @@ class EndogenousOutreach:
                 "session_id": session_id,
                 "chars": len(text),
                 "generation": gen_debug,
-            }
+            },
+            forced=force,
+            tension_reason=tension_reason,
         )
 
-    def _record(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def _record(
+        self, result: Dict[str, Any], *, forced: bool, tension_reason: Optional[Any] = None
+    ) -> Dict[str, Any]:
         result["at"] = datetime.now(timezone.utc).isoformat()
         self._last_result = result
         # Durable trail for every decision cycle, not just the ones that
@@ -805,8 +837,8 @@ class EndogenousOutreach:
 
             record_decision(
                 result,
-                tension_reason=self._last_tension_reason,
-                forced=self._last_forced,
+                tension_reason=tension_reason,
+                forced=forced,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("endogenous_outreach_decision_hook_failed err=%s", exc)

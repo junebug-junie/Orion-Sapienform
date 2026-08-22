@@ -14,10 +14,20 @@ this file's other cross-cutting reads/writes. Keeping it here also lets
 tests patch `record_decision` as one seam instead of reaching into
 `EndogenousOutreach`'s internals.
 
-Not rate-limited (unlike `hub_presence.py`'s writer): every decision cycle
-tick is already throttled by `EndogenousOutreach.tick_interval_sec` (floor
-5s), so this cannot write faster than roughly once every 5 seconds even at
-the tightest configured cadence -- nowhere near needing its own limiter.
+NOT rate-limited (unlike `hub_presence.py`'s writer), and this is a real,
+disclosed gap, not a settled tradeoff: the periodic `_run()` loop alone
+would throttle writes to roughly once per `EndogenousOutreach.
+tick_interval_sec` (floor 5s), but `maybe_outreach`'s `already_sending`
+early-return also calls this module, and that branch is reachable at
+UNBOUNDED rate via the unauthenticated `POST /api/debug/endogenous-outreach/
+trigger` while a slow `_generate()` call is in flight (up to
+`HUB_ENDOGENOUS_OUTREACH_TIMEOUT_SEC`, which can be minutes) -- each such
+call spawns a new thread and a new engine connection. Review finding,
+2026-08-22: accepted as-is for now (this endpoint's unauthenticated nature
+is an existing, separately-documented risk this module did not introduce,
+and every write here is still best-effort/fire-and-forget with no unbounded
+in-process accumulation), but a real rate limit on this path is a fair
+follow-up if it turns out to matter in practice.
 """
 
 from __future__ import annotations
@@ -41,49 +51,54 @@ def _write_decision_to_postgres(
     sustained_load_pressure: Optional[float],
     forced: bool,
 ) -> None:
-    uri = os.getenv("POSTGRES_URI", "").strip()
-    if not uri:
-        return
     try:
         import json
 
-        from sqlalchemy import create_engine, text
+        from scripts.pg_engine import get_engine
+        from sqlalchemy import text
 
-        engine = create_engine(uri, pool_pre_ping=True)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO endogenous_outreach_decisions (
-                            decision_id, outreach, reason, forced, target_id,
-                            run_length, peak_deviation_pressure,
-                            sustained_load_pressure, correlation_id, session_id,
-                            result_json
-                        ) VALUES (
-                            :decision_id, :outreach, :reason, :forced, :target_id,
-                            :run_length, :peak_deviation_pressure,
-                            :sustained_load_pressure, :correlation_id, :session_id,
-                            CAST(:result_json AS jsonb)
-                        )
-                        """
-                    ),
-                    {
-                        "decision_id": decision_id,
-                        "outreach": bool(result.get("outreach", False)),
-                        "reason": str(result.get("reason") or "unknown"),
-                        "forced": bool(forced),
-                        "target_id": target_id,
-                        "run_length": run_length,
-                        "peak_deviation_pressure": peak_deviation_pressure,
-                        "sustained_load_pressure": sustained_load_pressure,
-                        "correlation_id": result.get("correlation_id"),
-                        "session_id": result.get("session_id"),
-                        "result_json": json.dumps(result),
-                    },
-                )
-        finally:
-            engine.dispose()
+        # Shared, process-lifetime cached engine (scripts/pg_engine.py) --
+        # NOT disposed here, same contract that module's own docstring
+        # states and `tension_outreach_trigger.py`/`_fetch_recent_turns`
+        # already follow, rather than this module building and tearing
+        # down a private pool on every single write (review finding,
+        # 2026-08-22: an earlier version of this function did exactly
+        # that, inconsistent with the sibling debug-read route added in
+        # the same commit, which already used this shared engine).
+        engine = get_engine()
+        if engine is None:
+            return
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO endogenous_outreach_decisions (
+                        decision_id, outreach, reason, forced, target_id,
+                        run_length, peak_deviation_pressure,
+                        sustained_load_pressure, correlation_id, session_id,
+                        result_json
+                    ) VALUES (
+                        :decision_id, :outreach, :reason, :forced, :target_id,
+                        :run_length, :peak_deviation_pressure,
+                        :sustained_load_pressure, :correlation_id, :session_id,
+                        CAST(:result_json AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "decision_id": decision_id,
+                    "outreach": bool(result.get("outreach", False)),
+                    "reason": str(result.get("reason") or "unknown"),
+                    "forced": bool(forced),
+                    "target_id": target_id,
+                    "run_length": run_length,
+                    "peak_deviation_pressure": peak_deviation_pressure,
+                    "sustained_load_pressure": sustained_load_pressure,
+                    "correlation_id": result.get("correlation_id"),
+                    "session_id": result.get("session_id"),
+                    "result_json": json.dumps(result),
+                },
+            )
     except Exception as exc:
         logger.warning("endogenous_outreach_decision_write_failed error=%s", exc)
 

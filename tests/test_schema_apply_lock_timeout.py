@@ -44,7 +44,7 @@ def _fake_connect_cm():
     return conn
 
 
-def test_apply_memory_cards_schema_sets_lock_and_statement_timeout(tmp_path):
+def test_apply_memory_cards_schema_sets_lock_and_statement_timeout():
     from orion.core.storage import memory_cards
 
     fake_conn = _fake_connect_cm()

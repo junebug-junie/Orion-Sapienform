@@ -29,6 +29,15 @@ logger = logging.getLogger(__name__)
 # concurrent migration/COPY holding a relation lock at boot time can hang
 # the whole process indefinitely -- confirmed live 2026-08-22 (~9.5 min
 # orion-athena-hub outage, root-caused to this connection having no timeout).
+#
+# Note: memory_cards.sql is executed as one multi-statement cur.execute(sql)
+# call, and Postgres applies statement_timeout per statement in that mode,
+# not as one aggregate budget for the whole file. A future rewrite-heavy
+# ALTER (e.g. adding another STORED generated column, which requires a full
+# table rewrite unlike a plain ADD COLUMN ... DEFAULT) could legitimately
+# take longer than 30s on a large table and would then fail loudly instead
+# of completing slowly -- if that happens, raise this constant rather than
+# remove the timeout.
 _SCHEMA_APPLY_LOCK_TIMEOUT_MS = 10_000
 _SCHEMA_APPLY_STATEMENT_TIMEOUT_MS = 30_000
 

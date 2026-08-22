@@ -20,8 +20,10 @@ class _Result:
 class _Conn:
     def __init__(self, rows):
         self._rows = rows
+        self.executed_sql = []  # captured for SQL-text assertions
 
-    def execute(self, *a, **k):
+    def execute(self, clause, *a, **k):
+        self.executed_sql.append(str(clause))
         return _Result(self._rows)
 
     def __enter__(self):
@@ -34,9 +36,11 @@ class _Conn:
 class _Engine:
     def __init__(self, rows):
         self._rows = rows
+        self.last_conn = None
 
     def connect(self):
-        return _Conn(self._rows)
+        self.last_conn = _Conn(self._rows)
+        return self.last_conn
 
 
 def test_load_pending_loops_filters_and_builds(monkeypatch):
@@ -59,7 +63,8 @@ def test_load_pending_loops_filters_and_builds(monkeypatch):
         },
     ]
 
-    monkeypatch.setattr(store, "_engine", lambda: _Engine(rows))
+    engine = _Engine(rows)
+    monkeypatch.setattr(store, "_engine", lambda: engine)
     out = store.load_pending_loops()
     assert len(out) == 1
     loop, first_seen, recurrence, narrative, scope = out[0]
@@ -70,6 +75,24 @@ def test_load_pending_loops_filters_and_builds(monkeypatch):
     assert loop.salience_features == {"evidence_strength": 0.9}
     assert recurrence == 3
     assert scope == "chat"
+
+
+def test_load_pending_loops_query_excludes_already_verdicted_evidence(monkeypatch):
+    # Regression, confirmed live 2026-08-22: substrate_reverie_refractory is
+    # only a 24h cooldown -- ~22 loops Juniper resolved/dismissed on 2026-08-20
+    # silently reappeared once it lapsed, because nothing checked
+    # attention_loop_outcome directly. Can't exercise the real WHERE-clause
+    # semantics through this mock (Postgres evaluates it, not Python), so this
+    # asserts the query TEXT itself carries the exclusion -- a guard against
+    # someone deleting the clause, not a full behavioral proof (see the PR
+    # report / live before-after verification for that).
+    engine = _Engine([])
+    monkeypatch.setattr(store, "_engine", lambda: engine)
+    store.load_pending_loops()
+    sql = engine.last_conn.executed_sql[0]
+    assert "attention_loop_outcome" in sql
+    assert "resolved" in sql and "dismissed" in sql and "decayed_unattended" in sql
+    assert "o.created_at >= t.created_at" in sql
 
 
 def test_load_pending_loops_falls_back_to_theme_key(monkeypatch):

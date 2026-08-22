@@ -363,6 +363,33 @@ class Settings(BaseSettings):
     #
     # Reclaiming the ~29 GB this frees is a SEPARATE step: DELETE returns space for reuse
     # inside the table, not to the OS. Deferred by Juniper until retention is converging.
+
+    # Object permanence sweep -- see app/vision_object_permanence.py and its
+    # loop wrapper. Timer-driven by design: a departure is a non-event, so
+    # nothing frame-triggered can ever detect it.
+    #
+    # 1800s (30 min) default, the middle of the design doc's named 15-30 min
+    # range. Not yet tuned against a real departure/arrival -- there has not
+    # been one to check the cadence against.
+    vision_permanence_sweep_interval_sec: float = Field(
+        1800.0, alias="VISION_PERMANENCE_SWEEP_INTERVAL_SEC"
+    )
+    # Bounds a stream's FIRST-EVER sweep so it does not scan its entire
+    # census history on one tick. 3600s = one hour of census rows, ~700 at
+    # the live ~5s cadence -- comfortably small for a single query.
+    vision_permanence_lookback_ceiling_sec: float = Field(
+        3600.0, alias="VISION_PERMANENCE_LOOKBACK_CEILING_SEC"
+    )
+    vision_permanence_absence_fraction: float = Field(
+        0.1, alias="VISION_PERMANENCE_ABSENCE_FRACTION"
+    )
+    vision_permanence_min_absence_sec: float = Field(
+        3600.0, alias="VISION_PERMANENCE_MIN_ABSENCE_SEC"
+    )
+    vision_permanence_max_absence_sec: float = Field(
+        86400.0, alias="VISION_PERMANENCE_MAX_ABSENCE_SEC"
+    )
+
     grammar_retention_interval_sec: float = Field(
         60.0, alias="GRAMMAR_RETENTION_INTERVAL_SEC"
     )

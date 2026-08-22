@@ -861,10 +861,26 @@ async def lifespan(app: FastAPI):
             "retention runs only at startup, which cannot keep up with arrival"
         )
 
+    # Object-permanence sweep -- see app/vision_object_permanence.py. Timer-
+    # driven because a departure is a non-event: nothing frame-triggered can
+    # ever detect one.
+    vision_permanence_task: asyncio.Task | None = None
+    if float(getattr(settings, "vision_permanence_sweep_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_object_permanence_loop import vision_object_permanence_loop
+
+        vision_permanence_task = asyncio.create_task(vision_object_permanence_loop(settings))
+    else:
+        logger.info(
+            "vision object-permanence sweep DISABLED (VISION_PERMANENCE_SWEEP_INTERVAL_SEC=0)"
+        )
+
     try:
         yield
     finally:
-        pending = [t for t in (task, watch_task, retention_task) if t is not None]
+        pending = [
+            t for t in (task, watch_task, retention_task, vision_permanence_task)
+            if t is not None
+        ]
         for background in pending:
             background.cancel()
         if pending:

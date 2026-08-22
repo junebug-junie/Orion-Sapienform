@@ -200,10 +200,16 @@ def persist_loop_outcome(outcome: AttentionLoopOutcomeV1) -> bool:
 
 
 def suppress_loop(theme_key: str, *, cooldown_sec: float = 86400.0) -> bool:
-    """Suppress a closed loop so it exits the coalition (reuse refractory table).
+    """Suppress a closed loop out of live reverie coalition re-selection for
+    `cooldown_sec` (reuse refractory table). Never raises.
 
-    Resolves rather than pauses: the theme is refractory-suppressed for a long
-    cooldown so it won't re-ignite. Never raises.
+    This is genuinely only a temporary cooldown, NOT what keeps a closed loop
+    off the Hub panel permanently -- that guarantee now comes from
+    `load_pending_loops()`'s own `attention_loop_outcome` check (added
+    2026-08-22 after a live incident: this docstring used to claim the theme
+    "won't re-ignite", which was only true for 24h -- ~22 loops Juniper
+    resolved/dismissed on 2026-08-20 silently reappeared once this cooldown
+    lapsed, because nothing else remembered they'd been judged).
     """
     try:
         from datetime import timedelta
@@ -241,6 +247,29 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
     Reads the salience trace table; best-effort -> [] on any miss. `scope` is the
     most recent trace row's scope for that theme -- feeds build_pending_card's
     card_kind split (chat vs reverie/chronic).
+
+    Verdict exclusion (2026-08-22, live-caught): `substrate_reverie_refractory`
+    (checked below) is only a 24h COOLDOWN -- `suppress_loop`'s own name and
+    docstring claim a human Resolve/Dismiss "won't re-ignite", but that was only
+    ever true for 24 hours. Confirmed live: Juniper resolved/dismissed ~22 cards
+    in one sitting on 2026-08-20; by 2026-08-22 every one of them had silently
+    reappeared with the exact same stale evidence, because nothing here ever
+    checked `attention_loop_outcome` directly -- once the refractory window
+    lapsed, the SAME already-judged trace row just qualified again. Now also
+    excludes a trace row if the loop's most recent verdict (human resolved/
+    dismissed, or a system decayed_unattended) is at least as new as that row --
+    i.e. "this specific piece of evidence was already judged, nothing new has
+    arrived since." A row that legitimately postdates the verdict (fresh
+    activity after a close) still surfaces normally -- this is a real reopen,
+    not the same stale evidence again. Related to but NOT the same exclusion as
+    `orion/substrate/attention/verdicts.py::load_terminal_verdict_loop_ids`
+    (used by the live reverie coalition) -- that one deliberately keeps
+    decayed_unattended eligible to keep competing (a different question: loop
+    re-selection, where a quiet loop should still get to win again if it's
+    still genuinely salient). This one answers "is this specific trace ROW
+    stale review-panel evidence", where decayed_unattended correctly belongs
+    in the exclusion -- the panel shouldn't keep showing a row the digest
+    already judged abandoned.
     """
     try:
         from sqlalchemy import text
@@ -261,6 +290,12 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
                       AND NOT EXISTS (
                         SELECT 1 FROM substrate_reverie_refractory r
                         WHERE r.theme_key = t.theme_key AND r.suppressed_until > now()
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM attention_loop_outcome o
+                        WHERE o.loop_id = t.loop_id
+                          AND o.verdict IN ('resolved', 'dismissed', 'decayed_unattended')
+                          AND o.created_at >= t.created_at
                       )
                     ORDER BY t.theme_key, t.created_at DESC
                     LIMIT :limit

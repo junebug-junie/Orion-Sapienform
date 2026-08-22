@@ -303,6 +303,26 @@ class Settings(BaseSettings):
         default=240.0, alias="JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC"
     )
 
+    # Ambient (recurring) capture toggle -- see scripts/vision_affect_ambient.py
+    # module docstring for the full design (2026-08-22 correction: this is
+    # the real toggle Juniper actually asked for, not the one-shot button
+    # this shipped as at first). Loop always runs once Hub starts (gated by
+    # JUNIPER_AFFECTIVE_STATE_BASE_URL being configured); state.enabled is
+    # what the toggle route actually flips.
+    AFFECT_AMBIENT_ENABLED: bool = Field(
+        default=True,
+        alias="AFFECT_AMBIENT_ENABLED",
+        description="Master switch for starting the loop task at all -- NOT the same as the runtime on/off toggle (state.enabled), which always starts False.",
+    )
+    # Juniper's explicit choice, 2026-08-22: densest of three offered
+    # options, accepting the tight margin over a single capture's own
+    # worst-case duration (~195s) on purpose.
+    AFFECT_AMBIENT_INTERVAL_SEC: float = Field(default=300.0, alias="AFFECT_AMBIENT_INTERVAL_SEC")
+    # How often the loop checks state.enabled/due -- decoupled from
+    # INTERVAL_SEC so toggling off takes effect in ~this long, not up to a
+    # full interval later.
+    AFFECT_AMBIENT_POLL_SEC: float = Field(default=5.0, alias="AFFECT_AMBIENT_POLL_SEC")
+
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")

@@ -15,9 +15,16 @@ from typing import Any
 
 import pytest
 
-from app.main import JuniperAffectiveStateService, PerceptFetchError, settings
+from app.main import (
+    CaptureAndAssessRequest,
+    JuniperAffectiveStateService,
+    PerceptFetchError,
+    _normalize_trigger,
+    settings,
+)
 from orion.schemas.affectgpt import AffectGptAssessResultPayload
 from orion.schemas.vision import RetinaClipCaptureResultPayload
+from pydantic import ValidationError
 
 
 class FakeEnvelope:
@@ -42,6 +49,10 @@ class FakeBus:
         self._replies: dict[str, dict] = {}
         self._raises: dict[str, Exception] = {}
         self.calls: list[str] = []
+        # One entry per rpc_request call, in order -- lets a test assert
+        # the SAME correlation_id was used across both legs of one attempt
+        # (retina RPC, then worker RPC).
+        self.correlation_ids_used: list[str] = []
 
     def set_reply(self, channel: str, payload: dict) -> None:
         self._replies[channel] = payload
@@ -51,6 +62,7 @@ class FakeBus:
 
     async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):
         self.calls.append(request_channel)
+        self.correlation_ids_used.append(str(envelope.correlation_id))
         if request_channel in self._raises:
             raise self._raises[request_channel]
         return {"data": request_channel}
@@ -126,6 +138,67 @@ async def test_full_round_trip_fetches_and_assesses(monkeypatch, scratch_dir):
     # under AFFECTGPT_SCRATCH_DIR (the shared volume), not the default /tmp.
     assert event.input_ref["video_path"].startswith(str(scratch_dir))
     assert event.input_ref["audio_path"].startswith(str(scratch_dir))
+    # Default trigger, no explicit correlation_id passed in -- still gets
+    # a real one (generated fresh each attempt), just not caller-supplied.
+    assert event.trigger == "manual"
+    assert event.correlation_id
+
+
+@pytest.mark.asyncio
+async def test_ambient_trigger_shares_one_correlation_id_across_both_rpc_legs(
+    monkeypatch, scratch_dir
+):
+    """Juniper's ask, 2026-08-22: 'ensure the data model has good ability to
+    be correlative with other components in the mesh.' capture_and_assess()
+    generates ONE id and threads it through the retina RPC, the worker RPC,
+    and the published event -- not three independently-generated ids that
+    happen to describe the same real-world attempt but can't be joined."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+    bus.set_reply(
+        settings.CHANNEL_AFFECTGPT_INTAKE,
+        AffectGptAssessResultPayload(ok=True, raw_response="calm").model_dump(),
+    )
+
+    def _fake_fetch(self, sha256, dest_path):
+        with open(dest_path, "wb") as f:
+            f.write(b"x")
+        return dest_path
+
+    monkeypatch.setattr(JuniperAffectiveStateService, "_fetch_percept", _fake_fetch)
+
+    capture, result, event = await svc.capture_and_assess(trigger="ambient")
+
+    assert event.trigger == "ambient"
+    assert len(bus.correlation_ids_used) == 2
+    assert bus.correlation_ids_used[0] == bus.correlation_ids_used[1], (
+        "retina RPC and worker RPC used different correlation_ids for the "
+        "same attempt -- they should be joinable via one id"
+    )
+    assert event.correlation_id == bus.correlation_ids_used[0]
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_trigger_value_is_clamped_to_manual(monkeypatch, scratch_dir):
+    """trigger is caller-supplied (via the HTTP body) -- an unrecognized
+    string here must not reach JuniperMultimodalAffectV1's Literal field and
+    raise an unhandled ValidationError deep inside _wrap_event."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=False, error="unreachable", error_code="timeout"
+        ).model_dump(),
+    )
+
+    capture, result, event = await svc.capture_and_assess(trigger="not-a-real-value")
+
+    assert event.trigger == "manual"
 
 
 @pytest.mark.asyncio
@@ -353,3 +426,37 @@ async def test_fetch_percept_sends_no_token_header_when_unset(monkeypatch, tmp_p
     svc._fetch_percept(sha, str(tmp_path / "out.bin"))
 
     assert captured["token"] is None
+
+
+# --- _normalize_trigger / CaptureAndAssessRequest (review finding, 2026-08-22) --
+# The trigger clamp used to be duplicated verbatim in two places
+# (capture_and_assess() and _wrap_event()) with no shared function backing
+# either; the HTTP endpoint accepted an untyped dict with no real
+# validation. Both fixed via one helper + one pydantic request model.
+
+
+def test_normalize_trigger_only_accepts_the_literal_string_ambient():
+    assert _normalize_trigger("ambient") == "ambient"
+    assert _normalize_trigger("manual") == "manual"
+    assert _normalize_trigger("not-a-real-value") == "manual"
+    assert _normalize_trigger(None) == "manual"
+    assert _normalize_trigger(123) == "manual"
+    assert _normalize_trigger(["ambient"]) == "manual"
+
+
+def test_capture_and_assess_request_rejects_unrecognized_trigger():
+    with pytest.raises(ValidationError):
+        CaptureAndAssessRequest(trigger="not-a-real-value")
+
+
+def test_capture_and_assess_request_defaults_to_manual():
+    req = CaptureAndAssessRequest()
+    assert req.trigger == "manual"
+    assert req.subtitle == ""
+    assert req.user_message is None
+
+
+def test_capture_and_assess_request_accepts_ambient():
+    req = CaptureAndAssessRequest(trigger="ambient", subtitle="hi")
+    assert req.trigger == "ambient"
+    assert req.subtitle == "hi"

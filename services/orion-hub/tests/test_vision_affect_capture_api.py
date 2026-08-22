@@ -29,6 +29,21 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, candidate)
 
 from scripts import api_routes  # noqa: E402
+from scripts import vision_affect_ambient  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_ambient_state():
+    """vision_affect_ambient.state (and its threading.Lock) are module-level
+    singletons -- reset them around every test in this file so one test's
+    toggle/lock doesn't leak into the next. A threading.Lock can't be
+    "reset", only replaced, which matters for the collision test below that
+    deliberately acquires without releasing."""
+    vision_affect_ambient.state = vision_affect_ambient.AffectAmbientState()
+    vision_affect_ambient._capture_lock = vision_affect_ambient.threading.Lock()
+    yield
+    vision_affect_ambient.state = vision_affect_ambient.AffectAmbientState()
+    vision_affect_ambient._capture_lock = vision_affect_ambient.threading.Lock()
 
 
 def test_returns_503_when_base_url_not_configured():
@@ -54,6 +69,7 @@ def test_proxies_successful_response_body():
     mock_post.assert_called_once()
     called_url = mock_post.call_args.args[0]
     assert called_url == "http://circe:32799/v1/juniper/affect/capture_and_assess"
+    assert mock_post.call_args.kwargs["json"] == {"trigger": "manual"}
     assert payload["result"]["ok"] is True
     assert payload["result"]["raw_response"] == "sad, contemplative"
 
@@ -88,3 +104,100 @@ def test_transport_failure_raises_502():
         with pytest.raises(HTTPException) as exc_info:
             api_routes.api_vision_affect_capture()
     assert exc_info.value.status_code == 502
+
+
+# --- Ambient (recurring) toggle -- design correction, 2026-08-22 ------------
+# The route the "Affect check" button shipped as was mislabeled as fulfilling
+# the toggle Juniper had actually asked for and approved before compaction
+# ("a toggle that periodically grabs a clip... while on"). These cover the
+# real toggle: services/orion-hub/scripts/vision_affect_ambient.py's
+# module-level `state`, flipped via POST /api/vision/affect-ambient and read
+# via GET /api/vision/affect-ambient/status.
+
+
+def test_ambient_status_reflects_default_off_state():
+    payload = api_routes.api_vision_affect_ambient_status()
+    assert payload["enabled"] is False
+    assert payload["tick_count"] == 0
+    assert payload["last_attempt_at"] is None
+
+
+def test_ambient_toggle_on_requires_base_url_and_env_enabled():
+    req = api_routes.AffectAmbientToggleRequest(enabled=True)
+    with patch.object(api_routes.settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", ""):
+        with pytest.raises(HTTPException) as exc_info:
+            api_routes.api_vision_affect_ambient_toggle(req)
+    assert exc_info.value.status_code == 503
+    assert vision_affect_ambient.state.enabled is False
+
+
+def test_ambient_toggle_on_then_off():
+    req_on = api_routes.AffectAmbientToggleRequest(enabled=True)
+    with patch.object(
+        api_routes.settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", "http://circe:32799"
+    ), patch.object(api_routes.settings, "AFFECT_AMBIENT_ENABLED", True):
+        payload = api_routes.api_vision_affect_ambient_toggle(req_on)
+    assert payload["enabled"] is True
+    assert vision_affect_ambient.state.enabled is True
+
+    req_off = api_routes.AffectAmbientToggleRequest(enabled=False)
+    payload = api_routes.api_vision_affect_ambient_toggle(req_off)
+    assert payload["enabled"] is False
+    assert vision_affect_ambient.state.enabled is False
+
+
+def test_ambient_toggle_off_never_requires_base_url():
+    """Turning OFF must always succeed -- an operator flipping this off
+    (e.g. because JUNIPER_AFFECTIVE_STATE_BASE_URL was just cleared) must
+    never be blocked by the same precondition that gates turning it on."""
+    vision_affect_ambient.state.enabled = True
+    req_off = api_routes.AffectAmbientToggleRequest(enabled=False)
+    with patch.object(api_routes.settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", ""):
+        payload = api_routes.api_vision_affect_ambient_toggle(req_off)
+    assert payload["enabled"] is False
+
+
+def test_check_now_returns_429_when_ambient_holds_the_capture_slot():
+    """Review finding, 2026-08-22: this route used to bypass
+    vision_affect_ambient's state entirely -- a collision with an in-flight
+    ambient tick was only ever caught incidentally by retina's own device
+    lock (a confusing generic "busy" straight from the capture hardware).
+    Now it shares the same exclusive slot and gets an explicit 429."""
+    assert vision_affect_ambient.try_begin_capture("ambient") is True  # simulate an in-flight tick
+
+    with patch.object(
+        api_routes.settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", "http://circe:32799"
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            api_routes.api_vision_affect_capture()
+    assert exc_info.value.status_code == 429
+
+
+def test_check_now_releases_the_slot_after_completing():
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {"result": {"ok": True, "raw_response": "calm"}}
+    with patch.object(
+        api_routes.settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", "http://circe:32799"
+    ), patch.object(api_routes.requests, "post", return_value=fake_resp):
+        api_routes.api_vision_affect_capture()
+
+    assert vision_affect_ambient.state.tick_in_progress is False
+    assert vision_affect_ambient.state.last_result_ok is True
+    assert vision_affect_ambient.state.last_trigger == "manual"
+    # The slot must be free again -- a second call must be able to acquire it.
+    assert vision_affect_ambient.try_begin_capture("ambient") is True
+
+
+def test_check_now_releases_the_slot_on_transport_failure():
+    with patch.object(
+        api_routes.settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", "http://circe:32799"
+    ), patch.object(
+        api_routes.requests, "post", side_effect=requests.ConnectionError("refused")
+    ):
+        with pytest.raises(HTTPException):
+            api_routes.api_vision_affect_capture()
+
+    assert vision_affect_ambient.state.tick_in_progress is False
+    assert vision_affect_ambient.state.last_result_ok is False
+    assert vision_affect_ambient.try_begin_capture("ambient") is True

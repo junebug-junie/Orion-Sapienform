@@ -7,7 +7,8 @@ Thin CPU orchestrator in front of `orion-affectgpt-worker`. Two ways in:
 - `POST /v1/juniper/affect/capture_and_assess` (2026-08-22) — the live
   path: bus RPC to `orion-vision-retina` (carbon) for a fresh clip, fetch
   both blobs from `orion-percept-store`, then the same worker round trip.
-  This is what Hub's "Affect check" button calls.
+  This is what Hub's "Check now" button AND its ambient toggle both call
+  (`{"trigger": "manual"}` vs `{"trigger": "ambient"}` in the request body).
 
 Both wrap the result as `JuniperMultimodalAffectV1` and publish it to
 `orion:affectgpt:assessment` — one event stream regardless of entry point.
@@ -19,13 +20,24 @@ filesystem (`/mnt/telemetry` is athena-local ext4, no NFS/exports;
 `reference_circe_gpu_inventory_and_lane_map`). Co-locating sidesteps that
 gap for the worker call; see `app/settings.py`'s `NODE_NAME` comment.
 
-## Non-goal: still no ambient mode
+## Ambient mode exists now, but it does not live here (2026-08-22)
 
-Both entry points above are explicit, caller-triggered captures. There is
-still no background/scheduled polling loop — a loop with nothing forcing a
-capture to happen would be empty-shell cognition. Hub's button is a manual
-turn-scoped trigger, not a toggle that starts continuous recording; add
-ambient mode only once there's a real, named reason to poll on a schedule.
+Both entry points above are still single, explicit calls with no scheduling
+logic of their own inside THIS service — every request here is still one
+caller asking for one attempt. Recurring capture is real, though: Hub owns
+that loop (`services/orion-hub/scripts/vision_affect_ambient.py`) and just
+calls `/capture_and_assess` repeatedly with `trigger="ambient"` while its
+toggle is on. This corrects an earlier version of this README, which
+described Hub's button as "a manual turn-scoped trigger, not a toggle" --
+that was true of the button that shipped first (2026-08-22, PR #1838), not
+of the toggle that replaced it as the primary control the same day.
+
+`trigger` (`"manual"` | `"ambient"`) and `correlation_id` on
+`JuniperMultimodalAffectV1` (`orion/schemas/affectgpt.py`) exist so a
+consumer can tell the two apart and, via `correlation_id`, join one
+attempt's retina-RPC/worker-RPC/event legs together -- `capture_and_assess()`
+generates ONE id per attempt and threads it through all three, rather than
+each leg getting its own independently-generated one.
 
 ## The cross-host bridge (built 2026-08-22)
 
@@ -63,7 +75,7 @@ any other failed assessment.
 
 1. `GET /health`
 2. `POST /v1/juniper/affect/trigger` — `{"video_path": "...", "audio_path": "...", "subtitle": "..."}` (paths must be readable inside the *worker's* container).
-3. `POST /v1/juniper/affect/capture_and_assess` — optional `{"subtitle": "...", "user_message": "..."}`. Synchronous, typically well under a minute but up to ~195s worst case (real capture + real GPU inference) — use a generous client timeout, not a quick one.
+3. `POST /v1/juniper/affect/capture_and_assess` — optional `{"subtitle": "...", "user_message": "...", "trigger": "manual"|"ambient"}` (trigger defaults to "manual" if omitted). Synchronous, typically well under a minute but up to ~195s worst case (real capture + real GPU inference) — use a generous client timeout, not a quick one.
 
 ## Tests
 

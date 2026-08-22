@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import time
@@ -7,12 +9,21 @@ import uuid
 
 import cv2
 import numpy as np
+import urllib.error
+import urllib.request
 from loguru import logger
 from pydantic import BaseModel
 
 
 class SavedFrame(BaseModel):
-    image_path: str
+    """Where the frame ended up.
+
+    `image_path` is empty in percept-store mode: the frame never touched this
+    node's disk, which is the point. `sha256` is empty in local mode.
+    """
+
+    image_path: str = ""
+    sha256: str | None = None
     width: int
     height: int
     format: str = "jpg"
@@ -73,3 +84,69 @@ def cleanup_old_frames(directory: str, max_age_seconds: int) -> int:
             except OSError as exc:
                 logger.debug(f"[RETINA] cleanup skip {fp}: {exc}")
     return removed
+
+
+class PerceptUploadError(RuntimeError):
+    """The frame could not be handed to the percept store."""
+
+
+def upload_frame(
+    frame: np.ndarray,
+    *,
+    base_url: str,
+    quality: int,
+    token: str | None = None,
+    timeout_sec: float = 10.0,
+) -> SavedFrame:
+    """Encode in memory and POST to orion-percept-store. Never touches disk.
+
+    This is how a node with no shared filesystem feeds the pipeline. Everything
+    else in this module writes a file and publishes a path, which is correct
+    only when the consumer can read that path -- true for athena, false for
+    every other machine.
+
+    **Nothing is written locally, deliberately.** A capture agent on a personal
+    laptop must not accumulate a spool of webcam frames: if the store is
+    unreachable the frame is dropped and the next one is attempted. A backlog of
+    images of someone's face on their own machine is a worse failure than a gap
+    in the record.
+
+    Uses urllib rather than adding httpx/requests to this service (AGENTS.md
+    section 10 -- no dependency for a stdlib task). Callers run it off the event
+    loop via asyncio.to_thread.
+    """
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok:
+        raise PerceptUploadError("cv2.imencode failed")
+    data = buf.tobytes()
+    local_sha = hashlib.sha256(data).hexdigest()
+
+    url = f"{str(base_url).rstrip('/')}"
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/octet-stream")
+    if token:
+        req.add_header("X-Orion-Percept-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise PerceptUploadError(f"percept upload to {url} failed: {exc}") from exc
+
+    sha256 = str(body.get("sha256") or "")
+    if sha256 != local_sha:
+        # The store is content-addressed; if it disagrees with us about what we
+        # just sent, something re-encoded or truncated the body and the address
+        # we would publish would not resolve to this frame.
+        raise PerceptUploadError(
+            f"percept store returned {sha256[:12]!r} for content hashing to {local_sha[:12]!r}"
+        )
+
+    h, w = frame.shape[:2]
+    return SavedFrame(
+        image_path="",
+        sha256=sha256,
+        width=w,
+        height=h,
+        format="jpg",
+        bytes_written=len(data),
+    )

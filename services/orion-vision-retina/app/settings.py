@@ -29,6 +29,20 @@ class Settings(BaseSettings):
     RETINA_HEIGHT: int | None = None
 
     FRAME_STORAGE_DIR: str = "/mnt/telemetry/vision/frames"
+
+    # How this node addresses the frames it publishes.
+    #   local         -- write to FRAME_STORAGE_DIR, publish image_path.
+    #                    Correct ONLY when the vision host shares this
+    #                    filesystem. athena. Default, so nothing changes.
+    #   percept_store -- encode in memory, POST to orion-percept-store, publish
+    #                    sha256. The only option for a node with no shared
+    #                    disk. Nothing is written locally, on purpose: a
+    #                    capture agent on a personal laptop must not accumulate
+    #                    a spool of webcam frames.
+    RETINA_FRAME_MODE: str = "local"
+    RETINA_PERCEPT_STORE_URL: str = ""
+    RETINA_PERCEPT_STORE_TOKEN: str = ""
+    RETINA_PERCEPT_TIMEOUT_SEC: float = 10.0
     FRAME_RETENTION_SECONDS: int = 300
     JPEG_QUALITY: int = 90
 

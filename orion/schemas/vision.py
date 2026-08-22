@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class VisionObject(BaseModel):
@@ -92,8 +92,37 @@ class VisionTaskResultPayload(BaseModel):
 
 
 class VisionFramePointerPayload(BaseModel):
+    """Where a captured frame is, so a consumer can go and read it.
+
+    Carries a POINTER, never bytes -- a frame is ~100KB and this crosses Redis
+    on every capture.
+
+    Two addressing modes, and which one a node uses is a property of the node,
+    not a preference:
+
+    * ``image_path`` -- a path on a filesystem the consumer shares. Cheapest,
+      no copy, and correct for capture running on the same host as the vision
+      host. athena uses this and is unchanged.
+    * ``sha256`` -- a content address in orion-percept-store. The ONLY option
+      for a node with no shared filesystem, which is every node except athena.
+      Until this field existed, a second machine physically could not feed this
+      pipeline no matter what else was configured.
+
+    At least one must be set; a pointer that points nowhere is not a pointer.
+    A frame MAY carry both (uploaded and also on local disk), and consumers
+    should prefer whichever they can actually reach rather than assuming.
+    """
+
     model_config = ConfigDict(extra="forbid")
     image_path: Optional[str] = None
+    # 64-char lowercase hex. Validated here rather than at every consumer,
+    # because it becomes part of a fetch URL downstream and the gateway's
+    # rebuild-from-trusted-base assumes it is exactly this shape.
+    sha256: Optional[str] = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description="Content address in orion-percept-store, for nodes with no shared filesystem.",
+    )
     frame_paths: Optional[List[str]] = None
     video_path: Optional[str] = None
     camera_id: Optional[str] = None
@@ -103,6 +132,20 @@ class VisionFramePointerPayload(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     format: Optional[str] = None
+
+
+    @model_validator(mode="after")
+    def _require_an_address(self) -> "VisionFramePointerPayload":
+        """A pointer with neither address is silently undeliverable.
+
+        Without this the failure surfaces far downstream as "task produced no
+        artifact", which is indistinguishable from a detector finding nothing.
+        """
+        if not (self.image_path or self.frame_paths or self.video_path or self.sha256):
+            raise ValueError(
+                "frame pointer needs image_path, frame_paths, video_path or sha256"
+            )
+        return self
 
 
 # Alias for explicit requirement

@@ -161,16 +161,24 @@ class FrameDispatchPolicy:
             )
 
         image_path = (frame.image_path or "").strip()
+        sha256 = (frame.sha256 or "").strip()
         require_exists = self.require_image_path_exists(camera_id)
-        if not image_path:
-            cam_state.last_skip_reason = "missing_image_path"
-            return FrameDispatchDecision(
-                should_dispatch=False,
-                policy_name=policy_name,
-                dispatch_tier=dispatch_tier,
-                reason="missing_image_path",
-            )
-        if require_exists:
+
+        # A content-addressed frame is addressed, full stop. It lives in
+        # orion-percept-store, not on a filesystem this router can stat, so the
+        # path checks below do not apply to it -- and applying them would reject
+        # every frame from every node that does not share athena's disk, which
+        # is the entire reason sha256 exists.
+        #
+        # There is deliberately no "neither address" branch here. It would be
+        # unreachable: `VisionFramePointerPayload` rejects an addressless
+        # pointer at validation, and this method re-validates above (as does
+        # the dispatcher, which reports it as `invalid_frame_payload` and skips
+        # the frame). A first draft of this change did add such a branch; it
+        # could never execute, which is why it is gone.
+        if sha256 and not image_path:
+            pass
+        elif require_exists:
             visible = image_path_exists if image_path_exists is not None else os.path.isfile(image_path)
             if not visible:
                 cam_state.last_skip_reason = "image_path_not_visible"
@@ -250,7 +258,15 @@ class FrameDispatchPolicy:
         env: BaseEnvelope,
         decision: FrameDispatchDecision,
     ) -> VisionTaskRequestPayload:
-        base_request: dict[str, Any] = {"image_path": frame.image_path}
+        # Forward whichever address the frame actually carries. A frame from a
+        # node with no shared filesystem has only a sha256, and the host
+        # resolves it from orion-percept-store; a local frame keeps its path,
+        # which stays the cheap route (no HTTP hop, no copy).
+        base_request: dict[str, Any] = {}
+        if frame.image_path:
+            base_request["image_path"] = frame.image_path
+        if frame.sha256:
+            base_request["percept_sha256"] = frame.sha256
         base_request.update(decision.request_overrides or {})
         meta = {
             "camera_id": frame.camera_id,

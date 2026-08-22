@@ -22,6 +22,17 @@ services:
       - WINDOW_BELIEF_VOTE_N=${WINDOW_BELIEF_VOTE_N:-3}
       - WINDOW_BELIEF_ENTER_VOTES=${WINDOW_BELIEF_ENTER_VOTES:-3}
       - WINDOW_BELIEF_EXIT_VOTES=${WINDOW_BELIEF_EXIT_VOTES:-0}
+
+      # Presence writes go straight to Postgres (not via the bus + sql-writer,
+      # unlike every other write this service makes) -- see app/presence.py.
+      # Deliberately NOT loaded from this service's own .env: pulled from the
+      # ROOT .env's already-correct POSTGRES_URI via compose interpolation, so
+      # this can never drift from what every other service actually connects
+      # to.
+      - POSTGRES_URI=${POSTGRES_URI}
+      - WINDOW_PRESENCE_ENABLED=${WINDOW_PRESENCE_ENABLED:-true}
+      - WINDOW_PRESENCE_GRACE_SEC=${WINDOW_PRESENCE_GRACE_SEC:-120.0}
+      - WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC=${WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC:-5.0}
     networks:
       - app-net
     ports:

@@ -78,6 +78,7 @@ from app.models import (
     WorldPulseWorthWatchingSQL,
     MindRunSQL,
     VisionEventSQL,
+    VisionSceneInventorySQL,
     ActionOutcomeSQL,
     DominanceStreakTickSQL,
     DevEconomicsLedgerSQL,
@@ -149,7 +150,7 @@ from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionReco
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 from orion.schemas.evidence_index import EvidenceUnitV1
 from orion.schemas.mind.artifact import MindRunArtifactV1
-from orion.schemas.vision import VisionEventBundleItem
+from orion.schemas.vision import VisionEventBundleItem, VisionSceneInventoryV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.telemetry.system_health import EquilibriumServiceTransitionV1
 from orion.schemas.world_pulse import (
@@ -462,6 +463,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
     "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
+    "VisionSceneInventorySQL": (VisionSceneInventorySQL, VisionSceneInventoryV1),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
     "DominanceStreakTickSQL": (DominanceStreakTickSQL, DominanceStreakTickV1),
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),

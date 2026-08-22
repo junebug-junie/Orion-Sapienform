@@ -444,6 +444,19 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  # Per-window scene census, written unconditionally so object permanence has
+  # a continuous record to reduce over. Deliberately NOT derived from
+  # orion:vision:events -- the council only re-interprets on a label-set
+  # change (reason=stable_scene otherwise), so a pure count change emits no
+  # event, and a departure is a non-event by nature.
+  - name: "orion:vision:inventory:sql-write"
+    kind: "event"
+    schema_id: "VisionSceneInventoryV1"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-08-21"
+
   - name: "orion:exec:request:VisionWindowService"
     kind: "request"
     schema_id: "VisionWindowRequestPayload"

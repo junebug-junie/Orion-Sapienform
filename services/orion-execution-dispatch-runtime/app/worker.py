@@ -16,7 +16,11 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.autonomy.allocator import Candidate, allocate, candidate_from_dispatch
 from orion.autonomy.budget import budget_state, day_elapsed_fraction
-from orion.autonomy.contrast import TreatedCellKey, pooled_treated_mean
+from orion.autonomy.contrast import (
+    HOLDBACK_BLOCK_REASON,
+    TreatedCellKey,
+    pooled_treated_mean,
+)
 from orion.autonomy.prediction import (
     DEFAULT_OBSERVATION_VARIANCE,
     DEFAULT_PRIOR_VARIANCE,
@@ -842,6 +846,47 @@ class ExecutionDispatchRuntimeWorker:
 
         if not to_send:
             return frame.model_copy(update=baseline_fields)
+
+        # RANDOMIZED HOLDBACK. Rolled once per TICK, over candidates that have
+        # already passed every gate -- so the withheld set is a random sample
+        # of what would genuinely have run, which is what makes the resulting
+        # arm causal rather than merely matched.
+        #
+        # Per tick, not per candidate: the field delta is frame-wide, so
+        # withholding one candidate while its siblings run yields a control
+        # observation contaminated by those siblings. That is precisely the
+        # defect that made the capacity-blocked arm unusable, and repeating it
+        # here would produce a worse-than-useless arm wearing the word
+        # "randomized".
+        holdback_fraction = self._settings.orion_dispatch_holdback_fraction
+        if holdback_fraction > 0.0 and random.random() < holdback_fraction:
+            withheld_ids = {c.dispatch_id for c in to_send}
+            withheld = [
+                c.model_copy(
+                    update={
+                        "dispatch_status": "blocked",
+                        "blocked_by": [HOLDBACK_BLOCK_REASON],
+                        "reasons": list(c.reasons) + [HOLDBACK_BLOCK_REASON],
+                    }
+                )
+                for c in to_send
+            ]
+            logger.info(
+                "execution_dispatch_randomized_holdback withheld=%d fraction=%.3f "
+                "-- this tick deliberately does nothing, to buy a causal control arm",
+                len(withheld),
+                holdback_fraction,
+            )
+            return frame.model_copy(
+                update={
+                    **baseline_fields,
+                    "candidates": [
+                        c for c in frame.candidates if c.dispatch_id not in withheld_ids
+                    ],
+                    "blocked_candidates": list(frame.blocked_candidates) + withheld,
+                    "blocked_count": len(frame.blocked_candidates) + len(withheld),
+                }
+            )
 
         sent_ids = {c.dispatch_id for c in to_send}
         remaining_candidates = [c for c in frame.candidates if c.dispatch_id not in sent_ids]

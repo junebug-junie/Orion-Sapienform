@@ -98,6 +98,11 @@ ActionArm = Literal["dispatched", "capacity_blocked", "no_action", "randomized_h
 # the two.
 CONTROL_ARM_PRECEDENCE: tuple[ActionArm, ...] = ("randomized_holdback", "no_action")
 
+# The `blocked_by` marker a deliberately withheld tick carries. Reuses the
+# existing blocked-candidate mechanism rather than adding a frame field, so
+# there is no schema change and no deploy-order hazard.
+HOLDBACK_BLOCK_REASON = "randomized_holdback"
+
 BASELINE_BIN_COUNT = 10
 
 # A control cell that has never once seen the signal move is not a calm

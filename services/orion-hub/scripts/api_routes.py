@@ -27,6 +27,7 @@ from orion.hub.chat_route import (
 )
 from .settings import settings
 from . import vision_affect_ambient
+from . import vision_frame_cache
 from .grafana_tempo_link import build_grafana_tempo_trace_explore_url
 from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 from .session import ensure_session
@@ -1298,7 +1299,10 @@ def api_vision_affect_capture() -> Dict[str, Any]:
             base, float(settings.JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC), "manual"
         )
         ok, error = vision_affect_ambient.result_ok_and_error(body)
-        vision_affect_ambient.end_capture(ok=ok, error=error)
+        raw_response, video_sha256 = vision_affect_ambient.result_content(body)
+        vision_affect_ambient.end_capture(
+            ok=ok, error=error, raw_response=raw_response, video_sha256=video_sha256
+        )
         return body
     except requests.RequestException as exc:
         vision_affect_ambient.end_capture(ok=False, error=str(exc))
@@ -1347,6 +1351,59 @@ def api_vision_affect_ambient_toggle(req: AffectAmbientToggleRequest) -> Dict[st
     vision_affect_ambient.state.enabled = req.enabled
     logger.info(f"[HUB] affect_ambient_toggle enabled={req.enabled}")
     return vision_affect_ambient.state.status_payload()
+
+
+# --- Carbon camera dropdown (2026-08-22, Juniper's ask: "port that into
+# hub's camera drop down... one for streaming carbon, and one for the most
+# recent affect snapshot") -----------------------------------------------
+
+
+@router.get("/api/vision/carbon/latest-frame")
+async def api_vision_carbon_latest_frame() -> Dict[str, Any]:
+    """Metadata (sha256, frame_ts) for carbon's most recent captured frame
+    -- powers the Vision panel's "Carbon (live)" dropdown option. Backed by
+    vision_frame_cache.py's bus-subscriber cache -- confirmed live 2026-08-22
+    that no persisted "latest frame for stream X" lookup exists anywhere
+    else in this repo (see that module's docstring)."""
+    if vision_frame_cache.cache is None:
+        return {"available": False, "reason": "cache_not_started"}
+    latest = await vision_frame_cache.cache.get_latest("carbon")
+    if not latest:
+        return {"available": False, "reason": "no_frame_seen_yet"}
+    return {"available": True, **latest}
+
+
+@router.get("/api/vision/carbon/latest-frame/image")
+async def api_vision_carbon_latest_frame_image() -> Response:
+    """Proxies the actual JPEG bytes from orion-percept-store, server-side
+    -- the browser never talks to percept-store directly (no auth/CORS
+    surface to expose, and percept-store's port doesn't need to be
+    reachable from wherever Hub's frontend happens to be loaded from)."""
+    if vision_frame_cache.cache is None:
+        raise HTTPException(status_code=503, detail="vision_frame_cache_not_started")
+    latest = await vision_frame_cache.cache.get_latest("carbon")
+    if not latest or not latest.get("sha256"):
+        raise HTTPException(status_code=404, detail="no_frame_seen_yet")
+
+    base = str(settings.PERCEPT_STORE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(status_code=503, detail="percept_store_base_url_not_configured")
+    fetch_headers = {}
+    if settings.PERCEPT_STORE_TOKEN:
+        fetch_headers["X-Orion-Percept-Token"] = settings.PERCEPT_STORE_TOKEN
+    try:
+        resp = await asyncio.to_thread(
+            requests.get,
+            f"{base}/{latest['sha256']}",
+            headers=fetch_headers,
+            timeout=float(settings.PERCEPT_STORE_TIMEOUT_SEC),
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=502, detail=f"percept_store_unavailable:{exc}"
+        ) from exc
+    return Response(content=resp.content, media_type="image/jpeg")
 
 
 class AutonomyGoalArchiveRequest(BaseModel):

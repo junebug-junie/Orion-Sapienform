@@ -140,7 +140,7 @@ async def test_handle_clip_request_maps_cooldown_to_its_own_error_code(monkeypat
             source=ServiceRef(name="test-caller", version="0.0.0"),
             correlation_id=c,
             reply_to=f"orion:retina:clip:reply:{c}",
-            payload={},
+            payload={"target_stream_id": "retina-stream-01"},  # matches _make_svc's default RETINA_STREAM_ID
         )
 
     await svc._handle_clip_request(_envelope())  # first: succeeds

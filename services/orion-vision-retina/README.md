@@ -199,6 +199,24 @@ authentication. Real per-caller auth on this channel (or a signed capability
 token) is legitimate follow-up work, not done here; note this in any future
 threat-model pass on the bus.
 
+**Camera-identity check (Juniper's explicit instruction, 2026-08-22): "I want
+this to only run on my carbon webcam."** This channel has no built-in
+per-instance routing at all -- confirmed live 2026-08-22: no second retina
+deployment is actually configured anywhere in this repo today (the office/
+room camera, "Eye-Ball-1"/`cam0` in Hub's Vision panel, is a completely
+separate service, `orion-vision-edge`, sharing zero code path with this
+one), but the docs for THIS service already anticipate a future room-camera
+retina deployment. Without a check, that future deployment (or any retina
+instance with `RETINA_CLIP_ENABLED=true`) would silently race this one for
+every request on the shared channel. `RetinaClipCaptureRequestPayload.target_stream_id`
+(required, no default -- see `orion/schemas/vision.py`) closes that: every
+instance compares the incoming request's `target_stream_id` against its own
+`RETINA_STREAM_ID` BEFORE checking `RETINA_CLIP_ENABLED` or anything else,
+and refuses (`error_code="wrong_camera"`) on a mismatch. This is a real
+structural guarantee, not an operational convention an operator has to
+remember -- it holds even if a second instance is misconfigured with
+`RETINA_CLIP_ENABLED=true`.
+
 ## Tests
 
 From repo root (worktree or main):

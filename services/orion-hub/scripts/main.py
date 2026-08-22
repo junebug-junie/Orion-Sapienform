@@ -30,6 +30,7 @@ from scripts.chat_attachments import router as chat_attachments_router
 import scripts.api_routes as api_routes_runtime
 import scripts.concept_atlas_routes as concept_atlas_routes_runtime
 import scripts.vision_affect_ambient as vision_affect_ambient_runtime
+import scripts.vision_frame_cache as vision_frame_cache_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
@@ -429,6 +430,22 @@ async def startup_event():
                 role_weights_json=settings.BIOMETRICS_ROLE_WEIGHTS_JSON,
             )
             await biometrics_cache.start(bus)
+
+            # Latest-frame-per-stream cache for the Vision panel's "Carbon
+            # (live)" option -- see scripts/vision_frame_cache.py module
+            # docstring. Module-level singleton (same pattern as
+            # vision_affect_ambient.state), not instantiated-in-main.py like
+            # biometrics_cache above, so api_routes.py can read it directly.
+            vision_frame_cache_runtime.cache = vision_frame_cache_runtime.VisionFrameCache(
+                enabled=settings.VISION_FRAME_CACHE_ENABLED,
+                stream_ids={
+                    s.strip()
+                    for s in settings.VISION_FRAME_CACHE_STREAM_IDS.split(",")
+                    if s.strip()
+                },
+                channel=settings.VISION_FRAME_CHANNEL,
+            )
+            await vision_frame_cache_runtime.cache.start(bus)
 
             notification_cache = NotificationCache(
                 max_items=settings.NOTIFY_IN_APP_MAX,
@@ -935,6 +952,8 @@ async def shutdown_event() -> None:
         affect_ambient_loop_task = None
     if biometrics_cache is not None:
         await biometrics_cache.stop()
+    if vision_frame_cache_runtime.cache is not None:
+        await vision_frame_cache_runtime.cache.stop()
     if notification_cache is not None:
         await notification_cache.stop()
     if bus_synaptic_trigger_notifier is not None:

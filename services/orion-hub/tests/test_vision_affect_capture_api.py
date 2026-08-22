@@ -30,6 +30,7 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
 
 from scripts import api_routes  # noqa: E402
 from scripts import vision_affect_ambient  # noqa: E402
+from scripts import vision_frame_cache  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -201,3 +202,109 @@ def test_check_now_releases_the_slot_on_transport_failure():
     assert vision_affect_ambient.state.tick_in_progress is False
     assert vision_affect_ambient.state.last_result_ok is False
     assert vision_affect_ambient.try_begin_capture("ambient") is True
+
+
+def test_check_now_stores_raw_response_and_video_sha256_for_the_affect_snapshot_view():
+    """Vision panel's "Carbon (affect snapshot)" option (2026-08-22) reads
+    these off the shared status endpoint -- a manual "Check now" must
+    populate them exactly like an ambient tick does."""
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {
+        "capture": {"ok": True, "video_sha256": "a" * 64},
+        "result": {"ok": True, "raw_response": "calm, focused"},
+    }
+    with patch.object(
+        api_routes.settings, "JUNIPER_AFFECTIVE_STATE_BASE_URL", "http://circe:32799"
+    ), patch.object(api_routes.requests, "post", return_value=fake_resp):
+        api_routes.api_vision_affect_capture()
+
+    assert vision_affect_ambient.state.last_raw_response == "calm, focused"
+    assert vision_affect_ambient.state.last_video_sha256 == "a" * 64
+
+
+# --- Carbon camera dropdown (2026-08-22) ------------------------------------
+
+
+class _FakeFrameCache:
+    def __init__(self, latest=None):
+        self._latest = latest
+
+    async def get_latest(self, stream_id):
+        return self._latest
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_route_reports_unavailable_when_cache_not_started():
+    with patch.object(vision_frame_cache, "cache", None):
+        payload = await api_routes.api_vision_carbon_latest_frame()
+    assert payload == {"available": False, "reason": "cache_not_started"}
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_route_reports_no_frame_seen_yet():
+    with patch.object(vision_frame_cache, "cache", _FakeFrameCache(latest=None)):
+        payload = await api_routes.api_vision_carbon_latest_frame()
+    assert payload == {"available": False, "reason": "no_frame_seen_yet"}
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_route_returns_the_cached_pointer():
+    latest = {"sha256": "a" * 64, "frame_ts": 100.0, "width": 640, "height": 480, "cached_at": 1.0}
+    with patch.object(vision_frame_cache, "cache", _FakeFrameCache(latest=latest)):
+        payload = await api_routes.api_vision_carbon_latest_frame()
+    assert payload["available"] is True
+    assert payload["sha256"] == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_image_404s_when_no_frame_seen_yet():
+    with patch.object(vision_frame_cache, "cache", _FakeFrameCache(latest=None)):
+        with pytest.raises(HTTPException) as exc_info:
+            await api_routes.api_vision_carbon_latest_frame_image()
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_image_503s_when_percept_store_base_url_unset():
+    latest = {"sha256": "a" * 64, "frame_ts": 100.0}
+    with patch.object(vision_frame_cache, "cache", _FakeFrameCache(latest=latest)), patch.object(
+        api_routes.settings, "PERCEPT_STORE_BASE_URL", ""
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await api_routes.api_vision_carbon_latest_frame_image()
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_image_proxies_bytes_from_percept_store():
+    latest = {"sha256": "a" * 64, "frame_ts": 100.0}
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.content = b"\xff\xd8fake-jpeg-bytes"
+    with patch.object(
+        vision_frame_cache, "cache", _FakeFrameCache(latest=latest)
+    ), patch.object(
+        api_routes.settings, "PERCEPT_STORE_BASE_URL", "http://store/percepts"
+    ), patch.object(api_routes.requests, "get", return_value=fake_resp) as mock_get:
+        response = await api_routes.api_vision_carbon_latest_frame_image()
+
+    mock_get.assert_called_once()
+    assert mock_get.call_args.args[0] == "http://store/percepts/" + "a" * 64
+    assert response.media_type == "image/jpeg"
+    assert response.body == b"\xff\xd8fake-jpeg-bytes"
+
+
+@pytest.mark.asyncio
+async def test_latest_frame_image_502s_on_percept_store_transport_failure():
+    latest = {"sha256": "a" * 64, "frame_ts": 100.0}
+    with patch.object(
+        vision_frame_cache, "cache", _FakeFrameCache(latest=latest)
+    ), patch.object(
+        api_routes.settings, "PERCEPT_STORE_BASE_URL", "http://store/percepts"
+    ), patch.object(
+        api_routes.requests, "get", side_effect=requests.ConnectionError("refused")
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await api_routes.api_vision_carbon_latest_frame_image()
+    assert exc_info.value.status_code == 502

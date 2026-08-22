@@ -323,6 +323,31 @@ class Settings(BaseSettings):
     # full interval later.
     AFFECT_AMBIENT_POLL_SEC: float = Field(default=5.0, alias="AFFECT_AMBIENT_POLL_SEC")
 
+    # Vision panel camera dropdown -- "Carbon (live)" / "Carbon (affect
+    # snapshot)" (2026-08-22, Juniper's ask: "port that into hub's camera
+    # drop down"). scripts/vision_frame_cache.py subscribes to the bus
+    # (orion:vision:frames) to remember the latest frame pointer per stream
+    # -- see that module's docstring for why (no persisted "latest frame"
+    # lookup exists anywhere else in this repo). Scoped to an explicit
+    # allowlist, not every stream in the mesh -- cam0 alone publishes far
+    # more traffic than this panel has any use for.
+    VISION_FRAME_CACHE_ENABLED: bool = Field(default=True, alias="VISION_FRAME_CACHE_ENABLED")
+    VISION_FRAME_CACHE_STREAM_IDS: str = Field(
+        default="carbon",
+        alias="VISION_FRAME_CACHE_STREAM_IDS",
+        description="Comma-separated stream_ids to cache the latest frame pointer for.",
+    )
+    # Matches orion-vision-retina's own CHANNEL_RETINA_PUB default.
+    VISION_FRAME_CHANNEL: str = Field(default="orion:vision:frames", alias="VISION_FRAME_CHANNEL")
+
+    # Where /api/vision/carbon/latest-frame/image fetches the actual JPEG
+    # bytes from, server-side -- the browser never talks to percept-store
+    # directly. Same base-URL convention as orion-vision-retina's own
+    # RETINA_PERCEPT_STORE_URL (includes the /percepts suffix already).
+    PERCEPT_STORE_BASE_URL: str = Field(default="", alias="PERCEPT_STORE_BASE_URL")
+    PERCEPT_STORE_TIMEOUT_SEC: float = Field(default=10.0, alias="PERCEPT_STORE_TIMEOUT_SEC")
+    PERCEPT_STORE_TOKEN: str = Field(default="", alias="PERCEPT_STORE_TOKEN")
+
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")
     BIOMETRICS_STALE_AFTER_SEC: float = Field(default=60.0, alias="BIOMETRICS_STALE_AFTER_SEC")

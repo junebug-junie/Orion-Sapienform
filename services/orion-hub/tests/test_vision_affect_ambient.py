@@ -196,6 +196,8 @@ def test_status_payload_shape():
     ambient.state.last_result_ok = False
     ambient.state.last_error = "timeout"
     ambient.state.last_trigger = "ambient"
+    ambient.state.last_raw_response = "calm"
+    ambient.state.last_video_sha256 = "a" * 64
     payload = ambient.state.status_payload()
     assert payload == {
         "enabled": True,
@@ -205,6 +207,8 @@ def test_status_payload_shape():
         "last_trigger": "ambient",
         "last_result_ok": False,
         "last_error": "timeout",
+        "last_raw_response": "calm",
+        "last_video_sha256": "a" * 64,
     }
 
 
@@ -233,6 +237,41 @@ def test_end_capture_releases_the_slot_for_the_next_caller():
     assert ambient.state.tick_in_progress is False
     assert ambient.state.last_result_ok is True
     assert ambient.try_begin_capture("ambient") is True, "the slot must be free again after end_capture"
+
+
+def test_end_capture_stores_raw_response_only_on_success():
+    ambient.state.last_raw_response = "sad, contemplative"
+    ambient.state.last_video_sha256 = "a" * 64
+
+    ambient.try_begin_capture("manual")
+    ambient.end_capture(ok=False, error="timeout")
+
+    # A failure must NOT erase the last real reading -- "Carbon (affect
+    # snapshot)" should keep showing the last successful result, not go
+    # blank the moment one attempt fails.
+    assert ambient.state.last_raw_response == "sad, contemplative"
+    assert ambient.state.last_video_sha256 == "a" * 64
+
+    ambient.try_begin_capture("ambient")
+    ambient.end_capture(ok=True, error=None, raw_response="calm", video_sha256="b" * 64)
+
+    assert ambient.state.last_raw_response == "calm"
+    assert ambient.state.last_video_sha256 == "b" * 64
+
+
+def test_result_content_extracts_raw_response_and_video_sha256():
+    body = {
+        "capture": {"ok": True, "video_sha256": "a" * 64},
+        "result": {"ok": True, "raw_response": "focused"},
+    }
+    raw_response, video_sha256 = ambient.result_content(body)
+    assert raw_response == "focused"
+    assert video_sha256 == "a" * 64
+
+
+def test_result_content_handles_a_missing_result_or_capture():
+    assert ambient.result_content({}) == (None, None)
+    assert ambient.result_content({"result": {"ok": False}}) == (None, None)
 
 
 @pytest.mark.asyncio

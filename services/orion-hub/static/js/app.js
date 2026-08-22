@@ -11811,10 +11811,69 @@ document.addEventListener("DOMContentLoaded", () => {
       window.addEventListener('resize', setAllCanvasSizes);
       
       // Vision UI Init
+      // Carbon has no continuous video stream -- only a ~5s-interval
+      // still-frame presence loop (docs/operations/carbon-webcam.md). The
+      // "Carbon (live)" option below polls the latest captured frame
+      // rather than showing real video; carbonLivePollTimer tracks that
+      // poll so switching away from it (or re-selecting it) doesn't stack
+      // multiple overlapping timers.
+      let carbonLivePollTimer = null;
+
+      function stopCarbonLivePoll() {
+        if (carbonLivePollTimer) {
+          clearInterval(carbonLivePollTimer);
+          carbonLivePollTimer = null;
+        }
+      }
+
+      function renderCarbonLiveFrame(container) {
+        const img = new Image();
+        img.className = "w-full h-full object-contain";
+        img.alt = "Carbon (latest captured frame)";
+        img.src = `/api/vision/carbon/latest-frame/image?t=${Date.now()}`;
+        img.onerror = () => {
+          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No frame from carbon yet -- confirm orion-vision-retina is running there.</div>';
+        };
+        img.onload = () => {
+          container.innerHTML = "";
+          container.appendChild(img);
+        };
+      }
+
+      async function renderCarbonAffectSnapshot(container) {
+        container.innerHTML = '<div class="text-gray-400 text-xs text-center px-4">Loading last affect check…</div>';
+        try {
+          const resp = await fetch("/api/vision/affect-ambient/status");
+          const status = await resp.json().catch(() => null);
+          if (!resp.ok || !status) {
+            container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">Affect status unavailable.</div>';
+            return;
+          }
+          if (!status.last_attempt_at) {
+            container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No affect check has run yet -- use "Check now" or the ambient toggle.</div>';
+            return;
+          }
+          const when = formatAgo(status.last_attempt_at);
+          const kindLabel = status.last_trigger === "manual" ? "manual check" : "ambient tick";
+          if (status.last_result_ok && status.last_raw_response) {
+            container.innerHTML = `
+              <div class="w-full h-full overflow-y-auto p-4 text-sm text-gray-200 whitespace-pre-wrap">
+                <div class="text-[11px] text-gray-500 mb-2">Last ${kindLabel}, ${when}</div>
+                ${status.last_raw_response.replace(/</g, "&lt;")}
+              </div>`;
+          } else {
+            container.innerHTML = `<div class="text-gray-500 text-xs text-center px-4">Last ${kindLabel} (${when}) had no successful result${status.last_error ? ": " + status.last_error : ""}.</div>`;
+          }
+        } catch (err) {
+          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">Affect status unavailable.</div>';
+        }
+      }
+
       function updateVisionUi() {
         if (!visionDockedContainer) return;
+        stopCarbonLivePoll();
         const value = visionSourceSelect ? visionSourceSelect.value : "";
-        
+
         // Simple visibility toggles based on source selection
         const hasSource = value !== 'none';
         if (!hasSource) {
@@ -11824,12 +11883,28 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
+        if (value === "carbon-live") {
+            if (visionFloatingContainer) visionFloatingContainer.classList.add("hidden");
+            if (visionPopoutButton) visionPopoutButton.textContent = "Pop Out";
+            renderCarbonLiveFrame(visionDockedContainer);
+            // Matches carbon's own ~5s capture cadence -- polling faster
+            // than that would just refetch the same frame.
+            carbonLivePollTimer = setInterval(() => renderCarbonLiveFrame(visionDockedContainer), 5000);
+            return;
+        }
+        if (value === "carbon-affect") {
+            if (visionFloatingContainer) visionFloatingContainer.classList.add("hidden");
+            if (visionPopoutButton) visionPopoutButton.textContent = "Pop Out";
+            renderCarbonAffectSnapshot(visionDockedContainer);
+            return;
+        }
+
         let endpoint = value === "gopro-1" ? `${VISION_EDGE_BASE}/stream.mjpg` : "/static/img/vision-simulated.gif";
         // prevent caching
         if(value === "gopro-1") endpoint += "?t=" + Date.now();
 
         const imgHtml = `<img src="${endpoint}" class="w-full h-full object-cover">`;
-        
+
         if (visionIsFloating && visionFloatingContainer) {
             visionFloatingContainer.classList.remove("hidden");
             const flex = visionFloatingContainer.querySelector('.flex-1');

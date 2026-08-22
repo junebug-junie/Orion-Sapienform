@@ -160,14 +160,42 @@ class RetinaClipCaptureRequestPayload(BaseModel):
     to the capturing node (e.g. carbon accepts no inbound HTTP per
     docs/operations/carbon-webcam.md; the bus is its only reachable surface).
 
-    Deliberately empty of tunable fields for v1: duration/framerate/device
-    are the capturing node's own configured defaults
-    (RETINA_CLIP_DURATION_SEC etc.), not caller-overridable -- a remote
-    caller dictating recording parameters to a physical webcam it cannot see
-    is a bigger surface than this capability needs yet.
+    Mostly empty of tunable fields on purpose: duration/framerate/device are
+    the capturing node's own configured defaults (RETINA_CLIP_DURATION_SEC
+    etc.), not caller-overridable -- a remote caller dictating recording
+    parameters to a physical webcam it cannot see is a bigger surface than
+    this capability needs yet.
+
+    ``target_stream_id`` is the one required exception (added 2026-08-22,
+    Juniper's explicit instruction: "I want this to only run on my carbon
+    webcam"). This channel (orion:exec:request:RetinaClipCaptureService,
+    single_consumer: true in orion/bus/channels.yaml) has no built-in
+    per-instance routing -- ANY orion-vision-retina instance subscribed to
+    it with RETINA_CLIP_ENABLED=true would respond to ANY request. Today
+    that's a latent risk, not a live one (confirmed 2026-08-22: no second
+    retina deployment is actually configured anywhere in this repo, and the
+    office/room camera -- "Eye-Ball-1"/cam0 in Hub's Vision panel -- is a
+    completely separate service, orion-vision-edge, sharing no code path
+    with this one at all). But the docs for this very service explicitly
+    anticipate a future room-camera retina deployment
+    ("orion-vision-retina/docker-compose.yml"'s own comment), so this field
+    is the structural guarantee, not just an operational convention: every
+    retina instance checks it against its own RETINA_STREAM_ID and refuses
+    to capture on a mismatch (see RetinaService._handle_clip_request),
+    rather than relying on "nobody else has RETINA_CLIP_ENABLED=true yet."
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    target_stream_id: str = Field(
+        ...,
+        description=(
+            "Must equal the responding retina instance's own RETINA_STREAM_ID "
+            "(e.g. 'carbon') or that instance refuses to capture, replying "
+            "ok=False error_code='wrong_camera' instead. Required, no "
+            "default -- a caller must say which camera it means."
+        ),
+    )
 
 
 class RetinaClipCaptureResultPayload(BaseModel):

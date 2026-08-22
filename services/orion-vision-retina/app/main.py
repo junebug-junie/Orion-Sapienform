@@ -10,7 +10,11 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.schemas.vision import VisionFramePointerPayload
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.vision import (
+    RetinaClipCaptureResultPayload,
+    VisionFramePointerPayload,
+)
 
 from .clip_capture import ClipCaptureError, capture_clip
 from .envelopes import make_frame_pointer_envelope
@@ -62,6 +66,13 @@ class RetinaService:
         # tests could have caught this: it only manifests with a real
         # camera device, which this session never had access to.
         self._device_lock = asyncio.Lock()
+        # One capture at a time: /dev/video0 is exclusive-access, and a
+        # second ffmpeg trying to open it mid-capture fails with an opaque
+        # device-busy error instead of a clear "already in progress"
+        # response. Shared by the HTTP route and the bus RPC consumer below
+        # -- both must serialize through the same lock, not one each.
+        self._clip_capture_lock = asyncio.Lock()
+        self._clip_consumer_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         logger.remove()
@@ -72,11 +83,16 @@ class RetinaService:
         self._shutdown.clear()
         self._capture_task = asyncio.create_task(self.capture_loop())
         self._health_task = asyncio.create_task(self._health_loop())
+        if self.settings.RETINA_CLIP_ENABLED:
+            self._clip_consumer_task = asyncio.create_task(self._clip_consume_loop())
+            logger.info(
+                f"[RETINA] clip RPC intake → {self.settings.CHANNEL_RETINA_CLIP_INTAKE}"
+            )
         logger.info(f"[RETINA] Started → {self.settings.CHANNEL_RETINA_PUB}")
 
     async def stop(self) -> None:
         self._shutdown.set()
-        for task in (self._capture_task, self._health_task):
+        for task in (self._capture_task, self._health_task, self._clip_consumer_task):
             if task:
                 task.cancel()
                 try:
@@ -85,6 +101,130 @@ class RetinaService:
                     pass
         await self.source.stop()
         await self.bus.close()
+
+    async def capture_and_upload_clip(self) -> RetinaClipCaptureResultPayload:
+        """Shared body for both POST /capture/clip and the bus RPC consumer
+        -- record a clip, upload video+audio to percept-store, return refs.
+        Raises ClipCaptureError / PerceptUploadError / OSError; callers map
+        those to their own transport's error shape (HTTP status vs a
+        RetinaClipCaptureResultPayload with ok=False).
+        """
+        s = self.settings
+        async with self._clip_capture_lock:
+            # pause_device(): release /dev/video0 for the continuous
+            # capture_loop first -- see _device_lock comment above. Real bug
+            # found live on carbon (2026-08-22): without this, ffmpeg failed
+            # every time with "Device or resource busy" because capture_loop
+            # already held the webcam open.
+            async with self.pause_device():
+                result = await capture_clip(
+                    ffmpeg_bin=s.RETINA_CLIP_FFMPEG_BIN,
+                    video_device=s.RETINA_CLIP_VIDEO_DEVICE,
+                    audio_input=s.RETINA_CLIP_AUDIO_INPUT,
+                    duration_sec=s.RETINA_CLIP_DURATION_SEC,
+                    video_framerate=s.RETINA_CLIP_FRAMERATE,
+                    width=s.RETINA_CLIP_WIDTH,
+                    height=s.RETINA_CLIP_HEIGHT,
+                    timeout_sec=s.RETINA_CLIP_TIMEOUT_SEC,
+                )
+            video_sha256, audio_sha256 = await asyncio.gather(
+                asyncio.to_thread(
+                    upload_bytes,
+                    result.video_bytes,
+                    base_url=s.RETINA_PERCEPT_STORE_URL,
+                    token=s.RETINA_PERCEPT_STORE_TOKEN or None,
+                    timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
+                ),
+                asyncio.to_thread(
+                    upload_bytes,
+                    result.audio_bytes,
+                    base_url=s.RETINA_PERCEPT_STORE_URL,
+                    token=s.RETINA_PERCEPT_STORE_TOKEN or None,
+                    timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
+                ),
+            )
+        logger.info(
+            f"[RETINA] clip captured+uploaded video={video_sha256[:12]} audio={audio_sha256[:12]}"
+        )
+        return RetinaClipCaptureResultPayload(
+            ok=True,
+            video_sha256=video_sha256,
+            audio_sha256=audio_sha256,
+            duration_sec=result.duration_sec,
+            video_bytes=len(result.video_bytes),
+            audio_bytes=len(result.audio_bytes),
+        )
+
+    async def _clip_consume_loop(self) -> None:
+        """Bus-reachable twin of POST /capture/clip -- see
+        orion/bus/channels.yaml's orion:exec:request:RetinaClipCaptureService
+        entry for why this exists (carbon has no reachable inbound HTTP
+        surface). Mirrors orion-affectgpt-worker's _consume_loop pattern.
+        """
+        while not self._shutdown.is_set():
+            try:
+                async with self.bus.subscribe(
+                    self.settings.CHANNEL_RETINA_CLIP_INTAKE
+                ) as pubsub:
+                    async for msg in self.bus.iter_messages(pubsub):
+                        if self._shutdown.is_set():
+                            break
+                        data = msg.get("data")
+                        if not data:
+                            continue
+                        decoded = self.bus.codec.decode(data)
+                        if not decoded.ok or not decoded.envelope:
+                            logger.error(f"[RETINA] clip RPC decode failed: {decoded.error}")
+                            continue
+                        asyncio.create_task(self._handle_clip_request(decoded.envelope))
+            except Exception as exc:
+                logger.error(f"[RETINA] clip RPC consumer error: {exc}")
+                await asyncio.sleep(1)
+
+    async def _handle_clip_request(self, envelope: BaseEnvelope) -> None:
+        s = self.settings
+        if not s.RETINA_CLIP_ENABLED:
+            result = RetinaClipCaptureResultPayload(
+                ok=False, error="RETINA_CLIP_ENABLED is false", error_code="disabled"
+            )
+        elif not s.RETINA_PERCEPT_STORE_URL:
+            result = RetinaClipCaptureResultPayload(
+                ok=False,
+                error="RETINA_PERCEPT_STORE_URL is unset",
+                error_code="not_configured",
+            )
+        elif self._clip_capture_lock.locked():
+            result = RetinaClipCaptureResultPayload(
+                ok=False, error="a capture is already in progress", error_code="busy"
+            )
+        else:
+            try:
+                result = await self.capture_and_upload_clip()
+            except ClipCaptureError as exc:
+                logger.error(f"[RETINA] clip capture failed (bus): {exc}")
+                result = RetinaClipCaptureResultPayload(
+                    ok=False, error=str(exc), error_code="capture_error"
+                )
+            except PerceptUploadError as exc:
+                logger.error(f"[RETINA] clip upload failed (bus): {exc}")
+                result = RetinaClipCaptureResultPayload(
+                    ok=False, error=str(exc), error_code="upload_error"
+                )
+            except OSError as exc:
+                logger.error(f"[RETINA] clip capture could not start (bus): {exc}")
+                result = RetinaClipCaptureResultPayload(
+                    ok=False,
+                    error=f"capture failed to start: {exc}",
+                    error_code="os_error",
+                )
+
+        host_ref = ServiceRef(name=s.SERVICE_NAME, version=s.SERVICE_VERSION)
+        reply_envelope = envelope.derive_child(
+            kind="retina.clip_capture.result", source=host_ref, payload=result
+        )
+        corr_id = str(envelope.correlation_id)
+        reply_channel = envelope.reply_to or f"{s.CHANNEL_RETINA_CLIP_REPLY_PREFIX}:{corr_id}"
+        await self.bus.publish(reply_channel, reply_envelope)
 
     @asynccontextmanager
     async def pause_device(self):
@@ -246,26 +386,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Orion Vision Retina", version="0.2.0", lifespan=lifespan)
 
-# One capture at a time: /dev/video0 is exclusive-access, and a second ffmpeg
-# trying to open it mid-capture fails with an opaque device-busy error
-# instead of a clear "already in progress" response (review finding,
-# 2026-08-22).
-_clip_capture_lock = asyncio.Lock()
-
 
 @app.post("/capture/clip")
 async def capture_clip_endpoint(request: Request):
     """On-demand video+audio clip capture for AffectGPT. See
     app/clip_capture.py module docstring: UNVERIFIED against real hardware.
 
-    No toggle, no bus wiring yet -- deliberately on-demand only for this
-    first patch (see services/orion-juniper-affective-state/README.md non-
-    goals). A caller (curl, or later Hub) hits this and gets back sha256
-    refs. **Those refs are not yet consumable end-to-end**:
-    orion-affectgpt-worker currently requires local video_path/audio_path,
-    not a percept-store ref -- fetch-by-hash on that side is real, separate,
-    not-yet-built follow-up work (review finding, 2026-08-22: this docstring
-    previously implied more readiness than exists).
+    HTTP path for an operator on the same host/tailnet as this port (carbon's
+    venv/systemd deploy binds 127.0.0.1 only). Callers with no network path
+    to this node at all (e.g. Hub, via orion-juniper-affective-state) use
+    the bus RPC twin instead -- see RetinaService._handle_clip_request /
+    orion:exec:request:RetinaClipCaptureService in orion/bus/channels.yaml.
+    Both share RetinaService.capture_and_upload_clip() so there is exactly
+    one capture implementation, not two that can drift.
+
+    A caller (curl, or Hub via the bus) gets back sha256 refs. **Those refs
+    are not yet consumable by the worker directly** -- orion-affectgpt-worker
+    still requires local video_path/audio_path; orion-juniper-affective-state
+    does the percept-store fetch-by-hash + temp-file bridge on circe (see
+    that service's app/main.py capture_and_assess()).
     """
     s = service.settings
     if not s.RETINA_CLIP_ENABLED:
@@ -283,69 +422,25 @@ async def capture_clip_endpoint(request: Request):
         if request.headers.get("X-Orion-Retina-Token") != s.RETINA_CLIP_TOKEN:
             return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
-    if _clip_capture_lock.locked():
+    if service._clip_capture_lock.locked():
         return JSONResponse(
             {"ok": False, "error": "a capture is already in progress"}, status_code=409
         )
 
-    async with _clip_capture_lock:
-        try:
-            # pause_device(): release /dev/video0 for the continuous
-            # capture_loop first -- see RetinaService._device_lock comment.
-            # Real bug found live on carbon (2026-08-22): without this,
-            # ffmpeg failed every time with "Device or resource busy"
-            # because capture_loop already held the webcam open.
-            async with service.pause_device():
-                result = await capture_clip(
-                    ffmpeg_bin=s.RETINA_CLIP_FFMPEG_BIN,
-                    video_device=s.RETINA_CLIP_VIDEO_DEVICE,
-                    audio_input=s.RETINA_CLIP_AUDIO_INPUT,
-                    duration_sec=s.RETINA_CLIP_DURATION_SEC,
-                    video_framerate=s.RETINA_CLIP_FRAMERATE,
-                    width=s.RETINA_CLIP_WIDTH,
-                    height=s.RETINA_CLIP_HEIGHT,
-                    timeout_sec=s.RETINA_CLIP_TIMEOUT_SEC,
-                )
-        except ClipCaptureError as exc:
-            logger.error(f"[RETINA] clip capture failed: {exc}")
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
-        except OSError as exc:
-            # e.g. RETINA_CLIP_FFMPEG_BIN misconfigured / ffmpeg not
-            # installed -- create_subprocess_exec raises this directly,
-            # unguarded, before clip_capture.py gets a chance to wrap it
-            # (review finding, 2026-08-22: this used to be an unhandled 500).
-            logger.error(f"[RETINA] clip capture could not start: {exc}")
-            return JSONResponse({"ok": False, "error": f"capture failed to start: {exc}"}, status_code=502)
+    try:
+        result = await service.capture_and_upload_clip()
+    except ClipCaptureError as exc:
+        logger.error(f"[RETINA] clip capture failed: {exc}")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    except OSError as exc:
+        # e.g. RETINA_CLIP_FFMPEG_BIN misconfigured / ffmpeg not
+        # installed -- create_subprocess_exec raises this directly,
+        # unguarded, before clip_capture.py gets a chance to wrap it
+        # (review finding, 2026-08-22: this used to be an unhandled 500).
+        logger.error(f"[RETINA] clip capture could not start: {exc}")
+        return JSONResponse({"ok": False, "error": f"capture failed to start: {exc}"}, status_code=502)
+    except PerceptUploadError as exc:
+        logger.error(f"[RETINA] clip upload failed: {exc}")
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
 
-        try:
-            video_sha256, audio_sha256 = await asyncio.gather(
-                asyncio.to_thread(
-                    upload_bytes,
-                    result.video_bytes,
-                    base_url=s.RETINA_PERCEPT_STORE_URL,
-                    token=s.RETINA_PERCEPT_STORE_TOKEN or None,
-                    timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
-                ),
-                asyncio.to_thread(
-                    upload_bytes,
-                    result.audio_bytes,
-                    base_url=s.RETINA_PERCEPT_STORE_URL,
-                    token=s.RETINA_PERCEPT_STORE_TOKEN or None,
-                    timeout_sec=s.RETINA_PERCEPT_TIMEOUT_SEC,
-                ),
-            )
-        except PerceptUploadError as exc:
-            logger.error(f"[RETINA] clip upload failed: {exc}")
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
-
-    logger.info(
-        f"[RETINA] clip captured+uploaded video={video_sha256[:12]} audio={audio_sha256[:12]}"
-    )
-    return {
-        "ok": True,
-        "video_sha256": video_sha256,
-        "audio_sha256": audio_sha256,
-        "duration_sec": result.duration_sec,
-        "video_bytes": len(result.video_bytes),
-        "audio_bytes": len(result.audio_bytes),
-    }
+    return result.model_dump(exclude_none=True)

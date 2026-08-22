@@ -502,6 +502,8 @@ from orion.schemas.vision import (
     VisionEventCandidateV1,
     VisionEventPayload,
     VisionFramePointerPayload,
+    RetinaClipCaptureRequestPayload,
+    RetinaClipCaptureResultPayload,
     VisionGrammarProjectionCandidateV1,
     VisionGuardAlert,
     VisionGuardSignal,
@@ -827,6 +829,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AffectGptAssessRequestPayload": AffectGptAssessRequestPayload,
     "AffectGptAssessResultPayload": AffectGptAssessResultPayload,
     "JuniperMultimodalAffectV1": JuniperMultimodalAffectV1,
+    "RetinaClipCaptureRequestPayload": RetinaClipCaptureRequestPayload,
+    "RetinaClipCaptureResultPayload": RetinaClipCaptureResultPayload,
     "VisionTaskRequestPayload": VisionTaskRequestPayload,
     "VisionTaskResultPayload": VisionTaskResultPayload,
     "VisionArtifactPayload": VisionArtifactPayload,
@@ -1349,6 +1353,13 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "JuniperMultimodalAffectV1": SchemaRegistration(
         model=JuniperMultimodalAffectV1,
         kind="affectgpt.juniper_multimodal_affect.v1",
+    ),
+    # orion-vision-retina bus-reachable clip capture (2026-08-22). Request
+    # kind is set literally by the producer (orion-juniper-affective-state),
+    # same pattern as AffectGptAssessRequestPayload above.
+    "RetinaClipCaptureResultPayload": SchemaRegistration(
+        model=RetinaClipCaptureResultPayload,
+        kind="retina.clip_capture.result",
     ),
     # SubstrateReadService (2026-08-12, design doc
     # 2026-08-12-substrate-action-perception-design.md option B(2)). Registered

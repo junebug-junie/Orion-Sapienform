@@ -578,6 +578,30 @@ channels:
     stability: "experimental"
     since: "2026-08-22"
 
+  # Bus-reachable twin of orion-vision-retina's POST /capture/clip
+  # (2026-08-22). Exists because the capturing node has no reachable HTTP
+  # surface to a caller like Hub -- carbon accepts no inbound at all per
+  # docs/operations/carbon-webcam.md ("Nothing needs to reach carbon
+  # inbound"), only outbound to the bus and orion-percept-store. Same
+  # RPC shape as orion:exec:request:AffectGptWorkerService above.
+  - name: "orion:exec:request:RetinaClipCaptureService"
+    kind: "request"
+    schema_id: "RetinaClipCaptureRequestPayload"
+    producer_services: ["orion-juniper-affective-state"]
+    consumer_services: ["orion-vision-retina"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-22"
+
+  - name: "orion:retina:clip:reply:*"
+    kind: "result"
+    schema_id: "RetinaClipCaptureResultPayload"
+    message_kind: "retina.clip_capture.result"
+    producer_services: ["orion-vision-retina"]
+    consumer_services: ["orion-juniper-affective-state"]
+    stability: "experimental"
+    since: "2026-08-22"
+
   # orion-world-model (2026-08-20 scaffold, docs/superpowers/specs/
   # 2026-08-20-reverie-visual-chain-design.md §3/§8 deferred "whatever
   # 'world model' turns out to mean" -- this is that follow-up: port/schema/

@@ -39,6 +39,9 @@ services:
       - RETINA_CLIP_WIDTH=${RETINA_CLIP_WIDTH:-}
       - RETINA_CLIP_HEIGHT=${RETINA_CLIP_HEIGHT:-}
       - RETINA_CLIP_TIMEOUT_SEC=${RETINA_CLIP_TIMEOUT_SEC:-30.0}
+      # Bus-reachable twin of POST /capture/clip -- see .env_example comment.
+      - CHANNEL_RETINA_CLIP_INTAKE=${CHANNEL_RETINA_CLIP_INTAKE:-orion:exec:request:RetinaClipCaptureService}
+      - CHANNEL_RETINA_CLIP_REPLY_PREFIX=${CHANNEL_RETINA_CLIP_REPLY_PREFIX:-orion:retina:clip:reply}
       # ffmpeg's `-f pulse` input looks here by default -- best-effort
       # default for a single-user desktop Linux session, NOT verified
       # against carbon's actual audio backend/UID. Override

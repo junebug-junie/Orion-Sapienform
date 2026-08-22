@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     RETINA_CLIP_HEIGHT: int | None = None
     RETINA_CLIP_TIMEOUT_SEC: float = 30.0
 
+    # Bus-reachable twin of POST /capture/clip -- see orion/bus/channels.yaml
+    # for why this exists (carbon has no reachable inbound HTTP surface at
+    # all). Gated by RETINA_CLIP_ENABLED same as the HTTP route; no separate
+    # token check here since the bus itself is the trust boundary (unlike an
+    # HTTP port, nothing needs to be additionally exposed to reach it).
+    CHANNEL_RETINA_CLIP_INTAKE: str = "orion:exec:request:RetinaClipCaptureService"
+    CHANNEL_RETINA_CLIP_REPLY_PREFIX: str = "orion:retina:clip:reply"
+
     @field_validator("RETINA_CLIP_WIDTH", "RETINA_CLIP_HEIGHT", mode="before")
     @classmethod
     def _blank_clip_dims_to_none(cls, v: object) -> object:

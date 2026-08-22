@@ -1254,6 +1254,40 @@ class SelfExperimentsTriggerRequest(BaseModel):
     date: str | None = None
 
 
+@router.post("/api/vision/affect-capture")
+def api_vision_affect_capture() -> Dict[str, Any]:
+    """"Affect check" button in the Vision panel (templates/index.html /
+    static/js/app.js): triggers orion-juniper-affective-state's
+    capture_and_assess -- carbon records an on-demand clip (bus RPC to
+    orion-vision-retina, no direct HTTP path to carbon exists), circe fetches
+    it from percept-store and runs AffectGPT. Synchronous and slow (~30-90s:
+    real webcam+mic capture plus a real GPU inference call) -- the long
+    JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC default is deliberate, not an
+    oversight. The orchestrator's own endpoint always replies 200 with
+    ok/error fields inside the body even on internal failure (capture
+    failed, GPU busy, etc.) -- raise_for_status here only catches a true
+    transport failure (service down, connection refused).
+    """
+    base = str(settings.JUNIPER_AFFECTIVE_STATE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=503, detail="juniper_affective_state_base_url_not_configured"
+        )
+    try:
+        resp = requests.post(
+            f"{base}/v1/juniper/affect/capture_and_assess",
+            json={},
+            timeout=float(settings.JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC),
+        )
+        resp.raise_for_status()
+        parsed = resp.json()
+        return parsed if isinstance(parsed, dict) else {"ok": False, "error": "invalid_response"}
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=502, detail=f"juniper_affective_state_unavailable:{exc}"
+        ) from exc
+
+
 class AutonomyGoalArchiveRequest(BaseModel):
     dry_run: bool = True
     subjects: list[str] | None = None

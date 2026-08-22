@@ -404,3 +404,55 @@ async def test_latest_frame_routes_accept_a_stream_id_param_not_hardcoded_carbon
         await api_routes.api_vision_carbon_latest_frame(stream_id="cam0")
 
     assert fake_cache.requested_stream_ids == ["cam0"]
+
+
+def test_carbon_affect_snapshot_module_is_wired_into_the_page():
+    """Bug fix, 2026-08-22: the "Carbon (affect snapshot)" dropdown view
+    used to render once on selection and never poll again -- a real
+    ambient/manual capture landing seconds later was invisible until the
+    dropdown was re-selected. Reported live: Juniper flipped the ambient
+    toggle on, held a pose for the real capture, flipped it off, and the
+    panel still showed the OLD failed-tick text, even though the backend
+    (confirmed via /api/vision/affect-ambient/status) had a real fresh
+    success the whole time.
+
+    The actual change-detection/render logic now lives in
+    carbon-affect-snapshot.js and is covered by real executing tests in
+    carbon-affect-snapshot.test.js (`node --test`) -- this is just the
+    static-asset wiring check CLAUDE.md section 9 asks for (rendered
+    template references the linked script, app.js actually calls it),
+    kept deliberately light on exact source text so it doesn't break on
+    unrelated reformatting."""
+    template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+    assert '/static/js/carbon-affect-snapshot.js' in template
+
+    app_js = (HUB_ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "OrionCarbonAffectSnapshot" in app_js
+    assert "repaintCarbonAffectSnapshot" in app_js
+
+    # Exactly one GET of the status endpoint in the whole file (review
+    # finding, round 2/3): a second, independent poll call site is exactly
+    # what let two responses race and stale-overwrite each other before.
+    status_endpoint = '"/api/vision/affect-ambient/status"'
+    occurrences = app_js.count(status_endpoint)
+    assert occurrences == 1, (
+        f"expected exactly one fetch({status_endpoint}) call site, found {occurrences} -- "
+        "a second call site reintroduces the round-2/3 stale-overwrite race"
+    )
+
+    # The panel must be wired into the SAME poll that already runs every
+    # 15s regardless of which dropdown view is selected. Anchored on the
+    # NEXT function's own definition rather than a brace/indent-sensitive
+    # slice (review finding, round 3: the prior version of this assertion
+    # used a whitespace-sensitive "\n      }" search that would silently
+    # mis-slice on an unrelated reformat).
+    fetch_ambient_status_fn = app_js.index("async function fetchAmbientStatus()")
+    next_fn = app_js.index("async function toggleAffectAmbient()")
+    assert fetch_ambient_status_fn < next_fn
+    fetch_ambient_status_body = app_js[fetch_ambient_status_fn:next_fn]
+    assert "repaintCarbonAffectSnapshot" in fetch_ambient_status_body
+
+    # The ambient toggle click also repaints the panel from its own POST
+    # response, not just from the polling endpoint (review finding, round
+    # 3: without this, flipping the toggle left the panel up to 15s stale).
+    assert "repaintCarbonAffectSnapshot" in app_js[next_fn:]

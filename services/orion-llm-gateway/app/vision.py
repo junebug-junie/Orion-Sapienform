@@ -162,10 +162,23 @@ def resolve_attachment_url(attachment: Any) -> str:
     if not _SHA256_RE.match(sha256):
         raise AttachmentFetchError("attachment sha256 is not a 64-char hex digest")
 
-    base = str(getattr(settings, "llm_gateway_attachment_base_url", "") or "").strip().rstrip("/")
+    # Percepts resolve from a DIFFERENT store than user uploads. A camera frame
+    # of a private home and a file someone dragged into chat have different
+    # lifetimes and different blast radii, and Hub -- which serves the chat
+    # store -- is also the process holding the docker socket. Selecting the base
+    # by kind here is what keeps that separation real rather than promised.
+    kind = str(getattr(attachment, "kind", "image") or "image")
+    if kind == "percept":
+        base_key, env_name = "llm_gateway_percept_base_url", "LLM_GATEWAY_PERCEPT_BASE_URL"
+    else:
+        base_key, env_name = "llm_gateway_attachment_base_url", "LLM_GATEWAY_ATTACHMENT_BASE_URL"
+
+    base = str(getattr(settings, base_key, "") or "").strip().rstrip("/")
     if not base:
+        # Fail closed, and specifically do NOT fall back to the other store:
+        # an unset percept base must not silently start reading chat uploads.
         raise AttachmentFetchError(
-            "LLM_GATEWAY_ATTACHMENT_BASE_URL is not set; refusing to fetch attachments"
+            f"{env_name} is not set; refusing to fetch {kind} attachments"
         )
 
     parsed = urlparse(base)

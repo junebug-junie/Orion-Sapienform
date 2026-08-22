@@ -79,7 +79,13 @@ services:
       # anyone using the Docker path instead (review finding, 2026-08-22).
       # Also gated by RETINA_CLIP_TOKEN (settings.py) as defense in depth --
       # a POST here triggers a live recording, unlike every other route.
-      - "127.0.0.1:${RETINA_HTTP_PORT:-8022}:8000"
+      #
+      # Default is 8027, NOT 8022 -- confirmed live 2026-08-22:
+      # orion-athena-cortex-gateway already owns 8022 on athena, a
+      # multi-service host retina can also run on (room camera / cam0
+      # instance, alongside carbon's own). See .env_example for the full
+      # story; carbon's separate venv/systemd deployment is unaffected.
+      - "127.0.0.1:${RETINA_HTTP_PORT:-8027}:8000"
     networks:
       - app-net
 

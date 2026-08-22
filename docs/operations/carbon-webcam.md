@@ -130,6 +130,13 @@ systemctl --user stop orion-retina     # or Ctrl-C, or: docker stop orion-vision
 
 ## On-demand affect clip capture (AffectGPT, 2026-08-22)
 
+Port 8022 below matches carbon's own venv/systemd port above -- fine on a
+dedicated laptop. **If deploying the Docker path on a shared host instead**
+(e.g. athena, which can also run retina for the room camera), check
+`.env_example`'s `RETINA_HTTP_PORT` comment first -- confirmed live
+2026-08-22 that `orion-athena-cortex-gateway` already owns 8022 there;
+the Docker compose default is 8027 for exactly that reason.
+
 A second, separate HTTP surface on this same service:
 `POST http://127.0.0.1:8022/capture/clip` records a few seconds of video
 (v4l2) and audio (pulse/PipeWire mic) **concurrently**, uploads both to

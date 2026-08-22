@@ -141,8 +141,10 @@ names, the audio backend, and actual timing have not been exercised live.
 Before trusting this:
 
 ```bash
-# on carbon, after deploying:
-curl -X POST http://localhost:${RETINA_HTTP_PORT:-8022}/capture/clip \
+# on carbon (Docker path), after deploying -- RETINA_HTTP_PORT defaults to
+# 8027, not 8022, to avoid colliding with other services on a shared host
+# (see docker-compose.yml comment); check your actual .env value.
+curl -X POST http://localhost:${RETINA_HTTP_PORT:-8027}/capture/clip \
   -H "X-Orion-Retina-Token: ${RETINA_CLIP_TOKEN}"
 # expect: {"ok": true, "video_sha256": "...", "audio_sha256": "...", ...}
 # then fetch both back from percept-store and confirm they're a real,

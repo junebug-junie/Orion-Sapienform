@@ -125,11 +125,20 @@ class FeedbackRuntimeWorker:
         # An empty resolution is a legitimate outcome (a tick can dispatch
         # nothing, or dispatch only actions that declare no signal).
         try:
+            # NOT the feedback frame's own field_before/field_after. Those
+            # are [t-205s, t+1.1s] and the action has not returned at the
+            # closing edge -- see store.load_action_scoring_window for the
+            # measurements and why that made every contrast an unbiased
+            # estimate of a null quantity.
+            score_before, score_after = self._store.load_action_scoring_window(
+                dispatch.generated_at,
+                settle_sec=self._settings.action_settle_sec,
+            )
             resolution = resolve_action_outcomes(
                 dispatch_frame=dispatch,
                 feedback_frame_id=frame.frame_id,
-                field_before=field_before,
-                field_after=field_after,
+                field_before=score_before,
+                field_after=score_after,
                 priors=self._store.load_effect_posteriors(),
                 control_priors=self._store.load_control_posteriors(),
                 latency_by_dispatch_id=_latencies(cortex_results),

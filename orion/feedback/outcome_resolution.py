@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from orion.autonomy.contrast import (
+    HOLDBACK_BLOCK_REASON,
     ControlCell,
     ControlCellKey,
     TreatedCellKey,
@@ -54,6 +55,10 @@ NO_CHANGE_EPSILON = PRESSURE_DELTA_EPSILON
 # those are blocked for reasons correlated with the action's own content,
 # which is a worse confounder than the one being removed.
 CAPACITY_BLOCK_PREFIX = "max_dispatch_candidates:"
+
+
+def _is_holdback(candidate: ExecutionDispatchCandidateV1) -> bool:
+    return HOLDBACK_BLOCK_REASON in [str(b) for b in candidate.blocked_by]
 
 
 def claim_upheld(direction: str, observed_delta: float) -> bool | None:
@@ -115,6 +120,7 @@ class ControlObservation:
     """
 
     signal_id: str
+    arm: str
     baseline_bin: int
     observed_delta: float
     moved: bool
@@ -194,6 +200,16 @@ def resolve_action_outcomes(
     blocked = [c for c in dispatch_frame.blocked_candidates if _is_capacity_blocked(c)]
     frame_dispatch_count = len(dispatched)
 
+    # A deliberately withheld tick. These candidates passed every gate and
+    # were then withheld at random, so this tick is an untreated observation
+    # drawn from the population that WOULD have acted -- the only arm here
+    # whose assignment is independent of the signal, and therefore the only
+    # one that licenses a causal claim. Everything else in this function
+    # treats it exactly like an idle tick, which is what it is; the arm label
+    # is the only difference, and it is the difference that matters.
+    held_back = [c for c in dispatch_frame.blocked_candidates if _is_holdback(c)]
+    control_arm = "randomized_holdback" if held_back else "no_action"
+
     # The control condition is "nothing ran this tick", not "nothing claiming
     # this signal ran". 5 of 16 live templates declare no signal at all and
     # account for 72% of dispatch volume -- an undeclared action still acts,
@@ -209,7 +225,7 @@ def resolve_action_outcomes(
             baseline = float(baseline)
             bin_index = baseline_bin(baseline)
             delta = observed_after - baseline
-            key = control_key(signal, "no_action", bin_index)
+            key = control_key(signal, control_arm, bin_index)
             cell = control_working.get(key) or ControlCell(EffectPosterior.cold())
             posterior, _nats, _residual = score_observation(cell.posterior, delta)
             # Movement is counted, not inferred. A Normal-Normal posterior
@@ -223,6 +239,7 @@ def resolve_action_outcomes(
             control_observations.append(
                 ControlObservation(
                     signal_id=signal,
+                    arm=control_arm,
                     baseline_bin=bin_index,
                     observed_delta=delta,
                     moved=abs(delta) >= NO_CHANGE_EPSILON,
@@ -369,7 +386,11 @@ def summarize_control_observations(observations: list[ControlObservation]) -> st
         slot = agg.setdefault((obs.signal_id, obs.baseline_bin), [0, 0])
         slot[0] += 1 if obs.moved else 0
         slot[1] += 1
-    return " ".join(
+    arm = observations[0].arm
+    body = " ".join(
         f"{signal}@{b}:{moved}/{total}"
         for (signal, b), (moved, total) in sorted(agg.items())
     )
+    # The arm is named, not implied. A withheld tick and an idle tick produce
+    # identical-looking counts and mean completely different things.
+    return f"[{arm}] {body}"

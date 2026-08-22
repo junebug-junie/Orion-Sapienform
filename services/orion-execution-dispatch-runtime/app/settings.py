@@ -147,6 +147,28 @@ class Settings(BaseSettings):
     orion_dispatch_min_nats_per_sec: float = Field(
         0.02, alias="ORION_DISPATCH_MIN_NATS_PER_SEC"
     )
+
+    # Fraction of ACTING TICKS deliberately withheld, to create a genuinely
+    # randomized control arm. 0.0 = off.
+    #
+    # PER TICK, NOT PER CANDIDATE, and the difference is the whole point. The
+    # field delta is measured frame-wide, so withholding one candidate while
+    # its siblings run gives a "control" observation contaminated by those
+    # siblings -- which is exactly the defect that made the capacity-blocked
+    # arm unusable (see orion/autonomy/contrast.py). Withholding the entire
+    # tick produces a real no-action tick, drawn at random from ticks that
+    # WOULD have acted. That is the counterfactual, and it is the only arm
+    # in this system that licenses the word "causal": the existing
+    # `no_action` arm is quasi-experimental, because ticks where nothing was
+    # proposed are systematically calmer ticks and baseline binning absorbs
+    # most of that selection but provably not all of it.
+    #
+    # Cost is a bounded, measurable capability loss: at 0.05, one acting tick
+    # in twenty does nothing. Off by default -- this deliberately makes Orion
+    # do less, and that is a decision to take on purpose.
+    orion_dispatch_holdback_fraction: float = Field(
+        0.0, alias="ORION_DISPATCH_HOLDBACK_FRACTION", ge=0.0, le=0.5
+    )
     # 2026-07-29: enforcement is back ON (default flipped True -> False).
     # Real sequence, not "we always knew this": ORION_DISPATCH_MAX_RISK_PER_DAY
     # was a fixed 10.0 constant, ENFORCED, from 2026-07-26 through 2026-07-27

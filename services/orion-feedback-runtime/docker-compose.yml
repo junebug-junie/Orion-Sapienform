@@ -11,6 +11,7 @@ services:
       - "${FEEDBACK_RUNTIME_PORT:-8122}:8122"
     environment:
       - PROJECT=${PROJECT}
+      - ORION_ACTION_SETTLE_SEC=${ORION_ACTION_SETTLE_SEC:-15.0}
       - NODE_NAME=${NODE_NAME:-athena}
       - SERVICE_NAME=${SERVICE_NAME:-orion-feedback-runtime}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}

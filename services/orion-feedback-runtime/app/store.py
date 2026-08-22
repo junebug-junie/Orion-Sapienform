@@ -22,6 +22,14 @@ from orion.schemas.proposal_frame import ProposalFrameV1
 logger = logging.getLogger("orion.feedback_runtime.store")
 
 
+def _field_from_json(payload) -> FieldStateV1 | None:
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, dict):
+        return None
+    return FieldStateV1.model_validate(payload)
+
+
 class FeedbackRuntimeStore:
     def __init__(
         self,
@@ -316,6 +324,81 @@ class FeedbackRuntimeStore:
             # dispatch-runtime's fixed-id lookups could.
             logger.warning("field_state_incompatible_schema tick_id=%s", tick_id, exc_info=True)
             return None
+
+    def load_action_scoring_window(
+        self,
+        dispatch_generated_at: datetime,
+        *,
+        settle_sec: float,
+    ) -> tuple[FieldStateV1 | None, FieldStateV1 | None]:
+        """The field window that actually CONTAINS the action.
+
+        The feedback frame's own `field_before`/`field_after` do not, and the
+        action ledger was scoring against them. Measured live 2026-08-22 over
+        2,564 frames: `field_before` is the tick the POLICY frame was built
+        against -- p50 **204.7 seconds** before the dispatch -- and
+        `field_after` is the FIRST tick after it, p50 **1.12 seconds** later.
+
+        So the window was [t-205s, t+1.1s]. The action starts ~0.33s after t
+        and takes 1.2-5.4s, so the "after" snapshot was taken while the action
+        was still running, usually before it had returned, and always before
+        the digester could observe any consequence and fold it into a
+        pressure. Roughly 70 other dispatches sat inside the same window.
+
+        The estimator was therefore unbiased for a quantity that is null by
+        construction -- "the effect of this action on the field one second
+        before it finished". It would converge on ~0 with shrinking error bars
+        no matter how well the action worked, which is precisely the
+        confident-plausible-wrong failure orion/autonomy/contrast.py exists to
+        prevent, and it invalidated the interpretation of every contrast
+        measured before this fix.
+
+        This window is:
+          before = the newest tick at or before the dispatch
+          after  = the first tick at least `settle_sec` after the dispatch
+
+        `settle_sec` must cover send offset + action latency + the digester's
+        own fold. Waiting costs nothing: the feedback runtime processes a
+        dispatch frame minutes after it is written, so the later tick already
+        exists by the time this runs.
+
+        Returns (None, None) rather than a partial window -- a half-window is
+        not a weaker measurement, it is a different one.
+        """
+        with self._engine.connect() as conn:
+            before = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT field_json FROM substrate_field_state
+                         WHERE generated_at <= :at
+                         ORDER BY generated_at DESC
+                         LIMIT 1
+                        """
+                    ),
+                    {"at": dispatch_generated_at},
+                )
+                .mappings()
+                .first()
+            )
+            after = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT field_json FROM substrate_field_state
+                         WHERE generated_at >= :at + make_interval(secs => :settle)
+                         ORDER BY generated_at ASC
+                         LIMIT 1
+                        """
+                    ),
+                    {"at": dispatch_generated_at, "settle": float(settle_sec)},
+                )
+                .mappings()
+                .first()
+            )
+        if not before or not after:
+            return None, None
+        return _field_from_json(before["field_json"]), _field_from_json(after["field_json"])
 
     def load_latest_field_after(
         self,

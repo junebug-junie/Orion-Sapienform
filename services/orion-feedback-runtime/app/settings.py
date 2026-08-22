@@ -16,6 +16,22 @@ class Settings(BaseSettings):
         alias="FEEDBACK_POLICY_PATH",
     )
     feedback_poll_interval_sec: float = Field(2.0, alias="FEEDBACK_POLL_INTERVAL_SEC")
+
+    # How long to wait after a dispatch before snapshotting the field to
+    # score it. Must cover send offset + action latency + the digester's own
+    # fold, or the "after" reading is taken before the action can possibly
+    # have shown up in a pressure.
+    #
+    # Derived, not guessed: send offset p50 0.33s, action latency p95 5.4s,
+    # field ticks ~2.5s apart, and the digester needs a tick to observe a
+    # consequence and another to fold it. 5.4 + 2 ticks ~= 10.4s; 15s carries
+    # margin. Waiting is free -- the feedback runtime processes a dispatch
+    # frame minutes after it is written, so the later tick already exists.
+    #
+    # Before this existed the window was [t-205s, t+1.1s]: the action had not
+    # returned when the "after" snapshot was taken. See
+    # store.load_action_scoring_window.
+    action_settle_sec: float = Field(15.0, alias="ORION_ACTION_SETTLE_SEC", ge=0.0)
     # ROADMAP D2. How often to re-queue rows whose `*_pending` marker was cleared without the
     # downstream frame actually existing. The marker is cleared transactionally so this should
     # find nothing -- but the failure it guards is SILENT WORK LOSS, and it can only add work

@@ -63,16 +63,24 @@ pytest tests/test_paradigm_registry.py tests/test_repair_pressure_v2_paradigm.py
 
 This replaces a deleted regex-based detector (`LegacyRegexSignalDetector`) whose "any capitalized word" pattern matched sentence-initial interjections ("Heck" in "Heck yeah!") as fake candidates, with no real filter beyond a 9-word allowlist. The LLM call is a quick-lane classification call (short JSON-array output, tight timeout, small `max_tokens`), fail-open by contract: an unbound bus, RPC failure/timeout, or malformed output all degrade to zero candidates and a distinguishable WARNING log — never a raised exception, never a delayed chat turn beyond the configured timeout.
 
-**Structural floor (2026-08-21):** confirmed live, hours after the regex detector was
-already deleted and replaced: the LLM still returned bare single words as
-"concept"/"other" candidates ("bus", "Glad", "Compact", "Interesting") — the same
-class of unactionable garbage as the deleted regex's failure mode, one step
-removed rather than eliminated. `parse_current_turn_llm_signals()` now drops any
-single-token phrase not typed `person`/`place` — a floor under the prompt's own
-filtering instruction, not a replacement for it. See
+**Structural floor (2026-08-21, tightened 2026-08-22):** confirmed live, hours
+after the regex detector was already deleted and replaced: the LLM still
+returned bare single words as "concept"/"other" candidates ("bus", "Glad",
+"Compact", "Interesting") — the same class of unactionable garbage as the
+deleted regex's failure mode, one step removed rather than eliminated.
+`parse_current_turn_llm_signals()` dropped any single-token phrase not typed
+`person`/`place` — a floor under the prompt's own filtering instruction, not a
+replacement for it. **Confirmed live again 2026-08-22**, hours after that floor
+shipped: "bus" got through a second time because the model classified it
+`place` instead of `concept` — the word never changed, only the model's own
+(unreliable) classification did. A bare single token now ALSO has to be
+capitalized to survive the person/place carve-out (a real name/place is
+capitalized by ordinary convention; a lowercase word claiming to be one is
+almost always a mistyped common noun) — two independent signals instead of
+trusting the model's type field alone. See
 `evals/run_current_turn_signal_eval.py` for the labeled precision fixture this
-threshold is measured against (includes the exact live-garbage strings as
-regression cases).
+threshold is measured against (includes the exact live-garbage strings from
+both incidents as regression cases).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |

@@ -119,6 +119,17 @@ def test_single_bare_word_person_or_place_survives() -> None:
     ]
 
 
+def test_single_bare_lowercase_word_mistyped_person_or_place_is_still_dropped() -> None:
+    # Confirmed live 2026-08-22, hours after the type-carve-out floor shipped:
+    # "bus" got through again because the model classified it "place" that
+    # time instead of "concept"/"other" -- the word itself never changed, only
+    # the model's own (unreliable) classification did. A genuine name/place is
+    # capitalized by ordinary convention ("Sarah", "Paris" above); requiring
+    # that on top of the type check is a second, independent signal.
+    raw = '[{"phrase": "bus", "type": "place"}, {"phrase": "glad", "type": "person"}]'
+    assert parse_current_turn_llm_signals(raw) == []
+
+
 def test_multi_word_phrase_survives_regardless_of_type() -> None:
     raw = '[{"phrase": "the reactor rollout plan", "type": "plan"}, {"phrase": "context compaction", "type": "concept"}]'
     assert parse_current_turn_llm_signals(raw) == [

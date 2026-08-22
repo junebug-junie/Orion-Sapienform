@@ -205,7 +205,20 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
         # including non-breaking space (U+00A0) and other Unicode whitespace a
         # literal ASCII-space check would miss, misclassifying a real multi-word
         # phrase as a bare single token.
-        if len(phrase.split()) < 2 and type_hint not in {"person", "place"}:
+        is_bare_word = len(phrase.split()) < 2
+        # Confirmed live 2026-08-22 (hours after this floor shipped): "bus" --
+        # the exact garbage string this floor was built to stop -- got through
+        # again, because the model typed it "place" that time instead of
+        # "concept"/"other". The type/person-place carve-out alone trusts the
+        # model's own classification, and that classification isn't reliably
+        # consistent call to call for the same bare word. A genuine name/place
+        # is capitalized by ordinary English convention ("Sarah", "Paris" in
+        # every fixture below); a bare LOWERCASE word claimed to be a person
+        # or place is essentially always a mistyped common noun, not a real
+        # entity -- requiring capitalization on top of the type check is a
+        # second, independent signal, not just re-deriving the same one.
+        looks_like_a_name = phrase[:1].isupper() if phrase else False
+        if is_bare_word and (type_hint not in {"person", "place"} or not looks_like_a_name):
             logger.debug(
                 "current_turn_llm_signal_dropped_bare_word phrase=%r type=%s",
                 phrase, type_hint,

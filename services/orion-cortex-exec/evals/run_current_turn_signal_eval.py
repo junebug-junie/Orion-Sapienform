@@ -76,6 +76,15 @@ _FIXTURES: list[tuple[str, list[dict[str, str]], list[str]]] = [
         [],
     ),
     (
+        "garbage_live_bus_mistyped_place",
+        # Confirmed live 2026-08-22, hours after the type-carve-out floor
+        # shipped: "bus" got through again because the model typed it "place"
+        # this time instead of "concept". The lowercase word itself never
+        # changed -- only the model's own classification did.
+        [{"phrase": "bus", "type": "place"}],
+        [],
+    ),
+    (
         "real_person_single_word",
         [{"phrase": "Sarah", "type": "person"}],
         ["Sarah"],

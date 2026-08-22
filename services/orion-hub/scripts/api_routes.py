@@ -1254,6 +1254,40 @@ class SelfExperimentsTriggerRequest(BaseModel):
     date: str | None = None
 
 
+@router.post("/api/vision/affect-capture")
+def api_vision_affect_capture() -> Dict[str, Any]:
+    """"Affect check" button in the Vision panel (templates/index.html /
+    static/js/app.js): triggers orion-juniper-affective-state's
+    capture_and_assess -- carbon records an on-demand clip (bus RPC to
+    orion-vision-retina, no direct HTTP path to carbon exists), circe fetches
+    it from percept-store and runs AffectGPT. Synchronous and slow (~30-195s worst case:
+    real webcam+mic capture plus a real GPU inference call) -- the long
+    JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC default is deliberate, not an
+    oversight. The orchestrator's own endpoint always replies 200 with
+    ok/error fields inside the body even on internal failure (capture
+    failed, GPU busy, etc.) -- raise_for_status here only catches a true
+    transport failure (service down, connection refused).
+    """
+    base = str(settings.JUNIPER_AFFECTIVE_STATE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=503, detail="juniper_affective_state_base_url_not_configured"
+        )
+    try:
+        resp = requests.post(
+            f"{base}/v1/juniper/affect/capture_and_assess",
+            json={},
+            timeout=float(settings.JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC),
+        )
+        resp.raise_for_status()
+        parsed = resp.json()
+        return parsed if isinstance(parsed, dict) else {"ok": False, "error": "invalid_response"}
+    except requests.RequestException as exc:
+        raise HTTPException(
+            status_code=502, detail=f"juniper_affective_state_unavailable:{exc}"
+        ) from exc
+
+
 class AutonomyGoalArchiveRequest(BaseModel):
     dry_run: bool = True
     subjects: list[str] | None = None
@@ -1333,6 +1367,59 @@ async def api_debug_endogenous_outreach_trigger() -> Dict[str, Any]:
         return {"ok": False, "reason": "not_initialized"}
     result = await endogenous_outreach.maybe_outreach(force=True)
     return {"ok": True, "result": result}
+
+
+@router.get("/api/debug/endogenous-outreach/decisions")
+def api_debug_endogenous_outreach_decisions(limit: int = Query(default=50, ge=1, le=500)) -> Dict[str, Any]:
+    """Durable decision-cycle history -- every tick's outcome, not just
+    sends. See endogenous_outreach_decisions.py's own module docstring for
+    why this exists: `status()`'s `last_result` is in-process and wiped on
+    restart; this reads the real Postgres row history instead.
+    """
+    from scripts.pg_engine import get_engine
+
+    engine = get_engine()
+    if engine is None:
+        return {"ok": False, "reason": "no_postgres_uri"}
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.exc import ProgrammingError
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql_text(
+                    """
+                    SELECT decision_id, decided_at, outreach, reason, forced,
+                           target_id, run_length, peak_deviation_pressure,
+                           sustained_load_pressure, correlation_id, session_id,
+                           result_json
+                    FROM endogenous_outreach_decisions
+                    ORDER BY decided_at DESC
+                    LIMIT :lim
+                    """
+                ),
+                {"lim": limit},
+            ).mappings().all()
+    except ProgrammingError:
+        # Migration not applied yet -- see this route's own docstring.
+        return {"ok": False, "reason": "table_not_migrated"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_decisions_query_failed err=%s", exc)
+        return {"ok": False, "reason": "query_failed"}
+
+    # Row -> dict directly rather than re-listing every column by hand (review
+    # finding, 2026-08-22: the original hand-listed form meant a new SELECT
+    # column had to be added a third time here just to reach the response) --
+    # only `decided_at` (timestamp -> isoformat) and `result_json` (renamed to
+    # `result`, matching the field name `_record()`/`record_decision` use)
+    # are actually special-cased.
+    decisions = []
+    for r in rows:
+        d = dict(r)
+        d["decided_at"] = d["decided_at"].isoformat() if d["decided_at"] else None
+        d["result"] = d.pop("result_json")
+        decisions.append(d)
+    return {"ok": True, "count": len(decisions), "decisions": decisions}
 
 
 @router.get("/api/service-logs/services")

@@ -1228,3 +1228,165 @@ def test_tick_sec_default_is_not_the_root_caused_300s_value() -> None:
     )
     assert settings_match, "HUB_ENDOGENOUS_OUTREACH_TICK_SEC Field default not found in settings.py"
     assert float(settings_match.group(1)) != 300.0
+
+
+# --------------------------------------------------------------------------
+# Durable decision log (2026-08-22) -- _record() is the one choke point
+# every branch funnels through; these assert the persist hook fires with the
+# right forced/tension_reason for each shape, not just the happy path.
+# --------------------------------------------------------------------------
+
+
+def _patch_record_decision(monkeypatch):
+    import scripts.endogenous_outreach_decisions as decisions_mod
+
+    calls: list[dict] = []
+
+    def fake_record(result, *, tension_reason=None, forced=False):
+        calls.append({"result": result, "tension_reason": tension_reason, "forced": forced})
+
+    monkeypatch.setattr(decisions_mod, "record_decision", fake_record)
+    return calls
+
+
+def test_record_persists_a_blocked_decision_with_the_real_forced_flag(monkeypatch) -> None:
+    """The already_sending early-return in maybe_outreach never reaches
+    _outreach_once -- this is exactly the path the `_last_forced` comment on
+    `maybe_outreach` calls out as needing to be set before that return."""
+    outreach = _outreach()
+    calls = _patch_record_decision(monkeypatch)
+
+    async def run_both():
+        async with outreach._send_lock:
+            return await outreach.maybe_outreach(force=True)
+
+    result = asyncio.run(run_both())
+
+    assert result["reason"] == "already_sending"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is True
+    assert calls[0]["result"]["reason"] == "already_sending"
+
+
+def test_record_persists_no_tension_trigger_with_no_stale_reason(monkeypatch) -> None:
+    outreach = _outreach(trigger_evaluator=lambda: None)
+    calls = _patch_record_decision(monkeypatch)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "no_tension_trigger"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is False
+    assert calls[0]["tension_reason"] is None
+
+
+def test_record_persists_a_successful_send_with_the_real_tension_reason(monkeypatch) -> None:
+    outreach = _outreach()
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "The execution node has been noisy all afternoon.")
+
+    async def fake_history(self, **kwargs):
+        return None
+
+    async def fake_notify(self, **kwargs):
+        return None
+
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", fake_history)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", fake_notify)
+    calls = _patch_record_decision(monkeypatch)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "sent"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is False
+    assert calls[0]["result"]["reason"] == "sent"
+    assert calls[0]["tension_reason"].target_id == "node:test"
+
+
+def test_record_persists_a_forced_trigger_with_no_stale_tension_reason(monkeypatch) -> None:
+    """Mirrors test_forced_outreach_does_not_carry_a_stale_tension_reason --
+    the decision log must not misattribute a forced debug trigger to
+    whatever the LAST organic tick's reason was."""
+    outreach = _outreach()
+    outreach._last_tension_reason = _always_fires()  # stale, from a prior organic tick
+    _stub_context(monkeypatch, summaries=(), turns=())  # no organic grounding
+    calls = _patch_record_decision(monkeypatch)
+
+    # No curiosity/turns/tension_reason -> no_grounding_context, but the
+    # important assertion is what tension_reason gets threaded through.
+    result = asyncio.run(outreach.maybe_outreach(force=True))
+
+    assert result["reason"] == "no_grounding_context"
+    assert len(calls) == 1
+    assert calls[0]["forced"] is True
+    assert calls[0]["tension_reason"] is None
+
+
+def test_decision_log_hook_failure_does_not_break_the_tick(monkeypatch) -> None:
+    """A broken persist hook must not make maybe_outreach itself raise or
+    change its returned result -- same best-effort contract this module's
+    other side rails (_push_to_sockets, _publish_notification) already have."""
+    import scripts.endogenous_outreach_decisions as decisions_mod
+
+    def broken_record(*args, **kwargs):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(decisions_mod, "record_decision", broken_record)
+    outreach = _outreach(trigger_evaluator=lambda: None)
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "no_tension_trigger"
+
+
+def test_concurrent_ticks_persist_their_own_forced_flag_not_each_others(monkeypatch) -> None:
+    """Regression, review finding 2026-08-22: an earlier version of this
+    patch stored `forced`/`tension_reason` on unlocked shared instance
+    attributes (`self._last_forced`/`self._last_tension_reason`) read back
+    inside `_record()`. Same interleaving as
+    test_concurrent_ticks_cannot_both_send (the organic tick suspends inside
+    a slow `_generate`; a forced debug call lands on the already_sending
+    branch while it's suspended) -- but THAT test never checked what got
+    persisted. This one does: the organic tick's own decision row must say
+    forced=False and carry its OWN real tension_reason, never the forced
+    call's leftover values, and vice versa."""
+    outreach = _outreach(min_cooldown_sec=2700.0)
+    _stub_context(monkeypatch)
+    released = asyncio.Event()
+
+    async def slow_generate(self, prompt, session_id, correlation_id):
+        await released.wait()
+        return "an unprompted thought", {}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", slow_generate)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+    calls = _patch_record_decision(monkeypatch)
+
+    async def scenario():
+        first = asyncio.create_task(outreach.maybe_outreach())  # organic, force=False
+        await asyncio.sleep(0)  # let `first` reach slow_generate, past _should_roll()
+        second = await outreach.maybe_outreach(force=True)  # hits already_sending
+        released.set()
+        return await first, second
+
+    first_result, second_result = asyncio.run(scenario())
+
+    assert first_result["outreach"] is True
+    assert second_result["reason"] == "already_sending"
+    assert len(calls) == 2
+
+    # Order of _record() calls: the forced already_sending call returns
+    # immediately (never awaits), the organic call's _record only runs after
+    # `released.set()` lets slow_generate return -- so calls[0] is the forced
+    # one, calls[1] is the organic "sent" one.
+    forced_call, organic_call = calls[0], calls[1]
+    assert forced_call["result"]["reason"] == "already_sending"
+    assert forced_call["forced"] is True
+    assert forced_call["tension_reason"] is None
+
+    assert organic_call["result"]["reason"] == "sent"
+    assert organic_call["forced"] is False  # not clobbered by the forced call's True
+    assert organic_call["tension_reason"] is not None
+    assert organic_call["tension_reason"].target_id == "node:test"

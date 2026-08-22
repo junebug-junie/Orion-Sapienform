@@ -24,12 +24,21 @@ services:
       - CHANNEL_AFFECTGPT_ASSESSMENT=${CHANNEL_AFFECTGPT_ASSESSMENT}
       - AFFECTGPT_RPC_TIMEOUT_S=${AFFECTGPT_RPC_TIMEOUT_S}
 
+      # Live capture bridge (2026-08-22) -- see .env_example comments.
+      - CHANNEL_RETINA_CLIP_INTAKE=${CHANNEL_RETINA_CLIP_INTAKE:-orion:exec:request:RetinaClipCaptureService}
+      - CHANNEL_RETINA_CLIP_REPLY_PREFIX=${CHANNEL_RETINA_CLIP_REPLY_PREFIX:-orion:retina:clip:reply}
+      - RETINA_CLIP_RPC_TIMEOUT_S=${RETINA_CLIP_RPC_TIMEOUT_S:-60}
+      - PERCEPT_STORE_BASE_URL=${PERCEPT_STORE_BASE_URL:-}
+      - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-15}
+      - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
+      - AFFECTGPT_SCRATCH_DIR=${AFFECTGPT_SCRATCH_DIR:-/mnt/scripts/orion-affectgpt-scratch}
+
     volumes:
-      # Shared scratch so a caller can hand this service a video/audio path
-      # that the worker (on circe) can ALSO read -- see orion-affectgpt-
+      # Shared scratch: this service fetches percept-store blobs and writes
+      # them here (capture_and_assess()'s tempfile, dir=AFFECTGPT_SCRATCH_DIR)
+      # so the worker (on circe) can ALSO read them -- see orion-affectgpt-
       # worker's docker-compose.yml, same host path convention. Read-write
-      # here since this is the natural place to eventually drop a captured
-      # clip; read-only on the worker side.
+      # here (it's the writer); read-only on the worker side.
       - /mnt/scripts/orion-affectgpt-scratch:/mnt/scripts/orion-affectgpt-scratch
 
     ports:

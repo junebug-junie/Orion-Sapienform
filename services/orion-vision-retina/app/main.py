@@ -52,6 +52,16 @@ class RetinaService:
         self._started_at = time.time()
         self._last_publish_ts: float | None = None
         self._sample_attempted = False
+        # Guards physical device access between the continuous capture_loop
+        # and on-demand clip capture (app/clip_capture.py). Real bug found
+        # live on carbon (2026-08-22): both open /dev/video0 -- the
+        # continuous loop via cv2.VideoCapture (self.source), clip capture
+        # via a separate ffmpeg process -- and a webcam only accepts one
+        # exclusive handle at a time, so ffmpeg failed with "Device or
+        # resource busy" every time. Nothing in review or this module's own
+        # tests could have caught this: it only manifests with a real
+        # camera device, which this session never had access to.
+        self._device_lock = asyncio.Lock()
 
     async def start(self) -> None:
         logger.remove()
@@ -76,12 +86,37 @@ class RetinaService:
         await self.source.stop()
         await self.bus.close()
 
+    @asynccontextmanager
+    async def pause_device(self):
+        """Release the physical capture device for the duration of the
+        `with` block, then reopen it -- see _device_lock comment in
+        __init__. Holding _device_lock for the whole duration (not just
+        around the stop()/start() calls) is what actually prevents the
+        race: capture_loop's own read acquires the same lock around
+        capture_once() below, so it cannot be mid-read when this releases
+        the device, and cannot start a new read until this has reopened it.
+        """
+        async with self._device_lock:
+            await self.source.stop()
+            try:
+                yield
+            finally:
+                try:
+                    await self.source.start()
+                except Exception as exc:
+                    # Don't let a failed reopen crash the caller (e.g. the
+                    # HTTP handler returning a clip result) -- capture_loop's
+                    # own read on its next tick will retry via source.read()'s
+                    # existing "if not opened, _open()" fallback either way.
+                    logger.error(f"[RETINA] failed to reopen source after pause: {exc}")
+
     async def capture_loop(self) -> None:
         interval = 1.0 / max(self.settings.RETINA_FPS, 0.01)
         while not self._shutdown.is_set():
             t0 = time.time()
             try:
-                await self.capture_once()
+                async with self._device_lock:
+                    await self.capture_once()
             except Exception as exc:
                 self.metrics.last_error = str(exc)
                 logger.error(f"[RETINA] capture_once failed: {exc}")
@@ -255,16 +290,22 @@ async def capture_clip_endpoint(request: Request):
 
     async with _clip_capture_lock:
         try:
-            result = await capture_clip(
-                ffmpeg_bin=s.RETINA_CLIP_FFMPEG_BIN,
-                video_device=s.RETINA_CLIP_VIDEO_DEVICE,
-                audio_input=s.RETINA_CLIP_AUDIO_INPUT,
-                duration_sec=s.RETINA_CLIP_DURATION_SEC,
-                video_framerate=s.RETINA_CLIP_FRAMERATE,
-                width=s.RETINA_CLIP_WIDTH,
-                height=s.RETINA_CLIP_HEIGHT,
-                timeout_sec=s.RETINA_CLIP_TIMEOUT_SEC,
-            )
+            # pause_device(): release /dev/video0 for the continuous
+            # capture_loop first -- see RetinaService._device_lock comment.
+            # Real bug found live on carbon (2026-08-22): without this,
+            # ffmpeg failed every time with "Device or resource busy"
+            # because capture_loop already held the webcam open.
+            async with service.pause_device():
+                result = await capture_clip(
+                    ffmpeg_bin=s.RETINA_CLIP_FFMPEG_BIN,
+                    video_device=s.RETINA_CLIP_VIDEO_DEVICE,
+                    audio_input=s.RETINA_CLIP_AUDIO_INPUT,
+                    duration_sec=s.RETINA_CLIP_DURATION_SEC,
+                    video_framerate=s.RETINA_CLIP_FRAMERATE,
+                    width=s.RETINA_CLIP_WIDTH,
+                    height=s.RETINA_CLIP_HEIGHT,
+                    timeout_sec=s.RETINA_CLIP_TIMEOUT_SEC,
+                )
         except ClipCaptureError as exc:
             logger.error(f"[RETINA] clip capture failed: {exc}")
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)

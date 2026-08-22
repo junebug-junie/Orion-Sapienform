@@ -22,6 +22,26 @@ from orion.memory.crystallization.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Bound how long the synchronous DDL bootstrap (run during service startup)
+# can block on a conflicting lock or a slow statement. Without these, a
+# concurrent migration/COPY holding a relation lock at boot time can hang
+# the whole process indefinitely -- confirmed live 2026-08-22 (~9.5 min
+# orion-athena-hub outage, root-caused to the sibling memory_cards schema
+# apply having no timeout; this function has the same shape).
+#
+# Note: memory_crystallizations.sql runs as one multi-statement
+# cur.execute(sql) call, and Postgres applies statement_timeout per
+# statement in that mode, not as one aggregate budget for the whole file.
+# A future rewrite-heavy ALTER on a large table could legitimately exceed
+# 30s and would then fail loudly instead of completing slowly -- if that
+# happens, raise this constant rather than remove the timeout. Also: this
+# function is called directly (no try/except) by
+# services/orion-memory-crystallizer/app/main.py's lifespan, so a real
+# timeout there now fails fast + lets Docker's restart policy retry,
+# instead of hanging the process forever with no restart trigger at all.
+_SCHEMA_APPLY_LOCK_TIMEOUT_MS = 10_000
+_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS = 30_000
+
 
 def _crystallizations_sql_path() -> Path:
     here = Path(__file__).resolve().parents[2] / "core" / "storage" / "sql" / "memory_crystallizations.sql"
@@ -38,7 +58,11 @@ def apply_memory_crystallizations_schema(dsn: str) -> None:
     if not sql_path.is_file():
         raise FileNotFoundError(f"memory_crystallizations DDL not found at {sql_path}")
     sql = sql_path.read_text(encoding="utf-8")
-    with psycopg2.connect(dsn) as conn:
+    connect_options = (
+        f"-c lock_timeout={_SCHEMA_APPLY_LOCK_TIMEOUT_MS} "
+        f"-c statement_timeout={_SCHEMA_APPLY_STATEMENT_TIMEOUT_MS}"
+    )
+    with psycopg2.connect(dsn, options=connect_options) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(sql)

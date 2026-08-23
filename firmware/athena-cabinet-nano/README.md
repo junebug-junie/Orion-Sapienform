@@ -62,7 +62,34 @@ Notes:
 | VL53L1X | I2C | `lidar` (mm + range status) |
 | BNO085 | **I2C default** (0x4A/0x4B); UART-RVC fallback | `imu` (accel m/s², yaw/pitch/roll °) |
 
-## Wiring (default sketch pins)
+## Two-hub STEMMA topology (Athena cabinet)
+
+Observed live wiring:
+
+```text
+Nano A4/A5 ──► Hub A (5-port) ──► 3 sensors          ← I2C scan sees these
+                    │
+                    └── daisy ──► Hub B (5-port) ──► 2+ sensors  ← NOT on bus
+```
+
+Live pin-matrix scan only ever finds `0x29` / `0x4A` / `0x77` on **A4/A5**.
+So Hub A is fine; Hub B (or the daisy cable into it) is not passing SDA/SCL.
+
+### Isolation test (do this once)
+
+1. Unplug the daisy cable Hub A → Hub B.
+2. Move **one** “missing” sensor (LTR390 or LIS3MDL) onto an empty port on **Hub A**.
+3. Reboot Nano / wait for boot JSON.
+4. Interpret:
+   - **Appears on Hub A** → that breakout is fine; fix Hub B daisy (cable / hub / length).
+   - **Still missing on Hub A** → bad QT cable into that sensor, wrong part (UART PMS5003 vs I2C PMSA003I), or dead breakout.
+
+### Daisy link checklist
+
+- Cable Hub A → Hub B must be a real **4-pin STEMMA QT / Qwiic** cable (not power-only).
+- Prefer Hub A **port → Hub B IN**, not “out the side of a sensor” if that run is long.
+- Keep the inter-hub cable **short** (<20 cm if you can).
+- Firmware runs the bus at **25 kHz** for multi-hub capacitance.
 
 ### Shared I2C (`Wire`)
 

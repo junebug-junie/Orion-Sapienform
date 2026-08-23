@@ -232,11 +232,12 @@ static void probe_pin_matrix() {
 }
 
 static void init_i2c_buses() {
+  // Two STEMMA hubs + long daisy = high capacitance; keep the bus slow.
   Wire.begin(i2c_sda, i2c_scl);
-  Wire.setClock(100000);
+  Wire.setClock(25000);
   if (have_wire1) {
     Wire1.begin(i2c2_sda, i2c2_scl);
-    Wire1.setClock(100000);
+    Wire1.setClock(25000);
   }
 }
 
@@ -244,7 +245,7 @@ static void reinit_primary_i2c() {
   Wire.end();
   delay(10);
   Wire.begin(i2c_sda, i2c_scl);
-  Wire.setClock(100000);
+  Wire.setClock(25000);
 }
 
 static void quaternion_to_euler(float qr, float qi, float qj, float qk,

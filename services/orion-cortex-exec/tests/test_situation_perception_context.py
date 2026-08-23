@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import situation as situation_mod
-from app.situation import (
+from orion.situational import context as situation_mod
+from orion.situational.context import (
     SituationSettings,
     _build_perception_context,
     _build_prompt_fragment,
@@ -337,13 +337,13 @@ def test_presence_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> 
     ],
 )
 def test_coarse_duration_boundaries(seconds, expected_substring) -> None:
-    from app.situation import _coarse_duration
+    from orion.situational.context import _coarse_duration
 
     assert _coarse_duration(seconds) == expected_substring
 
 
 def test_negative_or_none_since_sec_produces_no_fragment() -> None:
-    from app.situation import _presence_fragment
+    from orion.situational.context import _presence_fragment
 
     assert _presence_fragment("present", None) is None
     assert _presence_fragment("present", -5.0) is None

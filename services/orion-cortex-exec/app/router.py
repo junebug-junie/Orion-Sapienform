@@ -18,7 +18,7 @@ from .executor import (
 )
 from .grounding_capsule import assemble_stance_grounding
 from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1, run_pcr_phase3
-from .situation import mark_orion_turn
+from orion.situational.context import mark_orion_turn
 from .recall_utils import (
     delivery_safe_recall_decision,
     has_inline_recall,

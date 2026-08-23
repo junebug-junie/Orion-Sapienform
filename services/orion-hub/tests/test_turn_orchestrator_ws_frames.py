@@ -225,6 +225,97 @@ async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_threads_situation_prompt_fragment_into_harness_request() -> None:
+    """Regression for the 2026-08-22 report ("Orion asked how my evening was
+    going at 12:45pm"): execute_unified_turn must resolve situation context
+    and pass its compact fragment into HarnessRunRequestV1 -- previously
+    this call didn't exist at all, so the harness prompt carried zero
+    time-of-day/day-phase/conversation-phase awareness."""
+    _ensure_hub_import_paths()
+    import orion.hub.turn_orchestrator as turn_orchestrator_mod
+
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    build_situation_mock = AsyncMock(
+        return_value=(
+            {"kind": "situation.brief.v1"},
+            {"compact_text": "Situation:\n- Local context: midday Saturday, America/Denver."},
+        )
+    )
+    settings = SimpleNamespace(
+        ORION_SITUATION_ENABLED=True,
+        ORION_SITUATION_TTL_SECONDS=300,
+        ORION_SITUATION_TIMEZONE="America/Denver",
+        ORION_PRESENCE_DEFAULT_REQUESTOR="Juniper",
+        ORION_PRESENCE_PERSIST_ALLOWED=False,
+        HUB_LLM_GATEWAY_URL="http://127.0.0.1:8210",
+    )
+    with patches[0], patches[1], patches[2], patch.object(
+        turn_orchestrator_mod, "build_situation_for_ctx", build_situation_mock
+    ):
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hi",
+            payload={},
+            settings=settings,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    build_situation_mock.assert_awaited_once()
+    harness_client_run.assert_awaited_once()
+    req = harness_client_run.await_args.args[0]
+    assert req.situation_prompt_fragment == "Situation:\n- Local context: midday Saturday, America/Denver."
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_situation_context_failure_degrades_to_none() -> None:
+    """Fail-open: a broken situation builder must never break the turn --
+    same contract as every other situation provider."""
+    _ensure_hub_import_paths()
+    import orion.hub.turn_orchestrator as turn_orchestrator_mod
+
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    build_situation_mock = AsyncMock(side_effect=RuntimeError("weather provider exploded"))
+    with patches[0], patches[1], patches[2], patch.object(
+        turn_orchestrator_mod, "build_situation_for_ctx", build_situation_mock
+    ):
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hi",
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    harness_client_run.assert_awaited_once()
+    req = harness_client_run.await_args.args[0]
+    assert req.situation_prompt_fragment is None
+    assert frames[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_threads_continuity_messages_into_recent_turns() -> None:
     """Regression for the missing-conversation-history gap: continuity_messages
     was already accepted as a param and fed into the pre-turn appraisal RPC,

@@ -17,8 +17,8 @@ if str(CORTEX_EXEC_ROOT) not in sys.path:
 
 from datetime import UTC, datetime, timedelta
 
-from app.session_turn_phase import bind_session_turn_phase_bus, write_session_turn_state
-from app.situation import build_situation_for_ctx
+from orion.situational.session_turn_phase import bind_session_turn_phase_bus, write_session_turn_state
+from orion.situational.context import build_situation_for_ctx
 
 
 class _InMemoryRedis:

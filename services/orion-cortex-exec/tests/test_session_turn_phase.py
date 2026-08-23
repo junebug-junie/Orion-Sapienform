@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import app.session_turn_phase as session_turn_phase
-from app.session_turn_phase import (
+import orion.situational.session_turn_phase as session_turn_phase
+from orion.situational.session_turn_phase import (
     bind_session_turn_phase_bus,
     read_session_turn_state,
     reset_session_turn_phase_bus_for_tests,

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -132,6 +134,68 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
     )
 
 
+def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
+    """Adapt orion-hub's `Settings` object into the lowercase-attribute shape
+    `settings_from_runtime` (above) already expects.
+
+    orion-hub's `Settings` class (services/orion-hub/app/settings.py)
+    declares its own `ORION_SITUATION_*`/`ORION_PRESENCE_*` fields
+    UPPERCASE, matching that file's existing local convention (and its own
+    live consumers -- services/orion-hub/scripts/api_routes.py's
+    `/api/situation/*` routes already read them that way; do not rename).
+    `settings_from_runtime` reads lowercase attribute names via `getattr`,
+    matching cortex-exec's `Settings` convention instead -- passing an
+    UPPERCASE settings object straight in would silently miss every field
+    (getattr is case-sensitive) and fall back to hardcoded literal defaults
+    with no visible error. This bridges the two conventions explicitly
+    rather than making `settings_from_runtime` guess casings.
+
+    Fields orion-hub does not yet configure (location, weather coordinates,
+    lab, perception) are turned off here on purpose, not left to
+    `settings_from_runtime`'s own defaults to silently decide: hub has no
+    verified weather/perception/lab runtime dependency yet (no DSN/HTTP
+    egress vetted for its event loop), so wiring those is a follow-up, not
+    an accident of a missing attr. The runtime probe (which model is
+    currently serving `chat`) IS enabled -- it reuses `HUB_LLM_GATEWAY_URL`,
+    a host orion-hub already calls today (see `/api/llm-routes`), so it
+    costs no new dependency, and `_build_runtime_context` awaits it via
+    `asyncio.to_thread` so a cache-miss probe cannot stall the event loop.
+    """
+    return SimpleNamespace(
+        orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
+        orion_situation_ttl_seconds=int(getattr(cfg, "ORION_SITUATION_TTL_SECONDS", 300)),
+        orion_situation_prompt_max_chars=1200,
+        orion_situation_timezone=str(getattr(cfg, "ORION_SITUATION_TIMEZONE", "America/Denver")),
+        orion_situation_location_label="Unknown",
+        orion_situation_locality=None,
+        orion_situation_region=None,
+        orion_situation_country=None,
+        orion_situation_location_precision="city",
+        orion_situation_weather_enabled=False,
+        orion_situation_weather_provider="stub",
+        orion_situation_weather_lat=None,
+        orion_situation_weather_lon=None,
+        orion_situation_weather_ttl_seconds=600,
+        orion_situation_umbrella_precip_prob_threshold=40,
+        orion_situation_jacket_temp_f_threshold=55,
+        orion_situation_high_wind_mph_threshold=25,
+        orion_situation_hot_car_temp_f_threshold=80,
+        orion_situation_agenda_enabled=False,
+        orion_situation_lab_context_enabled=False,
+        orion_situation_lab_provider="stub",
+        orion_situation_perception_enabled=False,
+        orion_situation_perception_max_age_seconds=900,
+        orion_situation_perception_stream_id="cam0",
+        orion_situation_runtime_enabled=True,
+        orion_situation_runtime_route="chat",
+        orion_situation_runtime_ttl_seconds=120,
+        orion_situation_runtime_probe_timeout_sec=2.0,
+        cortex_exec_llm_gateway_url=str(getattr(cfg, "HUB_LLM_GATEWAY_URL", "http://127.0.0.1:8210")),
+        orion_presence_default_requestor=str(getattr(cfg, "ORION_PRESENCE_DEFAULT_REQUESTOR", "Juniper")),
+        orion_presence_persist_allowed=bool(getattr(cfg, "ORION_PRESENCE_PERSIST_ALLOWED", False)),
+    )
+
+
 def _presence_cache_fingerprint(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     """Fingerprint of the presence-relevant fields that should bust the
     situation cache when they meaningfully change.
@@ -212,7 +276,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
     perception_ctx = _build_perception_context(cfg, diagnostics)
-    runtime_ctx = _build_runtime_context(cfg, diagnostics)
+    runtime_ctx = await _build_runtime_context(cfg, diagnostics)
     surface_ctx = _build_surface_context(ctx)
     affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
@@ -602,7 +666,7 @@ def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
     )
 
 
-def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationDiagnosticsV1) -> RuntimeContextV1:
+async def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationDiagnosticsV1) -> RuntimeContextV1:
     if not cfg.runtime_enabled:
         diagnostics.provider_status["runtime"] = "disabled"
         return RuntimeContextV1(available=False, route=cfg.runtime_route, source="disabled")
@@ -612,7 +676,14 @@ def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationDiagnos
         if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.runtime_ttl_seconds:
             return cached[1]
     try:
-        runtime_ctx = _fetch_runtime_context(cfg)
+        # `_fetch_runtime_context` is a plain blocking `urlopen` call (up to
+        # `runtime_probe_timeout_sec`). Offloaded to a thread rather than
+        # called inline -- this function runs inside `build_situation_for_ctx`,
+        # which orion-hub's `execute_unified_turn` now awaits directly on its
+        # single shared event loop (unlike cortex-exec, which already
+        # dedicates a worker per chat turn). A cache-miss call here must not
+        # stall every other concurrent WebSocket client's turn.
+        runtime_ctx = await asyncio.to_thread(_fetch_runtime_context, cfg)
         with _LOCK:
             _RUNTIME_CACHE[cache_key] = (datetime.now(UTC), runtime_ctx)
         diagnostics.provider_status["runtime"] = "ok" if runtime_ctx.available else "unavailable"

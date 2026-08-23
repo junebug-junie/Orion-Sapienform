@@ -144,17 +144,18 @@ def compile_harness_prefix(
     prior_tool_fetch_names: list[str] | None = None,
     current_served_model: str | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
+    situation_prompt_fragment: str | None = None,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
     Deterministically materializes the stance-conditioned context of the FCC
     motor prompt, in render order: the unified operator brief, grounding self
-    block, backend self-context, Thought imperative and stance slice, autonomy
-    slice, prior tool-fetch line, recent-turn history, user message, repair
-    overlay, and enabled MCP tool briefs. The full `claude -p` prompt is this
-    prefix plus the harness_motor_instruction that build_harness_prompt
-    (runner.py) appends on user-message turns — check both when chasing
-    unexpected motor context.
+    block, backend self-context, situation context, Thought imperative and
+    stance slice, autonomy slice, prior tool-fetch line, recent-turn history,
+    user message, repair overlay, and enabled MCP tool briefs. The full
+    `claude -p` prompt is this prefix plus the harness_motor_instruction that
+    build_harness_prompt (runner.py) appends on user-message turns — check
+    both when chasing unexpected motor context.
 
     Runtime evidence: the compiled prompt is what run_fcc_turn spawns with.
     Start here when the motor acted without stance or grounding context it
@@ -181,6 +182,16 @@ def compile_harness_prefix(
         # MODEL_HAIKU's route) rather than shown as a placeholder -- an
         # unknown backend is not the same claim as a known one.
         parts.append(f"Backend model currently serving this turn: {current_served_model}")
+
+    if situation_prompt_fragment:
+        # Resolved by orion-hub BEFORE this function runs (turn_orchestrator.py::
+        # execute_unified_turn calls orion.situational.context.build_situation_for_ctx),
+        # same treatment as current_served_model above -- this stays a pure
+        # formatter, no network/DB calls of its own. Omitted entirely when falsy
+        # (situation context disabled or failed to build) rather than shown as a
+        # placeholder, so a turn with no situation data renders byte-identical to
+        # before this parameter existed.
+        parts.append(situation_prompt_fragment)
 
     parts.extend(
         [

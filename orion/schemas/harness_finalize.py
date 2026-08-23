@@ -210,6 +210,20 @@ class HarnessRunRequestV1(BaseModel):
             "its pre-attachment form."
         ),
     )
+    situation_prompt_fragment: str | None = Field(
+        default=None,
+        description=(
+            "Compact, already-length-capped situational-awareness text "
+            "(local time-of-day/day-phase, conversation-phase, presence; "
+            "see orion.situational.context.SituationPromptFragmentV1.compact_text) "
+            "resolved by orion-hub BEFORE this request is built -- "
+            "orion/hub/turn_orchestrator.py::execute_unified_turn -- and "
+            "rendered verbatim into the harness prompt (orion/harness/"
+            "prefix.py::compile_harness_prefix). None when situation "
+            "context is disabled or failed to build; the prompt then omits "
+            "the block entirely rather than showing a placeholder."
+        ),
+    )
     recent_turns: list[TurnWindowMessageV1] = Field(
         default_factory=list,
         max_length=HARNESS_RECENT_TURNS_MAX,

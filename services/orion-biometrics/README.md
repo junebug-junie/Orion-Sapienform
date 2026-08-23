@@ -291,3 +291,28 @@ docker-compose up -d orion-biometrics
 scripts/smoke_biometrics.sh
 # Expects one message on sample/summary/induction + state-service reply.
 ```
+
+## Cabinet sensor node (Athena Nano ESP32)
+
+Physical cabinet telemetry (BME680 / LTR390 / LIS3MDL / PMSA003I / VL53L1X / BNO085 UART-RVC)
+enters Orion **only** through this service:
+
+```text
+Nano NDJSON → host systemd reader → /run/orion-sensors/latest.json
+  → orion-biometrics (ro bind) sample.sensors
+  → summary.measurements / cabinet_*_activity pressures (baseline-relative)
+  → grammar → substrate pressure_hints → field-digester (mode=replace)
+```
+
+Setup / flash / smokes: `scripts/setup_athena_cabinet_sensors.sh`,
+`scripts/flash_athena_cabinet_nano.sh`, `scripts/smoke_athena_cabinet_serial.sh`,
+`scripts/smoke_biometrics_cabinet_sensors.sh`, `scripts/smoke_biometrics_cabinet_grammar.sh`,
+and the extended `scripts/smoke_field_digester_biometrics.sh`.
+
+**Non-goals:** Arduino audio; absolute comfort/AQI thresholds in v1; overloading host
+`thermal_pressure` / `fan_pressure`. A USB microphone plugged into Athena is **host audio**,
+not part of this Nano path — document-only until a separate capture design lands.
+
+Env: `CABINET_SENSORS_PATH` (default `/run/orion-sensors/latest.json`),
+`CABINET_SENSOR_STALE_AFTER_SEC` (default `10`). Missing/stale ⇒ omit cabinet measurement keys
+(never zero-fill).

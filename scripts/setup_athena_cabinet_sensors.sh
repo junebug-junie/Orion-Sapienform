@@ -33,8 +33,12 @@ fi
 install -m 0644 "$UDEV_SRC" "$UDEV_DST"
 echo "Installed $UDEV_DST"
 
-install -m 0644 "$UNIT_SRC" "$UNIT_DST"
-echo "Installed $UNIT_DST"
+# Materialize systemd unit with this checkout's absolute paths.
+tmp_unit="$(mktemp)"
+sed "s|@ORION_ROOT@|${REPO_ROOT}|g" "$UNIT_SRC" >"$tmp_unit"
+install -m 0644 "$tmp_unit" "$UNIT_DST"
+rm -f "$tmp_unit"
+echo "Installed $UNIT_DST (ORION_ROOT=$REPO_ROOT)"
 
 if [[ ! -f "$DEFAULT_ENV" ]]; then
     cat >"$DEFAULT_ENV" <<EOF

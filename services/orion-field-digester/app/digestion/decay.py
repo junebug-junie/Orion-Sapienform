@@ -36,6 +36,14 @@ NODE_DECAY_CHANNELS = {
     "power_pressure",
     "disk_capacity_pressure",
     "fan_pressure",
+    # Athena cabinet Nano (baseline-relative activity + sensor trust)
+    "cabinet_climate_activity",
+    "cabinet_particulate_activity",
+    "cabinet_em_activity",
+    "cabinet_uv_activity",
+    "cabinet_vibration_activity",
+    "cabinet_proximity_activity",
+    "cabinet_sensor_staleness",
     # execution
     "cortex_exec_step_load",
     "execution_friction",

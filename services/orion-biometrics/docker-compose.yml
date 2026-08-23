@@ -62,6 +62,8 @@ services:
       - PDU_SNMP_PORT=${PDU_SNMP_PORT:-161}
       - PDU_POLL_INTERVAL_SEC=${PDU_POLL_INTERVAL_SEC:-60.0}
       - PDU_REQUEST_TIMEOUT_SEC=${PDU_REQUEST_TIMEOUT_SEC:-5.0}
+      - CABINET_SENSORS_PATH=${CABINET_SENSORS_PATH:-/run/orion-sensors/latest.json}
+      - CABINET_SENSOR_STALE_AFTER_SEC=${CABINET_SENSOR_STALE_AFTER_SEC:-10.0}
 
     volumes:
       - ../../config/biometrics:/app/config/biometrics:ro
@@ -85,6 +87,9 @@ services:
       - /mnt/postgres:/host_mnt/postgres:ro
       - /mnt/graphdb:/host_mnt/graphdb:ro
       - /mnt/telemetry:/host_mnt/telemetry:ro
+      # Host cabinet sensor snapshot (systemd reader -> /run/orion-sensors/latest.json).
+      # Create on host via scripts/setup_athena_cabinet_sensors.sh or RuntimeDirectory.
+      - /run/orion-sensors:/run/orion-sensors:ro
 
     deploy:
       resources:

@@ -4,14 +4,55 @@
     "sessionStart": [
       {
         "type": "command",
-        "command": "python3 scripts/hooks/session_start_agent_board.py",
-        "timeout": 25
+        "command": "python3 scripts/hooks/cursor_bridge.py context --timeout 24 scripts/hooks/session_start_worktree_summary.py scripts/hooks/session_start_agent_board.py scripts/hooks/session_start_graph_worktree_guard.py",
+        "timeout": 30
       }
     ],
     "stop": [
       {
         "type": "command",
-        "command": "python3 scripts/hooks/session_stop_agent_board.py",
+        "command": "python3 scripts/hooks/stop_worktree_wip_snapshot.py",
+        "timeout": 5
+      },
+      {
+        "type": "command",
+        "command": "python3 scripts/hooks/cursor_bridge.py stop --timeout 10 scripts/hooks/session_stop_agent_board.py",
+        "timeout": 12,
+        "loop_limit": 1
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "type": "command",
+        "command": "python3 scripts/hooks/cursor_bridge.py deny --timeout 10 scripts/hooks/destructive_git_guard.py",
+        "timeout": 12
+      }
+    ],
+    "preToolUse": [
+      {
+        "matcher": "Write|Edit|StrReplace|EditNotebook|NotebookEdit",
+        "type": "command",
+        "command": "python3 scripts/hooks/cursor_bridge.py deny --timeout 10 scripts/hooks/shared_checkout_edit_guard.py",
+        "timeout": 12
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "Shell|Grep",
+        "type": "command",
+        "command": "python3 scripts/hooks/cursor_bridge.py nudge --timeout 10 scripts/hooks/graphify_hook_guard_gate.sh search",
+        "timeout": 12
+      },
+      {
+        "matcher": "Read|Glob",
+        "type": "command",
+        "command": "python3 scripts/hooks/cursor_bridge.py nudge --timeout 10 scripts/hooks/graphify_hook_guard_gate.sh read",
+        "timeout": 12
+      },
+      {
+        "matcher": "Write|Edit|StrReplace|EditNotebook|NotebookEdit",
+        "type": "command",
+        "command": "python3 scripts/hooks/cursor_bridge.py nudge --timeout 8 scripts/hooks/metric_lineage_nudge.py",
         "timeout": 10
       }
     ]

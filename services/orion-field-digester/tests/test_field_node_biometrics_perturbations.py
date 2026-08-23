@@ -256,3 +256,78 @@ def test_gpu_and_cpu_perturbations_do_not_saturate_across_repeated_deltas() -> N
     node_vec = state.node_vectors["node:atlas"]
     assert node_vec["gpu_pressure"] == 0.4
     assert node_vec["cpu_pressure"] == 0.4
+
+
+CABINET_HINT_KEYS = (
+    "cabinet_climate_activity",
+    "cabinet_particulate_activity",
+    "cabinet_em_activity",
+    "cabinet_uv_activity",
+    "cabinet_vibration_activity",
+    "cabinet_proximity_activity",
+    "cabinet_sensor_staleness",
+)
+
+
+def test_node_channels_include_cabinet_sensor_channels() -> None:
+    from app.tensor.channels import NODE_CHANNELS
+
+    for channel in CABINET_HINT_KEYS:
+        assert channel in NODE_CHANNELS
+
+
+def test_node_biometrics_delta_produces_cabinet_sensor_perturbations() -> None:
+    pressure_hints = {key: 0.1 * (i + 1) for i, key in enumerate(CABINET_HINT_KEYS)}
+    delta = _make_node_biometrics_delta(pressure_hints=pressure_hints)
+    perturbations = delta_to_perturbations(delta)
+    channels = {p.channel: p.intensity for p in perturbations}
+    for key in CABINET_HINT_KEYS:
+        assert channels[key] == pressure_hints[key]
+    assert all(p.node_id == "node:atlas" for p in perturbations)
+
+
+def test_cabinet_sensor_perturbations_use_replace_mode() -> None:
+    pressure_hints = {key: 0.5 for key in CABINET_HINT_KEYS}
+    delta = _make_node_biometrics_delta(pressure_hints=pressure_hints)
+    perturbations = delta_to_perturbations(delta)
+    modes = {p.channel: p.mode for p in perturbations if p.channel in CABINET_HINT_KEYS}
+    assert len(modes) == len(CABINET_HINT_KEYS)
+    assert all(mode == "replace" for mode in modes.values())
+
+
+def test_node_biometrics_cabinet_and_host_hints_both_present() -> None:
+    delta = _make_node_biometrics_delta(
+        pressure_hints={
+            "fan_pressure": 0.29,
+            "thermal_pressure": 0.33,
+            "cabinet_climate_activity": 0.42,
+            "cabinet_sensor_staleness": 0.15,
+        }
+    )
+    perturbations = delta_to_perturbations(delta)
+    channels = {p.channel: p.intensity for p in perturbations}
+    assert channels["fan_pressure"] == 0.29
+    assert channels["thermal_pressure"] == 0.33
+    assert channels["cabinet_climate_activity"] == 0.42
+    assert channels["cabinet_sensor_staleness"] == 0.15
+
+
+def test_cabinet_sensor_perturbations_do_not_saturate_across_repeated_deltas() -> None:
+    delta = _make_node_biometrics_delta(
+        pressure_hints={"cabinet_climate_activity": 0.3, "cabinet_em_activity": 0.3}
+    )
+    perturbations = []
+    for _ in range(16):
+        perturbations.extend(delta_to_perturbations(delta))
+
+    state = FieldStateV1(
+        generated_at=datetime(2026, 8, 23, tzinfo=timezone.utc),
+        tick_id="tick_cabinet_saturation_regression",
+        node_vectors={},
+        capability_vectors={},
+        edges=[],
+    )
+    apply_perturbations(state, perturbations)
+    node_vec = state.node_vectors["node:atlas"]
+    assert node_vec["cabinet_climate_activity"] == 0.3
+    assert node_vec["cabinet_em_activity"] == 0.3

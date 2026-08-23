@@ -222,6 +222,28 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     mode="replace",
                 )
             )
+        # Cabinet sensor activity/staleness (2026-08-23): dedicated NODE_CHANNELS,
+        # not folded into thermal_pressure or other host biometrics. Same per-trace
+        # fan-out / mode="replace" precedent as fan_pressure above.
+        for channel, key in (
+            ("cabinet_climate_activity", "cabinet_climate_activity"),
+            ("cabinet_particulate_activity", "cabinet_particulate_activity"),
+            ("cabinet_em_activity", "cabinet_em_activity"),
+            ("cabinet_uv_activity", "cabinet_uv_activity"),
+            ("cabinet_vibration_activity", "cabinet_vibration_activity"),
+            ("cabinet_proximity_activity", "cabinet_proximity_activity"),
+            ("cabinet_sensor_staleness", "cabinet_sensor_staleness"),
+        ):
+            if key in hints:
+                out.append(
+                    Perturbation(
+                        node_id=node_id,
+                        channel=channel,
+                        intensity=float(hints[key]),
+                        label=delta.delta_id,
+                        mode="replace",
+                    )
+                )
         status = str(after.get("availability_status") or "")
         if status == "stale":
             out.append(Perturbation(node_id=node_id, channel="staleness", intensity=0.5, label=delta.delta_id))

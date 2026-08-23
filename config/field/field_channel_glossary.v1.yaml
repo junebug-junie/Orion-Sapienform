@@ -102,6 +102,41 @@ channels:
     meaning: "Node BMC fan speed (percent of max, max across fans). A response to thermal load, not an independent hazard on its own -- 0.0 on a node without iLO/BMC credentials configured."
     evidence_dimension: resource_pressure
 
+  - channel: cabinet_climate_activity
+    level: [node]
+    category: physical_substrate
+    meaning: "Athena cabinet climate sensor activity (BME680 temperature/humidity/pressure band deviation). Distinct from node thermal_pressure -- measures the enclosure ambient, not CPU/GPU die heat."
+
+  - channel: cabinet_particulate_activity
+    level: [node]
+    category: physical_substrate
+    meaning: "Athena cabinet particulate/air-quality sensor activity (PMS5003 band deviation)."
+
+  - channel: cabinet_em_activity
+    level: [node]
+    category: physical_substrate
+    meaning: "Athena cabinet electromagnetic activity (AD8313 RF power band deviation)."
+
+  - channel: cabinet_uv_activity
+    level: [node]
+    category: physical_substrate
+    meaning: "Athena cabinet UV sensor activity (GUVA-S12SD band deviation)."
+
+  - channel: cabinet_vibration_activity
+    level: [node]
+    category: physical_substrate
+    meaning: "Athena cabinet vibration activity (MPU6050 accel deviation from 1g rest)."
+
+  - channel: cabinet_proximity_activity
+    level: [node]
+    category: physical_substrate
+    meaning: "Athena cabinet proximity/presence sensor activity (VL53L0X band deviation)."
+
+  - channel: cabinet_sensor_staleness
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Whether Athena's cabinet Arduino sensor bundle is too stale to trust. When elevated, cabinet activity channels are withheld upstream -- this channel carries the liveness signal instead."
+
   - channel: expected_offline_suppression
     level: [node]
     category: sensor_trust_liveness

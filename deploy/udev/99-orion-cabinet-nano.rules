@@ -1,3 +1,5 @@
-# Orion Athena cabinet sensor — Arduino Nano ESP32 USB serial permissions.
+# Orion Athena cabinet sensor — Arduino Nano ESP32 USB serial + DFU permissions.
 # Stable open path: /dev/serial/by-id/usb-Arduino_Nano_ESP32_*
 SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{product}=="Nano ESP32", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+# Upload uses DFU (vid 2341 / pid 0070). Without this, arduino-cli hits LIBUSB_ERROR_ACCESS.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2341", MODE="0660", GROUP="plugdev", TAG+="uaccess"

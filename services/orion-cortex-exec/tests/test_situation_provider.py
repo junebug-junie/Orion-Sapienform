@@ -277,6 +277,88 @@ def _clear_runtime_cache():
     situation._RUNTIME_CACHE.clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_weather_cache():
+    # _WEATHER_CACHE keys by "{provider}:{lat}:{lon}", constant across the
+    # weather tests below -- same leak risk as _RUNTIME_CACHE above.
+    situation._WEATHER_CACHE.clear()
+    yield
+    situation._WEATHER_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_weather_context_reports_live_conditions_when_openmeteo_configured(monkeypatch):
+    """Regression guard for the 2026-08-23 "get weather" follow-up:
+    `_build_environment_context` is now async (its blocking urlopen call
+    moved to asyncio.to_thread, same fix already applied to
+    `_build_runtime_context`) -- confirm the conversion still produces a
+    real, populated EnvironmentContextV1 end to end, not just that it
+    doesn't crash."""
+
+    def _urlopen(url, timeout=None):
+        return _FakeUrlopenResponse(
+            {
+                "current": {
+                    "temperature_2m": 68.0,
+                    "apparent_temperature": 66.0,
+                    "weather_code": 1,
+                    "wind_speed_10m": 5.0,
+                    "wind_gusts_10m": 9.0,
+                },
+                "hourly": {
+                    "precipitation_probability": [10, 12, 15, 20, 25, 30],
+                    "temperature_2m": [68, 70, 71, 69, 65, 60],
+                    "wind_speed_10m": [5, 6, 7, 8, 9, 10],
+                },
+            }
+        )
+
+    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    cfg = situation.settings_from_runtime(
+        _settings(
+            orion_situation_weather_enabled=True,
+            orion_situation_weather_provider="openmeteo",
+            orion_situation_weather_lat=41.2230,
+            orion_situation_weather_lon=-111.9738,
+        )
+    )
+    diagnostics = situation.SituationDiagnosticsV1()
+    env = await situation._build_environment_context(cfg, diagnostics)
+
+    assert env.available is True
+    assert env.source == "openmeteo"
+    assert env.current_weather.temperature_f == 68.0
+    assert diagnostics.provider_status["weather"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_weather_context_caches_within_ttl(monkeypatch):
+    calls = {"n": 0}
+
+    def _urlopen(url, timeout=None):
+        calls["n"] += 1
+        return _FakeUrlopenResponse(
+            {
+                "current": {"temperature_2m": 55.0, "weather_code": 0},
+                "hourly": {"precipitation_probability": [], "temperature_2m": [], "wind_speed_10m": []},
+            }
+        )
+
+    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    cfg = situation.settings_from_runtime(
+        _settings(
+            orion_situation_weather_enabled=True,
+            orion_situation_weather_provider="openmeteo",
+            orion_situation_weather_lat=41.2230,
+            orion_situation_weather_lon=-111.9738,
+        )
+    )
+    diagnostics = situation.SituationDiagnosticsV1()
+    await situation._build_environment_context(cfg, diagnostics)
+    await situation._build_environment_context(cfg, diagnostics)
+    assert calls["n"] == 1
+
+
 @pytest.mark.asyncio
 async def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
     routes_payload = {

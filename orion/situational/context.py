@@ -150,16 +150,20 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     with no visible error. This bridges the two conventions explicitly
     rather than making `settings_from_runtime` guess casings.
 
-    Fields orion-hub does not yet configure (location, weather coordinates,
-    lab, perception) are turned off here on purpose, not left to
-    `settings_from_runtime`'s own defaults to silently decide: hub has no
-    verified weather/perception/lab runtime dependency yet (no DSN/HTTP
+    Fields orion-hub does not yet configure (location label/locality/
+    region/country, lab, perception) are turned off here on purpose, not
+    left to `settings_from_runtime`'s own defaults to silently decide: hub
+    has no verified perception/lab runtime dependency yet (no DSN/HTTP
     egress vetted for its event loop), so wiring those is a follow-up, not
-    an accident of a missing attr. The runtime probe (which model is
-    currently serving `chat`) IS enabled -- it reuses `HUB_LLM_GATEWAY_URL`,
-    a host orion-hub already calls today (see `/api/llm-routes`), so it
-    costs no new dependency, and `_build_runtime_context` awaits it via
-    `asyncio.to_thread` so a cache-miss probe cannot stall the event loop.
+    an accident of a missing attr. Weather and the runtime probe (which
+    model is currently serving `chat`) ARE enabled -- weather now reads
+    orion-hub's own ORION_SITUATION_WEATHER_* fields (added alongside this
+    adapter's weather wiring; same provider/coordinates/TTL as cortex-exec's
+    already-configured values), and the runtime probe reuses
+    `HUB_LLM_GATEWAY_URL`, a host orion-hub already calls today (see
+    `/api/llm-routes`). Both `_build_environment_context` and
+    `_build_runtime_context` await their blocking `urlopen` calls via
+    `asyncio.to_thread` so a cache-miss fetch cannot stall the event loop.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -171,11 +175,14 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_region=None,
         orion_situation_country=None,
         orion_situation_location_precision="city",
-        orion_situation_weather_enabled=False,
-        orion_situation_weather_provider="stub",
-        orion_situation_weather_lat=None,
-        orion_situation_weather_lon=None,
-        orion_situation_weather_ttl_seconds=600,
+        orion_situation_weather_enabled=bool(getattr(cfg, "ORION_SITUATION_WEATHER_ENABLED", True)),
+        orion_situation_weather_provider=str(getattr(cfg, "ORION_SITUATION_WEATHER_PROVIDER", "stub")),
+        orion_situation_weather_lat=getattr(cfg, "ORION_SITUATION_WEATHER_LAT", None),
+        orion_situation_weather_lon=getattr(cfg, "ORION_SITUATION_WEATHER_LON", None),
+        orion_situation_weather_ttl_seconds=int(getattr(cfg, "ORION_SITUATION_WEATHER_TTL_SECONDS", 600)),
+        # Practical-flag thresholds are shared policy constants, not
+        # location data -- cortex-exec's own defaults, not worth a separate
+        # hub env key each until an operator actually wants them to diverge.
         orion_situation_umbrella_precip_prob_threshold=40,
         orion_situation_jacket_temp_f_threshold=55,
         orion_situation_high_wind_mph_threshold=25,
@@ -272,7 +279,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     time_ctx = _build_time_context(cfg, diagnostics)
     phase_ctx = await _build_conversation_phase(ctx, time_ctx, now)
     place_ctx = _build_place_context(cfg)
-    env_ctx = _build_environment_context(cfg, diagnostics)
+    env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
     perception_ctx = _build_perception_context(cfg, diagnostics)
@@ -514,7 +521,7 @@ def _build_place_context(cfg: SituationSettings) -> PlaceContextV1:
     )
 
 
-def _build_environment_context(cfg: SituationSettings, diagnostics: SituationDiagnosticsV1) -> EnvironmentContextV1:
+async def _build_environment_context(cfg: SituationSettings, diagnostics: SituationDiagnosticsV1) -> EnvironmentContextV1:
     if not cfg.weather_enabled:
         diagnostics.provider_status["weather"] = "disabled"
         return EnvironmentContextV1(available=False, source="disabled")
@@ -524,7 +531,13 @@ def _build_environment_context(cfg: SituationSettings, diagnostics: SituationDia
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.weather_ttl_seconds:
             return cached[1]
     try:
-        env = _fetch_weather(cfg)
+        # `_fetch_weather` is a plain blocking `urlopen` call -- offloaded to a
+        # thread for the same reason `_build_runtime_context` already is:
+        # this now runs inside orion-hub's single shared WebSocket event loop
+        # (execute_unified_turn awaits build_situation_for_ctx directly), not
+        # just cortex-exec's per-turn dispatch, so a cache-miss call here must
+        # not stall every other concurrent client's turn.
+        env = await asyncio.to_thread(_fetch_weather, cfg)
         with _LOCK:
             _WEATHER_CACHE[cache_key] = (datetime.now(timezone.utc), env)
         diagnostics.provider_status["weather"] = "ok"

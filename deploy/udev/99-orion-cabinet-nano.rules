@@ -1,0 +1,3 @@
+# Orion Athena cabinet sensor — Arduino Nano ESP32 USB serial permissions.
+# Stable open path: /dev/serial/by-id/usb-Arduino_Nano_ESP32_*
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{product}=="Nano ESP32", MODE="0660", GROUP="plugdev", TAG+="uaccess"

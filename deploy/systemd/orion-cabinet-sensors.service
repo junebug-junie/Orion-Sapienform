@@ -1,0 +1,26 @@
+[Unit]
+Description=Orion Athena cabinet sensor serial reader
+Documentation=file:/mnt/scripts/Orion-Sapienform/docs/superpowers/specs/2026-08-23-athena-cabinet-sensor-node-design.md
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+RuntimeDirectory=orion-sensors
+RuntimeDirectoryMode=0755
+WorkingDirectory=/mnt/scripts/Orion-Sapienform
+Environment=PYTHONPATH=/mnt/scripts/Orion-Sapienform
+Environment=ORION_CABINET_SENSORS_PATH=/run/orion-sensors/latest.json
+EnvironmentFile=-/etc/default/orion-cabinet-sensors
+ExecStart=/mnt/scripts/Orion-Sapienform/venv/bin/python /mnt/scripts/Orion-Sapienform/scripts/orion_cabinet_sensor_reader.py
+Restart=always
+RestartSec=2
+# dialout/plugdev membership is granted by udev + setup script; override User in
+# /etc/default/orion-cabinet-sensors if the Athena operator account differs.
+User=athena
+Group=plugdev
+SupplementaryGroups=dialout
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

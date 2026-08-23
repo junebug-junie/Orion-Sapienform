@@ -3,8 +3,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/orion_runtime_root.sh
+source "$SCRIPT_DIR/lib/orion_runtime_root.sh"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
-VENV_PYTHON="$REPO_ROOT/venv/bin/python"
+RUNTIME_ROOT="$(orion_resolve_runtime_root "$REPO_ROOT")"
+VENV_PYTHON="$(orion_resolve_runtime_python "$REPO_ROOT")"
 UDEV_SRC="$REPO_ROOT/deploy/udev/99-orion-cabinet-nano.rules"
 UNIT_SRC="$REPO_ROOT/deploy/systemd/orion-cabinet-sensors.service"
 UDEV_DST="/etc/udev/rules.d/99-orion-cabinet-nano.rules"
@@ -13,11 +16,15 @@ DEFAULT_ENV="/etc/default/orion-cabinet-sensors"
 SERVICE_USER="${ORION_CABINET_SERVICE_USER:-athena}"
 
 if [[ ! -x "$VENV_PYTHON" ]]; then
-    echo "error: expected venv at $VENV_PYTHON" >&2
+    echo "error: expected venv python at $VENV_PYTHON (runtime root: $RUNTIME_ROOT)" >&2
     exit 1
 fi
 
-echo "Installing pyserial into repo venv..."
+if [[ "$REPO_ROOT" != "$RUNTIME_ROOT" ]]; then
+    echo "note: invoked from worktree $REPO_ROOT; runtime/systemd will use $RUNTIME_ROOT" >&2
+fi
+
+echo "Installing pyserial into runtime venv ($VENV_PYTHON)..."
 "$VENV_PYTHON" -m pip install -q pyserial
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -35,10 +42,10 @@ echo "Installed $UDEV_DST"
 
 # Materialize systemd unit with this checkout's absolute paths.
 tmp_unit="$(mktemp)"
-sed "s|@ORION_ROOT@|${REPO_ROOT}|g" "$UNIT_SRC" >"$tmp_unit"
+sed "s|@ORION_ROOT@|${RUNTIME_ROOT}|g" "$UNIT_SRC" >"$tmp_unit"
 install -m 0644 "$tmp_unit" "$UNIT_DST"
 rm -f "$tmp_unit"
-echo "Installed $UNIT_DST (ORION_ROOT=$REPO_ROOT)"
+echo "Installed $UNIT_DST (ORION_ROOT=$RUNTIME_ROOT)"
 
 if [[ ! -f "$DEFAULT_ENV" ]]; then
     cat >"$DEFAULT_ENV" <<EOF

@@ -3,14 +3,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/orion_runtime_root.sh
+source "$SCRIPT_DIR/lib/orion_runtime_root.sh"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
-VENV_PYTHON="$REPO_ROOT/venv/bin/python"
+RUNTIME_ROOT="$(orion_resolve_runtime_root "$REPO_ROOT")"
+VENV_PYTHON="$(orion_resolve_runtime_python "$REPO_ROOT")"
 NEEDED="${1:-3}"
 TIMEOUT_SEC="${SMOKE_SERIAL_TIMEOUT_SEC:-30}"
 
 DEVICE="$("$SCRIPT_DIR/discover_athena_cabinet_serial.sh")"
 
-export PYTHONPATH="$REPO_ROOT"
+export PYTHONPATH="$RUNTIME_ROOT"
 export ORION_CABINET_SERIAL_DEVICE="$DEVICE"
 export ORION_CABINET_SERIAL_NEEDED="$NEEDED"
 export ORION_CABINET_SERIAL_TIMEOUT_SEC="$TIMEOUT_SEC"

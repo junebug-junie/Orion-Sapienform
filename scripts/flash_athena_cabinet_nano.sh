@@ -130,8 +130,25 @@ if [[ -z "${DEVICE}" ]]; then
   exit 1
 fi
 
+if systemctl is-active --quiet orion-cabinet-sensors.service 2>/dev/null; then
+  echo "WARN: orion-cabinet-sensors.service is active; stop it before upload:" >&2
+  echo "  sudo systemctl stop orion-cabinet-sensors.service" >&2
+fi
+
 echo "Uploading to ${DEVICE}..."
-"${ARDUINO_CLI}" upload -p "${DEVICE}" --fqbn "${FQBN}" "${SKETCH_DIR}"
+if ! "${ARDUINO_CLI}" upload -p "${DEVICE}" --fqbn "${FQBN}" "${SKETCH_DIR}"; then
+  cat >&2 <<EOF
+ERROR: upload failed (often LIBUSB_ERROR_ACCESS until DFU udev is installed).
+
+Re-run host setup from this repo, then flash again:
+  sudo scripts/setup_athena_cabinet_sensors.sh
+  sudo systemctl stop orion-cabinet-sensors.service
+  ./scripts/flash_athena_cabinet_nano.sh --upload
+
+If it still fails, unplug/replug the Nano once so udev re-applies.
+EOF
+  exit 1
+fi
 
 echo "Upload complete. Serial monitor at ${BAUD} baud:"
 echo "  ${ARDUINO_CLI} monitor -p ${DEVICE} -c baudrate=${BAUD}"

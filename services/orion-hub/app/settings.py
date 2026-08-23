@@ -463,6 +463,14 @@ class Settings(BaseSettings):
     # not done here. See docs/superpowers/specs/2026-08-16-tension-driven-
     # outreach-design.md's "Poll-cadence root cause" section for the full
     # account and replay numbers.
+    #
+    # Not re-measured against MIN_RUN_LENGTH's 2026-08-22 recalibration
+    # (8 -> 6, see that Field's own comment): a shorter minimum run has a
+    # shorter average catchable window per episode, so the exact percentages
+    # above no longer apply verbatim -- but ~9x more raw qualifying episodes
+    # now exist to catch (71/24h vs 8/24h at the old bar), so the net effect
+    # on real catches per day should still be a clear improvement, just not
+    # this specific number. Re-derive if it turns out not to be.
     HUB_ENDOGENOUS_OUTREACH_TICK_SEC: float = Field(
         default=10.0, alias="HUB_ENDOGENOUS_OUTREACH_TICK_SEC"
     )
@@ -474,16 +482,23 @@ class Settings(BaseSettings):
     # fallback to the removed mechanism.
     #
     # This one constant IS operator-tunable, unlike the trigger's other
-    # internals: MIN_RUN_LENGTH=8 is derived from a one-time 2-hour replay of
-    # live history (see scripts/tension_outreach_trigger.py's module
+    # internals: MIN_RUN_LENGTH was 8, derived from a one-time 2-hour replay
+    # of live history (see scripts/tension_outreach_trigger.py's module
     # docstring) against one FieldTensionCompetition tuning snapshot. If that
     # tuning drifts later, the natural run-length distribution the "~1st
     # percentile" bar rests on drifts with it -- an operator needs to be able
     # to retune the bar from real post-deploy firing data without a code
     # change/deploy. Default matches the derived value; changing this does
     # not change what MIN_RUN_LENGTH means, only where the bar sits.
+    #
+    # RECALIBRATED 2026-08-22: exactly the drift the paragraph above warned
+    # about, confirmed live -- was 8, now 6. Numbers and method are NOT
+    # restated here; see scripts/tension_outreach_trigger.py's own module
+    # docstring ("WHERE THE BAR CAME FROM") for the full before/after
+    # replay data, kept as the single source of truth so a future
+    # recalibration only needs to update that one place, not two.
     HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH: int = Field(
-        default=8, alias="HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH"
+        default=6, alias="HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH"
     )
     HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC: float = Field(
         default=2700.0, alias="HUB_ENDOGENOUS_OUTREACH_MIN_COOLDOWN_SEC"

@@ -231,10 +231,10 @@ the loop asks `scripts/tension_outreach_trigger.py::current_run()`: has the
 same node been winning `orion.attention.tension`'s live Borda competition for
 a sustained, unbroken run of real ticks right now — not a single blip. See
 that module's own docstring for the full account, including why the
-persistence bar (`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default 8) is
-derived from a real replay of live history rather than guessed — it stays
-operator-tunable from real post-deploy firing-rate data, unlike the trigger's
-other internals. The message itself is generated from live substrate signals
+persistence bar (`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, default **6** as
+of a 2026-08-22 recalibration; was 8) is derived from a real replay of live
+history rather than guessed — it stays operator-tunable from real
+post-deploy firing-rate data, unlike the trigger's other internals. The message itself is generated from live substrate signals
 and real chat history, and lands on the same rails a normal turn uses — that
 part never changed.
 

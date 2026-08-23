@@ -51,19 +51,37 @@ saturate.
 
 WHERE THE BAR CAME FROM
 -------------------------
-`MIN_RUN_LENGTH = 8` is not guessed. Replayed 2 real hours (2,374 ticks,
-2026-08-16) of `substrate_field_state` through the real
+`MIN_RUN_LENGTH` is not guessed. Original derivation (2026-08-16): replayed
+2 real hours (2,374 ticks) of `substrate_field_state` through the real
 `FieldTensionCompetition` and measured the natural distribution of
 consecutive-same-winner run lengths: p50=3, p75=4, p90=5, p95=5, p99=8,
-max=11 (455 total runs). A run of 8 or more happening by chance -- not
-genuine persistence -- is roughly a 1st-percentile event against that one
-snapshot of `FieldTensionCompetition`'s tuning. If that tuning drifts later,
-the distribution this bar rests on drifts with it and nothing here would
-notice -- so unlike the trigger's other internals, this one constant IS
-operator-tunable (`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, wired in
-`scripts/main.py`) rather than baked in, precisely so it can be retuned from
-real post-deploy firing-rate data without a code change/deploy. The module
-constant below is the derived default, not a hardcoded floor.
+max=11 (455 total runs) -- landed on 8, since a run that long happening by
+chance, not genuine persistence, was roughly a 1st-percentile event against
+that one snapshot of `FieldTensionCompetition`'s tuning.
+
+That tuning DID drift, exactly as this paragraph warned it might, and
+nothing here noticed until an operator asked "why hasn't Orion reached out"
+a second time (2026-08-22) and the drift was checked by hand. RECALIBRATED
+2026-08-22: same replay technique, re-run against the trailing 24h of live
+`substrate_field_state` (3,625 raw runs, gaps-and-islands over the RAW tick
+sequence -- a NULL or different-winner tick correctly breaks a run, matching
+`current_run`'s own semantics below, not a same-winner-only filter that
+would silently stitch across real gaps): p50=3, p75=4, p90=5, p95=5, p99=6,
+max=10. The field is genuinely noisier now (more nodes actively competing
+for the Borda win, including `node:rpc_timeout`; 55.96% of ticks in a
+sampled trailing hour had no winner at all) -- the old bar of 8 had drifted
+from "top 1%" to roughly "top 0.2%" (8 qualifying runs out of 3,625 that
+same 24h). 6 is the new default, restoring the original ~1st-percentile
+selectivity against TODAY's distribution rather than 2026-08-16's.
+
+Unlike the trigger's other internals, this one constant IS operator-tunable
+(`HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH`, wired in `scripts/main.py`)
+rather than baked in, precisely so it can be retuned from real post-deploy
+firing-rate data without a code change/deploy -- exactly what happened here.
+The module constant below is the derived default, not a hardcoded floor;
+re-derive it again the same way if `FieldTensionCompetition`'s tuning drifts
+further. See docs/superpowers/pr-reports/2026-08-22-outreach-min-run-length-
+recalibration-pr.md for the full before/after numbers and the query used.
 """
 
 from __future__ import annotations
@@ -89,7 +107,7 @@ from scripts.pg_engine import get_engine as _engine
 # their value from HUB_ENDOGENOUS_OUTREACH_MIN_RUN_LENGTH (settings.py) via
 # `scripts/main.py`'s `functools.partial(current_run, min_run_length=...)`;
 # this module-level constant is only the fallback for direct/test callers.
-MIN_RUN_LENGTH = 8
+MIN_RUN_LENGTH = 6
 
 # How far back to look for the current run. Deliberately NOT derived from
 # orion-field-digester's actual poll cadence -- that is a separate service on

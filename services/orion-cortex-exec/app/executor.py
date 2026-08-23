@@ -96,7 +96,7 @@ from .chat_stance import (
     suppress_chat_general_speech_identity_priming,
 )
 from .admission_cue import admission_cue_for_settings
-from .situation import build_situation_for_ctx
+from orion.situational.context import build_situation_for_ctx
 from .world_context import fetch_latest_world_context_capsule
 from .world_context_capsule_cache import get_world_context_capsule_cache
 from .llm_lane import resolve_llm_lane_for_step

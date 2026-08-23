@@ -908,7 +908,7 @@ svc = Rabbit(
 )
 from .current_turn_llm_signals import bind_current_turn_llm_signals_bus
 from .pre_turn_appraisal import bind_pre_turn_appraisal_bus, handle_pre_turn_appraisal_request
-from .session_turn_phase import bind_session_turn_phase_bus
+from orion.situational.session_turn_phase import bind_session_turn_phase_bus
 
 pre_turn_appraisal_svc = Rabbit(
     _cfg(),

@@ -154,6 +154,7 @@ def build_harness_prompt(
     attachments: list[Any] | None = None,
     current_served_model: str | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
+    situation_prompt_fragment: str | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -164,6 +165,7 @@ def build_harness_prompt(
         prior_tool_fetch_names=prior_tool_fetch_names,
         current_served_model=current_served_model,
         recent_turns=recent_turns,
+        situation_prompt_fragment=situation_prompt_fragment,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -311,6 +313,7 @@ class HarnessRunner:
             attachments=list(getattr(request, "attachments", None) or []),
             current_served_model=current_served_model,
             recent_turns=list(getattr(request, "recent_turns", None) or []),
+            situation_prompt_fragment=getattr(request, "situation_prompt_fragment", None),
         )
 
         collector = HarnessGrammarCollector(

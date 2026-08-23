@@ -10,6 +10,7 @@ from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
+from orion.situational.context import build_situation_for_ctx, hub_settings_to_runtime_namespace
 from orion.harness.attachment_staging import prune_staging, stage_attachments
 from orion.schemas.harness_finalize import (
     HARNESS_RECENT_TURNS_MAX,
@@ -354,6 +355,67 @@ async def _run_pre_turn_appraisal(
     return bundle
 
 
+async def _build_situation_prompt_fragment(
+    *,
+    session_id: str | None,
+    user_message: str,
+    payload: dict[str, Any],
+    settings: Any,
+    correlation_id: str,
+) -> str | None:
+    """Orion capability: local time-of-day/day-phase/conversation-phase/presence
+    context for the unified-turn prompt.
+
+    Root cause of the "Orion asked how my evening was going at 12:45pm"
+    report (2026-08-22): this data was already fully built by
+    `orion.situational.context.build_situation_for_ctx` -- correctly, hour
+    12 buckets to `midday` not `evening` -- but that builder was only ever
+    called from services/orion-cortex-exec's own legacy chat-verb dispatch
+    lane, a DIFFERENT chat path from the one `execute_unified_turn`
+    actually serves. Fail-open by design, same contract as every other
+    situation provider: any failure here degrades to no situation context
+    for this turn, never an exception into turn assembly.
+
+    Runtime evidence: `HarnessRunRequestV1.situation_prompt_fragment` on the
+    request this builds, and the "Situation:" block it produces in the
+    compiled harness prefix (orion/harness/prefix.py::compile_harness_prefix).
+    """
+    try:
+        situation_runtime_ns = hub_settings_to_runtime_namespace(settings)
+        situation_ctx: dict[str, Any] = {
+            "session_id": session_id or "anonymous",
+            "raw_user_text": user_message,
+        }
+        presence_context = payload.get("presence_context")
+        if not isinstance(presence_context, dict):
+            # Fall back to the same stored per-session presence
+            # (`/api/presence`'s PresenceContextStore) the classic
+            # websocket_handler.py chat lane already merges in via
+            # `inject_session_presence` -- confirmed live 2026-08-22 that the
+            # unified-turn branch returns before that call ever runs, so a
+            # presence set via `/api/presence` was silently invisible to
+            # every Orion-mode turn. Best-effort: a stale/unimportable store
+            # degrades to "no stored presence", not a failed turn.
+            try:
+                from scripts.presence_session import inject_session_presence
+                import scripts.main as hub_main
+
+                enriched = inject_session_presence(
+                    payload, str(session_id or "anonymous"), getattr(hub_main, "presence_context_store", None)
+                )
+                presence_context = enriched.get("presence_context")
+            except Exception:
+                presence_context = None
+        if isinstance(presence_context, dict):
+            situation_ctx["presence_context"] = presence_context
+        _, situation_fragment = await build_situation_for_ctx(situation_ctx, situation_runtime_ns)
+        compact_text = situation_fragment.get("compact_text") if situation_fragment else None
+        return str(compact_text) if compact_text else None
+    except Exception:
+        logger.warning("unified_turn_situation_context_failed corr=%s", correlation_id, exc_info=True)
+        return None
+
+
 async def execute_unified_turn(
     *,
     bus: Any,
@@ -488,6 +550,14 @@ async def execute_unified_turn(
         settings=cfg,
     )
 
+    situation_prompt_fragment = await _build_situation_prompt_fragment(
+        session_id=session_id,
+        user_message=user_message,
+        payload=payload,
+        settings=cfg,
+        correlation_id=correlation_id,
+    )
+
     # Stage any attached images into the FCC sandbox BEFORE dispatch. The Hub is
     # the only container that mounts both the attachment store and the sandbox --
     # the harness-governor, which actually runs `claude`, cannot see the store at
@@ -573,6 +643,7 @@ async def execute_unified_turn(
         answer_contract=AnswerContract(),
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
         fcc_model_label=payload.get("fcc_model_label") or DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL,
+        situation_prompt_fragment=situation_prompt_fragment,
     )
     harness_bus = harness_rpc_bus or bus
     if harness_step_relay is not None and harness_step_queue is not None:

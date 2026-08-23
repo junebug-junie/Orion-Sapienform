@@ -192,6 +192,54 @@ async def test_harness_runner_omits_served_model_line_when_probe_fails() -> None
     assert "Backend model currently serving this turn" not in captured_kwargs["prompt"]
 
 
+@pytest.mark.asyncio
+async def test_harness_runner_threads_situation_prompt_fragment_into_prompt() -> None:
+    """Regression guard for the 2026-08-22 report ("Orion asked how my
+    evening was going at 12:45pm"): HarnessRunRequestV1.situation_prompt_fragment
+    (resolved by orion-hub before this request is built) must reach the
+    compiled prompt, same treatment as fcc_model_label/served_model above.
+    """
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-situation-prompt",
+        thought_event=make_thought(),
+        user_message="hi",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        situation_prompt_fragment="Situation:\n- Local context: midday Saturday, America/Denver.",
+    )
+    runner = HarnessRunner(AsyncMock(), fcc_runner=_capturing_fcc_runner)
+    await runner.run(request)
+
+    assert "Situation:\n- Local context: midday Saturday, America/Denver." in captured_kwargs["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_omits_situation_block_when_fragment_absent() -> None:
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-situation-prompt-absent",
+        thought_event=make_thought(),
+        user_message="hi",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    runner = HarnessRunner(AsyncMock(), fcc_runner=_capturing_fcc_runner)
+    await runner.run(request)
+
+    assert "Situation:" not in captured_kwargs["prompt"]
+
+
 def _step_with_tool_result(*, is_error: bool, text: str) -> dict[str, Any]:
     return _step_with_tool_results([(is_error, text)])
 

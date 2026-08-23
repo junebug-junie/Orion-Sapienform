@@ -17,10 +17,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import app.session_turn_phase as session_turn_phase
-import app.situation as situation_mod
-from app.session_turn_phase import bind_session_turn_phase_bus, reset_session_turn_phase_bus_for_tests
-from app.situation import _build_conversation_phase, _build_time_context, mark_orion_turn, settings_from_runtime
+import orion.situational.session_turn_phase as session_turn_phase
+import orion.situational.context as situation_mod
+from orion.situational.session_turn_phase import bind_session_turn_phase_bus, reset_session_turn_phase_bus_for_tests
+from orion.situational.context import _build_conversation_phase, _build_time_context, mark_orion_turn, settings_from_runtime
 from orion.schemas.situation import SituationDiagnosticsV1
 
 

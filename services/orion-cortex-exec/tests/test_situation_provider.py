@@ -6,13 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import app.situation as situation
-from app.session_turn_phase import (
+import orion.situational.context as situation
+from orion.situational.session_turn_phase import (
     bind_session_turn_phase_bus,
     reset_session_turn_phase_bus_for_tests,
     write_session_turn_state,
 )
-from app.situation import build_situation_for_ctx
+from orion.situational.context import build_situation_for_ctx
 
 
 def _settings(**overrides):
@@ -93,7 +93,7 @@ async def test_situation_marks_temporal_resume_for_long_gap():
 
 @pytest.mark.asyncio
 async def test_situation_presence_child_affordance():
-    from app import situation as situation_mod
+    from orion.situational import context as situation_mod
 
     situation_mod._SITUATION_CACHE.clear()
     ctx = {
@@ -114,7 +114,7 @@ async def test_situation_presence_child_affordance():
 
 @pytest.mark.asyncio
 async def test_situation_cache_refreshes_when_presence_changes():
-    from app import situation as situation_mod
+    from orion.situational import context as situation_mod
 
     situation_mod._SITUATION_CACHE.clear()
     session = "sid-cache-presence"
@@ -139,7 +139,7 @@ async def test_situation_cache_refreshes_when_presence_changes():
 
 @pytest.mark.asyncio
 async def test_situation_cache_refreshes_when_requestor_changes():
-    from app import situation as situation_mod
+    from orion.situational import context as situation_mod
 
     situation_mod._SITUATION_CACHE.clear()
     session = "sid-cache-requestor"
@@ -352,7 +352,8 @@ async def test_runtime_context_disabled_by_default_in_shared_fixture(monkeypatch
     assert "unavailable" in fragment["compact_text"].lower()
 
 
-def test_runtime_context_caches_within_ttl(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_context_caches_within_ttl(monkeypatch):
     calls = {"n": 0}
 
     def _urlopen(url, timeout=None):
@@ -368,6 +369,8 @@ def test_runtime_context_caches_within_ttl(monkeypatch):
     monkeypatch.setattr(situation, "urlopen", _urlopen)
     cfg = situation.settings_from_runtime(_settings(orion_situation_runtime_enabled=True))
     diagnostics = situation.SituationDiagnosticsV1()
-    situation._build_runtime_context(cfg, diagnostics)
-    situation._build_runtime_context(cfg, diagnostics)
+    # `_build_runtime_context` offloads its blocking urlopen call via
+    # `asyncio.to_thread` now (see context.py) -- it's async, must be awaited.
+    await situation._build_runtime_context(cfg, diagnostics)
+    await situation._build_runtime_context(cfg, diagnostics)
     assert calls["n"] == 1

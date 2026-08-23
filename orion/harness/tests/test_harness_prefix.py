@@ -67,6 +67,31 @@ def test_compile_harness_prefix_omits_served_model_line_when_none() -> None:
     assert "Backend model currently serving this turn" not in prompt
 
 
+def test_compile_harness_prefix_includes_situation_prompt_fragment_when_present() -> None:
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+        situation_prompt_fragment="Situation:\n- Local context: midday Saturday, America/Denver.",
+    )
+    assert "Situation:\n- Local context: midday Saturday, America/Denver." in prompt
+
+
+def test_compile_harness_prefix_omits_situation_block_when_none() -> None:
+    # Regression guard for the 2026-08-22 report ("Orion asked how my evening
+    # was going at 12:45pm"): a turn with no situation context must render
+    # byte-identical to a turn before this parameter existed, not show a
+    # placeholder.
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+    )
+    assert "Situation:" not in prompt
+
+
 def test_compile_harness_prefix_includes_autonomy_slice_recent_actions() -> None:
     """Regression for the stance_react dispatch-evidence patch: the FCC
     motor's own prefix must render recent_actions directly, not just leave

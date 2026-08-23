@@ -33,13 +33,23 @@ to normalize.
 """
 from __future__ import annotations
 
-import logging
 import struct
 import wave
 from dataclasses import dataclass
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
+from loguru import logger
+
+# NOT stdlib logging -- confirmed live 2026-08-22: main.py's start() calls
+# `loguru.logger.remove()` then adds its own single sink, but never touches
+# Python's stdlib logging module at all. A stdlib logging.getLogger(__name__)
+# call here is silently invisible (Python's lastResort handler only prints
+# WARNING+, and even then in a different, unformatted style than the rest of
+# this service's timestamped loguru output) -- caught by an actual live
+# request (subtitle_source came back "transcribed" in the response, proving
+# this code ran) that produced ZERO matching log lines. loguru is a global
+# singleton shared with app/main.py's own `from loguru import logger`, so
+# this needs no separate configuration to show up in the same sink.
 
 
 @dataclass

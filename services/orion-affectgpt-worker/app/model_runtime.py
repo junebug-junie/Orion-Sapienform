@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import logging
 import os
 import sys
 import tempfile
@@ -28,12 +27,15 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
+from loguru import logger
 
 from .face_extract import FaceExtractionResult
 from .settings import Settings
 from .transcribe import load_whisper_model, transcribe_audio
 
-logger = logging.getLogger(__name__)
+# NOT stdlib logging.getLogger -- see transcribe.py's own comment on this
+# import for why (confirmed live 2026-08-22: stdlib log calls here were
+# silently invisible in this service's actual container output).
 
 
 @dataclass

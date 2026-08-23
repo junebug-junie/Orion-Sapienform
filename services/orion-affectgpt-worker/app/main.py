@@ -133,6 +133,7 @@ class AffectGptWorkerService:
                     timings=result.timings or None,
                     subtitle_source=result.subtitle_source,
                     transcript=result.transcript,
+                    meta=result.meta,
                 )
                 if not result_future.done():
                     result_future.set_result(res)

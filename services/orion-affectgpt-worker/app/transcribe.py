@@ -58,23 +58,29 @@ class TranscribeResult:
     meta: dict[str, Any]
 
 
-def measure_wav_peak(path: str) -> tuple[float, int]:
-    """(rms, peak) of a 16-bit PCM wav's samples. Returns (0.0, 0) on any
-    format this can't read (e.g. not 16-bit) rather than raising -- this is
-    a gate, not a hard requirement; a measurement failure should fall through
-    to "try Whisper anyway", not block transcription outright."""
+def measure_wav_peak(path: str) -> tuple[float, int, Optional[str]]:
+    """(rms, peak, error) of a 16-bit PCM wav's samples. ``error`` is None on
+    a real, successful measurement; a string on anything unreadable (missing
+    file, corrupt wav, wrong sample width). Review finding, 2026-08-22: a
+    genuinely silent clip and an unreadable one used to both collapse to the
+    identical (0.0, 0) with nothing to tell them apart -- both then produced
+    the same "near_silent_skip" log line and subtitle_source="none", hiding
+    a real upstream bug (e.g. a truncated percept-store fetch) behind what
+    looked like routine silence-gating. Callers now get a real signal to
+    decide what "unreadable" should mean instead of it being silently
+    conflated with "measured, and it was quiet."""
     try:
         peak = 0
         sum_sq = 0.0
         count = 0
         with wave.open(path, "rb") as wf:
             if wf.getsampwidth() != 2:
-                return 0.0, 0
+                return 0.0, 0, f"unsupported sample width {wf.getsampwidth()} (expected 2)"
             while True:
                 frames = wf.readframes(8192)
                 if not frames:
                     break
-                for i in range(0, len(frames) - 1, 2):
+                for i in range(0, len(frames), 2):
                     sample = struct.unpack_from("<h", frames, i)[0]
                     abs_sample = abs(sample)
                     if abs_sample > peak:
@@ -82,11 +88,11 @@ def measure_wav_peak(path: str) -> tuple[float, int]:
                     sum_sq += sample * sample
                     count += 1
         if count == 0:
-            return 0.0, 0
-        return (sum_sq / count) ** 0.5, peak
+            return 0.0, 0, "wav contained no samples"
+        return (sum_sq / count) ** 0.5, peak, None
     except Exception as exc:  # noqa: BLE001 -- a bad/missing wav is a caller error elsewhere, not this gate's job
         logger.warning(f"[TRANSCRIBE] wav_peak_measure_failed error={exc}")
-        return 0.0, 0
+        return 0.0, 0, str(exc)
 
 
 def load_whisper_model(model_name: str, device: str):
@@ -115,19 +121,30 @@ def transcribe_audio(
     clip"). Caller (model_runtime.assess) falls back to subtitle="" on an
     empty result, identical to today's caller-supplies-nothing behavior."""
     try:
-        rms, peak = measure_wav_peak(audio_path)
+        rms, peak, measure_error = measure_wav_peak(audio_path)
         meta: dict[str, Any] = {
             "peak": peak,
             "rms": round(rms, 2),
             "peak_threshold": peak_threshold,
         }
-        if peak < peak_threshold:
+        if measure_error is not None:
+            # Can't tell "silent" from "unreadable" without a real
+            # measurement -- run Whisper anyway rather than silently
+            # rejecting as near-silent (review finding, 2026-08-22).
+            # Whisper's own decode will raise on a truly corrupt file,
+            # which the outer except below still catches.
+            meta["peak_measure_error"] = measure_error
+            logger.warning(
+                f"[TRANSCRIBE] peak_measure_failed_running_anyway error={measure_error}"
+            )
+        elif peak < peak_threshold:
             meta["silence_gate"] = "rejected"
             logger.info(
                 f"[TRANSCRIBE] near_silent_skip peak={peak} threshold={peak_threshold}"
             )
             return TranscribeResult(text="", meta=meta)
-        meta["silence_gate"] = "passed"
+        else:
+            meta["silence_gate"] = "passed"
 
         result = model.transcribe(
             audio_path,
@@ -143,3 +160,40 @@ def transcribe_audio(
     except Exception as exc:  # noqa: BLE001 -- transcription is advisory; never break the assessment
         logger.warning(f"[TRANSCRIBE] transcribe_failed error={exc}")
         return TranscribeResult(text="", meta={"error": str(exc)})
+
+
+def resolve_subtitle(
+    subtitle: str,
+    *,
+    whisper_model,
+    audio_path: str,
+    peak_threshold: int,
+    language: str = "en",
+) -> tuple[str, str, Optional[str], Optional[dict[str, Any]]]:
+    """The full "what subtitle does the model actually see" decision,
+    pulled out of model_runtime.assess() into a pure function that needs
+    no GPU/vendored-AffectGPT state -- only whisper_model (or None) and a
+    wav path -- so it's directly unit-testable (review finding, 2026-08-22:
+    the "caller subtitle always wins, Whisper never overwrites it" guarantee
+    had no test proving it; a future `and`/`or` typo in the condition could
+    have silently started overwriting real caller text with Whisper output).
+
+    Returns (effective_subtitle, subtitle_source, transcript, transcribe_meta).
+
+    ``subtitle`` is stripped before the truthiness check -- review finding,
+    2026-08-22: a whitespace-only subtitle (e.g. a stray " ") used to be
+    treated as real caller text, skipping Whisper entirely and silently
+    reproducing the exact degraded-mode failure this feature exists to fix,
+    while falsely reporting subtitle_source="caller".
+    """
+    stripped = (subtitle or "").strip()
+    if stripped:
+        return stripped, "caller", None, None
+    if whisper_model is None:
+        return "", "none", None, None
+    stt_result = transcribe_audio(
+        whisper_model, audio_path, peak_threshold=peak_threshold, language=language
+    )
+    if stt_result.text:
+        return stt_result.text, "transcribed", stt_result.text, stt_result.meta
+    return "", "none", None, stt_result.meta

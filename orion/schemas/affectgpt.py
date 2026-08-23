@@ -94,7 +94,16 @@ class AffectGptAssessResultPayload(BaseModel):
         description=(
             "The actual Whisper transcript text when subtitle_source=="
             "'transcribed' -- what the model was actually shown, not just "
-            "whether transcription happened."
+            "whether transcription happened. Review finding, 2026-08-22: "
+            "this is verbatim transcribed speech on the wire, a real "
+            "widening of this module's privacy surface -- see module "
+            "docstring's 'Paths only, never raw bytes/frames' principle, "
+            "which this field is a deliberate, Juniper-approved exception "
+            "to (not an oversight). Mitigating factor: raw_response "
+            "already routinely paraphrases/quotes the same speech content "
+            "indirectly (confirmed live -- e.g. 'the caption reads: "
+            "\"...\"'), so this field mostly makes explicit what was "
+            "already reachable, rather than opening a wholly new leak."
         ),
     )
     meta: Optional[Dict[str, Any]] = None

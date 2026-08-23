@@ -104,3 +104,12 @@ class Settings(BaseSettings):
     # that service found in production that Whisper hallucinates text from
     # near-silent audio without this gate.
     AFFECTGPT_TRANSCRIBE_NEAR_SILENT_PEAK_INT16: int = 50
+    # Review finding, 2026-08-22: this was hardcoded to "en" with no config
+    # knob at all, unlike orion-whisper-tts's own STTRequestPayload.language
+    # (config/request-driven there). Juniper's own captures are expected to
+    # be English, so "en" stays the default, but a wrong-language guess is a
+    # real, silent failure mode (Whisper forced through the wrong decode
+    # path produces garbled/hallucinated text that still gets stamped
+    # subtitle_source="transcribed" as if it were trustworthy) -- this makes
+    # it at least an operator-fixable setting instead of a code change.
+    AFFECTGPT_WHISPER_LANGUAGE: str = "en"

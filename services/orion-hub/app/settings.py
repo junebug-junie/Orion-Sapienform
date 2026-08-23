@@ -768,6 +768,26 @@ class Settings(BaseSettings):
     ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
     ORION_SITUATION_TIMEZONE: str = Field(default="America/Denver", alias="ORION_SITUATION_TIMEZONE")
     ORION_SITUATION_WEATHER_PROVIDER: str = Field(default="stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
+    # Added alongside ORION_SITUATION_WEATHER_PROVIDER above (that field
+    # shipped in an earlier, never-finished wiring attempt -- see
+    # orion.situational.context.hub_settings_to_runtime_namespace()) so the
+    # unified-turn chat prompt can carry real weather, not just the
+    # `/api/situation/*` UI status routes that already read
+    # ORION_SITUATION_WEATHER_PROVIDER.
+    ORION_SITUATION_WEATHER_ENABLED: bool = Field(default=True, alias="ORION_SITUATION_WEATHER_ENABLED")
+    ORION_SITUATION_WEATHER_LAT: float | None = Field(default=None, alias="ORION_SITUATION_WEATHER_LAT")
+    ORION_SITUATION_WEATHER_LON: float | None = Field(default=None, alias="ORION_SITUATION_WEATHER_LON")
+    ORION_SITUATION_WEATHER_TTL_SECONDS: int = Field(default=600, alias="ORION_SITUATION_WEATHER_TTL_SECONDS")
+
+    @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")
+    @classmethod
+    def _blank_weather_coord_to_none(cls, value: object) -> object:
+        # Mirrors services/orion-cortex-exec/app/settings.py's identical
+        # validator: an empty-string env value (unset/blank .env line) must
+        # resolve to None, not fail float() coercion.
+        if value is None or value == "":
+            return None
+        return value
 
     # --- No-Write Debug Mode (skip publishing chat history) ---
     HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")

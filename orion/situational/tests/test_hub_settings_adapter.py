@@ -59,17 +59,42 @@ def test_adapter_output_survives_settings_from_runtime_round_trip() -> None:
 
 
 def test_adapter_turns_off_unwired_providers_explicitly() -> None:
-    """Weather/lab/perception are not yet configurable from orion-hub --
-    the adapter must turn them off explicitly rather than leave it to a
+    """Lab/perception are not yet configurable from orion-hub -- the adapter
+    must turn them off explicitly rather than leave it to a
     missing-attribute default to silently decide."""
     cfg = settings_from_runtime(hub_settings_to_runtime_namespace(SimpleNamespace()))
 
-    assert cfg.weather_enabled is False
     assert cfg.lab_enabled is False
     assert cfg.perception_enabled is False
-    # The runtime (self-model) probe IS wired -- it reuses HUB_LLM_GATEWAY_URL,
-    # a host orion-hub already calls today, so it costs no new dependency.
+    # Weather and the runtime (self-model) probe ARE wired -- weather reads
+    # orion-hub's own ORION_SITUATION_WEATHER_* fields, and the runtime probe
+    # reuses HUB_LLM_GATEWAY_URL, a host orion-hub already calls today -- so
+    # neither costs a new, unvetted dependency.
     assert cfg.runtime_enabled is True
+
+
+def test_adapter_reads_hub_weather_config() -> None:
+    hub_settings = SimpleNamespace(
+        ORION_SITUATION_WEATHER_ENABLED=True,
+        ORION_SITUATION_WEATHER_PROVIDER="openmeteo",
+        ORION_SITUATION_WEATHER_LAT=41.2230,
+        ORION_SITUATION_WEATHER_LON=-111.9738,
+        ORION_SITUATION_WEATHER_TTL_SECONDS=600,
+    )
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.weather_enabled is True
+    assert cfg.weather_provider == "openmeteo"
+    assert cfg.weather_lat == 41.2230
+    assert cfg.weather_lon == -111.9738
+    assert cfg.weather_ttl_seconds == 600
+
+
+def test_adapter_weather_disabled_when_hub_sets_it_off() -> None:
+    hub_settings = SimpleNamespace(ORION_SITUATION_WEATHER_ENABLED=False)
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.weather_enabled is False
 
 
 def test_adapter_falls_back_to_safe_defaults_when_hub_settings_missing_attrs() -> None:

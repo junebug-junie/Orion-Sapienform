@@ -27,9 +27,15 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
+from loguru import logger
 
 from .face_extract import FaceExtractionResult
 from .settings import Settings
+from .transcribe import load_whisper_model, resolve_subtitle
+
+# NOT stdlib logging.getLogger -- see transcribe.py's own comment on this
+# import for why (confirmed live 2026-08-22: stdlib log calls here were
+# silently invisible in this service's actual container output).
 
 
 @dataclass
@@ -42,6 +48,9 @@ class AssessmentResult:
     face_or_frame_mode: Optional[str] = None
     face_detection: Optional[dict] = None
     timings: dict = field(default_factory=dict)
+    subtitle_source: Optional[str] = None
+    transcript: Optional[str] = None
+    meta: Optional[dict] = None
 
 
 class AffectGptRuntime:
@@ -54,6 +63,7 @@ class AffectGptRuntime:
         self._dataset_cls = None
         self._face_or_frame = settings.AFFECTGPT_FACE_OR_FRAME
         self._ckpt_path: Optional[str] = None
+        self._whisper_model = None
 
     def load(self) -> None:
         s = self.settings
@@ -143,6 +153,22 @@ class AffectGptRuntime:
 
         self._loaded = True
 
+        # Whisper is advisory, not core -- a load failure here must never
+        # block readiness for the actual AffectGPT model (self._loaded is
+        # already True above). assess() below checks self._whisper_model
+        # is not None before ever using it, falling back to today's
+        # subtitle="" behavior on any failure.
+        if s.AFFECTGPT_TRANSCRIBE_ENABLED:
+            try:
+                self._whisper_model = load_whisper_model(
+                    s.AFFECTGPT_WHISPER_MODEL, s.AFFECTGPT_DEVICE
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._whisper_model = None
+                logger.warning(
+                    f"[WARM] whisper_load_failed error={exc} -- subtitle transcription disabled for this session"
+                )
+
     @property
     def loaded(self) -> bool:
         return self._loaded
@@ -165,6 +191,33 @@ class AffectGptRuntime:
         s = self.settings
         user_message = user_message or s.AFFECTGPT_DEFAULT_USER_MESSAGE
         timings: dict[str, Any] = {}
+        t_request_start = time.monotonic()
+
+        # Populate subtitle from Whisper ONLY when the caller supplied none
+        # -- an explicit caller-provided subtitle always wins, this never
+        # overwrites real text (unit-tested in test_transcribe.py via
+        # resolve_subtitle directly -- review finding, 2026-08-22: this
+        # guarantee previously had no test at all). Both Hub's ambient loop
+        # and its manual "Check now" route currently never send one, so
+        # this is the effective default path today, not an edge case.
+        t_stt = time.monotonic()
+        subtitle, subtitle_source, transcript, transcribe_meta = resolve_subtitle(
+            subtitle,
+            whisper_model=self._whisper_model,
+            audio_path=audio_path,
+            peak_threshold=s.AFFECTGPT_TRANSCRIBE_NEAR_SILENT_PEAK_INT16,
+            language=s.AFFECTGPT_WHISPER_LANGUAGE,
+        )
+        if subtitle_source == "transcribed" or transcribe_meta is not None:
+            # Only recorded when Whisper actually ran (resolve_subtitle
+            # short-circuits before this on a real caller subtitle) --
+            # review finding, 2026-08-22: t0 used to be captured BEFORE
+            # this block, so a Whisper run silently inflated the
+            # data_load_s timing below by its own duration on top of the
+            # real dataset-load work that field is meant to measure.
+            timings["transcribe_s"] = round(time.monotonic() - t_stt, 3)
+        result_meta = {"transcribe": transcribe_meta} if transcribe_meta is not None else None
+
         t0 = time.monotonic()
 
         # AffectGPT's load_face() reads from a .npy path (np.load), not an
@@ -216,7 +269,10 @@ class AffectGptRuntime:
                 max_length=s.AFFECTGPT_MAX_LENGTH,
             )
             timings["generate_s"] = round(time.monotonic() - t2, 3)
-            timings["total_s"] = round(time.monotonic() - t0, 3)
+            # From t_request_start, not t0 -- total_s must cover the whole
+            # request including subtitle resolution/transcription above,
+            # not just the dataset-load-onward portion t0 measures.
+            timings["total_s"] = round(time.monotonic() - t_request_start, 3)
 
             return AssessmentResult(
                 ok=True,
@@ -225,6 +281,9 @@ class AffectGptRuntime:
                 face_or_frame_mode=self._face_or_frame,
                 face_detection=face_result.as_meta(),
                 timings=timings,
+                subtitle_source=subtitle_source,
+                transcript=transcript,
+                meta=result_meta,
             )
         except Exception as exc:  # noqa: BLE001 -- boundary: never crash the service on a bad clip
             return AssessmentResult(
@@ -234,6 +293,9 @@ class AffectGptRuntime:
                 face_or_frame_mode=self._face_or_frame,
                 face_detection=face_result.as_meta(),
                 timings=timings,
+                subtitle_source=subtitle_source,
+                transcript=transcript,
+                meta=result_meta,
             )
         finally:
             try:

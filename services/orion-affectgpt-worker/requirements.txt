@@ -76,3 +76,9 @@ redis[hiredis]==5.0.7
 pydantic==2.9.2
 pydantic-settings==2.5.2
 loguru
+
+# Whisper subtitle transcription (app/transcribe.py, 2026-08-22) -- unpinned,
+# matching services/orion-whisper-tts/requirements.txt's own convention for
+# this exact package. Reuses this image's already-present torch (base image:
+# pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime); no separate torch install.
+openai-whisper

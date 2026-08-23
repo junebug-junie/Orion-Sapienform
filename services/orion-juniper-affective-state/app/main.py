@@ -399,6 +399,8 @@ class JuniperAffectiveStateService:
             model_ckpt=result.model_ckpt,
             face_detection=result.face_detection,
             timings=result.timings,
+            subtitle_source=result.subtitle_source,
+            transcript=result.transcript,
             input_ref={"video_path": req.video_path, "audio_path": req.audio_path},
             trigger=_normalize_trigger(trigger),
             correlation_id=str(corr_id) if corr_id else None,

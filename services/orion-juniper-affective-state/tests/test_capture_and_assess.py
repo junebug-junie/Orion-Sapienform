@@ -149,6 +149,42 @@ async def test_full_round_trip_fetches_and_assesses(monkeypatch, scratch_dir):
 
 
 @pytest.mark.asyncio
+async def test_subtitle_source_and_transcript_thread_through_to_the_event(monkeypatch, scratch_dir):
+    """The worker's own subtitle_source/transcript telemetry (2026-08-22,
+    Whisper auto-transcription) must reach the published event, not just
+    raw_response -- a consumer needs to tell "real transcribed speech" apart
+    from "no subtitle at all" to interpret a hedging raw_response correctly."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+    bus.set_reply(
+        settings.CHANNEL_AFFECTGPT_INTAKE,
+        AffectGptAssessResultPayload(
+            ok=True,
+            raw_response="the speaker sounds anxious",
+            subtitle_source="transcribed",
+            transcript="I don't know what to do",
+        ).model_dump(),
+    )
+    monkeypatch.setattr(
+        JuniperAffectiveStateService,
+        "_fetch_percept",
+        lambda self, sha256, dest_path: (open(dest_path, "wb").write(b"x"), dest_path)[1],
+    )
+
+    _, result, event = await svc.capture_and_assess()
+
+    assert result.subtitle_source == "transcribed"
+    assert result.transcript == "I don't know what to do"
+    assert event.subtitle_source == "transcribed"
+    assert event.transcript == "I don't know what to do"
+
+
+@pytest.mark.asyncio
 async def test_ambient_trigger_shares_one_correlation_id_across_both_rpc_legs(
     monkeypatch, scratch_dir
 ):

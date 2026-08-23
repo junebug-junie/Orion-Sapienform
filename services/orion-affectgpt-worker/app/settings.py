@@ -90,3 +90,26 @@ class Settings(BaseSettings):
     # as thread-safe. A queue is a premature complexity for a single-user
     # (Juniper) signal -- see README non-goals.
     AFFECTGPT_REQUEST_TIMEOUT_S: float = 120.0
+
+    # Whisper subtitle transcription (2026-08-22, Juniper's own ask) -- see
+    # app/transcribe.py's module docstring for why this loads Whisper
+    # in-process here rather than calling orion-whisper-tts over the bus.
+    # "base" (~74M params, ~1GB VRAM) matches orion-whisper-tts's own model
+    # choice -- confirmed real headroom under AffectGPT's ~18.4GB/32GB peak
+    # on the same GPU (see README "VRAM / timing").
+    AFFECTGPT_TRANSCRIBE_ENABLED: bool = True
+    AFFECTGPT_WHISPER_MODEL: str = "base"
+    # Same silence-gate threshold and technique as orion-whisper-tts's own
+    # STT_NEAR_SILENT_PEAK_INT16 (services/orion-whisper-tts/app/stt.py) --
+    # that service found in production that Whisper hallucinates text from
+    # near-silent audio without this gate.
+    AFFECTGPT_TRANSCRIBE_NEAR_SILENT_PEAK_INT16: int = 50
+    # Review finding, 2026-08-22: this was hardcoded to "en" with no config
+    # knob at all, unlike orion-whisper-tts's own STTRequestPayload.language
+    # (config/request-driven there). Juniper's own captures are expected to
+    # be English, so "en" stays the default, but a wrong-language guess is a
+    # real, silent failure mode (Whisper forced through the wrong decode
+    # path produces garbled/hallucinated text that still gets stamped
+    # subtitle_source="transcribed" as if it were trustworthy) -- this makes
+    # it at least an operator-fixable setting instead of a code change.
+    AFFECTGPT_WHISPER_LANGUAGE: str = "en"

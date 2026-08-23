@@ -65,7 +65,9 @@ fi
 
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=tty
-echo "Reloaded udev rules"
+udevadm trigger --subsystem-match=usb --attr-match=idVendor=2341
+echo "Reloaded udev rules (tty + Arduino USB/DFU)"
+
 
 systemctl daemon-reload
 systemctl enable orion-cabinet-sensors.service

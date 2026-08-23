@@ -6,6 +6,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from orion.schemas.telemetry.biometrics import BiometricsSummaryV1, BiometricsInductionV1, BiometricsInductionMetricV1
 from orion.signals.normalization import clamp01, EwmaBand, InductionTracker
+from orion.telemetry.cabinet_sensors import (
+    CabinetPressureConfig,
+    CabinetSensorTracker,
+    compute_cabinet_pressures,
+    extract_cabinet_measurements,
+)
 
 
 def utc_now() -> datetime:
@@ -320,6 +326,13 @@ class PipelineConfig:
     disk_bw_mbps: float = 200.0
     net_bw_mbps: float = 125.0
     power_band_alpha: float = 0.1
+    # Cabinet sensor node (Nano ESP32) config -- see orion/telemetry/cabinet_sensors.py.
+    cabinet_climate_band_alpha: float = 0.1
+    cabinet_particulate_band_alpha: float = 0.1
+    cabinet_em_band_alpha: float = 0.1
+    cabinet_uv_band_alpha: float = 0.1
+    cabinet_vibration_band_alpha: float = 0.1
+    cabinet_proximity_band_alpha: float = 0.1
 
 
 class BiometricsPipeline:
@@ -328,6 +341,16 @@ class BiometricsPipeline:
         self.window_sec = window_sec
         self.power_band = EwmaBand(alpha=cfg.power_band_alpha)
         self.tracker = InductionTracker()
+        self.cabinet_tracker = CabinetSensorTracker(
+            CabinetPressureConfig(
+                climate_band_alpha=cfg.cabinet_climate_band_alpha,
+                particulate_band_alpha=cfg.cabinet_particulate_band_alpha,
+                em_band_alpha=cfg.cabinet_em_band_alpha,
+                uv_band_alpha=cfg.cabinet_uv_band_alpha,
+                vibration_band_alpha=cfg.cabinet_vibration_band_alpha,
+                proximity_band_alpha=cfg.cabinet_proximity_band_alpha,
+            )
+        )
 
     def update(self, sample: Dict[str, object]) -> Tuple[BiometricsSummaryV1, BiometricsInductionV1]:
         summary = self._summarize(sample)
@@ -450,8 +473,30 @@ class BiometricsPipeline:
         }
 
         constraint = self._constraint_from_pressures(pressures)
+        # peak_pressure/constraint are computed from `pressures` BEFORE the cabinet merge
+        # below, deliberately: both already carry an explicit "binding constraint on this
+        # HOST" meaning (see _peak_pressure's docstring and _constraint_from_pressures'
+        # CONSTRAINTS map), neither of which any CONSTRAINTS entry names for the cabinet
+        # channels. Folding cabinet_*_activity into that max would silently
+        # change what `constraint`/`peak_pressure_channel` mean without updating either
+        # function's own contract -- a real host thermal/power constraint should not lose
+        # to a cabinet reading nothing has calibrated as comparably severe yet.
         peak_pressure, peak_pressure_channel = self._peak_pressure(pressures)
         telemetry_error_rate = clamp01(len(errors) / 5) if isinstance(errors, list) else 0.0
+
+        measurements = extract_measurements(sample)
+        # Cabinet sensor node (Nano ESP32): additive, same pattern as every other pressure
+        # added to this pipeline (memory/thermal/disk/power/disk_capacity/fan) -- existing
+        # host channels/composites/strain are untouched. UNLIKE those, a cabinet
+        # measurement/pressure key is only added when a fresh frame is actually present
+        # (see extract_cabinet_measurements/compute_cabinet_pressures docstrings): no Nano
+        # attached means no cabinet_* keys at all, not a fabricated 0.0. That keeps a
+        # never-yet-measured cabinet from reading as "measured, calm" downstream.
+        cabinet_measurements = extract_cabinet_measurements(sample.get("sensors"))
+        if cabinet_measurements:
+            measurements.update(cabinet_measurements)
+            pressures.update(compute_cabinet_pressures(cabinet_measurements, self.cabinet_tracker))
+            headroom.update({k: clamp01(1.0 - v) for k, v in pressures.items() if k not in headroom})
 
         return BiometricsSummaryV1(
             peak_pressure=peak_pressure,
@@ -465,7 +510,7 @@ class BiometricsPipeline:
             composites=composites,
             constraint=constraint,
             telemetry_error_rate=telemetry_error_rate,
-            measurements=extract_measurements(sample),
+            measurements=measurements,
         )
 
     def _gpu_pressures(self, gpu: Dict[str, object]) -> Tuple[float, float]:

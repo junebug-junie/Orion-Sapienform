@@ -5,7 +5,7 @@ import json
 import math
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlencode
@@ -263,10 +263,10 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     cache_key = _situation_cache_key(ctx, cfg)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
-        if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.ttl_seconds:
+        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.ttl_seconds:
             return cached[1].model_dump(mode="json"), cached[2].model_dump(mode="json")
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     diagnostics = SituationDiagnosticsV1()
     presence = _presence_from_ctx(ctx, cfg, now)
     time_ctx = _build_time_context(cfg, diagnostics)
@@ -497,7 +497,7 @@ async def mark_orion_turn(session_id: str | None) -> None:
     await write_session_turn_state(
         sid,
         last_user_turn_at=state.last_user_turn_at,
-        last_orion_turn_at=datetime.now(UTC),
+        last_orion_turn_at=datetime.now(timezone.utc),
     )
 
 
@@ -521,12 +521,12 @@ def _build_environment_context(cfg: SituationSettings, diagnostics: SituationDia
     cache_key = f"{cfg.weather_provider}:{cfg.weather_lat}:{cfg.weather_lon}"
     with _LOCK:
         cached = _WEATHER_CACHE.get(cache_key)
-        if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.weather_ttl_seconds:
+        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.weather_ttl_seconds:
             return cached[1]
     try:
         env = _fetch_weather(cfg)
         with _LOCK:
-            _WEATHER_CACHE[cache_key] = (datetime.now(UTC), env)
+            _WEATHER_CACHE[cache_key] = (datetime.now(timezone.utc), env)
         diagnostics.provider_status["weather"] = "ok"
         return env
     except Exception as exc:
@@ -673,7 +673,7 @@ async def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationD
     cache_key = cfg.runtime_route
     with _LOCK:
         cached = _RUNTIME_CACHE.get(cache_key)
-        if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.runtime_ttl_seconds:
+        if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.runtime_ttl_seconds:
             return cached[1]
     try:
         # `_fetch_runtime_context` is a plain blocking `urlopen` call (up to
@@ -685,7 +685,7 @@ async def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationD
         # stall every other concurrent WebSocket client's turn.
         runtime_ctx = await asyncio.to_thread(_fetch_runtime_context, cfg)
         with _LOCK:
-            _RUNTIME_CACHE[cache_key] = (datetime.now(UTC), runtime_ctx)
+            _RUNTIME_CACHE[cache_key] = (datetime.now(timezone.utc), runtime_ctx)
         diagnostics.provider_status["runtime"] = "ok" if runtime_ctx.available else "unavailable"
         return runtime_ctx
     except Exception as exc:

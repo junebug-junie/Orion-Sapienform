@@ -1093,7 +1093,30 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                     )
                     continue
-                from orion.hub.turn_orchestrator import run_unified_turn
+                # Guarded, not a bare module-level import -- confirmed live,
+                # 2026-08-23: an ImportError here (orion/situational/
+                # context.py's `datetime.UTC`, valid on the dev venv's
+                # Python 3.12 but not this container's actual 3.10 runtime)
+                # propagated straight out of this whole handler with no
+                # `turn_error` frame ever sent -- unlike the
+                # harness_governor_disabled case just above, which does.
+                # The browser just saw the socket die mid-turn with zero
+                # explanation, reading as a silent hang rather than a
+                # visible, debuggable error.
+                try:
+                    from orion.hub.turn_orchestrator import run_unified_turn
+                except Exception as exc:
+                    await websocket.send_json(
+                        await _with_biometrics(
+                            {
+                                "type": "turn_error",
+                                "phase": "import",
+                                "error": str(exc),
+                            },
+                            cache=biometrics_cache,
+                        )
+                    )
+                    continue
 
                 active_turn["correlation_id"] = trace_id
                 active_turn["kind"] = "orion"

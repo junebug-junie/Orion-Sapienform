@@ -224,7 +224,7 @@ class RuntimeContextV1(BaseModel):
     `model_used` field on chat responses was echoing the requested route
     label (e.g. "Active-GGUF-Model"), not the real served weights, and the
     value never reached any prompt Orion sees. This model is that fix's
-    prompt-facing half -- see `orion-cortex-exec/app/situation.py`'s
+    prompt-facing half -- see `orion/situational/context.py`'s
     `_build_runtime_context()` for the producer, and `llm_backend.py`'s
     `_served_model()` / `route_catalog.py`'s `_probe_model()` in
     orion-llm-gateway for where the honest value comes from (a live

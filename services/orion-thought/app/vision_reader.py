@@ -6,14 +6,16 @@ this deliberately does NOT import `orion.substrate` (drags the graph engine /
 `vision_events` table (`services/orion-sql-writer/app/models/vision_event.py`)
 directly with sqlalchemy + a psycopg driver.
 
-This mirrors `services/orion-cortex-exec/app/perception_reader.py` (P4 of
+This mirrors `orion/situational/perception_reader.py` (P4 of
 `docs/superpowers/specs/2026-08-12-perception-frontier-design.md`, the situation-
-brief's percept read) as closely as the service boundary allows -- same table,
-same statement_timeout GUC, same narrative-only privacy contract. It is a
-separate module rather than a shared import because orion-thought and
-orion-cortex-exec are separate services/containers with no shared `app/`
-package (CLAUDE.md §5: cross-service seams are `orion/`-package or documented
-API/bus contracts, not reaching into another service's `app/` internals).
+brief's percept read -- relocated 2026-08-22 from cortex-exec's private `app/`
+into that shared `orion/` package so orion-hub could reuse it too) as closely
+as the service boundary allows -- same table, same statement_timeout GUC, same
+narrative-only privacy contract. It remains a separate module here rather than
+importing that shared one directly: this file predates the relocation, and
+orion-thought's own thin-import-boundary test (`test_reverie_thin_import_boundary.py`)
+is deliberately narrow about what this service pulls in. Worth revisiting as a
+follow-up, not assumed safe to merge in this comment alone.
 Deliberately NOT merged with this module's own `broadcast_reader.py` sibling's
 connection pool either: `perception_reader.py`'s statement_timeout only takes
 effect on first-use engine construction for a given DSN, so sharing one lazily-

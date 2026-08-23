@@ -1082,7 +1082,17 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if client_mode == "orion" and settings.ORION_UNIFIED_TURN_ENABLED:
                 if not settings.ORION_HARNESS_GOVERNOR_ENABLED:
-                    await websocket.send_json(
+                    # Pop the user turn just appended above -- no assistant
+                    # turn will ever answer it on this early-exit path, and
+                    # leaving it in `history` means a client that retries on
+                    # the same socket gets two consecutive {role: user}
+                    # entries with nothing in between (review finding,
+                    # 2026-08-22: caught on the sibling import-guard path
+                    # below, applies here too -- same shape, same fix).
+                    if history and history[-1].get("role") == "user":
+                        history.pop()
+                    await _safe_ws_send_json(
+                        websocket,
                         await _with_biometrics(
                             {
                                 "type": "turn_error",
@@ -1090,7 +1100,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "error": "harness_governor_disabled",
                             },
                             cache=biometrics_cache,
-                        )
+                        ),
                     )
                     continue
                 # Guarded, not a bare module-level import -- confirmed live,
@@ -1103,10 +1113,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 # The browser just saw the socket die mid-turn with zero
                 # explanation, reading as a silent hang rather than a
                 # visible, debuggable error.
+                #
+                # ImportError specifically, not Exception -- narrower on
+                # purpose (review finding, 2026-08-23): this guard exists to
+                # turn ONE confirmed failure mode (a py3.10-incompatible
+                # stdlib import) into a client-visible error instead of a
+                # dead socket. Swallowing every exception class here would
+                # also mask an unrelated, unexpected failure somewhere in
+                # turn_orchestrator's transitive import graph behind the
+                # same generic "phase: import" message, indistinguishable
+                # from this bug and re-attempted on every single message on
+                # a long-lived connection instead of failing loud once.
                 try:
                     from orion.hub.turn_orchestrator import run_unified_turn
-                except Exception as exc:
-                    await websocket.send_json(
+                except ImportError as exc:
+                    logger.error(
+                        "turn_import_failed correlation_id=%s error=%s",
+                        trace_id,
+                        exc,
+                    )
+                    if history and history[-1].get("role") == "user":
+                        history.pop()
+                    await _safe_ws_send_json(
+                        websocket,
                         await _with_biometrics(
                             {
                                 "type": "turn_error",
@@ -1114,7 +1143,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "error": str(exc),
                             },
                             cache=biometrics_cache,
-                        )
+                        ),
                     )
                     continue
 

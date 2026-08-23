@@ -456,3 +456,34 @@ def test_carbon_affect_snapshot_module_is_wired_into_the_page():
     # response, not just from the polling endpoint (review finding, round
     # 3: without this, flipping the toggle left the panel up to 15s stale).
     assert "repaintCarbonAffectSnapshot" in app_js[next_fn:]
+
+
+def test_check_now_button_no_longer_keeps_its_own_separate_result_box_in_sync():
+    """Simplification, 2026-08-22 (Juniper: "this shit is so complicated...
+    I dont know what all this bullshit means"). "Check now" used to call
+    showAffectResult() on its success path, keeping a THIRD, separate
+    result box (#affectCaptureResult) in sync by hand -- redundant with,
+    and confusingly juxtaposed next to, the "Carbon (affect snapshot)"
+    panel and the small ambient status line, which both already reflect
+    the exact same shared state (vision_affect_ambient.state, written by
+    both this route and the ambient loop's own try_begin_capture/
+    end_capture). Reported live: the stale leftover text in that third box
+    from an old manual click sat directly under the live, correct status
+    line, and Juniper read it as a live/contradictory result.
+
+    runAffectCapture() now refetches the one canonical status endpoint on
+    success instead -- this only checks the wiring; carbon-affect-snapshot
+    -style logic-level tests aren't warranted for a call-site simplification
+    with no new decision logic."""
+    app_js = (HUB_ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    fn_start = app_js.index("async function runAffectCapture()")
+    next_fn = app_js.index("if (affectCaptureButton) affectCaptureButton.addEventListener")
+    assert fn_start < next_fn
+    body = app_js[fn_start:next_fn]
+
+    assert "fetchAmbientStatus()" in body
+    # No success-path showAffectResult call left -- only real failure paths
+    # (HTTP error / thrown exception) may still call it.
+    assert 'showAffectResult(result.raw_response' not in body
+    assert "Recording an 8s clip" not in body

@@ -12016,31 +12016,48 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       async function runAffectCapture() {
+        // "Check now" used to keep its own separate result box in sync by
+        // hand on every path (recording/success/failure) -- duplicating
+        // what the "Carbon (affect snapshot)" panel already shows from the
+        // exact same shared state (this route and the ambient loop both
+        // write into vision_affect_ambient.state via try_begin_capture/
+        // end_capture -- see api_routes.py). Simplified, 2026-08-22
+        // (Juniper: "this shit is so complicated... I dont know what all
+        // this bullshit means") -- one canonical place to look now (the
+        // panel); this box only appears for the two failure modes where
+        // no capture was even attempted (base_url unset -> 503, or the
+        // exclusive slot already held -> 429) and their message wouldn't
+        // otherwise show up anywhere.
         if (!affectCaptureButton) return;
         affectCaptureButton.disabled = true;
         affectCaptureButton.classList.add("opacity-50", "cursor-not-allowed");
         const originalLabel = affectCaptureButton.textContent;
         affectCaptureButton.textContent = "Recording…";
-        showAffectResult("Recording an 8s clip on carbon and running AffectGPT — this can take a couple of minutes.", "info");
+        if (affectCaptureResult) affectCaptureResult.classList.add("hidden");
         try {
           const resp = await fetch("/api/vision/affect-capture", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
           });
-          const body = await resp.json().catch(() => null);
           if (!resp.ok) {
+            const body = await resp.json().catch(() => null);
             const detail = body && body.detail ? body.detail : `HTTP ${resp.status}`;
             showAffectResult(`Affect check failed: ${detail}`, "error");
+            // A 502 here means the orchestrator call itself threw, which
+            // still calls end_capture() server-side (api_routes.py) -- a
+            // 503/429 means no capture was attempted at all. Either way,
+            // refresh from the real state rather than guessing which case
+            // this was.
+            await fetchAmbientStatus();
             return;
           }
-          const result = body && body.result ? body.result : null;
-          const capture = body && body.capture ? body.capture : null;
-          if (!result || !result.ok) {
-            const err = (result && result.error) || (capture && capture.error) || "unknown error";
-            showAffectResult(`Affect check failed: ${err}`, "error");
-            return;
-          }
-          showAffectResult(result.raw_response || "(model returned no text)", "ok");
+          // Success or a real-but-completed failure (busy GPU, capture
+          // error) -- both already updated the shared state above via
+          // end_capture(). Refetch the one canonical status endpoint so
+          // the panel (if active) and the small status line both reflect
+          // it immediately, instead of waiting up to 15s for the next
+          // scheduled poll.
+          await fetchAmbientStatus();
         } catch (err) {
           showAffectResult(`Affect check failed: ${err && err.message ? err.message : err}`, "error");
         } finally {

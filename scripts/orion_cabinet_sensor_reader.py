@@ -30,6 +30,8 @@ from orion.schemas.telemetry.cabinet_sensor_frame import (
 Status = Literal["ok", "stale", "error", "missing"]
 
 DEFAULT_OUTPUT_PATH = Path("/run/orion-sensors/latest.json")
+BOOT_OUTPUT_PATH = Path("/run/orion-sensors/boot.json")
+BOOT_SCHEMA_V1 = "orion.sensor_boot.v1"
 DEVICE_GLOB = "/dev/serial/by-id/usb-Arduino_Nano_ESP32_*"
 DEFAULT_STALE_AFTER_SEC = 10.0
 DEFAULT_RECONNECT_SEC = 2.0
@@ -64,6 +66,37 @@ def discover_device(glob_pattern: str = DEVICE_GLOB) -> Optional[str]:
     if not matches:
         return None
     return matches[0]
+
+
+def boot_output_path() -> Path:
+    raw = os.environ.get("ORION_CABINET_BOOT_PATH", "").strip()
+    if raw:
+        return Path(raw)
+    return BOOT_OUTPUT_PATH
+
+
+def parse_boot_line(line: str) -> Optional[dict[str, Any]]:
+    """Parse a boot diagnostic NDJSON line. Returns None if not boot schema."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        raw = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("schema") != BOOT_SCHEMA_V1:
+        return None
+    return raw
+
+
+def ingest_boot_line(line: str, *, boot_path: Optional[Path] = None) -> bool:
+    boot = parse_boot_line(line)
+    if boot is None:
+        return False
+    atomic_write_json(boot_path or boot_output_path(), boot)
+    return True
 
 
 def parse_frame_line(line: str) -> Optional[dict[str, Any]]:
@@ -230,6 +263,8 @@ def run_loop(
                     continue
 
                 text = raw.decode("utf-8", errors="replace")
+                if ingest_boot_line(text):
+                    continue
                 state.process_line(text, device=device)
                 write_snapshot(output, state)
         finally:

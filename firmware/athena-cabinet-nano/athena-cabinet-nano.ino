@@ -1,15 +1,8 @@
 /*
  * Athena cabinet sensor node — Arduino Nano ESP32 (ABX00083)
  *
- * Emits one NDJSON line per second on USB Serial matching schema
- * "orion.sensor_frame.v1". Failed sensors omit their entire sub-object;
- * never zero-fill absent readings.
- *
- * Sensors:
- *   BME680, LTR390, LIS3MDL, PMSA003I, VL53L1X — shared I2C (Wire)
- *   BNO085 — UART-RVC on Serial1 only (NOT on ESP32 I2C)
- *
- * No audio / MAX9814 on this board.
+ * Emits one NDJSON boot diagnostic (orion.sensor_boot.v1) then one data frame
+ * per second (orion.sensor_frame.v1). Failed sensors omit their sub-object.
  */
 
 #include <Wire.h>
@@ -23,28 +16,21 @@
 #include <Adafruit_VL53L1X.h>
 #include <Adafruit_BNO08x_RVC.h>
 
-// ---------------------------------------------------------------------------
-// Pin / bus configuration (see README for wiring)
-// ---------------------------------------------------------------------------
-
 static constexpr uint8_t I2C_SDA_PIN = A4;
 static constexpr uint8_t I2C_SCL_PIN = A5;
 
-// BNO085 UART-RVC: breakout TX -> Nano RX1 (D7), breakout RX -> Nano TX1 (D6).
 static constexpr uint8_t BNO085_RX_PIN = D7;
 static constexpr uint8_t BNO085_TX_PIN = D6;
 static constexpr uint32_t BNO085_BAUD = 115200;
+static constexpr uint32_t BNO085_SYNC_MS = 3000;
 
-// PMSA003I SET pin (active low sleep); tie high or drive from MCU to wake.
 static constexpr uint8_t PMSA003I_SET_PIN = D2;
 static constexpr uint8_t PMSA003I_I2C_ADDR = 0x12;
+static constexpr uint32_t PMSA003I_BOOT_MS = 3000;
 
 static constexpr uint32_t FRAME_INTERVAL_MS = 1000;
 static constexpr uint32_t USB_BAUD = 115200;
-
-// ---------------------------------------------------------------------------
-// Sensor drivers and availability flags (init-time only; never zero-fill)
-// ---------------------------------------------------------------------------
+static constexpr uint8_t I2C_SCAN_MAX = 16;
 
 Adafruit_BME680 bme680;
 Adafruit_LTR390 ltr390;
@@ -59,16 +45,43 @@ bool have_pmsa003i = false;
 bool have_vl53l1x = false;
 bool have_bno085 = false;
 
+uint8_t bme680_addr = 0;
+uint8_t lis3mdl_addr = 0;
+uint8_t i2c_found[I2C_SCAN_MAX];
+uint8_t i2c_found_count = 0;
+
 uint32_t frame_seq = 0;
 
-// ---------------------------------------------------------------------------
-// PMSA003I — minimal I2C reader (no external library)
-// ---------------------------------------------------------------------------
+static void append_i2c_addr_hex(JsonArray out, uint8_t addr) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "0x%02X", addr);
+  out.add(buf);
+}
+
+static void i2c_scan_bus() {
+  i2c_found_count = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      if (i2c_found_count < I2C_SCAN_MAX) {
+        i2c_found[i2c_found_count++] = addr;
+      }
+    }
+  }
+}
+
+static bool i2c_has_addr(uint8_t addr) {
+  for (uint8_t i = 0; i < i2c_found_count; i++) {
+    if (i2c_found[i] == addr) {
+      return true;
+    }
+  }
+  return false;
+}
 
 static bool pmsa003i_wake() {
   pinMode(PMSA003I_SET_PIN, OUTPUT);
   digitalWrite(PMSA003I_SET_PIN, HIGH);
-  delay(100);
   return true;
 }
 
@@ -77,7 +90,22 @@ static bool pmsa003i_probe() {
   return Wire.endTransmission() == 0;
 }
 
+static bool pmsa003i_request_frame() {
+  const uint8_t cmd[] = {0x42, 0x4D, 0xE2, 0x00, 0x00, 0x01, 0x71};
+  Wire.beginTransmission(PMSA003I_I2C_ADDR);
+  Wire.write(cmd, sizeof(cmd));
+  if (Wire.endTransmission() != 0) {
+    return false;
+  }
+  delay(10);
+  return true;
+}
+
 static bool pmsa003i_read(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10) {
+  if (!pmsa003i_request_frame()) {
+    return false;
+  }
+
   uint8_t buf[32];
   Wire.requestFrom((int)PMSA003I_I2C_ADDR, 32);
   if (Wire.available() < 32) {
@@ -87,7 +115,6 @@ static bool pmsa003i_read(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10) {
     buf[i] = Wire.read();
   }
 
-  // Standard Plantower frame: 0x42 0x4d header, PM values at bytes 4-9 (BE).
   if (buf[0] != 0x42 || buf[1] != 0x4d) {
     return false;
   }
@@ -98,10 +125,6 @@ static bool pmsa003i_read(uint16_t *pm1, uint16_t *pm25, uint16_t *pm10) {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Per-sensor init (soft-fail)
-// ---------------------------------------------------------------------------
-
 static void init_i2c_bus() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(100000);
@@ -110,8 +133,10 @@ static void init_i2c_bus() {
 static void init_bme680() {
   if (bme680.begin(0x76)) {
     have_bme680 = true;
+    bme680_addr = 0x76;
   } else if (bme680.begin(0x77)) {
     have_bme680 = true;
+    bme680_addr = 0x77;
   }
   if (!have_bme680) {
     return;
@@ -125,21 +150,26 @@ static void init_bme680() {
 }
 
 static void init_ltr390() {
-  have_ltr390 = ltr390.begin();
+  have_ltr390 = ltr390.begin(&Wire);
 }
 
 static void init_lis3mdl() {
-  // Adafruit_LIS3MDL 1.x uses begin_I2C(), not begin().
-  if (lis3mdl.begin_I2C(0x1C) || lis3mdl.begin_I2C(0x1E)) {
+  if (lis3mdl.begin_I2C(0x1C, &Wire)) {
     have_lis3mdl = true;
-    lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
-    lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
-    lis3mdl.setDataRate(LIS3MDL_DATARATE_155_HZ);
+    lis3mdl_addr = 0x1C;
+  } else if (lis3mdl.begin_I2C(0x1E, &Wire)) {
+    have_lis3mdl = true;
+    lis3mdl_addr = 0x1E;
   }
+  if (!have_lis3mdl) {
+    return;
+  }
+  lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
+  lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+  lis3mdl.setDataRate(LIS3MDL_DATARATE_155_HZ);
 }
 
 static void init_pmsa003i() {
-  pmsa003i_wake();
   have_pmsa003i = pmsa003i_probe();
 }
 
@@ -154,23 +184,95 @@ static void init_vl53l1x() {
   have_vl53l1x = true;
 }
 
+static bool bno085_wait_for_sync(uint32_t timeout_ms) {
+  const uint32_t start = millis();
+  while (millis() - start < timeout_ms) {
+    if (Serial1.available() > 0 && Serial1.peek() == 0xAA) {
+      BNO08x_RVC_Data sample;
+      if (bno085.read(&sample)) {
+        return true;
+      }
+    }
+    delay(10);
+  }
+  return false;
+}
+
 static void init_bno085() {
   Serial1.begin(BNO085_BAUD, SERIAL_8N1, BNO085_RX_PIN, BNO085_TX_PIN);
-  // UART-RVC only (PS0=1 PS1=0 on breakout). Not on ESP32 I2C.
-  if (bno085.begin(&Serial1)) {
+  delay(100);
+  if (bno085.begin(&Serial1) && bno085_wait_for_sync(BNO085_SYNC_MS)) {
     have_bno085 = true;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Per-sensor read helpers — return false to omit sub-object for this frame
-// ---------------------------------------------------------------------------
+static void sensor_json(JsonObject obj, bool ok, const char *detail, uint8_t addr = 0) {
+  obj["ok"] = ok;
+  if (detail != nullptr) {
+    obj["detail"] = detail;
+  }
+  if (addr != 0) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "0x%02X", addr);
+    obj["addr"] = buf;
+  }
+}
+
+static void emit_boot_diagnostic() {
+  StaticJsonDocument<1024> doc;
+  doc["schema"] = "orion.sensor_boot.v1";
+  doc["uptime_ms"] = millis();
+
+  JsonObject i2c = doc.createNestedObject("i2c");
+  i2c["sda_pin"] = "A4";
+  i2c["scl_pin"] = "A5";
+  JsonArray addrs = i2c.createNestedArray("addresses");
+  for (uint8_t i = 0; i < i2c_found_count; i++) {
+    append_i2c_addr_hex(addrs, i2c_found[i]);
+  }
+
+  JsonObject sensors = doc.createNestedObject("sensors");
+  sensor_json(sensors.createNestedObject("bme680"), have_bme680,
+              have_bme680 ? nullptr : (i2c_has_addr(0x76) || i2c_has_addr(0x77)
+                                           ? "begin_failed"
+                                           : "not_on_bus"),
+              bme680_addr);
+  sensor_json(sensors.createNestedObject("ltr390"), have_ltr390,
+              have_ltr390 ? nullptr
+                          : (i2c_has_addr(0x53) ? "begin_failed" : "not_on_bus"));
+  sensor_json(sensors.createNestedObject("lis3mdl"), have_lis3mdl,
+              have_lis3mdl ? nullptr
+                           : (i2c_has_addr(0x1C) || i2c_has_addr(0x1E)
+                                  ? "begin_failed"
+                                  : "not_on_bus"),
+              lis3mdl_addr);
+  sensor_json(sensors.createNestedObject("pmsa003i"), have_pmsa003i,
+              have_pmsa003i ? nullptr
+                            : (i2c_has_addr(PMSA003I_I2C_ADDR) ? "probe_nack"
+                                                               : "not_on_bus"));
+  sensors["pmsa003i"]["set_pin"] = "D2";
+
+  sensor_json(sensors.createNestedObject("vl53l1x"), have_vl53l1x,
+              have_vl53l1x ? nullptr
+                           : (i2c_has_addr(0x29) ? "begin_failed" : "not_on_bus"),
+              have_vl53l1x ? 0x29 : 0);
+
+  JsonObject bno = sensors.createNestedObject("bno085");
+  bno["ok"] = have_bno085;
+  if (!have_bno085) {
+    bno["detail"] = "uart_no_sync";
+  }
+  bno["rx_pin"] = "D7";
+  bno["tx_pin"] = "D6";
+  bno["baud"] = BNO085_BAUD;
+  bno["mode"] = "uart_rvc";
+
+  serializeJson(doc, Serial);
+  Serial.println();
+}
 
 static bool read_environment(JsonObject out) {
-  if (!have_bme680) {
-    return false;
-  }
-  if (!bme680.performReading()) {
+  if (!have_bme680 || !bme680.performReading()) {
     return false;
   }
 
@@ -206,7 +308,6 @@ static bool read_magnetic(JsonObject out) {
     return false;
   }
 
-  // Adafruit LIS3MDL reports gauss; schema expects microtesla (uT).
   const float x_ut = event.magnetic.x * 100.0f;
   const float y_ut = event.magnetic.y * 100.0f;
   const float z_ut = event.magnetic.z * 100.0f;
@@ -239,11 +340,7 @@ static bool read_particulate(JsonObject out) {
 }
 
 static bool read_lidar(JsonObject out) {
-  if (!have_vl53l1x) {
-    return false;
-  }
-
-  if (!vl53l1x.dataReady()) {
+  if (!have_vl53l1x || !vl53l1x.dataReady()) {
     return false;
   }
 
@@ -257,7 +354,6 @@ static bool read_lidar(JsonObject out) {
   vl53l1x.VL53L1X_GetRangeStatus(&status);
   vl53l1x.clearInterrupt();
 
-  // VL53L1X RangeStatus 0 == valid (see host schema / ST user manual).
   out["distance_mm"] = distance_mm;
   out["status"] = status;
   return true;
@@ -281,10 +377,6 @@ static bool read_imu(JsonObject out) {
   out["roll_deg"] = roundf(heading.roll * 100.0f) / 100.0f;
   return true;
 }
-
-// ---------------------------------------------------------------------------
-// Frame emission
-// ---------------------------------------------------------------------------
 
 static void emit_frame() {
   StaticJsonDocument<768> doc;
@@ -327,25 +419,27 @@ static void emit_frame() {
   Serial.println();
 }
 
-// ---------------------------------------------------------------------------
-// Arduino lifecycle
-// ---------------------------------------------------------------------------
-
 void setup() {
   Serial.begin(USB_BAUD);
   while (!Serial && millis() < 3000) {
     delay(10);
   }
 
+  pmsa003i_wake();
+
   init_i2c_bus();
   init_bme680();
   init_ltr390();
   init_lis3mdl();
-  init_pmsa003i();
   init_vl53l1x();
+
+  delay(PMSA003I_BOOT_MS);
+  init_pmsa003i();
+
   init_bno085();
 
-  delay(500);
+  i2c_scan_bus();
+  emit_boot_diagnostic();
 }
 
 void loop() {
@@ -356,5 +450,4 @@ void loop() {
     last_frame_ms = now;
     emit_frame();
   }
-
 }

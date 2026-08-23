@@ -139,3 +139,37 @@ Requires `arduino-cli` with the `arduino:esp32` core and libraries above. The fl
 ## Soft-fail behavior
 
 Each sensor initializes independently in `setup()`. On init or per-frame read failure, that sensor's JSON sub-object is omitted for that frame. One dead sensor does not halt the loop or zero-fill other channels.
+
+## Boot diagnostic (`orion.sensor_boot.v1`)
+
+Once at boot, before data frames, the sketch emits one NDJSON line:
+
+```json
+{
+  "schema": "orion.sensor_boot.v1",
+  "uptime_ms": 4200,
+  "i2c": {"sda_pin": "A4", "scl_pin": "A5", "addresses": ["0x29", "0x76"]},
+  "sensors": {
+    "bme680": {"ok": true, "addr": "0x76"},
+    "ltr390": {"ok": false, "detail": "not_on_bus"},
+    "lis3mdl": {"ok": false, "detail": "not_on_bus"},
+    "pmsa003i": {"ok": false, "detail": "not_on_bus", "set_pin": "D2"},
+    "vl53l1x": {"ok": true, "addr": "0x29"},
+    "bno085": {"ok": false, "detail": "uart_no_sync", "rx_pin": "D7", "tx_pin": "D6", "baud": 115200, "mode": "uart_rvc"}
+  }
+}
+```
+
+The host reader captures this to `/run/orion-sensors/boot.json`. Inspect with:
+
+```bash
+./scripts/diagnose_athena_cabinet_sensors.sh
+```
+
+`detail` values:
+
+| detail | Meaning |
+|--------|---------|
+| `not_on_bus` | No I2C ACK — unwired, unpowered, or wrong sensor variant |
+| `begin_failed` | ACK present but driver init failed |
+| `uart_no_sync` | BNO085 not sending RVC packets — UART wiring or PS0/PS1 mode |

@@ -8,8 +8,11 @@ from pathlib import Path
 import pytest
 
 from scripts.orion_cabinet_sensor_reader import (
+    BOOT_SCHEMA_V1,
     SnapshotState,
     atomic_write_json,
+    ingest_boot_line,
+    parse_boot_line,
     parse_frame_line,
     write_snapshot,
 )
@@ -143,3 +146,25 @@ def test_write_snapshot_round_trip(tmp_path: Path):
     loaded = json.loads(path.read_text())
     assert loaded["status"] == "ok"
     assert loaded["frame"]["seq"] == 3
+
+
+def test_parse_boot_line_accepts_boot_schema():
+    line = json.dumps(
+        {
+            "schema": BOOT_SCHEMA_V1,
+            "uptime_ms": 4000,
+            "i2c": {"addresses": ["0x29", "0x76"]},
+            "sensors": {"bme680": {"ok": True}},
+        }
+    )
+    boot = parse_boot_line(line)
+    assert boot is not None
+    assert boot["schema"] == BOOT_SCHEMA_V1
+
+
+def test_ingest_boot_line_writes_boot_snapshot(tmp_path: Path):
+    boot_path = tmp_path / "boot.json"
+    line = json.dumps({"schema": BOOT_SCHEMA_V1, "uptime_ms": 1, "sensors": {}})
+    assert ingest_boot_line(line, boot_path=boot_path)
+    data = json.loads(boot_path.read_text())
+    assert data["schema"] == BOOT_SCHEMA_V1

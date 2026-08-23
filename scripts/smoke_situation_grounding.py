@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 if str(CORTEX_EXEC_ROOT) not in sys.path:
     sys.path.insert(0, str(CORTEX_EXEC_ROOT))
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from orion.situational.session_turn_phase import bind_session_turn_phase_bus, write_session_turn_state
 from orion.situational.context import build_situation_for_ctx
@@ -105,7 +105,7 @@ async def main() -> None:
     # there instead of poking a since-removed in-process dict.
     await write_session_turn_state(
         "smoke-gap",
-        last_user_turn_at=datetime.now(UTC) - timedelta(hours=10),
+        last_user_turn_at=datetime.now(timezone.utc) - timedelta(hours=10),
         last_orion_turn_at=None,
     )
     await _print_case("long_gap_resume", {"session_id": "smoke-gap", "raw_user_text": "yeah do that"})

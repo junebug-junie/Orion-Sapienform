@@ -137,20 +137,62 @@ if systemctl is-active --quiet orion-cabinet-sensors.service 2>/dev/null; then
   echo "  sudo systemctl stop orion-cabinet-sensors.service" >&2
 fi
 
+# Nano ESP32 DFU wedges after interrupted uploads (LIBUSB_ERROR_OTHER on
+# set-interface). usbreset clears that without unplug/replug.
+if command -v usbreset >/dev/null 2>&1; then
+  echo "Resetting USB device 2341:0070 before DFU..."
+  usbreset 2341:0070 >/dev/null 2>&1 || true
+  sleep 1
+  # Re-discover after reset (by-id path is stable; node may briefly vanish).
+  if ! DEVICE="$(discover_device)"; then
+    sleep 2
+    DEVICE="$(discover_device)" || true
+  fi
+fi
+
 echo "Uploading to ${DEVICE}..."
-if ! "${ARDUINO_CLI}" upload -p "${DEVICE}" --fqbn "${FQBN}" "${SKETCH_DIR}"; then
-  cat >&2 <<EOF
-ERROR: upload failed (often LIBUSB_ERROR_ACCESS until DFU udev is installed).
+upload_once() {
+  "${ARDUINO_CLI}" upload -p "${DEVICE}" --fqbn "${FQBN}" "${SKETCH_DIR}"
+}
 
-Re-run host setup from this repo, then flash again:
-  sudo scripts/setup_athena_cabinet_sensors.sh
-  sudo systemctl stop orion-cabinet-sensors.service
+if ! upload_once; then
+  if command -v usbreset >/dev/null 2>&1; then
+    echo "WARN: upload failed; usbreset + one retry..." >&2
+    usbreset 2341:0070 >/dev/null 2>&1 || true
+    sleep 1
+    DEVICE="$(discover_device)" || true
+    if [[ -n "${DEVICE}" ]] && upload_once; then
+      :
+    else
+      cat >&2 <<EOF
+ERROR: DFU upload failed.
+
+Common causes:
+  1) Reader still holding the port:
+       sudo systemctl stop orion-cabinet-sensors.service
+  2) Wedged DFU (LIBUSB_ERROR_OTHER):
+       usbreset 2341:0070
+       # or unplug/replug the Nano USB cable
+  3) Missing DFU udev (LIBUSB_ERROR_ACCESS):
+       sudo scripts/setup_athena_cabinet_sensors.sh
+
+Then re-run:
   ./scripts/flash_athena_cabinet_nano.sh --upload
-
-If it still fails, unplug/replug the Nano once so udev re-applies.
 EOF
-  exit 1
+      exit 1
+    fi
+  else
+    cat >&2 <<EOF
+ERROR: DFU upload failed (and usbreset is not installed).
+
+  sudo systemctl stop orion-cabinet-sensors.service
+  # unplug/replug Nano, then:
+  ./scripts/flash_athena_cabinet_nano.sh --upload
+EOF
+    exit 1
+  fi
 fi
 
 echo "Upload complete. Serial monitor at ${BAUD} baud:"
 echo "  ${ARDUINO_CLI} monitor -p ${DEVICE} -c baudrate=${BAUD}"
+echo "Restart reader: sudo systemctl start orion-cabinet-sensors.service"

@@ -11819,6 +11819,11 @@ document.addEventListener("DOMContentLoaded", () => {
       // multiple overlapping timers.
       let carbonLivePollTimer = null;
       let carbonLiveLastSha256 = null;
+      // "Carbon (affect snapshot)" dropdown value -- shared between
+      // updateVisionUi's dispatch and fetchAmbientStatus's view-active
+      // check below so the two can't drift out of sync (review finding,
+      // round 2).
+      const CARBON_AFFECT_VIEW_VALUE = "carbon-affect";
       // Bumped every updateVisionUi() call -- async renderers (both carbon
       // views hit the network) capture their own value at start and check
       // it's still current before touching the DOM. Review finding,
@@ -11873,36 +11878,33 @@ document.addEventListener("DOMContentLoaded", () => {
         };
       }
 
-      async function renderCarbonAffectSnapshot(container, generation) {
-        container.innerHTML = '<div class="text-gray-400 text-xs text-center px-4">Loading last affect check…</div>';
-        let resp, status;
-        try {
-          resp = await fetch("/api/vision/affect-ambient/status");
-          status = await resp.json().catch(() => null);
-        } catch (err) {
-          resp = null;
-          status = null;
-        }
+      // Repaints the "Carbon (affect snapshot)" panel from an ALREADY-
+      // FETCHED status object -- no network call of its own, no dedup.
+      // This view used to run its own independent 5s poll; it now
+      // free-rides on fetchAmbientStatus()'s existing 15s interval below
+      // instead of adding a second, uncoordinated poll of the same
+      // endpoint (review finding, round 1). It also unconditionally
+      // repaints every time it's called rather than skipping "unchanged"
+      // polls (review finding, round 2 -- see carbon-affect-snapshot.js's
+      // own design-note comment for why that dedup kept reproducing the
+      // exact bug this whole fix exists for). All the actual "what to
+      // show" logic lives in carbon-affect-snapshot.js so it's unit-
+      // testable without a DOM harness.
+      // A single transient poll failure must not blank out real content
+      // already on screen -- matches the toggle status line's own
+      // best-effort "keep last-known text on a blip" convention (review
+      // finding, round 3). Only the very first attempt for a given view
+      // selection shows "unavailable" outright, since there's nothing yet
+      // to preserve; reset to false wherever the panel is (re)selected.
+      let carbonAffectPanelHasRenderedOnce = false;
+
+      function repaintCarbonAffectSnapshot(container, generation, status) {
         if (generation !== visionRenderGeneration) return;
-        if (!resp || !resp.ok || !status) {
-          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">Affect status unavailable.</div>';
+        if (!status && carbonAffectPanelHasRenderedOnce) {
           return;
         }
-        if (!status.last_attempt_at) {
-          container.innerHTML = '<div class="text-gray-500 text-xs text-center px-4">No affect check has run yet -- use "Check now" or the ambient toggle.</div>';
-          return;
-        }
-        const when = formatAgo(status.last_attempt_at);
-        const kindLabel = status.last_trigger === "manual" ? "manual check" : "ambient tick";
-        if (status.last_result_ok && status.last_raw_response) {
-          container.innerHTML = `
-            <div class="w-full h-full overflow-y-auto p-4 text-sm text-gray-200 whitespace-pre-wrap">
-              <div class="text-[11px] text-gray-500 mb-2">Last ${kindLabel}, ${when}</div>
-              ${status.last_raw_response.replace(/</g, "&lt;")}
-            </div>`;
-        } else {
-          container.innerHTML = `<div class="text-gray-500 text-xs text-center px-4">Last ${kindLabel} (${when}) had no successful result${status.last_error ? ": " + status.last_error : ""}.</div>`;
-        }
+        carbonAffectPanelHasRenderedOnce = true;
+        container.innerHTML = window.OrionCarbonAffectSnapshot.renderAffectSnapshotHtml(status, Date.now() / 1000);
       }
 
       function setPopoutEnabled(enabled) {
@@ -11928,7 +11930,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        if (value === "carbon-live" || value === "carbon-affect") {
+        if (value === "carbon-live" || value === CARBON_AFFECT_VIEW_VALUE) {
             // Neither carbon view has a "pop out to floating video" concept
             // (no continuous stream to pop out) -- disable the button and
             // force visionIsFloating back to false rather than letting a
@@ -11945,7 +11947,18 @@ document.addEventListener("DOMContentLoaded", () => {
                     () => renderCarbonLiveFrame(visionDockedContainer, generation), 5000
                 );
             } else {
-                renderCarbonAffectSnapshot(visionDockedContainer, generation);
+                // No poll of its own -- fetchAmbientStatus() below already
+                // runs on a 15s interval regardless of what's selected;
+                // this just triggers one right now so selecting the view
+                // doesn't wait up to 15s for the next scheduled tick, and
+                // it repaints this panel too as long as the view stays
+                // active (review finding, round 1: two independent polls
+                // of the same endpoint; round 2: the two polls could race
+                // and stale-overwrite each other -- there is now exactly
+                // one fetch site for this endpoint in the whole file).
+                visionDockedContainer.innerHTML = '<div class="text-gray-400 text-xs text-center px-4">Loading last affect check…</div>';
+                carbonAffectPanelHasRenderedOnce = false;
+                fetchAmbientStatus();
             }
             return;
         }
@@ -12087,14 +12100,56 @@ document.addEventListener("DOMContentLoaded", () => {
         affectAmbientStatusLine.textContent = parts.join(" · ");
       }
 
+      // "Only the most recently issued request wins" -- shared by every
+      // caller that can produce a fresh /api/vision/affect-ambient/status
+      // -shaped response (the 15s poll, the immediate fetch fired on
+      // dropdown selection, and the ambient toggle's own POST response
+      // below), so an older one resolving late can never overwrite a
+      // newer paint (review finding, round 3 -- the view-generation guard
+      // alone only protects against a VIEW SWITCH, not two same-view
+      // requests resolving out of order; see carbon-affect-snapshot.js's
+      // createLatestWinsGate for the tested logic).
+      const ambientStatusGate = window.OrionCarbonAffectSnapshot.createLatestWinsGate();
+      // Only warn once per outage streak, not on every failed 15s tick
+      // (review finding, round 3) -- cleared the moment a poll succeeds.
+      let ambientStatusFetchWarned = false;
+
       async function fetchAmbientStatus() {
+        const token = ambientStatusGate.issue();
+        const generation = visionRenderGeneration;
+        let status = null;
         try {
           const resp = await fetch("/api/vision/affect-ambient/status");
-          if (!resp.ok) return;
-          const status = await resp.json().catch(() => null);
-          renderAmbientStatus(status);
+          if (resp.ok) {
+            status = await resp.json().catch(() => null);
+          }
         } catch (err) {
-          // Best-effort UI refresh -- a failed poll shouldn't disable the toggle itself.
+          if (!ambientStatusFetchWarned) {
+            console.warn("[HUB] affect-ambient/status fetch failed", err);
+            ambientStatusFetchWarned = true;
+          }
+        }
+        if (!ambientStatusGate.isCurrent(token)) {
+          return; // a newer request has already been issued -- drop this stale response
+        }
+        if (status) {
+          ambientStatusFetchWarned = false;
+          // The small toggle status line only ever reflects a REAL status
+          // object -- a failed poll just keeps whatever it last showed
+          // rather than blanking it, same as before this fix EXCEPT for
+          // one case (review finding, round 3): a 200 response with
+          // malformed JSON used to still call renderAmbientStatus(null);
+          // it's now skipped here too, same as any other failed fetch.
+          renderAmbientStatus(status);
+        }
+        // The "Carbon (affect snapshot)" panel free-rides on this same
+        // already-running 15s poll instead of running its own (review
+        // finding, round 1) -- only when that view is the one currently
+        // docked, and reusing the one fetch already made above rather
+        // than making a second one (round 2/3: a second, independent
+        // fetch site could race this one and stale-overwrite it).
+        if (visionSourceSelect && visionSourceSelect.value === CARBON_AFFECT_VIEW_VALUE && visionDockedContainer) {
+          repaintCarbonAffectSnapshot(visionDockedContainer, generation, status);
         }
       }
 
@@ -12102,6 +12157,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!affectAmbientToggle) return;
         const wantsOn = !affectAmbientEnabled;
         affectAmbientToggle.disabled = true;
+        const token = ambientStatusGate.issue();
+        const generation = visionRenderGeneration;
         try {
           const resp = await fetch("/api/vision/affect-ambient", {
             method: "POST",
@@ -12115,6 +12172,20 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
           }
           renderAmbientStatus(body);
+          // The toggle's own response is the same status shape as the
+          // polling endpoint -- reuse it to repaint the affect-snapshot
+          // panel right now instead of leaving it up to 15s stale after a
+          // click (review finding, round 3). Same latest-wins token as
+          // fetchAmbientStatus so an in-flight poll issued just before
+          // this click can't overwrite it if it resolves afterward.
+          if (
+            ambientStatusGate.isCurrent(token) &&
+            visionSourceSelect &&
+            visionSourceSelect.value === CARBON_AFFECT_VIEW_VALUE &&
+            visionDockedContainer
+          ) {
+            repaintCarbonAffectSnapshot(visionDockedContainer, generation, body);
+          }
         } catch (err) {
           showAffectResult(`Ambient toggle failed: ${err && err.message ? err.message : err}`, "error");
         } finally {

@@ -129,13 +129,10 @@ static void init_ltr390() {
 }
 
 static void init_lis3mdl() {
-  if (lis3mdl.begin(0x1C)) {
+  // Adafruit_LIS3MDL 1.x uses begin_I2C(), not begin().
+  if (lis3mdl.begin_I2C(0x1C) || lis3mdl.begin_I2C(0x1E)) {
     have_lis3mdl = true;
-  } else if (lis3mdl.begin(0x1E)) {
-    have_lis3mdl = true;
-  }
-  if (have_lis3mdl) {
-    lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHPERFORMANCE);
+    lis3mdl.setPerformanceMode(LIS3MDL_ULTRAHIGHMODE);
     lis3mdl.setOperationMode(LIS3MDL_CONTINUOUSMODE);
     lis3mdl.setDataRate(LIS3MDL_DATARATE_155_HZ);
   }

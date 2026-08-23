@@ -342,3 +342,5 @@ def test_cursor_hooks_file_calls_agent_board_scripts() -> None:
     assert "stop" in rendered
     assert "session_start_agent_board.py" in rendered
     assert "session_stop_agent_board.py" in rendered
+    # Cursor must go through the dialect bridge so additionalContext lands.
+    assert "cursor_bridge.py" in rendered

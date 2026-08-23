@@ -6,10 +6,15 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-BIOMETRICS_SERVICE = REPO_ROOT / "services" / "orion-biometrics"
-if str(BIOMETRICS_SERVICE) not in sys.path:
-    sys.path.insert(0, str(BIOMETRICS_SERVICE))
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
+# Many services expose a top-level `app` package; clear any previously imported
+# namespace so biometrics' app wins for this module.
+for _name in list(sys.modules):
+    if _name == "app" or _name.startswith("app."):
+        del sys.modules[_name]
+sys.path.insert(0, str(SERVICE_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from app.grammar_emit import build_biometrics_node_grammar_events  # noqa: E402
 from app.node_catalog import NodeCatalog  # noqa: E402

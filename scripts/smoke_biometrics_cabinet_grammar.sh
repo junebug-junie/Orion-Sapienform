@@ -19,7 +19,7 @@ export PYTHONPATH="${ROOT}/services/orion-biometrics:${ROOT}${PYTHONPATH:+:}${PY
 
 echo "== unit: cabinet grammar + snapshot =="
 "${PY}" -m pytest \
-  tests/test_cabinet_grammar.py \
+  services/orion-biometrics/tests/test_cabinet_grammar.py \
   services/orion-biometrics/tests/test_cabinet_snapshot.py \
   -q
 

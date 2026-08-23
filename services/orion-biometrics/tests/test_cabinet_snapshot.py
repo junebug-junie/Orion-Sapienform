@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from app.cabinet_snapshot import load_cabinet_sensors_snapshot
-from orion.telemetry.cabinet_sensors import extract_cabinet_measurements
+_SERVICE_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+for _name in list(sys.modules):
+    if _name == "app" or _name.startswith("app."):
+        del sys.modules[_name]
+sys.path.insert(0, str(_SERVICE_ROOT))
+sys.path.insert(0, str(_REPO_ROOT))
+
+from app.cabinet_snapshot import load_cabinet_sensors_snapshot  # noqa: E402
+from orion.telemetry.cabinet_sensors import extract_cabinet_measurements  # noqa: E402
 
 
 def _frame(**overrides):

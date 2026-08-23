@@ -81,6 +81,26 @@ actually working ("otherwise your inference code or downloaded model may
 contain errors"). Always pass real subtitle text when available;
 `subtitle=""` is a degraded mode, not a neutral default.
 
+**Whisper auto-transcription (2026-08-22, Juniper's own ask -- "HIT IT")
+closes this gap when the caller doesn't supply one.** Confirmed live 2026-08-22:
+neither Hub's ambient loop nor its manual "Check now" route ever sent real
+subtitle text, so every real capture was running in the degraded mode above
+by default. `app/transcribe.py` now runs Whisper ("base" model,
+`AFFECTGPT_WHISPER_MODEL`) on `audio_path` whenever the request's `subtitle`
+is empty, and uses the result as the prompt's subtitle if non-empty. Purely
+additive and fails open: an explicit caller-supplied subtitle always wins
+(never overwritten), Whisper never blocks or crashes an assessment on
+failure (falls back to empty, exactly today's behavior), and it's disabled
+entirely via `AFFECTGPT_TRANSCRIBE_ENABLED=false` if needed. Loads in-process
+on the same GPU as the AffectGPT model rather than calling the repo's other
+Whisper deployment (`orion-whisper-tts`) over the bus -- see
+`app/transcribe.py`'s module docstring for why. `AffectGptAssessResultPayload.
+subtitle_source` (`"caller" | "transcribed" | "none"`) and `.transcript`
+report which case actually happened and, when transcribed, the real text --
+so a caller reading a generic hedge in `raw_response` can tell whether that
+came from real detected speech or from silence/no-subtitle, instead of
+guessing.
+
 **VRAM / timing** (cold start, one-off subprocess run during benchmarking,
 not yet re-measured against this warm-loaded service): ~18.4GB peak / 32GB,
 ~20.7s wall time including ~30s of checkpoint-shard loading. This service

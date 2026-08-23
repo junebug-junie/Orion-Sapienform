@@ -131,6 +131,8 @@ class AffectGptWorkerService:
                     face_or_frame_mode=result.face_or_frame_mode,
                     face_detection=result.face_detection,
                     timings=result.timings or None,
+                    subtitle_source=result.subtitle_source,
+                    transcript=result.transcript,
                 )
                 if not result_future.done():
                     result_future.set_result(res)

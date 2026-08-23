@@ -31,6 +31,15 @@ def test_result_requires_ok():
     res = AffectGptAssessResultPayload(ok=True, raw_response="In the text, ...")
     assert res.error is None
     assert res.face_detection is None
+    assert res.subtitle_source is None
+    assert res.transcript is None
+
+
+def test_result_subtitle_source_only_accepts_the_three_real_states():
+    for value in ("caller", "transcribed", "none"):
+        assert AffectGptAssessResultPayload(ok=True, subtitle_source=value).subtitle_source == value
+    with pytest.raises(ValidationError):
+        AffectGptAssessResultPayload(ok=True, subtitle_source="bogus")
 
 
 def test_juniper_multimodal_affect_defaults():
@@ -39,6 +48,8 @@ def test_juniper_multimodal_affect_defaults():
     evt = JuniperMultimodalAffectV1(observed_at=datetime.now(timezone.utc), ok=True)
     assert evt.schema_version == "juniper_multimodal_affect.v1"
     assert evt.source == "affectgpt"
+    assert evt.subtitle_source is None
+    assert evt.transcript is None
 
 
 def test_schema_id_not_shared_with_text_only_signal():

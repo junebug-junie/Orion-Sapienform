@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import os
 import sys
 import tempfile
@@ -30,6 +31,9 @@ import numpy as np
 
 from .face_extract import FaceExtractionResult
 from .settings import Settings
+from .transcribe import load_whisper_model, transcribe_audio
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,6 +46,8 @@ class AssessmentResult:
     face_or_frame_mode: Optional[str] = None
     face_detection: Optional[dict] = None
     timings: dict = field(default_factory=dict)
+    subtitle_source: Optional[str] = None
+    transcript: Optional[str] = None
 
 
 class AffectGptRuntime:
@@ -54,6 +60,7 @@ class AffectGptRuntime:
         self._dataset_cls = None
         self._face_or_frame = settings.AFFECTGPT_FACE_OR_FRAME
         self._ckpt_path: Optional[str] = None
+        self._whisper_model = None
 
     def load(self) -> None:
         s = self.settings
@@ -143,6 +150,22 @@ class AffectGptRuntime:
 
         self._loaded = True
 
+        # Whisper is advisory, not core -- a load failure here must never
+        # block readiness for the actual AffectGPT model (self._loaded is
+        # already True above). assess() below checks self._whisper_model
+        # is not None before ever using it, falling back to today's
+        # subtitle="" behavior on any failure.
+        if s.AFFECTGPT_TRANSCRIBE_ENABLED:
+            try:
+                self._whisper_model = load_whisper_model(
+                    s.AFFECTGPT_WHISPER_MODEL, s.AFFECTGPT_DEVICE
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._whisper_model = None
+                logger.warning(
+                    f"[WARM] whisper_load_failed error={exc} -- subtitle transcription disabled for this session"
+                )
+
     @property
     def loaded(self) -> bool:
         return self._loaded
@@ -166,6 +189,26 @@ class AffectGptRuntime:
         user_message = user_message or s.AFFECTGPT_DEFAULT_USER_MESSAGE
         timings: dict[str, Any] = {}
         t0 = time.monotonic()
+
+        # Populate subtitle from Whisper ONLY when the caller supplied none
+        # -- an explicit caller-provided subtitle always wins, this never
+        # overwrites real text. Both Hub's ambient loop and its manual
+        # "Check now" route currently never send one, so this is the
+        # effective default path today, not an edge case.
+        subtitle_source = "caller" if subtitle else "none"
+        transcript: Optional[str] = None
+        if not subtitle and self._whisper_model is not None:
+            t_stt = time.monotonic()
+            stt_result = transcribe_audio(
+                self._whisper_model,
+                audio_path,
+                peak_threshold=s.AFFECTGPT_TRANSCRIBE_NEAR_SILENT_PEAK_INT16,
+            )
+            timings["transcribe_s"] = round(time.monotonic() - t_stt, 3)
+            if stt_result.text:
+                subtitle = stt_result.text
+                transcript = stt_result.text
+                subtitle_source = "transcribed"
 
         # AffectGPT's load_face() reads from a .npy path (np.load), not an
         # in-memory array -- round-trip through a scratch file for byte-exact
@@ -225,6 +268,8 @@ class AffectGptRuntime:
                 face_or_frame_mode=self._face_or_frame,
                 face_detection=face_result.as_meta(),
                 timings=timings,
+                subtitle_source=subtitle_source,
+                transcript=transcript,
             )
         except Exception as exc:  # noqa: BLE001 -- boundary: never crash the service on a bad clip
             return AssessmentResult(
@@ -234,6 +279,8 @@ class AffectGptRuntime:
                 face_or_frame_mode=self._face_or_frame,
                 face_detection=face_result.as_meta(),
                 timings=timings,
+                subtitle_source=subtitle_source,
+                transcript=transcript,
             )
         finally:
             try:

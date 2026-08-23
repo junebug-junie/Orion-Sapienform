@@ -72,6 +72,31 @@ class AffectGptAssessResultPayload(BaseModel):
         description="Haar-cascade detection telemetry: frames_total/detected/carried_forward/fallback + detection_rate.",
     )
     timings: Optional[Dict[str, Any]] = None
+    subtitle_source: Optional[Literal["caller", "transcribed", "none"]] = Field(
+        default=None,
+        description=(
+            "Where the subtitle text actually fed to the model came from -- "
+            "'caller' (the request already carried real text), 'transcribed' "
+            "(request's subtitle was empty, Whisper produced real text from "
+            "audio_path), or 'none' (empty request subtitle and either "
+            "transcription is disabled/failed or the clip was judged "
+            "near-silent). Added 2026-08-22 -- this service's own README "
+            "already documented that an empty subtitle materially degrades "
+            "output quality, but nothing surfaced WHICH case produced a "
+            "given raw_response, so a caller reading a generic hedge (e.g. "
+            "\"cannot infer emotional state\") had no way to tell whether "
+            "that was a real model read on real speech or an artifact of "
+            "silently getting no transcript at all."
+        ),
+    )
+    transcript: Optional[str] = Field(
+        default=None,
+        description=(
+            "The actual Whisper transcript text when subtitle_source=="
+            "'transcribed' -- what the model was actually shown, not just "
+            "whether transcription happened."
+        ),
+    )
     meta: Optional[Dict[str, Any]] = None
 
 
@@ -92,6 +117,14 @@ class JuniperMultimodalAffectV1(BaseModel):
     model_ckpt: Optional[str] = None
     face_detection: Optional[Dict[str, Any]] = None
     timings: Optional[Dict[str, Any]] = None
+    subtitle_source: Optional[Literal["caller", "transcribed", "none"]] = Field(
+        default=None,
+        description="See AffectGptAssessResultPayload.subtitle_source -- threaded straight through by _wrap_event().",
+    )
+    transcript: Optional[str] = Field(
+        default=None,
+        description="See AffectGptAssessResultPayload.transcript -- threaded straight through by _wrap_event().",
+    )
     # Paths only, never raw bytes/frames on the wire -- keeps this event
     # inspectable/traceable without becoming a raw-media exposure surface.
     input_ref: Optional[Dict[str, Any]] = None

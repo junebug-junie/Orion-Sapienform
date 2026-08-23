@@ -60,7 +60,7 @@ Notes:
 | LIS3MDL | I2C | `magnetic` (µT + magnitude) |
 | PMSA003I | I2C | `particulate` (µg/m³) |
 | VL53L1X | I2C | `lidar` (mm + range status) |
-| BNO085 | **UART-RVC only** | `imu` (accel m/s², yaw/pitch/roll °) |
+| BNO085 | **I2C default** (0x4A/0x4B); UART-RVC fallback | `imu` (accel m/s², yaw/pitch/roll °) |
 
 ## Wiring (default sketch pins)
 
@@ -89,17 +89,20 @@ All I2C sensors share this bus. Typical 7-bit addresses:
 |--------|----------------|
 | SET (wake) | D2 (driven HIGH to keep sensor awake) |
 
-### BNO085 UART-RVC (not I2C)
+### BNO085 (I2C default — Adafruit STEMMA)
 
-Configure the BNO085 breakout for **UART-RVC** (PS0=1, PS1=0 per Hillcrest / SparkFun jumper table).
+Adafruit BNO085 breakouts default to **I2C** (PS0/PS1 pulled low). Address **0x4A** (or **0x4B** if DI tied high). Put it on the same STEMMA/I2C bus as the other sensors.
+
+| BNO085 | Nano ESP32 |
+|--------|------------|
+| SDA / SCL / 3V3 / GND | A4 / A5 / 3.3 V / GND |
+
+**UART-RVC fallback** (only if jumpers set PS0=1 PS1=0 and not on I2C):
 
 | BNO085 | Nano ESP32 |
 |--------|------------|
 | TXO → | D7 (Serial1 RX) |
 | RXI ← | D6 (Serial1 TX) |
-| 3V3, GND | 3.3 V, GND |
-
-Do **not** connect BNO085 to the ESP32 I2C bus for this firmware.
 
 ## Arduino libraries
 
@@ -109,10 +112,10 @@ Install via Library Manager or `arduino-cli lib install`:
 - Adafruit LTR390 Library
 - Adafruit LIS3MDL
 - Adafruit VL53L1X
-- Adafruit BNO08x RVC
+- Adafruit BNO08x
+- Adafruit BNO08x RVC (UART-RVC fallback)
+- Adafruit PM25 AQI Sensor
 - ArduinoJson
-
-PMSA003I is read with inline I2C code (no separate library).
 
 ## Board target
 
@@ -139,3 +142,37 @@ Requires `arduino-cli` with the `arduino:esp32` core and libraries above. The fl
 ## Soft-fail behavior
 
 Each sensor initializes independently in `setup()`. On init or per-frame read failure, that sensor's JSON sub-object is omitted for that frame. One dead sensor does not halt the loop or zero-fill other channels.
+
+## Boot diagnostic (`orion.sensor_boot.v1`)
+
+Once at boot, before data frames, the sketch emits one NDJSON line:
+
+```json
+{
+  "schema": "orion.sensor_boot.v1",
+  "uptime_ms": 4200,
+  "i2c": {"sda_pin": "A4", "scl_pin": "A5", "addresses": ["0x29", "0x76"]},
+  "sensors": {
+    "bme680": {"ok": true, "addr": "0x76"},
+    "ltr390": {"ok": false, "detail": "not_on_bus"},
+    "lis3mdl": {"ok": false, "detail": "not_on_bus"},
+    "pmsa003i": {"ok": false, "detail": "not_on_bus", "set_pin": "D2"},
+    "vl53l1x": {"ok": true, "addr": "0x29"},
+    "bno085": {"ok": false, "detail": "uart_no_sync", "rx_pin": "D7", "tx_pin": "D6", "baud": 115200, "mode": "uart_rvc"}
+  }
+}
+```
+
+The host reader captures this to `/run/orion-sensors/boot.json`. Inspect with:
+
+```bash
+./scripts/diagnose_athena_cabinet_sensors.sh
+```
+
+`detail` values:
+
+| detail | Meaning |
+|--------|---------|
+| `not_on_bus` | No I2C ACK — unwired, unpowered, or wrong sensor variant |
+| `begin_failed` | ACK present but driver init failed |
+| `uart_no_sync` | BNO085 not sending RVC packets — UART wiring or PS0/PS1 mode |

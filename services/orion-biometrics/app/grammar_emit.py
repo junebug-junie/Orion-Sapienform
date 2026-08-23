@@ -19,6 +19,30 @@ from orion.schemas.telemetry.biometrics import (
 
 from .node_catalog import NodeProfile
 
+# Cabinet sensor activity pressures (v1) — keys match summary.pressures and
+# grammar_extract pressure_hints exactly. Atoms are emitted only when the
+# corresponding pressure key is present; staleness only when sample.sensors exists.
+_CABINET_PRESSURE_SPECS: list[tuple[str, str, str]] = [
+    ("cabinet_climate_activity", "cabinet_climate_activity_signal", "climate activity"),
+    (
+        "cabinet_particulate_activity",
+        "cabinet_particulate_activity_signal",
+        "particulate activity",
+    ),
+    ("cabinet_em_activity", "cabinet_em_activity_signal", "EM activity"),
+    ("cabinet_uv_activity", "cabinet_uv_activity_signal", "UV activity"),
+    (
+        "cabinet_vibration_activity",
+        "cabinet_vibration_activity_signal",
+        "vibration activity",
+    ),
+    (
+        "cabinet_proximity_activity",
+        "cabinet_proximity_activity_signal",
+        "proximity activity",
+    ),
+]
+
 
 def _dt(value: Any) -> datetime:
     if isinstance(value, datetime):
@@ -297,6 +321,41 @@ def build_biometrics_node_grammar_events(
         ),
     }
 
+    pressures = summary.pressures or {}
+    for pressure_key, role, label in _CABINET_PRESSURE_SPECS:
+        if pressure_key not in pressures:
+            continue
+        atoms[role] = GrammarAtomV1(
+            atom_id=atom_id(role),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role=role,
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "cabinet"],
+            summary=f"{node_id} cabinet {label} observed",
+            confidence=0.9,
+            salience=float(pressures[pressure_key]),
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.pressure.{pressure_key}:{node_id}:{ts}",
+        )
+
+    sensors = sample.sensors
+    if sensors is not None:
+        stale = bool(sensors.get("stale"))
+        atoms["cabinet_sensor_staleness_signal"] = GrammarAtomV1(
+            atom_id=atom_id("cabinet_sensor_staleness_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="cabinet_sensor_staleness_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "cabinet", "freshness"],
+            summary=f"{node_id} cabinet sensor staleness observed",
+            confidence=0.9,
+            salience=1.0 if stale else 0.0,
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.sensor.staleness:{node_id}:{ts}",
+        )
+
     edge_specs = [
         ("node_context", "telemetry_sample", "references"),
         ("telemetry_sample", "body_state", "derived_from"),
@@ -319,6 +378,19 @@ def build_biometrics_node_grammar_events(
         ("fan_pressure_signal", "capability_surface", "influenced"),
         ("gpu_pressure_signal", "capability_surface", "influenced"),
     ]
+
+    for pressure_key, role, _label in _CABINET_PRESSURE_SPECS:
+        if role not in atoms:
+            continue
+        edge_specs.append(("telemetry_sample", role, "derived_from"))
+        edge_specs.append((role, "capability_surface", "influenced"))
+    if "cabinet_sensor_staleness_signal" in atoms:
+        edge_specs.append(
+            ("telemetry_sample", "cabinet_sensor_staleness_signal", "derived_from")
+        )
+        edge_specs.append(
+            ("cabinet_sensor_staleness_signal", "capability_surface", "influenced")
+        )
 
     events: list[GrammarEventV1] = [root_event]
 

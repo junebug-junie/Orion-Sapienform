@@ -18,6 +18,7 @@ from orion.schemas.telemetry.biometrics import (
     BiometricsClusterV1,
 )
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from app.cabinet_snapshot import load_cabinet_sensors_snapshot
 from app.metrics import collect_biometrics, collect_disk_capacity
 from app.ilo import IloPoller
 from app.pdu import PduPoller, parse_outlets, parse_proxy_outlets
@@ -266,6 +267,12 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
 
     try:
         sample_data = collect_biometrics()
+        sensors = load_cabinet_sensors_snapshot(
+            settings.CABINET_SENSORS_PATH,
+            stale_after_sec=settings.CABINET_SENSOR_STALE_AFTER_SEC,
+        )
+        if sensors is not None:
+            sample_data["sensors"] = sensors
         sample = BiometricsSampleV1.model_validate(sample_data)
         # BiometricsSampleV1 has extra="ignore" -- these two keys would be silently
         # dropped by model_validate() above, so they're merged into the pipeline's

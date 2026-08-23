@@ -14,3 +14,14 @@ curl -s "${BASE}/api/substrate/field/node/atlas" | jq .
 
 echo "4. LLM inference capability field:"
 curl -s "${BASE}/api/substrate/field/capability/llm_inference" | jq .
+
+echo "5. Athena cabinet sensor channels (expect keys present; values should move with Nano, not ratchet up):"
+curl -s "${BASE}/api/substrate/field/node/athena" | jq '{
+  cabinet_climate_activity,
+  cabinet_particulate_activity,
+  cabinet_em_activity,
+  cabinet_uv_activity,
+  cabinet_vibration_activity,
+  cabinet_proximity_activity,
+  cabinet_sensor_staleness
+}'

@@ -98,6 +98,25 @@ class BiometricsSampleV1(BaseModel):
     power: Optional[Dict[str, Any]] = None
     errors: List[str] = Field(default_factory=list)
 
+    # Nano ESP32 cabinet sensor node (raw), read by orion-biometrics from the
+    # host-local /run/orion-sensors/latest.json snapshot -- see
+    # orion/schemas/telemetry/cabinet_sensor_frame.py for the wire contract
+    # and orion/telemetry/cabinet_sensors.py for the raw->measurements/
+    # pressures step. Shape (all keys optional, present only when the host
+    # reader has a fresh frame):
+    #   {
+    #     "frame": {<CabinetSensorFrameV1, by_alias=True>},
+    #     "received_at": "<host UTC ISO8601 receive timestamp>",
+    #     "stale": <bool, set by orion-biometrics against
+    #               CABINET_SENSOR_STALE_AFTER_SEC, not by the reader>,
+    #   }
+    # ABSENT (not present, not {}) when the Nano has never been attached on
+    # this node or the reader has never produced a valid frame -- same
+    # absent-is-not-zero rule as `measurements` below. A present-but-empty
+    # `sensors: {}` would read as "checked, nothing there", which is a
+    # different (false) claim from "never checked".
+    sensors: Optional[Dict[str, Any]] = None
+
 
 class BiometricsSummaryV1(BaseModel):
     model_config = ConfigDict(extra="ignore")

@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     # overwrites a node's own reading.
     PDU_PROXY_OUTLETS: str = Field(default="")
 
+    # Nano ESP32 cabinet sensor node snapshot (host-local, read-only bind mount).
+    # Written by scripts/orion_cabinet_sensor_reader.py on the Athena host.
+    # Missing file => BiometricsSampleV1.sensors stays absent (not {}).
+    CABINET_SENSORS_PATH: str = Field(default="/run/orion-sensors/latest.json")
+    CABINET_SENSOR_STALE_AFTER_SEC: float = Field(default=10.0)
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:

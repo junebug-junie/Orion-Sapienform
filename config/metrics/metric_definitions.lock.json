@@ -1,12 +1,18 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 606,
+  "metric_count": 613,
   "_last_change": {
-    "base": "merge base bbdb3bff0 (origin/main)",
-    "change_count": 0,
+    "base": "merge base e1ec12f38 (origin/main)",
+    "change_count": 7,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://field_channel/orion-field-digester/cabinet_climate_activity",
+      "medium added metric://field_channel/orion-field-digester/cabinet_em_activity",
+      "medium added metric://field_channel/orion-field-digester/cabinet_particulate_activity",
+      "medium added metric://field_channel/orion-field-digester/cabinet_proximity_activity",
+      "medium added metric://field_channel/orion-field-digester/cabinet_sensor_staleness",
+      "medium added metric://field_channel/orion-field-digester/cabinet_uv_activity",
+      "medium added metric://field_channel/orion-field-digester/cabinet_vibration_activity"
     ]
   },
   "definitions": {
@@ -3178,6 +3184,41 @@
     "metric://field_channel/orion-field-digester/avg_step_chars_pressure": {
       "meaning": "Per-step verbosity of the FCC motor's tool output for one turn.",
       "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_climate_activity": {
+      "meaning": "Athena cabinet climate sensor activity (BME680 temperature/humidity/pressure band deviation). Distinct from node thermal_pressure -- measures the enclosure ambient, not CPU/GPU die heat.",
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_em_activity": {
+      "meaning": "Athena cabinet electromagnetic activity (AD8313 RF power band deviation).",
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_particulate_activity": {
+      "meaning": "Athena cabinet particulate/air-quality sensor activity (PMS5003 band deviation).",
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_proximity_activity": {
+      "meaning": "Athena cabinet proximity/presence sensor activity (VL53L0X band deviation).",
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_sensor_staleness": {
+      "meaning": "Whether Athena's cabinet Arduino sensor bundle is too stale to trust. When elevated, cabinet activity channels are withheld upstream -- this channel carries the liveness signal instead.",
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_uv_activity": {
+      "meaning": "Athena cabinet UV sensor activity (GUVA-S12SD band deviation).",
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_vibration_activity": {
+      "meaning": "Athena cabinet vibration activity (MPU6050 accel deviation from 1g rest).",
+      "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/catalog_drift_pressure": {

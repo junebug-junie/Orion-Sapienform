@@ -13,7 +13,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 from orion.execution_dispatch.envelopes import build_cortex_request_envelope
 from orion.execution_dispatch.policy import CortexRouteTemplateV1, load_execution_dispatch_policy
@@ -205,19 +207,35 @@ def test_route_skill_args_reach_the_verb_context() -> None:
     assert env["context"]["skill_args"] == {"source": "vision_events", "window_hours": "12"}
 
 
-def test_config_skill_args_cannot_override_the_derived_maintenance_mode() -> None:
-    """A typo'd `skill_args: {mode: execute}` in the policy file must not be
-    able to promote a preview into a real prune. Config never wins over a
-    safety-derived value."""
+def test_config_cannot_declare_a_run_mode_at_all() -> None:
+    """A skill's run mode is DERIVED from the dispatch runtime's own dry_run
+    state. envelopes.py only forces it for maintenance-scoped routes, and
+    `allowed_scope` / `cortex_verb` are independent unvalidated config fields --
+    so a mutating verb declared under `summarize_only` (which scope_allowed
+    admits unconditionally) plus `skill_args: {mode: execute}` would have
+    reached that verb with mode=execute regardless of dry_run. Refused at the
+    schema, not merely overridden downstream."""
+    for forbidden in ("mode", "run_mode", "dry_run", "MODE"):
+        with pytest.raises(ValidationError):
+            CortexRouteTemplateV1(
+                dispatch_kind="summarize",
+                cortex_verb="skills.runtime.builder_prune.v1",
+                allowed_scope="summarize_only",
+                skill_args={forbidden: "execute"},
+            )
+
+
+def test_a_maintenance_route_still_gets_its_derived_mode_alongside_config_args() -> None:
     route = CortexRouteTemplateV1(
         dispatch_kind="maintain",
         cortex_verb="skills.runtime.image_prune.v1",
         allowed_scope="maintenance_bounded",
-        skill_args={"mode": "execute", "note": "kept"},
+        skill_args={"note": "kept"},
     )
-    env = _envelope(route, dry_run=True)
-    assert env["context"]["skill_args"]["mode"] == "preview"
-    assert env["context"]["skill_args"]["note"] == "kept"
+    assert _envelope(route, dry_run=True)["context"]["skill_args"] == {
+        "note": "kept",
+        "mode": "preview",
+    }
 
 
 def test_maintenance_routes_without_skill_args_still_get_their_mode() -> None:

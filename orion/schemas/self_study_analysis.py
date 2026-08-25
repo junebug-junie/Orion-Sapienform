@@ -7,10 +7,15 @@ when) a disclosed notability rule fires, writes ONE self-study journal entry.
 Why a single shape rather than four verbs: the four sources differ only in
 which table is read and which columns are summarised. The rules that decide
 "is there anything here worth Orion writing down" are shared
-(`services/orion-cortex-exec/app/self_study_analysis.py::NOTABILITY_RULES`),
-so four adapters would be four copies of one analysis with four names -- the
-exact "names the world but changes nothing" shape CLAUDE.md section 0A bans.
-The source is chosen by the dispatch route's own `skill_args.source`.
+(`services/orion-cortex-exec/app/self_study_analysis.py::evaluate_rules`), so
+four adapters would be four copies of one analysis with four names -- the exact
+"names the world but changes nothing" shape CLAUDE.md section 0A bans.
+
+The live dispatch route pins NO source. The verb picks whichever input has gone
+longest without being ANALYSED (`select_least_recently_analysed`, keyed on a
+per-source run mark rather than on journal writes -- see that function for the
+measured reason). A route's `skill_args.source` exists so an operator, or a
+test, can deliberately narrow the action to one lens.
 
 NOT a new metric. Nothing here is wired into field pressure, proposal scoring,
 or any cognition model -- every number below is a read-only summary of rows

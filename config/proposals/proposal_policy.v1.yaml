@@ -437,10 +437,20 @@ proposal_templates:
   # copy that says "elevated" on a template whose real firing baseline (0.1917)
   # sits BELOW the population mean (0.2842).
   #
-  # base_priority 0.34 = mid-pack, matching inspect_node_resource_pressure and
-  # inspect_attended_target. Disclosed, uncalibrated: high enough to clear the
-  # ~0.32 candidate cut every tick, low enough not to displace the 0.38-0.42
-  # leaders. Revisit against real post-deploy dispatch counts.
+  # base_priority 0.34 = mid-pack, the same value inspect_node_resource_pressure
+  # and inspect_attended_target carry. Disclosed and uncalibrated: high enough
+  # to clear the ~0.32 candidate cut every tick, low enough not to displace the
+  # 0.38-0.42 leaders. Sharing a base_priority does NOT predict sharing a
+  # dispatch rate -- those two templates got 65 and 2,316 dispatches in the 24h
+  # to 2026-08-25, three orders of magnitude apart on an identical base, because
+  # the rest of the score is field-dependent. What this template DOES share with
+  # three proven-live templates is its whole gate-relevant tuple, traced through
+  # the real builders in review: conf=0.125, risk=0.150, rev=1.00,
+  # gate=read_only, kind=summarize, scope=summarize_only, base_risk=0.05 --
+  # identical to summarize_transport_contract_drift (2,828 dispatches/24h),
+  # inspect_bus_channel_catalog (2,864) and inspect_attended_target (2,316). It
+  # passes or fails the gates with them. Revisit base_priority against real
+  # post-deploy dispatch counts, not against this comment.
   #
   # RISK. Read-only against all four sources. The only write is an append-only
   # journal entry on the existing journal.entry.write.v1 channel -- the same

@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT / "services" / "orion-cortex-exec"))
 
 from app.self_study_analysis import (  # noqa: E402
     ANALYSIS_SOURCES,
+    _RUN_MARK_KEY_PREFIX,
     DEFAULT_WINDOW_HOURS,
     MAX_WINDOW_HOURS,
     MIN_WINDOW_HOURS,
@@ -69,17 +70,19 @@ class _FakeEngine:
         self,
         *,
         window_rows: dict[tuple[datetime, datetime], list[dict]] | None = None,
-        journaled: bool = False,
+        journaled_source_refs: list[str] | None = None,
         last_by_source: list[dict] | None = None,
         dedup_raises: bool = False,
         window_raises: bool = False,
     ) -> None:
         self.window_rows = window_rows or {}
-        self.journaled = journaled
+        self.journaled_source_refs = [
+            {"source_ref": ref} for ref in (journaled_source_refs or [])
+        ]
         self.last_by_source = last_by_source or []
         self.dedup_raises = dedup_raises
         self.window_raises = window_raises
-        self.dedup_source_refs: list[str] = []
+        self.dedup_since: list[datetime] = []
 
     def connect(self) -> _FakeConn:
         return _FakeConn(self)
@@ -90,8 +93,8 @@ class _FakeEngine:
         if "FROM journal_entries" in sql:
             if self.dedup_raises:
                 raise RuntimeError("journal_entries_unavailable")
-            self.dedup_source_refs.append(params["source_ref"])
-            return _FakeResult([{"?column?": 1}] if self.journaled else [])
+            self.dedup_since.append(params["since"])
+            return _FakeResult(list(self.journaled_source_refs))
         if self.window_raises:
             raise RuntimeError("statement_timeout")
         key = (params["since"], params["until"])
@@ -183,17 +186,48 @@ def test_a_broken_dedup_lookup_fails_closed() -> None:
     assert bus.published == []
 
 
-def test_the_cooldown_suppresses_an_identical_finding_set() -> None:
+def test_the_cooldown_suppresses_a_second_entry_for_the_same_source() -> None:
     bus = _RecordingBus()
-    result = _run(engine=_engine_for(20, 80, journaled=True), bus=bus)
+    result = _run(
+        engine=_engine_for(20, 80, journaled_source_refs=["vision_events:whatever"]), bus=bus
+    )
     assert result.status == "skipped_recently_journaled"
     assert bus.published == []
 
 
-def test_the_cooldown_is_keyed_on_the_source_and_finding_digest() -> None:
-    engine = _engine_for(20, 80, journaled=True)
-    result = _run(engine=engine, bus=_RecordingBus())
-    assert engine.dedup_source_refs == [f"vision_events:{result.finding_digest}"]
+def test_the_cooldown_suppresses_even_a_DIFFERENT_finding_set() -> None:
+    """REVIEW ROUND 2. Keying the cooldown on the exact finding digest let a
+    bursty producer alternate `new_category` and `lost_category` on the same
+    label, each variant carrying its own independent cooldown. Replayed over
+    24h of real rows with the source rotation working, that produced 130
+    journal entries in a day. The cap is per SOURCE."""
+    bus = _RecordingBus()
+    result = _run(
+        engine=_engine_for(20, 80, journaled_source_refs=["vision_events:a-totally-different-digest"]),
+        bus=bus,
+    )
+    assert result.status == "skipped_recently_journaled"
+    assert bus.published == []
+
+
+def test_the_cooldown_does_not_suppress_a_different_source() -> None:
+    bus = _RecordingBus()
+    result = _run(
+        engine=_engine_for(20, 80, journaled_source_refs=["affective_state:x", "cocreation_signals:y"]),
+        bus=bus,
+    )
+    assert result.status == "journaled"
+    assert len(bus.published) == 1
+
+
+def test_a_source_name_is_not_matched_as_a_bare_prefix() -> None:
+    """`vision_events` must not be suppressed by a hypothetical
+    `vision_events_extra:...` entry -- the separator is part of the key."""
+    bus = _RecordingBus()
+    result = _run(
+        engine=_engine_for(20, 80, journaled_source_refs=["vision_events_extra:z"]), bus=bus
+    )
+    assert result.status == "journaled"
 
 
 # --- the write path --------------------------------------------------------
@@ -238,39 +272,124 @@ def test_a_missing_bus_is_reported_not_counted_as_written() -> None:
 
 
 # --- source selection ------------------------------------------------------
+#
+# REGRESSION SUITE for the review blocker: the first version keyed rotation on
+# JOURNAL WRITES, so a source too quiet to journal could never advance and won
+# 97% of runs in a live replay. These fixtures therefore drive the selector
+# through the run-mark store only, and one of them proves a run that writes
+# nothing still rotates.
 
 
-def test_selection_prefers_a_source_never_analysed() -> None:
-    engine = _FakeEngine(
-        last_by_source=[
-            {"src": name, "last_at": NOW - timedelta(hours=i + 1)}
-            for i, name in enumerate(ANALYSIS_SOURCES[:-1])
-        ]
+class _FakeRedis:
+    def __init__(self, values: dict[str, str] | None = None, *, fail: bool = False) -> None:
+        self.values = dict(values or {})
+        self.fail = fail
+        self.setex_calls: list[tuple[str, int, str]] = []
+
+    async def get(self, key: str):
+        if self.fail:
+            raise RuntimeError("redis_down")
+        return self.values.get(key)
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        if self.fail:
+            raise RuntimeError("redis_down")
+        self.setex_calls.append((key, ttl, value))
+        self.values[key] = value
+
+
+class _BusWithRedis(_RecordingBus):
+    def __init__(self, redis: _FakeRedis, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.redis = redis
+
+
+def _marks(**ages_hours: float) -> _FakeRedis:
+    return _FakeRedis(
+        {
+            f"{_RUN_MARK_KEY_PREFIX}{name}": (NOW - timedelta(hours=hours)).isoformat()
+            for name, hours in ages_hours.items()
+        }
     )
-    assert select_least_recently_analysed(engine) == ANALYSIS_SOURCES[-1]
+
+
+def test_selection_prefers_a_source_never_run() -> None:
+    redis = _marks(**{name: i + 1 for i, name in enumerate(ANALYSIS_SOURCES[:-1])})
+    chosen = asyncio.run(
+        select_least_recently_analysed(_BusWithRedis(redis), now=NOW)
+    )
+    assert chosen == ANALYSIS_SOURCES[-1]
 
 
 def test_selection_prefers_the_most_overdue_source() -> None:
-    engine = _FakeEngine(
-        last_by_source=[
-            {"src": "concept_induction", "last_at": NOW - timedelta(hours=1)},
-            {"src": "vision_events", "last_at": NOW - timedelta(hours=9)},
-            {"src": "affective_state", "last_at": NOW - timedelta(hours=2)},
-            {"src": "cocreation_signals", "last_at": NOW - timedelta(hours=3)},
-        ]
+    redis = _marks(
+        concept_induction=1.0, vision_events=9.0, affective_state=2.0, cocreation_signals=3.0
     )
-    assert select_least_recently_analysed(engine) == "vision_events"
+    chosen = asyncio.run(select_least_recently_analysed(_BusWithRedis(redis), now=NOW))
+    assert chosen == "vision_events"
 
 
 def test_selection_cold_start_is_deterministic() -> None:
-    assert select_least_recently_analysed(_FakeEngine()) == ANALYSIS_SOURCES[0]
+    chosen = asyncio.run(select_least_recently_analysed(_BusWithRedis(_FakeRedis()), now=NOW))
+    assert chosen == ANALYSIS_SOURCES[0]
 
 
-def test_selection_ignores_source_refs_it_does_not_recognise() -> None:
-    engine = _FakeEngine(
-        last_by_source=[{"src": "something_else", "last_at": NOW}]
+def test_selection_without_a_bus_is_deterministic_not_a_crash() -> None:
+    assert asyncio.run(select_least_recently_analysed(None, now=NOW)) == ANALYSIS_SOURCES[0]
+
+
+def test_selection_survives_an_unreadable_run_mark_store() -> None:
+    """An unreadable mark reads as "never analysed", which sorts that source
+    FIRST -- failing toward looking at things, not away from them."""
+    chosen = asyncio.run(
+        select_least_recently_analysed(_BusWithRedis(_FakeRedis(fail=True)), now=NOW)
     )
-    assert select_least_recently_analysed(engine) in ANALYSIS_SOURCES
+    assert chosen == ANALYSIS_SOURCES[0]
+
+
+def test_selection_ignores_a_malformed_mark() -> None:
+    redis = _FakeRedis({f"{_RUN_MARK_KEY_PREFIX}concept_induction": "not-a-timestamp"})
+    assert asyncio.run(select_least_recently_analysed(_BusWithRedis(redis), now=NOW)) == (
+        ANALYSIS_SOURCES[0]
+    )
+
+
+def test_a_run_that_journals_nothing_still_rotates_the_selector() -> None:
+    """THE blocker, in one test. A quiet source must not be able to hold the
+    selector: the mark is written at SELECTION time, before the analysis."""
+    redis = _FakeRedis()
+    bus = _BusWithRedis(redis)
+    result = _run(engine=_engine_for(50, 52), bus=bus, source=None)
+    assert result.status == "skipped_not_notable"
+    assert bus.published == [], "fixture must genuinely journal nothing"
+    assert redis.setex_calls, "the run must still have been marked"
+    key, _ttl, _value = redis.setex_calls[0]
+    assert key == f"{_RUN_MARK_KEY_PREFIX}{result.source}"
+    # ...and the next selection must therefore move on.
+    assert asyncio.run(select_least_recently_analysed(bus, now=NOW)) != result.source
+
+
+def test_a_run_whose_query_fails_still_rotates_the_selector() -> None:
+    redis = _FakeRedis()
+    bus = _BusWithRedis(redis)
+    result = _run(engine=_engine_for(50, 52, window_raises=True), bus=bus, source=None)
+    assert result.status == "unavailable"
+    assert redis.setex_calls, "a failing source must not be able to monopolise the rotation"
+
+
+def test_an_operator_pinned_source_does_not_perturb_the_rotation() -> None:
+    redis = _FakeRedis()
+    bus = _BusWithRedis(redis)
+    _run(engine=_engine_for(50, 52), bus=bus, source="affective_state")
+    assert redis.setex_calls == []
+
+
+def test_the_run_mark_carries_a_bounded_ttl() -> None:
+    redis = _FakeRedis()
+    _run(engine=_engine_for(50, 52), bus=_BusWithRedis(redis), source=None)
+    _key, ttl, value = redis.setex_calls[0]
+    assert 0 < ttl <= 7 * 24 * 3600
+    assert datetime.fromisoformat(value) == NOW
 
 
 # --- window clamping -------------------------------------------------------
@@ -349,3 +468,78 @@ def test_the_verb_reports_an_unreadable_source_as_an_error() -> None:
     assert out.ok is False
     assert out.status == "error"
     assert out.error is not None
+
+
+# --- mutation-survivor closures -------------------------------------------
+
+
+def test_the_cooldown_is_the_analysis_window_when_that_is_the_wider_one() -> None:
+    """Mutation M16: the cooldown WIDTH was unpinned -- only its existence was
+    tested."""
+    from app import self_study_analysis as analysis_module
+
+    engine = _engine_for(20, 80)
+    _run(engine=engine, bus=_RecordingBus(), window_hours=analysis_module.DEFAULT_WINDOW_HOURS)
+    assert engine.dedup_since == [NOW - timedelta(hours=analysis_module.DEFAULT_WINDOW_HOURS)]
+
+
+def test_a_short_window_cannot_shrink_the_cooldown_below_its_floor() -> None:
+    """Without the floor, `window_hours=0.5` would allow 48 entries per source
+    per day."""
+    from app import self_study_analysis as analysis_module
+
+    hours = analysis_module.MIN_WINDOW_HOURS
+    assert hours < analysis_module.JOURNAL_COOLDOWN_MIN_HOURS
+    recent_since = NOW - timedelta(hours=hours)
+    baseline_since = NOW - timedelta(hours=2 * hours)
+    engine = _FakeEngine(
+        window_rows={
+            (recent_since, NOW): _vision_rows(20, since=recent_since, until=NOW),
+            (baseline_since, recent_since): _vision_rows(
+                80, since=baseline_since, until=recent_since
+            ),
+        }
+    )
+    _run(engine=engine, bus=_RecordingBus(), window_hours=hours)
+    assert engine.dedup_since == [
+        NOW - timedelta(hours=analysis_module.JOURNAL_COOLDOWN_MIN_HOURS)
+    ]
+
+
+def test_a_truncated_window_is_disclosed_in_the_journal_body() -> None:
+    """Mutations M15/M21: the whole read-ceiling seam had zero coverage, so
+    `_MAX_ROWS_PER_WINDOW` could be set to 3 without a test noticing -- and a
+    truncated window silently skews the ratio and every mean."""
+    from app import self_study_analysis as analysis_module
+
+    original = analysis_module._MAX_ROWS_PER_WINDOW
+    analysis_module._MAX_ROWS_PER_WINDOW = 20
+    try:
+        result = _run(engine=_engine_for(20, 80), bus=_RecordingBus())
+    finally:
+        analysis_module._MAX_ROWS_PER_WINDOW = original
+    assert result.status == "journaled"
+    body = result.journal_entry.body
+    assert "recent window hit the 20-row read ceiling" in body
+    assert "baseline window hit the 20-row read ceiling" in body
+
+
+def test_an_untruncated_window_says_nothing_about_the_ceiling() -> None:
+    result = _run(engine=_engine_for(20, 80), bus=_RecordingBus())
+    assert "read ceiling" not in result.journal_entry.body
+
+
+def test_the_read_ceiling_is_actually_passed_to_the_query() -> None:
+    from app import self_study_analysis as analysis_module
+
+    limits: list[int] = []
+
+    class _LimitCapturingEngine(_FakeEngine):
+        def execute(self, sql: str, params: dict):
+            if "limit" in params:
+                limits.append(params["limit"])
+            return super().execute(sql, params)
+
+    engine = _LimitCapturingEngine(window_rows=_engine_for(20, 80).window_rows)
+    _run(engine=engine, bus=_RecordingBus())
+    assert limits and set(limits) == {analysis_module._MAX_ROWS_PER_WINDOW}

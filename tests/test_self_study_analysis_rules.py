@@ -313,3 +313,181 @@ def test_digest_separates_sources_and_rule_sets() -> None:
     assert finding_digest("vision_events", [gap]) != finding_digest("affective_state", [gap])
     assert finding_digest("vision_events", [gap]) != finding_digest("vision_events", [gap, vol])
     assert finding_digest("vision_events", [gap, vol]) == finding_digest("vision_events", [vol, gap])
+
+
+# --- mutation-survivor closures -------------------------------------------
+#
+# Every test below exists because a specific semantic mutation to the REAL
+# module survived the suite in adversarial review (2026-08-25). Named by what
+# they pin, not by the mutation id, but the mutation is stated in each.
+
+
+def test_producer_stalled_refuses_on_a_baseline_too_thin_to_call_it_a_stall() -> None:
+    """REVIEW BLOCKER. Against live `memory_crystallizations` (~4.6 rows/day)
+    the unguarded rule fired on 72 of 288 sampled windows with baselines of 1
+    or 2 rows, publishing "The producer stopped." about a producer behaving
+    exactly as it always does."""
+    for baseline_rows in range(1, MIN_BASELINE_ROWS):
+        fired = _fired(
+            _window(rows=0),
+            _window(stamps=_evenly(baseline_rows, since=SINCE - WINDOW, until=SINCE)),
+        )
+        assert "producer_stalled" not in fired, f"fired on baseline_rows={baseline_rows}"
+    assert "producer_stalled" in _fired(
+        _window(rows=0),
+        _window(stamps=_evenly(MIN_BASELINE_ROWS, since=SINCE - WINDOW, until=SINCE)),
+    )
+
+
+def test_mean_shift_fires_in_the_downward_direction_too() -> None:
+    """Mutation M23: dropping abs() survived, because every mean_shift fixture
+    shifted UPWARD. A vision pipeline whose mean confidence COLLAPSES is the
+    interesting direction and was untested."""
+    baseline_values = [0.0, 1.0, 2.0, 1.0, 0.0, 1.0, 2.0, 1.0]
+    sigma = _stdev(baseline_values)
+    assert sigma is not None
+    dropped = [1.0 - MEAN_SHIFT_SIGMAS * sigma - 0.05] * 8
+    findings, _ = evaluate_rules(
+        recent=_window(stamps=_evenly(8), numeric={"score": dropped}),
+        baseline=_window(
+            stamps=_evenly(8, since=SINCE - WINDOW, until=SINCE),
+            numeric={"score": baseline_values},
+        ),
+        recent_since=SINCE,
+        recent_until=NOW,
+    )
+    shift = [f for f in findings if f.rule == "mean_shift"]
+    assert shift, "a downward mean shift must fire"
+    assert shift[0].recent is not None and shift[0].baseline is not None
+    assert shift[0].recent < shift[0].baseline
+
+
+def test_the_gap_bar_is_the_larger_of_the_floor_and_the_relative_multiple() -> None:
+    """Mutations M08/M11: `max` -> `min` and the 2.0 multiple both survived, so
+    the relative-bar arithmetic was entirely unpinned. `min` would reinstate
+    the fires-every-window bug the live smoke found.
+
+    Hand-computed. Baseline emits every 90 min across its window, edges
+    included, so its largest gap is exactly 90 min and the bar is
+    max(120, 2*90) = 180 min. The 120-min FLOOR is therefore not the binding
+    constraint here, which is the whole point: a 150-min recent gap clears the
+    floor and must still refuse."""
+    baseline = _window(
+        stamps=[SINCE - WINDOW + timedelta(minutes=90 * i) for i in range(1, 4)]
+    )
+    baseline_gap = _largest_gap_minutes(baseline.timestamps, since=SINCE - WINDOW, until=SINCE)
+    assert baseline_gap == 90.0
+    assert baseline.rows >= MIN_BASELINE_ROWS - 2  # 3 stamps; padded below
+    baseline = _window(
+        stamps=sorted(
+            baseline.timestamps
+            + [SINCE - WINDOW + timedelta(minutes=m) for m in (10, 20)]
+        )
+    )
+    assert baseline.rows >= MIN_BASELINE_ROWS
+    assert _largest_gap_minutes(baseline.timestamps, since=SINCE - WINDOW, until=SINCE) == 90.0
+
+    over_floor_under_relative = [SINCE] + [
+        SINCE + timedelta(minutes=150 + 30 * i) for i in range(9)
+    ]
+    assert _largest_gap_minutes(over_floor_under_relative, since=SINCE, until=NOW) == 150.0
+    assert "observation_gap" not in _fired(_window(stamps=over_floor_under_relative), baseline)
+
+    clears_both = [SINCE] + [SINCE + timedelta(minutes=200 + 20 * i) for i in range(9)]
+    assert _largest_gap_minutes(clears_both, since=SINCE, until=NOW) == 200.0
+    assert "observation_gap" in _fired(_window(stamps=clears_both), baseline)
+
+
+def test_mean_shift_refuses_on_a_recent_window_too_thin_to_average() -> None:
+    """Mutation M22: dropping the recent-side guard survived, so mean_shift
+    could have fired off a single recent row."""
+    baseline_values = [0.0, 1.0, 2.0, 1.0, 0.0, 1.0, 2.0, 1.0]
+    thin = [50.0] * (MIN_BASELINE_ROWS - 1)
+    assert "mean_shift" not in _fired(
+        _window(stamps=_evenly(len(thin)), numeric={"score": thin}),
+        _window(
+            stamps=_evenly(8, since=SINCE - WINDOW, until=SINCE),
+            numeric={"score": baseline_values},
+        ),
+    )
+
+
+def test_lost_category_honours_the_same_row_bar_as_new_category() -> None:
+    """Mutations M06/M27: the bar was pinned on new_category but not on
+    lost_category. Asymmetric coverage of one shared constant."""
+    stray = MIN_CATEGORY_ROWS - 1
+    assert "lost_category" not in _fired(
+        _window(stamps=_evenly(40), categories={"domain": {"git": 40}}),
+        _window(
+            stamps=_evenly(40, since=SINCE - WINDOW, until=SINCE),
+            categories={"domain": {"git": 40 - stray, "graph": stray}},
+        ),
+    )
+    assert "lost_category" in _fired(
+        _window(stamps=_evenly(40), categories={"domain": {"git": 40}}),
+        _window(
+            stamps=_evenly(40, since=SINCE - WINDOW, until=SINCE),
+            categories={
+                "domain": {"git": 40 - MIN_CATEGORY_ROWS, "graph": MIN_CATEGORY_ROWS}
+            },
+        ),
+    )
+
+
+def test_the_volume_ratio_band_is_inclusive_at_both_edges() -> None:
+    """Mutations M02/M05/M10: every `>=`/`<=` could be flipped to `>`/`<`
+    without a test noticing. Exact-boundary behaviour is a real decision and
+    should be recorded, not left to whichever operator happened to type it."""
+    baseline = _window(stamps=_evenly(40, since=SINCE - WINDOW, until=SINCE))
+    assert "volume_shift" in _fired(_window(stamps=_evenly(80)), baseline)  # exactly 2.00x
+    assert "volume_shift" in _fired(_window(stamps=_evenly(20)), baseline)  # exactly 0.50x
+    assert "volume_shift" not in _fired(_window(stamps=_evenly(79)), baseline)
+    assert "volume_shift" not in _fired(_window(stamps=_evenly(21)), baseline)
+
+
+def test_mean_shift_is_inclusive_at_exactly_one_sigma() -> None:
+    baseline_values = [0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0]
+    sigma = _stdev(baseline_values)
+    assert sigma is not None
+    mean = sum(baseline_values) / len(baseline_values)
+    at_bar = [mean + MEAN_SHIFT_SIGMAS * sigma] * 8
+    assert "mean_shift" in _fired(
+        _window(stamps=_evenly(8), numeric={"score": at_bar}),
+        _window(
+            stamps=_evenly(8, since=SINCE - WINDOW, until=SINCE),
+            numeric={"score": baseline_values},
+        ),
+    )
+
+
+def test_the_volume_baseline_bar_is_inclusive() -> None:
+    at_bar = _window(stamps=_evenly(MIN_BASELINE_ROWS, since=SINCE - WINDOW, until=SINCE))
+    assert "volume_shift" in _fired(_window(stamps=_evenly(MIN_BASELINE_ROWS * 3)), at_bar)
+
+
+def test_a_degenerate_zero_width_window_has_no_measurable_gap() -> None:
+    """Mutation M18: `until <= since` -> `until < since` survived."""
+    assert _largest_gap_minutes([], since=SINCE, until=SINCE) is None
+    assert _largest_gap_minutes([SINCE], since=SINCE, until=SINCE) is None
+    assert _largest_gap_minutes([], since=NOW, until=SINCE) is None
+
+
+def test_the_category_row_bar_is_pinned_to_its_actual_value() -> None:
+    """Mutation M06 survived even the first round of closures, because those
+    tests expressed the stray count as `MIN_CATEGORY_ROWS - 1` -- so lowering
+    the constant moved the fixture with it. The bar is a real decision about
+    how much evidence a one-sentence claim needs; pin the number itself."""
+    assert MIN_CATEGORY_ROWS == 3
+    baseline = _window(
+        stamps=_evenly(40, since=SINCE - WINDOW, until=SINCE),
+        categories={"event_type": {"seen": 40}},
+    )
+    for stray in (1, 2):
+        assert "new_category" not in _fired(
+            _window(stamps=_evenly(40), categories={"event_type": {"seen": 40, "rare": stray}}),
+            baseline,
+        ), f"fired on {stray} row(s)"
+    assert "new_category" in _fired(
+        _window(stamps=_evenly(40), categories={"event_type": {"seen": 40, "rare": 3}}),
+        baseline,
+    )

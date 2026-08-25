@@ -17,10 +17,17 @@ THE ANTI-SPAM GATE IS THE POINT. `journal_entries` already holds 32,991
 `metacog` digests. An action that writes an entry every time it runs would be
 digest #4, not cognition. So:
 
-  * `_evaluate_rules` must fire, or nothing is written (`skipped_not_notable`).
-  * An identical finding-set for the same source inside the cooldown is not
-    written twice (`skipped_recently_journaled`), keyed on the journal's own
-    indexed `source_ref` column rather than a new table.
+  * `evaluate_rules` must fire, or nothing is written (`skipped_not_notable`).
+  * ONE entry per source per cooldown, whatever the finding-set
+    (`skipped_recently_journaled`). Hard ceiling: 16 entries/day across all
+    four sources. Replayed against 24h and 48h of real rows at a 2-min and
+    5-min dispatch cadence, the actual rate is 3-5/day.
+
+Both numbers above are measured, and the second one is measured because the
+first version of the cooldown was NOT enough: keyed on the exact finding
+digest, the same replay produced 130 entries/day once the source rotation was
+fixed. See `recently_journaled` and `select_least_recently_analysed` for the
+two defects and how they hid each other.
 
 THE RULES ARE SHARED, NOT PER-SOURCE. `_evaluate_rules` operates on two
 `SourceWindow`s and knows nothing about vision or affect or crystallizations.
@@ -77,6 +84,12 @@ _QUERY_STATEMENT_TIMEOUT_MS = 4000
 _MAX_ROWS_PER_WINDOW = 20000
 
 DEFAULT_WINDOW_HOURS = 6.0
+# Floor on how often ONE source may produce a journal entry, independent of the
+# analysis window. Without it a caller passing `window_hours=0.5` would get 48
+# entries/day/source. At 6h this caps the whole action at 16 entries/day across
+# all four sources. Disclosed, uncalibrated -- chosen against the 34k entries
+# `journal_entries` already holds, not fitted to anything.
+JOURNAL_COOLDOWN_MIN_HOURS = 6.0
 MIN_WINDOW_HOURS = 0.5
 MAX_WINDOW_HOURS = 168.0
 
@@ -279,13 +292,29 @@ def evaluate_rules(
         fired.add(finding.rule)
 
     # 1. producer_stalled -- the loudest and cheapest failure to catch.
-    if recent.rows == 0 and baseline.rows > 0:
+    #
+    # REVIEW FINDING (2026-08-25): this was the ONE rule without the
+    # MIN_BASELINE_ROWS floor, and against live `memory_crystallizations` (a
+    # producer that genuinely emits ~4.6 rows/day) it fired on 72 of 288
+    # sampled 6h windows with baseline counts of 1 or 2, publishing the
+    # sentence "The producer stopped." about a producer that had not stopped.
+    # Same disease `observation_gap` was already fixed for, on the same source,
+    # in the same live smoke -- this rule kept the bug.
+    #
+    # The floor costs something real and it is the right trade: a genuinely
+    # stalled SLOW producer is now only reported once the window is wide enough
+    # to hold >= MIN_BASELINE_ROWS of its normal output. Orion staying quiet
+    # about a real stall is recoverable; Orion asserting a false state of the
+    # world in its own journal is the thing CLAUDE.md's no-empty-shell clause
+    # exists to prevent.
+    if recent.rows == 0 and baseline.rows >= MIN_BASELINE_ROWS:
         fire(
             AnalysisFindingV1(
                 rule="producer_stalled",
                 detail=(
                     f"No rows at all in the recent window, against {baseline.rows} "
-                    "in the window before it. The producer stopped."
+                    f"in the window before it (bar: {MIN_BASELINE_ROWS}). The "
+                    "producer stopped."
                 ),
                 metric="rows",
                 recent=0.0,
@@ -545,62 +574,126 @@ def fetch_window(engine: Any, spec: SourceSpec, *, since: datetime, until: datet
     return window
 
 
-def select_least_recently_analysed(engine: Any, *, lookback_days: int = 30) -> str:
+_RUN_MARK_KEY_PREFIX = "orion:self_study:last_run:"
+# Generous outer bound: rotation state is ephemeral by design, and a source
+# whose mark has expired simply sorts first again (i.e. gets looked at), which
+# is the safe direction to fail.
+_RUN_MARK_TTL_SECONDS = 7 * 24 * 3600
+
+
+async def _read_run_marks(bus: Any | None) -> dict[str, datetime]:
+    """Last time each source was ANALYSED. Fail-open: an unreadable mark is
+    treated as "never", which sorts that source first."""
+    marks: dict[str, datetime] = {}
+    if bus is None or getattr(bus, "redis", None) is None:
+        return marks
+    for name in ANALYSIS_SOURCES:
+        try:
+            raw = await bus.redis.get(_RUN_MARK_KEY_PREFIX + name)
+        except Exception:  # noqa: BLE001
+            logger.warning("self_study_analysis_run_mark_read_failed source=%s", name, exc_info=True)
+            continue
+        if raw is None:
+            continue
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            parsed = datetime.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        marks[name] = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return marks
+
+
+async def _write_run_mark(bus: Any | None, source: str, *, moment: datetime) -> None:
+    """Stamp a source as analysed. Fail-open -- a failed stamp must never break
+    the analysis it is bookkeeping for."""
+    if bus is None or getattr(bus, "redis", None) is None:
+        return
+    try:
+        await bus.redis.setex(
+            _RUN_MARK_KEY_PREFIX + source, _RUN_MARK_TTL_SECONDS, moment.isoformat()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("self_study_analysis_run_mark_write_failed source=%s", source, exc_info=True)
+
+
+async def select_least_recently_analysed(bus: Any | None, *, now: datetime) -> str:
     """Pick which of the four inputs to study this run.
 
     THE DEFAULT, not a fallback. The dispatch route deliberately does NOT pin a
     source: there is one action ("study yourself"), and which lens it uses is a
     scheduling question, not a proposal-arena question. Four near-identical
     templates competing for the same five dispatch slots would have starved
-    four existing templates to say the same thing four ways -- the
-    keyword-cathedral shape in template form.
+    four existing templates to say the same thing four ways.
 
-    "Most overdue" rather than round-robin or a hash: it is just as
-    deterministic, it self-heals after any source is unreachable for a while,
-    and it spends the action on the lens Orion has looked at least recently.
-    Ties (including the all-never-analysed cold start) break on
-    `ANALYSIS_SOURCES` order, so the first run of a fresh deployment is
-    predictable rather than arbitrary.
+    MEASURED ON RUNS, NOT ON WRITES, and that distinction is load-bearing.
+    REVIEW FINDING (2026-08-25): the first version of this read `journal_entries`,
+    so a source's position only advanced when it JOURNALED. A source quiet
+    enough that no rule could fire was therefore permanently un-journalable,
+    permanently sorted first, and permanently won. Replayed against the real
+    2026-08-23 vision outage at a 5-minute cadence, `concept_induction` took
+    560 of 576 runs (97%) and held the selector for 474 consecutive runs
+    (~39.5h) -- during which the vision pipeline was dead and its lens was
+    never re-examined. That defeats the entire point of the rotation, and it
+    made a false `producer_stalled` alarm load-bearing for releasing it.
+
+    So the mark is written at SELECTION time, before the analysis runs: a
+    source whose query fails, or that returns nothing, still rotates away.
+
+    "Most overdue" rather than round-robin or a hash: just as deterministic,
+    self-healing after any source is unreachable for a while, and it spends the
+    action on the lens Orion has looked at least recently. Ties -- including the
+    all-never-analysed cold start and the no-bus case -- break on
+    `ANALYSIS_SOURCES` order, so the first run is predictable, not arbitrary.
     """
-    sql = text(
-        "SELECT split_part(source_ref, ':', 1) AS src, MAX(created_at) AS last_at "
-        "FROM journal_entries "
-        "WHERE source_kind = :source_kind AND created_at >= :since "
-        "GROUP BY 1"
-    )
-    since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    last_by_source: dict[str, datetime] = {}
-    with engine.connect() as conn:
-        for row in conn.execute(sql, {"source_kind": _SOURCE_KIND, "since": since}).mappings():
-            stamp = _as_datetime(row.get("last_at"))
-            src = str(row.get("src") or "")
-            if src in SOURCE_SPECS and stamp is not None:
-                last_by_source[src] = stamp
+    marks = await _read_run_marks(bus)
     # None sorts first: never-analysed beats any real timestamp.
     return min(
         ANALYSIS_SOURCES,
         key=lambda name: (
-            last_by_source.get(name) is not None,
-            last_by_source.get(name) or since,
+            name in marks,
+            marks.get(name) or now,
             ANALYSIS_SOURCES.index(name),
         ),
     )
 
 
-def recently_journaled(engine: Any, *, source_ref: str, since: datetime) -> bool:
-    """True when an entry with this exact source_ref already exists inside the
-    cooldown. Uses `journal_entries`' own columns -- no new table, and the
-    dedup key is visible in the artifact it dedups."""
+def recently_journaled(engine: Any, *, source: str, since: datetime) -> bool:
+    """True when ANY self-study entry for this source already exists inside the
+    cooldown -- not merely one with the same finding-set.
+
+    REVIEW ROUND 2 (2026-08-25). The first version keyed this on the exact
+    `finding_digest`, and a live replay said that was fine: 4 entries/24h. That
+    replay was measuring the OTHER blocker. Once the source selector was fixed
+    to rotate properly, the same replay over the same 24h of real rows produced
+    **130 entries** -- because the digest genuinely churns as the window slides
+    (`cocreation_signals` alone alternated `new_category|domain:git` and
+    `lost_category|domain:git` on a bursty producer, each variant carrying its
+    own independent cooldown). The broken selector had been acting as an
+    accidental rate limiter, and fixing it removed the limiter.
+
+    So the cap is per SOURCE, and it is a cap rather than a deduplicator: at
+    the 6h floor below, at most 4 entries per source per day, 16 total, against
+    the 34k entries `journal_entries` already holds. A genuinely new finding
+    inside the cooldown is not lost, only deferred -- the next window carries
+    it, and the digest still goes in `source_ref` so which finding-set was
+    written stays inspectable.
+
+    Plans as an Index Scan on `idx_journal_entries_created_at` (529 buffers,
+    1.9 ms live) rather than a prefix LIKE on `source_ref`, whose btree cannot
+    serve a left-anchored pattern under this database's non-C collation.
+    """
     sql = text(
-        "SELECT 1 FROM journal_entries "
-        "WHERE source_kind = :source_kind AND source_ref = :source_ref "
-        "AND created_at >= :since LIMIT 1"
+        "SELECT source_ref FROM journal_entries "
+        "WHERE source_kind = :source_kind AND created_at >= :since"
     )
+    prefix = f"{source}:"
     with engine.connect() as conn:
-        row = conn.execute(
-            sql, {"source_kind": _SOURCE_KIND, "source_ref": source_ref, "since": since}
-        ).first()
-    return row is not None
+        for row in conn.execute(sql, {"source_kind": _SOURCE_KIND, "since": since}).mappings():
+            if str(row.get("source_ref") or "").startswith(prefix):
+                return True
+    return False
 
 
 # --- metrics + journal body ------------------------------------------------
@@ -645,6 +738,7 @@ def build_analysis_journal_entry(
     spec: SourceSpec,
     result: SelfStudyAnalysisResultV1,
     recent: SourceWindow,
+    baseline: SourceWindow,
     created_at: datetime | None = None,
 ) -> JournalEntryWriteV1:
     ts = created_at or datetime.now(timezone.utc)
@@ -657,11 +751,14 @@ def build_analysis_journal_entry(
         f"{result.recent_rows} rows recent, {result.baseline_rows} baseline.",
         f"What these rows are: {spec.what_it_measures}",
     ]
-    if recent.truncated:
-        lines.append(
-            f"NOTE: the recent window hit the {_MAX_ROWS_PER_WINDOW}-row read "
-            "ceiling, so every number below is over a truncated window."
-        )
+    for label, window in (("recent", recent), ("baseline", baseline)):
+        if window.truncated:
+            lines.append(
+                f"NOTE: the {label} window hit the {_MAX_ROWS_PER_WINDOW}-row "
+                "read ceiling. Every number below that touches it -- the row "
+                "count, volume_shift's ratio, every mean -- is over a "
+                "truncated window, not the whole one."
+            )
     lines += ["", "What fired:"]
     for finding in result.findings:
         lines.append(f"- {finding.rule}: {finding.detail}")
@@ -753,7 +850,7 @@ async def run_self_study_analysis(
 
     if source is None or not str(source).strip():
         try:
-            source = select_least_recently_analysed(db)
+            source = await select_least_recently_analysed(bus, now=moment)
         except Exception as exc:  # noqa: BLE001
             # Selection failing is not a reason to skip the run entirely; fall
             # back to the first source rather than doing nothing, and say so.
@@ -761,6 +858,11 @@ async def run_self_study_analysis(
                 "self_study_analysis_source_selection_failed corr=%s err=%s", correlation_id, exc
             )
             source = ANALYSIS_SOURCES[0]
+        # Stamped BEFORE the analysis, so a source that errors or stays quiet
+        # still rotates away. Only stamped for an auto-selected run: an
+        # operator pinning `skill_args.source` is not participating in the
+        # rotation and must not perturb it.
+        await _write_run_mark(bus, str(source), moment=moment)
 
     spec = SOURCE_SPECS.get(str(source))
     if spec is None:
@@ -819,9 +921,9 @@ async def run_self_study_analysis(
     if not findings:
         return result
 
-    entry_source_ref = f"{result.source}:{result.finding_digest}"
+    cooldown = timedelta(hours=max(JOURNAL_COOLDOWN_MIN_HOURS, hours))
     try:
-        if recently_journaled(db, source_ref=entry_source_ref, since=moment - delta):
+        if recently_journaled(db, source=result.source, since=moment - cooldown):
             result.status = "skipped_recently_journaled"
             return result
     except Exception as exc:  # noqa: BLE001
@@ -838,7 +940,9 @@ async def run_self_study_analysis(
         result.unavailable_reason = f"dedup_failed:{type(exc).__name__}"
         return result
 
-    entry = build_analysis_journal_entry(spec=spec, result=result, recent=recent, created_at=moment)
+    entry = build_analysis_journal_entry(
+        spec=spec, result=result, recent=recent, baseline=baseline, created_at=moment
+    )
     entry.correlation_id = correlation_id
     result.journal_entry = entry
 

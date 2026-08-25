@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DispatchModeConfigV1(BaseModel):
@@ -18,6 +18,11 @@ class DispatchModeConfigV1(BaseModel):
 # putting it in builder makes that a cycle. (Learned the same day, from
 # orion/field/action_warrant.py's own circular import; see PR #1581.)
 MAINTENANCE_SCOPE = "maintenance_bounded"
+
+# Keys a route's static `skill_args` may never carry, because a real value
+# for them is derived from runtime safety state rather than chosen by an
+# operator. See CortexRouteTemplateV1.skill_args.
+_CONFIG_FORBIDDEN_SKILL_ARGS = frozenset({"mode", "run_mode", "dry_run"})
 
 
 class CortexRouteTemplateV1(BaseModel):
@@ -34,6 +39,40 @@ class CortexRouteTemplateV1(BaseModel):
     # the prune would let ONE hung inspect stall all dispatch for that long.
     # Only routes that actually need a longer budget get one.
     rpc_timeout_sec: float | None = None
+
+    # 2026-08-25: static per-route arguments for the target verb, merged into
+    # the envelope's `context.skill_args` (orion/execution_dispatch/
+    # envelopes.py). Exists because `maintain` routes already needed exactly
+    # this and had it hardcoded there as a single `mode` key -- so a second
+    # route wanting any argument at all had nowhere to put it.
+    #
+    # STATIC ONLY, and deliberately so: these are config, chosen by the
+    # operator writing the policy file, never derived from candidate state.
+    # A route that needs to vary its arguments per tick is describing a
+    # decision, and a decision belongs in the proposal arena or inside the
+    # skill, not smuggled through a route table.
+    #
+    # `mode` is REFUSED here outright, not merely overridden. envelopes.py
+    # forces the derived `mode` only for MAINTENANCE_SCOPE routes, and
+    # `allowed_scope` / `cortex_verb` are independent unvalidated config
+    # fields -- so a route declaring a mutating verb under `summarize_only`
+    # (which builder.py::scope_allowed admits unconditionally, without
+    # mode.allow_mutating_dispatch) plus `skill_args: {mode: execute}` would
+    # reach that verb with `mode=execute` regardless of dry_run. Before route
+    # skill_args existed there was no such channel at all; this validator is
+    # what keeps it that way. Caught in review, 2026-08-25.
+    skill_args: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("skill_args")
+    @classmethod
+    def _refuse_run_mode(cls, value: dict[str, str]) -> dict[str, str]:
+        forbidden = sorted(k for k in value if k.lower() in _CONFIG_FORBIDDEN_SKILL_ARGS)
+        if forbidden:
+            raise ValueError(
+                f"route skill_args may not set {forbidden}: a skill's run mode is derived "
+                "from the dispatch runtime's own dry_run state, never from config"
+            )
+        return value
 
 
 class DispatchLimitsV1(BaseModel):

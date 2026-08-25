@@ -431,6 +431,11 @@ from orion.schemas.telemetry.dream import (
 )
 from orion.schemas.rdf import RdfBuildRequest, RdfWriteRequest, RdfWriteResult
 from orion.schemas.spark_concept_graph import SparkConceptProfileGraphMaterializationV1
+from orion.schemas.self_study_analysis import (
+    AnalysisFindingV1,
+    AnalysisMetricV1,
+    SelfStudyAnalysisResultV1,
+)
 from orion.schemas.self_study import (
     SelfConceptEvidenceRefV1,
     SelfConceptInduceResultV1,
@@ -813,6 +818,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfConceptRefV1": SelfConceptRefV1,
     "SelfReflectiveFindingV1": SelfReflectiveFindingV1,
     "SelfConceptReflectResultV1": SelfConceptReflectResultV1,
+    "AnalysisMetricV1": AnalysisMetricV1,
+    "AnalysisFindingV1": AnalysisFindingV1,
+    "SelfStudyAnalysisResultV1": SelfStudyAnalysisResultV1,
     "SelfStudyRetrieveFiltersV1": SelfStudyRetrieveFiltersV1,
     "SelfStudyRetrieveRequestV1": SelfStudyRetrieveRequestV1,
     "SelfStudyRetrievedRecordV1": SelfStudyRetrievedRecordV1,

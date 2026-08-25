@@ -45,9 +45,24 @@ def build_cortex_request_envelope(
             # a real prune needs BOTH that and this -- and then still has to
             # pass the skill's own measured gate. Three independent switches,
             # none of them defaulted open.
+            # Route-declared static args first, then the maintenance `mode`.
+            # That order is intentional: `mode` is the one argument in here
+            # that is DERIVED (from the dispatch runtime's own dry_run state)
+            # rather than configured, so a typo'd `skill_args: {mode: execute}`
+            # in the policy file must not be able to promote a preview into a
+            # real prune. Config never wins over a safety-derived value.
             **(
-                {"skill_args": {"mode": "execute" if not dry_run else "preview"}}
-                if route.allowed_scope == MAINTENANCE_SCOPE
+                {
+                    "skill_args": {
+                        **dict(route.skill_args),
+                        **(
+                            {"mode": "execute" if not dry_run else "preview"}
+                            if route.allowed_scope == MAINTENANCE_SCOPE
+                            else {}
+                        ),
+                    }
+                }
+                if (route.skill_args or route.allowed_scope == MAINTENANCE_SCOPE)
                 else {}
             ),
         },

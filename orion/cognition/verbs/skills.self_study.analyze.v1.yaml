@@ -1,0 +1,61 @@
+name: skills.self_study.analyze.v1
+label: Skills — Self-Study Analysis
+description: >
+  Read one window of an already-stored telemetry source, contrast it against
+  the window immediately before it, and write ONE self-study journal entry --
+  only when a disclosed notability rule fires. One action shape, four inputs
+  (concept induction, vision events, affective state, co-creation signals).
+  Read-only against every source; the only write is an append-only journal
+  entry on the existing journal.entry.write.v1 channel. Omit `source` to study
+  whichever input has gone longest without being studied.
+category: ExecutiveControl
+priority: low
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+# Four small windowed SELECTs plus one dedup lookup, each capped by a 4s
+# per-connection statement_timeout. 30s leaves real headroom without letting a
+# stuck query hold the single-threaded dispatch consumer for minutes.
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+input_schema:
+  type: object
+  properties:
+    source:
+      type: string
+      enum: [concept_induction, vision_events, affective_state, cocreation_signals]
+      description: Which input to study. Omit to pick the most overdue one.
+    window_hours:
+      type: number
+      description: Recent window width in hours; the baseline is the same width immediately before it. Clamped to [0.5, 168].
+  additionalProperties: false
+output_schema:
+  type: object
+  properties:
+    run_id: {type: string}
+    source: {type: string}
+    status:
+      type: string
+      enum: [journaled, skipped_not_notable, skipped_recently_journaled, unavailable, journal_failed]
+    window_hours: {type: number}
+    time_column: {type: string}
+    recent_rows: {type: integer}
+    baseline_rows: {type: integer}
+    finding_digest: {type: [string, "null"]}
+    metrics:
+      type: array
+      items: {type: object}
+    findings:
+      type: array
+      items: {type: object}
+    rules_not_fired:
+      type: array
+      items: {type: string}
+    unavailable_reason: {type: [string, "null"]}
+plan:
+  - name: skills.self_study.analyze.v1
+    description: Execute the direct Cortex-side self-study analysis skill.
+    order: 0
+    services: []

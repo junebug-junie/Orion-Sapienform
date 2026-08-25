@@ -53,12 +53,17 @@ services:
     ports:
       - "${HOST_PORT}:6610"
 
-    # Pinned to GPU2 (circe's "agent / affect / testing lane", :8014 --
-    # per reference_circe_gpu_inventory_and_lane_map this card is Juniper's
-    # own designated slot for prototyping an affective model). Physical
-    # device N is always remapped to container-local index 0 -- confirmed
-    # live 2026-08-22 -- hence AFFECTGPT_DEVICE=cuda:0 above regardless of
-    # which physical card this points at.
+    # Pinned to GPU1 (Tesla V100-SXM2-32GB) -- moved off GPU2 (PG500) on
+    # 2026-08-25 per Juniper. GPU2 is circe's "agent / affect / testing
+    # lane" (:8014, per reference_circe_gpu_inventory_and_lane_map) but this
+    # worker needs more headroom; GPU1 was confirmed idle live (nvidia-smi
+    # + nvidia-smi --query-compute-apps showed no process on it -- the
+    # index-1-is-reserved-for-chat note in that same reference doc was
+    # stale: the real 35B chat model (pid on :8011) actually runs tensor-
+    # split across GPU0+GPU3, not GPU1). Physical device N is always
+    # remapped to container-local index 0 -- confirmed live 2026-08-22 --
+    # hence AFFECTGPT_DEVICE=cuda:0 above regardless of which physical card
+    # this points at.
     #
     # Compose's top-level `gpus:` key only accepts the literal 'all' --
     # confirmed live 2026-08-22 ("gpus value must be 'all'"). Per-device
@@ -70,7 +75,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2"]
+              device_ids: ["1"]
               capabilities: [gpu]
 
     networks:

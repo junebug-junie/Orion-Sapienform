@@ -15,7 +15,8 @@ unconfirmed -- adding this worker as a second, undeclared producer would
 couple a synchronous assessment path to another service's uptime/GPU
 contention with no established guarantee it even shares this GPU.
 ``orion-affectgpt-worker`` already carries a full CUDA/torch stack on circe
-GPU2 with ~11-14GB of confirmed headroom under AffectGPT's own ~18.4GB peak
+GPU1 (moved off GPU2 2026-08-25) with ~11-14GB of confirmed headroom under
+AffectGPT's own ~18.4GB peak
 (see README) -- loading Whisper "base" (~1GB VRAM) into the SAME
 already-warm, single-request-locked process is the smaller, more contained
 seam.

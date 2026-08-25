@@ -286,6 +286,17 @@ class Settings(BaseSettings):
     )
     SELF_EXPERIMENTS_TIMEOUT_SEC: float = Field(default=6.0, alias="SELF_EXPERIMENTS_TIMEOUT_SEC")
 
+    # Embodied-presence enrichment for endogenous_outreach.py's prompt (2026-08-25,
+    # docs/superpowers/specs/2026-08-21-seeing-juniper-identity-and-situated-
+    # observation-design.md section 6.3). Same stream_id convention orion-cortex-
+    # exec's own situation-perception context uses (orion.situational.context's
+    # `orion_situation_perception_stream_id`, default "cam0") -- one camera today,
+    # kept as its own setting rather than sharing a cross-service default so the
+    # two can diverge later without coupling.
+    ENDOGENOUS_OUTREACH_PERCEPTION_STREAM_ID: str = Field(
+        default="cam0", alias="ENDOGENOUS_OUTREACH_PERCEPTION_STREAM_ID"
+    )
+
     # orion-juniper-affective-state (circe) -- the "Affect check" toggle in
     # the Vision panel calls POST /v1/juniper/affect/capture_and_assess on
     # this base. Long timeout on purpose: that call is synchronous through a

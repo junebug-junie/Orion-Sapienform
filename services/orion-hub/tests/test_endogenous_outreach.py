@@ -15,6 +15,7 @@ from scripts.endogenous_outreach import (
     EndogenousOutreach,
     OutreachContext,
     OutreachGateInputs,
+    _fetch_embodied_presence,
     build_outreach_prompt,
     in_quiet_hours,
     is_pass_response,
@@ -114,6 +115,139 @@ def test_empty_context_yields_no_prompt() -> None:
     assert build_outreach_prompt(ctx) == ""
 
 
+def test_embodied_presence_alone_does_not_make_context_non_empty() -> None:
+    """is_empty() deliberately does not check embodied_presence -- an empty
+    room (or a full one) with nothing else happening must never be a reason
+    to interrupt Juniper on its own. Same rule chat presence already had;
+    confirmed directly on is_empty() here, not just indirectly through
+    build_outreach_prompt()'s own empty-string check above."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        embodied_presence={"state": "present", "since_sec": 10800.0, "subject": "juniper"},
+    )
+    assert ctx.is_empty() is True
+
+
+def _install_fake_scripts_settings(monkeypatch, **attrs):
+    """`_fetch_embodied_presence` does a local `from scripts.settings import
+    settings` -- the real `scripts.settings` module eagerly instantiates a
+    full pydantic Settings() at import time (`_source_ref`'s own docstring
+    already notes this needs the full operator env), which fails in a bare
+    test process with several required-field ValidationErrors having
+    nothing to do with this test. Installing a fake module into
+    `sys.modules` first means that import line reads the fake instead of
+    triggering the real one -- `monkeypatch.setattr("scripts.settings.
+    settings", ...)` was tried first and rejected: resolving that dotted
+    string itself re-imports the real module before patching anything."""
+    import sys
+    import types
+
+    fake_settings = type("S", (), attrs)()
+    fake_module = types.ModuleType("scripts.settings")
+    fake_module.settings = fake_settings
+    monkeypatch.setitem(sys.modules, "scripts.settings", fake_module)
+
+
+def _install_fake_scripts_pg_engine(monkeypatch, engine=None):
+    """Same sys.modules-injection reasoning as
+    _install_fake_scripts_settings -- `_fetch_embodied_presence` also does a
+    local `from scripts.pg_engine import get_engine`."""
+    import sys
+    import types
+
+    fake_module = types.ModuleType("scripts.pg_engine")
+    fake_module.get_engine = lambda: engine
+    monkeypatch.setitem(sys.modules, "scripts.pg_engine", fake_module)
+
+
+def test_fetch_embodied_presence_uses_configured_stream_id_and_shared_engine(monkeypatch) -> None:
+    # Patches the exact global namespace `_fetch_embodied_presence` itself
+    # closes over (via `__globals__`), not a fresh `import
+    # scripts.endogenous_outreach` done inside this test body -- this
+    # file's own conftest.py has an autouse fixture that clears every
+    # `scripts.*` entry from sys.modules before each test, so a fresh
+    # in-body import here would create a SECOND, different module object
+    # than the one `_fetch_embodied_presence` (imported once at collection
+    # time, top of this file) is actually bound to. Patching that second
+    # copy silently never affects the function under test -- confirmed
+    # live: the first version of this test patched `module.fetch_presence`
+    # that way and the mock was simply never called.
+    captured = {}
+    sentinel_engine = object()
+
+    def fake_fetch_presence(stream_id, *, engine=None):
+        captured["stream_id"] = stream_id
+        captured["engine"] = engine
+        return {"state": "present", "since_sec": 42.0, "subject": "juniper"}
+
+    monkeypatch.setitem(_fetch_embodied_presence.__globals__, "fetch_presence", fake_fetch_presence)
+    _install_fake_scripts_settings(monkeypatch, ENDOGENOUS_OUTREACH_PERCEPTION_STREAM_ID="cam1")
+    _install_fake_scripts_pg_engine(monkeypatch, engine=sentinel_engine)
+
+    result = _fetch_embodied_presence()
+
+    assert captured["stream_id"] == "cam1"
+    # Review finding, 2026-08-25: must pass the tick's own shared pg_engine
+    # through, not let fetch_presence open a second pool of its own.
+    assert captured["engine"] is sentinel_engine
+    assert result == {"state": "present", "since_sec": 42.0, "subject": "juniper"}
+
+
+def test_gather_context_runs_its_three_fetches_concurrently(monkeypatch) -> None:
+    """Review finding, 2026-08-25: `_gather_context` used to await
+    `_fetch_curiosity_summaries`/`_fetch_recent_turns`/`_fetch_embodied_
+    presence` one after another even though each is independent and
+    already dispatched via asyncio.to_thread -- wall time was their SUM,
+    not the slowest one. Three fakes that each sleep 60ms: sequential would
+    take ~180ms+, concurrent (asyncio.gather) should land close to 60ms.
+    Generous 150ms ceiling to stay non-flaky under CI scheduling jitter
+    while still being well under the sequential floor."""
+    import time
+
+    # Same __globals__-of-an-already-imported-symbol technique as the
+    # _fetch_embodied_presence tests above, for the same reason: a fresh
+    # `import scripts.endogenous_outreach as module` here would be a THIRD
+    # distinct module object (conftest.py's autouse fixture clears
+    # sys.modules["scripts.*"] before every test), different again from the
+    # one `EndogenousOutreach`/`_outreach()` below actually run against.
+    # `_fetch_embodied_presence.__globals__` IS that real module's globals
+    # dict -- every name defined at module level (including the other two
+    # fetch functions, and `EndogenousOutreach` itself) lives in that same
+    # dict, so patching through it reaches the real target.
+    module_globals = _fetch_embodied_presence.__globals__
+
+    def _sleepy(name, value):
+        def _fn(*args):
+            time.sleep(0.06)
+            return value
+        _fn.__name__ = name
+        return _fn
+
+    monkeypatch.setitem(module_globals, "_fetch_curiosity_summaries", _sleepy("_fetch_curiosity_summaries", ["c"]))
+    monkeypatch.setitem(module_globals, "_fetch_recent_turns", _sleepy("_fetch_recent_turns", [("Juniper", "hi")]))
+    monkeypatch.setitem(
+        module_globals, "_fetch_embodied_presence", _sleepy("_fetch_embodied_presence", {"state": "present"})
+    )
+    # ctx.presence (chat liveness, distinct from embodied_presence) is read
+    # synchronously and not part of this timing assertion -- its own
+    # `scripts.hub_presence.presence_snapshot()` call is unmocked here and
+    # already degrades to None near-instantly with no reachable Postgres in
+    # this test process (its own try/except, same as every other DB call
+    # in this file's test suite).
+
+    outreach = _outreach()
+    t0 = time.monotonic()
+    ctx = asyncio.run(outreach._gather_context(session_id="s"))
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 0.15, f"_gather_context took {elapsed:.3f}s -- fetches are not running concurrently"
+    assert ctx.curiosity_summaries == ["c"]
+    assert ctx.recent_turns == [("Juniper", "hi")]
+    assert ctx.embodied_presence == {"state": "present"}
+
+
 def test_presence_alone_is_not_grounding() -> None:
     # Presence is colour, not substance -- it must not by itself unlock a tick.
     ctx = OutreachContext(
@@ -137,6 +271,57 @@ def test_prompt_carries_real_signals_and_turns() -> None:
     # 2460s / 60 == 41 minutes, rounded by format spec.
     assert "41 minutes ago" in prompt
     assert "PASS" in prompt
+
+
+def test_embodied_presence_alone_is_not_grounding() -> None:
+    """Same rule as chat presence: camera enrichment is colour, not
+    substance -- must not by itself unlock a tick. Design doc section 6.3
+    frames this as enrichment on a REAL trigger, never a trigger itself."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        embodied_presence={"state": "present", "since_sec": 10800.0, "subject": "juniper"},
+    )
+    assert build_outreach_prompt(ctx) == ""
+
+
+def test_embodied_presence_fragment_included_alongside_real_grounding() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising on node:substrate.route"],
+        recent_turns=[],
+        presence=None,
+        embodied_presence={"state": "present", "since_sec": 10800.0, "subject": "juniper"},
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "What your camera currently shows:" in prompt
+    # 10800s == 3h exactly -- presence_fragment's own coarse_duration output.
+    assert "Someone has been in view for about 3 hours." in prompt
+
+
+def test_embodied_presence_absent_state_produces_no_fragment() -> None:
+    """presence_fragment's own contract: never mentions 'absent'. An empty
+    room is the default expectation most of the time and isn't worth a
+    word on its own -- confirmed here at the OutreachContext/prompt level,
+    not just inside presence_fragment's own unit tests."""
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising on node:substrate.route"],
+        recent_turns=[],
+        presence=None,
+        embodied_presence={"state": "absent", "since_sec": 10800.0, "subject": "none"},
+    )
+    prompt = build_outreach_prompt(ctx)
+    assert "camera" not in prompt.lower()
+
+
+def test_embodied_presence_none_omits_camera_line() -> None:
+    ctx = OutreachContext(
+        curiosity_summaries=["repair pressure rising on node:substrate.route"],
+        recent_turns=[],
+        presence=None,
+        embodied_presence=None,
+    )
+    assert "camera" not in build_outreach_prompt(ctx).lower()
 
 
 def test_curiosity_alone_is_enough_grounding() -> None:

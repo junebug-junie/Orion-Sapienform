@@ -118,6 +118,37 @@ template_to_cortex:
     allowed_scope: inspect_only
     rpc_timeout_sec: 40
 
+  # 2026-08-25: analysis -> self-study journal entry.
+  #
+  # `summarize_only`, not a new scope. builder.py::scope_allowed permits
+  # inspect_only / summarize_only unconditionally and maintenance_bounded only
+  # behind mode.allow_mutating_dispatch; adding a fifth scope would mean
+  # editing that check, which is a safety gate, to buy nothing this route needs.
+  # summarize_only is also the honest label: the action summarises a window.
+  #
+  # NO `skill_args.source`. The route mechanism exists (CortexRouteTemplateV1.
+  # skill_args, added in this patch) and is deliberately left unset -- the verb
+  # then studies whichever of its four inputs has gone longest without being
+  # studied. Pin one here only to deliberately narrow the action to a single
+  # lens; the enum is in orion/cognition/verbs/skills.self_study.analyze.v1.yaml.
+  #
+  # NO reserved slot, and that was checked rather than assumed. The starvation
+  # fix this file already carries (starvation_aging_bonus_per_tick 0.002, cap
+  # 0.25) is explicitly general -- "anything else quietly losing this race gets
+  # the same relief without being named" -- and 0.34 + a full aging bonus (0.59)
+  # clears every fresh competitor here. Revisit if real post-deploy dispatch
+  # counts show it starving anyway; do not pre-emptively reserve capacity.
+  #
+  # Verb timeout_ms is 30000; 60s gives the same ~2x margin the other
+  # short routes use. The work is four windowed SELECTs plus one dedup lookup,
+  # each already capped by a 4s per-connection statement_timeout.
+  analyze_self_study_source:
+    dispatch_kind: summarize
+    cortex_verb: skills.self_study.analyze.v1
+    cortex_mode: brain
+    allowed_scope: summarize_only
+    rpc_timeout_sec: 60
+
   # Same first two gates as `maintain` above (mode.allow_mutating_dispatch,
   # maintenance_bounded scope) -- this and prune_stopped_containers now share
   # that one MAINTENANCE_SCOPE reserved slot (limits.reserved_slots_by_scope

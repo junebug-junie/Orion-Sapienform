@@ -110,6 +110,17 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
         "Deviation and/or resource pressure is elevated; reclaim dangling (untagged, unreferenced) image layers if the skill's own disk/count gate agrees.",
         ["deviation_pressure_elevated", "bounded_mutation", "regenerable"],
     ),
+    # 2026-08-25: analysis -> self-study journal entry. ONE template, not four,
+    # even though there are four inputs -- the verb picks whichever input has
+    # gone longest without being studied (app/self_study_analysis.py::
+    # select_least_recently_analysed). Four near-identical templates would have
+    # competed for the same five dispatch slots to say the same thing four
+    # ways, displacing four existing templates from a 10-candidate arena.
+    "analyze_self_study_source": (
+        "Study one lens of Orion's own recent telemetry",
+        "Contrast the last window of one already-stored telemetry source against the window before it, and journal it only if a disclosed notability rule fires.",
+        ["self_study", "read_only", "append_only_journal"],
+    ),
     "prune_stopped_containers": (
         "Prune stopped containers under tension",
         "Deviation and/or resource pressure is elevated; prune stopped containers if the skill's own gate agrees.",

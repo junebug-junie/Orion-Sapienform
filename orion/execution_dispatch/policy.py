@@ -35,6 +35,22 @@ class CortexRouteTemplateV1(BaseModel):
     # Only routes that actually need a longer budget get one.
     rpc_timeout_sec: float | None = None
 
+    # 2026-08-25: static per-route arguments for the target verb, merged into
+    # the envelope's `context.skill_args` (orion/execution_dispatch/
+    # envelopes.py). Exists because `maintain` routes already needed exactly
+    # this and had it hardcoded there as a single `mode` key -- so a second
+    # route wanting any argument at all had nowhere to put it.
+    #
+    # STATIC ONLY, and deliberately so: these are config, chosen by the
+    # operator writing the policy file, never derived from candidate state.
+    # A route that needs to vary its arguments per tick is describing a
+    # decision, and a decision belongs in the proposal arena or inside the
+    # skill, not smuggled through a route table.
+    #
+    # Cannot override the maintenance `mode` key -- see envelopes.py for the
+    # merge order and why it is that way round.
+    skill_args: dict[str, str] = Field(default_factory=dict)
+
 
 class DispatchLimitsV1(BaseModel):
     max_dispatch_candidates: int = 5

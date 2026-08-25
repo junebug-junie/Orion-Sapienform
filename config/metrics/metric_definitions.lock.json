@@ -1,13 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 615,
+  "metric_count": 616,
   "_last_change": {
-    "base": "merge base 5e7be2dfc (origin/main)",
-    "change_count": 2,
-    "high_severity_count": 1,
+    "base": "merge base 635245200 (origin/main)",
+    "change_count": 0,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://bus_channel/unknown/orion:exec:request:WorldModelService",
-      "medium added metric://bus_channel/orion-substrate-runtime/orion:exec:request:WorldModelService"
+      "no definition changes relative to the merge base"
     ]
   },
   "definitions": {
@@ -2425,17 +2424,6 @@
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-substrate-runtime/orion:exec:request:WorldModelService": {
-      "schema_id": "WorldModelTaskRequestPayload",
-      "all_producers": [
-        "orion-substrate-runtime"
-      ],
-      "declared_consumers": [
-        "orion-world-model"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-substrate-runtime/orion:grammar:accepted-pressure": {
       "schema_id": "GrammarEventV1",
       "all_producers": [
@@ -2587,6 +2575,17 @@
         "orion-vector-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-council/orion:exec:request:VisionHostService:*": {
+      "schema_id": "VisionTaskRequestPayload",
+      "all_producers": [
+        "orion-vision-council"
+      ],
+      "declared_consumers": [
+        "orion-vision-host"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-vision-council/orion:exec:request:VisionScribeService": {
@@ -3100,6 +3099,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/unknown/orion:exec:request:WorldModelService": {
+      "schema_id": "WorldModelTaskRequestPayload",
+      "all_producers": [
+        "unknown"
+      ],
+      "declared_consumers": [
+        "orion-world-model"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/unknown/orion:memory:drives:state": {

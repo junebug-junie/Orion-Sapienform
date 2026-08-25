@@ -43,6 +43,30 @@ physical GPU 2: `nvidia-smi --query-compute-apps=pid,used_memory,process_name
 --format=csv` should show nothing, and `docker ps` should show no container
 whose compose reserves `device_ids: ["2"]`.
 
+**A third, more insidious bug found on this exact deploy: `/health`
+reporting success does not prove the model landed on the intended physical
+card.** `CUDA_VISIBLE_DEVICES=2` was set correctly, but torch's default CUDA
+device enumeration is "fastest first," not `nvidia-smi`'s PCI-bus-id order
+-- on this host they disagree. The first real deploy of this patch loaded
+`sdxl-turbo` onto physical GPU **3** (a busy V100 already serving a
+llama.cpp worker) while `CUDA_VISIBLE_DEVICES=2` was intended to mean the
+empty PG500-216 at physical index 2, and `/health`/`/ready` both reported
+clean success throughout -- nothing about the HTTP contract exposed the
+mismatch. Same root cause, same day, same host as
+`services/orion-world-model`'s identical bug (see that service's README
+"Operator checklist" item 1). Fixed here by setting
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` in the Dockerfile, which forces torch's
+enumeration to match `nvidia-smi`'s.
+
+**Verify index parity after every deploy — don't trust `/health` alone:**
+
+```bash
+docker exec orion-circe-diffusion-host python3 -c \
+  "import torch; print(torch.cuda.get_device_name(0))"
+# must print "Tesla PG500-216" -- if it prints a V100/P100/other name,
+# the model landed on the wrong physical card even though /health is green.
+```
+
 ## What this is for
 
 The visual reverie chain (design doc §1/§3) is a second, parallel reverie

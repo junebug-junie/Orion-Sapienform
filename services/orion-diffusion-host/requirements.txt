@@ -7,6 +7,14 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 
+# redis is a real runtime dependency now, not optional: app/main.py imports
+# orion.core.bus.bus_service_chassis (for the HeartbeatOnly chassis), which
+# imports orion.core.bus.async_service, which imports `redis` unconditionally
+# -- caught live via a real crash-loop (ModuleNotFoundError: No module named
+# 'redis') the first time this container actually started with the heartbeat
+# wiring in place, since none of the unit tests import app.main in a context
+# that reaches that import chain. Same pin as services/orion-vision-host.
+redis[hiredis]==5.0.7
 pydantic==2.9.2
 pydantic-settings==2.5.2
 loguru==0.7.2

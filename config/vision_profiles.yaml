@@ -62,26 +62,13 @@ runtime:
       - name: drop_optional_profiles
         disable_profiles:
           - retina_segment
-          - pose_estimation
-          - depth_estimation
-          - action_recognition
-          - ocr_read
-          - scene_graph
           - identity_face
-          - person_reid
-          - affect_signals
           - vlm_vqa
 
       - name: refuse_ultra_tasks
         refuse_task_types:
-          - scene_graph
-          - depth_map
-          - action_classify
-          - ocr
           - vqa
           - identity_face
-          - person_reid
-          - affect_signals
 
   defaults:
     max_short_side_px: 960
@@ -107,15 +94,7 @@ task_routing:
   caption_frame: vlm_caption
   vqa: vlm_vqa
 
-  pose: pose_estimation
-  depth_map: depth_estimation
-  action_classify: action_recognition
-  ocr: ocr_read
-  scene_graph: scene_graph
-
   identity_face: identity_face
-  person_reid: person_reid
-  affect_signals: affect_signals
 
 # ===================================================================
 # Pipelines (Retina Modes)
@@ -146,15 +125,13 @@ pipelines:
   - name: pipeline_retina_dense
     enabled: true
     description: >
-      Dense retina foundation: open-vocab detect + optional segmentation + optional pose +
+      Dense retina foundation: open-vocab detect + optional segmentation +
       optional tracking + optional embeddings + optional caption.
-      Segmentation/pose are intentionally "optional" to avoid VRAM thrash.
+      Segmentation is intentionally "optional" to avoid VRAM thrash.
     steps:
       - use: retina_detect_open_vocab
       - use: retina_segment
         when: "request.want_masks == true"
-      - use: pose_estimation
-        when: "request.want_pose == true"
       - use: retina_track
         when: "request.is_video == true"
       - use: embed_image
@@ -165,7 +142,6 @@ pipelines:
       emits:
         - objects
         - masks_optional
-        - pose_optional
         - tracks_optional
         - embedding_optional
         - caption_optional
@@ -411,116 +387,16 @@ profiles:
         include_confidence: true
         include_rationale: false
 
-  - name: pose_estimation
-    enabled: false
-    warm_on_start: false
-    kind: pose
-    backend: custom
-    description: >
-      Pose/keypoints. Useful later for embodied interaction and activity signals.
-    model_id: "REPLACE_ME/pose_model"
-    device: auto
-    dtype: auto
-    cost:
-      vram_estimate_mb: 2400
-      latency_class: medium
-      gpu_class: medium
-    params:
-      max_people: 8
-    outputs:
-      pose:
-        include_keypoints: true
-        include_scores: true
-
-  - name: depth_estimation
-    enabled: false
-    warm_on_start: false
-    kind: depth
-    backend: transformers
-    description: >
-      Depth maps. Spatial reasoning. Keep off until you want to spend VRAM.
-    model_id: "REPLACE_ME/depth_model"
-    device: auto
-    dtype: auto
-    cost:
-      vram_estimate_mb: 3200
-      latency_class: medium
-      gpu_class: heavy
-    params:
-      max_short_side_px: 768
-      output_format: ref
-    outputs:
-      depth:
-        include_ref: true
-
-  - name: action_recognition
-    enabled: false
-    warm_on_start: false
-    kind: action
-    backend: custom
-    description: >
-      Clip-level action classification. Needs short clip windows; expensive.
-    model_id: "REPLACE_ME/action_model"
-    device: auto
-    dtype: auto
-    cost:
-      vram_estimate_mb: 4200
-      latency_class: high
-      gpu_class: heavy
-    params:
-      window_s: 2.0
-      stride_s: 1.0
-      topk: 5
-    outputs:
-      action:
-        include_labels: true
-        include_scores: true
-
-  - name: ocr_read
-    enabled: false
-    warm_on_start: false
-    kind: ocr
-    backend: custom
-    description: >
-      OCR. Privacy-sensitive. Keep off by default.
-    model_id: "REPLACE_ME/ocr_model"
-    device: auto
-    dtype: auto
-    cost:
-      vram_estimate_mb: 2200
-      latency_class: medium
-      gpu_class: medium
-    params:
-      language: en
-      min_conf: 0.4
-    outputs:
-      ocr:
-        include_text: true
-        include_boxes: true
-        include_scores: true
-
-  - name: scene_graph
-    enabled: false
-    warm_on_start: false
-    kind: scene_graph
-    backend: custom
-    description: >
-      Relationship triples: (person holding package), (package on porch), etc.
-      Great for reasoning. Expensive.
-    model_id: "REPLACE_ME/scene_graph_model"
-    device: auto
-    dtype: auto
-    cost:
-      vram_estimate_mb: 6200
-      latency_class: high
-      gpu_class: heavy
-    params:
-      max_relations: 60
-    outputs:
-      graph:
-        include_triples: true
-        include_scores: true
-
+  # Deliberately kept (chore, 2026-08-25): the other 8 profiles that shipped
+  # alongside this one at repo genesis were deleted in the same patch that
+  # added this comment -- confirmed zero references anywhere in real code,
+  # keyword-cathedral stubs per docs/superpowers/specs/2026-08-21-seeing-
+  # juniper-identity-and-situated-observation-design.md section 3.1's
+  # blast-radius-checked table. identity_face is the one survivor: that same
+  # doc's verdict is IMPLEMENT, not delete ("the one thing that cannot leave
+  # the node") -- its section 4 is the design for filling this in. Still
+  # `enabled: false` because that section is proposal-mode per AGENTS.md
+  # section 0A (identity), not yet implemented or approved.
   - name: identity_face
     enabled: false
     warm_on_start: false
@@ -545,46 +421,3 @@ profiles:
         include_confidence: true
         include_embedding_ref: true
 
-  - name: person_reid
-    enabled: false
-    warm_on_start: false
-    kind: reid
-    backend: custom
-    description: >
-      Re-identification across cameras without face dependence.
-    model_id: "REPLACE_ME/reid_model"
-    device: auto
-    dtype: auto
-    cost:
-      vram_estimate_mb: 3200
-      latency_class: high
-      gpu_class: heavy
-    params:
-      match_threshold: 0.30
-      max_candidates: 5
-    outputs:
-      reid:
-        include_candidates: true
-        include_confidence: true
-        include_embedding_ref: true
-
-  - name: affect_signals
-    enabled: false
-    warm_on_start: false
-    kind: affect
-    backend: custom
-    description: >
-      Weak affect/vibe signals only. Never treat as truth.
-    model_id: "REPLACE_ME/affect_model"
-    device: auto
-    dtype: auto
-    cost:
-      vram_estimate_mb: 2600
-      latency_class: medium
-      gpu_class: medium
-    params:
-      outputs: [valence, arousal, engagement]
-    outputs:
-      affect:
-        include_scores: true
-        include_confidence: true

@@ -14,7 +14,6 @@ from uuid import uuid4
 import requests
 
 from orion.biometrics.node_catalog import NodeCatalog
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
@@ -1654,18 +1653,36 @@ class BiometricsSubstrateWorker:
                 dims=dims,
                 execution_context=scalars,
                 vision_embedding_vector=self._last_perception_embedding_vector,
+                # Staleness floor (review finding): checking dim alone let a
+                # P2 listener outage keep publishing vision_source="real" off
+                # an arbitrarily stale vector forever -- see
+                # world_model_features.build_vision_embedding_group's own
+                # docstring.
+                vision_embedding_at=self._last_perception_embedding_at,
+                vision_embedding_max_age_sec=(
+                    self._settings.world_model_vision_embedding_max_age_sec
+                ),
             )
             payload = WorldModelTaskRequestPayload(
                 task_type="predict_next_state",
                 trajectory=[step],
                 meta=meta,
             )
+            # Local imports + self._service_ref()/publish_with_reconnect
+            # (review findings): match this file's own established
+            # convention for every other outbound bus publish (see
+            # _publish_embodiment_intent and its sibling a few hundred lines
+            # below) rather than constructing ServiceRef by hand (which
+            # silently dropped source.node) or calling self._bus.publish
+            # directly (which skips this file's one-retry-on-reconnect
+            # resilience wrapper).
+            from orion.core.bus.bus_schemas import BaseEnvelope
+            from orion.core.bus.resilience import publish_with_reconnect
+
             envelope = BaseEnvelope(
                 kind="world_model.task.request",
-                source=ServiceRef(
-                    name=self._settings.service_name, version=self._settings.service_version
-                ),
-                correlation_id=str(uuid4()),
+                source=self._service_ref(),
+                correlation_id=uuid4(),
                 # reply_to deliberately left unset: WorldModelService falls
                 # back to its own orion:worldmodel:reply:<correlation_id>
                 # (registered wildcard channel) when absent. Setting a
@@ -1675,7 +1692,12 @@ class BiometricsSubstrateWorker:
                 # nothing in this repo consumes the reply yet (see README).
                 payload=payload.model_dump(mode="json"),
             )
-            await self._bus.publish(self._settings.world_model_request_channel, envelope)
+            await publish_with_reconnect(
+                self._bus,
+                self._settings.world_model_request_channel,
+                envelope,
+                log_label="substrate_world_model_publish",
+            )
             logger.info(
                 "substrate_world_model_publish_tick_completed zero_filled_groups=%s "
                 "real_execution_context_domains=%s vision_source=%s",

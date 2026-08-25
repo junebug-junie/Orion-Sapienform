@@ -174,7 +174,12 @@ def build_execution_context_group(
 
 
 def build_vision_embedding_group(
-    dim: int, *, raw_vector: Optional[Sequence[float]]
+    dim: int,
+    *,
+    raw_vector: Optional[Sequence[float]],
+    now: datetime,
+    embedding_at: Optional[datetime],
+    max_age_sec: float,
 ) -> Tuple[WorldModelFeatureGroupV1, Dict[str, Any]]:
     """Defensive vision-embedding assembly.
 
@@ -188,8 +193,8 @@ def build_vision_embedding_group(
     that would just trade one unverified constant for another.
 
     Instead: compare the real observed vector's length to the configured
-    ``dim`` at publish time.
-      - Match -> use the real vector, ``vision_source="real"``.
+    ``dim``, and its age to ``max_age_sec``, at publish time.
+      - Match + fresh -> use the real vector, ``vision_source="real"``.
       - Missing (no embedding cached yet, e.g. the P2 listener is disabled or
         has not seen a message yet this process lifetime) ->
         ``vision_source="unavailable"``.
@@ -202,9 +207,32 @@ def build_vision_embedding_group(
         world-model service's own ``trajectory_steps_to_tensors`` (app/
         main.py) would reject anyway (its own dim check is stricter: it
         raises ValueError on a mismatch rather than degrading).
+      - Stale (``embedding_at`` older than ``max_age_sec``, e.g. the P2
+        listener has stopped receiving artifacts) -> zero-fill,
+        ``vision_source="stale"``. Review finding: an earlier draft of this
+        function checked dim only, never age -- a P2 outage (this repo has a
+        documented 21h vision-host outage precedent) would have kept
+        publishing ``vision_source="real"`` off an arbitrarily stale cached
+        vector forever, with no age field anywhere in ``meta`` for a
+        downstream reader to catch it. That is exactly the "decayed value
+        indistinguishable from real" failure class CLAUDE.md's metric-
+        quality-gate item 4 names by name.
     """
-    if not raw_vector:
+    if not raw_vector or embedding_at is None:
         return zero_feature_group(dim), {"vision_source": "unavailable"}
+    age_sec = max(0.0, (now - embedding_at).total_seconds())
+    if age_sec > max_age_sec:
+        logger.warning(
+            "world_model_vision_embedding_stale age_sec=%.1f max_age_sec=%.1f -- "
+            "zero-filling this tick's vision_embedding group rather than publishing a "
+            "decayed vector as if it were current.",
+            age_sec,
+            max_age_sec,
+        )
+        return zero_feature_group(dim), {
+            "vision_source": "stale",
+            "vision_embedding_age_sec": age_sec,
+        }
     observed_dim = len(raw_vector)
     if observed_dim != dim:
         logger.warning(
@@ -221,7 +249,7 @@ def build_vision_embedding_group(
         }
     return (
         WorldModelFeatureGroupV1(dim=dim, vector=[float(x) for x in raw_vector]),
-        {"vision_source": "real"},
+        {"vision_source": "real", "vision_embedding_age_sec": age_sec},
     )
 
 
@@ -232,6 +260,8 @@ def assemble_world_model_trajectory_step(
     dims: WorldModelFeatureDims,
     execution_context: ExecutionContextScalars,
     vision_embedding_vector: Optional[Sequence[float]],
+    vision_embedding_at: Optional[datetime],
+    vision_embedding_max_age_sec: float,
 ) -> Tuple[WorldModelTrajectoryStepV1, Dict[str, Any]]:
     """Build one real ``WorldModelTrajectoryStepV1`` plus a ``meta`` dict
     documenting exactly which groups were zero-filled and why -- assigned to
@@ -243,7 +273,11 @@ def assemble_world_model_trajectory_step(
         dims.execution_context, execution_context
     )
     vision_group, vision_meta = build_vision_embedding_group(
-        dims.vision_embedding, raw_vector=vision_embedding_vector
+        dims.vision_embedding,
+        raw_vector=vision_embedding_vector,
+        now=now,
+        embedding_at=vision_embedding_at,
+        max_age_sec=vision_embedding_max_age_sec,
     )
     temporal_vector = temporal_features(
         now, dim=dims.temporal, process_started_at=process_started_at

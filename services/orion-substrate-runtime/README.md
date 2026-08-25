@@ -967,9 +967,10 @@ must be flagged in `payload.meta`, not hidden):
 `payload.meta` names exactly which groups were zero-filled this tick
 (`zero_filled_groups`), which `execution_context` domains were real
 (`real_execution_context_domains`), and the vision-embedding source
-(`vision_source`: `real` / `unavailable` / `dim_mismatch`, plus
-`vision_dim_observed`/`vision_dim_configured` on a mismatch) -- so a downstream reader (or a human
-inspecting the bus) never mistakes a zero vector for a real "nothing is happening" reading.
+(`vision_source`: `real` / `unavailable` / `dim_mismatch` / `stale`, plus
+`vision_dim_observed`/`vision_dim_configured` on a mismatch and `vision_embedding_age_sec` whenever
+an embedding was actually cached) -- so a downstream reader (or a human inspecting the bus) never
+mistakes a zero vector for a real "nothing is happening" reading.
 
 **`transport` is deliberately excluded from `execution_context`.** `transport_prediction_error()`
 is a retired metric -- excluded from `ACTIVE_INFERENCE_DOMAINS` since 2026-07-26 because it measures
@@ -1002,6 +1003,18 @@ not just vision).
 (`self._last_perception_embedding_vector`, added by this patch; the P2 tick itself previously only
 ever cached the timestamp/stream_id/score, never the raw vector). If P2 is off, this group is always
 `"unavailable"` and zero-filled -- not a bug, an honest reflection of no cached vector existing.
+
+**Vision-embedding staleness floor** (`SUBSTRATE_WORLD_MODEL_VISION_EMBEDDING_MAX_AGE_SEC`, default
+120s -- 4x `SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_INTERVAL_SEC`'s own 30s default). Review
+finding: an earlier draft of this patch compared dimension only, never age -- so a P2 listener outage
+(this repo has a documented 21h vision-host outage precedent, `project_vision_host_vram_outage_and_
+gate_2026-08-21`) would have kept publishing `vision_source="real"` off an arbitrarily stale cached
+vector forever, with no age field anywhere in `meta` for a downstream reader to catch it. That is
+exactly the "decayed value indistinguishable from real" failure class CLAUDE.md's metric-quality-gate
+item 4 names by name. `build_vision_embedding_group` now checks `self._last_perception_embedding_at`
+against `now` before checking dimension at all -- an embedding older than the configured floor
+zero-fills with `vision_source="stale"` and a `vision_embedding_age_sec` field, regardless of whether
+its dimension happens to still be correct.
 
 **Real cross-service dim coupling, not automatically enforced.** `SUBSTRATE_WORLD_MODEL_DIM_*` must
 match `services/orion-world-model/app/settings.py`'s `WM_DIM_*` on whatever host runs that service

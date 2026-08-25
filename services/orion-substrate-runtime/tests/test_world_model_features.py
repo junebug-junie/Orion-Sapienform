@@ -10,6 +10,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SUBSTRATE_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -120,22 +122,43 @@ def test_build_execution_context_group_handles_dim_smaller_than_domain_count():
     assert real_domains == ["execution", "chat"]
 
 
-def test_build_vision_embedding_group_real_vector_used_when_dim_matches():
+_NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_build_vision_embedding_group_real_vector_used_when_dim_matches_and_fresh():
     raw = [0.1] * 512
-    group, meta = build_vision_embedding_group(512, raw_vector=raw)
+    group, meta = build_vision_embedding_group(
+        512, raw_vector=raw, now=_NOW, embedding_at=_NOW, max_age_sec=120.0
+    )
     assert group.dim == 512
     assert group.vector == raw
-    assert meta == {"vision_source": "real"}
+    assert meta["vision_source"] == "real"
+    assert meta["vision_embedding_age_sec"] == 0.0
 
 
 def test_build_vision_embedding_group_missing_vector_zero_fills():
-    group, meta = build_vision_embedding_group(512, raw_vector=None)
+    group, meta = build_vision_embedding_group(
+        512, raw_vector=None, now=_NOW, embedding_at=None, max_age_sec=120.0
+    )
     assert group.vector == [0.0] * 512
     assert meta == {"vision_source": "unavailable"}
 
 
 def test_build_vision_embedding_group_empty_vector_zero_fills():
-    group, meta = build_vision_embedding_group(512, raw_vector=[])
+    group, meta = build_vision_embedding_group(
+        512, raw_vector=[], now=_NOW, embedding_at=_NOW, max_age_sec=120.0
+    )
+    assert group.vector == [0.0] * 512
+    assert meta == {"vision_source": "unavailable"}
+
+
+def test_build_vision_embedding_group_no_timestamp_treated_as_unavailable():
+    """A real vector cached with no timestamp (should never happen given how
+    worker.py sets both together, but the function must not trust that) is
+    treated as unavailable, not real."""
+    group, meta = build_vision_embedding_group(
+        512, raw_vector=[0.1] * 512, now=_NOW, embedding_at=None, max_age_sec=120.0
+    )
     assert group.vector == [0.0] * 512
     assert meta == {"vision_source": "unavailable"}
 
@@ -145,12 +168,41 @@ def test_build_vision_embedding_group_dim_mismatch_zero_fills_and_flags_both_dim
     and must not silently pass through -- it zero-fills and names both the
     observed and configured dims so a human can fix the real number."""
     raw = [0.2] * 1152  # e.g. a real SigLIP2 so400m width, hypothetically
-    group, meta = build_vision_embedding_group(512, raw_vector=raw)
+    group, meta = build_vision_embedding_group(
+        512, raw_vector=raw, now=_NOW, embedding_at=_NOW, max_age_sec=120.0
+    )
     assert group.dim == 512
     assert group.vector == [0.0] * 512
     assert meta["vision_source"] == "dim_mismatch"
     assert meta["vision_dim_observed"] == 1152
     assert meta["vision_dim_configured"] == 512
+
+
+def test_build_vision_embedding_group_stale_zero_fills_even_when_dim_matches():
+    """Regression guard (review finding): a correctly-dimensioned but STALE
+    vector -- e.g. a P2 listener outage leaving a real embedding cached from
+    hours ago -- must not be published as vision_source="real". Staleness is
+    checked BEFORE dim, so a stale+wrong-dim vector reports "stale" (the more
+    actionable of the two problems: nothing to compare a dim against if the
+    reading is not current)."""
+    raw = [0.1] * 512
+    stale_at = _NOW - timedelta(seconds=121)  # 1s past the 120s default floor
+    group, meta = build_vision_embedding_group(
+        512, raw_vector=raw, now=_NOW, embedding_at=stale_at, max_age_sec=120.0
+    )
+    assert group.vector == [0.0] * 512
+    assert meta["vision_source"] == "stale"
+    assert meta["vision_embedding_age_sec"] == pytest.approx(121.0)
+
+
+def test_build_vision_embedding_group_exactly_at_max_age_is_still_fresh():
+    raw = [0.1] * 512
+    at_boundary = _NOW - timedelta(seconds=120)
+    group, meta = build_vision_embedding_group(
+        512, raw_vector=raw, now=_NOW, embedding_at=at_boundary, max_age_sec=120.0
+    )
+    assert meta["vision_source"] == "real"
+    assert group.vector == raw
 
 
 def test_assemble_world_model_trajectory_step_validates_against_schema_all_zero():
@@ -161,6 +213,8 @@ def test_assemble_world_model_trajectory_step_validates_against_schema_all_zero(
         dims=_WM_DIMS,
         execution_context=ExecutionContextScalars(None, None, None, None),
         vision_embedding_vector=None,
+        vision_embedding_at=None,
+        vision_embedding_max_age_sec=120.0,
     )
     payload = WorldModelTaskRequestPayload(
         task_type="predict_next_state", trajectory=[step], meta=meta
@@ -196,6 +250,8 @@ def test_assemble_world_model_trajectory_step_with_real_execution_and_vision():
             execution=0.2, chat=0.0, route=0.05, bus_synaptic=0.1
         ),
         vision_embedding_vector=[0.3] * 512,
+        vision_embedding_at=now,
+        vision_embedding_max_age_sec=120.0,
     )
     payload = WorldModelTaskRequestPayload(
         task_type="predict_next_state", trajectory=[step], meta=meta
@@ -207,6 +263,22 @@ def test_assemble_world_model_trajectory_step_with_real_execution_and_vision():
     assert meta["real_execution_context_domains"] == ["execution", "chat", "route", "bus_synaptic"]
     assert "vision_embedding" not in meta["zero_filled_groups"]
     assert set(meta["zero_filled_groups"]) == {"biometrics", "affect", "memory_pointers"}
+
+
+def test_assemble_world_model_trajectory_step_stale_vision_is_zero_filled():
+    now = datetime(2026, 8, 25, 12, 0, 0, tzinfo=timezone.utc)
+    step, meta = assemble_world_model_trajectory_step(
+        now=now,
+        process_started_at=now,
+        dims=_WM_DIMS,
+        execution_context=ExecutionContextScalars(None, None, None, None),
+        vision_embedding_vector=[0.3] * 512,
+        vision_embedding_at=now - timedelta(hours=21),  # e.g. a real vision-host outage
+        vision_embedding_max_age_sec=120.0,
+    )
+    assert step.vision_embedding.vector == [0.0] * 512
+    assert meta["vision_source"] == "stale"
+    assert "vision_embedding" in meta["zero_filled_groups"]
 
 
 def test_zero_feature_group_shape():

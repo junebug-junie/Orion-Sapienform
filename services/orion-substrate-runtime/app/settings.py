@@ -445,15 +445,26 @@ class Settings(BaseSettings):
     # WM_DIM_<GROUP>. If an operator changes one side's dim, the other side's
     # env key must be changed too, in the same changeset -- nothing enforces
     # this automatically across the service boundary.
-    world_model_dim_biometrics: int = Field(32, alias="SUBSTRATE_WORLD_MODEL_DIM_BIOMETRICS")
-    world_model_dim_affect: int = Field(16, alias="SUBSTRATE_WORLD_MODEL_DIM_AFFECT")
+    # ge=1 on every dim below (review finding): WorldModelFeatureGroupV1.dim
+    # (orion/schemas/world_model.py) is itself `Field(..., ge=1)`. Without a
+    # matching floor here, a `0`/negative misconfiguration would pass
+    # Settings validation cleanly, then raise pydantic.ValidationError inside
+    # every single tick forever -- caught by _world_model_publish_tick's
+    # broad except-Exception (fail-open by design for transient errors), so
+    # a real misconfiguration would silently produce nothing but a repeating
+    # ERROR log line rather than failing loudly once at startup the way a
+    # bad config should. Defaults (32/16/16/32/8/512) are unaffected.
+    world_model_dim_biometrics: int = Field(
+        32, ge=1, alias="SUBSTRATE_WORLD_MODEL_DIM_BIOMETRICS"
+    )
+    world_model_dim_affect: int = Field(16, ge=1, alias="SUBSTRATE_WORLD_MODEL_DIM_AFFECT")
     world_model_dim_execution_context: int = Field(
-        16, alias="SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT"
+        16, ge=1, alias="SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT"
     )
     world_model_dim_memory_pointers: int = Field(
-        32, alias="SUBSTRATE_WORLD_MODEL_DIM_MEMORY_POINTERS"
+        32, ge=1, alias="SUBSTRATE_WORLD_MODEL_DIM_MEMORY_POINTERS"
     )
-    world_model_dim_temporal: int = Field(8, alias="SUBSTRATE_WORLD_MODEL_DIM_TEMPORAL")
+    world_model_dim_temporal: int = Field(8, ge=1, alias="SUBSTRATE_WORLD_MODEL_DIM_TEMPORAL")
     # See app/world_model_features.py's module docstring for why this is
     # NEVER hardcoded to a "corrected" value even though WM_DIM_VISION_
     # EMBEDDING=512 was never verified against a real deployed SigLIP2
@@ -461,7 +472,18 @@ class Settings(BaseSettings):
     # observed vector length to this configured value at publish time and
     # zero-fills + logs loudly on any mismatch, rather than guessing.
     world_model_dim_vision_embedding: int = Field(
-        512, alias="SUBSTRATE_WORLD_MODEL_DIM_VISION_EMBEDDING"
+        512, ge=1, alias="SUBSTRATE_WORLD_MODEL_DIM_VISION_EMBEDDING"
+    )
+    # Freshness floor for the cached vision embedding (review finding: the
+    # first draft compared dim only, never age -- so a P2 listener outage
+    # (this repo has a documented 21h vision-host outage precedent) would
+    # have kept publishing vision_source="real" off an arbitrarily stale
+    # vector forever, the exact "decayed value indistinguishable from real"
+    # failure class CLAUDE.md's metric-quality-gate item 4 names). 120s = 4x
+    # SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_INTERVAL_SEC's own 30s
+    # default -- generous margin over one missed cycle, not a tight SLA.
+    world_model_vision_embedding_max_age_sec: float = Field(
+        120.0, ge=0, alias="SUBSTRATE_WORLD_MODEL_VISION_EMBEDDING_MAX_AGE_SEC"
     )
 
 

@@ -42,6 +42,30 @@ gate is layered on top of the TTL: `substrate_pressure_signals()`'s own
 pool at all unless it is independently salient again *today*, so the TTL only
 answers "how long does a closed verdict block re-entry," not "is this loop
 still real."
+
+**Independence check.** This is not a transform of any metric already in the
+rung-3 scoring path -- `evidence_strength`/`evidence_breadth`
+(`orion.substrate.attention.salience`) are per-tick evidence magnitudes with
+no time dimension at all; this TTL is the only place `attention_loop_outcome`
+timing feeds the exclusion decision.
+
+**Reversibility.** Cheap: ``VERDICT_EXCLUSION_TTL_HOURS`` /
+``ORION_ATTENTION_VERDICT_EXCLUSION_TTL_HOURS`` is a single named constant
+with an env override (see ``_ttl_hours()`` below), read fresh on every call --
+not baked into a schema, manifest, or persisted row. Recalibrating it once
+more verdict data accumulates needs no migration.
+
+**Known limitation, not addressed here.** This is a blind wall-clock timer,
+not an evidence-based re-arm: a loop that gets genuinely fresh, salient
+evidence 5 hours after being dismissed still can't compete until hour 48, and
+a loop with zero new activity still gets re-admitted at hour 48 regardless of
+whether anything real changed. `services/orion-hub/scripts/
+attention_loops_store.py::load_pending_loops` already compares whether fresh
+evidence postdates a verdict for a *different* question (is this trace row
+stale review-panel evidence) -- reusing that pattern here, or the
+`dormancy_updated_at` per-node change signal `orion.substrate.dynamics`
+already tracks, is the natural next step if the wall-clock TTL proves too
+blunt. Not done in this patch to keep it a thin, single-mechanism fix.
 """
 
 from __future__ import annotations
@@ -62,6 +86,21 @@ TERMINAL_VERDICTS = {"resolved", "dismissed"}
 # See module docstring's "TTL, added 2026-08-25" section for the live-data
 # derivation (n=2 real inter-verdict gaps, ~37h22m / ~35h34m, rounded up).
 VERDICT_EXCLUSION_TTL_HOURS = 48.0
+
+# Env key for overriding the constant above without a code change/redeploy --
+# same convention as attention_frame.py's _env_int/_env_float (e.g.
+# ORION_CURIOSITY_MIN_ASK_SCORE), needed here specifically because the n=2
+# calibration behind VERDICT_EXCLUSION_TTL_HOURS is disclosed as thin and
+# likely to warrant a real revisit once more verdict data accumulates.
+TTL_ENV_KEY = "ORION_ATTENTION_VERDICT_EXCLUSION_TTL_HOURS"
+
+
+def _ttl_hours() -> float:
+    try:
+        value = float(os.getenv(TTL_ENV_KEY) or VERDICT_EXCLUSION_TTL_HOURS)
+    except (TypeError, ValueError):
+        return VERDICT_EXCLUSION_TTL_HOURS
+    return value if value > 0 else VERDICT_EXCLUSION_TTL_HOURS
 
 
 def _database_url() -> str:
@@ -100,7 +139,13 @@ def load_terminal_verdict_loop_ids(
     if not ids:
         return set()
     resolved_now = now or datetime.now(timezone.utc)
-    ttl = timedelta(hours=VERDICT_EXCLUSION_TTL_HOURS)
+    if resolved_now.tzinfo is None:
+        # Coerced the same way `created_at` is below -- a naive `now` must
+        # not raise inside the try/except further down, where it would be
+        # swallowed by the blanket DB-failure handler and silently re-arm
+        # every loop_id in this batch instead of just failing one comparison.
+        resolved_now = resolved_now.replace(tzinfo=timezone.utc)
+    ttl = timedelta(hours=_ttl_hours())
     try:
         from sqlalchemy import bindparam, text
 

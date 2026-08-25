@@ -94,10 +94,17 @@ raises, so a Redis hiccup here cannot break the real event stream.
 `orion:affectgpt:assessment` now has a second real consumer:
 `orion-sql-writer` projects every event into `juniper_multimodal_affect_log`
 (see that service's README). The Redis mirror above has a 1h TTL and is
-the live-read path for chat turns; this table is the actual history --
-once the TTL key expires, the SQL row is the only remaining record a
-capture happened. Same privacy boundary as the mirror: `transcript` is
-never persisted there either.
+the live-read path for chat turns; this table is the durable history for
+any capture published while `orion-sql-writer` was actually connected to
+the bus. Review finding, 2026-08-25: `OrionBusAsync.publish()` is plain
+Redis pub/sub with no redelivery -- a capture published while
+`orion-sql-writer` itself is disconnected (restart, DB pool exhaustion)
+is dropped before it ever reaches this table too, same as any other
+consumer on this bus. Once both the TTL key and that window have passed
+with nothing durable written, the capture leaves no trace anywhere. Same
+privacy boundary as the mirror: `transcript` is never persisted here
+either (including on error -- see `JuniperMultimodalAffectSQL`'s
+docstring for the fallback-path fix).
 
 ## Operator checklist
 

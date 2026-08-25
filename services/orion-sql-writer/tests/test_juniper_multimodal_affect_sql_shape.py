@@ -133,6 +133,49 @@ def test_raw_response_is_persisted_in_full() -> None:
     assert "raw_response" in columns
 
 
+@pytest.mark.asyncio
+async def test_transcript_is_redacted_from_the_fallback_log_on_write_failure(monkeypatch) -> None:
+    """Review finding, 2026-08-25: _write_row()'s column-filter only
+    protects the SUCCESS path. handle_envelope's shared except block
+    (every MODEL_MAP route) falls back to _write_fallback() with the RAW
+    env.payload on any exception -- schema drift raising in
+    _coerce_payload, a non-duplicate-key DB error, anything. Without an
+    explicit redaction there, a failed write would persist Juniper's
+    verbatim transcript into bus_fallback_log, silently breaking the
+    exact privacy boundary this model's docstring and the tests above
+    claim holds."""
+
+    async def _raising_write(*args, **kwargs):
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(worker, "_write", _raising_write)
+
+    captured: dict = {}
+
+    def _fake_write_fallback(kind, correlation_id, payload, error=None):
+        captured["payload"] = payload
+        captured["error"] = error
+
+    monkeypatch.setattr(worker, "_write_fallback", _fake_write_fallback)
+
+    event = _event()
+    assert event.transcript  # sanity: the wire payload really carries it
+    env = BaseEnvelope(
+        kind="affectgpt.juniper_multimodal_affect.v1",
+        correlation_id=uuid4(),
+        source=_source(),
+        payload=event.model_dump(mode="json"),
+    )
+    await worker.handle_envelope(env, bus=None)
+
+    assert "payload" in captured, "expected the failing write to reach _write_fallback"
+    assert "transcript" not in captured["payload"]
+    # Not a blanket wipe -- everything else needed to diagnose the
+    # failure is still there.
+    assert captured["payload"]["raw_response"] == event.raw_response
+    assert "simulated write failure" in (captured["error"] or "")
+
+
 # --------------------------------------------------------------------------
 # event_id synthesis (worker.py special case -- this schema has no
 # event_id field of its own, unlike the tiling-window text signal)

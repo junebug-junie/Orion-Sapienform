@@ -2814,7 +2814,21 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")
-            await asyncio.to_thread(_write_fallback, env.kind, extra_sql_fields.get("correlation_id", ""), env.payload, str(e))
+            fallback_payload = env.payload
+            if sql_model is JuniperMultimodalAffectSQL and isinstance(fallback_payload, dict):
+                # _write_row()'s column-filter is what keeps transcript out
+                # of juniper_multimodal_affect_log on the success path
+                # (JuniperMultimodalAffectSQL declares no transcript
+                # column) -- but _write_fallback() below takes the raw,
+                # unfiltered env.payload with no filtering of its own, so
+                # without this the privacy boundary broke completely on
+                # any exception (schema drift raising in _coerce_payload,
+                # a non-duplicate-key DB error, ...). Review finding,
+                # 2026-08-25: this except is the SHARED handler for every
+                # MODEL_MAP route, so the redaction is scoped to this one
+                # model rather than applied generically.
+                fallback_payload = {k: v for k, v in fallback_payload.items() if k != "transcript"}
+            await asyncio.to_thread(_write_fallback, env.kind, extra_sql_fields.get("correlation_id", ""), fallback_payload, str(e))
     else:
         if await _persist_evidence_units():
             logger.info("Written %s -> evidence_units (adapter-only path)", env.kind)

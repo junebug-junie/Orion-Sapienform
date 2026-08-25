@@ -31,11 +31,21 @@ class JuniperMultimodalAffectSQL(Base):
     materially different privacy postures. This model declares no
     ``transcript`` column; ``_write_row()``'s column-filter (matches
     incoming payload keys against declared SQLAlchemy columns, drops the
-    rest) means it is silently never written here, without needing any
-    bespoke redaction code. ``raw_response`` (the model's OWN generated
-    read of Juniper's affect, already surfaced live in the Hub UI panel
-    and already on the bus) is persisted in full -- keeping it durably
-    does not widen exposure beyond what already exists.
+    rest) means it is silently never written here on the success path,
+    without needing any bespoke redaction code. ``raw_response`` (the
+    model's OWN generated read of Juniper's affect, already surfaced live
+    in the Hub UI panel and already on the bus) is persisted in full --
+    keeping it durably does not widen exposure beyond what already exists.
+
+    Review finding, 2026-08-25: the column-filter only covers the success
+    path. ``worker.py``'s ``_handle_envelope_body`` has one shared
+    exception handler for every ``MODEL_MAP`` route that falls back to
+    ``_write_fallback()`` with the RAW, unfiltered ``env.payload`` (schema
+    drift raising in ``_coerce_payload``, a non-duplicate-key DB error,
+    ...) -- ``_write_fallback`` does no field filtering of its own, only
+    JSON-compatibility sanitization. Fixed by an explicit
+    ``sql_model is JuniperMultimodalAffectSQL`` redaction scoped to that
+    one except block, not a change to the shared handler.
 
     ``face_detection``/``timings``/``input_ref`` are also not persisted --
     debug/perf telemetry already inspectable via
@@ -45,12 +55,23 @@ class JuniperMultimodalAffectSQL(Base):
 
     ``event_id`` is NOT a field on ``JuniperMultimodalAffectV1`` (unlike
     the tiling-window text signal, this is a discrete per-capture event
-    with no natural deterministic key) -- ``worker.py`` synthesizes it
-    from the envelope's ``correlation_id`` (the one id threading the
+    with no natural deterministic key) -- ``worker.py``'s
+    ``_affectgpt_multimodal_event_id()`` synthesizes it from the
+    envelope's ``correlation_id`` (the one id threading the
     retina-capture/worker-assess/this-event legs of a single tick, per the
     schema's own ``correlation_id`` docstring), falling back to the
     envelope id, then a fresh uuid4. Using ``correlation_id`` means a
-    redelivered event upserts onto the same row instead of duplicating it.
+    redelivery would merge onto the same row rather than duplicate it --
+    UNVERIFIED whether real redelivery ever happens: ``OrionBusAsync`` is
+    plain Redis pub/sub with no consumer-group/ack/replay mechanism, so a
+    dropped event (subscriber disconnected) is lost, not redelivered.
+    This only protects against an actual re-publish (e.g. a producer
+    retry). The one real producer,
+    ``orion-juniper-affective-state/app/main.py``'s ``_publish_event``,
+    already explicitly keeps the envelope-level and payload-level
+    ``correlation_id`` in sync; a hypothetical second producer that
+    didn't would key its rows on an unrelated, non-reproducible
+    envelope-generated id instead.
     """
 
     __tablename__ = "juniper_multimodal_affect_log"
@@ -58,7 +79,11 @@ class JuniperMultimodalAffectSQL(Base):
     event_id = Column(String, primary_key=True)
     observed_at = Column(DateTime(timezone=True), nullable=False, index=True)
 
-    source = Column(String, nullable=False, default="affectgpt")
+    # No SQLAlchemy-side default: JuniperMultimodalAffectV1.source is a
+    # Literal["affectgpt"]="affectgpt", so the wire payload always
+    # already carries this key -- a column default here could never
+    # actually fire and would misleadingly imply the value is optional.
+    source = Column(String, nullable=False)
     # "manual" (POST /trigger or /capture_and_assess) vs "ambient" (Hub's
     # recurring toggle loop) -- see JuniperMultimodalAffectV1.trigger.
     trigger = Column(String, nullable=True)

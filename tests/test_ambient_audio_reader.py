@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import struct
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from scripts.orion_ambient_audio_reader import (
     SnapshotState,
     atomic_write_json,
     build_snapshot,
+    capture_pcm_via_arecord,
     compute_levels_from_pcm,
     write_snapshot_if_changed,
 )
@@ -98,11 +100,51 @@ def test_failed_capture_preserves_last_good_levels():
 def test_failed_capture_without_last_good_is_error():
     state = SnapshotState()
     state.ingest_failed_capture("device not found")
-    snap = state.to_snapshot()
+    now = datetime.fromisoformat("2026-08-25T05:00:01+00:00")
+    snap = state.to_snapshot(now)
     assert snap["status"] == "error"
+    assert snap["received_at"] == "2026-08-25T05:00:01.000Z"
     assert snap["rms"] == 0.0
     assert snap["peak"] == 0
     assert snap["error"] == "device not found"
+
+
+def test_arecord_capture_requests_raw_pcm_and_exact_sample_count(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def fake_run(argv, *, capture_output, check):
+        seen["argv"] = argv
+        assert capture_output is True
+        assert check is False
+        return subprocess.CompletedProcess(argv, 0, stdout=b"\x00\x00", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    pcm = capture_pcm_via_arecord(
+        device="plughw:CARD=CMTECK,DEV=0",
+        sample_rate=16000,
+        channels=1,
+        duration_sec=0.5,
+    )
+
+    assert pcm == b"\x00\x00"
+    assert seen["argv"] == [
+        "arecord",
+        "-D",
+        "plughw:CARD=CMTECK,DEV=0",
+        "-f",
+        "S16_LE",
+        "-r",
+        "16000",
+        "-c",
+        "1",
+        "-t",
+        "raw",
+        "--samples",
+        "8000",
+        "-q",
+        "-",
+    ]
 
 
 def test_stale_status_when_last_good_aged_out():

@@ -90,7 +90,7 @@ if ! "$SCRIPT_DIR/discover_athena_ambient_audio.sh"; then
 fi
 
 echo "One-shot capture verify (as $SERVICE_USER)..."
-if sudo -u "$SERVICE_USER" arecord -D "$DEFAULT_DEVICE" -f S16_LE -r 16000 -c 1 -d 0.2 -q /dev/null 2>/dev/null; then
+if sudo -u "$SERVICE_USER" arecord -D "$DEFAULT_DEVICE" -f S16_LE -r 16000 -c 1 -t raw -d 1 -q /dev/null 2>/dev/null; then
     echo "ok: one-shot arecord capture succeeded"
 else
     echo "warning: one-shot capture failed; user may need to re-login for audio group" >&2

@@ -33,12 +33,16 @@ DEFAULT_STALE_AFTER_SEC = 10.0
 DEFAULT_LOOP_SEC = 1.0
 
 
-def utc_now_iso() -> str:
+def datetime_to_iso(value: datetime) -> str:
     return (
-        datetime.now(timezone.utc)
+        value.astimezone(timezone.utc)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
+
+
+def utc_now_iso() -> str:
+    return datetime_to_iso(datetime.now(timezone.utc))
 
 
 def output_path() -> Path:
@@ -128,7 +132,7 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 def build_snapshot(
     *,
     status: Status,
-    received_at: Optional[str],
+    received_at: str,
     device: Optional[str],
     window_sec: float,
     sample_rate: int,
@@ -217,12 +221,13 @@ class SnapshotState:
         return "ok"
 
     def to_snapshot(self, now: Optional[datetime] = None) -> dict[str, Any]:
-        status = self.compute_status(now)
+        effective_now = now or datetime.now(timezone.utc)
+        status = self.compute_status(effective_now)
         rms = self.last_good_rms if self.last_good_rms is not None else 0.0
         peak = self.last_good_peak if self.last_good_peak is not None else 0
         return build_snapshot(
             status=status,
-            received_at=self.last_good_received_at,
+            received_at=self.last_good_received_at or datetime_to_iso(effective_now),
             device=self.device,
             window_sec=self.window_sec,
             sample_rate=self.sample_rate,
@@ -257,6 +262,9 @@ def capture_pcm_via_arecord(
     arecord_bin: str = "arecord",
 ) -> bytes:
     """Capture raw S16_LE PCM from ALSA via arecord subprocess."""
+    samples = int(sample_rate * duration_sec)
+    if samples <= 0:
+        raise ValueError("capture duration must produce at least one sample")
     proc = subprocess.run(
         [
             arecord_bin,
@@ -268,8 +276,10 @@ def capture_pcm_via_arecord(
             str(sample_rate),
             "-c",
             str(channels),
-            "-d",
-            str(duration_sec),
+            "-t",
+            "raw",
+            "--samples",
+            str(samples),
             "-q",
             "-",
         ],

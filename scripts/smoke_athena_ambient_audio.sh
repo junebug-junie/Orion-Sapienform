@@ -10,11 +10,13 @@ RUNTIME_ROOT="$(orion_resolve_runtime_root "$REPO_ROOT")"
 VENV_PYTHON="$(orion_resolve_runtime_python "$REPO_ROOT")"
 NEEDED="${1:-3}"
 TIMEOUT_SEC="${SMOKE_AMBIENT_AUDIO_TIMEOUT_SEC:-30}"
+FRESHNESS_SEC="${ORION_AMBIENT_AUDIO_STALE_AFTER_SEC:-10}"
 SNAP="${ORION_AMBIENT_AUDIO_PATH:-/run/orion-audio/latest.json}"
 
 export PYTHONPATH="$RUNTIME_ROOT"
 export ORION_AMBIENT_AUDIO_NEEDED="$NEEDED"
 export ORION_AMBIENT_AUDIO_TIMEOUT_SEC="$TIMEOUT_SEC"
+export ORION_AMBIENT_AUDIO_FRESHNESS_SEC="$FRESHNESS_SEC"
 export ORION_AMBIENT_AUDIO_PATH="$SNAP"
 
 if systemctl is-active --quiet orion-ambient-audio.service 2>/dev/null; then
@@ -26,6 +28,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from orion.schemas.telemetry.ambient_audio import AmbientAudioSnapshotV1
@@ -33,6 +36,7 @@ from orion.schemas.telemetry.ambient_audio import AmbientAudioSnapshotV1
 snap = Path(os.environ["ORION_AMBIENT_AUDIO_PATH"])
 needed = int(os.environ["ORION_AMBIENT_AUDIO_NEEDED"])
 timeout_sec = float(os.environ["ORION_AMBIENT_AUDIO_TIMEOUT_SEC"])
+freshness_sec = float(os.environ["ORION_AMBIENT_AUDIO_FRESHNESS_SEC"])
 
 if not snap.is_file():
     print(f"error: snapshot missing at {snap}", file=sys.stderr)
@@ -42,11 +46,13 @@ deadline = time.monotonic() + timeout_sec
 ok_count = 0
 last_device = ""
 last_rms = 0.0
+last_received_at: datetime | None = None
 
 while ok_count < needed and time.monotonic() < deadline:
     try:
         payload = json.loads(snap.read_text())
         model = AmbientAudioSnapshotV1.model_validate(payload)
+        received_at = datetime.fromisoformat(model.received_at.replace("Z", "+00:00"))
     except (OSError, json.JSONDecodeError, ValueError):
         time.sleep(0.25)
         continue
@@ -55,14 +61,24 @@ while ok_count < needed and time.monotonic() < deadline:
         time.sleep(0.25)
         continue
 
+    age_sec = (datetime.now(timezone.utc) - received_at).total_seconds()
+    if age_sec < -1.0 or age_sec > freshness_sec:
+        time.sleep(0.25)
+        continue
+
+    if last_received_at is not None and received_at <= last_received_at:
+        time.sleep(0.25)
+        continue
+
     ok_count += 1
+    last_received_at = received_at
     last_device = model.device
     last_rms = model.rms
     time.sleep(0.25)
 
 if ok_count < needed:
     print(
-        f"error: only {ok_count}/{needed} valid ok snapshots in {timeout_sec}s "
+        f"error: only {ok_count}/{needed} distinct fresh ok snapshots in {timeout_sec}s "
         f"(last device={last_device or 'unknown'})",
         file=sys.stderr,
     )

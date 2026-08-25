@@ -177,13 +177,7 @@ def test_load_terminal_verdict_loop_ids_empty_input_short_circuits():
     assert verdicts_mod.load_terminal_verdict_loop_ids(None) == set()  # type: ignore[arg-type]
 
 
-def test_load_terminal_verdict_loop_ids_filters_to_terminal_verdicts(monkeypatch):
-    rows = [
-        {"loop_id": "open-loop-a", "verdict": "resolved"},
-        {"loop_id": "open-loop-b", "verdict": "dismissed"},
-        {"loop_id": "open-loop-c", "verdict": "decayed_unattended"},
-    ]
-
+def _fake_engine(rows, monkeypatch):
     class _FakeResult:
         def mappings(self):
             return self
@@ -207,8 +201,17 @@ def test_load_terminal_verdict_loop_ids_filters_to_terminal_verdicts(monkeypatch
 
     monkeypatch.setattr(verdicts_mod, "_engine", lambda: _FakeEngine())
 
+
+def test_load_terminal_verdict_loop_ids_filters_to_terminal_verdicts(monkeypatch):
+    rows = [
+        {"loop_id": "open-loop-a", "verdict": "resolved", "created_at": _NOW},
+        {"loop_id": "open-loop-b", "verdict": "dismissed", "created_at": _NOW},
+        {"loop_id": "open-loop-c", "verdict": "decayed_unattended", "created_at": _NOW},
+    ]
+    _fake_engine(rows, monkeypatch)
+
     result = verdicts_mod.load_terminal_verdict_loop_ids(
-        ["open-loop-a", "open-loop-b", "open-loop-c"]
+        ["open-loop-a", "open-loop-b", "open-loop-c"], now=_NOW
     )
 
     assert result == {"open-loop-a", "open-loop-b"}
@@ -220,9 +223,59 @@ def test_load_terminal_verdict_loop_ids_fails_open_on_db_error(monkeypatch):
 
     monkeypatch.setattr(verdicts_mod, "_engine", _boom)
 
-    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-9d84d08cddf5"])
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-9d84d08cddf5"], now=_NOW)
 
     assert result == set()
+
+
+def test_load_terminal_verdict_loop_ids_excludes_within_ttl(monkeypatch):
+    from datetime import timedelta
+
+    verdict_at = _NOW - timedelta(hours=47)
+    rows = [{"loop_id": "open-loop-a", "verdict": "resolved", "created_at": verdict_at}]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+
+    assert result == {"open-loop-a"}
+
+
+def test_load_terminal_verdict_loop_ids_lapses_after_ttl(monkeypatch):
+    """The exact regression this patch fixes: a resolved/dismissed loop must
+    become eligible again once VERDICT_EXCLUSION_TTL_HOURS has passed -- the
+    2026-08-19 incident was this exclusion never lapsing at all."""
+    from datetime import timedelta
+
+    verdict_at = _NOW - timedelta(hours=49)
+    rows = [{"loop_id": "open-loop-a", "verdict": "resolved", "created_at": verdict_at}]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+
+    assert result == set()
+
+
+def test_load_terminal_verdict_loop_ids_naive_created_at_treated_as_utc(monkeypatch):
+    """A DB driver that returns a naive datetime must not crash the TTL
+    comparison -- treat it as UTC, same convention AttentionFrameV1 uses."""
+    naive_recent = _NOW.replace(tzinfo=None)
+    rows = [{"loop_id": "open-loop-a", "verdict": "resolved", "created_at": naive_recent}]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+
+    assert result == {"open-loop-a"}
+
+
+def test_load_terminal_verdict_loop_ids_missing_created_at_fails_closed(monkeypatch):
+    """A row with no created_at (malformed data) keeps the pre-TTL behavior --
+    still excluded -- rather than silently re-arming on bad data."""
+    rows = [{"loop_id": "open-loop-a", "verdict": "resolved", "created_at": None}]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+
+    assert result == {"open-loop-a"}
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +299,9 @@ def test_build_substrate_attention_frame_excludes_verdicted_loop(monkeypatch):
     excluded_id = _loop_id("substrate:node:substrate.transport")
 
     monkeypatch.setattr(
-        attention_broadcast, "load_terminal_verdict_loop_ids", lambda ids: {excluded_id}
+        attention_broadcast,
+        "load_terminal_verdict_loop_ids",
+        lambda ids, now=None: {excluded_id},
     )
 
     frame = attention_broadcast.build_substrate_attention_frame(nodes=[node], now=_NOW)
@@ -266,7 +321,7 @@ def test_build_substrate_attention_frame_survives_verdict_lookup_db_failure(monk
 
     node = _node("node:transport", "substrate:node:substrate.transport", pressure=1.0)
 
-    def _boom(ids):
+    def _boom(ids, now=None):
         raise RuntimeError("simulated DB failure")
 
     monkeypatch.setattr(attention_broadcast, "load_terminal_verdict_loop_ids", _boom)

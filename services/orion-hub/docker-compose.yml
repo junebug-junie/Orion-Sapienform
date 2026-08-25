@@ -67,6 +67,9 @@ services:
       # Geometry proposal adopted in this container is invisible to orion-field-digester's
       # diffusion tick, which runs in a separate container.
       - ${STORAGE_ROOT:-/mnt/postgres}/field_topology:/mnt/postgres/field_topology
+      # Host cabinet sensor snapshot (systemd reader -> /run/orion-sensors/latest.json).
+      # Same :ro mount as orion-biometrics; create via scripts/setup_athena_cabinet_sensors.sh.
+      - /run/orion-sensors:/run/orion-sensors:ro
     environment:
       # Core service identity
       - PROJECT=${PROJECT}
@@ -92,6 +95,9 @@ services:
       - BIOMETRICS_NO_SIGNAL_AFTER_SEC=${BIOMETRICS_NO_SIGNAL_AFTER_SEC}
       - BIOMETRICS_ROLE_WEIGHTS_JSON=${BIOMETRICS_ROLE_WEIGHTS_JSON}
       - BIOMETRICS_PUSH_INTERVAL_SEC=${BIOMETRICS_PUSH_INTERVAL_SEC}
+      - CABINET_SENSORS_PATH=${CABINET_SENSORS_PATH:-/run/orion-sensors/latest.json}
+      - CABINET_BOOT_PATH=${CABINET_BOOT_PATH:-/run/orion-sensors/boot.json}
+      - CABINET_SENSORS_STALE_AFTER_SEC=${CABINET_SENSORS_STALE_AFTER_SEC:-10.0}
       - NOTIFY_IN_APP_ENABLED=${NOTIFY_IN_APP_ENABLED}
       - NOTIFY_IN_APP_CHANNEL=${NOTIFY_IN_APP_CHANNEL}
       - NOTIFY_IN_APP_MAX=${NOTIFY_IN_APP_MAX}

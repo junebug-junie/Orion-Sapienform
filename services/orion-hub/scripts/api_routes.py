@@ -178,6 +178,7 @@ from .bus_synaptic_graph_routes import router as bus_synaptic_graph_router
 from .attention_organ_routes import router as attention_organ_router
 from .cocreation_signals_routes import router as cocreation_signals_router
 from .chat_turn_trace_routes import router as chat_turn_trace_router
+from .cabinet_sensors_routes import router as cabinet_sensors_router
 router.include_router(grammar_atlas_router)
 router.include_router(chat_turn_trace_router)
 router.include_router(substrate_biometrics_router)
@@ -196,6 +197,7 @@ router.include_router(field_channel_glossary_router)
 router.include_router(bus_synaptic_graph_router)
 router.include_router(attention_organ_router)
 router.include_router(cocreation_signals_router)
+router.include_router(cabinet_sensors_router)
 
 
 def _hub_uses_host_network_mode() -> bool:

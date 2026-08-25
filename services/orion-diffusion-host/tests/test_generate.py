@@ -116,7 +116,7 @@ def test_generate_prompt_too_long_rejected(monkeypatch):
 
 def test_generate_pipe_exception_returns_500_not_crash(monkeypatch):
     def _boom(**kwargs):
-        raise RuntimeError("simulated CUDA OOM")
+        raise RuntimeError("simulated CUDA OOM, path=/mnt/storage-warm/models/diffusion")
 
     monkeypatch.setattr(main_mod, "_pipe", _boom)
     client = TestClient(main_mod.app)
@@ -124,7 +124,46 @@ def test_generate_pipe_exception_returns_500_not_crash(monkeypatch):
     resp = client.post("/generate", json={"prompt": "orion dreaming"})
 
     assert resp.status_code == 500
-    assert "simulated CUDA OOM" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    # Review finding: the raw exception text can embed local paths / driver
+    # internals -- the client-facing detail must be generic, never the raw
+    # str(exc). Only the exception *class name* is safe to surface.
+    assert "RuntimeError" in detail
+    assert "simulated CUDA OOM" not in detail
+    assert "/mnt/storage-warm" not in detail
+
+
+def test_generate_429_when_already_in_flight(monkeypatch):
+    class AlwaysLocked:
+        def locked(self):
+            return True
+
+    fake = FakePipe()
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    monkeypatch.setattr(main_mod, "_generation_lock", AlwaysLocked())
+    client = TestClient(main_mod.app)
+
+    resp = client.post("/generate", json={"prompt": "orion dreaming"})
+
+    assert resp.status_code == 429
+    assert not fake.calls  # rejected before ever touching the pipe
+
+
+def test_generate_rejects_out_of_bounds_dimensions(monkeypatch):
+    fake = FakePipe()
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    client = TestClient(main_mod.app)
+
+    zero_width = client.post("/generate", json={"prompt": "x", "width": 0})
+    assert zero_width.status_code == 422
+
+    negative_height = client.post("/generate", json={"prompt": "x", "height": -8})
+    assert negative_height.status_code == 422
+
+    too_large = client.post("/generate", json={"prompt": "x", "width": 4096})
+    assert too_large.status_code == 422
+
+    assert not fake.calls  # all three rejected before ever touching the pipe
 
 
 def test_ready_and_health_report_loaded_when_pipe_present(monkeypatch):

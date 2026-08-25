@@ -17,21 +17,25 @@ originally assumed (design doc §3). `docker-compose.yml` reserves the GPU
 (`gpus: all`); `CUDA_VISIBLE_DEVICES` scopes the container to physical
 device 2.
 
-**GPU 2 has had two collisions since this assignment, both resolved live on
-Circe as of 2026-08-25 — check for a third before assuming the card is
-free:**
+**GPU 2 has had two collisions since this assignment. Both were checked and
+cleared live on Circe on 2026-08-25 via direct `docker ps`/`nvidia-smi`
+inspection over SSH during this patch's own deploy session — that is a
+point-in-time confirmation, not a standing guarantee. Re-run the check below
+before assuming the card is still free:**
 
 1. The llama.cpp `atlas-agent` worker (`muse-glimmer-30b`) that originally
-   occupied this port/GPU. Already stopped as of 2026-08-25 (confirmed via
-   `docker ps` / `nvidia-smi` on Circe — not present).
+   occupied this port/GPU. Confirmed absent from `docker ps` / `nvidia-smi`
+   on Circe on 2026-08-25.
 2. `services/orion-affectgpt-worker`'s compose pinned the *same* physical
    GPU 2026-08-22 — two days after this assignment — calling it "Juniper's
-   own designated slot for prototyping an affective model." Evicted live on
-   Circe 2026-08-25 (`docker compose stop affectgpt-worker`). **That
-   service's `docker-compose.yml` comment still claims GPU 2 as its slot —
-   this is now a real contradiction between the two files, not fixed by
-   this patch.** Whoever revisits `orion-affectgpt-worker` needs to either
-   give it a different physical card or update its comment to say GPU 2 is
+   own designated slot for prototyping an affective model." Confirmed
+   running on GPU 2 (18.4GB, `nvidia-smi --query-compute-apps`) on
+   2026-08-25 and stopped via `docker compose stop affectgpt-worker`,
+   confirmed freed immediately after (0 MiB). **That service's
+   `docker-compose.yml` comment still claims GPU 2 as its slot — this is
+   now a real contradiction between the two files, not fixed by this
+   patch.** Whoever revisits `orion-affectgpt-worker` needs to either give
+   it a different physical card or update its comment to say GPU 2 is
    diffusion-host's now.
 
 Before bringing this service up anywhere, confirm nothing is pinned to
@@ -68,15 +72,27 @@ degraded output, not just slower output. Trained at 512x512
 
 What exists:
 
-- `app/main.py` — FastAPI app. Loads the model once at startup (in a worker
-  thread, so `/health` stays responsive during a cold weight download —
-  see `app/main.py`'s `_load_pipeline` docstring). `GET /health` (liveness,
-  always 200), `GET /ready` (200 once the model is loaded, 503 otherwise),
-  `POST /generate` (see below).
+- `app/main.py` — FastAPI app. Model load runs as a background task kicked
+  off from `lifespan()` and is never awaited before startup completes, so
+  `/health`/`/ready` are live immediately, not just "eventually" (see the
+  module docstring's "Startup" section — an earlier draft of this patch got
+  this wrong: awaiting the load before `yield` blocked *every* route,
+  caught in review). Load retries up to 3 times with backoff before giving
+  up permanently. `GET /health` (liveness, always 200), `GET /ready` (200
+  once the model is loaded, 503 otherwise, stays 503 forever after a
+  permanent load failure — restart the container to retry), `POST
+  /generate` (see below). Also wires the standard `HeartbeatOnly` bus
+  chassis (off by default, `ORION_BUS_ENABLED=false`, matching Patch 1's
+  decision to defer all bus wiring — flip the env flag to get
+  `SystemHealthV1` liveness on `orion:system:health` with no further code
+  changes).
 - `app/settings.py` — pydantic-settings config: port, node name, model
   cache dir, and the `DIFFUSION_*` model/generation block.
 - `docker-compose.yml` — reserves the GPU (`gpus: all`), mounts the real
-  model cache dir, passes through the full `DIFFUSION_*` env block.
+  model cache dir, passes through the full `DIFFUSION_*` env block with
+  `:-default` fallbacks matching `settings.py` (a present-but-empty env var
+  otherwise crashes pydantic-settings' int/float validation at import
+  time, not falls back).
 - `requirements.txt` / `Dockerfile` — `diffusers`/`transformers`/
   `accelerate`/`pillow` in requirements; CUDA torch wheels installed
   explicitly in the Dockerfile (same pattern as
@@ -85,16 +101,18 @@ What exists:
 
 What does **not** exist yet:
 
-- Any bus consumer/producer wiring (no intake channel, no reply channel —
-  the channel names in `orion/bus/channels.yaml` have not been touched and
-  this service is not in that file yet). A caller reaches this service over
-  plain HTTP.
+- Any bus consumer/producer wiring beyond the heartbeat above (no intake
+  channel, no reply channel — the channel names in
+  `orion/bus/channels.yaml` have not been touched and this service is not
+  in that file yet). A caller reaches this service over plain HTTP.
 - Any chain orchestration (`visual_chain.py` in `orion-thought` — Patch 2).
 - Any context-seeding (Patch 3).
-- Concurrency beyond a single in-process lock: this service assumes it owns
-  its GPU exclusively and serializes generation requests one at a time
+- Concurrency beyond a dedicated single-worker executor: this service
+  assumes it owns its GPU exclusively; model load and every generation call
+  run on one dedicated thread, and a second `/generate` call while one is
+  already running gets an immediate `429`, not a queued wait
   (`app/main.py`'s module docstring explains why there is no
-  cancel-on-timeout).
+  cancel-on-timeout instead).
 
 ## `POST /generate`
 
@@ -111,10 +129,22 @@ What does **not** exist yet:
 ```
 
 Only `prompt` is required; every other field defaults to the
-`DIFFUSION_*` settings above. Response is raw `image/png` bytes on success
-(200), `503` if the model hasn't finished loading, `422` if the prompt
-exceeds `DIFFUSION_MAX_PROMPT_CHARS`, `500` on a generation failure (OOM,
-etc. — the service stays up, the request fails).
+`DIFFUSION_*` settings above. `width`/`height` are bounded `(0, 1536]`,
+`num_inference_steps` `(0, 50]`, `guidance_scale` `[0, 20]` — out-of-range
+values get a clean `422`, not an opaque failure from inside diffusers.
+`negative_prompt` is only effective when the *effective* `guidance_scale`
+is above `1.0`; diffusers does not apply classifier-free guidance (and
+therefore ignores the negative prompt) at or below that, which is exactly
+this model's own default (`0.0`) — passing a `negative_prompt` at the
+default guidance is accepted but silently has no effect (logged as a
+warning server-side, not surfaced in the response).
+
+Response is raw `image/png` bytes on success (200), `503` if the model
+hasn't finished loading, `422` on a validation failure, `429` if another
+generation is already in flight, `500` on a generation failure (OOM, etc.
+— the service stays up, the request fails; the response detail is a
+generic message plus the exception class name only, never the raw
+exception text, which can embed local paths or driver internals).
 
 A caller should pass the response body straight into
 `orion.reverie.visual_storage.store_visual_artifact` — that function sniffs
@@ -168,7 +198,7 @@ file /tmp/orion-diffusion-smoke.png   # should say PNG image data
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Liveness. Always 200 if the process is up; reports whether the model has finished loading. |
-| `GET /ready` | Readiness. 200 once the model is loaded, 503 otherwise. |
+| `GET /ready` | Readiness. 200 once the model is loaded, 503 otherwise (permanently, after a load failure exhausts its retries — restart to retry again). |
 | `POST /generate` | Generate one image. See above. |
 
 ## Tests

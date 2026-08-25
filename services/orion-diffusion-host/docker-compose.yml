@@ -24,14 +24,22 @@ services:
 
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
 
-      - DIFFUSION_MODEL_ID=${DIFFUSION_MODEL_ID}
-      - DIFFUSION_DEVICE=${DIFFUSION_DEVICE}
-      - DIFFUSION_DTYPE=${DIFFUSION_DTYPE}
-      - DIFFUSION_NUM_INFERENCE_STEPS=${DIFFUSION_NUM_INFERENCE_STEPS}
-      - DIFFUSION_GUIDANCE_SCALE=${DIFFUSION_GUIDANCE_SCALE}
-      - DIFFUSION_DEFAULT_WIDTH=${DIFFUSION_DEFAULT_WIDTH}
-      - DIFFUSION_DEFAULT_HEIGHT=${DIFFUSION_DEFAULT_HEIGHT}
-      - DIFFUSION_MAX_PROMPT_CHARS=${DIFFUSION_MAX_PROMPT_CHARS}
+      # `:-default` fallbacks matching settings.py's Python defaults --
+      # review finding: pydantic-settings raises ValidationError (not a
+      # silent fallback) on an int/float field fed a present-but-empty
+      # string, which is what compose writes if a required key is ever
+      # missing from `.env` (e.g. sync_local_env_from_example.py skipped on
+      # a fresh worktree/host -- a documented recurring failure mode in
+      # this repo). Same pattern NODE_NAME/HEARTBEAT_INTERVAL_SEC already
+      # use above.
+      - DIFFUSION_MODEL_ID=${DIFFUSION_MODEL_ID:-stabilityai/sdxl-turbo}
+      - DIFFUSION_DEVICE=${DIFFUSION_DEVICE:-cuda:0}
+      - DIFFUSION_DTYPE=${DIFFUSION_DTYPE:-fp16}
+      - DIFFUSION_NUM_INFERENCE_STEPS=${DIFFUSION_NUM_INFERENCE_STEPS:-1}
+      - DIFFUSION_GUIDANCE_SCALE=${DIFFUSION_GUIDANCE_SCALE:-0.0}
+      - DIFFUSION_DEFAULT_WIDTH=${DIFFUSION_DEFAULT_WIDTH:-512}
+      - DIFFUSION_DEFAULT_HEIGHT=${DIFFUSION_DEFAULT_HEIGHT:-512}
+      - DIFFUSION_MAX_PROMPT_CHARS=${DIFFUSION_MAX_PROMPT_CHARS:-2000}
 
     volumes:
       # Real weight download now lands here (sdxl-turbo, several GB) --

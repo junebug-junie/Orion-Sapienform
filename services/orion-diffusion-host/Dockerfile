@@ -28,4 +28,10 @@ COPY services/orion-diffusion-host/app ./app
 COPY orion ./orion
 
 EXPOSE 6700
-CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "6700"]
+# --workers 1 pinned explicitly (uvicorn's own default without this flag is
+# also 1, but review finding: a future "improve throughput" edit adding
+# --workers N here would give each worker process its own model copy on
+# the same physical GPU with independently-locked, uncoordinated access --
+# a silent multi-process OOM/thrash regression on a service with exactly
+# one dedicated GPU. Explicit, so that edit has to remove this on purpose.
+CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "6700", "--workers", "1"]

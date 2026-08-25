@@ -248,3 +248,79 @@ with a turn-level budget/circuit-breaker on the caller.
 
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
+
+## Reverie VISUAL chain (Patch 2)
+
+`app/visual_chain.py`, alongside `chain.py`. Patch 2 of
+`docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
+orchestration Patch 1.5 (`services/orion-diffusion-host`'s real model wiring)
+was a prerequisite for. Default-off (`ORION_VISUAL_CHAIN_ENABLED=false`).
+
+On a slow, capacity-gated cadence (`ORION_VISUAL_CHAIN_INTERVAL_SEC`, default
+600s — slower than the text chain's ~90s, per design doc §4): generate an
+image from `orion-diffusion-host` (circe, `POST /generate`), store it
+content-addressed (`orion.reverie.visual_storage`), hand it to
+`orion-vision-host`'s existing `caption_frame` task (via
+`orion-percept-store` — no vision-host code change needed, no new task_type;
+`caption_frame` + `percept_sha256` already captions any image), and persist
+both a `reverie_visual_chain` row and a `reverie_visual_artifact` row. The
+caption becomes `prior_description`, which the *next* run's prompt is built
+from — the enforced continuity column design doc §2 exists specifically to
+avoid repeating the text chain's dead `next_focus`/`drift` fields (nothing
+ever read them). One run = one step (`step_index=0` always); the "chain" here
+is the sequence of runs over time, not a multi-step ladder like the text
+chain's — there is no coalition/pressure signal to climb.
+
+**Scope of this patch:** the mechanical loop and the `prior_description`
+wiring only. What specific recent-activity / chat / dream context seeds a
+run's prompt is Patch 3 (design doc §8) — `build_visual_prompt` is
+deliberately the thinnest honest placeholder (`prior_description`, or a fixed
+seed prompt for the very first run), not a fabricated stand-in for
+context-seeding this patch does not own.
+
+**Single-flight, no backlog** (design doc §4 acceptance check): the worker
+loop's own sequential shape (run, then sleep, then run again — same as
+`chain.py`/`reverie.py`) makes overlap structurally impossible; there is no
+separate scheduler event outside the loop. `run_visual_chain_once` also holds
+a process-local `asyncio.Lock` and no-ops if already held, as defense-in-depth
+independent of caller discipline (mirrors `orion-diffusion-host`'s own
+`_generation_lock`).
+
+**Honest degradation, never fabrication:**
+- diffusion-host call fails → `terminal_reason="generation_failed"`, no
+  artifact row (nothing was generated).
+- re-observation (percept upload or vision-host RPC) fails → the image is
+  still real and gets stored with `description=None` (never a fabricated
+  caption), and the *previous* run's `prior_description` carries forward
+  unchanged rather than propagating a null description and losing continuity
+  for one bad step.
+
+Requires `manual_migration_reverie_visual_chain.sql` applied (Patch 1) and
+`orion-diffusion-host` live on circe
+(`services/orion-diffusion-host/README.md`). New producer on the existing
+shared `orion:exec:request:VisionHostService` / `orion:vision:reply:*`
+channel pair (`orion/bus/channels.yaml`) — that channel already supports
+multiple producers (`single_consumer: true` means one *consumer*, not one
+producer).
+
+Flags:
+
+| Env key | Default | Role |
+|---------|---------|------|
+| `ORION_VISUAL_CHAIN_ENABLED` | `false` | Master switch |
+| `ORION_VISUAL_CHAIN_INTERVAL_SEC` | `600` | Trigger cadence (real cadence is `max(this, run duration)`) |
+| `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
+| `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `30` | `/generate` HTTP timeout |
+| `ORION_VISUAL_CHAIN_STORAGE_DIR` | `/mnt/storage-lukewarm/orion/reverie-visual` | Content-addressed image store |
+| `ORION_VISUAL_CHAIN_PERCEPT_STORE_URL` | `http://orion-athena-percept-store:8000/percepts` | Cross-host hop to vision-host |
+| `ORION_VISUAL_CHAIN_PERCEPT_STORE_TOKEN` | *(empty)* | `X-Orion-Percept-Token`, if the store requires one |
+| `ORION_VISUAL_CHAIN_PERCEPT_UPLOAD_TIMEOUT_SEC` | `10` | Percept upload timeout |
+| `CHANNEL_VISION_HOST_REQUEST` | `orion:exec:request:VisionHostService` | Shared vision-host intake |
+| `CHANNEL_VISION_REPLY_PREFIX` | `orion:vision:reply` | Per-call reply channel prefix |
+| `ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC` | `60` | Vision-host RPC timeout |
+
+Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
+percept upload, vision-host RPC, persistence); one test runs two sequential
+calls and asserts the second run's diffusion prompt demonstrably contains the
+first run's persisted description (design doc §9's "same-run evidence, not
+schema presence" acceptance check).

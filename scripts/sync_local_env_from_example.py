@@ -176,6 +176,9 @@ SYNC_PREFIXES = (
     "ORION_HARNESS_",
     "ORION_ATTENTION_",
     "ORION_REVERIE_",
+    # Reverie VISUAL chain (Patch 2 of docs/superpowers/specs/2026-08-20-
+    # reverie-visual-chain-design.md, default-off)
+    "ORION_VISUAL_CHAIN_",
     "SUBSTRATE_FELT_STATE_",
     # Drive attribution + substrate act (PR drive-attribution-substrate-act)
     "ORION_SUBSTRATE_",
@@ -290,6 +293,11 @@ SYNC_EXACT = frozenset(
         "HUB_HARNESS_GOVERNOR_LIVENESS_WINDOW_SEC",
         "HUB_HARNESS_STEP_RELAY_LIVENESS_TTL_SEC",
         "HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES",
+        # Reverie VISUAL chain (Patch 2) -- orion-diffusion-host's address
+        # doesn't fit the ORION_VISUAL_CHAIN_ prefix family above.
+        # (CHANNEL_VISION_HOST_REQUEST/CHANNEL_VISION_REPLY_PREFIX already
+        # match the existing CHANNEL_VISION_ prefix, no entry needed here.)
+        "ORION_DIFFUSION_HOST_BASE_URL",
     }
 )
 

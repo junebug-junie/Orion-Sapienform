@@ -337,6 +337,121 @@ def persist_reverie_chain(chain) -> bool:
         return False
 
 
+# --- Reverie VISUAL chain (Patch 2 of docs/superpowers/specs/2026-08-20-
+# reverie-visual-chain-design.md) -- separate table, same engine, same
+# best-effort-never-raises discipline as everything else in this module. See
+# visual_chain.py for why the chain row must be inserted before the artifact
+# row (reverie_visual_artifact.chain_id is a real FK).
+
+
+def persist_reverie_visual_chain(chain) -> bool:
+    """Insert one visual-chain readout. Never raises; idempotent on chain_id."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO reverie_visual_chain
+                        (chain_id, created_at, theme_key, terminal_reason,
+                         ema_salience, prior_description, chain_json)
+                    VALUES
+                        (:chain_id, :created_at, :theme_key, :terminal_reason,
+                         :ema_salience, :prior_description, CAST(:chain_json AS jsonb))
+                    ON CONFLICT (chain_id) DO NOTHING
+                    """
+                ),
+                {
+                    "chain_id": chain.chain_id,
+                    "created_at": chain.created_at,
+                    "theme_key": chain.theme_key,
+                    "terminal_reason": chain.terminal_reason,
+                    "ema_salience": float(chain.ema_salience),
+                    "prior_description": chain.prior_description,
+                    "chain_json": json.dumps(chain.model_dump(mode="json")),
+                },
+            )
+        return True
+    except Exception as exc:
+        logger.warning("visual chain persist failed id=%s err=%s", chain.chain_id, exc)
+        return False
+
+
+def persist_reverie_visual_artifact(artifact) -> bool:
+    """Insert one generated-image pointer row. Never raises; idempotent on sha256.
+
+    Requires the referenced chain_id to already exist (FK) -- callers must
+    persist the chain row first.
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO reverie_visual_artifact
+                        (sha256, chain_id, step_index, mime, bytes, width, height,
+                         path, description, created_at)
+                    VALUES
+                        (:sha256, :chain_id, :step_index, :mime, :bytes, :width, :height,
+                         :path, :description, :created_at)
+                    ON CONFLICT (sha256) DO NOTHING
+                    """
+                ),
+                {
+                    "sha256": artifact.sha256,
+                    "chain_id": artifact.chain_id,
+                    "step_index": int(artifact.step_index),
+                    "mime": artifact.mime,
+                    "bytes": int(artifact.bytes),
+                    "width": artifact.width,
+                    "height": artifact.height,
+                    "path": artifact.path,
+                    "description": artifact.description,
+                    "created_at": artifact.created_at,
+                },
+            )
+        return True
+    except Exception as exc:
+        logger.warning("visual artifact persist failed sha256=%s err=%s", artifact.sha256, exc)
+        return False
+
+
+def load_latest_visual_chain_prior_description() -> str | None:
+    """Most recent visual-chain row's prior_description -- the continuity input
+    the next run's prompt is built from (design doc §2/§5). Read-only,
+    best-effort: None on any error or empty table, so a lookup failure
+    degrades to "no continuity yet" (the same prompt a first-ever run uses)
+    rather than breaking the tick.
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT prior_description FROM reverie_visual_chain "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = row.get("prior_description")
+        return str(value).strip() or None if value else None
+    except Exception as exc:
+        logger.debug("visual chain prior_description load failed: %s", exc)
+        return None
+
+
 def persist_compaction_request(request) -> bool:
     """Enqueue one compaction request (Phase E). Never raises; idempotent."""
     try:

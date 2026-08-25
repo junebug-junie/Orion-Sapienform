@@ -77,7 +77,12 @@ Full pipeline (Whisper transcription, face detection, AffectGPT inference) confi
 
 ## Review findings fixed
 
-Code review dispatched via the code-review skill in a subagent (medium effort) against this diff. [Fill in from review results before merge if not already reflected here.]
+Code review dispatched via the code-review skill in a subagent (medium effort) against this diff. No material/blocking findings — compose syntax verified correct via PyYAML parse + live `docker inspect` match, no other compose file in the repo pins `device_ids: ["1"]` (no collision), env parity confirmed byte-identical between `.env_example` and the hand-synced live `.env`.
+
+- Finding: two stale "circe GPU2" prose references were missed by the original commit — `orion/bus/channels.yaml:535` (contract-doc comment) and `services/orion-affectgpt-worker/app/transcribe.py:18` (module docstring). Neither is load-bearing (pure comments, nothing reads the string).
+  - Fix: updated both to say GPU1 / "moved off GPU2 2026-08-25", matching the standard already applied to `docker-compose.yml`, `README.md`, and `.env_example`.
+  - Evidence: `git diff` on both files; re-verified `orion/bus/channels.yaml` still parses as valid YAML (`yaml.safe_load`) and `transcribe.py` still parses as valid Python (`ast.parse`) after the edit.
+- Noted, correctly left alone: `docs/superpowers/pr-reports/2026-08-22-carbon-affect-hub-loop-pr.md` and `2026-08-23-affectgpt-whisper-subtitle-pr.md` still say "circe GPU2" — these are dated historical PR reports describing what was true at the time, not live docs, so they were intentionally not touched.
 
 ## Restart required
 
@@ -90,4 +95,4 @@ Already done as part of live verification — `orion-circe-affectgpt-worker` is 
 
 ## PR link
 
-(filled in after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/1857

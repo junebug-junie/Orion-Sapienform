@@ -34,6 +34,17 @@ services:
       - CHANNEL_MIND_ARTIFACT=${CHANNEL_MIND_ARTIFACT:-orion:mind:artifact}
       - NOTIFY_BASE_URL=${NOTIFY_BASE_URL:-http://orion-athena-notify:7140}
       - NOTIFY_API_TOKEN=${NOTIFY_API_TOKEN:-}
+    volumes:
+      # Reverie VISUAL chain (Patch 2, default-off): store_visual_artifact
+      # writes real generated-image bytes here. Missing entirely until now --
+      # without this bind mount, ORION_VISUAL_CHAIN_STORAGE_DIR's default
+      # (/mnt/storage-lukewarm/orion/reverie-visual) resolves to a path
+      # inside the container's own ephemeral filesystem, not the real host
+      # disk design doc §6 confirmed live on 2026-08-20 -- every generated
+      # image would silently vanish on container restart/recreate. Same
+      # bare host-path==container-path pattern as
+      # services/orion-diffusion-host/docker-compose.yml's model-cache mount.
+      - /mnt/storage-lukewarm/orion/reverie-visual:/mnt/storage-lukewarm/orion/reverie-visual
     networks:
       - app-net
     ports:

@@ -295,9 +295,15 @@ independent of caller discipline (mirrors `orion-diffusion-host`'s own
   unchanged rather than propagating a null description and losing continuity
   for one bad step.
 
-Requires `manual_migration_reverie_visual_chain.sql` applied (Patch 1) and
+Requires `manual_migration_reverie_visual_chain.sql` applied (Patch 1),
 `orion-diffusion-host` live on circe
-(`services/orion-diffusion-host/README.md`). New producer on the existing
+(`services/orion-diffusion-host/README.md`), and (fixed after Patch 2's
+initial merge — the compose file shipped with no `volumes:` block at all)
+`docker-compose.yml`'s bind mount of
+`/mnt/storage-lukewarm/orion/reverie-visual` — without it,
+`store_visual_artifact` writes into the container's own ephemeral
+filesystem at that path, not the real host disk, and every generated image
+silently vanishes on the next container restart/recreate. New producer on the existing
 shared `orion:exec:request:VisionHostService` / `orion:vision:reply:*`
 channel pair (`orion/bus/channels.yaml`) — that channel already supports
 multiple producers (`single_consumer: true` means one *consumer*, not one

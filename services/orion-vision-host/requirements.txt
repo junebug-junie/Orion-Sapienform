@@ -11,8 +11,19 @@ numpy==1.26.4
 pillow==10.4.0
 opencv-python-headless==4.10.0.84
 
-transformers==4.44.2
-accelerate==0.34.2
+# 4.44.2 predates Qwen2-VL support (landed in transformers 4.45.0) --
+# bumped to 4.49.0 to add a real VLM captioner alongside the existing
+# BLIP/BLIP2 path (model_manager.py's load_vlm_captioner). Not a fresh
+# guess: 4.49.0 + accelerate 1.0.0 is the exact pin already proven live on
+# this same fleet's GPU hardware by services/orion-affectgpt-worker
+# (circe GPU1, PR #1857) -- reused rather than picking a new version blind.
+# GroundingDINO (retina_detect_open_vocab) and SigLIP2 (embed_image) share
+# this same requirements.txt/transformers install; test_detections.py and
+# test_detector_vocabulary.py cover the former, embed_image has no
+# dedicated regression test in this service -- both re-run against 4.49.0
+# as part of this change's test pass (see PR report).
+transformers==4.49.0
+accelerate==1.0.0
 safetensors==0.4.5
 sentencepiece==0.2.0
 protobuf==5.28.2

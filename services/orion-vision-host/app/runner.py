@@ -21,6 +21,7 @@ from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
 from .settings import Settings
+from .vlm_family import is_chat_template_vlm
 from .when_guard import safe_when
 
 settings = Settings()
@@ -668,6 +669,68 @@ class VisionRunner:
     # ------------------------
     # Real Captioning (VLM)
     # ------------------------
+    def _generate_vlm_text(
+        self,
+        model: Any,
+        processor: Any,
+        img: Image.Image,
+        text_prompt: str,
+        model_id: str,
+        device: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Shared build-inputs / generate / decode path for both
+        ``_run_caption_frame`` and ``_run_vlm_vqa`` -- the only real
+        difference between a caption call and a VQA call is which text goes
+        in, so both call this instead of duplicating the transformers
+        plumbing.
+
+        The one thing that genuinely differs by model family is *how* that
+        plumbing works: BLIP/BLIP2 take ``processor(images=, text=)``
+        directly and their full decoded output is already just the answer.
+        Qwen2-VL/Qwen2.5-VL (``is_chat_template_vlm``) expect the prompt
+        wrapped via ``apply_chat_template`` and echo the whole templated
+        prompt back in ``generate()``'s output -- decoding the full sequence
+        and string-matching a prefix off it (as the BLIP path safely can)
+        is not reliable against a chat template's special tokens, so this
+        slices the reply by the real input token length instead, the
+        standard Qwen2-VL usage pattern.
+        """
+        if is_chat_template_vlm(model_id):
+            messages = [{
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": text_prompt}],
+            }]
+            chat_text = processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = processor(text=[chat_text], images=[img], return_tensors="pt")
+        else:
+            inputs = processor(images=img, text=text_prompt, return_tensors="pt")
+
+        if device.startswith("cuda"):
+            model_dtype = next(model.parameters()).dtype
+            inputs = {
+                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
+                for k, v in inputs.items()
+            }
+
+        with torch.inference_mode():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+                do_sample=(temperature > 0)
+            )
+
+        if is_chat_template_vlm(model_id):
+            input_len = inputs["input_ids"].shape[1]
+            trimmed = [out[input_len:] for out in generated_ids]
+            return processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
+
+        return processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
     def _run_caption_frame(
         self,
         p: ProfileDef,
@@ -691,43 +754,19 @@ class VisionRunner:
             model_id=model_id,
         )
 
-        # Simple prompt generation (task agnostic usually)
-        # Some models require specific prompting formats.
-        # For simplicity, we assume standard image-to-text here.
-
-        # prompt = request.get("prompt", "Describe this image.") # Some VLMs need text
-        # But many like BLIP/IDEFICS can just take image or image+prompt.
-        # We'll use a standard prompt if supported by the processor.
-
-        # Note: API differences between VLMs are significant.
-        # Using a generic approach for "IDEFICS2" or similar.
-
         text_prompt = CAPTION_PROMPT
-        inputs = processor(images=img, text=text_prompt, return_tensors="pt")
-
-        if device.startswith("cuda"):
-            model_dtype = next(model.parameters()).dtype
-            inputs = {
-                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
-                for k, v in inputs.items()
-            }
-
         max_tokens = settings.VISION_VLM_MAX_TOKENS
         temperature = settings.VISION_VLM_TEMPERATURE
 
-        with torch.inference_mode():
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-                do_sample=(temperature > 0)
-            )
-
-        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        generated_text = self._generate_vlm_text(
+            model, processor, img, text_prompt, model_id, device, max_tokens, temperature
+        )
 
         # Case-insensitive prefix strip -- see strip_echoed_prompt_prefix's
         # own docstring for why the plain str.replace() this used to be
         # silently failed to strip a lowercased echo of a mixed-case prompt.
+        # For a chat-template model this is already a no-op safety net --
+        # _generate_vlm_text already trimmed the reply by input token length.
         cleaned = strip_echoed_prompt_prefix(generated_text, prompt=text_prompt)
         caption_text, ok, reason = sanitize_caption(cleaned)
         if not ok:
@@ -792,15 +831,6 @@ class VisionRunner:
             model_id=model_id,
         )
 
-        inputs = processor(images=img, text=question, return_tensors="pt")
-
-        if device.startswith("cuda"):
-            model_dtype = next(model.parameters()).dtype
-            inputs = {
-                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
-                for k, v in inputs.items()
-            }
-
         # This profile's own declared params, not the caption profile's
         # global settings.VISION_VLM_MAX_TOKENS/TEMPERATURE -- vlm_vqa's
         # config already declares its own max_tokens/temperature (see
@@ -810,15 +840,9 @@ class VisionRunner:
         max_tokens = int(p.params.get("max_tokens", settings.VISION_VLM_MAX_TOKENS))
         temperature = float(p.params.get("temperature", settings.VISION_VLM_TEMPERATURE))
 
-        with torch.inference_mode():
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-                do_sample=(temperature > 0)
-            )
-
-        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        generated_text = self._generate_vlm_text(
+            model, processor, img, question, model_id, device, max_tokens, temperature
+        )
 
         cleaned = strip_echoed_prompt_prefix(generated_text, prompt=question)
         answer_text, ok, reason = sanitize_answer(cleaned, question)

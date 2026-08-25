@@ -140,10 +140,15 @@ class ModelManager:
         model_id: str,
     ):
         """
-        Loads a VLM for captioning (e.g. IDEFICS, BLIP-2, Git, etc).
-        Assumes standard transformers AutoProcessor/AutoModelForVision2Seq usage.
+        Loads a VLM for captioning (BLIP/BLIP2, Qwen2-VL/Qwen2.5-VL, or a
+        generic AutoModelForVision2Seq fallback for anything else). Family
+        is selected from ``model_id`` via ``vlm_family.py`` -- runner.py's
+        prompt-building/decode path reads the same module so the two never
+        drift on which model_ids count as which family.
         """
         from transformers import AutoProcessor, AutoModelForVision2Seq
+
+        from .vlm_family import is_qwen2_5_vl_model, is_qwen2_vl_model
 
         key = ModelKey(profile=profile_name, device=device)
         lock = self._key_lock(key)
@@ -167,6 +172,16 @@ class ModelManager:
 
                 processor = BlipProcessor.from_pretrained(model_id)
                 model = BlipForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
+            elif is_qwen2_5_vl_model(model_id):
+                from transformers import Qwen2_5_VLForConditionalGeneration
+
+                processor = AutoProcessor.from_pretrained(model_id)
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
+            elif is_qwen2_vl_model(model_id):
+                from transformers import Qwen2VLForConditionalGeneration
+
+                processor = AutoProcessor.from_pretrained(model_id)
+                model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
             else:
                 processor = AutoProcessor.from_pretrained(model_id)
                 model = AutoModelForVision2Seq.from_pretrained(model_id, torch_dtype=torch_dtype)

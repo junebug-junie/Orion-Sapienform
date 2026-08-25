@@ -6,8 +6,11 @@ description: >
   only when a disclosed notability rule fires. One action shape, four inputs
   (concept induction, vision events, affective state, co-creation signals).
   Read-only against every source; the only write is an append-only journal
-  entry on the existing journal.entry.write.v1 channel. Omit `source` to study
-  whichever input has gone longest without being studied.
+  entry on the existing journal.entry.write.v1 channel. Omit both `source` and
+  `window_hours` to study whichever (source, window) cell has gone longest
+  without being looked at -- four inputs across a 3/6/12/24/72h ladder, so a
+  camera that died 40 minutes ago and a concept lane slowing over three days
+  are both visible.
 category: ExecutiveControl
 priority: low
 interruptible: true
@@ -29,7 +32,7 @@ input_schema:
       description: Which input to study. Omit to pick the most overdue one.
     window_hours:
       type: number
-      description: Recent window width in hours; the baseline is the same width immediately before it. Clamped to [0.5, 168].
+      description: Recent window width in hours; the baseline is the same width immediately before it. Clamped to [0.5, 168]. Omit to let the rotation pick the most overdue (source, window) cell from the 3/6/12/24/72h ladder.
   additionalProperties: false
 output_schema:
   type: object

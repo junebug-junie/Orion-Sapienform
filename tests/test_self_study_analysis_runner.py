@@ -20,8 +20,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "services" / "orion-cortex-exec"))
 
 from app.self_study_analysis import (  # noqa: E402
+    ANALYSIS_CELLS,
     ANALYSIS_SOURCES,
-    _RUN_MARK_KEY_PREFIX,
+    WINDOW_LADDER,
+    _cell_key,
+    _write_run_mark,
     DEFAULT_WINDOW_HOURS,
     MAX_WINDOW_HOURS,
     MIN_WINDOW_HOURS,
@@ -146,6 +149,7 @@ def _run(**kwargs):
     kwargs.setdefault("bus", None)
     kwargs.setdefault("source_ref", SOURCE_REF)
     kwargs.setdefault("source", "vision_events")
+    kwargs.setdefault("window_hours", DEFAULT_WINDOW_HOURS)
     kwargs.setdefault("correlation_id", "corr-1")
     kwargs.setdefault("now", NOW)
     return asyncio.run(run_self_study_analysis(**kwargs))
@@ -304,77 +308,115 @@ class _BusWithRedis(_RecordingBus):
         self.redis = redis
 
 
-def _marks(**ages_hours: float) -> _FakeRedis:
+def _marks(*, cells: dict[tuple[str, float], float] | None = None) -> _FakeRedis:
+    """`cells` maps (source, window_hours) -> how many hours ago it last ran."""
     return _FakeRedis(
         {
-            f"{_RUN_MARK_KEY_PREFIX}{name}": (NOW - timedelta(hours=hours)).isoformat()
-            for name, hours in ages_hours.items()
+            _cell_key(source, hours): (NOW - timedelta(hours=ago)).isoformat()
+            for (source, hours), ago in (cells or {}).items()
         }
     )
 
 
-def test_selection_prefers_a_source_never_run() -> None:
-    redis = _marks(**{name: i + 1 for i, name in enumerate(ANALYSIS_SOURCES[:-1])})
-    chosen = asyncio.run(
-        select_least_recently_analysed(_BusWithRedis(redis), now=NOW)
+def _all_cells_except(*, missing: tuple[str, float]) -> _FakeRedis:
+    return _marks(
+        cells={cell: 1.0 for cell in ANALYSIS_CELLS if cell != missing}
     )
-    assert chosen == ANALYSIS_SOURCES[-1]
 
 
-def test_selection_prefers_the_most_overdue_source() -> None:
-    redis = _marks(
-        concept_induction=1.0, vision_events=9.0, affective_state=2.0, cocreation_signals=3.0
-    )
-    chosen = asyncio.run(select_least_recently_analysed(_BusWithRedis(redis), now=NOW))
-    assert chosen == "vision_events"
+def test_the_rotation_covers_every_source_at_every_window() -> None:
+    """The whole point of the ladder. MEASURED 2026-08-25, an hour after first
+    deploy: 48 real autonomous runs at a fixed 6h window produced 48
+    `skipped_not_notable` and zero findings, and a sweep of the live corpus
+    showed 6h was the ONE width at which nothing fires on any source."""
+    assert set(ANALYSIS_CELLS) == {
+        (source, hours) for source in ANALYSIS_SOURCES for hours in WINDOW_LADDER
+    }
+    assert len(ANALYSIS_CELLS) == len(ANALYSIS_SOURCES) * len(WINDOW_LADDER)
+    # The ladder must actually span scales, not be several names for "a few
+    # hours" -- a fixed scale is blind to everything at another one.
+    assert min(WINDOW_LADDER) <= 3.0 and max(WINDOW_LADDER) >= 72.0
+
+
+def test_selection_prefers_a_cell_never_run() -> None:
+    target = ("affective_state", 24.0)
+    redis = _all_cells_except(missing=target)
+    assert asyncio.run(select_least_recently_analysed(_BusWithRedis(redis), now=NOW)) == target
+
+
+def test_selection_prefers_the_most_overdue_cell() -> None:
+    redis = _marks(cells={cell: 1.0 for cell in ANALYSIS_CELLS})
+    target = ("vision_events", 72.0)
+    redis.values[_cell_key(*target)] = (NOW - timedelta(hours=9)).isoformat()
+    assert asyncio.run(select_least_recently_analysed(_BusWithRedis(redis), now=NOW)) == target
 
 
 def test_selection_cold_start_is_deterministic() -> None:
     chosen = asyncio.run(select_least_recently_analysed(_BusWithRedis(_FakeRedis()), now=NOW))
-    assert chosen == ANALYSIS_SOURCES[0]
+    assert chosen == ANALYSIS_CELLS[0]
 
 
 def test_selection_without_a_bus_is_deterministic_not_a_crash() -> None:
-    assert asyncio.run(select_least_recently_analysed(None, now=NOW)) == ANALYSIS_SOURCES[0]
+    assert asyncio.run(select_least_recently_analysed(None, now=NOW)) == ANALYSIS_CELLS[0]
 
 
 def test_selection_survives_an_unreadable_run_mark_store() -> None:
-    """An unreadable mark reads as "never analysed", which sorts that source
+    """An unreadable mark reads as "never analysed", which sorts that cell
     FIRST -- failing toward looking at things, not away from them."""
     chosen = asyncio.run(
         select_least_recently_analysed(_BusWithRedis(_FakeRedis(fail=True)), now=NOW)
     )
-    assert chosen == ANALYSIS_SOURCES[0]
+    assert chosen == ANALYSIS_CELLS[0]
 
 
 def test_selection_ignores_a_malformed_mark() -> None:
-    redis = _FakeRedis({f"{_RUN_MARK_KEY_PREFIX}concept_induction": "not-a-timestamp"})
+    redis = _FakeRedis({_cell_key(*ANALYSIS_CELLS[0]): "not-a-timestamp"})
     assert asyncio.run(select_least_recently_analysed(_BusWithRedis(redis), now=NOW)) == (
-        ANALYSIS_SOURCES[0]
+        ANALYSIS_CELLS[0]
     )
 
 
-def test_a_run_that_journals_nothing_still_rotates_the_selector() -> None:
-    """THE blocker, in one test. A quiet source must not be able to hold the
-    selector: the mark is written at SELECTION time, before the analysis."""
+def test_consecutive_runs_walk_the_whole_grid_before_repeating() -> None:
+    """Without this, a bug that always returned the same window would still
+    look like working rotation as long as the SOURCE changed."""
     redis = _FakeRedis()
     bus = _BusWithRedis(redis)
-    result = _run(engine=_engine_for(50, 52), bus=bus, source=None)
+    seen = []
+    moment = NOW
+    for _ in range(len(ANALYSIS_CELLS)):
+        cell = asyncio.run(select_least_recently_analysed(bus, now=moment))
+        seen.append(cell)
+        asyncio.run(_write_run_mark(bus, cell[0], cell[1], moment=moment))
+        moment += timedelta(seconds=30)
+    assert sorted(seen) == sorted(ANALYSIS_CELLS)
+    assert len(set(seen)) == len(ANALYSIS_CELLS)
+
+
+def test_a_run_that_journals_nothing_still_rotates_the_selector() -> None:
+    """THE review blocker, in one test. A quiet cell must not be able to hold
+    the selector: the mark is written at SELECTION time, before the analysis."""
+    redis = _FakeRedis()
+    bus = _BusWithRedis(redis)
+    result = _run(engine=_engine_for(50, 52), bus=bus, source=None, window_hours=None)
     assert result.status == "skipped_not_notable"
     assert bus.published == [], "fixture must genuinely journal nothing"
     assert redis.setex_calls, "the run must still have been marked"
     key, _ttl, _value = redis.setex_calls[0]
-    assert key == f"{_RUN_MARK_KEY_PREFIX}{result.source}"
-    # ...and the next selection must therefore move on.
-    assert asyncio.run(select_least_recently_analysed(bus, now=NOW)) != result.source
+    assert key == _cell_key(result.source, result.window_hours)
+    assert asyncio.run(select_least_recently_analysed(bus, now=NOW)) != (
+        result.source,
+        result.window_hours,
+    )
 
 
 def test_a_run_whose_query_fails_still_rotates_the_selector() -> None:
     redis = _FakeRedis()
     bus = _BusWithRedis(redis)
-    result = _run(engine=_engine_for(50, 52, window_raises=True), bus=bus, source=None)
+    result = _run(
+        engine=_engine_for(50, 52, window_raises=True), bus=bus, source=None, window_hours=None
+    )
     assert result.status == "unavailable"
-    assert redis.setex_calls, "a failing source must not be able to monopolise the rotation"
+    assert redis.setex_calls, "a failing cell must not be able to monopolise the rotation"
 
 
 def test_an_operator_pinned_source_does_not_perturb_the_rotation() -> None:
@@ -384,9 +426,29 @@ def test_an_operator_pinned_source_does_not_perturb_the_rotation() -> None:
     assert redis.setex_calls == []
 
 
+def test_an_explicit_window_overrides_the_rotations_choice() -> None:
+    redis = _FakeRedis()
+    bus = _BusWithRedis(redis)
+    pinned = 24.0
+    assert pinned in WINDOW_LADDER
+    recent_since = NOW - timedelta(hours=pinned)
+    baseline_since = NOW - timedelta(hours=2 * pinned)
+    engine = _FakeEngine(
+        window_rows={
+            (recent_since, NOW): _vision_rows(20, since=recent_since, until=NOW),
+            (baseline_since, recent_since): _vision_rows(
+                80, since=baseline_since, until=recent_since
+            ),
+        }
+    )
+    result = _run(engine=engine, bus=bus, source=None, window_hours=pinned)
+    assert result.window_hours == pinned
+    assert redis.setex_calls[0][0] == _cell_key(result.source, pinned)
+
+
 def test_the_run_mark_carries_a_bounded_ttl() -> None:
     redis = _FakeRedis()
-    _run(engine=_engine_for(50, 52), bus=_BusWithRedis(redis), source=None)
+    _run(engine=_engine_for(50, 52), bus=_BusWithRedis(redis), source=None, window_hours=None)
     _key, ttl, value = redis.setex_calls[0]
     assert 0 < ttl <= 7 * 24 * 3600
     assert datetime.fromisoformat(value) == NOW

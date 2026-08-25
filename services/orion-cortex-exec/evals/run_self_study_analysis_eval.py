@@ -32,15 +32,22 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "services" / "orion-cortex-exec"))
 
 from app.self_study_analysis import (  # noqa: E402
-    ANALYSIS_SOURCES,
+    ANALYSIS_CELLS,
     SOURCE_SPECS,
+    WINDOW_LADDER,
     run_self_study_analysis,
 )
 from orion.core.bus.bus_schemas import ServiceRef  # noqa: E402
 
-# Windows wide enough apart that a healthy corpus should produce a mixture. Not
-# a tuned set -- deliberately spans "recent and small" to "days and large".
-WINDOWS = (1.0, 6.0, 24.0, 72.0)
+# THE EVAL GRID IS PRODUCTION'S GRID, by construction, and that is the fix for
+# a real miss rather than a tidiness preference. The first deployed version was
+# pinned to a single 6h window while this eval swept 1/6/24/72h; it PASSED,
+# because some cell fired -- and then produced 48 consecutive
+# `skipped_not_notable` runs live, because 6h was the one width at which
+# nothing fired. The eval was measuring a configuration production did not run.
+# Importing `ANALYSIS_CELLS` makes that divergence impossible: whatever the
+# action actually rotates over is exactly what gets graded here.
+WINDOWS = WINDOW_LADDER
 
 SOURCE_REF = ServiceRef(name="orion-cortex-exec-eval", version="0.1.0", node="athena")
 
@@ -68,8 +75,8 @@ async def main() -> int:
         os.environ["SUBSTRATE_FELT_STATE_DATABASE_URL"] = args.dsn
 
     rows: list[dict] = []
-    for source in ANALYSIS_SOURCES:
-        for hours in WINDOWS:
+    for source, hours in ANALYSIS_CELLS:
+        if True:
             result = await run_self_study_analysis(
                 bus=None,
                 source_ref=SOURCE_REF,
@@ -135,6 +142,16 @@ async def main() -> int:
     print(
         f"\n{len(fired_cells)} fired / {len(quiet_cells)} quiet / {len(unreadable)} unreadable"
     )
+    # Per-window breakdown, printed rather than gated. A window that is quiet
+    # across all four sources TODAY is not necessarily a dead width -- "dead
+    # today" is not "dead" -- but a width that is persistently silent here is
+    # the signature of the miss described above, and it should be visible
+    # rather than buried in an aggregate that passes.
+    print("per-window fire counts (a persistently silent width is worth a look):")
+    for hours in WINDOWS:
+        at_window = [r for r in rows if r["window_hours"] == hours]
+        fired_here = sum(1 for r in at_window if r["fired"])
+        print(f"  {hours:6.1f}h  {fired_here}/{len(at_window)} sources fired")
     if failures:
         print("\nFAIL", file=sys.stderr)
         for line in failures:

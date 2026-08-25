@@ -84,6 +84,23 @@ _QUERY_STATEMENT_TIMEOUT_MS = 4000
 _MAX_ROWS_PER_WINDOW = 20000
 
 DEFAULT_WINDOW_HOURS = 6.0
+# The action rotates over (source, window) CELLS, not just sources.
+#
+# MEASURED, 2026-08-25, an hour after first deploy: 48 real autonomous runs
+# produced 48 `skipped_not_notable` and zero findings, because the action was
+# pinned to a single 6h window -- and a sweep of the live corpus showed 6h was
+# the one width at which NOTHING fires on any of the four sources, while 3h,
+# 12h, 24h, 48h and 72h all fired on at least one. A fixed window does not just
+# lose sensitivity, it picks a scale and is blind to everything else: a camera
+# that died 40 minutes ago and a concept lane that has been slowing for two
+# days are not visible through the same lens.
+#
+# The ladder is roughly geometric and is NOT fitted to that sweep -- picking
+# the widths that happened to fire this afternoon would be overfitting one
+# moment, and 6h is retained precisely because "dead today" is not "dead".
+# It spans "just now" to "three days", which is the real range of things that
+# can go wrong with these producers.
+WINDOW_LADDER: tuple[float, ...] = (3.0, 6.0, 12.0, 24.0, 72.0)
 # Floor on how often ONE source may produce a journal entry, independent of the
 # analysis window. Without it a caller passing `window_hours=0.5` would get 48
 # entries/day/source. At 6h this caps the whole action at 16 entries/day across
@@ -575,23 +592,39 @@ def fetch_window(engine: Any, spec: SourceSpec, *, since: datetime, until: datet
 
 
 _RUN_MARK_KEY_PREFIX = "orion:self_study:last_run:"
+
+
+def _cell_key(source: str, window_hours: float) -> str:
+    """Redis key for one (source, window) cell. `%g` so 3.0 -> "3", keeping the
+    key readable from `redis-cli keys` without a decoder ring."""
+    return f"{_RUN_MARK_KEY_PREFIX}{source}:{window_hours:g}"
+
+
+ANALYSIS_CELLS: tuple[tuple[str, float], ...] = tuple(
+    (source, hours) for source in ANALYSIS_SOURCES for hours in WINDOW_LADDER
+)
 # Generous outer bound: rotation state is ephemeral by design, and a source
 # whose mark has expired simply sorts first again (i.e. gets looked at), which
 # is the safe direction to fail.
 _RUN_MARK_TTL_SECONDS = 7 * 24 * 3600
 
 
-async def _read_run_marks(bus: Any | None) -> dict[str, datetime]:
-    """Last time each source was ANALYSED. Fail-open: an unreadable mark is
-    treated as "never", which sorts that source first."""
-    marks: dict[str, datetime] = {}
+async def _read_run_marks(bus: Any | None) -> dict[tuple[str, float], datetime]:
+    """Last time each (source, window) cell was ANALYSED. Fail-open: an
+    unreadable mark is treated as "never", which sorts that cell first."""
+    marks: dict[tuple[str, float], datetime] = {}
     if bus is None or getattr(bus, "redis", None) is None:
         return marks
-    for name in ANALYSIS_SOURCES:
+    for source, hours in ANALYSIS_CELLS:
         try:
-            raw = await bus.redis.get(_RUN_MARK_KEY_PREFIX + name)
+            raw = await bus.redis.get(_cell_key(source, hours))
         except Exception:  # noqa: BLE001
-            logger.warning("self_study_analysis_run_mark_read_failed source=%s", name, exc_info=True)
+            logger.warning(
+                "self_study_analysis_run_mark_read_failed source=%s window=%s",
+                source,
+                hours,
+                exc_info=True,
+            )
             continue
         if raw is None:
             continue
@@ -601,60 +634,66 @@ async def _read_run_marks(bus: Any | None) -> dict[str, datetime]:
             parsed = datetime.fromisoformat(str(raw))
         except ValueError:
             continue
-        marks[name] = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        marks[(source, hours)] = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return marks
 
 
-async def _write_run_mark(bus: Any | None, source: str, *, moment: datetime) -> None:
-    """Stamp a source as analysed. Fail-open -- a failed stamp must never break
+async def _write_run_mark(bus: Any | None, source: str, window_hours: float, *, moment: datetime) -> None:
+    """Stamp a cell as analysed. Fail-open -- a failed stamp must never break
     the analysis it is bookkeeping for."""
     if bus is None or getattr(bus, "redis", None) is None:
         return
     try:
         await bus.redis.setex(
-            _RUN_MARK_KEY_PREFIX + source, _RUN_MARK_TTL_SECONDS, moment.isoformat()
+            _cell_key(source, window_hours), _RUN_MARK_TTL_SECONDS, moment.isoformat()
         )
     except Exception:  # noqa: BLE001
-        logger.warning("self_study_analysis_run_mark_write_failed source=%s", source, exc_info=True)
+        logger.warning(
+            "self_study_analysis_run_mark_write_failed source=%s window=%s",
+            source,
+            window_hours,
+            exc_info=True,
+        )
 
 
-async def select_least_recently_analysed(bus: Any | None, *, now: datetime) -> str:
-    """Pick which of the four inputs to study this run.
+async def select_least_recently_analysed(
+    bus: Any | None, *, now: datetime
+) -> tuple[str, float]:
+    """Pick which (source, window) CELL to study this run.
 
-    THE DEFAULT, not a fallback. The dispatch route deliberately does NOT pin a
-    source: there is one action ("study yourself"), and which lens it uses is a
-    scheduling question, not a proposal-arena question. Four near-identical
-    templates competing for the same five dispatch slots would have starved
-    four existing templates to say the same thing four ways.
+    THE DEFAULT, not a fallback. The dispatch route deliberately pins neither
+    source nor window: there is one action ("study yourself"), and which lens
+    at which timescale it uses is a scheduling question, not a proposal-arena
+    question. Separate templates per source would have starved four existing
+    templates to say the same thing four ways.
 
     MEASURED ON RUNS, NOT ON WRITES, and that distinction is load-bearing.
-    REVIEW FINDING (2026-08-25): the first version of this read `journal_entries`,
-    so a source's position only advanced when it JOURNALED. A source quiet
-    enough that no rule could fire was therefore permanently un-journalable,
-    permanently sorted first, and permanently won. Replayed against the real
-    2026-08-23 vision outage at a 5-minute cadence, `concept_induction` took
-    560 of 576 runs (97%) and held the selector for 474 consecutive runs
-    (~39.5h) -- during which the vision pipeline was dead and its lens was
-    never re-examined. That defeats the entire point of the rotation, and it
-    made a false `producer_stalled` alarm load-bearing for releasing it.
+    REVIEW FINDING (2026-08-25): the first version of this read
+    `journal_entries`, so a cell's position only advanced when it JOURNALED. A
+    source quiet enough that no rule could fire was therefore permanently
+    un-journalable, permanently sorted first, and permanently won. Replayed
+    against the real 2026-08-23 vision outage at a 5-minute cadence,
+    `concept_induction` took 560 of 576 runs (97%) and held the selector for
+    474 consecutive runs (~39.5h) -- during which the vision pipeline was dead
+    and its lens was never re-examined.
 
-    So the mark is written at SELECTION time, before the analysis runs: a
-    source whose query fails, or that returns nothing, still rotates away.
+    So the mark is written at SELECTION time, before the analysis runs: a cell
+    whose query fails, or that returns nothing, still rotates away.
 
     "Most overdue" rather than round-robin or a hash: just as deterministic,
-    self-healing after any source is unreachable for a while, and it spends the
-    action on the lens Orion has looked at least recently. Ties -- including the
-    all-never-analysed cold start and the no-bus case -- break on
-    `ANALYSIS_SOURCES` order, so the first run is predictable, not arbitrary.
+    self-healing after any cell is unreachable for a while, and it spends the
+    action on the view Orion has looked through least recently. Ties --
+    including the all-never-analysed cold start and the no-bus case -- break on
+    `ANALYSIS_CELLS` order, so the first runs are predictable, not arbitrary.
     """
     marks = await _read_run_marks(bus)
     # None sorts first: never-analysed beats any real timestamp.
     return min(
-        ANALYSIS_SOURCES,
-        key=lambda name: (
-            name in marks,
-            marks.get(name) or now,
-            ANALYSIS_SOURCES.index(name),
+        ANALYSIS_CELLS,
+        key=lambda cell: (
+            cell in marks,
+            marks.get(cell) or now,
+            ANALYSIS_CELLS.index(cell),
         ),
     )
 
@@ -834,8 +873,14 @@ async def run_self_study_analysis(
     now: datetime | None = None,
 ) -> SelfStudyAnalysisResultV1:
     run_id = str(uuid4())
-    hours = _clamp_window_hours(window_hours if window_hours is not None else DEFAULT_WINDOW_HOURS)
     moment = now or datetime.now(timezone.utc)
+    # An explicitly supplied window is honoured (and clamped); otherwise the
+    # rotation below chooses it along with the source.
+    hours = (
+        _clamp_window_hours(window_hours)
+        if window_hours is not None and str(window_hours).strip() != ""
+        else None
+    )
 
     db = engine if engine is not None else _get_engine()
     if db is None:
@@ -843,26 +888,33 @@ async def run_self_study_analysis(
             source="concept_induction",
             reason="database_url_unset",
             run_id=run_id,
-            window_hours=hours,
+            window_hours=hours if hours is not None else DEFAULT_WINDOW_HOURS,
             now=moment,
             time_column="",
         )
 
     if source is None or not str(source).strip():
         try:
-            source = await select_least_recently_analysed(bus, now=moment)
+            source, rotated_hours = await select_least_recently_analysed(bus, now=moment)
         except Exception as exc:  # noqa: BLE001
             # Selection failing is not a reason to skip the run entirely; fall
-            # back to the first source rather than doing nothing, and say so.
+            # back to the first cell rather than doing nothing, and say so.
             logger.warning(
                 "self_study_analysis_source_selection_failed corr=%s err=%s", correlation_id, exc
             )
-            source = ANALYSIS_SOURCES[0]
-        # Stamped BEFORE the analysis, so a source that errors or stays quiet
+            source, rotated_hours = ANALYSIS_CELLS[0]
+        # An explicit window_hours still wins over the rotation's own choice,
+        # so `skill_args: {window_hours: 24}` narrows the action to one
+        # timescale across all four sources.
+        if hours is None:
+            hours = rotated_hours
+        # Stamped BEFORE the analysis, so a cell that errors or stays quiet
         # still rotates away. Only stamped for an auto-selected run: an
         # operator pinning `skill_args.source` is not participating in the
         # rotation and must not perturb it.
-        await _write_run_mark(bus, str(source), moment=moment)
+        await _write_run_mark(bus, str(source), hours, moment=moment)
+    elif hours is None:
+        hours = DEFAULT_WINDOW_HOURS
 
     spec = SOURCE_SPECS.get(str(source))
     if spec is None:

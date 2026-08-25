@@ -1,7 +1,8 @@
-# Skeleton only (Patch 1, docs/superpowers/specs/2026-08-20-reverie-visual-
-# chain-design.md). Deliberately NOT including diffusers/torch here -- that
-# is real GPU weight, not a health-check skeleton dependency. Added in the
-# later patch that wires real generation.
+# Real model wired (follow-up to Patch 1,
+# docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md). torch
+# itself is installed explicitly in the Dockerfile from the CUDA wheel index
+# (same pattern as services/orion-vision-host/Dockerfile) -- not listed here,
+# a plain `pip install torch` from this file would pull a CPU-only wheel.
 
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
@@ -9,3 +10,9 @@ uvicorn[standard]==0.30.6
 pydantic==2.9.2
 pydantic-settings==2.5.2
 loguru==0.7.2
+
+diffusers==0.30.3
+transformers==4.44.2
+accelerate==0.34.2
+safetensors==0.4.5
+pillow==10.4.0

@@ -1,7 +1,5 @@
 # CUDA base image matches orion-vision-host's convention (design doc §3: the
-# right analog for a GPU-resident inference service, not llama.cpp). No CUDA
-# torch wheels installed in this patch -- there is no model to run yet
-# (README.md "Current skeleton status").
+# right analog for a GPU-resident inference service, not llama.cpp).
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 WORKDIR /app
@@ -15,6 +13,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir --upgrade pip
+
+# Install CUDA torch wheels explicitly (avoid CPU torch) -- same pattern and
+# index as services/orion-vision-host/Dockerfile.
+RUN pip3 install --no-cache-dir \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 # App deps
 COPY services/orion-diffusion-host/requirements.txt ./requirements.txt

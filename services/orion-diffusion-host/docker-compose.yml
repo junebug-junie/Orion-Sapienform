@@ -24,15 +24,25 @@ services:
 
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
 
+      - DIFFUSION_MODEL_ID=${DIFFUSION_MODEL_ID}
+      - DIFFUSION_DEVICE=${DIFFUSION_DEVICE}
+      - DIFFUSION_DTYPE=${DIFFUSION_DTYPE}
+      - DIFFUSION_NUM_INFERENCE_STEPS=${DIFFUSION_NUM_INFERENCE_STEPS}
+      - DIFFUSION_GUIDANCE_SCALE=${DIFFUSION_GUIDANCE_SCALE}
+      - DIFFUSION_DEFAULT_WIDTH=${DIFFUSION_DEFAULT_WIDTH}
+      - DIFFUSION_DEFAULT_HEIGHT=${DIFFUSION_DEFAULT_HEIGHT}
+      - DIFFUSION_MAX_PROMPT_CHARS=${DIFFUSION_MAX_PROMPT_CHARS}
+
     volumes:
-      # Path convention only, in this patch -- nothing is downloaded here
-      # yet (README.md "Model cache dir convention").
+      # Real weight download now lands here (sdxl-turbo, several GB) --
+      # this mount stopped being a bare path convention once this patch
+      # wired a real model load.
       - /mnt/storage-warm/models/diffusion:/mnt/storage-warm/models/diffusion
 
-    # GPU reservation added with the Circe agent-lane assignment (2026-08-20)
-    # so the card is already visible to this container ahead of Patch 2's
-    # real model load -- CUDA_VISIBLE_DEVICES above still scopes it to one
-    # physical device. No model reads this yet in this patch; see README.md.
+    # GPU reservation, Circe agent-lane assignment (2026-08-20).
+    # CUDA_VISIBLE_DEVICES above scopes the container to one physical
+    # device; this patch is the first one that actually loads a model onto
+    # it. See README.md "Node/port/GPU assignment".
     gpus: all
 
     ports:

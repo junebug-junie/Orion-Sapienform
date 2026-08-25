@@ -85,13 +85,32 @@ class OpenLoopV1(BaseModel):
     predictive_value: float = Field(default=0.0, ge=0.0, le=1.0)
     concept_value: float = Field(default=0.0, ge=0.0, le=1.0)
     autonomy_value: float = Field(default=0.0, ge=0.0, le=1.0)
-    emotional_charge: float = Field(default=0.0, ge=0.0, le=1.0)
     already_known: bool = False
     askability: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     provenance: dict[str, Any] = Field(default_factory=dict)
-    # Salience v2 (additive, back-compatible). The 7 legacy score fields above
+    # Salience v2 (additive, back-compatible). The legacy score fields above
     # remain populated for one deprecation release; new code reads these.
+    #
+    # emotional_charge REMOVED 2026-08-25 (kill means kill, CLAUDE.md Sec
+    # 0A) -- it was a bare regex over 11 emotion-adjacent words
+    # (_EMOTION_RE in orion/substrate/attention/scoring.py, added
+    # 2026-05-16) computed on every chat turn, but its only reader
+    # (score_loop()'s old hand-tuned formula, `+ loop.emotional_charge *
+    # 0.07`) was deleted 2026-07-31 in the same salience-v2 rewrite that
+    # trimmed SalienceFeaturesV1's other untethered fields (see that
+    # class's own docstring) -- that PR missed this sibling field on
+    # OpenLoopV1. Confirmed dead by full-repo grep before removal: no
+    # scoring, persistence (attention_salience_trace never stored it), or
+    # UI/debug consumer ever read it again after 2026-07-31. Found while
+    # investigating a suspected competing architecture for reading
+    # Juniper's affect -- this predates and was never reconciled with
+    # either JuniperAffectiveStateV1 (orion-cocreation-signals) or
+    # JuniperMultimodalAffectV1 (AffectGPT, PR #1865/#1871).
+    #
+    # continuity_relevance/relational_relevance appear similarly unread
+    # (same grep), but were NOT part of this patch's scope/approval --
+    # flagged as a disclosed follow-up, not removed here.
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
     salience_features: dict[str, Any] = Field(default_factory=dict)
     # Voluntary attention (additive, back-compatible). top_down_bias is the

@@ -3,10 +3,11 @@
   "metric_count": 615,
   "_last_change": {
     "base": "merge base 105224a24 (origin/main)",
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "high   removed metric://bus_channel/orion-vision-council/orion:exec:request:VisionHostService:*"
+      "high   removed metric://bus_channel/orion-vision-council/orion:exec:request:VisionHostService:*",
+      "high   routing_changed metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment (declared_consumers: ['orion-juniper-affective-state'] -> ['orion-juniper-affective-state', 'orion-sql-writer'])"
     ]
   },
   "definitions": {
@@ -1637,7 +1638,8 @@
         "orion-juniper-affective-state"
       ],
       "declared_consumers": [
-        "orion-juniper-affective-state"
+        "orion-juniper-affective-state",
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

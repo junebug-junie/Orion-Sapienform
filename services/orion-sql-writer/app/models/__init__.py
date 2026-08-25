@@ -68,6 +68,7 @@ from .dominance_streak_tick import DominanceStreakTickSQL
 from .dev_economics_ledger import DevEconomicsLedgerSQL
 from .doc_semantic_drift import DocSemanticDriftSQL
 from .juniper_affective_state import JuniperAffectiveStateSQL
+from .juniper_multimodal_affect import JuniperMultimodalAffectSQL
 from .equilibrium_service_transition import EquilibriumServiceTransitionSQL
 from .grammar_trace import (
     GrammarAtomSQL,
@@ -142,6 +143,7 @@ __all__ = [
     "DevEconomicsLedgerSQL",
     "DocSemanticDriftSQL",
     "JuniperAffectiveStateSQL",
+    "JuniperMultimodalAffectSQL",
     "EquilibriumServiceTransitionSQL",
     "GrammarTraceSQL",
     "HarnessTurnTraceSQL",

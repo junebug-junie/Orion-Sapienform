@@ -523,22 +523,19 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  # ISOLATED per-host suffix (e.g. ":circe-vl"), deliberately never the bare
-  # channel above. A second orion-vision-host instance subscribing to the
-  # bare shared channel raced its fast local-path rejections against the
-  # first instance's real, slower replies and silently killed 2m13s of live
-  # presence updates on 2026-08-25 (see PR #1859 / #1860 and
-  # app/foveal_probe.py's module docstring in orion-vision-council). Every
-  # dedicated/foveal vision-host deployment gets its OWN suffixed channel
-  # name here, not a shared one.
-  - name: "orion:exec:request:VisionHostService:*"
-    kind: "request"
-    schema_id: "VisionTaskRequestPayload"
-    producer_services: ["orion-vision-council"]
-    consumer_services: ["orion-vision-host"]
-    single_consumer: true
-    stability: "experimental"
-    since: "2026-08-25"
+  # RETIRED 2026-08-25 (same day it was added): "orion:exec:request:
+  # VisionHostService:*", an isolated per-host suffix channel (e.g.
+  # ":circe-vl") for orion-vision-council's Foveal probe to RPC a dedicated
+  # vision-host instance without racing the shared channel above (see PR
+  # #1859). Live-tested end to end once real config landed and found it
+  # returned an EMPTY caption -- config/vision_profiles.yaml's vlm_caption
+  # profile still had the unfilled REPLACE_ME model_id placeholder, so
+  # nothing richer than the shared pipeline's own BLIP captioner was
+  # actually behind it. Replaced with a call through orion-llm-gateway's
+  # already-live, already-vision-capable `chat` route instead (see
+  # app/foveal_probe.py's module docstring in orion-vision-council) --
+  # orion-vision-council was this channel's only producer, so removing the
+  # entry here retires it outright rather than leaving a dead registration.
 
   - name: "orion:vision:reply:*"
     kind: "result"
@@ -588,15 +585,22 @@ channels:
     schema_id: "JuniperMultimodalAffectV1"
     message_kind: "affectgpt.juniper_multimodal_affect.v1"
     producer_services: ["orion-juniper-affective-state"]
-    # No real downstream COGNITION consumer yet -- flagged honestly per
-    # CLAUDE.md, same pattern as orion:worldmodel:predictions below (which
-    # lists itself the same way). The real, live-subscribable consumer is
-    # services/orion-juniper-affective-state/scripts/tap_assessments.py
+    # No real downstream COGNITION consumer subscribes to THIS bus channel
+    # -- flagged honestly per CLAUDE.md, same pattern as
+    # orion:worldmodel:predictions below (which lists itself the same
+    # way). The cognition path (orion/situational/juniper_affect_state.py,
+    # PR #1865) reads a SEPARATE single-key Redis SETEX mirror
+    # _publish_event() writes alongside this bus publish, not this
+    # channel via subscription. orion-sql-writer added 2026-08-25 as the
+    # first real persistence consumer (JuniperMultimodalAffectSQL) -- same
+    # "publish real data first" -> "stop dropping it on the floor" fix
+    # already applied to juniper_affective_state and doc_semantic_drift
+    # above. services/orion-juniper-affective-state/scripts/tap_assessments.py
     # (mirrors orion-vision-host's tap_artifacts.py /
-    # orion-world-model's tap_predictions.py) -- not a cognition consumer,
-    # but a genuine one, which is what keeps this entry off the
+    # orion-world-model's tap_predictions.py) remains the live-tap debug
+    # consumer, which is what originally kept this entry off the
     # metric-lineage orphan ratchet honestly rather than via a baseline bump.
-    consumer_services: ["orion-juniper-affective-state"]
+    consumer_services: ["orion-juniper-affective-state", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-22"
 

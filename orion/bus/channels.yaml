@@ -611,13 +611,12 @@ channels:
   - name: "orion:exec:request:WorldModelService"
     kind: "request"
     schema_id: "WorldModelTaskRequestPayload"
-    # No real producer service yet -- same honesty as orion:worldmodel:
-    # predictions below (code review, 2026-08-20: an earlier version of this
-    # entry incorrectly self-listed orion-world-model as its own producer).
-    # services/orion-world-model/scripts/publish_test_task.py is the only
-    # current publisher (a documented smoke/tap script, not a registered
-    # service).
-    producer_services: []
+    # 2026-08-25: first real producer wired -- orion-substrate-runtime's
+    # world-model publish tick (SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_ENABLED,
+    # default off). services/orion-world-model/scripts/publish_test_task.py
+    # remains a documented smoke/tap script, not a registered service, and is
+    # not listed here for the same reason it never was.
+    producer_services: ["orion-substrate-runtime"]
     consumer_services: ["orion-world-model"]
     single_consumer: true
     stability: "experimental"

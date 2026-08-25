@@ -934,6 +934,87 @@ specifically to rule out a silent decay-to-zero artifact -- the `node:substrate.
 CLAUDE.md section 0A names, caught only by pulling raw history and checking the exact ratio
 between successive values by hand, not by eyeballing the aggregate.
 
+## World-model publish tick
+
+`SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_ENABLED` (default `false`). The first real producer for
+`orion:exec:request:WorldModelService` (`services/orion-world-model`, PR #1775/#1861) --
+previously only a manual test-publish CLI
+(`services/orion-world-model/scripts/publish_test_task.py`) issued requests. Producer:
+`app/world_model_features.py` (pure feature assembly) + `app/worker.py`'s
+`_world_model_publish_tick`/`_world_model_publish_tick_loop` (bus publish, async -- not
+`asyncio.to_thread`-dispatched like most ticks in this file, since the only real work is an
+in-memory assembly plus `bus.publish`, both already async-safe).
+
+**Single step per request, not a buffered rolling window.** `WorldModelService.__init__`
+(`services/orion-world-model/app/main.py`) holds no session/window cache across requests --
+every request is built fresh from `payload.trajectory` -- so this tick publishes one
+`WorldModelTrajectoryStepV1` per tick, gated by
+`SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_INTERVAL_SEC` (default 30s).
+
+**Honesty split -- which of the six feature groups are real vs. zero-filled, every tick** (CLAUDE.md
+"no empty-shell cognition": a schema-valid payload with meaningless content is not success, so this
+must be flagged in `payload.meta`, not hidden):
+
+| Group | Status | Source |
+|---|---|---|
+| `execution_context` | **Real** | Four of this worker's existing per-domain prediction-error scalars, cached by their own `_execution_tick`/`_chat_tick`/`_route_tick`/`_bus_synaptic_tick` methods. Fixed slot order: `[execution, chat, route, bus_synaptic]`, remaining slots up to `SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT` (default 16) are 0.0. |
+| `temporal` | **Real** | Pure function over wall-clock time (`world_model_features.temporal_features`): hour-of-day/day-of-week/minute-of-hour sin/cos pairs + tanh-squashed session-elapsed time. |
+| `vision_embedding` | **Real when available and correctly dimensioned; zero-filled + flagged otherwise** | See "Unresolved vision-embedding dim" below. |
+| `biometrics` | **Always zero-filled** | The real biometrics numeric vector lives in `orion-field-digester`, not cheaply reachable from this process per CLAUDE.md section 5's service-boundary rule. This is a different signal from `node:substrate.biometrics`'s own prediction-error *scalar* (which this worker does compute) -- that scalar is deliberately not folded into `execution_context` either; see `world_model_features.py`'s module docstring. |
+| `affect` | **Always zero-filled** | Orion's own affect has no producer anywhere in this repo as of this patch. |
+| `memory_pointers` | **Always zero-filled** | Memory-pointer vectors are an unbuilt design. |
+
+`payload.meta` names exactly which groups were zero-filled this tick
+(`zero_filled_groups`), which `execution_context` domains were real
+(`real_execution_context_domains`), and the vision-embedding source
+(`vision_source`: `real` / `unavailable` / `dim_mismatch`, plus
+`vision_dim_observed`/`vision_dim_configured` on a mismatch) -- so a downstream reader (or a human
+inspecting the bus) never mistakes a zero vector for a real "nothing is happening" reading.
+
+**`transport` is deliberately excluded from `execution_context`.** `transport_prediction_error()`
+is a retired metric -- excluded from `ACTIVE_INFERENCE_DOMAINS` since 2026-07-26 because it measures
+a narrow 2-Redis-Stream `world_pulse` census, not real inter-service bus traffic (CLAUDE.md 0A "kill
+means kill" -- confirmed live 2026-07-26 that its tick kept running and winning real budget slots in
+`orion/substrate/endogenous_curiosity.py` even after every *other* consumer had already excluded it).
+Wiring a known-dead signal into this brand-new consumer would repeat that exact mistake.
+
+**Unresolved vision-embedding dim -- do not guess a fix.** `SUBSTRATE_WORLD_MODEL_DIM_VISION_EMBEDDING`
+(default 512, mirroring `services/orion-world-model/app/settings.py`'s own `WM_DIM_VISION_EMBEDDING`
+default) was never verified against the real deployed SigLIP2 profile
+(`google/siglip2-so400m-patch14-384` on `orion-vision-host`, profile `embed_image`). As of this patch
+that profile has never actually been exercised on athena (no HF model cache under
+`/mnt/telemetry/models/vision/hf` in the container, zero pubsub history) -- there is no live number to
+check yet, so this patch does not hardcode a "corrected" dim guess (e.g. 1152); that would just trade
+one unverified constant for another. Instead, `world_model_features.build_vision_embedding_group`
+compares the real observed embedding vector's length to the configured dim at publish time:
+match -> use it (`vision_source="real"`); missing -> zero-fill (`"unavailable"`); length mismatch ->
+zero-fill **and** log a WARNING naming both the observed and configured dims (`"dim_mismatch"`). The
+first time a real embedding actually flows through, this either silently confirms the config is right
+or surfaces the real number for a human to fix -- instead of crashing the tick or sending
+`orion-world-model` a shape its own `trajectory_steps_to_tensors` (`app/main.py`) would reject anyway
+(that check is stricter: it raises `ValueError` on any dim mismatch across any of the six groups,
+not just vision).
+
+**Vision embedding source.** The real vector is only available if
+`SUBSTRATE_PERCEPTION_PREDICTION_ERROR_TICK_ENABLED` (P2, see the section above) is also on --
+`_handle_perception_prediction_error_message` is the only place that decodes
+`orion:vision:artifacts` and caches the actual embedding vector
+(`self._last_perception_embedding_vector`, added by this patch; the P2 tick itself previously only
+ever cached the timestamp/stream_id/score, never the raw vector). If P2 is off, this group is always
+`"unavailable"` and zero-filled -- not a bug, an honest reflection of no cached vector existing.
+
+**Real cross-service dim coupling, not automatically enforced.** `SUBSTRATE_WORLD_MODEL_DIM_*` must
+match `services/orion-world-model/app/settings.py`'s `WM_DIM_*` on whatever host runs that service
+(circe as of this patch). A mismatch is caught defensively for `vision_embedding` only (see above);
+the other five groups are rejected outright by `orion-world-model`'s own `trajectory_steps_to_tensors`
+(`ValueError`, logged there as `error_code="bad_trajectory"` in the (unused, since this producer sets
+no `reply_to`) reply payload) if an operator changes one side's dim without the other.
+
+**Activation.** `SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_ENABLED=true` on whichever host runs
+`orion-substrate-runtime` (athena as of this patch), then rebuild + restart the container (see
+"Restart required" in this patch's PR report -- new code, not just a config flip, so the image must
+be rebuilt regardless of the flag's value).
+
 ## Downstream of this service: Layers 6-11
 
 This service (Layers 1-5: grammar events → reducers → `substrate_field_state` via

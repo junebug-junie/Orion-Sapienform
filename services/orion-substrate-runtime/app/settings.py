@@ -416,6 +416,54 @@ class Settings(BaseSettings):
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 
+    # World-model publish tick: the first real producer for
+    # orion:exec:request:WorldModelService (services/orion-world-model, PR
+    # #1775/#1861). Default-off like every other tick in this file -- this is
+    # a brand-new producer wiring an untrained-weights scaffold service, not a
+    # decision to make this worker's output feed real cognition yet. See
+    # services/orion-substrate-runtime/README.md "World-model publish tick"
+    # for the full honesty split (which of the six feature groups are real
+    # vs. explicitly zero-filled this patch).
+    enable_world_model_publish_tick: bool = Field(
+        False, alias="SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_ENABLED"
+    )
+    world_model_publish_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_INTERVAL_SEC"
+    )
+    world_model_request_channel: str = Field(
+        "orion:exec:request:WorldModelService", alias="SUBSTRATE_WORLD_MODEL_REQUEST_CHANNEL"
+    )
+    # Feature-group dims. Deliberately this service's OWN env keys, not a
+    # cross-service import of services/orion-world-model/app/settings.py
+    # (CLAUDE.md section 5: do not reach into another service's internals).
+    # Defaults mirror that service's own WM_DIM_* defaults exactly as of this
+    # patch (services/orion-world-model/app/settings.py) so an out-of-the-box
+    # deployment matches without operator action -- but this is a REAL
+    # coupling, not a coincidence: orion-world-model's
+    # trajectory_steps_to_tensors() (app/main.py) rejects any request where a
+    # feature group's declared `dim` does not equal that service's configured
+    # WM_DIM_<GROUP>. If an operator changes one side's dim, the other side's
+    # env key must be changed too, in the same changeset -- nothing enforces
+    # this automatically across the service boundary.
+    world_model_dim_biometrics: int = Field(32, alias="SUBSTRATE_WORLD_MODEL_DIM_BIOMETRICS")
+    world_model_dim_affect: int = Field(16, alias="SUBSTRATE_WORLD_MODEL_DIM_AFFECT")
+    world_model_dim_execution_context: int = Field(
+        16, alias="SUBSTRATE_WORLD_MODEL_DIM_EXECUTION_CONTEXT"
+    )
+    world_model_dim_memory_pointers: int = Field(
+        32, alias="SUBSTRATE_WORLD_MODEL_DIM_MEMORY_POINTERS"
+    )
+    world_model_dim_temporal: int = Field(8, alias="SUBSTRATE_WORLD_MODEL_DIM_TEMPORAL")
+    # See app/world_model_features.py's module docstring for why this is
+    # NEVER hardcoded to a "corrected" value even though WM_DIM_VISION_
+    # EMBEDDING=512 was never verified against a real deployed SigLIP2
+    # profile as of this patch -- the assembly code compares the real
+    # observed vector length to this configured value at publish time and
+    # zero-fills + logs loudly on any mismatch, rather than guessing.
+    world_model_dim_vision_embedding: int = Field(
+        512, alias="SUBSTRATE_WORLD_MODEL_DIM_VISION_EMBEDDING"
+    )
+
 
 _settings: Settings | None = None
 

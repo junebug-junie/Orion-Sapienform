@@ -14,6 +14,7 @@ from uuid import uuid4
 import requests
 
 from orion.biometrics.node_catalog import NodeCatalog
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
@@ -24,6 +25,7 @@ from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.harness_finalize import HarnessPostTurnClosureV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
+from orion.schemas.world_model import WorldModelTaskRequestPayload
 from orion.structural_mass.git_delta import GitChurnDelta
 from orion.structural_mass.graph_delta import GraphStructuralDelta
 from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
@@ -88,6 +90,11 @@ from .reducer_health import (
 )
 from .settings import Settings, get_settings
 from .store import BiometricsSubstrateStore
+from .world_model_features import (
+    ExecutionContextScalars,
+    WorldModelFeatureDims,
+    assemble_world_model_trajectory_step,
+)
 
 logger = logging.getLogger("orion.substrate.runtime")
 
@@ -387,6 +394,14 @@ class BiometricsSubstrateWorker:
         self._last_perception_prediction_error: float | None = None
         self._last_perception_embedding_at: datetime | None = None
         self._last_perception_stream_id: str | None = None
+        # The actual embedding vector, cached alongside the state above so
+        # the world-model publish tick (world_model_features.py) has a real
+        # vision_embedding group to send -- NOT previously cached here; the
+        # P2 tick only ever needed the timestamp/stream_id/score above,
+        # never the raw vector itself. Bounded-window "most recent real
+        # embedding" cache, same shape as every other _last_* attribute in
+        # this block, not an audit trail.
+        self._last_perception_embedding_vector: list[float] | None = None
         # Cached alongside the score above so the tick below can tell "no
         # real anomaly, confirmed calm" apart from "real embeddings are
         # arriving but the scalar surprise EWMA (2026-08-19 z-score
@@ -396,6 +411,17 @@ class BiometricsSubstrateWorker:
         # treated both cases identically, and the z-score migration widened
         # the still-warming window from one real observation to two.
         self._last_perception_surprise_n: int = 0
+        # World-model publish tick (world_model_features.py): real per-domain
+        # prediction-error scalars cached by their own _*_tick() methods
+        # below, read by _world_model_publish_tick's execution_context group
+        # assembly. `transport` is deliberately NOT cached here -- see
+        # world_model_features.py's module docstring for why wiring the
+        # retired transport_prediction_error() into a brand-new consumer
+        # would repeat CLAUDE.md 0A's own documented mistake.
+        self._last_execution_prediction_error: float | None = None
+        self._last_chat_prediction_error: float | None = None
+        self._last_route_prediction_error: float | None = None
+        self._last_bus_synaptic_prediction_error: float | None = None
 
     @property
     def bus(self):
@@ -511,6 +537,17 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._codebase_delta_listener_loop(),
                     name="substrate-codebase-delta-listener",
+                )
+            )
+        # World-model publish tick: the first real producer for
+        # orion:exec:request:WorldModelService. Requires the bus (it is a
+        # pure publisher, no listener half) -- default-off, see settings.py's
+        # enable_world_model_publish_tick docstring.
+        if self._bus is not None and s.enable_world_model_publish_tick:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._world_model_publish_tick_loop(),
+                    name="substrate-world-model-publish-tick",
                 )
             )
 
@@ -1274,6 +1311,11 @@ class BiometricsSubstrateWorker:
         now = datetime.now(timezone.utc)
         self._last_perception_embedding_at = now
         self._last_perception_stream_id = stream_id
+        # Real vector cache for the world-model publish tick's
+        # vision_embedding group (world_model_features.py) -- this handler's
+        # own P2 scoring above only ever needed embedding_vec locally, never
+        # cached it.
+        self._last_perception_embedding_vector = embedding_vec
         # Cached regardless of whether this call produced a score --
         # the tick below needs to distinguish "confirmed calm" from
         # "still warming the scalar surprise EWMA" even on ticks that
@@ -1503,6 +1545,10 @@ class BiometricsSubstrateWorker:
 
             error = bus_synaptic_prediction_error(zscores)
             now = datetime.now(timezone.utc)
+            # Cached for the world-model publish tick's execution_context
+            # group (world_model_features.py) -- see _execution_tick's
+            # identical comment.
+            self._last_bus_synaptic_prediction_error = error
             if error > 0.0:
                 # caused_by_event_ids intentionally left at its default `()`
                 # (2026-07-31, PR #1547 proposal) -- unlike the four grammar-
@@ -1554,6 +1600,99 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._bus_synaptic_tick)
             except Exception:
                 logger.exception("substrate_bus_synaptic_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    async def _world_model_publish_tick(self) -> None:
+        """The first real producer for ``orion:exec:request:WorldModelService``
+        (services/orion-world-model, PR #1775/#1861) -- previously only a
+        manual test-publish CLI issued requests. See
+        ``app/world_model_features.py``'s module docstring for the full
+        honesty split (which feature groups are real vs. explicitly
+        zero-filled) and ``services/orion-substrate-runtime/README.md``
+        "World-model publish tick".
+
+        Async (not ``asyncio.to_thread``-dispatched like most ticks in this
+        file) because the only real work here is an in-memory feature
+        assembly plus a bus publish -- both already async-safe, no blocking
+        Postgres/FalkorDB I/O in this tick's own critical path. Default-off,
+        fail-open: never raises out of a tick.
+
+        Publishes one single-step trajectory per tick, not a buffered
+        rolling window -- ``services/orion-world-model/app/main.py``'s
+        ``WorldModelService`` holds no session/window state across requests
+        (confirmed: its ``__init__`` has no trajectory cache), so a
+        1-length ``trajectory`` list is a fully valid, complete request.
+        """
+        if not self._settings.enable_world_model_publish_tick:
+            return
+        if self._bus is None:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            dims = WorldModelFeatureDims(
+                biometrics=self._settings.world_model_dim_biometrics,
+                affect=self._settings.world_model_dim_affect,
+                execution_context=self._settings.world_model_dim_execution_context,
+                memory_pointers=self._settings.world_model_dim_memory_pointers,
+                temporal=self._settings.world_model_dim_temporal,
+                vision_embedding=self._settings.world_model_dim_vision_embedding,
+            )
+            scalars = ExecutionContextScalars(
+                execution=self._last_execution_prediction_error,
+                chat=self._last_chat_prediction_error,
+                route=self._last_route_prediction_error,
+                bus_synaptic=self._last_bus_synaptic_prediction_error,
+            )
+            step, meta = assemble_world_model_trajectory_step(
+                now=now,
+                process_started_at=self._process_started_at,
+                dims=dims,
+                execution_context=scalars,
+                vision_embedding_vector=self._last_perception_embedding_vector,
+            )
+            payload = WorldModelTaskRequestPayload(
+                task_type="predict_next_state",
+                trajectory=[step],
+                meta=meta,
+            )
+            envelope = BaseEnvelope(
+                kind="world_model.task.request",
+                source=ServiceRef(
+                    name=self._settings.service_name, version=self._settings.service_version
+                ),
+                correlation_id=str(uuid4()),
+                # reply_to deliberately left unset: WorldModelService falls
+                # back to its own orion:worldmodel:reply:<correlation_id>
+                # (registered wildcard channel) when absent. Setting a
+                # non-catalog reply_to here would risk
+                # ORION_BUS_ENFORCE_CATALOG rejecting the *reply* publish on
+                # the world-model side -- this producer is fire-and-forget;
+                # nothing in this repo consumes the reply yet (see README).
+                payload=payload.model_dump(mode="json"),
+            )
+            await self._bus.publish(self._settings.world_model_request_channel, envelope)
+            logger.info(
+                "substrate_world_model_publish_tick_completed zero_filled_groups=%s "
+                "real_execution_context_domains=%s vision_source=%s",
+                meta.get("zero_filled_groups"),
+                meta.get("real_execution_context_domains"),
+                meta.get("vision_source"),
+            )
+        except Exception:
+            logger.exception("substrate_world_model_publish_tick_failed")
+
+    async def _world_model_publish_tick_loop(self) -> None:
+        interval = float(self._settings.world_model_publish_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await self._world_model_publish_tick()
+            except Exception:
+                logger.exception("substrate_world_model_publish_tick_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -3040,6 +3179,11 @@ class BiometricsSubstrateWorker:
             # restart re-cold-starts at n=0. Cheap: save_execution_trajectory is
             # the same upsert process_batch already calls above.
             self._store.save_execution_trajectory(curr_projection)
+            # Cached for the world-model publish tick's execution_context
+            # group (world_model_features.py) -- a real reading regardless of
+            # whether it is > 0.0 this tick, same "confirmed calm is still a
+            # real value" reasoning as every other _last_* cache in this file.
+            self._last_execution_prediction_error = error
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )
@@ -3133,6 +3277,10 @@ class BiometricsSubstrateWorker:
             # Found in code review, confirmed live-reproducible via the worker's
             # own load/save call graph before this fix.
             self._store.save_chat_session_projection(curr_projection)
+            # Cached for the world-model publish tick's execution_context
+            # group (world_model_features.py) -- see _execution_tick's
+            # identical comment above.
+            self._last_chat_prediction_error = error
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )
@@ -3205,6 +3353,10 @@ class BiometricsSubstrateWorker:
         if last_id is not None:
             curr_projection = load_projection()
             error = route_prediction_error(prev_projection, curr_projection)
+            # Cached for the world-model publish tick's execution_context
+            # group (world_model_features.py) -- see _execution_tick's
+            # identical comment above.
+            self._last_route_prediction_error = error
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )

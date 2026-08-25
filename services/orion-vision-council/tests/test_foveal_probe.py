@@ -3,15 +3,14 @@ docs/superpowers/specs/2026-08-12-perception-frontier-design.md's Foveal
 tier, manually triggered via POST /debug/foveal-probe.
 
 Three real hops, tested independently plus end-to-end with a fake bus:
-resolve the newest local frame -> upload it to the percept store -> RPC the
-isolated foveal-host channel and return its real reply.
+resolve the newest local frame -> upload it to the percept store -> ask
+orion-llm-gateway's vision-capable `chat` route and return its real reply.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import json
 import time
 import uuid
@@ -21,17 +20,18 @@ from unittest.mock import patch
 import pytest
 
 from app.foveal_probe import (
-    FovealHostNotConfiguredError,
+    DEFAULT_CAPTION_PROMPT,
+    FovealNotConfiguredError,
     FovealReplyDecodeError,
     FovealTaskFailedError,
     NoFrameAvailableError,
     PerceptUploadError,
-    build_foveal_task_envelope,
+    build_foveal_chat_envelope,
     resolve_latest_frame_path,
     run_foveal_probe,
     upload_frame_bytes,
 )
-from orion.schemas.vision import VisionTaskRequestPayload
+from orion.core.bus.bus_schemas import ChatRequestPayload
 
 
 # ---------------------------------------------------------------------------
@@ -129,43 +129,58 @@ def test_upload_frame_bytes_sends_token_header_when_set() -> None:
 
 
 # ---------------------------------------------------------------------------
-# build_foveal_task_envelope
+# build_foveal_chat_envelope
 # ---------------------------------------------------------------------------
 
 
-def test_build_foveal_task_envelope_caption_mode_when_no_question() -> None:
-    env = build_foveal_task_envelope(
+def test_build_foveal_chat_envelope_uses_default_caption_prompt_when_no_question() -> None:
+    env = build_foveal_chat_envelope(
         sha256="a" * 64,
+        percept_store_url="http://percept-store/percepts",
+        frame_bytes_len=1234,
         question=None,
-        reply_to="orion:vision:reply:foveal:123",
+        reply_to="orion:council:reply:foveal:123",
+        llm_route="chat",
         service_name="vision-council",
         service_version="0.1.0",
     )
-    task = VisionTaskRequestPayload.model_validate(env.payload)
-    assert task.task_type == "caption_frame"
-    assert task.request == {"percept_sha256": "a" * 64}
-    assert env.reply_to == "orion:vision:reply:foveal:123"
+    req = ChatRequestPayload.model_validate(env.payload)
+    assert req.route == "chat"
+    assert req.messages[0].content == DEFAULT_CAPTION_PROMPT
+    assert len(req.attachments) == 1
+    attachment = req.attachments[0]
+    assert attachment.kind == "percept"
+    assert attachment.sha256 == "a" * 64
+    assert attachment.mime == "image/jpeg"
+    assert attachment.bytes == 1234
+    assert attachment.source_url == "http://percept-store/percepts/" + "a" * 64
+    assert env.reply_to == "orion:council:reply:foveal:123"
 
 
-def test_build_foveal_task_envelope_vqa_mode_when_question_set() -> None:
-    env = build_foveal_task_envelope(
+def test_build_foveal_chat_envelope_uses_question_as_prompt_when_set() -> None:
+    env = build_foveal_chat_envelope(
         sha256="b" * 64,
+        percept_store_url="http://percept-store/percepts",
+        frame_bytes_len=1,
         question="is the door open?",
-        reply_to="orion:vision:reply:foveal:456",
+        reply_to="orion:council:reply:foveal:456",
+        llm_route="chat",
         service_name="vision-council",
         service_version="0.1.0",
     )
-    task = VisionTaskRequestPayload.model_validate(env.payload)
-    assert task.task_type == "vqa"
-    assert task.request == {"percept_sha256": "b" * 64, "question": "is the door open?"}
+    req = ChatRequestPayload.model_validate(env.payload)
+    assert req.messages[0].content == "is the door open?"
 
 
-def test_build_foveal_task_envelope_uses_supplied_correlation_id() -> None:
+def test_build_foveal_chat_envelope_uses_supplied_correlation_id() -> None:
     corr = uuid.uuid4()
-    env = build_foveal_task_envelope(
+    env = build_foveal_chat_envelope(
         sha256="c" * 64,
+        percept_store_url="http://percept-store/percepts",
+        frame_bytes_len=1,
         question=None,
-        reply_to="orion:vision:reply:foveal:789",
+        reply_to="orion:council:reply:foveal:789",
+        llm_route="chat",
         service_name="vision-council",
         service_version="0.1.0",
         correlation_id=corr,
@@ -173,37 +188,46 @@ def test_build_foveal_task_envelope_uses_supplied_correlation_id() -> None:
     assert env.correlation_id == corr
 
 
+def test_build_foveal_chat_envelope_uses_real_byte_length() -> None:
+    env = build_foveal_chat_envelope(
+        sha256="d" * 64,
+        percept_store_url="http://percept-store/percepts",
+        frame_bytes_len=42,
+        question=None,
+        reply_to="orion:council:reply:foveal:000",
+        llm_route="chat",
+        service_name="vision-council",
+        service_version="0.1.0",
+    )
+    req = ChatRequestPayload.model_validate(env.payload)
+    assert req.attachments[0].bytes == 42
+
+
+def test_build_foveal_chat_envelope_whitespace_only_question_falls_back_to_caption_prompt() -> None:
+    """A whitespace-only question (e.g. ?question=%20) must fall back to the
+    default caption prompt, not send the model a blank instruction --
+    code review caught the pre-strip truthiness check missing this."""
+    env = build_foveal_chat_envelope(
+        sha256="e" * 64,
+        percept_store_url="http://percept-store/percepts",
+        frame_bytes_len=1,
+        question="   ",
+        reply_to="orion:council:reply:foveal:111",
+        llm_route="chat",
+        service_name="vision-council",
+        service_version="0.1.0",
+    )
+    req = ChatRequestPayload.model_validate(env.payload)
+    assert req.messages[0].content == DEFAULT_CAPTION_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # run_foveal_probe (end-to-end with a fake bus)
 # ---------------------------------------------------------------------------
 
 
-def _ok_reply(task_type: str, **outputs) -> dict:
-    """A realistic VisionTaskResultPayload-shaped reply (matches what the
-    real vision-host actually sends -- see this session's own live curl
-    transcripts in the PR report), not an arbitrary dict. run_foveal_probe
-    now parses the reply through VisionTaskResultPayload.model_validate, so
-    an under-shaped fixture would fail validation before ever reaching the
-    assertions that matter."""
-    return {
-        "ok": True,
-        "task_type": task_type,
-        "device": "cuda:0",
-        "artifact": {
-            "artifact_id": "fake-artifact-id",
-            "correlation_id": "fake-corr-id",
-            "task_type": task_type,
-            "device": "cuda:0",
-            "inputs": {},
-            "outputs": outputs,
-            "timing": {"latency_s": 0.1},
-            "model_fingerprints": {task_type: "fake-model-id"},
-        },
-    }
-
-
-def _failed_reply(*, error: str, error_code: str) -> dict:
-    return {"ok": False, "task_type": "caption_frame", "device": "cuda:0", "error": error, "error_code": error_code}
+def _ok_reply(text: str) -> dict:
+    return {"content": text}
 
 
 class _FakeCodec:
@@ -230,8 +254,9 @@ class _FakeBus:
 
 def _settings(**overrides) -> SimpleNamespace:
     base = dict(
-        CHANNEL_FOVEAL_HOST_REQUEST="orion:exec:request:VisionHostService:circe-vl",
-        CHANNEL_FOVEAL_HOST_REPLY_PREFIX="orion:vision:reply:foveal",
+        CHANNEL_LLM_REQUEST="orion:exec:request:LLMGatewayService",
+        CHANNEL_LLM_REPLY_PREFIX="orion:council:reply",
+        FOVEAL_LLM_ROUTE="chat",
         FOVEAL_HOST_TIMEOUT_SEC=45.0,
         FOVEAL_FRAMES_DIR="/nonexistent",
         FOVEAL_PERCEPT_STORE_URL="http://percept-store/percepts",
@@ -245,11 +270,24 @@ def _settings(**overrides) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_run_foveal_probe_refuses_when_channel_unconfigured(tmp_path) -> None:
-    settings = _settings(CHANNEL_FOVEAL_HOST_REQUEST="", FOVEAL_FRAMES_DIR=str(tmp_path))
+async def test_run_foveal_probe_refuses_when_percept_store_unconfigured(tmp_path) -> None:
+    settings = _settings(FOVEAL_PERCEPT_STORE_URL="", FOVEAL_FRAMES_DIR=str(tmp_path))
     (tmp_path / "frame.jpg").write_bytes(b"data")
-    bus = _FakeBus(reply_payload=_ok_reply("caption_frame", caption={"text": "unused"}))
-    with pytest.raises(FovealHostNotConfiguredError):
+    bus = _FakeBus(reply_payload=_ok_reply("unused"))
+    with pytest.raises(FovealNotConfiguredError):
+        await run_foveal_probe(bus, settings)
+    assert bus.published == []
+
+
+@pytest.mark.asyncio
+async def test_run_foveal_probe_refuses_when_llm_route_unconfigured(tmp_path) -> None:
+    """Checked before the real disk read + upload -- a blank route must fail
+    fast rather than spend a real upload on every call before the gateway
+    eventually replies with an embedded routing error."""
+    settings = _settings(FOVEAL_LLM_ROUTE="", FOVEAL_FRAMES_DIR=str(tmp_path))
+    (tmp_path / "frame.jpg").write_bytes(b"data")
+    bus = _FakeBus(reply_payload=_ok_reply("unused"))
+    with pytest.raises(FovealNotConfiguredError):
         await run_foveal_probe(bus, settings)
     assert bus.published == []
 
@@ -263,13 +301,27 @@ async def test_run_foveal_probe_raises_when_no_frame_exists(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_foveal_probe_raises_when_frame_is_empty(tmp_path) -> None:
+    """sha256(b"") is well-defined and would pass upload_frame_bytes's hash
+    check, so a 0-byte frame (a truncated/partial capture) must be rejected
+    before upload rather than silently sent as a 'successful' empty
+    attachment."""
+    (tmp_path / "frame.jpg").write_bytes(b"")
+    settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
+    bus = _FakeBus(reply_payload={})
+    with pytest.raises(NoFrameAvailableError):
+        await run_foveal_probe(bus, settings)
+    assert bus.published == []
+
+
+@pytest.mark.asyncio
 async def test_run_foveal_probe_end_to_end_success(tmp_path) -> None:
     frame_bytes = b"a real jpeg would go here"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
     (tmp_path / "frame.jpg").write_bytes(frame_bytes)
 
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
-    reply = _ok_reply("caption_frame", caption={"text": "a person at a desk"})
+    reply = _ok_reply("a person at a desk")
     bus = _FakeBus(reply_payload=reply)
 
     with patch(
@@ -279,17 +331,20 @@ async def test_run_foveal_probe_end_to_end_success(tmp_path) -> None:
         result = await run_foveal_probe(bus, settings)
 
     assert result["sha256"] == real_sha
+    assert result["caption"] == "a person at a desk"
     assert result["reply"] == reply
     assert result["frame_path"] == str(tmp_path / "frame.jpg")
 
-    # The actual RPC target must be the configured channel -- never hardcoded
-    # and never accidentally the shared vision-host channel.
+    # The actual RPC target must be the gateway's existing chat-intake
+    # channel -- the retired foveal-host channel is gone entirely, and this
+    # must never silently fall back to it.
     request_channel, envelope, reply_channel, timeout_sec = bus.published[0]
-    assert request_channel == "orion:exec:request:VisionHostService:circe-vl"
-    assert reply_channel.startswith("orion:vision:reply:foveal:")
+    assert request_channel == "orion:exec:request:LLMGatewayService"
+    assert reply_channel.startswith("orion:council:reply:foveal:")
     assert timeout_sec == 45.0
-    task = VisionTaskRequestPayload.model_validate(envelope.payload)
-    assert task.request["percept_sha256"] == real_sha
+    req = ChatRequestPayload.model_validate(envelope.payload)
+    assert req.attachments[0].sha256 == real_sha
+    assert req.route == "chat"
 
 
 @pytest.mark.asyncio
@@ -298,7 +353,7 @@ async def test_run_foveal_probe_vqa_mode_passes_question_through(tmp_path) -> No
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
     (tmp_path / "frame.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
-    reply = _ok_reply("vqa", vqa={"question": "is the door open?", "answer": "yes"})
+    reply = _ok_reply("yes")
     bus = _FakeBus(reply_payload=reply)
 
     with patch(
@@ -307,11 +362,10 @@ async def test_run_foveal_probe_vqa_mode_passes_question_through(tmp_path) -> No
     ):
         result = await run_foveal_probe(bus, settings, question="is the door open?")
 
-    assert result["reply"] == reply
+    assert result["caption"] == "yes"
     _, envelope, _, _ = bus.published[0]
-    task = VisionTaskRequestPayload.model_validate(envelope.payload)
-    assert task.task_type == "vqa"
-    assert task.request["question"] == "is the door open?"
+    req = ChatRequestPayload.model_validate(envelope.payload)
+    assert req.messages[0].content == "is the door open?"
 
 
 @pytest.mark.asyncio
@@ -331,10 +385,8 @@ async def test_run_foveal_probe_raises_when_upload_fails(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_run_foveal_probe_raises_distinct_error_on_decode_failure(tmp_path) -> None:
     """A bus-level decode failure must not be reported through
-    PerceptUploadError -- live-caught by code review: reusing that class here
-    meant a decode failure was reported to callers as error_code=
-    'upload_failed', pointing debugging at percept-store connectivity when
-    the upload had already succeeded."""
+    PerceptUploadError -- reusing that class here would point debugging at
+    percept-store connectivity when the upload had already succeeded."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
     (tmp_path / "frame.jpg").write_bytes(frame_bytes)
@@ -350,17 +402,17 @@ async def test_run_foveal_probe_raises_distinct_error_on_decode_failure(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_run_foveal_probe_raises_when_domain_task_failed(tmp_path) -> None:
-    """The RPC itself can succeed (envelope decodes fine) while the foveal
-    host's own task failed (e.g. profile_disabled) -- live-reproduced during
-    this PR's own testing (a percept_sha256 field-name bug made the real
-    circe host reply ok:false while the bus-level round-trip was fine). The
-    caller must be able to see that failure, not a blanket ok:true."""
+async def test_run_foveal_probe_raises_when_response_is_empty(tmp_path) -> None:
+    """The RPC itself can succeed (envelope decodes fine) while the actual
+    answer is empty -- the exact live failure mode found in production
+    2026-08-25 with the retired vision-host path (BLIP-family fallback
+    rejected as caption_rejected:too_short). The caller must see that
+    failure, not a blanket ok:true with an empty caption."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
     (tmp_path / "frame.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
-    bus = _FakeBus(reply_payload=_failed_reply(error="profile disabled: vqa", error_code="profile_disabled"))
+    bus = _FakeBus(reply_payload=_ok_reply(""))
 
     with patch(
         "urllib.request.urlopen",
@@ -368,23 +420,42 @@ async def test_run_foveal_probe_raises_when_domain_task_failed(tmp_path) -> None
     ):
         with pytest.raises(FovealTaskFailedError) as excinfo:
             await run_foveal_probe(bus, settings)
-    assert excinfo.value.result.error_code == "profile_disabled"
-    assert excinfo.value.result.error == "profile disabled: vqa"
+    assert excinfo.value.error_code == "empty_response"
 
 
 @pytest.mark.asyncio
-async def test_run_foveal_probe_runs_blocking_io_off_the_event_loop(tmp_path) -> None:
-    """Code review caught that resolve_latest_frame_path/read_bytes/
-    upload_frame_bytes ran directly on the event loop, which would stall
-    CouncilService's own always-on _consume/_consume_rpc tasks (app/main.py)
-    for the full upload timeout every time this endpoint fires. Assert the
-    blocking work actually routes through asyncio.to_thread rather than
-    trusting it by inspection alone."""
+async def test_run_foveal_probe_raises_on_embedded_error_content(tmp_path) -> None:
+    """`_call_llm_raw` (app/main.py) treats a `"[Error: ...]"`-prefixed
+    content string as a gateway-reported failure, not a real answer -- the
+    foveal probe must apply the identical convention since it shares the
+    same reply contract."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
     (tmp_path / "frame.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
-    bus = _FakeBus(reply_payload=_ok_reply("caption_frame", caption={"text": "x"}))
+    bus = _FakeBus(reply_payload=_ok_reply("[Error: no vision-capable route reachable]"))
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_FakeResponse(json.dumps({"sha256": real_sha}).encode()),
+    ):
+        with pytest.raises(FovealTaskFailedError) as excinfo:
+            await run_foveal_probe(bus, settings)
+    assert "no vision-capable route reachable" in excinfo.value.detail
+    assert excinfo.value.error_code == "gateway_error"
+
+
+@pytest.mark.asyncio
+async def test_run_foveal_probe_runs_blocking_io_off_the_event_loop(tmp_path) -> None:
+    """resolve_latest_frame_path/read_bytes/upload_frame_bytes must not run
+    directly on the event loop -- that would stall CouncilService's own
+    always-on _consume/_consume_rpc tasks (app/main.py) for the full upload
+    timeout every time this endpoint fires."""
+    frame_bytes = b"frame"
+    real_sha = hashlib.sha256(frame_bytes).hexdigest()
+    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
+    bus = _FakeBus(reply_payload=_ok_reply("x"))
 
     calls = []
     real_to_thread = asyncio.to_thread

@@ -40,25 +40,31 @@ class Settings(BaseSettings):
     # automatic trigger (surprise-driven foveation is P2, blocked on
     # want_embeddings -- see that design doc's pragmatic ladder).
     #
-    # Empty by default -- unset means "no foveal host configured", and the
-    # probe refuses cleanly rather than silently calling a channel nobody is
-    # listening on. Point this at a dedicated, ISOLATED vision-host intake
-    # channel (e.g. circe's orion:exec:request:VisionHostService:circe-vl),
-    # never at the shared orion:exec:request:VisionHostService channel the
-    # frame-router's continuous pipeline uses -- two consumers on that shared
-    # channel race on every task and the faster (usually wrong) reply wins;
-    # see PR #1859 / this session's own incident record for why this is a
-    # hard requirement, not a style preference.
-    CHANNEL_FOVEAL_HOST_REQUEST: str = ""
-    CHANNEL_FOVEAL_HOST_REPLY_PREFIX: str = "orion:vision:reply:foveal"
+    # 2026-08-25: originally RPC'd a dedicated, isolated vision-host instance
+    # (CHANNEL_FOVEAL_HOST_REQUEST -> e.g. circe's orion:exec:request:
+    # VisionHostService:circe-vl). Live-tested end-to-end after that config
+    # landed: mechanically worked, but returned an EMPTY caption --
+    # config/vision_profiles.yaml's vlm_caption profile still has the unfilled
+    # placeholder model_id "REPLACE_ME/qwen2-vl_or_llava_next", which falls
+    # back to orion-vision-host's own VISION_VLM_MODEL_ID default, itself
+    # another BLIP-family model. No richer VLM was actually behind the tier.
+    #
+    # Replaced with a call through orion-llm-gateway's `chat` route instead
+    # (Qwen-class, modalities.vision=true, confirmed live via /props) --
+    # already-warm, already-proven infra (app/vision.py's kind="percept"
+    # attachment path was built for exactly this). CHANNEL_FOVEAL_HOST_REQUEST
+    # and CHANNEL_FOVEAL_HOST_REPLY_PREFIX are retired: the probe now shares
+    # CHANNEL_LLM_REQUEST/CHANNEL_LLM_REPLY_PREFIX above with the council's
+    # own metacog calls rather than owning a separate channel.
+    FOVEAL_LLM_ROUTE: str = "chat"
     FOVEAL_HOST_TIMEOUT_SEC: float = 45.0
 
     # Where captured frames already live on this node's local disk (read-only
     # mount -- same convention orion-vision-host itself uses via
-    # VISION_FRAMES_DIR). The probe reads the newest .jpg here, uploads it to
-    # the percept store, and hands the resulting sha256 to the foveal host --
-    # never a local path, since the foveal host is on a different machine
-    # with no shared filesystem.
+    # VISION_FRAMES_DIR). The probe reads the newest .jpg here and uploads it
+    # to the percept store below; the gateway fetches it from there by
+    # content address rather than over any local path, since the gateway's
+    # own worker (circe) is a different machine with no shared filesystem.
     FOVEAL_FRAMES_DIR: str = "/mnt/telemetry/vision/frames"
 
     FOVEAL_PERCEPT_STORE_URL: str = ""

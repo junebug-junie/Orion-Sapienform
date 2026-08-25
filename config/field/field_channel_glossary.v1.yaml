@@ -137,6 +137,16 @@ channels:
     category: sensor_trust_liveness
     meaning: "Whether Athena's cabinet Arduino sensor bundle is too stale to trust. When elevated, cabinet activity channels are withheld upstream -- this channel carries the liveness signal instead."
 
+  - channel: cabinet_ambient_audio_activity
+    level: [node]
+    category: physical_substrate
+    meaning: "Athena cabinet ambient microphone activity (CMTECK USB RMS band deviation). Levels-only -- not speech content. Distinct from fan_pressure and thermal_pressure."
+
+  - channel: cabinet_ambient_audio_staleness
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Whether Athena's ambient microphone snapshot is too stale to trust. When elevated, cabinet_ambient_audio_activity is withheld upstream -- this channel carries the liveness signal instead."
+
   - channel: expected_offline_suppression
     level: [node]
     category: sensor_trust_liveness

@@ -24,15 +24,33 @@ services:
 
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
 
+      # `:-default` fallbacks matching settings.py's Python defaults --
+      # review finding: pydantic-settings raises ValidationError (not a
+      # silent fallback) on an int/float field fed a present-but-empty
+      # string, which is what compose writes if a required key is ever
+      # missing from `.env` (e.g. sync_local_env_from_example.py skipped on
+      # a fresh worktree/host -- a documented recurring failure mode in
+      # this repo). Same pattern NODE_NAME/HEARTBEAT_INTERVAL_SEC already
+      # use above.
+      - DIFFUSION_MODEL_ID=${DIFFUSION_MODEL_ID:-stabilityai/sdxl-turbo}
+      - DIFFUSION_DEVICE=${DIFFUSION_DEVICE:-cuda:0}
+      - DIFFUSION_DTYPE=${DIFFUSION_DTYPE:-fp16}
+      - DIFFUSION_NUM_INFERENCE_STEPS=${DIFFUSION_NUM_INFERENCE_STEPS:-1}
+      - DIFFUSION_GUIDANCE_SCALE=${DIFFUSION_GUIDANCE_SCALE:-0.0}
+      - DIFFUSION_DEFAULT_WIDTH=${DIFFUSION_DEFAULT_WIDTH:-512}
+      - DIFFUSION_DEFAULT_HEIGHT=${DIFFUSION_DEFAULT_HEIGHT:-512}
+      - DIFFUSION_MAX_PROMPT_CHARS=${DIFFUSION_MAX_PROMPT_CHARS:-2000}
+
     volumes:
-      # Path convention only, in this patch -- nothing is downloaded here
-      # yet (README.md "Model cache dir convention").
+      # Real weight download now lands here (sdxl-turbo, several GB) --
+      # this mount stopped being a bare path convention once this patch
+      # wired a real model load.
       - /mnt/storage-warm/models/diffusion:/mnt/storage-warm/models/diffusion
 
-    # GPU reservation added with the Circe agent-lane assignment (2026-08-20)
-    # so the card is already visible to this container ahead of Patch 2's
-    # real model load -- CUDA_VISIBLE_DEVICES above still scopes it to one
-    # physical device. No model reads this yet in this patch; see README.md.
+    # GPU reservation, Circe agent-lane assignment (2026-08-20).
+    # CUDA_VISIBLE_DEVICES above scopes the container to one physical
+    # device; this patch is the first one that actually loads a model onto
+    # it. See README.md "Node/port/GPU assignment".
     gpus: all
 
     ports:

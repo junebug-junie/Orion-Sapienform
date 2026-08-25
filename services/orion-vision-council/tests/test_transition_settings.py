@@ -32,9 +32,14 @@ def test_settings_reads_legacy_skip_max_sec_alias(monkeypatch: pytest.MonkeyPatc
     assert Settings().COUNCIL_TRANSITION_REFRESH_SEC == 45.0
 
 
-def test_settings_refresh_ttl_default_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_refresh_ttl_default_is_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for the 2026-08-23/25 44h-silent-vision-events incident:
+    a default of 0 (never force) plus a home-office scene's coarse hard_labels
+    never changing turn to turn meant evidence_transition.py's gate could (and
+    did) stay on "stable_scene" forever, with no error anywhere in the pipeline
+    to signal it. The default must be a real, non-zero ceiling."""
     monkeypatch.delenv("COUNCIL_TRANSITION_REFRESH_SEC", raising=False)
     monkeypatch.delenv("COUNCIL_EVIDENCE_SKIP_MAX_SEC", raising=False)
     from app.settings import Settings
 
-    assert Settings().COUNCIL_TRANSITION_REFRESH_SEC == 0.0
+    assert Settings().COUNCIL_TRANSITION_REFRESH_SEC == 600.0

@@ -363,6 +363,22 @@ class Settings(BaseSettings):
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
 
+    # --- Cabinet Nano sensors (Hub operator tab; host bind-mount) ---
+    # Same host paths as orion-biometrics. Written by
+    # scripts/orion_cabinet_sensor_reader.py → /run/orion-sensors/*.json.
+    CABINET_SENSORS_PATH: str = Field(
+        default="/run/orion-sensors/latest.json",
+        alias="CABINET_SENSORS_PATH",
+    )
+    CABINET_BOOT_PATH: str = Field(
+        default="/run/orion-sensors/boot.json",
+        alias="CABINET_BOOT_PATH",
+    )
+    CABINET_SENSORS_STALE_AFTER_SEC: float = Field(
+        default=10.0,
+        alias="CABINET_SENSORS_STALE_AFTER_SEC",
+    )
+
     # --- Organ signal gateway inspect (Phase 2b Hub) ---
     SIGNALS_INSPECT_ENABLED: bool = Field(default=True, alias="SIGNALS_INSPECT_ENABLED")
     SIGNALS_INSPECT_SUBSCRIBE_PATTERN: str = Field(

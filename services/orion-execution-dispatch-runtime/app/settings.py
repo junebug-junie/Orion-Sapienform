@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -196,6 +196,38 @@ class Settings(BaseSettings):
     orion_dispatch_risk_cap_advisory_only: bool = Field(
         False, alias="ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY"
     )
+    # --- Theater tripwire recovery (2026-08-25) -------------------------
+    # Before this, the tripwire was a one-way latch: it could stop Orion from
+    # acting but nothing could start it again short of a human restarting the
+    # container. That cost 45 hours of zero dispatches on 2026-08-23, tripped
+    # by ordinary post-redeploy startup wobble rather than by a real fault.
+    # See app/worker.py's incident note beside TRIPWIRE_PROBE_DISPATCHES.
+    #
+    # Set to False to restore the old restart-only behavior. The per-tick
+    # logging, frame warning and re-notification below are NOT gated by this
+    # flag -- those close the "45 hours of silence" half of the defect and
+    # there is no version of this system that is better off without them.
+    orion_dispatch_tripwire_probe_enabled: bool = Field(
+        True, alias="ORION_DISPATCH_TRIPWIRE_PROBE_ENABLED"
+    )
+    # How long after tripping (and after each failed probe) before the next
+    # single-action probe is allowed. Doubles per failed probe up to the max
+    # below, so a genuinely dead motor costs one action per hour rather than a
+    # retry storm against a broken dependency.
+    orion_dispatch_tripwire_probe_cooldown_sec: float = Field(
+        300.0, alias="ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC", gt=0.0
+    )
+    orion_dispatch_tripwire_probe_max_cooldown_sec: float = Field(
+        3600.0, alias="ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC", gt=0.0
+    )
+    # Consecutive successful probes required to clear the latch. This is the
+    # knob that answers the original design's stated objection to a
+    # self-clearing tripwire -- at 1 it would genuinely be "resume on a
+    # coincidentally-good sample", which is why the floor is 1 but the default
+    # is not. Any single probe failure resets the run to zero.
+    orion_dispatch_tripwire_rearm_successes: int = Field(
+        3, alias="ORION_DISPATCH_TRIPWIRE_REARM_SUCCESSES", ge=1
+    )
     action_outcome_channel: str = Field(
         "orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT"
     )
@@ -210,6 +242,30 @@ class Settings(BaseSettings):
         900.0, alias="DISPATCH_RECONCILE_INTERVAL_SEC"
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+
+    @model_validator(mode="after")
+    def _check_tripwire_cooldowns(self) -> Settings:
+        """A max below the base makes the backoff run backwards.
+
+        Each bound is only `gt=0.0` on its own, so `COOLDOWN_SEC=3600` with
+        `MAX_COOLDOWN_SEC=300` validates field-by-field and then, on the first
+        failed probe, `min(3600 * 2, 300)` SHORTENS the wait from 3600s to
+        300s -- a misconfiguration that makes a dead motor probed more often
+        the worse it gets, silently. Cross-field, so it cannot be expressed as
+        a constraint on either field alone.
+        """
+        if (
+            self.orion_dispatch_tripwire_probe_max_cooldown_sec
+            < self.orion_dispatch_tripwire_probe_cooldown_sec
+        ):
+            raise ValueError(
+                "ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC "
+                f"({self.orion_dispatch_tripwire_probe_max_cooldown_sec}) must be >= "
+                "ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC "
+                f"({self.orion_dispatch_tripwire_probe_cooldown_sec}); a lower max "
+                "makes the probe backoff shorten on failure instead of widening."
+            )
+        return self
 
 
 _settings: Settings | None = None

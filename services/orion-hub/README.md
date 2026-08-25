@@ -1611,6 +1611,30 @@ previously had zero doc surface here at all.
 those new names and you were expecting the old ones, that's this rename, not a bug. See the
 field-digester README's sixth training-data cutoff entry for the full mechanism.
 
+## Cabinet tab
+
+Top-level Hub nav **Cabinet** (`#cabinet`) polls Athena Nano host snapshots while the tab is
+visible (~1s). Backed by `GET /api/cabinet/sensors/latest` (`scripts/cabinet_sensors_routes.py`)
+and `/static/js/cabinet-sensors.js`.
+
+**Operator setup**
+
+1. Host reader writing `/run/orion-sensors/latest.json` (and optional `boot.json`) via
+   `orion-cabinet-sensors.service`.
+2. Compose bind-mount already in `docker-compose.yml`:
+   `/run/orion-sensors:/run/orion-sensors:ro` plus `CABINET_SENSORS_PATH` /
+   `CABINET_BOOT_PATH` / `CABINET_SENSORS_STALE_AFTER_SEC` from `.env_example`.
+3. After mount/env change, restart Hub so the container sees the bind:
+
+```bash
+# from a worktree (not shared checkout):
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+Open Hub → **Cabinet**. Missing snapshot shows a no-snapshot message naming
+`orion-cabinet-sensors.service`. Pressure strip is labeled **activity (Hub)** (process-local
+baselines; operator-debug only).
+
 ## Bus synaptic graph debug routes
 
 Read-only view into `services/orion-bus-mirror`'s live FalkorDB graph (`orion_bus_synapse`) —

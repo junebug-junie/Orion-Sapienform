@@ -16,6 +16,8 @@ _CABINET_ROLE_TO_HINT: dict[str, str] = {
     "cabinet_vibration_activity_signal": "cabinet_vibration_activity",
     "cabinet_proximity_activity_signal": "cabinet_proximity_activity",
     "cabinet_sensor_staleness_signal": "cabinet_sensor_staleness",
+    "cabinet_ambient_audio_activity_signal": "cabinet_ambient_audio_activity",
+    "cabinet_ambient_audio_staleness_signal": "cabinet_ambient_audio_staleness",
 }
 
 

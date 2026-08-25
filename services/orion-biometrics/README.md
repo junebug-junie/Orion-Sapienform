@@ -310,9 +310,13 @@ Setup / flash / smokes: `scripts/setup_athena_cabinet_sensors.sh`,
 and the extended `scripts/smoke_field_digester_biometrics.sh`.
 
 **Non-goals:** Arduino audio; absolute comfort/AQI thresholds in v1; overloading host
-`thermal_pressure` / `fan_pressure`. A USB microphone plugged into Athena is **host audio**,
-not part of this Nano path — document-only until a separate capture design lands.
+`thermal_pressure` / `fan_pressure`. Athena's USB microphone is a separate host-audio path;
+see `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md`.
 
 Env: `CABINET_SENSORS_PATH` (default `/run/orion-sensors/latest.json`),
 `CABINET_SENSOR_STALE_AFTER_SEC` (default `10`). Missing/stale ⇒ omit cabinet measurement keys
 (never zero-fill).
+
+Ambient audio env: `AMBIENT_AUDIO_PATH` (default `/run/orion-audio/latest.json`) and
+`AMBIENT_AUDIO_STALE_AFTER_SEC` (default `5`). Missing/stale snapshots omit ambient
+measurement and pressure keys; ambient activity never participates in host `peak_pressure`.

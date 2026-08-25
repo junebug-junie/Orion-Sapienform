@@ -344,10 +344,33 @@ part-2 throughput redesign this was scoped alongside but does not itself impleme
 **Theater tripwire**: if more than half of the trailing 10 real results are **not**
 `status="success"` — i.e. `empty` (a real send that produced no usable result) or `failed`
 (an RPC send error, or a verb whose own plan reported `fail`/`blocked`) — the worker stops
-sending for the rest of its process lifetime — visible via `GET /latest`'s
-`theater_tripwire_active` field and one `orion-notify` warning event on the transition into
-tripped. Re-arm requires a restart; it does not self-clear, by design (a self-clearing tripwire
-could resume sending on a coincidentally healthy sample without anyone deciding that was safe).
+sending — visible via `GET /latest`'s `theater_tripwire_active` field and an `orion-notify`
+warning event on the transition into tripped.
+
+**Recovery (2026-08-25).** Re-arm used to require a restart, and nothing in the code could
+clear the latch. On 2026-08-23 that turned ordinary post-redeploy startup wobble into **45
+hours of zero autonomous dispatches** — six `plan_status=fail` in a row at 07:33 UTC while
+cortex-exec was still cold, after which nothing acted until a human noticed. It was also
+silent (one warning at the trip, then nothing for 45 hours) and self-sealing (no sends means
+no new statuses, so no evidence could ever accumulate for a recovery decision).
+
+The latch now clears on its own, but **not on a sample** — the original objection ("a
+self-clearing tripwire could resume sending on a coincidentally healthy sample") is preserved.
+What clears it is a *probe*: one candidate (`TRIPWIRE_PROBE_DISPATCHES`), released after a
+cooldown that doubles on each failure up to `ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC`,
+and the latch opens only after `ORION_DISPATCH_TRIPWIRE_REARM_SUCCESSES` **consecutive**
+successful probes. Any single failure resets the run to zero. Probes are judged solely on
+statuses recorded during that tick — never on the trailing window, which at probe time is
+still full of the failures that caused the trip. A probe tick is exempt from the randomized
+holdback, and a probe whose tick sent nothing is refunded rather than counted.
+
+While tripped, every blocked tick now carries an `execution_dispatch_theater_tripwire_active`
+string in the frame's `warnings` (persisted, so "could Orion act at time T" is answerable from
+Postgres after the fact — including after the restart that would otherwise erase the
+in-process state), a throttled log line every 5 minutes, and an hourly re-notification.
+
+Set `ORION_DISPATCH_TRIPWIRE_PROBE_ENABLED=false` to restore restart-only recovery. The
+logging, frame warning and re-notification are not gated by that flag.
 
 > Widened 2026-08-13 from counting only `status="empty"`. Skill-verb results
 > (`skills.runtime.*`) used to be misclassified as `empty` because the result parser only

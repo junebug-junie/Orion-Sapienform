@@ -127,12 +127,17 @@ def call_diffusion_generate(prompt: str, *, base_url: str, timeout_sec: float) -
     try:
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             data = resp.read()
-    except (urllib.error.URLError, OSError) as exc:
-        raise DiffusionGenerationError(f"diffusion-host /generate failed: {exc}") from exc
-    except urllib.error.HTTPError as exc:  # narrower than URLError; caught separately for clarity
+    except urllib.error.HTTPError as exc:
+        # HTTPError is a URLError subclass -- this branch MUST come first, or
+        # the except below (review finding) silently swallows every non-2xx
+        # response (including orion-diffusion-host's documented 429
+        # busy-reject) under the generic "failed" message, losing the status
+        # code/reason a caller needs to tell "busy" from "broken".
         raise DiffusionGenerationError(
             f"diffusion-host /generate returned HTTP {exc.code}: {exc.reason}"
         ) from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise DiffusionGenerationError(f"diffusion-host /generate failed: {exc}") from exc
     if not data:
         raise DiffusionGenerationError("diffusion-host /generate returned empty body")
     return data
@@ -161,10 +166,16 @@ def upload_to_percept_store(
     try:
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             body = json.loads(resp.read().decode("utf-8"))
+        # A syntactically-valid but non-object JSON response (e.g. `[]`,
+        # `null`) parses fine above but has no .get -- checked inside this
+        # try (review finding) so it raises the documented PerceptUploadError
+        # instead of an uncaught AttributeError.
+        if not isinstance(body, dict):
+            raise ValueError(f"percept store response was not a JSON object: {body!r}")
+        sha256 = str(body.get("sha256") or "")
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise PerceptUploadError(f"percept upload to {url} failed: {exc}") from exc
 
-    sha256 = str(body.get("sha256") or "")
     if sha256 != local_sha:
         raise PerceptUploadError(
             f"percept store returned {sha256[:12]!r} for content hashing to {local_sha[:12]!r}"
@@ -235,6 +246,20 @@ async def run_visual_chain_once(
         logger.info("visual chain skipped: run already in flight")
         return None
 
+    async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
+                                  prior_description: str | None) -> ReverieVisualChainV1:
+        logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
+        chain = ReverieVisualChainV1(
+            chain_id=chain_id,
+            created_at=now_fn(),
+            terminal_reason="generation_failed",
+            prior_description=prior_description,
+            chain_json={"prompt": prompt, "error": str(error)},
+        )
+        with suppress(Exception):
+            await asyncio.to_thread(persist_reverie_visual_chain, chain)
+        return chain
+
     async with _visual_chain_lock:
         chain_id = str(uuid4())
         prior_description = await asyncio.to_thread(load_latest_visual_chain_prior_description)
@@ -247,46 +272,46 @@ async def run_visual_chain_once(
                 base_url=settings.diffusion_host_base_url,
                 timeout_sec=settings.visual_chain_diffusion_timeout_sec,
             )
-            stored: StoredVisualArtifact = await asyncio.to_thread(
-                store_visual_artifact, png_bytes, base_dir=settings.visual_chain_storage_dir
-            )
         except Exception as exc:
-            # Broad on purpose (module docstring: "Never raises") -- covers the
-            # typed DiffusionGenerationError/UnsupportedImageError above as
-            # well as an unanticipated failure (e.g. a disk write error inside
-            # store_visual_artifact); any of them means this run produced no
-            # usable image, so the handling is identical either way.
-            logger.warning("visual chain generation failed chain=%s err=%s", chain_id, exc)
-            chain = ReverieVisualChainV1(
-                chain_id=chain_id,
-                created_at=now_fn(),
-                terminal_reason="generation_failed",
-                prior_description=prior_description,
-                chain_json={"prompt": prompt, "error": str(exc)},
-            )
-            with suppress(Exception):
-                await asyncio.to_thread(persist_reverie_visual_chain, chain)
-            return chain
+            return await _generation_failed(chain_id, exc, prompt, prior_description)
 
-        description: str | None = None
-        try:
-            percept_sha256 = await asyncio.to_thread(
+        # store_visual_artifact (disk write) and upload_to_percept_store (a
+        # network round trip) both operate on the same immutable png_bytes
+        # with no data dependency between them -- run concurrently so the
+        # wall-clock cost is max(), not sum() (review finding). A store
+        # failure is a real generation failure (nothing to persist); an
+        # upload failure only degrades the re-observation step below (module
+        # docstring) -- handled separately despite running concurrently.
+        store_result, upload_result = await asyncio.gather(
+            asyncio.to_thread(
+                store_visual_artifact, png_bytes, base_dir=settings.visual_chain_storage_dir
+            ),
+            asyncio.to_thread(
                 upload_to_percept_store,
                 png_bytes,
                 base_url=settings.visual_chain_percept_store_url,
                 token=settings.visual_chain_percept_store_token,
                 timeout_sec=settings.visual_chain_percept_upload_timeout_sec,
-            )
-            description = await request_caption(
-                bus, percept_sha256, timeout_sec=settings.visual_chain_caption_timeout_sec
-            )
-        except Exception as exc:
+            ),
+            return_exceptions=True,
+        )
+
+        if isinstance(store_result, BaseException):
+            return await _generation_failed(chain_id, store_result, prompt, prior_description)
+        stored: StoredVisualArtifact = store_result
+
+        description: str | None = None
+        if isinstance(upload_result, BaseException):
             logger.warning(
                 "visual chain re-observation failed chain=%s sha=%s err=%s -- "
                 "image stored without a caption",
                 chain_id,
                 stored.sha256[:12],
-                exc,
+                upload_result,
+            )
+        else:
+            description = await request_caption(
+                bus, upload_result, timeout_sec=settings.visual_chain_caption_timeout_sec
             )
 
         # Only advance continuity on a real, non-empty description -- a failed
@@ -306,8 +331,18 @@ async def run_visual_chain_once(
             },
         )
         # Chain row before artifact row: reverie_visual_artifact.chain_id is a
-        # real FK (manual_migration_reverie_visual_chain.sql).
-        await asyncio.to_thread(persist_reverie_visual_chain, chain)
+        # real FK (manual_migration_reverie_visual_chain.sql). The artifact
+        # insert is skipped (not just attempted-and-swallowed) when the chain
+        # row itself failed to persist -- review finding: persisting the
+        # artifact unconditionally meant a transient chain-row failure still
+        # attempted the artifact insert, which would then also fail its own
+        # FK check, burying the real cause behind a second, confusing warning.
+        chain_persisted = await asyncio.to_thread(persist_reverie_visual_chain, chain)
+        if not chain_persisted:
+            logger.warning(
+                "visual chain artifact skipped chain=%s: chain row failed to persist", chain_id
+            )
+            return chain
 
         artifact = ReverieVisualArtifactV1(
             sha256=stored.sha256,

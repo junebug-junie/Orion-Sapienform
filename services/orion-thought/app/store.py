@@ -345,7 +345,16 @@ def persist_reverie_chain(chain) -> bool:
 
 
 def persist_reverie_visual_chain(chain) -> bool:
-    """Insert one visual-chain readout. Never raises; idempotent on chain_id."""
+    """Insert one visual-chain readout. Never raises; idempotent on chain_id.
+
+    Unlike `persist_reverie_chain` above, `ReverieVisualChainV1` has its OWN
+    `chain_json: dict` field (the run's small prompt/artifact/description
+    side-channel -- see `orion.schemas.reverie_visual`'s docstring) -- write
+    THAT into the `chain_json` column, not the full model dump. The text
+    chain's model has no such field of its own, so `model_dump()` is correct
+    there; copying that pattern here would self-nest the real data one level
+    deeper than every reader expects (review finding, caught before ship).
+    """
     try:
         from sqlalchemy import text
 
@@ -370,7 +379,7 @@ def persist_reverie_visual_chain(chain) -> bool:
                     "terminal_reason": chain.terminal_reason,
                     "ema_salience": float(chain.ema_salience),
                     "prior_description": chain.prior_description,
-                    "chain_json": json.dumps(chain.model_dump(mode="json")),
+                    "chain_json": json.dumps(chain.chain_json),
                 },
             )
         return True

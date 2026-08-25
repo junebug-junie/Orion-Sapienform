@@ -33,3 +33,12 @@ orion-rdf-store
 # PR #1467). Excluded so athena's bring-up-all doesn't try to start a stale
 # local copy pointing at the old, now-stopped athena volume/containers.
 orion-ai-town
+# orion-world-model deployed circe-only, GPU 2 (Tesla PG500-216), 2026-08-25
+# (PR #1775/#1861 -- see services/orion-world-model/.env_example's
+# CUDA_DEVICE_ORDER note for why that GPU specifically). No .env has ever
+# existed for it on athena or any other host -- .env_example's NODE_NAME=athena
+# default is only a local/dev fallback so a fresh operator .env can still boot
+# the service standalone for testing, not a claim it runs there. Excluded so
+# athena's (or any other host's) bring-up-all doesn't spam
+# "Skipped (missing services/<svc>/.env)" on every run.
+orion-world-model

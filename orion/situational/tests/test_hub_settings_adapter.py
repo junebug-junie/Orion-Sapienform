@@ -66,11 +66,27 @@ def test_adapter_turns_off_unwired_providers_explicitly() -> None:
 
     assert cfg.lab_enabled is False
     assert cfg.perception_enabled is False
-    # Weather and the runtime (self-model) probe ARE wired -- weather reads
-    # orion-hub's own ORION_SITUATION_WEATHER_* fields, and the runtime probe
-    # reuses HUB_LLM_GATEWAY_URL, a host orion-hub already calls today -- so
-    # neither costs a new, unvetted dependency.
+    # Weather, the runtime (self-model) probe, and affect ARE wired --
+    # weather reads orion-hub's own ORION_SITUATION_WEATHER_* fields, the
+    # runtime probe reuses HUB_LLM_GATEWAY_URL (a host orion-hub already
+    # calls today), and affect reads off the bus connection orion-hub
+    # already holds (bind_juniper_affect_state_bus in scripts/main.py) --
+    # none of the three costs a new, unvetted dependency, unlike
+    # lab/perception's unwired DSN/HTTP needs.
     assert cfg.runtime_enabled is True
+    assert cfg.affect_enabled is True
+    assert cfg.affect_max_age_seconds == 300
+
+
+def test_adapter_reads_hub_affect_overrides() -> None:
+    hub_settings = SimpleNamespace(
+        ORION_SITUATION_AFFECT_ENABLED=False,
+        ORION_SITUATION_AFFECT_MAX_AGE_SECONDS=60,
+    )
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(hub_settings))
+
+    assert cfg.affect_enabled is False
+    assert cfg.affect_max_age_seconds == 60
 
 
 def test_adapter_reads_hub_weather_config() -> None:

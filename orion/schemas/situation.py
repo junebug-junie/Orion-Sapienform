@@ -340,6 +340,55 @@ class PerceptionContextV1(BaseModel):
     presence_subject: Optional[str] = None           # "unknown" | "none"
 
 
+class AffectContextV1(BaseModel):
+    """Juniper's most recent facial+vocal affect read, for the situation brief.
+
+    Source: `orion-affectgpt-worker`'s inference, relayed through
+    `orion-juniper-affective-state` (`JuniperMultimodalAffectV1`, published on
+    `orion:affectgpt:assessment`) and mirrored into a single Redis key by
+    `orion/situational/juniper_affect_state.py` -- see that module's
+    docstring for the write side. This schema is the read side's privacy
+    contract, same role `PerceptionContextV1`'s docstring plays for camera
+    content.
+
+    **`summary` is a truncated excerpt of the model's own `raw_response`
+    reasoning, never the verbatim spoken transcript.** Juniper's actual
+    words (`JuniperMultimodalAffectV1.transcript`) are deliberately NOT
+    forwarded into a chat prompt -- Orion gets the model's inferred
+    affect description, not a transcript of private speech. Do not widen
+    this without proposal-mode sign-off (CLAUDE.md's cognition-change gate).
+
+    `available=False` is a real state ("no recent capture" / "capture
+    failed" / "too old to trust"), not an error swallowed into silence --
+    same honesty contract as `PerceptionContextV1.available`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["affect.context.v1"] = "affect.context.v1"
+    available: bool = False
+    summary: Optional[str] = None
+    observed_at: Optional[datetime] = None
+    observation_age_seconds: Optional[int] = None
+    # "manual" (Hub's "Check now" button) | "ambient" (Hub's ambient toggle,
+    # ~5min cadence) -- lets the prompt distinguish "you just asked to be
+    # seen" from "this is from the background loop".
+    trigger: Optional[str] = None
+    # Mirrors AffectGptAssessResultPayload.subtitle_source -- "transcribed"
+    # means Whisper actually heard something; "none" means silence/no audio
+    # signal reached the model at all, which materially changes how much to
+    # trust the read.
+    subtitle_source: Optional[str] = None
+    # "live" | "stale" | "disabled" | "unavailable" | "error" -- same
+    # vocabulary as PerceptionContextV1.source, so a missing read is never
+    # ambiguous about why.
+    source: str = "unavailable"
+    # Juniper's own inferred emotional state. session_only is the only value
+    # this should hold without an explicit, separately-approved change --
+    # same posture as PerceptionContextV1.privacy_mode.
+    privacy_mode: Literal["session_only", "persist_allowed"] = "session_only"
+
+
 class SituationDiagnosticsV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -368,6 +417,10 @@ class SituationBriefV1(BaseModel):
     # disabled flag yields "haven't seen anything recently" rather than a
     # missing field.
     perception: PerceptionContextV1 = Field(default_factory=PerceptionContextV1)
+    # Additive (2026-08-25): defaults to available=False, so an unpatched
+    # producer/disabled flag/no-recent-capture yields "no recent affect
+    # read" rather than a missing field or a stale guess.
+    affect: AffectContextV1 = Field(default_factory=AffectContextV1)
     # Additive (2026-08-14): defaults to available=False, so an unpatched
     # producer/disabled flag/probe failure yields "do not infer" rather than
     # a missing field or a stale guess.

@@ -2,11 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 616,
   "_last_change": {
-    "base": "merge base f49886573 (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base 105224a24 (origin/main)",
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment (declared_consumers: ['orion-juniper-affective-state'] -> ['orion-juniper-affective-state', 'orion-sql-writer'])"
     ]
   },
   "definitions": {
@@ -1637,7 +1637,8 @@
         "orion-juniper-affective-state"
       ],
       "declared_consumers": [
-        "orion-juniper-affective-state"
+        "orion-juniper-affective-state",
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

@@ -89,6 +89,23 @@ its own schedule. The mirror write is additive and fail-open: it runs after
 the real `orion:affectgpt:assessment` publish already succeeded, and never
 raises, so a Redis hiccup here cannot break the real event stream.
 
+## Durable persistence (2026-08-25)
+
+`orion:affectgpt:assessment` now has a second real consumer:
+`orion-sql-writer` projects every event into `juniper_multimodal_affect_log`
+(see that service's README). The Redis mirror above has a 1h TTL and is
+the live-read path for chat turns; this table is the durable history for
+any capture published while `orion-sql-writer` was actually connected to
+the bus. Review finding, 2026-08-25: `OrionBusAsync.publish()` is plain
+Redis pub/sub with no redelivery -- a capture published while
+`orion-sql-writer` itself is disconnected (restart, DB pool exhaustion)
+is dropped before it ever reaches this table too, same as any other
+consumer on this bus. Once both the TTL key and that window have passed
+with nothing durable written, the capture leaves no trace anywhere. Same
+privacy boundary as the mirror: `transcript` is never persisted here
+either (including on error -- see `JuniperMultimodalAffectSQL`'s
+docstring for the fallback-path fix).
+
 ## Operator checklist
 
 1. `GET /health`

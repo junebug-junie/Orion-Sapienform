@@ -38,19 +38,24 @@ A loop that goes dark after a human resolve/dismiss can now surface again after 
 
 ## Env/config changes
 
-None.
+- Added keys: `ORION_ATTENTION_VERDICT_EXCLUSION_TTL_HOURS` (default `48.0`) — override for `VERDICT_EXCLUSION_TTL_HOURS`, added during the review-fix pass so the thin n=2 calibration can be corrected without a code change/redeploy.
+- Removed keys: none.
+- Renamed keys: none.
+- `.env_example` updated: `services/orion-substrate-runtime/.env_example`.
+- local `.env` synced with `python3 scripts/sync_local_env_from_example.py`: yes — `orion-substrate-runtime: +ORION_ATTENTION_VERDICT_EXCLUSION_TTL_HOURS='48.0'`.
+- skipped keys requiring operator action: none. (The sync run also reported several pre-existing, unrelated "Diverged" keys across other services — not touched by this patch.)
 
 ## Tests run
 
 ```text
 docker exec orion-athena-substrate-runtime python3 -m pytest orion/substrate/tests/test_attention_verdict_exclusion.py -q
-16 passed in 1.30s
+21 passed in 1.09s
 
 docker exec orion-athena-substrate-runtime python3 -m pytest orion/substrate/ -q \
   --ignore=orion/substrate/experiments/hyperbolic_gpt/smoke_test.py \
   --ignore=orion/substrate/tests/test_causal_geometry_fdr_correction.py \
   --ignore=orion/substrate/tests/test_causal_geometry_producer.py
-683 passed, 2 warnings in 16.72s
+688 passed, 2 warnings in 16.85s
 ```
 
 (The three ignored files fail to import for a pre-existing, unrelated reason — `torch`/`numpy` aren't installed in this production runtime image. Not touched by this patch; confirmed by diff.) No local pytest/pip was available outside the container (`ModuleNotFoundError: No module named 'pytest'`/`'pip'`), so `pytest` was installed inside `orion-athena-substrate-runtime` and the edited files `docker cp`'d in for a real dependency run rather than skipped.
@@ -65,7 +70,33 @@ Not run — no compose/runtime/dependency change, pure Python logic + one new ke
 
 ## Review findings fixed
 
-(filled in after the code-review skill run completes)
+`/code-review` (medium, forked, fanned out to 3 review angles + verification) surfaced 10 candidates; the reuse-finder's "duplicate cooldown constant" candidate was checked against `attention_loops_store.py::suppress_loop`'s pre-existing 24h cooldown docstring, found to answer a genuinely different question, and folded into finding 3 below rather than reported standalone.
+
+- Finding: naive `now` raises inside the guarded `try/except`, silently caught by the same handler that guards real DB failures, re-arming an *entire batch* instead of failing one comparison.
+  - Fix: `resolved_now` now coerced to UTC-aware the same way `created_at` already was, before entering the try block.
+  - Evidence: new test `test_load_terminal_verdict_loop_ids_naive_now_does_not_poison_whole_batch` — passes.
+- Finding: `VERDICT_EXCLUSION_TTL_HOURS` was a hardcoded constant, unlike sibling thresholds in `attention_frame.py` that use an `_env_*` override convention — worse reversibility for a value explicitly disclosed as thin (n=2).
+  - Fix: added `_ttl_hours()` reading `ORION_ATTENTION_VERDICT_EXCLUSION_TTL_HOURS`, wired into the exclusion query; documented in `.env_example`.
+  - Evidence: `test_ttl_hours_env_override`, `test_ttl_hours_invalid_env_falls_back_to_default` — pass.
+- Finding: CLAUDE.md's metric quality gate items 2 (independence) and 6 (reversibility) weren't recorded in the docstring alongside the other 4 items.
+  - Fix: added explicit "Independence check" and "Reversibility" paragraphs.
+  - Evidence: `orion/substrate/attention/verdicts.py` module docstring.
+  - Also folds in: existing-mechanism cross-reference gap (should have evaluated `attention_loops_store.py::load_pending_loops`'s evidence-based staleness pattern and `dynamics.py`'s `dormancy_updated_at` as candidates before choosing a wall-clock TTL) — addressed as a disclosed "Known limitation, not addressed here" paragraph rather than a rewrite, to keep this patch a thin, single-mechanism fix; named as the natural next step if the TTL proves too blunt.
+- Finding: no test for a mixed batch (one malformed row alongside valid rows) — the exact shape where the naive-`now` batch-poisoning bug would have surfaced.
+  - Fix: added `test_load_terminal_verdict_loop_ids_mixed_batch_bad_row_does_not_poison_others`.
+  - Evidence: passes; asserts only the malformed row's own loop_id is affected.
+- Finding: the exact 48h boundary (`<=`) was untested — only 47h/49h were covered.
+  - Fix: added `exactly_48h_ago_boundary` parametrize case, asserting inclusive (still excluded at exactly 48h).
+  - Evidence: `test_load_terminal_verdict_loop_ids_ttl_cases[exactly_48h_ago_boundary-...]` — passes.
+- Finding: 4 near-duplicate single-row test functions differing only in `created_at`/expected result.
+  - Fix: consolidated into one `@pytest.mark.parametrize`-driven test.
+  - Evidence: `test_load_terminal_verdict_loop_ids_ttl_cases` — 4 parametrized cases, all pass.
+- Finding (not changed): a row with `created_at IS NULL` fails closed (stays excluded forever) — reproduces the pre-patch permanent-exclusion bug for that one row.
+  - Disposition: verified gated out today by `attention_loop_outcome.created_at timestamptz not null` (`services/orion-sql-db/manual_migration_attention_loop_outcome.sql:16`) — unreachable via normal writes. Kept the defensive fail-closed behavior and its existing test rather than changing behavior for an unreachable case.
+- Finding (not changed): incident-narrative docstring content (rejected fix attempts, specific loop_ids/timestamps) "belongs in the PR description, not permanently in source."
+  - Disposition: declined — this is the established, consistent house style across every neighboring module read this session (`salience.py`, `regime.py`, `significance.py`, `tension_outreach_trigger.py` all carry equivalent incident/derivation narratives in their own docstrings), and CLAUDE.md's metric gate explicitly wants provenance tied to the code, not passed verbally.
+- Finding (not changed): the naive-datetime coercion one-liner duplicates a pattern seen elsewhere (`episodic_consolidation.py::_utc()`, `receipts/retention.py::_utc()`).
+  - Disposition: declined — those are module-private (leading-underscore) single-use helpers in unrelated modules, not a shared public utility; extracting a shared helper for a 2-line coercion would add an abstraction layer without removing real duplication risk.
 
 ## Restart required
 

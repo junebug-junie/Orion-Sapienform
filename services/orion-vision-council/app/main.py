@@ -1,7 +1,7 @@
 import asyncio
 import time
 import uuid
-from typing import Any, Optional
+from typing import Optional
 
 from contextlib import asynccontextmanager
 
@@ -11,7 +11,6 @@ from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
-from orion.llm.openai_message_content import join_openai_message_content
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayload, LLMMessage
 from orion.schemas.vision import (
     VisionWindowPayload,
@@ -40,7 +39,7 @@ from .evidence_transition import (
     stream_key_from_window,
 )
 from .foveal_probe import (
-    FovealHostNotConfiguredError,
+    FovealNotConfiguredError,
     FovealReplyDecodeError,
     FovealTaskFailedError,
     NoFrameAvailableError,
@@ -54,48 +53,12 @@ from .interpretation import (
     parse_llm_content,
     project_interpretation_to_events,
 )
+from .llm_reply import extract_chat_result_text as _extract_chat_result_text
 
 _MAX_DEBUG_INTERPRETATIONS = 20
 from .settings import Settings
 
 settings = Settings()
-
-
-def _extract_chat_result_text(payload: Any) -> str:
-    if payload is None:
-        return ""
-    if hasattr(payload, "model_dump"):
-        payload = payload.model_dump(mode="json")
-    if not isinstance(payload, dict):
-        return join_openai_message_content(payload)
-
-    for key in ("content", "text"):
-        text = join_openai_message_content(payload.get(key))
-        if text:
-            return text
-
-    choices = payload.get("choices")
-    if isinstance(choices, list) and choices:
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
-        text = join_openai_message_content(msg.get("content"))
-        if text:
-            return text
-        text = join_openai_message_content(first.get("text"))
-        if text:
-            return text
-
-    raw = payload.get("raw")
-    if isinstance(raw, dict):
-        raw_choices = raw.get("choices")
-        if isinstance(raw_choices, list) and raw_choices:
-            first = raw_choices[0] if isinstance(raw_choices[0], dict) else {}
-            msg = first.get("message") if isinstance(first.get("message"), dict) else {}
-            text = join_openai_message_content(msg.get("content"))
-            if text:
-                return text
-
-    return ""
 
 
 class CouncilService:
@@ -509,15 +472,23 @@ async def debug_recent_interpretations(limit: int = 10):
 async def debug_foveal_probe(question: Optional[str] = None):
     """Manual trigger for the Foveal tier (docs/superpowers/specs/2026-08-12-
     perception-frontier-design.md) -- reads the newest local frame, uploads
-    it to the percept store, and RPCs a dedicated (isolated-channel) VLM host
-    for a real caption or, with ?question=, a real VQA answer. Not on any
-    automatic cadence yet; this endpoint exists to prove the lane end-to-end.
+    it to the percept store, and asks orion-llm-gateway's vision-capable
+    `chat` route for a real caption or, with ?question=, a real VQA answer.
+    Not on any automatic cadence yet; this endpoint exists to prove the lane
+    end-to-end.
     """
     if service._rpc_bus is None:
         return JSONResponse({"ok": False, "error": "rpc bus not initialized"}, status_code=503)
     try:
-        result = await run_foveal_probe(service._rpc_bus, settings, question=question)
-    except FovealHostNotConfiguredError as exc:
+        # Shares the same semaphore _call_llm_raw uses to serialize this
+        # process's outbound calls to orion-llm-gateway -- without it, a
+        # probe fired while the always-on metacog interpretation loop has an
+        # in-flight gateway call would send two concurrent requests on
+        # CHANNEL_LLM_REQUEST, exactly the concurrency the semaphore exists
+        # to prevent for every other caller.
+        async with service._llm_semaphore:
+            result = await run_foveal_probe(service._rpc_bus, settings, question=question)
+    except FovealNotConfiguredError as exc:
         return JSONResponse({"ok": False, "error_code": "not_configured", "error": str(exc)}, status_code=503)
     except NoFrameAvailableError as exc:
         return JSONResponse({"ok": False, "error_code": "no_frame", "error": str(exc)}, status_code=503)
@@ -527,11 +498,7 @@ async def debug_foveal_probe(question: Optional[str] = None):
         return JSONResponse({"ok": False, "error_code": "reply_decode_failed", "error": str(exc)}, status_code=502)
     except FovealTaskFailedError as exc:
         return JSONResponse(
-            {
-                "ok": False,
-                "error_code": exc.result.error_code or "foveal_task_failed",
-                "error": exc.result.error or str(exc),
-            },
+            {"ok": False, "error_code": exc.error_code, "error": exc.detail},
             status_code=502,
         )
     except TimeoutError as exc:

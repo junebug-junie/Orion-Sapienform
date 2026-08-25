@@ -144,6 +144,26 @@ request is `scripts/publish_test_task.py`. Wiring a real upstream caller
    VRAM-aware scheduling; without it (or without any `cuda:*` device
    configured), the service falls back to CPU -- untrained-scaffolding
    forward passes still work there, just slower.
+   **Index parity is not automatic**: `app/gpu.py::GpuInspector` picks a
+   candidate index via NVML (always PCI-bus-id order, same as `nvidia-smi`),
+   then `app/main.py::_select_device` hands that same integer straight to
+   torch as `cuda:{idx}`. On a heterogeneous multi-GPU host, CUDA's default
+   enumeration is *not* PCI-bus-id order (a "fastest first" heuristic), so
+   the two index spaces can silently disagree -- NVML's `cuda:2` and torch's
+   `cuda:2` can be two different physical cards. Confirmed live on circe
+   (2026-08-25): `WM_DEFAULT_DEVICE=cuda:2` intended for the empty
+   PG500-216 (host index 2) instead loaded weights onto host index 3, a
+   busy V100-32GB, while `/health`/`/ready` reported `device=cuda:2` and
+   looked correct. The Dockerfile now sets `CUDA_DEVICE_ORDER=PCI_BUS_ID` to
+   force torch's enumeration to match NVML's -- the same fix
+   `orion-llamacpp-host`/`orion-vllm-host` already apply for their spawned
+   subprocesses. **`orion-vision-host` (this service's `GpuInspector`
+   source pattern) has the same latent gap and has not been fixed** -- flagged,
+   not fixed here, out of scope for this patch.
+   To verify index parity after a deploy, don't trust the log line alone:
+   `docker exec <container> python3 -c "import torch; print(torch.cuda.get_device_name(N), torch.cuda.mem_get_info(N))"`
+   and cross-check the name/free-bytes against `nvidia-smi --query-gpu=index,name,memory.free --format=csv` for
+   the same physical index.
 2. **Bus**: when `ORION_BUS_ENABLED=true`, Redis must be reachable before
    `/ready` goes green.
 3. **VRAM floors**: tune `WM_VRAM_RESERVE_MB` and `WM_VRAM_HARD_FLOOR_MB` to

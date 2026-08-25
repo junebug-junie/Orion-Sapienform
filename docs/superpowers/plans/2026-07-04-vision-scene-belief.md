@@ -1,5 +1,7 @@
 # Vision Scene Belief Implementation Plan
 
+> **Superseded 2026-08-25:** this plan's "refresh TTL default 0 (contract A: silence on stable scenes)" decision caused a real 44+ hour silent `orion:vision:events` outage -- a genuinely static scene has no ceiling under `0`. The live default is now `600`. See `services/orion-vision-council/README.md` and `docs/superpowers/specs/2026-07-04-vision-scene-belief-design.md`'s own superseded note for the incident writeup. This historical plan is otherwise left as-is (it documents what was actually built at the time).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Eliminate council metacog flicker on stable office scenes by habituating `hard_labels` in `orion-vision-window` and gating council transitions on `believed_hard_labels` only.

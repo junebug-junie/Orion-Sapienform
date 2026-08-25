@@ -2,8 +2,9 @@
 
 Real-time facial+vocal affect assessment for Juniper, via
 [AffectGPT](https://github.com/zeroQiaoba/AffectGPT) (Qwen2.5-7B-Instruct +
-CLIP ViT-L + HuBERT-L, LoRA fine-tuned). Runs on **circe GPU2** (V100-32GB,
-the "agent / affect / testing" lane, :8014).
+CLIP ViT-L + HuBERT-L, LoRA fine-tuned). Runs on **circe GPU1**
+(V100-SXM2-32GB) as of 2026-08-25 -- moved off GPU2 (the "agent / affect /
+testing" lane, :8014), which was confirmed idle at the same time.
 
 Bus: consumes `orion:exec:request:AffectGptWorkerService`
 (`AffectGptAssessRequestPayload`), replies on `orion:affectgpt:reply:*`
@@ -30,7 +31,8 @@ why this is deliberately NOT the same channel/schema family as the existing
 ## Provenance (read before trusting the numbers)
 
 Everything below was proven live on circe GPU2, 2026-08-22, not assumed from
-docs. Summarized here because none of it is obvious from the code alone.
+docs. (The service moved to GPU1 on 2026-08-25 -- a pure GPU-pin change,
+re-verified live on the new card; none of the claims below changed.) Summarized here because none of it is obvious from the code alone.
 
 **Face crops.** AffectGPT's only released checkpoint
 (`MERChallenge/AffectGPT` epoch 60, downloaded via HuggingFace) is trained on

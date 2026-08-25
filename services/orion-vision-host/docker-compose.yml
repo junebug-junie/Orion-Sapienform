@@ -10,6 +10,14 @@ services:
       - .env
 
     environment:
+      # Literal, not ${CUDA_DEVICE_ORDER}-interpolated: this must win over any
+      # stray CUDA_DEVICE_ORDER a future .env adds, since compose `environment:`
+      # entries take precedence over both `env_file:` and the Dockerfile's own
+      # ENV default. See the Dockerfile's own comment on this line for why it
+      # matters -- CUDA_VISIBLE_DEVICES=<nvidia-smi index> is meaningless
+      # without it on a multi-GPU host.
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+
       - LOG_LEVEL=${LOG_LEVEL}
       - NODE_NAME=${NODE_NAME:-athena}
 

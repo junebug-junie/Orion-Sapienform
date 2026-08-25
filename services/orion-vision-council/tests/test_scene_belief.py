@@ -74,7 +74,12 @@ def test_stable_scene_when_observed_flickers_but_belief_stable() -> None:
     assert decision.reason == "stable_scene"
 
 
-def test_refresh_ttl_disabled_by_default() -> None:
+def test_max_refresh_sec_zero_means_disabled() -> None:
+    """NOTE: max_refresh_sec=0 is passed explicitly here -- this guards
+    EvidenceTransitionTracker's own "0 = never force" contract, not the
+    Settings-level default (that moved to 600, see
+    test_transition_settings.py::test_settings_refresh_ttl_default_is_nonzero,
+    2026-08-25 incident fix)."""
     tracker = EvidenceTransitionTracker()
     snap = snapshot_from_window(
         _window(hard_labels=["door"], believed_hard_labels=["door"])

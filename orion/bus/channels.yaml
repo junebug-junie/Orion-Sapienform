@@ -532,7 +532,8 @@ channels:
 
   # orion-affectgpt-worker / orion-juniper-affective-state (2026-08-22).
   # Real, webcam+mic-derived multimodal affect via AffectGPT (Qwen2.5-7B +
-  # CLIP + HuBERT), running on circe GPU2. DELIBERATELY a different domain
+  # CLIP + HuBERT), running on circe GPU1 (moved off GPU2 2026-08-25).
+  # DELIBERATELY a different domain
   # namespace (orion:affectgpt:*) and schema_id family from the existing,
   # narrower orion:substrate:juniper_affective_state (text-only swear-word
   # frequency, docs/superpowers/specs/2026-07-30-juniper-affective-state-

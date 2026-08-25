@@ -139,6 +139,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Field Attention</a>
+          <a
+            id="cabinetTabButton"
+            href="#cabinet"
+            data-hash-target="#cabinet"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Cabinet</a>
           {{HUB_AITOWN_TAB_NAV}}
           <a
             id="selfObservabilityTabButton"
@@ -1037,6 +1044,31 @@
         <div id="fieldAttentionSuppressedTargets" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
 
         <div id="fieldAttentionBottomStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+      </section>
+
+      <section id="cabinet" data-panel="cabinet" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="text-xl font-bold text-white">Cabinet — Athena Nano sensors</h2>
+            <p class="text-xs text-gray-400 max-w-4xl">
+              Live host snapshot from <code class="text-gray-500">/run/orion-sensors/latest.json</code>
+              (written by <code class="text-gray-500">orion-cabinet-sensors.service</code>), served by
+              <code class="text-gray-500">GET /api/cabinet/sensors/latest</code>. Raw channels plus Hub-local
+              derived pressures. Missing sensors render as <code class="text-gray-500">absent</code>, never as
+              zero. Polls only while this tab is visible.
+            </p>
+            <p class="text-[10px] text-gray-500 max-w-4xl mt-1">
+              Pressure strip is labeled <span class="text-gray-400">activity (Hub)</span> because baselines are
+              process-local operator-debug approximations — not the live biometrics field values.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 text-xs shrink-0">
+            <button type="button" id="cabinetRefreshBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div id="cabinetStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this tab to start polling.</div>
+        <div id="cabinetSensorGrid" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
+        <div id="cabinetPressureStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
       </section>
 
       <section id="self-observability" data-panel="self-observability" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
@@ -3588,6 +3620,7 @@
   <script src="/static/js/attention-organ.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cocreation-signals.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/self_observability.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <!--
     Vendored, not CDN. chat-markdown.js is the first place the Hub renders

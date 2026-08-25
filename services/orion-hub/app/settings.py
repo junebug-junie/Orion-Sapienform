@@ -363,6 +363,22 @@ class Settings(BaseSettings):
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
 
+    # --- Cabinet Nano sensors (Hub operator tab; host bind-mount) ---
+    # Same host paths as orion-biometrics. Written by
+    # scripts/orion_cabinet_sensor_reader.py → /run/orion-sensors/*.json.
+    CABINET_SENSORS_PATH: str = Field(
+        default="/run/orion-sensors/latest.json",
+        alias="CABINET_SENSORS_PATH",
+    )
+    CABINET_BOOT_PATH: str = Field(
+        default="/run/orion-sensors/boot.json",
+        alias="CABINET_BOOT_PATH",
+    )
+    CABINET_SENSORS_STALE_AFTER_SEC: float = Field(
+        default=10.0,
+        alias="CABINET_SENSORS_STALE_AFTER_SEC",
+    )
+
     # --- Organ signal gateway inspect (Phase 2b Hub) ---
     SIGNALS_INSPECT_ENABLED: bool = Field(default=True, alias="SIGNALS_INSPECT_ENABLED")
     SIGNALS_INSPECT_SUBSCRIBE_PATTERN: str = Field(
@@ -778,6 +794,24 @@ class Settings(BaseSettings):
     ORION_SITUATION_WEATHER_LAT: float | None = Field(default=None, alias="ORION_SITUATION_WEATHER_LAT")
     ORION_SITUATION_WEATHER_LON: float | None = Field(default=None, alias="ORION_SITUATION_WEATHER_LON")
     ORION_SITUATION_WEATHER_TTL_SECONDS: int = Field(default=600, alias="ORION_SITUATION_WEATHER_TTL_SECONDS")
+    # 2026-08-25: Juniper's facial+vocal affect read, folded into the
+    # situation brief every "orion" mode chat turn builds
+    # (orion.hub.turn_orchestrator.run_unified_turn ->
+    # orion.situational.context.build_situation_for_ctx). Default ON --
+    # unlike perception/lab above (left off in
+    # hub_settings_to_runtime_namespace() pending a verified DSN/HTTP
+    # dependency), Hub itself owns the capture loop that produces this read
+    # (services/orion-hub/scripts/vision_affect_ambient.py) and already
+    # holds the connected bus this reads from -- no new dependency. See
+    # orion/situational/juniper_affect_state.py and AffectContextV1
+    # (orion/schemas/situation.py) for the read path and privacy contract.
+    ORION_SITUATION_AFFECT_ENABLED: bool = Field(default=True, alias="ORION_SITUATION_AFFECT_ENABLED")
+    # 300s: matches Hub's own ambient-capture cadence (~5min). Tighter than
+    # perception's 900s on purpose -- a stale mood read is more likely to
+    # mislead a reply than a stale room description.
+    ORION_SITUATION_AFFECT_MAX_AGE_SECONDS: int = Field(
+        default=300, alias="ORION_SITUATION_AFFECT_MAX_AGE_SECONDS"
+    )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")
     @classmethod

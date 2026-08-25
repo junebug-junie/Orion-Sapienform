@@ -50,10 +50,17 @@ from orion.schemas.affectgpt import (
     JuniperMultimodalAffectV1,
 )
 from orion.schemas.vision import RetinaClipCaptureRequestPayload, RetinaClipCaptureResultPayload
+from orion.situational.juniper_affect_state import write_latest_juniper_affect
 
 from .settings import Settings
 
 settings = Settings()
+
+# Truncated excerpt only -- never the verbatim transcript. See
+# orion/situational/juniper_affect_state.py's docstring and
+# AffectContextV1 (orion/schemas/situation.py) for the privacy contract
+# this feeds into a chat prompt.
+_AFFECT_SUMMARY_MAX_CHARS = 300
 
 
 class PerceptFetchError(Exception):
@@ -428,6 +435,29 @@ class JuniperAffectiveStateService:
             **envelope_kwargs,
         )
         await self.bus.publish(settings.CHANNEL_AFFECTGPT_ASSESSMENT, envelope)
+
+        # Mirror a successful read into the single-key store
+        # orion/situational/context.py polls for chat-turn grounding
+        # (2026-08-25 -- closes the loop this event stream previously
+        # dead-ended at: nothing besides a manual debug CLI ever consumed
+        # `orion:affectgpt:assessment` before this). Best-effort and
+        # additive to the publish above, never a precondition for it --
+        # this call sits after the real publish already succeeded, and
+        # `write_latest_juniper_affect` is itself fail-open (never raises).
+        # Skipped on a failed/empty capture: a failure should not overwrite
+        # a real prior read, and the reader's own TTL/max-age gate already
+        # ages that prior read out on its own schedule.
+        if event.ok and event.raw_response:
+            summary = event.raw_response.strip()
+            if len(summary) > _AFFECT_SUMMARY_MAX_CHARS:
+                summary = summary[: _AFFECT_SUMMARY_MAX_CHARS - 1] + "…"
+            await write_latest_juniper_affect(
+                self.bus,
+                summary=summary,
+                observed_at=event.observed_at,
+                trigger=event.trigger,
+                subtitle_source=event.subtitle_source,
+            )
 
 
 service = JuniperAffectiveStateService()

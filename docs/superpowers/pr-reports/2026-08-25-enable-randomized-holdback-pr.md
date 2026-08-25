@@ -1,15 +1,23 @@
-# Enable the randomized holdback at 5%
+# Randomized holdback: measurement, and the case for turning it on
+
+> **STATUS CHANGE, same day.** This branch briefly set
+> `ORION_DISPATCH_HOLDBACK_FRACTION=0.05` and it ran live for about an hour
+> (verified end to end -- withheld ticks reached
+> `substrate_signal_control_cells` as `arm='randomized_holdback'`). Juniper's
+> call was to put it back to **0.0**, so what this PR now lands is the
+> measurement, the wiring proof, and the sizing -- not the capability cost.
+> Turning it on later is a one-value change with no wiring left to do.
 
 ## Summary
 
-- Flips `ORION_DISPATCH_HOLDBACK_FRACTION` 0.0 -> 0.05. Config only; the machinery shipped earlier and has been inert since.
+- Leaves `ORION_DISPATCH_HOLDBACK_FRACTION` at **0.0**. Records in `.env_example` what the arm is for, what it would cost, and that its consumer path is verified live.
 - Motivated by a null and a non-null: **no individual action Orion has beats doing five other things**, but **acting at all** is associated with an ~8x larger movement in `execution_pressure` — and only a randomized arm can say whether that is real.
 - Records the measurement, the power calculation, the cost, and an explicit exit criterion in `.env_example` so this cannot quietly become a permanent capability tax.
-- Live-verified end to end: withheld ticks are firing and landing in `substrate_signal_control_cells` under `arm='randomized_holdback'`.
+- Live-verified end to end during the hour it ran: withheld ticks fired and landed in `substrate_signal_control_cells` under `arm='randomized_holdback'`, including `execution_pressure` bin 3.
 
 ## Outcome moved
 
-"Does acting help at all?" goes from unanswerable to answerable in ~2 days. Every arm available until now was observational.
+Two live nulls are now documented with the control that produced them, and the one non-null worth chasing is sized and wired. "Does acting help at all?" remains unanswered by choice -- the arm that would settle it is proven working and switched off.
 
 ## What the measurement actually found
 

@@ -192,7 +192,7 @@ same host. See `services/orion-diffusion-host/README.md`.
 
 - `services/orion-thought/app/visual_chain.py`: `run_visual_chain_once` /
   `run_visual_chain_worker`, wired into `main.py`'s lifespan alongside
-  `chain.py`'s workers. Default-off (`ORION_VISUAL_CHAIN_ENABLED=false`).
+  `chain.py`'s workers. Shipped default-off, enabled 2026-08-25 (§13).
 - `store.py`: `persist_reverie_visual_chain`, `persist_reverie_visual_artifact`,
   `load_latest_visual_chain_prior_description` (chain row inserted before the
   artifact row — `reverie_visual_artifact.chain_id` is a real FK).
@@ -206,6 +206,24 @@ same host. See `services/orion-diffusion-host/README.md`.
 - Single-flight via the worker loop's own sequential shape (§4), plus a
   process-local lock in `run_visual_chain_once` as defense-in-depth.
 - Explicitly NOT in this patch: real context-seeding (§8, still Patch 3) —
-  the prompt is `prior_description` or a fixed seed string only. Also not in
-  this patch: turning `ORION_VISUAL_CHAIN_ENABLED` on in production — that is
-  Juniper's call after reviewing a live run, not a default this patch flips.
+  the prompt is `prior_description` or a fixed seed string only.
+
+## 13. Live (2026-08-25)
+
+`ORION_VISUAL_CHAIN_ENABLED=true` on athena, after a live smoke: real image
+generated on circe, stored on the actual host disk (required a follow-up
+fix — Patch 2's `docker-compose.yml` shipped with no `volumes:` block at
+all, so `store_visual_artifact` was writing into the container's own
+ephemeral filesystem instead of `/mnt/storage-lukewarm/orion/reverie-visual`
+until that was added), a real `reverie_visual_chain` +
+`reverie_visual_artifact` row pair with the FK intact, and an honest
+`description=null` (never a fabricated caption) on all 3 ticks run so far.
+
+Known follow-up, not yet fixed: `visual_chain.py`'s `DEFAULT_SEED_PROMPT`
+("a calm orion, soft abstract light, dreaming") reliably produces images
+too abstract for `orion-vision-host`'s `caption_frame` to pass its own
+`sanitize_caption` quality gate — 3/3 live ticks came back uncaptioned, so
+`prior_description` has never yet advanced past `None` in production. Either
+rewrite the seed prompt to something more literal/photographic, or treat
+this as expected until Patch 3's real context-seeding replaces the
+placeholder prompt entirely.

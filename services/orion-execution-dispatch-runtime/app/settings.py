@@ -196,6 +196,38 @@ class Settings(BaseSettings):
     orion_dispatch_risk_cap_advisory_only: bool = Field(
         False, alias="ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY"
     )
+    # --- Theater tripwire recovery (2026-08-25) -------------------------
+    # Before this, the tripwire was a one-way latch: it could stop Orion from
+    # acting but nothing could start it again short of a human restarting the
+    # container. That cost 45 hours of zero dispatches on 2026-08-23, tripped
+    # by ordinary post-redeploy startup wobble rather than by a real fault.
+    # See app/worker.py's incident note beside TRIPWIRE_PROBE_DISPATCHES.
+    #
+    # Set to False to restore the old restart-only behavior. The per-tick
+    # logging, frame warning and re-notification below are NOT gated by this
+    # flag -- those close the "45 hours of silence" half of the defect and
+    # there is no version of this system that is better off without them.
+    orion_dispatch_tripwire_probe_enabled: bool = Field(
+        True, alias="ORION_DISPATCH_TRIPWIRE_PROBE_ENABLED"
+    )
+    # How long after tripping (and after each failed probe) before the next
+    # single-action probe is allowed. Doubles per failed probe up to the max
+    # below, so a genuinely dead motor costs one action per hour rather than a
+    # retry storm against a broken dependency.
+    orion_dispatch_tripwire_probe_cooldown_sec: float = Field(
+        300.0, alias="ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC", gt=0.0
+    )
+    orion_dispatch_tripwire_probe_max_cooldown_sec: float = Field(
+        3600.0, alias="ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC", gt=0.0
+    )
+    # Consecutive successful probes required to clear the latch. This is the
+    # knob that answers the original design's stated objection to a
+    # self-clearing tripwire -- at 1 it would genuinely be "resume on a
+    # coincidentally-good sample", which is why the floor is 1 but the default
+    # is not. Any single probe failure resets the run to zero.
+    orion_dispatch_tripwire_rearm_successes: int = Field(
+        3, alias="ORION_DISPATCH_TRIPWIRE_REARM_SUCCESSES", ge=1
+    )
     action_outcome_channel: str = Field(
         "orion:autonomy:action:outcome", alias="BUS_ACTION_OUTCOME_OUT"
     )

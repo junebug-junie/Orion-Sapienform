@@ -9,6 +9,7 @@ isolated foveal-host channel and return its real reply.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -21,6 +22,8 @@ import pytest
 
 from app.foveal_probe import (
     FovealHostNotConfiguredError,
+    FovealReplyDecodeError,
+    FovealTaskFailedError,
     NoFrameAvailableError,
     PerceptUploadError,
     build_foveal_task_envelope,
@@ -175,15 +178,49 @@ def test_build_foveal_task_envelope_uses_supplied_correlation_id() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _ok_reply(task_type: str, **outputs) -> dict:
+    """A realistic VisionTaskResultPayload-shaped reply (matches what the
+    real vision-host actually sends -- see this session's own live curl
+    transcripts in the PR report), not an arbitrary dict. run_foveal_probe
+    now parses the reply through VisionTaskResultPayload.model_validate, so
+    an under-shaped fixture would fail validation before ever reaching the
+    assertions that matter."""
+    return {
+        "ok": True,
+        "task_type": task_type,
+        "device": "cuda:0",
+        "artifact": {
+            "artifact_id": "fake-artifact-id",
+            "correlation_id": "fake-corr-id",
+            "task_type": task_type,
+            "device": "cuda:0",
+            "inputs": {},
+            "outputs": outputs,
+            "timing": {"latency_s": 0.1},
+            "model_fingerprints": {task_type: "fake-model-id"},
+        },
+    }
+
+
+def _failed_reply(*, error: str, error_code: str) -> dict:
+    return {"ok": False, "task_type": "caption_frame", "device": "cuda:0", "error": error, "error_code": error_code}
+
+
 class _FakeCodec:
+    def __init__(self, decode_ok: bool = True, decode_error: str | None = None):
+        self._decode_ok = decode_ok
+        self._decode_error = decode_error
+
     def decode(self, data):
+        if not self._decode_ok:
+            return SimpleNamespace(ok=False, error=self._decode_error, envelope=None)
         return SimpleNamespace(ok=True, error=None, envelope=SimpleNamespace(payload=data))
 
 
 class _FakeBus:
-    def __init__(self, reply_payload):
+    def __init__(self, reply_payload, *, decode_ok: bool = True, decode_error: str | None = None):
         self._reply_payload = reply_payload
-        self.codec = _FakeCodec()
+        self.codec = _FakeCodec(decode_ok=decode_ok, decode_error=decode_error)
         self.published = []
 
     async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec):
@@ -211,7 +248,7 @@ def _settings(**overrides) -> SimpleNamespace:
 async def test_run_foveal_probe_refuses_when_channel_unconfigured(tmp_path) -> None:
     settings = _settings(CHANNEL_FOVEAL_HOST_REQUEST="", FOVEAL_FRAMES_DIR=str(tmp_path))
     (tmp_path / "frame.jpg").write_bytes(b"data")
-    bus = _FakeBus(reply_payload={"caption": {"text": "unused"}})
+    bus = _FakeBus(reply_payload=_ok_reply("caption_frame", caption={"text": "unused"}))
     with pytest.raises(FovealHostNotConfiguredError):
         await run_foveal_probe(bus, settings)
     assert bus.published == []
@@ -232,7 +269,8 @@ async def test_run_foveal_probe_end_to_end_success(tmp_path) -> None:
     (tmp_path / "frame.jpg").write_bytes(frame_bytes)
 
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
-    bus = _FakeBus(reply_payload={"caption": {"text": "a person at a desk"}})
+    reply = _ok_reply("caption_frame", caption={"text": "a person at a desk"})
+    bus = _FakeBus(reply_payload=reply)
 
     with patch(
         "urllib.request.urlopen",
@@ -241,7 +279,7 @@ async def test_run_foveal_probe_end_to_end_success(tmp_path) -> None:
         result = await run_foveal_probe(bus, settings)
 
     assert result["sha256"] == real_sha
-    assert result["reply"] == {"caption": {"text": "a person at a desk"}}
+    assert result["reply"] == reply
     assert result["frame_path"] == str(tmp_path / "frame.jpg")
 
     # The actual RPC target must be the configured channel -- never hardcoded
@@ -260,7 +298,8 @@ async def test_run_foveal_probe_vqa_mode_passes_question_through(tmp_path) -> No
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
     (tmp_path / "frame.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
-    bus = _FakeBus(reply_payload={"vqa": {"answer": "yes"}})
+    reply = _ok_reply("vqa", vqa={"question": "is the door open?", "answer": "yes"})
+    bus = _FakeBus(reply_payload=reply)
 
     with patch(
         "urllib.request.urlopen",
@@ -268,7 +307,7 @@ async def test_run_foveal_probe_vqa_mode_passes_question_through(tmp_path) -> No
     ):
         result = await run_foveal_probe(bus, settings, question="is the door open?")
 
-    assert result["reply"] == {"vqa": {"answer": "yes"}}
+    assert result["reply"] == reply
     _, envelope, _, _ = bus.published[0]
     task = VisionTaskRequestPayload.model_validate(envelope.payload)
     assert task.task_type == "vqa"
@@ -287,3 +326,77 @@ async def test_run_foveal_probe_raises_when_upload_fails(tmp_path) -> None:
         with pytest.raises(PerceptUploadError):
             await run_foveal_probe(bus, settings)
     assert bus.published == []
+
+
+@pytest.mark.asyncio
+async def test_run_foveal_probe_raises_distinct_error_on_decode_failure(tmp_path) -> None:
+    """A bus-level decode failure must not be reported through
+    PerceptUploadError -- live-caught by code review: reusing that class here
+    meant a decode failure was reported to callers as error_code=
+    'upload_failed', pointing debugging at percept-store connectivity when
+    the upload had already succeeded."""
+    frame_bytes = b"frame"
+    real_sha = hashlib.sha256(frame_bytes).hexdigest()
+    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
+    bus = _FakeBus(reply_payload={}, decode_ok=False, decode_error="schema mismatch")
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_FakeResponse(json.dumps({"sha256": real_sha}).encode()),
+    ):
+        with pytest.raises(FovealReplyDecodeError):
+            await run_foveal_probe(bus, settings)
+
+
+@pytest.mark.asyncio
+async def test_run_foveal_probe_raises_when_domain_task_failed(tmp_path) -> None:
+    """The RPC itself can succeed (envelope decodes fine) while the foveal
+    host's own task failed (e.g. profile_disabled) -- live-reproduced during
+    this PR's own testing (a percept_sha256 field-name bug made the real
+    circe host reply ok:false while the bus-level round-trip was fine). The
+    caller must be able to see that failure, not a blanket ok:true."""
+    frame_bytes = b"frame"
+    real_sha = hashlib.sha256(frame_bytes).hexdigest()
+    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
+    bus = _FakeBus(reply_payload=_failed_reply(error="profile disabled: vqa", error_code="profile_disabled"))
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_FakeResponse(json.dumps({"sha256": real_sha}).encode()),
+    ):
+        with pytest.raises(FovealTaskFailedError) as excinfo:
+            await run_foveal_probe(bus, settings)
+    assert excinfo.value.result.error_code == "profile_disabled"
+    assert excinfo.value.result.error == "profile disabled: vqa"
+
+
+@pytest.mark.asyncio
+async def test_run_foveal_probe_runs_blocking_io_off_the_event_loop(tmp_path) -> None:
+    """Code review caught that resolve_latest_frame_path/read_bytes/
+    upload_frame_bytes ran directly on the event loop, which would stall
+    CouncilService's own always-on _consume/_consume_rpc tasks (app/main.py)
+    for the full upload timeout every time this endpoint fires. Assert the
+    blocking work actually routes through asyncio.to_thread rather than
+    trusting it by inspection alone."""
+    frame_bytes = b"frame"
+    real_sha = hashlib.sha256(frame_bytes).hexdigest()
+    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
+    bus = _FakeBus(reply_payload=_ok_reply("caption_frame", caption={"text": "x"}))
+
+    calls = []
+    real_to_thread = asyncio.to_thread
+
+    async def _spy_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_FakeResponse(json.dumps({"sha256": real_sha}).encode()),
+    ), patch("app.foveal_probe.asyncio.to_thread", side_effect=_spy_to_thread):
+        await run_foveal_probe(bus, settings)
+
+    assert len(calls) == 1

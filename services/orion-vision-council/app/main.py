@@ -41,6 +41,8 @@ from .evidence_transition import (
 )
 from .foveal_probe import (
     FovealHostNotConfiguredError,
+    FovealReplyDecodeError,
+    FovealTaskFailedError,
     NoFrameAvailableError,
     PerceptUploadError,
     run_foveal_probe,
@@ -521,6 +523,17 @@ async def debug_foveal_probe(question: Optional[str] = None):
         return JSONResponse({"ok": False, "error_code": "no_frame", "error": str(exc)}, status_code=503)
     except PerceptUploadError as exc:
         return JSONResponse({"ok": False, "error_code": "upload_failed", "error": str(exc)}, status_code=502)
+    except FovealReplyDecodeError as exc:
+        return JSONResponse({"ok": False, "error_code": "reply_decode_failed", "error": str(exc)}, status_code=502)
+    except FovealTaskFailedError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_code": exc.result.error_code or "foveal_task_failed",
+                "error": exc.result.error or str(exc),
+            },
+            status_code=502,
+        )
     except TimeoutError as exc:
         return JSONResponse({"ok": False, "error_code": "timeout", "error": str(exc)}, status_code=504)
     return {"ok": True, **result}

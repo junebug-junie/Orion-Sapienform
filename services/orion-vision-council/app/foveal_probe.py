@@ -28,6 +28,7 @@ Three real hops, each independently testable:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import urllib.error
@@ -38,7 +39,7 @@ from typing import Any, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.vision import VisionTaskRequestPayload
+from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPayload
 
 
 class NoFrameAvailableError(RuntimeError):
@@ -47,6 +48,34 @@ class NoFrameAvailableError(RuntimeError):
 
 class PerceptUploadError(RuntimeError):
     """The frame could not be handed to the percept store."""
+
+
+class FovealReplyDecodeError(RuntimeError):
+    """The foveal host's RPC reply arrived but the bus envelope itself
+    failed to decode (malformed bytes, schema drift, wrong codec version).
+
+    Deliberately NOT PerceptUploadError -- code review caught that reusing
+    that class here meant a bus-level decode failure was reported to callers
+    as `error_code="upload_failed"`, sending anyone debugging it toward
+    percept-store connectivity when the upload had already succeeded.
+    """
+
+
+class FovealTaskFailedError(RuntimeError):
+    """The RPC round-trip itself worked (envelope decoded fine), but the
+    foveal host's own VisionTaskResultPayload.ok was False -- e.g. a
+    disabled profile, a bad percept_sha256, an OOM on the host's GPU.
+
+    Code review caught that the debug endpoint was returning top-level
+    `ok: true` whenever the bus-level decode succeeded, without ever looking
+    at this domain-level field -- reproduced live during this same PR's own
+    testing (a `percept_sha256` field-name bug made the foveal host reply
+    `ok: false`, and the endpoint still reported success at the top level).
+    """
+
+    def __init__(self, result: "VisionTaskResultPayload"):
+        self.result = result
+        super().__init__(f"foveal host task failed: error={result.error!r} error_code={result.error_code!r}")
 
 
 class FovealHostNotConfiguredError(RuntimeError):
@@ -160,19 +189,32 @@ async def run_foveal_probe(
     if not settings.CHANNEL_FOVEAL_HOST_REQUEST:
         raise FovealHostNotConfiguredError("CHANNEL_FOVEAL_HOST_REQUEST is unset")
 
-    frame_path = resolve_latest_frame_path(settings.FOVEAL_FRAMES_DIR)
-    if frame_path is None:
-        raise NoFrameAvailableError(
-            f"no .jpg frames found under {settings.FOVEAL_FRAMES_DIR}"
+    # File I/O and urllib.request.urlopen are both blocking. run_foveal_probe
+    # is called from a FastAPI request handler on orion-vision-council's own
+    # event loop -- the SAME loop CouncilService._consume/_consume_rpc use
+    # for the always-on peripheral vision pipeline (app/main.py). Without
+    # to_thread, a single probe call stalls that pipeline for the full
+    # upload timeout plus network latency every time it's triggered. Code
+    # review caught this: the sibling module this deliberately mirrors,
+    # orion-vision-retina/app/frame_store.py, states in its own docstring
+    # "Callers run it off the event loop via asyncio.to_thread" and every
+    # call site there honors it -- this file dropped that wrapper.
+    def _resolve_and_upload() -> tuple[Path, str]:
+        frame_path = resolve_latest_frame_path(settings.FOVEAL_FRAMES_DIR)
+        if frame_path is None:
+            raise NoFrameAvailableError(
+                f"no .jpg frames found under {settings.FOVEAL_FRAMES_DIR}"
+            )
+        data = frame_path.read_bytes()
+        sha256 = upload_frame_bytes(
+            data,
+            base_url=settings.FOVEAL_PERCEPT_STORE_URL,
+            token=settings.FOVEAL_PERCEPT_STORE_TOKEN or None,
+            timeout_sec=settings.FOVEAL_PERCEPT_UPLOAD_TIMEOUT_SEC,
         )
+        return frame_path, sha256
 
-    data = frame_path.read_bytes()
-    sha256 = upload_frame_bytes(
-        data,
-        base_url=settings.FOVEAL_PERCEPT_STORE_URL,
-        token=settings.FOVEAL_PERCEPT_STORE_TOKEN or None,
-        timeout_sec=settings.FOVEAL_PERCEPT_UPLOAD_TIMEOUT_SEC,
-    )
+    frame_path, sha256 = await asyncio.to_thread(_resolve_and_upload)
 
     corr_id = uuid.uuid4()
     reply_to = f"{settings.CHANNEL_FOVEAL_HOST_REPLY_PREFIX}:{corr_id}"
@@ -193,7 +235,11 @@ async def run_foveal_probe(
     )
     decoded = bus.codec.decode(msg.get("data"))
     if not decoded.ok:
-        raise PerceptUploadError(f"foveal host reply decode failed: {decoded.error}")
+        raise FovealReplyDecodeError(f"foveal host reply decode failed: {decoded.error}")
+
+    result = VisionTaskResultPayload.model_validate(decoded.envelope.payload)
+    if not result.ok:
+        raise FovealTaskFailedError(result)
 
     return {
         "frame_path": str(frame_path),

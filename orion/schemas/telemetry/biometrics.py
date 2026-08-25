@@ -117,6 +117,25 @@ class BiometricsSampleV1(BaseModel):
     # different (false) claim from "never checked".
     sensors: Optional[Dict[str, Any]] = None
 
+    # Host USB mic ambient audio levels (raw), read by orion-biometrics from
+    # the host-local /run/orion-audio/latest.json snapshot -- see
+    # orion/schemas/telemetry/ambient_audio.py for the wire contract
+    # and orion/telemetry/ambient_audio.py for the raw->measurements/
+    # pressures step. Shape (all keys optional, present only when the host
+    # reader has a fresh snapshot):
+    #   {
+    #     "rms": <float>,
+    #     "peak": <int>,
+    #     "received_at": "<host UTC ISO8601 receive timestamp>",
+    #     "stale": <bool, set by orion-biometrics against
+    #               AMBIENT_AUDIO_STALE_AFTER_SEC, not by the reader>,
+    #     "device": "<ALSA plughw string, optional>",
+    #     "window_sec": <float, optional>,
+    #   }
+    # ABSENT (not present, not {}) when no valid snapshot has ever been read
+    # on this node -- same absent-is-not-zero rule as `sensors` above.
+    ambient_audio: Optional[Dict[str, Any]] = None
+
 
 class BiometricsSummaryV1(BaseModel):
     model_config = ConfigDict(extra="ignore")

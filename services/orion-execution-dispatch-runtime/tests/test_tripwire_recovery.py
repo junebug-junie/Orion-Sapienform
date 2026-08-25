@@ -144,6 +144,25 @@ class TestDefect1NoRearmPath:
             _probe(w, "failed")
         assert w.theater_tripwire_active is True
 
+    def test_a_trip_starts_a_fresh_recovery_cycle(self) -> None:
+        """Tripping must reset the recovery counters, not inherit stale ones.
+
+        Asserting this after a `_clear_tripwire` proves nothing -- clearing
+        already zeroes them, so the trip-branch reset is invisible there (found
+        by mutation testing: deleting it passed the whole suite). Seeding the
+        counters directly is the only way to pin the trip's own contract.
+        """
+        w = _worker()
+        w._tripwire_probe_attempts = 9
+        w._tripwire_probe_successes = 2
+        w._tripwire_probe_cooldown_sec = MAX_COOLDOWN
+        _trip(w)
+        assert w._tripwire_probe_attempts == 0
+        assert w._tripwire_probe_successes == 0
+        assert w._tripwire_probe_cooldown_sec == COOLDOWN
+        assert w._tripwire_tripped_at is not None
+        assert w._tripwire_next_probe_at == pytest.approx(w._clock.now + COOLDOWN)
+
     def test_probing_can_be_disabled_restoring_restart_only_recovery(self) -> None:
         w = _worker(probe_enabled=False)
         _trip(w)
@@ -174,9 +193,16 @@ class TestDefect2SelfSealing:
             _probe(w, "success")
         assert w.theater_tripwire_active is False
 
-    def test_clearing_does_not_wipe_the_trailing_window(self) -> None:
-        """A motor that passes its probes but is still mostly failing must stay
-        visible to the ordinary tripwire predicate.
+    def test_clearing_wipes_the_trailing_window(self) -> None:
+        """REVERSED after review, because the original behaviour made the whole
+        re-arm a no-op.
+
+        This test used to assert the pre-trip failures SURVIVE a clear, on the
+        reasoning that they should age out naturally. They do not get the
+        chance: at clear time the window still holds >=6 unproductive entries,
+        so the `_check_theater_tripwire()` that production runs on the very next
+        line re-trips immediately. Dragging a 10-slot window back under
+        threshold needs up to 5 appended successes; the default re-arm run is 3.
         """
         w = _worker()
         _trip(w)
@@ -184,8 +210,30 @@ class TestDefect2SelfSealing:
             w._clock.advance(COOLDOWN)
             _probe(w, "success")
         assert w.theater_tripwire_active is False
-        # 10-slot deque: 7 pre-trip failures survive alongside the 3 probes.
-        assert list(w._recent_dispatch_statuses).count("failed") == 7
+        assert len(w._recent_dispatch_statuses) == 0
+
+    def test_a_clear_survives_the_check_that_runs_immediately_after_it(self) -> None:
+        """The production call order, which the first version of this file did
+        not simulate: _evaluate_tripwire_probe() then _check_theater_tripwire().
+        Omitting that second call is what let the old suite report a 900s
+        recovery for a sequence that really took 1800s and fired two false
+        'dispatch resumed' notifications on the way.
+        """
+        w = _worker()
+        _trip(w)
+        clears: list[tuple[float, int]] = []
+        w._notify_tripwire_cleared = lambda secs, n: clears.append((secs, n))  # type: ignore[method-assign]
+        trips: list[tuple[int, int]] = []
+        w._notify_tripwire = lambda a, b: trips.append((a, b))  # type: ignore[method-assign]
+
+        for _ in range(REARM):
+            w._clock.advance(COOLDOWN)
+            _probe(w, "success")
+            w._check_theater_tripwire()  # <-- what production does next
+
+        assert w.theater_tripwire_active is False
+        assert len(clears) == 1, f"re-armed more than once: {clears}"
+        assert trips == [], f"re-tripped after clearing: {trips}"
 
     def test_re_tripping_after_recovery_works_normally(self) -> None:
         w = _worker()
@@ -193,9 +241,15 @@ class TestDefect2SelfSealing:
         for _ in range(REARM):
             w._clock.advance(COOLDOWN)
             _probe(w, "success")
+            w._check_theater_tripwire()
         assert w.theater_tripwire_active is False
-        for _ in range(THEATER_TRIPWIRE_WINDOW):
+        # A cleared window means the predicate needs a full fresh window before
+        # it can trip again -- assert that blind spot explicitly rather than
+        # letting it be a surprise.
+        for _ in range(THEATER_TRIPWIRE_WINDOW - 1):
             w._record_dispatch_status("failed")
+        assert w._check_theater_tripwire() is False, "tripped on a partial window"
+        w._record_dispatch_status("failed")
         assert w._check_theater_tripwire() is True
         assert w._tripwire_probe_attempts == 0, "recovery state must reset on a re-trip"
 
@@ -290,6 +344,13 @@ class TestProbeEvidenceRules:
         assert w._tripwire_probe_successes == 0
 
     def test_a_refunded_probe_does_not_consume_an_attempt(self) -> None:
+        """A refund is only for a tick that sent NOTHING, so it owes no backoff.
+
+        That immediate re-claimability is safe only because the claim site
+        refuses to claim when nothing is preparable -- see
+        test_no_claim_when_there_is_nothing_to_send, which is the guard that
+        stops this from becoming a per-tick spin.
+        """
         w = _worker()
         _trip(w)
         w._clock.advance(COOLDOWN)
@@ -298,9 +359,41 @@ class TestProbeEvidenceRules:
         w._tripwire_probe_in_flight = True
         w._refund_tripwire_probe()
         assert w._tripwire_probe_attempts == 0
-        # And the next tick may probe immediately -- no evidence was gathered,
-        # so no backoff is owed.
         assert w._claim_tripwire_probe_slots() > 0
+
+    def test_a_probe_that_sent_an_action_but_learned_nothing_costs_a_backoff(self) -> None:
+        """Found by review. `_send_one` swallows exceptions without recording a
+        status, and `save_dispatch_result` runs AFTER the cortex-exec RPC has
+        already fired -- so with Postgres down, every probe sends a real action
+        and comes back with no statuses. Refunding that (the first version's
+        behaviour) made the next tick immediately claimable, turning the
+        documented one-probe-per-hour ceiling into ~1,800 real dispatches an
+        hour aimed at an already-failing dependency.
+        """
+        w = _worker()
+        _trip(w)
+        w._clock.advance(COOLDOWN)
+        w._claim_tripwire_probe_slots()
+        w._tripwire_probe_in_flight = True
+        w._tick_dispatch_statuses = []  # action sent, nothing recorded
+        w._evaluate_tripwire_probe()
+
+        assert w._tripwire_probe_cooldown_sec > COOLDOWN, "no backoff applied"
+        assert w._tripwire_probe_attempts == 1, "attempt was refunded"
+        assert w._claim_tripwire_probe_slots() == 0, "immediately re-probeable"
+
+    def test_repeated_inconclusive_probes_stay_bounded(self) -> None:
+        w = _worker()
+        _trip(w)
+        sent = 0
+        for _ in range(6 * 3600 // 2):  # 6 simulated hours at the real 2s tick
+            if w._claim_tripwire_probe_slots() > 0:
+                sent += 1
+                w._tripwire_probe_in_flight = True
+                w._tick_dispatch_statuses = []
+                w._evaluate_tripwire_probe()
+            w._clock.advance(2.0)
+        assert sent <= 12, f"inconclusive probes ran away: {sent} actions in 6h"
 
     def test_a_partially_successful_probe_is_a_failed_probe(self) -> None:
         """Pins `all(...)`, not `any(...)`.
@@ -348,7 +441,7 @@ class TestDefect3Silence:
         _trip(w)
         frame = SimpleNamespace(warnings=["pre-existing"], candidates=[1, 2, 3])
         for _ in range(5):
-            warnings = w._tripwire_blocked_warnings(frame)
+            warnings = w._record_tripwire_blocked_tick(frame)
             assert "pre-existing" in warnings
             assert any(x.startswith(TRIPWIRE_BLOCKED_WARNING) for x in warnings)
 
@@ -357,7 +450,7 @@ class TestDefect3Silence:
         _trip(w)
         w._clock.advance(7_200.0)
         frame = SimpleNamespace(warnings=[], candidates=[1, 2, 3, 4])
-        warning = w._tripwire_blocked_warnings(frame)[0]
+        warning = w._record_tripwire_blocked_tick(frame)[0]
         assert "tripped_for_sec=7200" in warning
         assert "candidates_withheld=4" in warning
 
@@ -366,16 +459,16 @@ class TestDefect3Silence:
         _trip(w)
         frame = SimpleNamespace(warnings=[], candidates=[])
 
-        w._tripwire_blocked_warnings(frame)
+        w._record_tripwire_blocked_tick(frame)
         first = w._tripwire_last_blocked_log_at
         assert first is not None
 
         w._clock.advance(TRIPWIRE_BLOCKED_LOG_INTERVAL_SEC / 2)
-        w._tripwire_blocked_warnings(frame)
+        w._record_tripwire_blocked_tick(frame)
         assert w._tripwire_last_blocked_log_at == first, "logged inside the throttle"
 
         w._clock.advance(TRIPWIRE_BLOCKED_LOG_INTERVAL_SEC)
-        w._tripwire_blocked_warnings(frame)
+        w._record_tripwire_blocked_tick(frame)
         assert w._tripwire_last_blocked_log_at != first
 
     def test_renotifies_on_an_interval_rather_than_once(self) -> None:
@@ -388,7 +481,7 @@ class TestDefect3Silence:
         frame = SimpleNamespace(warnings=[], candidates=[])
         # Simulate 5 hours of blocked ticks at a 2s cadence.
         for _ in range(5 * 3600 // 2):
-            w._tripwire_blocked_warnings(frame)
+            w._record_tripwire_blocked_tick(frame)
             w._clock.advance(2.0)
 
         assert len(sent) == pytest.approx(5, abs=1), f"expected ~hourly, got {len(sent)}"
@@ -432,6 +525,8 @@ class TestTheIncident:
         # cortex-exec is healthy again within a couple of minutes, but nothing
         # notices: under the old code this state persisted for 45 hours.
         recovered_after_sec = 0.0
+        clears = 0
+        w._notify_tripwire_cleared = lambda *_: None  # type: ignore[method-assign]
         frame = SimpleNamespace(warnings=[], candidates=[1, 2, 3, 4, 5])
         for _ in range(4 * 3600 // 2):  # up to 4 simulated hours, 2s ticks
             if not w.theater_tripwire_active:
@@ -441,9 +536,15 @@ class TestTheIncident:
                 w._tripwire_probe_in_flight = True
                 w._tick_dispatch_statuses = []
                 w._record_dispatch_status("success")
+                was_active = w.theater_tripwire_active
                 w._evaluate_tripwire_probe()
+                if was_active and not w.theater_tripwire_active:
+                    clears += 1
+                # Production runs this on the very next line. Omitting it is
+                # what made the first version of this test wrong.
+                w._check_theater_tripwire()
             else:
-                w._tripwire_blocked_warnings(frame)
+                w._record_tripwire_blocked_tick(frame)
             w._clock.advance(2.0)
             recovered_after_sec += 2.0
 
@@ -452,3 +553,49 @@ class TestTheIncident:
         # hours of nothing.
         assert recovered_after_sec <= REARM * COOLDOWN + 60.0
         assert recovered_after_sec < 3_600.0
+        # Exactly one re-arm. The first version of this test omitted the
+        # `_check_theater_tripwire()` below and therefore reported this same
+        # input recovering in 900s; production actually took 1800s and fired
+        # two false "dispatch resumed" notifications getting there.
+        assert clears == 1, f"re-armed {clears} times, expected exactly 1"
+
+
+class TestSettingsValidation:
+    """A max cooldown below the base makes the backoff run backwards."""
+
+    def _settings(self, **over):
+        import os
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        os.environ.setdefault("POSTGRES_URI", "postgresql://t:t@localhost/t")
+        import app.settings as settings_mod
+
+        return settings_mod.Settings(**over)
+
+    def test_max_cooldown_below_base_is_rejected(self) -> None:
+        with pytest.raises(Exception) as exc:
+            self._settings(
+                ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC=3600.0,
+                ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC=300.0,
+            )
+        assert "MAX_COOLDOWN" in str(exc.value)
+
+    def test_equal_cooldowns_are_allowed(self) -> None:
+        s = self._settings(
+            ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC=300.0,
+            ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC=300.0,
+        )
+        assert s.orion_dispatch_tripwire_probe_max_cooldown_sec == 300.0
+
+    def test_shipped_defaults_validate(self) -> None:
+        s = self._settings()
+        assert s.orion_dispatch_tripwire_probe_enabled is True
+        assert s.orion_dispatch_tripwire_rearm_successes == REARM
+        assert (
+            s.orion_dispatch_tripwire_probe_max_cooldown_sec
+            > s.orion_dispatch_tripwire_probe_cooldown_sec
+        )

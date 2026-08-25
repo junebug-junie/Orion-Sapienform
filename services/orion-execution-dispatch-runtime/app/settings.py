@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -242,6 +242,30 @@ class Settings(BaseSettings):
         900.0, alias="DISPATCH_RECONCILE_INTERVAL_SEC"
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+
+    @model_validator(mode="after")
+    def _check_tripwire_cooldowns(self) -> Settings:
+        """A max below the base makes the backoff run backwards.
+
+        Each bound is only `gt=0.0` on its own, so `COOLDOWN_SEC=3600` with
+        `MAX_COOLDOWN_SEC=300` validates field-by-field and then, on the first
+        failed probe, `min(3600 * 2, 300)` SHORTENS the wait from 3600s to
+        300s -- a misconfiguration that makes a dead motor probed more often
+        the worse it gets, silently. Cross-field, so it cannot be expressed as
+        a constraint on either field alone.
+        """
+        if (
+            self.orion_dispatch_tripwire_probe_max_cooldown_sec
+            < self.orion_dispatch_tripwire_probe_cooldown_sec
+        ):
+            raise ValueError(
+                "ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC "
+                f"({self.orion_dispatch_tripwire_probe_max_cooldown_sec}) must be >= "
+                "ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC "
+                f"({self.orion_dispatch_tripwire_probe_cooldown_sec}); a lower max "
+                "makes the probe backoff shorten on failure instead of widening."
+            )
+        return self
 
 
 _settings: Settings | None = None

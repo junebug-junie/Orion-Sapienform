@@ -45,12 +45,7 @@ DEFAULT_CHANNELS_FILE = REPO_ROOT / "orion" / "bus" / "channels.yaml"
 _GLOB_CHARS = ("*", "?", "[")
 
 
-def load_single_consumer_channels(channels_file: Path = DEFAULT_CHANNELS_FILE) -> list[str]:
-    """All catalog channel names marked single_consumer: true, glob names skipped.
-
-    Glob-shaped names (e.g. reply patterns like `orion:llm:reply*`) cannot be a
-    single concrete pub/sub channel, so a subscriber count is meaningless.
-    """
+def _load_catalog_entries(channels_file: Path) -> list[dict]:
     # Plain yaml only: the shared load_channels_catalog helper falls back to a
     # regex parse when PyYAML is absent, which silently drops single_consumer
     # flags -- for a gate, a missing parser must be a loud infra error, not an
@@ -61,10 +56,13 @@ def load_single_consumer_channels(channels_file: Path = DEFAULT_CHANNELS_FILE) -
         raise RuntimeError("PyYAML is required to read channels.yaml") from exc
 
     data = yaml.safe_load(channels_file.read_text(encoding="utf-8")) or {}
-    entries = [e for e in (data.get("channels") or []) if isinstance(e, dict)]
+    return [e for e in (data.get("channels") or []) if isinstance(e, dict)]
 
+
+def load_single_consumer_channels(channels_file: Path = DEFAULT_CHANNELS_FILE) -> list[str]:
+    """Literal (non-glob) catalog channel names marked single_consumer: true."""
     names: list[str] = []
-    for entry in entries:
+    for entry in _load_catalog_entries(channels_file):
         name = entry.get("name")
         if not isinstance(name, str):
             continue
@@ -74,6 +72,61 @@ def load_single_consumer_channels(channels_file: Path = DEFAULT_CHANNELS_FILE) -
             continue
         names.append(name)
     return names
+
+
+def load_single_consumer_glob_patterns(channels_file: Path = DEFAULT_CHANNELS_FILE) -> list[str]:
+    """Glob-shaped catalog channel names marked single_consumer: true.
+
+    A glob pattern (e.g. "orion:exec:request:VisionHostService:*") is never
+    itself a single concrete pub/sub channel -- but it exists in the catalog
+    specifically so per-suffix instances (one per isolated foveal/dedicated
+    host, e.g. "...:circe-vl") each get single_consumer coverage without a
+    new catalog entry per instance. `resolve_glob_channels` turns this
+    pattern into the concrete, currently-live channel names to actually
+    check -- skipping that step (as this gate used to) means a
+    single_consumer violation on any glob-registered channel goes
+    completely unchecked, which is exactly the incident class this whole
+    gate exists to catch (see this file's module docstring, PR #994) --
+    confirmed live 2026-08-25: PR #1860's new
+    "orion:exec:request:VisionHostService:*" entry was silently invisible to
+    this gate until this function existed.
+    """
+    patterns: list[str] = []
+    for entry in _load_catalog_entries(channels_file):
+        name = entry.get("name")
+        if not isinstance(name, str):
+            continue
+        if entry.get("single_consumer") is not True:
+            continue
+        if any(ch in name for ch in _GLOB_CHARS):
+            patterns.append(name)
+    return patterns
+
+
+def resolve_glob_channels(bus_url: str, pattern: str) -> list[str]:
+    """Concrete, currently-subscribed-or-recently-active channel names
+    matching `pattern`, via `redis-cli PUBSUB CHANNELS <pattern>` (Redis's
+    own glob matching, not Python's -- same syntax this catalog already uses
+    for the pattern itself). An empty result means no realized channel
+    matching this pattern currently exists (e.g. a foveal host that hasn't
+    been deployed yet) -- not itself a violation, just nothing to check."""
+    cmd = ["redis-cli", "-u", bus_url, "PUBSUB", "CHANNELS", pattern]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except FileNotFoundError:
+        raise RuntimeError("redis-cli not found on PATH; install redis-tools")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"redis-cli timed out after 15s connecting to {bus_url}")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"redis-cli failed (exit {proc.returncode}): {detail}")
+    combined = (proc.stdout + proc.stderr).lower()
+    if "could not connect" in combined or "connection refused" in combined:
+        raise RuntimeError(f"redis-cli could not connect: {(proc.stderr or proc.stdout).strip()}")
+    first_line = next((ln.strip() for ln in proc.stdout.splitlines() if ln.strip()), "")
+    if any(first_line.startswith(p) for p in _REDIS_ERROR_PREFIXES):
+        raise RuntimeError(f"redis error reply: {first_line}")
+    return [ln.strip('"') for ln in proc.stdout.splitlines() if ln.strip()]
 
 
 _REDIS_ERROR_PREFIXES = ("ERR", "NOAUTH", "WRONGPASS", "NOPERM", "LOADING", "MOVED", "CLUSTERDOWN")
@@ -201,16 +254,34 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         channels = load_single_consumer_channels(args.channels_file)
+        glob_patterns = load_single_consumer_glob_patterns(args.channels_file)
     except RuntimeError as exc:
         print(f"single_consumer gate: infra error (not a violation): {exc}", file=sys.stderr)
         return 2
-    if not channels:
+    if not channels and not glob_patterns:
         print(
             "single_consumer gate: no channels marked single_consumer: true in "
             f"{args.channels_file} -- catalog annotation missing?",
             file=sys.stderr,
         )
         return 2
+
+    for pattern in glob_patterns:
+        try:
+            resolved = resolve_glob_channels(args.bus_url, pattern)
+        except RuntimeError as exc:
+            print(f"single_consumer gate: infra error (not a violation): {exc}", file=sys.stderr)
+            return 2
+        if not resolved:
+            print(f"single_consumer gate: {pattern} -- no live channel matches yet, nothing to check")
+            continue
+        channels.extend(ch for ch in resolved if ch not in channels)
+
+    if not channels:
+        print(
+            "single_consumer gate OK: only glob pattern(s) registered, none currently realized"
+        )
+        return 0
 
     try:
         counts = fetch_live_counts(args.bus_url, channels)

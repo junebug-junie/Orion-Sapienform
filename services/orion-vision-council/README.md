@@ -47,8 +47,49 @@ Evidence transition choke point: `services/orion-vision-council/app/evidence_tra
 | `GET /health` | Liveness check (`{"ok": true}`) |
 | `GET /debug/last-interpretation` | Most recent `VisionSceneInterpretationV1` (in-memory ring buffer) |
 | `GET /debug/recent-interpretations?limit=10` | Last N interpretations (max 20); each record includes Council-local `parse_mode` and optional `salvage_warnings` |
+| `POST /debug/foveal-probe?question=...` | Manual trigger for the Foveal tier — see below |
 
 Interpretations are retained in an in-memory ring buffer (max 20 items) for local debugging only; they are not persisted. Debug endpoints are unauthenticated — restrict network exposure in production.
+
+## Foveal probe
+
+`docs/superpowers/specs/2026-08-12-perception-frontier-design.md`'s Foveal
+tier: a manually-triggered, event-driven call to a dedicated VLM host for a
+real caption (or, with `?question=`, a real VQA answer) on the current
+frame — distinct from the always-on peripheral pipeline. Not on any
+automatic cadence yet (surprise-driven foveation is P2, blocked on
+`want_embeddings`); this exists to prove the lane works end to end.
+
+```
+POST /debug/foveal-probe
+POST /debug/foveal-probe?question=is+the+door+open%3F
+```
+
+Three real hops (`app/foveal_probe.py`): read the newest local frame
+(`FOVEAL_FRAMES_DIR`, read-only mount) → upload it to `orion-percept-store`
+(`FOVEAL_PERCEPT_STORE_URL`) → RPC the foveal host on
+`CHANNEL_FOVEAL_HOST_REQUEST` and return its real reply.
+
+**`CHANNEL_FOVEAL_HOST_REQUEST` must be an ISOLATED channel, never the
+shared `orion:exec:request:VisionHostService` the frame-router's continuous
+pipeline uses.** A second vision-host instance subscribed to the bare shared
+channel raced its fast local-path rejections against the real, slower
+replies and silently killed 2m13s of live `host_trigger` updates on
+2026-08-25 (PR #1859). `orion/bus/channels.yaml` registers
+`orion:exec:request:VisionHostService:*` (wildcard) specifically so every
+dedicated/foveal host gets its own suffixed channel (e.g. `...:circe-vl`)
+without a new catalog entry each time — `scripts/check_single_consumer_channels.py`
+resolves that glob against the live bus and checks each realized channel's
+subscriber count, so a second consumer accidentally reusing a suffix still
+gets caught.
+
+No quality eval exists for this endpoint yet (unit tests cover the plumbing
+— upload/RPC/error-path correctness — not caption/answer quality). Both live
+calls made while building this returned real inference but an empty
+caption/answer, rejected by `sanitize_caption`/`sanitize_answer` as
+too-short — BLIP-base's documented quality ceiling (see the design doc's P1
+rationale), the concrete case for swapping the foveal host's captioner for a
+real VLM next.
 
 ## Tests
 

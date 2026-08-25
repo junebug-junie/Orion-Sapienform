@@ -17,7 +17,11 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(SVC))
 
 import app.worker as worker_mod  # noqa: E402
-from app.worker import ExecutionDispatchRuntimeWorker  # noqa: E402
+from app.worker import (  # noqa: E402
+    THEATER_TRIPWIRE_WINDOW,
+    TRIPWIRE_BLOCKED_WARNING,
+    ExecutionDispatchRuntimeWorker,
+)
 from orion.schemas.execution_dispatch_frame import (  # noqa: E402
     ExecutionDispatchCandidateV1,
     ExecutionDispatchFrameV1,
@@ -1848,3 +1852,187 @@ async def test_payload_with_no_readable_status_keeps_content_classification(monk
     await worker._send_prepared_candidates(frame)
 
     assert worker._store.save_dispatch_result.call_args.kwargs["status"] == "success"
+
+
+# --- Tripwire recovery inside the real send path (2026-08-25) --------------
+#
+# test_tripwire_recovery.py covers the recovery state machine in isolation with
+# an object.__new__ shell. That shell cannot reach _send_prepared_candidates, so
+# every line this patch added to it was unverified -- review demonstrated 7
+# mutations to those lines surviving the whole suite. These use the real worker.
+
+
+def _trip_tripwire(worker) -> None:
+    for _ in range(THEATER_TRIPWIRE_WINDOW):
+        worker._record_dispatch_status("failed")
+    assert worker._check_theater_tripwire() is True
+
+
+@pytest.mark.asyncio
+async def test_a_tripped_tick_writes_a_warning_onto_the_persisted_frame(monkeypatch) -> None:
+    """Defect 3. The frame is what gets stored, so this is the only surface on
+    which a 45-hour outage is visible after the fact."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    _trip_tripwire(worker)
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert updated.dispatched_candidates == []
+    assert any(w.startswith(TRIPWIRE_BLOCKED_WARNING) for w in updated.warnings), updated.warnings
+
+
+@pytest.mark.asyncio
+async def test_no_claim_when_there_is_nothing_to_send(monkeypatch) -> None:
+    """The guard behind S2. Without it, a tick with nothing preparable claims a
+    probe, refunds it, and thereby skips the blocked-tick warning entirely --
+    silently disabling the visibility fix on exactly the ticks where upstream is
+    also unhealthy."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    _trip_tripwire(worker)
+    # Spy on the claim itself. Asserting only on the resulting warning is not
+    # enough: the abandon path refunds and still writes the warning, so the
+    # observable frame looks identical whether this guard exists or not. What
+    # the guard actually prevents is a claim/refund spin -- one WARNING-level
+    # "tripwire_probe attempt=" line every 2s poll interval, indefinitely.
+    real_claim = worker._claim_tripwire_probe_slots
+    claims = []
+
+    def _spy():
+        claims.append(1)
+        return real_claim()
+
+    worker._claim_tripwire_probe_slots = _spy
+    worker._tripwire_next_probe_at = worker._monotonic() - 1.0  # cooldown elapsed
+    # A candidate that is NOT prepared_for_dispatch.
+    frame = _frame_with_candidates(_candidate("dispatch:1", status="blocked"))
+
+    for _ in range(5):
+        updated = await worker._send_prepared_candidates(frame)
+        assert any(w.startswith(TRIPWIRE_BLOCKED_WARNING) for w in updated.warnings)
+    assert claims == [], "claimed a probe on a tick with nothing preparable"
+    assert worker._tripwire_probe_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_a_probe_tick_sends_exactly_one_candidate(monkeypatch) -> None:
+    """Pins send_budget through the real take-loop. Reverting it to
+    max_dispatches_per_tick sends all three."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_client(
+        monkeypatch,
+        {
+            f"dispatch:{i}": {"result": {"final_text": '{"observation": "ok"}'}}
+            for i in (1, 2, 3)
+        },
+    )
+    _trip_tripwire(worker)
+    # Make the cooldown elapse.
+    worker._tripwire_next_probe_at = worker._monotonic() - 1.0
+    frame = _frame_with_candidates(
+        _candidate("dispatch:1"), _candidate("dispatch:2"), _candidate("dispatch:3")
+    )
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert len(updated.dispatched_candidates) == 1, "a probe must not resume service"
+    assert len(updated.candidates) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_untripped_tick_sends_the_full_burst(monkeypatch) -> None:
+    """The other side of the same line: ordinary ticks must be byte-for-byte
+    unchanged by this patch."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_client(
+        monkeypatch,
+        {
+            f"dispatch:{i}": {"result": {"final_text": '{"observation": "ok"}'}}
+            for i in (1, 2, 3)
+        },
+    )
+    frame = _frame_with_candidates(
+        _candidate("dispatch:1"), _candidate("dispatch:2"), _candidate("dispatch:3")
+    )
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert len(updated.dispatched_candidates) == 3
+    assert not any(w.startswith(TRIPWIRE_BLOCKED_WARNING) for w in updated.warnings)
+
+
+@pytest.mark.asyncio
+async def test_the_risk_cap_refunds_a_probe_and_still_records_the_tick(monkeypatch) -> None:
+    """S4. The daily risk cap is enforced in production today, so a tripwire
+    that trips late in a spent day hits this path on every cooldown expiry."""
+    worker = _make_worker(monkeypatch)
+    # Spend the whole cap so the enforced branch is taken.
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=10_000.0)
+    monkeypatch.setattr(
+        worker._settings, "orion_dispatch_risk_cap_advisory_only", False, raising=False
+    )
+    _trip_tripwire(worker)
+    worker._tripwire_next_probe_at = worker._monotonic() - 1.0
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert updated.dispatched_candidates == []
+    assert worker._tripwire_probe_attempts == 0, "probe consumed but nothing was sent"
+    assert any(w.startswith(TRIPWIRE_BLOCKED_WARNING) for w in updated.warnings)
+
+
+@pytest.mark.asyncio
+async def test_a_probe_tick_is_exempt_from_the_randomized_holdback(monkeypatch) -> None:
+    """Withholding the one action being used to test the motor spends a probe
+    to learn nothing and re-arms strictly slower."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_client(
+        monkeypatch, {"dispatch:1": {"result": {"final_text": '{"observation": "ok"}'}}}
+    )
+    # Hold back EVERY acting tick.
+    monkeypatch.setattr(
+        worker._settings, "orion_dispatch_holdback_fraction", 1.0, raising=False
+    )
+    _trip_tripwire(worker)
+    worker._tripwire_next_probe_at = worker._monotonic() - 1.0
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    updated = await worker._send_prepared_candidates(frame)
+
+    assert len(updated.dispatched_candidates) == 1, "the probe was held back"
+
+
+@pytest.mark.asyncio
+async def test_the_per_tick_status_list_is_reset_each_tick(monkeypatch) -> None:
+    """Without the reset, one tick's statuses leak into the next tick's probe
+    verdict -- a stale success could re-arm on evidence from before the trip."""
+    worker = _make_worker(monkeypatch)
+    worker._store.sum_risk_dispatched_today = MagicMock(return_value=0.0)
+    worker._store.latest_bus_synaptic_prediction_error = MagicMock(return_value=0.1)
+    worker._store.save_dispatch_result = MagicMock()
+    worker._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
+    _patch_bus_and_client(
+        monkeypatch, {"dispatch:1": {"result": {"final_text": '{"observation": "ok"}'}}}
+    )
+    worker._tick_dispatch_statuses = ["leaked", "leaked", "leaked"]
+    frame = _frame_with_candidates(_candidate("dispatch:1"))
+
+    await worker._send_prepared_candidates(frame)
+
+    assert "leaked" not in worker._tick_dispatch_statuses
+    assert worker._tick_dispatch_statuses == ["success"]

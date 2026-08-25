@@ -11,6 +11,7 @@ and `_notify_tripwire` actually touch are set.
 from __future__ import annotations
 
 from collections import deque
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,25 @@ def _bare_worker() -> ExecutionDispatchRuntimeWorker:
     worker.theater_tripwire_active = False
     worker._recent_dispatch_statuses = deque(maxlen=THEATER_TRIPWIRE_WINDOW)
     worker._notify = None  # _notify_tripwire wraps its use in try/except
+    # 2026-08-25: tripping now also arms the recovery schedule, so the trip
+    # path reads settings and the clock. Recovery BEHAVIOUR is exercised in
+    # test_tripwire_recovery.py; this file still covers only the trip
+    # predicate, and these are the minimum attributes that path touches.
+    worker._settings = SimpleNamespace(
+        orion_dispatch_tripwire_probe_enabled=True,
+        orion_dispatch_tripwire_probe_cooldown_sec=300.0,
+        orion_dispatch_tripwire_probe_max_cooldown_sec=3600.0,
+        orion_dispatch_tripwire_rearm_successes=3,
+    )
+    worker._tick_dispatch_statuses = []
+    worker._tripwire_tripped_at = None
+    worker._tripwire_next_probe_at = None
+    worker._tripwire_probe_cooldown_sec = 300.0
+    worker._tripwire_probe_successes = 0
+    worker._tripwire_probe_attempts = 0
+    worker._tripwire_last_blocked_log_at = None
+    worker._tripwire_last_notify_at = None
+    worker._tripwire_probe_in_flight = False
     return worker
 
 
@@ -63,12 +83,18 @@ class TestTheaterTripwireInProcessWindow:
         assert worker._check_theater_tripwire() is False
 
     def test_does_not_self_clear_once_tripped(self) -> None:
-        """Deliberate design (worker.py's own docstring): once tripped, stays
-        tripped for this process's lifetime even if fresh appends show a
-        healthy window -- only a real restart (a fresh process, fresh deque)
-        re-arms it. This is NOT a regression to fix; it's the property this
-        patch is careful to preserve while fixing the separate, real bug
-        (stale pre-restart Postgres rows defeating restart-to-re-arm)."""
+        """This PREDICATE only ever sets the latch; it never clears it.
+
+        Narrowed 2026-08-25. It used to read "once tripped, stays tripped for
+        this process's lifetime -- only a real restart re-arms it", and that
+        rule cost 45 hours of zero dispatches on 2026-08-23. The latch can now
+        be cleared, but only by a run of consecutive successful recovery probes
+        in `_evaluate_tripwire_probe` (see test_tripwire_recovery.py).
+
+        What this test still pins is the part that must not change: a healthy
+        trailing WINDOW is not by itself grounds to resume. That is the
+        original design's "could silently resume sending on a coincidentally-
+        good sample" objection, and it is still answered here."""
         worker = _bare_worker()
         n_empty = int(THEATER_TRIPWIRE_WINDOW * THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD) + 1
         for _ in range(n_empty):

@@ -34,6 +34,15 @@ services:
       - ORION_DISPATCH_MIN_NATS_PER_SEC=${ORION_DISPATCH_MIN_NATS_PER_SEC:-0.02}
       - ORION_DISPATCH_HOLDBACK_FRACTION=${ORION_DISPATCH_HOLDBACK_FRACTION:-0.0}
       - ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY=${ORION_DISPATCH_RISK_CAP_ADVISORY_ONLY:-false}
+      # This service uses an explicit allowlist, NOT env_file -- a key present
+      # in .env_example, settings.py AND the live .env still does not reach the
+      # container unless it is listed here, and every env-parity gate passes
+      # while it is missing. Shipped exactly that way once (2026-08-25): the
+      # tripwire probe's documented kill switch was unreachable in production.
+      - ORION_DISPATCH_TRIPWIRE_PROBE_ENABLED=${ORION_DISPATCH_TRIPWIRE_PROBE_ENABLED:-true}
+      - ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC=${ORION_DISPATCH_TRIPWIRE_PROBE_COOLDOWN_SEC:-300.0}
+      - ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC=${ORION_DISPATCH_TRIPWIRE_PROBE_MAX_COOLDOWN_SEC:-3600.0}
+      - ORION_DISPATCH_TRIPWIRE_REARM_SUCCESSES=${ORION_DISPATCH_TRIPWIRE_REARM_SUCCESSES:-3}
       - BUS_ACTION_OUTCOME_OUT=${BUS_ACTION_OUTCOME_OUT:-orion:autonomy:action:outcome}
       # 2026-08-12: fallback was http://orion-notify:7140, which does not
       # resolve -- verified live inside this very container

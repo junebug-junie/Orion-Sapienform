@@ -3,7 +3,8 @@ FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # System deps
 RUN apt-get update && apt-get install -y \

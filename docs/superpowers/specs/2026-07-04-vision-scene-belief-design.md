@@ -152,6 +152,8 @@ def _labels_for_gate(window) -> frozenset[str]:
 
 Set `COUNCIL_TRANSITION_REFRESH_SEC` default to **0** (disabled). Contract A: no periodic metacog on stable scenes. Operators may re-enable explicitly if needed.
 
+> **Superseded 2026-08-25.** A default of 0 has no ceiling: a real scene whose coarse `hard_labels` genuinely never change (a static home-office desk view) caused `orion:vision:events` to go silently dark for 44+ continuous hours, working exactly as designed with no error anywhere in the pipeline. The default is now `600` (10 minutes) -- see `services/orion-vision-council/README.md` and `app/settings.py` for the incident writeup and the tradeoffs picked for that number.
+
 ---
 
 ## 7. Data flow and restart behavior

@@ -85,6 +85,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "substrate.dev_economics_ledger.v1": "DevEconomicsLedgerSQL",
     "substrate.doc_semantic_drift.v1": "DocSemanticDriftSQL",
     "juniper.affective_state.v1": "JuniperAffectiveStateSQL",
+    "affectgpt.juniper_multimodal_affect.v1": "JuniperMultimodalAffectSQL",
     "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
 }
 
@@ -182,6 +183,7 @@ class Settings(BaseSettings):
             "orion:debug:attention:streak_tick",
             "orion:substrate:dev_economics_ledger",
             "orion:substrate:doc_semantic_drift","orion:substrate:juniper_affective_state",
+            "orion:affectgpt:assessment",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

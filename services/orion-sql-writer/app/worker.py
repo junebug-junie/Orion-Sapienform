@@ -84,6 +84,7 @@ from app.models import (
     DevEconomicsLedgerSQL,
     DocSemanticDriftSQL,
     JuniperAffectiveStateSQL,
+    JuniperMultimodalAffectSQL,
     GrammarEventSQL,
     EquilibriumServiceTransitionSQL,
     HarnessTurnTraceSQL,
@@ -108,6 +109,7 @@ from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 from orion.schemas.affective_state import JuniperAffectiveStateV1
+from orion.schemas.affectgpt import JuniperMultimodalAffectV1
 
 from app.route_coverage import log_route_coverage
 
@@ -469,6 +471,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
     "DocSemanticDriftSQL": (DocSemanticDriftSQL, DocSemanticDriftV1),
     "JuniperAffectiveStateSQL": (JuniperAffectiveStateSQL, JuniperAffectiveStateV1),
+    "JuniperMultimodalAffectSQL": (JuniperMultimodalAffectSQL, JuniperMultimodalAffectV1),
     "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),
 }
 
@@ -1776,6 +1779,28 @@ def _extract_calibration_profile_id(actions: list[str]) -> str | None:
     return None
 
 
+def _affectgpt_multimodal_event_id(
+    data_to_process: Dict[str, Any], extra_sql_fields: Dict[str, Any], env: BaseEnvelope
+) -> str:
+    """JuniperMultimodalAffectV1 has no event_id field of its own (unlike
+    the tiling-window text signal) -- key on the correlation_id already
+    threading the retina-capture/worker-assess/this-event legs of one
+    tick, so a redelivery upserts instead of duplicating. Falls back to
+    the envelope id, then a fresh uuid4, in case a producer ever omits
+    correlation_id (BaseEnvelope's own field always carries one in
+    practice, so this is defensive, not a reachable normal path).
+
+    Extracted as a pure function so the fallback chain is unit-testable
+    without needing an invalid BaseEnvelope (correlation_id is a
+    required, always-generated uuid there)."""
+    return (
+        extra_sql_fields.get("correlation_id")
+        or data_to_process.get("correlation_id")
+        or (str(env.id) if getattr(env, "id", None) else None)
+        or str(uuid.uuid4())
+    )
+
+
 def _normalize_endogenous_runtime_record_payload(payload: Any) -> Dict[str, Any]:
     record = EndogenousRuntimeExecutionRecordV1.model_validate(payload)
     return {
@@ -2589,6 +2614,11 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 extra_sql_fields["id"] = base_id
                 if not data_to_process.get("correlation_id") and not extra_sql_fields.get("correlation_id"):
                     extra_sql_fields["correlation_id"] = base_id
+
+            if sql_model is JuniperMultimodalAffectSQL and isinstance(data_to_process, dict):
+                extra_sql_fields["event_id"] = _affectgpt_multimodal_event_id(
+                    data_to_process, extra_sql_fields, env
+                )
 
             if sql_model is CollapseEnrichment and isinstance(data_to_process, dict):
                 extra_sql_fields["id"] = str(uuid.uuid4())

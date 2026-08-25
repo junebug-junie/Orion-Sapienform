@@ -584,15 +584,22 @@ channels:
     schema_id: "JuniperMultimodalAffectV1"
     message_kind: "affectgpt.juniper_multimodal_affect.v1"
     producer_services: ["orion-juniper-affective-state"]
-    # No real downstream COGNITION consumer yet -- flagged honestly per
-    # CLAUDE.md, same pattern as orion:worldmodel:predictions below (which
-    # lists itself the same way). The real, live-subscribable consumer is
-    # services/orion-juniper-affective-state/scripts/tap_assessments.py
+    # No real downstream COGNITION consumer subscribes to THIS bus channel
+    # -- flagged honestly per CLAUDE.md, same pattern as
+    # orion:worldmodel:predictions below (which lists itself the same
+    # way). The cognition path (orion/situational/juniper_affect_state.py,
+    # PR #1865) reads a SEPARATE single-key Redis SETEX mirror
+    # _publish_event() writes alongside this bus publish, not this
+    # channel via subscription. orion-sql-writer added 2026-08-25 as the
+    # first real persistence consumer (JuniperMultimodalAffectSQL) -- same
+    # "publish real data first" -> "stop dropping it on the floor" fix
+    # already applied to juniper_affective_state and doc_semantic_drift
+    # above. services/orion-juniper-affective-state/scripts/tap_assessments.py
     # (mirrors orion-vision-host's tap_artifacts.py /
-    # orion-world-model's tap_predictions.py) -- not a cognition consumer,
-    # but a genuine one, which is what keeps this entry off the
+    # orion-world-model's tap_predictions.py) remains the live-tap debug
+    # consumer, which is what originally kept this entry off the
     # metric-lineage orphan ratchet honestly rather than via a baseline bump.
-    consumer_services: ["orion-juniper-affective-state"]
+    consumer_services: ["orion-juniper-affective-state", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-22"
 

@@ -89,6 +89,16 @@ its own schedule. The mirror write is additive and fail-open: it runs after
 the real `orion:affectgpt:assessment` publish already succeeded, and never
 raises, so a Redis hiccup here cannot break the real event stream.
 
+## Durable persistence (2026-08-25)
+
+`orion:affectgpt:assessment` now has a second real consumer:
+`orion-sql-writer` projects every event into `juniper_multimodal_affect_log`
+(see that service's README). The Redis mirror above has a 1h TTL and is
+the live-read path for chat turns; this table is the actual history --
+once the TTL key expires, the SQL row is the only remaining record a
+capture happened. Same privacy boundary as the mirror: `transcript` is
+never persisted there either.
+
 ## Operator checklist
 
 1. `GET /health`

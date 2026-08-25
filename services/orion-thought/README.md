@@ -254,7 +254,10 @@ byte-identical to today's stance behavior.
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
 orchestration Patch 1.5 (`services/orion-diffusion-host`'s real model wiring)
-was a prerequisite for. Default-off (`ORION_VISUAL_CHAIN_ENABLED=false`).
+was a prerequisite for. **Live** (`ORION_VISUAL_CHAIN_ENABLED=true`, enabled
+2026-08-25 per Juniper after a live smoke verified the full loop: real file
+on disk, real `reverie_visual_chain`/`reverie_visual_artifact` rows,
+correct FK, honest `description=null` rather than a fabricated caption).
 
 On a slow, capacity-gated cadence (`ORION_VISUAL_CHAIN_INTERVAL_SEC`, default
 600s — slower than the text chain's ~90s, per design doc §4): generate an
@@ -313,7 +316,7 @@ Flags:
 
 | Env key | Default | Role |
 |---------|---------|------|
-| `ORION_VISUAL_CHAIN_ENABLED` | `false` | Master switch |
+| `ORION_VISUAL_CHAIN_ENABLED` | `true` | Master switch |
 | `ORION_VISUAL_CHAIN_INTERVAL_SEC` | `600` | Trigger cadence (real cadence is `max(this, run duration)`) |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
 | `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `30` | `/generate` HTTP timeout |

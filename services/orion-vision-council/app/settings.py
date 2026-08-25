@@ -33,6 +33,38 @@ class Settings(BaseSettings):
     COUNCIL_LLM_TIMEOUT_SEC: float = 90.0
     COUNCIL_STRUCTURED_OUTPUT_METHOD: str = "json_object_schema"
 
+    # Foveal probe (docs/superpowers/specs/2026-08-12-perception-frontier-design.md's
+    # "Foveal tier" -- rare, event-driven, richer-than-BLIP interpretation of the
+    # current frame, distinct from the always-on peripheral pipeline). Manually
+    # triggered via POST /debug/foveal-probe today; not yet wired to any
+    # automatic trigger (surprise-driven foveation is P2, blocked on
+    # want_embeddings -- see that design doc's pragmatic ladder).
+    #
+    # Empty by default -- unset means "no foveal host configured", and the
+    # probe refuses cleanly rather than silently calling a channel nobody is
+    # listening on. Point this at a dedicated, ISOLATED vision-host intake
+    # channel (e.g. circe's orion:exec:request:VisionHostService:circe-vl),
+    # never at the shared orion:exec:request:VisionHostService channel the
+    # frame-router's continuous pipeline uses -- two consumers on that shared
+    # channel race on every task and the faster (usually wrong) reply wins;
+    # see PR #1859 / this session's own incident record for why this is a
+    # hard requirement, not a style preference.
+    CHANNEL_FOVEAL_HOST_REQUEST: str = ""
+    CHANNEL_FOVEAL_HOST_REPLY_PREFIX: str = "orion:vision:reply:foveal"
+    FOVEAL_HOST_TIMEOUT_SEC: float = 45.0
+
+    # Where captured frames already live on this node's local disk (read-only
+    # mount -- same convention orion-vision-host itself uses via
+    # VISION_FRAMES_DIR). The probe reads the newest .jpg here, uploads it to
+    # the percept store, and hands the resulting sha256 to the foveal host --
+    # never a local path, since the foveal host is on a different machine
+    # with no shared filesystem.
+    FOVEAL_FRAMES_DIR: str = "/mnt/telemetry/vision/frames"
+
+    FOVEAL_PERCEPT_STORE_URL: str = ""
+    FOVEAL_PERCEPT_STORE_TOKEN: str = ""
+    FOVEAL_PERCEPT_UPLOAD_TIMEOUT_SEC: float = 10.0
+
     # Host-pipe transition gate: interpret only on hard_labels / person-presence changes (evidence_transition.py).
     COUNCIL_TRANSITION_GATE_ENABLED: bool = Field(
         default=True,

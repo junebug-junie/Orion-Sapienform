@@ -519,6 +519,23 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  # ISOLATED per-host suffix (e.g. ":circe-vl"), deliberately never the bare
+  # channel above. A second orion-vision-host instance subscribing to the
+  # bare shared channel raced its fast local-path rejections against the
+  # first instance's real, slower replies and silently killed 2m13s of live
+  # presence updates on 2026-08-25 (see PR #1859 / #1860 and
+  # app/foveal_probe.py's module docstring in orion-vision-council). Every
+  # dedicated/foveal vision-host deployment gets its OWN suffixed channel
+  # name here, not a shared one.
+  - name: "orion:exec:request:VisionHostService:*"
+    kind: "request"
+    schema_id: "VisionTaskRequestPayload"
+    producer_services: ["orion-vision-council"]
+    consumer_services: ["orion-vision-host"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-25"
+
   - name: "orion:vision:reply:*"
     kind: "result"
     schema_id: "VisionTaskResultPayload"

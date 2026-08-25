@@ -71,6 +71,24 @@ any other failed assessment.
   every trigger, success or failure (the event's `ok`/`error` fields carry
   that — a failed assessment is still a real event, not a silent drop).
 
+## Closing the loop into Orion's own chat turns (2026-08-25)
+
+Before this date, `orion:affectgpt:assessment` had exactly one consumer:
+`scripts/tap_assessments.py`, a manual debug CLI. Orion's own chat turns
+never found out about a capture — only the Hub UI panel showed it to
+Juniper. `_publish_event` now ALSO mirrors every successful capture (a
+truncated excerpt of `raw_response`, capped at `_AFFECT_SUMMARY_MAX_CHARS`
+= 300 chars — never the verbatim `transcript`) into a single Redis key
+(`orion:juniper_affect:latest`, `orion/situational/juniper_affect_state.py`)
+that `orion/situational/context.py` polls for every "orion" mode chat turn's
+situation brief, gated on a configurable max-age (default 300s,
+`ORION_SITUATION_AFFECT_MAX_AGE_SECONDS` in orion-hub/orion-cortex-exec).
+Failed/empty captures are not mirrored — a failure should not overwrite a
+real prior read, and the reader's own age gate ages that prior read out on
+its own schedule. The mirror write is additive and fail-open: it runs after
+the real `orion:affectgpt:assessment` publish already succeeded, and never
+raises, so a Redis hiccup here cannot break the real event stream.
+
 ## Operator checklist
 
 1. `GET /health`

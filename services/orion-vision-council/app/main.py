@@ -6,6 +6,7 @@ from typing import Any, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -37,6 +38,14 @@ from .evidence_transition import (
     EvidenceTransitionTracker,
     snapshot_from_window,
     stream_key_from_window,
+)
+from .foveal_probe import (
+    FovealHostNotConfiguredError,
+    FovealReplyDecodeError,
+    FovealTaskFailedError,
+    NoFrameAvailableError,
+    PerceptUploadError,
+    run_foveal_probe,
 )
 from .interpretation import (
     InterpretationParseOutcome,
@@ -494,3 +503,37 @@ async def debug_last_interpretation():
 async def debug_recent_interpretations(limit: int = 10):
     limit = min(max(1, limit), _MAX_DEBUG_INTERPRETATIONS)
     return {"interpretations": service._recent_interpretations[-limit:]}
+
+
+@app.post("/debug/foveal-probe")
+async def debug_foveal_probe(question: Optional[str] = None):
+    """Manual trigger for the Foveal tier (docs/superpowers/specs/2026-08-12-
+    perception-frontier-design.md) -- reads the newest local frame, uploads
+    it to the percept store, and RPCs a dedicated (isolated-channel) VLM host
+    for a real caption or, with ?question=, a real VQA answer. Not on any
+    automatic cadence yet; this endpoint exists to prove the lane end-to-end.
+    """
+    if service._rpc_bus is None:
+        return JSONResponse({"ok": False, "error": "rpc bus not initialized"}, status_code=503)
+    try:
+        result = await run_foveal_probe(service._rpc_bus, settings, question=question)
+    except FovealHostNotConfiguredError as exc:
+        return JSONResponse({"ok": False, "error_code": "not_configured", "error": str(exc)}, status_code=503)
+    except NoFrameAvailableError as exc:
+        return JSONResponse({"ok": False, "error_code": "no_frame", "error": str(exc)}, status_code=503)
+    except PerceptUploadError as exc:
+        return JSONResponse({"ok": False, "error_code": "upload_failed", "error": str(exc)}, status_code=502)
+    except FovealReplyDecodeError as exc:
+        return JSONResponse({"ok": False, "error_code": "reply_decode_failed", "error": str(exc)}, status_code=502)
+    except FovealTaskFailedError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_code": exc.result.error_code or "foveal_task_failed",
+                "error": exc.result.error or str(exc),
+            },
+            status_code=502,
+        )
+    except TimeoutError as exc:
+        return JSONResponse({"ok": False, "error_code": "timeout", "error": str(exc)}, status_code=504)
+    return {"ok": True, **result}

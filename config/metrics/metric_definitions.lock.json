@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 613,
+  "metric_count": 616,
   "_last_change": {
-    "base": "merge base c250b48ec (origin/main)",
-    "change_count": 0,
+    "base": "merge base 10b2697d1 (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-vision-council/orion:exec:request:VisionHostService:*"
     ]
   },
   "definitions": {
@@ -2577,6 +2577,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-vision-council/orion:exec:request:VisionHostService:*": {
+      "schema_id": "VisionTaskRequestPayload",
+      "all_producers": [
+        "orion-vision-council"
+      ],
+      "declared_consumers": [
+        "orion-vision-host"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-vision-council/orion:exec:request:VisionScribeService": {
       "schema_id": "VisionScribeRequestPayload",
       "all_producers": [
@@ -3178,6 +3189,16 @@
     "metric://field_channel/orion-field-digester/avg_step_chars_pressure": {
       "meaning": "Per-step verbosity of the FCC motor's tool output for one turn.",
       "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_ambient_audio_activity": {
+      "meaning": "Athena cabinet ambient microphone activity (CMTECK USB RMS band deviation). Levels-only -- not speech content. Distinct from fan_pressure and thermal_pressure.",
+      "notes": "category=physical_substrate level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/cabinet_ambient_audio_staleness": {
+      "meaning": "Whether Athena's ambient microphone snapshot is too stale to trust. When elevated, cabinet_ambient_audio_activity is withheld upstream -- this channel carries the liveness signal instead.",
+      "notes": "category=sensor_trust_liveness level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/cabinet_climate_activity": {

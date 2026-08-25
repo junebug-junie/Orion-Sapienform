@@ -203,6 +203,21 @@ class Settings(BaseSettings):
     orion_situation_perception_stream_id: str = Field(
         "cam0", alias="ORION_SITUATION_PERCEPTION_STREAM_ID"
     )
+    # 2026-08-25: Juniper's facial+vocal affect read (orion-affectgpt-worker
+    # via orion-juniper-affective-state), mirrored into a single Redis key
+    # by orion/situational/juniper_affect_state.py. Default ON, unlike
+    # perception: the capture is already an explicit Juniper action (Hub's
+    # "Check now"/ambient toggle), so this is surfacing an already-consented
+    # read, not new surveillance -- see AffectContextV1's docstring
+    # (orion/schemas/situation.py) for the privacy contract (excerpt only,
+    # never the verbatim transcript).
+    orion_situation_affect_enabled: bool = Field(True, alias="ORION_SITUATION_AFFECT_ENABLED")
+    # 300s: matches Hub's ambient-capture cadence (~5min). Tighter than
+    # perception's 900s on purpose -- a stale mood read is more likely to
+    # mislead a reply than a stale room description.
+    orion_situation_affect_max_age_seconds: int = Field(
+        300, alias="ORION_SITUATION_AFFECT_MAX_AGE_SECONDS"
+    )
     orion_situation_lab_provider: str = Field("stub", alias="ORION_SITUATION_LAB_PROVIDER")
     # 2026-08-14: "does Orion know what model it's running on" (Juniper).
     # Default ON -- unlike perception, this carries no private-home content,

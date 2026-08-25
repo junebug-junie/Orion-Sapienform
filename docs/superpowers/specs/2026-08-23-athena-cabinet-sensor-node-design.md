@@ -6,7 +6,7 @@ Worktree: `/mnt/scripts/Orion-Sapienform-cabinet-sensor-node` on `feat/cabinet-s
 
 ## Arsonist summary
 
-Give Athena a physical cabinet sense: a Nano ESP32 on USB publishes raw sensor NDJSON; a tiny host reader snapshots it; `orion-biometrics` folds it into the existing biometrics → grammar → substrate → field-digester path as **new** measurements, pressures, and field channels on node `athena`. No Arduino→field shortcut. No overload of host CPU/GPU/thermal/fan pressures. No invented absolute “badness” thresholds in v1. USB mic on Athena is documented only, not wired.
+Give Athena a physical cabinet sense: a Nano ESP32 on USB publishes raw sensor NDJSON; a tiny host reader snapshots it; `orion-biometrics` folds it into the existing biometrics → grammar → substrate → field-digester path as **new** measurements, pressures, and field channels on node `athena`. No Arduino→field shortcut. No overload of host CPU/GPU/thermal/fan pressures. No invented absolute “badness” thresholds in v1. USB mic on Athena is out of scope for this patch — see `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md` for the separate host-side ambient audio levels path (not Nano firmware).
 
 ## Decisions locked
 
@@ -19,7 +19,7 @@ Give Athena a physical cabinet sense: a Nano ESP32 on USB publishes raw sensor N
 | Existing WIP | Continue; drop absolute climate/PM pressure normalizers from WIP |
 | Firmware | Write + flash in-repo (Nano never installed on Athena before) |
 | Arduino audio (MAX9814) | Removed — not on this board |
-| USB mic on Athena | Document-only this patch |
+| USB mic on Athena | Out of scope — see `2026-08-24-athena-ambient-audio-levels-design.md` (host reader, not Nano) |
 | Perturbation mode | `mode="replace"` for all current-reading cabinet hints |
 
 ## Current architecture (grounded)
@@ -123,7 +123,7 @@ Emit one versioned NDJSON object per line at ~1 Hz. On sensor init/read failure,
 | BNO085 | **UART-RVC only** — not on ESP32 I2C |
 | MAX9814 | **Not used** — removed from this design |
 
-Audio is not part of the Nano frame. A USB microphone plugged into Athena is a separate host audio concern; this patch only documents that fact (non-goal for code).
+Audio is not part of the Nano frame. A USB microphone plugged into Athena is a separate host-side concern — implemented in `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md` (host ALSA reader → biometrics `ambient_audio`, not Nano `sensors`).
 
 Host-local transport validation: `orion/schemas/telemetry/cabinet_sensor_frame.py` (not a bus-registry payload). Align WIP field names to this document (`schema: orion.sensor_frame.v1`, no `audio` block, lidar trust rule above).
 
@@ -299,7 +299,7 @@ E2E: scripted smokes on Athena when hardware is attached.
 
 ## Non-goals
 
-- USB microphone capture on Athena (document only)
+- USB microphone capture on Athena (see `2026-08-24-athena-ambient-audio-levels-design.md` — host path, not this Nano patch)
 - MAX9814 / Arduino analog audio
 - Absolute comfort or AQI thresholds in v1
 - Calibrated dBA

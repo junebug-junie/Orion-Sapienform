@@ -49,8 +49,19 @@ def test_resolve_latest_frame_path_ignores_non_jpg_files(monkeypatch, tmp_path) 
 def test_load_image_without_image_path_or_use_latest_frame_still_raises_as_before() -> None:
     """Backward compat: a request with neither image_path/frame_path NOR
     use_latest_frame must keep the exact prior behavior (a clear error),
-    not silently fall back to the latest frame -- opt-in, not implicit."""
-    with pytest.raises(ValueError, match="request.image_path is required"):
+    not silently fall back to the latest frame -- opt-in, not implicit.
+
+    Assertion text updated (pre-existing bug, unrelated to this patch --
+    found while running this file's suite to verify the vision_profiles.yaml
+    cleanup): the percept_sha256 pointer path (PR #1867) changed the real
+    message from "request.image_path is required" to the one below; this
+    test never ran against that real message before now because torch isn't
+    importable in this repo's shared dev venv, so pytest -q errors at
+    collection instead of reaching this assertion."""
+    with pytest.raises(
+        ValueError,
+        match=r"request needs image_path or percept_sha256",
+    ):
         _load_image_from_request({})
 
 

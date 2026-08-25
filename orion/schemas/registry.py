@@ -596,6 +596,7 @@ from orion.schemas.attention_salience import (
 )
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.situation import (
+    AffectContextV1,
     AgendaContextV1,
     ConversationPhaseContextV1,
     EnvironmentContextV1,
@@ -903,6 +904,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SituationPolicyV1": SituationPolicyV1,
     "SituationDiagnosticsV1": SituationDiagnosticsV1,
     "PerceptionContextV1": PerceptionContextV1,
+    "AffectContextV1": AffectContextV1,
     "SituationBriefV1": SituationBriefV1,
     "SituationPromptFragmentV1": SituationPromptFragmentV1,
     "ChatHistoryMessageV1": ChatHistoryMessageV1,  # includes memory policy + client_meta fields

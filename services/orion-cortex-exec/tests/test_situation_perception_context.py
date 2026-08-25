@@ -337,15 +337,19 @@ def test_presence_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> 
     ],
 )
 def test_coarse_duration_boundaries(seconds, expected_substring) -> None:
-    from orion.situational.context import _coarse_duration
+    # Promoted to orion.situational.perception_reader (2026-08-25) so
+    # endogenous_outreach.py's presence-aware prompt block reads the same
+    # formatting instead of a second, independently-drifting copy --
+    # context.py now imports the public name rather than defining its own.
+    from orion.situational.perception_reader import coarse_duration
 
-    assert _coarse_duration(seconds) == expected_substring
+    assert coarse_duration(seconds) == expected_substring
 
 
 def test_negative_or_none_since_sec_produces_no_fragment() -> None:
-    from orion.situational.context import _presence_fragment
+    from orion.situational.perception_reader import presence_fragment
 
-    assert _presence_fragment("present", None) is None
-    assert _presence_fragment("present", -5.0) is None
-    assert _presence_fragment("absent", 100.0) is None
-    assert _presence_fragment(None, 100.0) is None
+    assert presence_fragment("present", None) is None
+    assert presence_fragment("present", -5.0) is None
+    assert presence_fragment("absent", 100.0) is None
+    assert presence_fragment(None, 100.0) is None

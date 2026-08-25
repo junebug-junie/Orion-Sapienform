@@ -126,6 +126,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.notify import HubNotificationEvent
+from orion.situational.perception_reader import fetch_presence, presence_fragment
 
 logger = logging.getLogger("orion-hub.endogenous_outreach")
 
@@ -225,6 +226,14 @@ class OutreachContext:
     # level) to match this file's existing lazy-import convention for
     # cross-Hub-module dependencies (curiosity_hint, hub_presence below).
     tension_reason: Optional["TensionTriggerReason"] = None  # noqa: F821
+    # Camera-derived, distinct from `presence` above (that's chat liveness --
+    # substrate_hub_presence). This is substrate_embodied_presence, the same
+    # row orion-cortex-exec's own situation brief reads via
+    # orion.situational.perception_reader.fetch_presence -- see design doc
+    # section 6.3, "the thinnest patch here." Enrichment only, deliberately
+    # NOT part of is_empty() below: an empty room with nothing else happening
+    # must never be a reason to interrupt Juniper on its own.
+    embodied_presence: Optional[Dict[str, Any]] = None
 
     def is_empty(self) -> bool:
         return (
@@ -255,6 +264,35 @@ def _fetch_curiosity_summaries() -> List[str]:
         if len(summaries) >= _MAX_CURIOSITY_SUMMARIES:
             break
     return summaries
+
+
+def _fetch_embodied_presence() -> Optional[Dict[str, Any]]:
+    """Current `substrate_embodied_presence` snapshot for the configured
+    camera stream, or None -- reuses `orion.situational.perception_reader.
+    fetch_presence`, the same reader orion-cortex-exec's own situation
+    brief already uses (design doc section 5: "reuse what's built, don't
+    build a new one"). That module's own fail-open contract already
+    degrades a DB error to None rather than raising; nothing extra to add
+    here except naming the stream_id.
+
+    Passes this tick's own shared `pg_engine` (review finding, 2026-08-25):
+    `fetch_presence` would otherwise open its own second connection pool
+    against the identical database `pg_engine.py` was purpose-built to stop
+    `_fetch_recent_turns`/`tension_outreach_trigger` from duplicating.
+    """
+    # scripts.settings/scripts.pg_engine are lazily imported here, not at
+    # module top -- same reasoning as this file's own `_source_ref()`: full
+    # hub settings need the real operator env, and a bare test process
+    # shouldn't have to provide it just to import this module.
+    from scripts.pg_engine import get_engine
+    from scripts.settings import settings
+
+    # No getattr fallback -- ENDOGENOUS_OUTREACH_PERCEPTION_STREAM_ID is a
+    # real pydantic Field with its own default (app/settings.py); a genuine
+    # Settings instance always has it, so `str(settings.X)` is the single
+    # source of truth for that default rather than a second copy here.
+    stream_id = str(settings.ENDOGENOUS_OUTREACH_PERCEPTION_STREAM_ID)
+    return fetch_presence(stream_id, engine=get_engine())
 
 
 def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
@@ -368,6 +406,20 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
         age_txt = f"{float(age) / 60.0:.0f} minutes ago" if isinstance(age, (int, float)) else "unknown"
         lines.append(f"Your chat presence: {health}; last turn with Juniper was {age_txt}.")
         lines.append("")
+
+    if ctx.embodied_presence:
+        # Camera-derived -- distinct from ctx.presence (chat liveness) above.
+        # Same fragment logic orion-cortex-exec's own situation brief uses
+        # (orion.situational.perception_reader.presence_fragment) so a
+        # felt-sense duration ("about 3 hours") reads identically in both
+        # places -- never mentions "absent" (an empty room is the default
+        # expectation most of the time, not worth a word on its own).
+        fragment = presence_fragment(
+            ctx.embodied_presence.get("state"), ctx.embodied_presence.get("since_sec")
+        )
+        if fragment:
+            lines.append(f"What your camera currently shows: {fragment}")
+            lines.append("")
 
     if ctx.recent_turns:
         lines.append("The last thing the two of you said:")
@@ -854,8 +906,18 @@ class EndogenousOutreach:
                 logger.warning("endogenous_outreach_context_read_failed fn=%s err=%s", fn.__name__, exc)
                 return None
 
-        summaries = await _safe(_fetch_curiosity_summaries)
-        turns = await _safe(_fetch_recent_turns, session_id)
+        # Concurrent, not sequential (review finding, 2026-08-25): three
+        # independent DB reads, each already dispatched via
+        # asyncio.to_thread inside `_safe` -- awaiting them one after
+        # another made this tick's wall time the SUM of all three round
+        # trips instead of the slowest one. `_safe` already swallows each
+        # call's own failure into None, so a `gather` result is never a
+        # raised exception to handle here.
+        summaries, turns, embodied_presence = await asyncio.gather(
+            _safe(_fetch_curiosity_summaries),
+            _safe(_fetch_recent_turns, session_id),
+            _safe(_fetch_embodied_presence),
+        )
 
         presence = None
         try:
@@ -872,6 +934,7 @@ class EndogenousOutreach:
             # Set by _should_roll() just before this is called; None on a
             # forced (force=True) debug trigger, which never calls it.
             tension_reason=self._last_tension_reason,
+            embodied_presence=embodied_presence,
         )
 
     async def _generate(

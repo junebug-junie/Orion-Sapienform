@@ -12,7 +12,7 @@ from orion.field.channel_glossary import (
 )
 
 
-def test_load_glossary_has_46_channels_matching_field_digester_channels_py():
+def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     """23 + the 5 FCC-motor channels added 2026-07-23 (harness_step_load,
     tool_failure_streak_pressure, avg_step_chars_pressure, compliance_deficit,
     turn_incompletion -- see docs/superpowers/specs/2026-07-23-fcc-motor-field-digester-signals-design.md)

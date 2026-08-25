@@ -1,8 +1,8 @@
 # Athena cabinet ambient audio (levels-only) — design
 
 Date: 2026-08-24  
-Status: draft pending Juniper review of written spec  
-Worktree: `/mnt/scripts/Orion-Sapienform-athena-ambient-audio-levels` on `docs/athena-ambient-audio-levels`  
+Status: implemented on `feat/athena-ambient-audio-levels` — awaiting merge  
+Worktree: `/mnt/scripts/Orion-Sapienform-athena-ambient-audio-levels` on `feat/athena-ambient-audio-levels`  
 Hardware observed: ALSA card `CMTECK` (`MV-SILICON CMTECK`), `/dev/snd/pcmC0D0c`, capture S16_LE stereo @ 44100/48000
 
 ## Arsonist summary

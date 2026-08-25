@@ -233,6 +233,8 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("cabinet_vibration_activity", "cabinet_vibration_activity"),
             ("cabinet_proximity_activity", "cabinet_proximity_activity"),
             ("cabinet_sensor_staleness", "cabinet_sensor_staleness"),
+            ("cabinet_ambient_audio_activity", "cabinet_ambient_audio_activity"),
+            ("cabinet_ambient_audio_staleness", "cabinet_ambient_audio_staleness"),
         ):
             if key in hints:
                 out.append(

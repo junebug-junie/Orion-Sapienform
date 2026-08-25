@@ -152,6 +152,11 @@ class Settings(BaseSettings):
     CABINET_SENSORS_PATH: str = Field(default="/run/orion-sensors/latest.json")
     CABINET_SENSOR_STALE_AFTER_SEC: float = Field(default=10.0)
 
+    # Athena USB microphone ambient-level snapshot (host-local, read-only bind).
+    # Missing file => BiometricsSampleV1.ambient_audio stays absent.
+    AMBIENT_AUDIO_PATH: str = Field(default="/run/orion-audio/latest.json")
+    AMBIENT_AUDIO_STALE_AFTER_SEC: float = Field(default=5.0)
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:

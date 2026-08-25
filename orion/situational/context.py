@@ -12,9 +12,11 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
+from .juniper_affect_state import read_latest_juniper_affect
 from .perception_reader import fetch_latest_percept, fetch_presence, percept_age_seconds
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.schemas.situation import (
+    AffectContextV1,
     AgendaContextV1,
     ConversationPhaseContextV1,
     EnvironmentContextV1,
@@ -74,6 +76,8 @@ class SituationSettings:
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
+    affect_enabled: bool
+    affect_max_age_seconds: int
     runtime_enabled: bool
     runtime_route: str
     runtime_ttl_seconds: int
@@ -118,6 +122,20 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         ),
         perception_stream_id=str(
             getattr(settings, "orion_situation_perception_stream_id", "cam0")
+        ),
+        # Default ON, unlike perception: the capture that produces this is
+        # already an explicit Juniper action (Hub's "Check now"/ambient
+        # toggle), so folding the result into the prompt is not new
+        # surveillance, just surfacing what was already deliberately
+        # captured. See juniper_affect_state.py + AffectContextV1's
+        # docstrings for the privacy contract (excerpt only, never the
+        # verbatim transcript).
+        affect_enabled=bool(getattr(settings, "orion_situation_affect_enabled", True)),
+        # 300s: matches Hub's ambient-capture cadence (~5min). Tighter than
+        # perception's 900s on purpose -- a stale mood read is more likely
+        # to mislead a reply than a stale room description is.
+        affect_max_age_seconds=int(
+            getattr(settings, "orion_situation_affect_max_age_seconds", 300)
         ),
         lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
@@ -164,6 +182,15 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     `/api/llm-routes`). Both `_build_environment_context` and
     `_build_runtime_context` await their blocking `urlopen` calls via
     `asyncio.to_thread` so a cache-miss fetch cannot stall the event loop.
+
+    Affect (2026-08-25) IS enabled here, unlike perception/lab -- orion-hub
+    is the MOST verified host for it, not the least: Hub owns the capture
+    loop that produces the read in the first place
+    (`services/orion-hub/scripts/vision_affect_ambient.py`) and already
+    holds a connected bus (`bind_juniper_affect_state_bus` is called at
+    startup in `services/orion-hub/scripts/main.py`). No new DSN/HTTP
+    egress is needed -- `juniper_affect_state.py`'s read side is a plain
+    Redis GET on the bus connection this process already owns.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -193,6 +220,10 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_perception_enabled=False,
         orion_situation_perception_max_age_seconds=900,
         orion_situation_perception_stream_id="cam0",
+        orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
+        orion_situation_affect_max_age_seconds=int(
+            getattr(cfg, "ORION_SITUATION_AFFECT_MAX_AGE_SECONDS", 300)
+        ),
         orion_situation_runtime_enabled=True,
         orion_situation_runtime_route="chat",
         orion_situation_runtime_ttl_seconds=120,
@@ -283,6 +314,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
     perception_ctx = _build_perception_context(cfg, diagnostics)
+    affect_ctx = await _build_affect_context(cfg, diagnostics)
     runtime_ctx = await _build_runtime_context(cfg, diagnostics)
     surface_ctx = _build_surface_context(ctx)
     affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
@@ -297,6 +329,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
             "phase": phase_ctx.phase_change,
             "surface": surface_ctx.surface,
             "perception": perception_ctx.source,
+            "affect": affect_ctx.source,
             "runtime": runtime_ctx.source,
         },
         requestor=presence.requestor,
@@ -308,6 +341,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
         agenda=agenda_ctx,
         lab=lab_ctx,
         perception=perception_ctx,
+        affect=affect_ctx,
         runtime=runtime_ctx,
         surface=surface_ctx,
         affordances=affordances,
@@ -893,6 +927,64 @@ def _build_affordances(
     return out
 
 
+async def _build_affect_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> AffectContextV1:
+    """Most recent facial+vocal affect read of Juniper, gated hard on age.
+
+    Same staleness-gate reasoning `_build_perception_context` documents: an
+    affect read from 20 minutes ago rendered as current is a confabulation
+    with a real referent, worse than saying nothing. Past the threshold this
+    returns `available=False` and the prompt line becomes an explicit "no
+    recent affect read" -- never a stale mood presented as current.
+
+    Fail-open like every other provider here -- a Redis problem yields no
+    affect read, never an exception into turn assembly.
+    """
+    if not cfg.affect_enabled:
+        diagnostics.provider_status["affect"] = "disabled"
+        return AffectContextV1(available=False, source="disabled")
+
+    try:
+        state = await read_latest_juniper_affect()
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["affect"] = "error"
+        diagnostics.provider_errors["affect"] = str(exc)
+        return AffectContextV1(available=False, source="error")
+
+    if not state.ok:
+        diagnostics.provider_status["affect"] = "error"
+        return AffectContextV1(available=False, source="error")
+
+    if not state.summary or not state.observed_at:
+        diagnostics.provider_status["affect"] = "empty"
+        return AffectContextV1(available=False, source="unavailable")
+
+    age = percept_age_seconds(state.observed_at)
+    if age is None or age > cfg.affect_max_age_seconds:
+        diagnostics.provider_status["affect"] = "stale"
+        # observed_at is carried even when stale so a debug surface can say
+        # how old, but summary is NOT -- a stale mood read in the payload is
+        # a stale read one refactor away from reaching a prompt.
+        return AffectContextV1(
+            available=False,
+            source="stale",
+            observed_at=state.observed_at,
+            observation_age_seconds=age,
+        )
+
+    diagnostics.provider_status["affect"] = "ok"
+    return AffectContextV1(
+        available=True,
+        summary=state.summary,
+        observed_at=state.observed_at,
+        observation_age_seconds=age,
+        trigger=state.trigger,
+        subtitle_source=state.subtitle_source,
+        source="live",
+    )
+
+
 def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> SituationPromptFragmentV1:
     lines = [
         f"Local context: {brief.time.time_of_day_label.replace('_', ' ')} {brief.time.weekday}, {brief.time.timezone}.",
@@ -916,6 +1008,17 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Never phrase this as "the room is empty/quiet" -- not seeing and
         # seeing nothing are different claims, and only one of them is true.
         lines.append("Room: haven't seen anything recently; do not infer.")
+    if brief.affect.available and brief.affect.summary:
+        age_min = round((brief.affect.observation_age_seconds or 0) / 60)
+        seen = "just now" if age_min < 1 else f"{age_min} min ago"
+        no_voice = " (no speech detected)" if brief.affect.subtitle_source == "none" else ""
+        lines.append(
+            f"Juniper's affect (captured {seen}{no_voice}): {brief.affect.summary}"
+        )
+    else:
+        # Same honesty rule as Room above -- no recent capture and a
+        # deliberately-not-captured mood are different claims.
+        lines.append("Juniper's affect: no recent capture; do not infer.")
     if brief.runtime.available and brief.runtime.model_id:
         lines.append(f"You are currently running on model: {brief.runtime.model_id} (route={brief.runtime.route}).")
     else:
@@ -924,6 +1027,7 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     cautions = [
         "Situation context is grounding, not a requirement to mention.",
         "Use only when relevant; avoid contrived time/weather/location commentary.",
+        "Juniper's affect read is a model's inference, not a diagnosis or a fixed label -- treat it as one signal, not a certainty, and don't announce it unprompted.",
     ]
     compact = "Situation:\n- " + "\n- ".join(lines + relevance + cautions)
     if len(compact) > max_chars:

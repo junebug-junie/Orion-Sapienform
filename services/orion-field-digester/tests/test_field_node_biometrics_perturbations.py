@@ -266,6 +266,8 @@ CABINET_HINT_KEYS = (
     "cabinet_vibration_activity",
     "cabinet_proximity_activity",
     "cabinet_sensor_staleness",
+    "cabinet_ambient_audio_activity",
+    "cabinet_ambient_audio_staleness",
 )
 
 
@@ -310,6 +312,33 @@ def test_node_biometrics_cabinet_and_host_hints_both_present() -> None:
     assert channels["thermal_pressure"] == 0.33
     assert channels["cabinet_climate_activity"] == 0.42
     assert channels["cabinet_sensor_staleness"] == 0.15
+
+
+def test_cabinet_ambient_audio_perturbations_use_replace_mode_and_do_not_saturate() -> None:
+    delta = _make_node_biometrics_delta(
+        pressure_hints={
+            "cabinet_ambient_audio_activity": 0.63,
+            "cabinet_ambient_audio_staleness": 1.0,
+        }
+    )
+    perturbations = []
+    for _ in range(16):
+        perturbations.extend(delta_to_perturbations(delta))
+    modes = {p.channel: p.mode for p in perturbations if p.channel in CABINET_HINT_KEYS[-2:]}
+    assert modes["cabinet_ambient_audio_activity"] == "replace"
+    assert modes["cabinet_ambient_audio_staleness"] == "replace"
+
+    state = FieldStateV1(
+        generated_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+        tick_id="tick_ambient_audio_saturation_regression",
+        node_vectors={},
+        capability_vectors={},
+        edges=[],
+    )
+    apply_perturbations(state, perturbations)
+    node_vec = state.node_vectors["node:atlas"]
+    assert node_vec["cabinet_ambient_audio_activity"] == 0.63
+    assert node_vec["cabinet_ambient_audio_staleness"] == 1.0
 
 
 def test_cabinet_sensor_perturbations_do_not_saturate_across_repeated_deltas() -> None:

@@ -12,6 +12,12 @@ from orion.telemetry.cabinet_sensors import (
     compute_cabinet_pressures,
     extract_cabinet_measurements,
 )
+from orion.telemetry.ambient_audio import (
+    AmbientAudioPressureConfig,
+    AmbientAudioTracker,
+    compute_ambient_audio_pressures,
+    extract_ambient_audio_measurements,
+)
 
 
 def utc_now() -> datetime:
@@ -333,6 +339,7 @@ class PipelineConfig:
     cabinet_uv_band_alpha: float = 0.1
     cabinet_vibration_band_alpha: float = 0.1
     cabinet_proximity_band_alpha: float = 0.1
+    ambient_audio_rms_band_alpha: float = 0.1
 
 
 class BiometricsPipeline:
@@ -350,6 +357,9 @@ class BiometricsPipeline:
                 vibration_band_alpha=cfg.cabinet_vibration_band_alpha,
                 proximity_band_alpha=cfg.cabinet_proximity_band_alpha,
             )
+        )
+        self.ambient_audio_tracker = AmbientAudioTracker(
+            AmbientAudioPressureConfig(rms_band_alpha=cfg.ambient_audio_rms_band_alpha)
         )
 
     def update(self, sample: Dict[str, object]) -> Tuple[BiometricsSummaryV1, BiometricsInductionV1]:
@@ -497,6 +507,22 @@ class BiometricsPipeline:
             measurements.update(cabinet_measurements)
             pressures.update(compute_cabinet_pressures(cabinet_measurements, self.cabinet_tracker))
             headroom.update({k: clamp01(1.0 - v) for k, v in pressures.items() if k not in headroom})
+
+        # Athena host ambient audio is additive cabinet context. Keep it after
+        # peak_pressure/constraint, like the Nano cabinet channels above, so an
+        # acoustic change cannot become the host's binding resource constraint.
+        ambient_measurements = extract_ambient_audio_measurements(sample.get("ambient_audio"))
+        if ambient_measurements:
+            measurements.update(ambient_measurements)
+            pressures.update(
+                compute_ambient_audio_pressures(
+                    ambient_measurements,
+                    self.ambient_audio_tracker,
+                )
+            )
+            headroom.update(
+                {k: clamp01(1.0 - v) for k, v in pressures.items() if k not in headroom}
+            )
 
         return BiometricsSummaryV1(
             peak_pressure=peak_pressure,

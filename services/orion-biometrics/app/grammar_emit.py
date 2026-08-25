@@ -41,6 +41,11 @@ _CABINET_PRESSURE_SPECS: list[tuple[str, str, str]] = [
         "cabinet_proximity_activity_signal",
         "proximity activity",
     ),
+    (
+        "cabinet_ambient_audio_activity",
+        "cabinet_ambient_audio_activity_signal",
+        "ambient audio activity",
+    ),
 ]
 
 
@@ -356,6 +361,23 @@ def build_biometrics_node_grammar_events(
             payload_ref=f"biometrics.sensor.staleness:{node_id}:{ts}",
         )
 
+    ambient_audio = sample.ambient_audio
+    if ambient_audio is not None:
+        stale = bool(ambient_audio.get("stale"))
+        atoms["cabinet_ambient_audio_staleness_signal"] = GrammarAtomV1(
+            atom_id=atom_id("cabinet_ambient_audio_staleness_signal"),
+            trace_id=trace_id,
+            atom_type="signal",
+            semantic_role="cabinet_ambient_audio_staleness_signal",
+            layer="organ_signal",
+            dimensions=["physiology", "telemetry", "node", "cabinet", "freshness"],
+            summary=f"{node_id} cabinet ambient audio staleness observed",
+            confidence=0.9,
+            salience=1.0 if stale else 0.0,
+            source_event_id=f"{node_id}:{ts}",
+            payload_ref=f"biometrics.ambient_audio.staleness:{node_id}:{ts}",
+        )
+
     edge_specs = [
         ("node_context", "telemetry_sample", "references"),
         ("telemetry_sample", "body_state", "derived_from"),
@@ -390,6 +412,13 @@ def build_biometrics_node_grammar_events(
         )
         edge_specs.append(
             ("cabinet_sensor_staleness_signal", "capability_surface", "influenced")
+        )
+    if "cabinet_ambient_audio_staleness_signal" in atoms:
+        edge_specs.append(
+            ("telemetry_sample", "cabinet_ambient_audio_staleness_signal", "derived_from")
+        )
+        edge_specs.append(
+            ("cabinet_ambient_audio_staleness_signal", "capability_surface", "influenced")
         )
 
     events: list[GrammarEventV1] = [root_event]

@@ -722,6 +722,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const cocreationSignalsPanel = document.getElementById("cocreation-signals");
   const fieldAttentionTabButton = document.getElementById("fieldAttentionTabButton");
   const fieldAttentionPanel = document.getElementById("field-attention");
+  const cabinetTabButton = document.getElementById("cabinetTabButton");
+  const cabinetPanel = document.getElementById("cabinet");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
   const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
   const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
@@ -1026,6 +1028,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "field-attention" && !fieldAttentionPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "cabinet" && !cabinetPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -1044,6 +1049,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isAttentionOrgan = effectiveTab === "attention-organ";
     const isCocreationSignals = effectiveTab === "cocreation-signals";
     const isFieldAttention = effectiveTab === "field-attention";
+    const isCabinet = effectiveTab === "cabinet";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -1184,6 +1190,17 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionFieldAttention.deactivate();
       }
     }
+    if (cabinetPanel) {
+      cabinetPanel.classList.toggle("hidden", !isCabinet);
+      // Same poll-only-while-visible rule as Field Attention — Nano snapshot tab.
+      if (isCabinet) {
+        if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.activate === "function") {
+          window.OrionCabinetSensors.activate();
+        }
+      } else if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.deactivate === "function") {
+        window.OrionCabinetSensors.deactivate();
+      }
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
@@ -1229,6 +1246,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (fieldAttentionTabButton) {
       styleTabButton(fieldAttentionTabButton, isFieldAttention);
+    }
+    if (cabinetTabButton) {
+      styleTabButton(cabinetTabButton, isCabinet);
     }
   }
 
@@ -1818,6 +1838,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("cocreation-signals");
     } else if (h === "#field-attention" && fieldAttentionPanel && fieldAttentionTabButton) {
       setActiveTab("field-attention");
+    } else if (h === "#cabinet" && cabinetPanel && cabinetTabButton) {
+      setActiveTab("cabinet");
     } else {
       if (
         h === "#pressure"
@@ -1833,6 +1855,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#attention-organ"
         || h === "#cocreation-signals"
         || h === "#field-attention"
+        || h === "#cabinet"
       ) {
         history.replaceState(null, "", "#hub");
       }
@@ -12487,6 +12510,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("field-attention");
         history.replaceState(null, "", "#field-attention");
+      });
+    }
+    if (cabinetTabButton && cabinetPanel) {
+      cabinetTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("cabinet");
+        history.replaceState(null, "", "#cabinet");
       });
     }
     applyHashToTab();

@@ -413,6 +413,17 @@ async def startup_event():
             await bus.connect()
             logger.info("OrionBusAsync connection established successfully.")
 
+            # 2026-08-25: lets orion.situational.context.py's
+            # _build_affect_context read Juniper's latest affect capture
+            # (see orion/situational/juniper_affect_state.py) for the
+            # situation brief every "orion" mode chat turn builds via
+            # orion.hub.turn_orchestrator.run_unified_turn -- same bind
+            # pattern services/orion-cortex-exec/app/main.py already uses
+            # for session_turn_phase.py's own module-level bus handle.
+            from orion.situational.juniper_affect_state import bind_juniper_affect_state_bus
+
+            bind_juniper_affect_state_bus(bus)
+
             # Outbound RPC uses a forked bus + worker so long-lived Hub subscribers
             # (trace/biometrics caches) cannot steal gateway/TTS/embedding replies.
             from orion.core.bus.rpc_fork import fork_rpc_client

@@ -124,6 +124,29 @@ def test_tracker_refresh_ttl() -> None:
     assert decision.reason == "refresh_ttl"
 
 
+def test_tracker_stable_scene_never_refreshes_when_ttl_disabled() -> None:
+    """Regression test for the 2026-08-23/25 incident: with max_refresh_sec=0
+    ("never force"), a scene whose hard_labels never change stays stable_scene
+    forever -- there is no implicit ceiling. This reproduces the exact 44+ hour
+    silent-outage shape (same unchanging label set, arbitrarily large elapsed
+    time) to prove the old default (0) had no escape valve, in contrast to
+    test_tracker_refresh_ttl above which proves a non-zero value does."""
+    tracker = EvidenceTransitionTracker()
+    labels = ["chair", "clothing", "desk", "door", "person", "table"]
+    snap = snapshot_from_window(_window(hard_labels=labels))
+    tracker.record_interpretation(stream_key="cam0", snapshot=snap, now=0.0)
+
+    # 44 hours later, same labels, refresh explicitly disabled.
+    decision = tracker.evaluate(
+        stream_key="cam0",
+        snapshot=snap,
+        now=44 * 3600.0,
+        max_refresh_sec=0.0,
+    )
+    assert decision.interpret is False
+    assert decision.reason == "stable_scene"
+
+
 def test_tracker_labels_changed() -> None:
     tracker = EvidenceTransitionTracker()
     door = snapshot_from_window(_window(hard_labels=["door"]))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from time import perf_counter
+from time import monotonic, perf_counter
 import math
 import random
 from collections import deque
@@ -55,6 +55,64 @@ THEATER_TRIPWIRE_WINDOW = 10
 # Renamed from THEATER_TRIPWIRE_EMPTY_THRESHOLD 2026-08-13: the predicate it
 # gates now counts every non-success status, not just literal "empty".
 THEATER_TRIPWIRE_UNPRODUCTIVE_THRESHOLD = 0.5
+
+# --- Tripwire recovery (2026-08-25) -------------------------------------
+#
+# THE INCIDENT THIS EXISTS FOR. 2026-08-23 07:33 UTC -> 2026-08-25 05:20 UTC:
+# 45 hours, zero dispatches. A routine redeploy at 06:58 bounced the whole
+# stack; cortex-exec came back cold (four dispatches at 06:59 took 61-91s and
+# returned plan_status=partial), then six in a row failed fast with
+# plan_status=fail at 07:33. That crossed the >5-of-trailing-10 threshold and
+# latched the tripwire. Nothing was actually broken by then -- cortex-exec was
+# serving other callers normally the whole time.
+#
+# Three separate defects made a transient into a two-day outage:
+#
+#   1. NO RE-ARM PATH. `theater_tripwire_active` had exactly one assignment to
+#      True and no assignment back to False outside __init__. Recovery required
+#      a human noticing and restarting the process.
+#   2. SELF-SEALING. Once tripped, _send_prepared_candidates returns before
+#      sending, so `_recent_dispatch_statuses` never receives another sample.
+#      Even a hypothetical re-arm rule had no evidence it could ever act on --
+#      the window is frozen at the moment of the trip, forever.
+#   3. SILENT. One warning notification at the moment of the trip, then nothing
+#      for 45 hours. Every tick kept logging `motor_budget mode=advisory
+#      pace=0.85x` as though the motor were running, because the budget readout
+#      sits BELOW the tripwire's early return and never learns it was skipped.
+#
+# WHY THIS IS NOT SIMPLY REVERSING THE ORIGINAL DECISION. The manual re-arm was
+# deliberate, and __init__'s own comment states the reason: "a self-clearing
+# tripwire could silently resume sending on a coincidentally-good sample." That
+# concern is real and is preserved here. What clears the latch is not a sample,
+# it is a probe: at most TRIPWIRE_PROBE_DISPATCHES candidate per attempt, on an
+# exponential backoff, and the latch clears only after
+# orion_dispatch_tripwire_rearm_successes CONSECUTIVE probe successes -- a
+# single lucky result re-arms nothing and resets the run to zero. Probe outcomes
+# are tracked separately from `_recent_dispatch_statuses` precisely so the frozen
+# pre-trip window cannot vote on the recovery decision.
+#
+# The cost of being wrong is bounded and directional: a probe is one action, and
+# a persistently dead motor settles at one probe per
+# orion_dispatch_tripwire_probe_max_cooldown_sec. Compared against 45 hours of
+# zero actions, that is the trade this makes on purpose.
+
+# One candidate per probe attempt. Deliberately not "a normal tick, but
+# monitored": a probe must not be able to become a de-facto resumption of
+# service before the re-arm run is complete.
+TRIPWIRE_PROBE_DISPATCHES = 1
+# Each failed probe doubles the wait, capped at the configured maximum.
+TRIPWIRE_PROBE_BACKOFF_FACTOR = 2.0
+# While tripped, say so on this cadence. Defect 3 above: the absence of any
+# per-tick record is what made a 45-hour outage indistinguishable from normal
+# operation in both the logs and the stored frames.
+TRIPWIRE_BLOCKED_LOG_INTERVAL_SEC = 300.0
+# And re-notify on this cadence. Fire-once is why nobody acted for two days.
+TRIPWIRE_RENOTIFY_INTERVAL_SEC = 3600.0
+# Frame-level warning string. Goes into ExecutionDispatchFrameV1.warnings --
+# which already exists and is already persisted -- so "was Orion able to act
+# at time T" becomes a Postgres question instead of an in-process one that
+# dies with the very restart used to recover. No schema change.
+TRIPWIRE_BLOCKED_WARNING = "execution_dispatch_theater_tripwire_active"
 # Real, disclosed gap closed defensively (review, 2026-07-26): every live
 # proposal_kind_to_cortex-routed template today has base_risk >= 0.02 (the
 # one base_risk=0.0 template, defer_due_to_low_readiness, has no cortex
@@ -184,11 +242,46 @@ class ExecutionDispatchRuntimeWorker:
             timeout=10,
         )
         self._stop = asyncio.Event()
-        # In-memory only, by design: once tripped, stays tripped until this
-        # process restarts (mirrors the "re-arm is manual" rule in the
-        # parent spec -- a self-clearing tripwire could silently resume
-        # sending on a coincidentally-good sample).
+        # In-memory only, by design: the latch never survives a restart, and
+        # the tripwire's own judgment is always built from samples this
+        # process observed (see _recent_dispatch_statuses below).
+        #
+        # 2026-08-25: it is no longer true that "once tripped, stays tripped
+        # until this process restarts". That rule cost 45 hours of zero
+        # dispatches -- see the incident note beside TRIPWIRE_PROBE_DISPATCHES.
+        # The original rationale ("a self-clearing tripwire could silently
+        # resume sending on a coincidentally-good sample") is preserved rather
+        # than discarded: nothing here clears on a sample. Re-arming requires a
+        # run of consecutive successful PROBES, each one a single deliberate
+        # action taken after a backoff, tracked in state that the frozen
+        # pre-trip window cannot influence.
         self.theater_tripwire_active = False
+        # Monotonic, not wall-clock: this only ever measures elapsed intervals,
+        # and must not be perturbed by an NTP step or a DST boundary.
+        self._tripwire_tripped_at: float | None = None
+        self._tripwire_next_probe_at: float | None = None
+        self._tripwire_probe_cooldown_sec = (
+            self._settings.orion_dispatch_tripwire_probe_cooldown_sec
+        )
+        # Consecutive successes only. Any probe failure resets this to 0 --
+        # that reset is what keeps "coincidentally-good sample" from re-arming.
+        self._tripwire_probe_successes = 0
+        self._tripwire_probe_attempts = 0
+        # Throttle state for the two "still blocked" surfaces. Seeded to None
+        # rather than 0.0 so the FIRST blocked tick after a trip always speaks,
+        # instead of being swallowed by an interval that appears already-served.
+        self._tripwire_last_blocked_log_at: float | None = None
+        self._tripwire_last_notify_at: float | None = None
+        # True only for the span of a probe tick, so the post-send evaluation
+        # knows whether the results it is looking at are probe evidence or an
+        # ordinary tick's.
+        self._tripwire_probe_in_flight = False
+        # Statuses recorded during the CURRENT tick only, in the same
+        # vocabulary as _recent_dispatch_statuses. The trailing window is
+        # useless for judging a probe: it is maxlen-bounded and, at the moment
+        # a probe runs, still full of the pre-trip failures that caused the
+        # trip. A probe is judged solely on evidence the probe itself produced.
+        self._tick_dispatch_statuses: list[str] = []
         # Per-process window for the tripwire's own judgment. Deliberately
         # NOT sourced from substrate_dispatch_results' full history (that
         # table persists real history for other consumers and is never
@@ -740,10 +833,49 @@ class ExecutionDispatchRuntimeWorker:
     ) -> ExecutionDispatchFrameV1:
         derived_cap, baseline_fields = self._derive_daily_risk_cap(frame.generated_at)
 
+        # Default: no cap beyond the policy's own per-tick burst limit. A probe
+        # tick narrows this to TRIPWIRE_PROBE_DISPATCHES.
+        send_budget = self._policy.limits.max_dispatches_per_tick
+        self._tripwire_probe_in_flight = False
+        # Fresh every tick: a probe is judged only on what this tick produced.
+        self._tick_dispatch_statuses = []
+
         if self._check_theater_tripwire():
-            # tripped (this tick or a prior one) -- send nothing, but still
-            # carry the current baseline state forward onto the saved frame.
-            return frame.model_copy(update=baseline_fields)
+            # Tripped (this tick or a prior one). Either this tick is a probe --
+            # one deliberate action, to find out whether the motor works again --
+            # or it sends nothing and SAYS SO, on the frame and in the log.
+            #
+            # Claim only when something could actually go out. A claim on a tick
+            # with nothing preparable is refunded a few lines later, and the
+            # refund makes the next tick immediately claimable again -- so the
+            # `probe_slots <= 0` branch below would never be reached, and with it
+            # neither the frame warning, the throttled log, nor the hourly
+            # escalation. Measured on the real code before this guard: 6
+            # simulated hours with nothing preparable produced 10,650 claim/
+            # refund cycles, 150 frame warnings (all in the first 5 minutes) and
+            # ZERO re-notifications -- defect 3 reproduced inside its own fix.
+            has_preparable = any(
+                c.dispatch_status == "prepared_for_dispatch" for c in frame.candidates
+            )
+            probe_slots = self._claim_tripwire_probe_slots() if has_preparable else 0
+            if probe_slots <= 0:
+                return frame.model_copy(
+                    update={
+                        **baseline_fields,
+                        "warnings": self._record_tripwire_blocked_tick(frame),
+                    }
+                )
+            send_budget = min(send_budget, probe_slots)
+            self._tripwire_probe_in_flight = True
+            logger.warning(
+                "execution_dispatch_tripwire_probe attempt=%d slots=%d "
+                "consecutive_successes=%d/%d tripped_for_sec=%.0f",
+                self._tripwire_probe_attempts,
+                send_budget,
+                self._tripwire_probe_successes,
+                self._settings.orion_dispatch_tripwire_rearm_successes,
+                self._tripwire_tripped_for_sec(),
+            )
 
         # THE REAL BUDGET, advisory for now. Denominated in motor-seconds --
         # wall-clock an action actually occupies -- against an operator-set
@@ -788,7 +920,7 @@ class ExecutionDispatchRuntimeWorker:
 
             if motor.mode == "enforcing" and motor.exhausted:
                 logger.info("motor_budget_exhausted sending nothing this tick")
-                return frame.model_copy(update=baseline_fields)
+                return self._abandon_tick_without_sending(frame, baseline_fields)
 
         spent_today = self._store.sum_risk_dispatched_today()
         remaining_risk_budget = derived_cap - spent_today
@@ -806,7 +938,7 @@ class ExecutionDispatchRuntimeWorker:
                 enforced,
             )
             if enforced:
-                return frame.model_copy(update=baseline_fields)
+                return self._abandon_tick_without_sending(frame, baseline_fields)
             # Advisory-only (operator override, no longer the default as of
             # 2026-07-29 -- see settings.py's own comment): log that it would
             # have blocked, but don't actually withhold real dispatches.
@@ -832,7 +964,9 @@ class ExecutionDispatchRuntimeWorker:
         for candidate in frame.candidates:
             if candidate.dispatch_status != "prepared_for_dispatch":
                 continue
-            if len(to_send) >= self._policy.limits.max_dispatches_per_tick:
+            # send_budget is max_dispatches_per_tick on an ordinary tick, and
+            # TRIPWIRE_PROBE_DISPATCHES on a probe tick.
+            if len(to_send) >= send_budget:
                 break
             # max(..., MINIMUM_REAL_RISK_FLOOR): a real risk_score=0.0 must
             # still cost something against the daily budget, or the budget
@@ -845,7 +979,7 @@ class ExecutionDispatchRuntimeWorker:
             cumulative_risk += spend
 
         if not to_send:
-            return frame.model_copy(update=baseline_fields)
+            return self._abandon_tick_without_sending(frame, baseline_fields)
 
         # RANDOMIZED HOLDBACK. Rolled once per TICK, over candidates that have
         # already passed every gate -- so the withheld set is a random sample
@@ -858,7 +992,19 @@ class ExecutionDispatchRuntimeWorker:
         # defect that made the capacity-blocked arm unusable, and repeating it
         # here would produce a worse-than-useless arm wearing the word
         # "randomized".
-        holdback_fraction = self._settings.orion_dispatch_holdback_fraction
+        #
+        # A probe tick is never held back. The holdback exists to buy a causal
+        # control arm out of ticks that would otherwise have acted; withholding
+        # the single action being used to test whether the motor still works
+        # would spend a probe to learn nothing and re-arm strictly slower. The
+        # arm loses nothing real either -- probe ticks are a deliberately
+        # non-random subset of ticks (they only occur while tripped), so they
+        # were never eligible to be a uniform sample of ordinary acting ticks.
+        holdback_fraction = (
+            0.0
+            if self._tripwire_probe_in_flight
+            else self._settings.orion_dispatch_holdback_fraction
+        )
         if holdback_fraction > 0.0 and random.random() < holdback_fraction:
             withheld_ids = {c.dispatch_id for c in to_send}
             withheld = [
@@ -941,8 +1087,286 @@ class ExecutionDispatchRuntimeWorker:
         # Re-check after this tick's real sends appended to the in-process
         # window -- lets the tripwire fire the same tick it actually crosses
         # the threshold, not one tick late.
+        #
+        # Order matters: evaluate the probe FIRST, so a re-arm decided by this
+        # tick's probe is applied before the predicate below gets to look at the
+        # window. _clear_tripwire empties that window as part of re-arming (see
+        # its own comment for why the alternative is a no-op), so the predicate
+        # then correctly reads "not enough samples yet" rather than re-tripping
+        # on the failures the probes just disproved.
+        if self._tripwire_probe_in_flight:
+            self._evaluate_tripwire_probe()
         self._check_theater_tripwire()
         return updated
+
+    def _monotonic(self) -> float:
+        """Seam for tests. Production always uses the real monotonic clock."""
+        return monotonic()
+
+    def _record_dispatch_status(self, status: str, *, live: bool = True) -> None:
+        """The single choke point for every recorded dispatch outcome.
+
+        Both the tripwire's trailing window and the current tick's own list are
+        written here. They were separate appends at four call sites before
+        2026-08-25; a fifth site added later that updated only one of them
+        would have produced a probe that could never succeed, or a tripwire
+        that could never fire, with nothing failing loudly to say so.
+
+        `live=False` marks a status that did NOT come from contacting the motor
+        this tick -- today only the idempotency replay branch, which reads a
+        stored result. Such a status still counts toward the trailing window
+        (it is real information about a real past attempt) but must never count
+        as probe evidence, since a probe's whole job is to establish that the
+        motor responds NOW.
+        """
+        self._recent_dispatch_statuses.append(status)
+        if live:
+            self._tick_dispatch_statuses.append(status)
+
+    def _tripwire_tripped_for_sec(self) -> float:
+        if self._tripwire_tripped_at is None:
+            return 0.0
+        return max(0.0, self._monotonic() - self._tripwire_tripped_at)
+
+    def _claim_tripwire_probe_slots(self) -> int:
+        """How many candidates this tick may send as a recovery probe.
+
+        Claiming is not free: it consumes the current cooldown and counts an
+        attempt, so a caller that ends up sending nothing must call
+        _refund_tripwire_probe. Returns 0 whenever probing is disabled or the
+        backoff has not yet elapsed.
+        """
+        if not self._settings.orion_dispatch_tripwire_probe_enabled:
+            return 0
+        now = self._monotonic()
+        if self._tripwire_next_probe_at is None:
+            # Tripped by a path that did not initialise the schedule (a latch
+            # set before this patch's state existed, or a direct test poke).
+            # Start the clock now rather than probing instantly.
+            self._tripwire_next_probe_at = now + self._tripwire_probe_cooldown_sec
+            return 0
+        if now < self._tripwire_next_probe_at:
+            return 0
+        self._tripwire_probe_attempts += 1
+        # Schedule the next attempt up front. If this probe succeeds and
+        # re-arms, the schedule is discarded by _clear_tripwire anyway; if it
+        # fails, _evaluate_tripwire_probe widens the backoff from here.
+        self._tripwire_next_probe_at = now + self._tripwire_probe_cooldown_sec
+        return TRIPWIRE_PROBE_DISPATCHES
+
+    def _abandon_tick_without_sending(
+        self, frame: ExecutionDispatchFrameV1, baseline_fields: dict
+    ) -> ExecutionDispatchFrameV1:
+        """Single exit for every gate that decides to send nothing after the
+        tripwire check has already run.
+
+        There are three such gates (motor budget exhausted, daily risk cap
+        reached-and-enforced, and nothing surviving the risk take-loop) and they
+        all sit BELOW the probe claim. Review found each one silently consuming
+        a probe: the attempt counter climbed, the cooldown was consumed, no
+        action went out, no evidence came back, and -- because the blocked-tick
+        branch is above them -- no frame warning was written either. The
+        "after N recovery probe(s)" line in the escalation then reported probes
+        that never happened. Routing all three through here keeps the accounting
+        honest and the tick visible.
+        """
+        if self._tripwire_probe_in_flight:
+            self._refund_tripwire_probe()
+        update = dict(baseline_fields)
+        if self.theater_tripwire_active:
+            update["warnings"] = self._record_tripwire_blocked_tick(frame)
+        return frame.model_copy(update=update)
+
+    def _refund_tripwire_probe(self) -> None:
+        """Undo a claim whose tick sent nothing, so no evidence was gathered.
+
+        Deliberately restores immediate claimability: no action was spent, so no
+        backoff is owed. That is only safe because the claim site refuses to
+        claim at all unless something is preparable -- without that guard this
+        line turns into a per-tick claim/refund spin that starves the blocked-
+        tick warning entirely (see the claim site's own comment).
+
+        NOT the right response to a probe that sent a real action and learned
+        nothing; that path applies the backoff instead. See
+        _evaluate_tripwire_probe.
+        """
+        self._tripwire_probe_in_flight = False
+        self._tripwire_probe_attempts = max(0, self._tripwire_probe_attempts - 1)
+        self._tripwire_next_probe_at = self._monotonic()
+
+    def _evaluate_tripwire_probe(self) -> None:
+        """Judge this tick's probe and either re-arm dispatch or back off.
+
+        Judged ONLY on statuses recorded during this tick. A probe that somehow
+        recorded no status at all is treated as no evidence -- not as a success
+        -- because "nothing came back" is the exact condition the tripwire
+        exists to catch, and counting it toward re-arming would let a fully
+        dead motor talk its way back into service.
+        """
+        statuses = list(self._tick_dispatch_statuses)
+        self._tripwire_probe_in_flight = False
+        required = self._settings.orion_dispatch_tripwire_rearm_successes
+
+        if not statuses:
+            # A real action WAS sent (this method only runs on a tick that got
+            # past every gate and into the send loop); we simply never learned
+            # what happened to it -- _send_one swallows any exception from
+            # _send_one_inner without recording a status, and
+            # save_dispatch_result runs AFTER the cortex-exec RPC has already
+            # fired. Refunding here was the first version's mistake: with
+            # Postgres unavailable, every recording path raises, every probe
+            # comes back inconclusive, every refund makes the next tick
+            # immediately claimable, and the 2.0s poll interval turns the
+            # documented "one probe per hour" into ~1,800 real dispatches an
+            # hour aimed at a dependency that is already failing.
+            #
+            # So: treat it as a failed probe. No re-arm credit, and the backoff
+            # widens. "We spent an action and learned nothing" must cost the
+            # same as "we spent an action and it failed" -- it is strictly less
+            # informative, and it is the shape a genuinely dead motor produces.
+            self._penalise_failed_probe()
+            logger.warning(
+                "execution_dispatch_tripwire_probe_inconclusive attempt=%d "
+                "next_probe_in_sec=%.0f -- an action was sent but no outcome was "
+                "recorded; counting it as a failed probe",
+                self._tripwire_probe_attempts,
+                self._tripwire_probe_cooldown_sec,
+            )
+            return
+
+        if all(s == "success" for s in statuses):
+            self._tripwire_probe_successes += 1
+            if self._tripwire_probe_successes >= required:
+                self._clear_tripwire()
+                return
+            logger.warning(
+                "execution_dispatch_tripwire_probe_ok %d/%d consecutive -- "
+                "still paused until the run completes",
+                self._tripwire_probe_successes,
+                required,
+            )
+            return
+
+        self._penalise_failed_probe()
+        logger.warning(
+            "execution_dispatch_tripwire_probe_failed statuses=%s next_probe_in_sec=%.0f "
+            "tripped_for_sec=%.0f",
+            ",".join(statuses),
+            self._tripwire_probe_cooldown_sec,
+            self._tripwire_tripped_for_sec(),
+        )
+
+    def _penalise_failed_probe(self) -> None:
+        """Reset the re-arm run and widen the backoff.
+
+        The reset is the line that keeps the original design's objection
+        answered: a coincidentally-good sample cannot accumulate toward
+        re-arming across a flapping motor.
+        """
+        self._tripwire_probe_successes = 0
+        self._tripwire_probe_cooldown_sec = min(
+            self._tripwire_probe_cooldown_sec * TRIPWIRE_PROBE_BACKOFF_FACTOR,
+            self._settings.orion_dispatch_tripwire_probe_max_cooldown_sec,
+        )
+        self._tripwire_next_probe_at = self._monotonic() + self._tripwire_probe_cooldown_sec
+
+    def _clear_tripwire(self) -> None:
+        tripped_for = self._tripwire_tripped_for_sec()
+        attempts = self._tripwire_probe_attempts
+        self.theater_tripwire_active = False
+        self._tripwire_tripped_at = None
+        self._tripwire_next_probe_at = None
+        self._tripwire_probe_cooldown_sec = (
+            self._settings.orion_dispatch_tripwire_probe_cooldown_sec
+        )
+        self._tripwire_probe_successes = 0
+        self._tripwire_probe_attempts = 0
+        self._tripwire_last_blocked_log_at = None
+        self._tripwire_last_notify_at = None
+        # The trailing window MUST be cleared here, and the first version of
+        # this patch got it wrong.
+        #
+        # It originally left the window alone, reasoning that it would "age out
+        # naturally" and that clearing it would blind the tripwire to a motor
+        # still mostly failing. Review caught that this made the entire re-arm a
+        # no-op: at the moment of clearing, the window still holds the >= 6
+        # failures that caused the trip, so the very next _check_theater_
+        # tripwire call re-trips instantly. Reproduced against the real code --
+        # the default 3-probe run cleared and re-tripped twice before sticking,
+        # firing a false "Execution dispatch resumed" notification each time and
+        # resetting _tripwire_tripped_at, which would have pinned the "Orion has
+        # not acted for Nh" escalation permanently under an hour on a flapping
+        # motor. Clearing needs up to 5 appended successes to drag the window
+        # under threshold; the default re-arm run is 3.
+        #
+        # Clearing is also the honest reading: after a run of consecutive
+        # successful probes, the pre-trip failures are a resolved incident, not
+        # recent evidence. The cost is a real but small blind spot -- the
+        # predicate needs THEATER_TRIPWIRE_WINDOW fresh samples before it can
+        # trip again (len(recent) < WINDOW returns early), roughly two ticks at
+        # max_dispatches_per_tick=5. A motor that passes three spaced probes and
+        # then fails re-trips inside that handful of dispatches.
+        self._recent_dispatch_statuses.clear()
+        logger.warning(
+            "execution_dispatch_theater_tripwire_cleared tripped_for_sec=%.0f probes=%d "
+            "-- dispatch resuming",
+            tripped_for,
+            attempts,
+        )
+        self._notify_tripwire_cleared(tripped_for, attempts)
+
+    def _record_tripwire_blocked_tick(self, frame: ExecutionDispatchFrameV1) -> list[str]:
+        """Record, log and escalate the fact that this tick sent nothing.
+
+        Defect 3 of the 2026-08-23 incident: for 45 hours there was no per-tick
+        evidence anywhere that Orion had been stopped. The returned warning
+        rides on the frame, which is persisted, so the question "could Orion act
+        at time T" is answerable from Postgres after the fact -- including after
+        the restart that clears the in-process latch.
+        """
+        now = self._monotonic()
+        tripped_for = self._tripwire_tripped_for_sec()
+        # Rendered as a word, not a magic negative. This string is persisted on
+        # the frame and someone will eventually parse it for "how long until
+        # recovery"; "unscheduled" fails loudly there, "-1" quietly becomes a
+        # negative duration. Reachable whenever probing is disabled.
+        if self._tripwire_next_probe_at is None:
+            next_probe_in: float | None = None
+        else:
+            next_probe_in = max(0.0, self._tripwire_next_probe_at - now)
+        next_probe_str = "unscheduled" if next_probe_in is None else f"{next_probe_in:.0f}"
+
+        if (
+            self._tripwire_last_blocked_log_at is None
+            or now - self._tripwire_last_blocked_log_at >= TRIPWIRE_BLOCKED_LOG_INTERVAL_SEC
+        ):
+            self._tripwire_last_blocked_log_at = now
+            logger.warning(
+                "execution_dispatch_theater_tripwire_blocking tripped_for_sec=%.0f "
+                "candidates_withheld=%d probes=%d next_probe_in_sec=%s probe_enabled=%s",
+                tripped_for,
+                len(frame.candidates),
+                self._tripwire_probe_attempts,
+                next_probe_str,
+                self._settings.orion_dispatch_tripwire_probe_enabled,
+            )
+
+        if (
+            self._tripwire_last_notify_at is None
+            or now - self._tripwire_last_notify_at >= TRIPWIRE_RENOTIFY_INTERVAL_SEC
+        ):
+            # Skip the immediate re-notify on the very first blocked tick --
+            # _notify_tripwire already fired at the moment of the trip.
+            if self._tripwire_last_notify_at is not None:
+                self._notify_tripwire_still_blocked(tripped_for)
+            self._tripwire_last_notify_at = now
+
+        return list(frame.warnings) + [
+            f"{TRIPWIRE_BLOCKED_WARNING} tripped_for_sec={tripped_for:.0f} "
+            f"candidates_withheld={len(frame.candidates)} "
+            f"probes={self._tripwire_probe_attempts} "
+            f"next_probe_in_sec={next_probe_str}"
+        ]
 
     def _check_theater_tripwire(self) -> bool:
         recent = list(self._recent_dispatch_statuses)
@@ -971,6 +1395,19 @@ class ExecutionDispatchRuntimeWorker:
         )
         if newly_tripped:
             self.theater_tripwire_active = True
+            # Start the recovery clock at the moment of the trip. Without this
+            # the latch has no schedule and _claim_tripwire_probe_slots has to
+            # fall back to seeding one on its first blocked tick.
+            now = self._monotonic()
+            self._tripwire_tripped_at = now
+            self._tripwire_probe_cooldown_sec = (
+                self._settings.orion_dispatch_tripwire_probe_cooldown_sec
+            )
+            self._tripwire_next_probe_at = now + self._tripwire_probe_cooldown_sec
+            self._tripwire_probe_successes = 0
+            self._tripwire_probe_attempts = 0
+            self._tripwire_last_blocked_log_at = None
+            self._tripwire_last_notify_at = now
             logger.warning(
                 "execution_dispatch_theater_tripwire_active unproductive=%d window=%d",
                 unproductive_count,
@@ -1050,7 +1487,15 @@ class ExecutionDispatchRuntimeWorker:
             # Real information about a real attempt even on replay -- counts
             # toward this process's own tripwire window the same as a fresh
             # send would.
-            self._recent_dispatch_statuses.append(existing["status"])
+            #
+            # But NOT toward a recovery probe. This branch reads a stored result
+            # and makes no contact with cortex-exec at all, so a stale
+            # "success" here would let a motor that was never touched vote for
+            # its own re-arm -- exactly what _evaluate_tripwire_probe's docstring
+            # says must not happen. Narrow (it needs a crash between
+            # save_dispatch_result and save_dispatch_frame) but real, and a
+            # probe is precisely the tick where being wrong matters most.
+            self._record_dispatch_status(existing["status"], live=False)
             # Re-emit on replay too: action_outcomes.action_id is the SQL
             # primary key and sql-writer's route upserts by merge(), so a
             # repeat emit for the same dispatch_id idempotently overwrites
@@ -1165,7 +1610,7 @@ class ExecutionDispatchRuntimeWorker:
                 dispatch_kind=candidate.dispatch_kind,
                 target_id=candidate.target_id,
             )
-            self._recent_dispatch_statuses.append("failed")
+            self._record_dispatch_status("failed")
             await self._emit_action_outcome(
                 bus,
                 candidate=candidate,
@@ -1228,7 +1673,7 @@ class ExecutionDispatchRuntimeWorker:
                 dispatch_kind=candidate.dispatch_kind,
                 target_id=candidate.target_id,
             )
-            self._recent_dispatch_statuses.append("failed")
+            self._record_dispatch_status("failed")
             await self._emit_action_outcome(
                 bus,
                 candidate=candidate,
@@ -1283,7 +1728,7 @@ class ExecutionDispatchRuntimeWorker:
             dispatch_kind=candidate.dispatch_kind,
             target_id=candidate.target_id,
         )
-        self._recent_dispatch_statuses.append(status)
+        self._record_dispatch_status(status)
         logger.info(
             "execution_dispatch_result dispatch_id=%s status=%s kind=%s raw_len=%d",
             candidate.dispatch_id,
@@ -1386,8 +1831,58 @@ class ExecutionDispatchRuntimeWorker:
                     severity="warning",
                     title="Execution dispatch theater tripwire tripped",
                     body_text=(
-                        f"{empty_count}/{window} of the last real dispatches returned empty "
-                        "observations. Dispatch sending is paused until this worker restarts."
+                        f"{empty_count}/{window} of the last real dispatches were "
+                        "unproductive. Dispatch sending is paused. Recovery probes will "
+                        "retry automatically; this will re-notify hourly until it clears."
+                    ),
+                    tags=["execution_dispatch", "tripwire"],
+                )
+            )
+        except Exception:
+            logger.exception("execution_dispatch_tripwire_notify_failed")
+
+    def _notify_tripwire_still_blocked(self, tripped_for_sec: float) -> None:
+        """Hourly escalation while the latch holds.
+
+        The 2026-08-23 outage ran 45 hours on a single fire-once warning. A
+        notification that describes a state rather than an instant has to keep
+        speaking, or it is indistinguishable from a state that has resolved.
+        """
+        hours = tripped_for_sec / 3600.0
+        probe_enabled = self._settings.orion_dispatch_tripwire_probe_enabled
+        try:
+            self._notify.send(
+                NotificationRequest(
+                    source_service="orion-execution-dispatch-runtime",
+                    event_kind="execution_dispatch_theater_tripwire_still_blocked",
+                    severity="warning",
+                    title=f"Orion has not acted for {hours:.1f}h (tripwire still active)",
+                    body_text=(
+                        f"Dispatch has been paused for {hours:.1f} hours after "
+                        f"{self._tripwire_probe_attempts} recovery probe(s). "
+                        + (
+                            "Probes are retrying on a backoff."
+                            if probe_enabled
+                            else "Automatic probing is DISABLED; this needs a restart."
+                        )
+                    ),
+                    tags=["execution_dispatch", "tripwire", "autonomy_down"],
+                )
+            )
+        except Exception:
+            logger.exception("execution_dispatch_tripwire_notify_failed")
+
+    def _notify_tripwire_cleared(self, tripped_for_sec: float, probes: int) -> None:
+        try:
+            self._notify.send(
+                NotificationRequest(
+                    source_service="orion-execution-dispatch-runtime",
+                    event_kind="execution_dispatch_theater_tripwire_cleared",
+                    severity="info",
+                    title="Execution dispatch resumed",
+                    body_text=(
+                        f"Recovery probes succeeded after {tripped_for_sec / 60.0:.0f} "
+                        f"minutes and {probes} attempt(s). Dispatch is sending again."
                     ),
                     tags=["execution_dispatch", "tripwire"],
                 )

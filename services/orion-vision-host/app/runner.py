@@ -179,6 +179,25 @@ class VisionRunner:
     def _is_enabled(self, name: str) -> bool:
         return name in self.enabled
 
+    @staticmethod
+    def _cast_inputs_to_model_dtype(inputs: Dict[str, Any], model: Any, device: str) -> Dict[str, Any]:
+        """Moves processor output onto ``device`` at the model's own resident
+        dtype -- shared by every profile that hands a HF processor's dict
+        straight to a HF model's forward/generate (embedding, detection,
+        VLM). Floating tensors get the model's dtype (fp16/bf16/fp32);
+        everything else (e.g. int64 ``input_ids``/attention masks) keeps its
+        own dtype, just moved to device -- casting those would corrupt them.
+        A no-op (returns ``inputs`` unchanged) off CUDA, matching every
+        caller's own pre-existing ``device.startswith("cuda")`` guard.
+        """
+        if not device.startswith("cuda"):
+            return inputs
+        model_dtype = next(model.parameters()).dtype
+        return {
+            k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
+            for k, v in inputs.items()
+        }
+
     def _resolve_dtype(self, p: ProfileDef) -> str:
         profile_dtype = (p.dtype or "").strip().lower()
         if profile_dtype and profile_dtype != "auto":
@@ -245,6 +264,8 @@ class VisionRunner:
                 device=device,
                 dtype=dtype,
                 model_id=model_id,
+                qwen_min_pixels=settings.VISION_VLM_QWEN_MIN_PIXELS,
+                qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
             )
         elif p.kind == "vlm":
             # Same loader as caption_frame (both are "a VLM, generic
@@ -271,6 +292,8 @@ class VisionRunner:
                 device=device,
                 dtype=dtype,
                 model_id=model_id,
+                qwen_min_pixels=settings.VISION_VLM_QWEN_MIN_PIXELS,
+                qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
             )
 
     def execute(self, task: VisionTask, device: str) -> VisionResult:
@@ -463,12 +486,7 @@ class VisionRunner:
         )
 
         inputs = processor(images=img, return_tensors="pt")
-        if device.startswith("cuda"):
-            model_dtype = next(model.parameters()).dtype
-            inputs = {
-                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
-                for k, v in inputs.items()
-            }
+        inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
 
         with torch.inference_mode():
             if hasattr(model, "get_image_features"):
@@ -557,12 +575,7 @@ class VisionRunner:
         )
 
         inputs = processor(images=img, text=text, return_tensors="pt")
-        if device.startswith("cuda"):
-            model_dtype = next(model.parameters()).dtype
-            inputs = {
-                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
-                for k, v in inputs.items()
-            }
+        inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
 
         with torch.inference_mode():
             outputs = model(**inputs)
@@ -709,12 +722,7 @@ class VisionRunner:
         else:
             inputs = processor(images=img, text=text_prompt, return_tensors="pt")
 
-        if device.startswith("cuda"):
-            model_dtype = next(model.parameters()).dtype
-            inputs = {
-                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
-                for k, v in inputs.items()
-            }
+        inputs = self._cast_inputs_to_model_dtype(inputs, model, device)
 
         with torch.inference_mode():
             generated_ids = model.generate(
@@ -752,6 +760,8 @@ class VisionRunner:
             device=device,
             dtype=dtype,
             model_id=model_id,
+            qwen_min_pixels=settings.VISION_VLM_QWEN_MIN_PIXELS,
+            qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
         )
 
         text_prompt = CAPTION_PROMPT
@@ -829,6 +839,8 @@ class VisionRunner:
             device=device,
             dtype=dtype,
             model_id=model_id,
+            qwen_min_pixels=settings.VISION_VLM_QWEN_MIN_PIXELS,
+            qwen_max_pixels=settings.VISION_VLM_QWEN_MAX_PIXELS,
         )
 
         # This profile's own declared params, not the caption profile's

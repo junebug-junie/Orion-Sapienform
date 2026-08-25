@@ -85,6 +85,48 @@ def test_load_vlm_captioner_still_selects_blip2_for_blip2_model_id():
     assert model is blip2_load.return_value
 
 
+def test_load_vlm_captioner_passes_qwen_pixel_bounds_to_processor():
+    """Review finding, 2026-08-25: Qwen2-VL/2.5-VL's "naive dynamic
+    resolution" processor scales visual-token count (and VRAM) with input
+    image resolution, uncapped, unless min_pixels/max_pixels are passed.
+    Confirms load_vlm_captioner's caller-supplied bounds actually reach
+    AutoProcessor.from_pretrained for both Qwen generations -- not just
+    that the kwargs exist on the function signature."""
+    mgr = ModelManager()
+    patches = _patched_loaders()
+    with patches["auto_processor"] as processor_load, patches["blip2"], patches["blip"], \
+         patches["qwen2_vl"], patches["qwen2_5_vl"], patches["generic"]:
+        mgr.load_vlm_captioner(
+            profile_name="vlm_caption", device="cpu", dtype="fp16",
+            model_id="Qwen/Qwen2-VL-2B-Instruct",
+            qwen_min_pixels=200704, qwen_max_pixels=1003520,
+        )
+
+    processor_load.assert_called_once()
+    _, kwargs = processor_load.call_args
+    assert kwargs.get("min_pixels") == 200704
+    assert kwargs.get("max_pixels") == 1003520
+
+
+def test_load_vlm_captioner_qwen_pixel_bounds_default_to_none():
+    """Caller omitting the new kwargs (e.g. an older/simpler call site, or
+    a test that doesn't care) must not accidentally pass a real numeric
+    default into the processor -- None means "use the checkpoint's own
+    default", not "0 pixels"."""
+    mgr = ModelManager()
+    patches = _patched_loaders()
+    with patches["auto_processor"] as processor_load, patches["blip2"], patches["blip"], \
+         patches["qwen2_vl"], patches["qwen2_5_vl"], patches["generic"]:
+        mgr.load_vlm_captioner(
+            profile_name="vlm_caption", device="cpu", dtype="fp16",
+            model_id="Qwen/Qwen2.5-VL-3B-Instruct",
+        )
+
+    _, kwargs = processor_load.call_args
+    assert kwargs.get("min_pixels") is None
+    assert kwargs.get("max_pixels") is None
+
+
 def test_load_vlm_captioner_unrecognized_model_id_still_falls_back_to_generic():
     mgr = ModelManager()
     patches = _patched_loaders()

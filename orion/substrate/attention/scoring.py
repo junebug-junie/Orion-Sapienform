@@ -10,7 +10,6 @@ from orion.substrate.attention.salience import borda_coalition_salience, compute
 
 logger = logging.getLogger("orion.substrate.attention.scoring")
 
-_EMOTION_RE = re.compile(r"\b(frustrated|pissed|worried|excited|afraid|stuck|blocked|confused|love|hate|urgent)\b", re.I)
 _PLAN_RE = re.compile(r"\b(plan|planning|going to|tomorrow|next|later|schedule|deadline|future)\b", re.I)
 _ANOMALY_RE = re.compile(r"\b(weird|unexpected|anomaly|regression|broken|failed|mismatch|surprise)\b", re.I)
 
@@ -138,7 +137,6 @@ def build_open_loops(
         relational = 0.68 if any(token in user_text.lower() for token in ("my ", "our ", "we ", "juniper", "relationship")) else 0.18
         predictive = 0.72 if target_type in {"plan", "future_event", "anomaly"} or _PLAN_RE.search(user_text) else 0.22
         concept_value = max(concept_pressure_from_signals(signals, phrase), 0.55 if target_type in {"concept", "belief", "anomaly"} else 0.25)
-        emotional = 0.65 if _EMOTION_RE.search(user_text) else 0.12
         askability = 0.5 if direct_turn else 0.72
         if generic_reversal or stale_thread_active:
             askability = min(askability, 0.25)
@@ -155,7 +153,6 @@ def build_open_loops(
             predictive_value=bounded(predictive),
             concept_value=bounded(concept_value),
             autonomy_value=autonomy_value,
-            emotional_charge=bounded(emotional),
             already_known=already_known,
             askability=bounded(askability),
             confidence=bounded(max(signal.confidence, 0.58 if already_known else 0.72)),

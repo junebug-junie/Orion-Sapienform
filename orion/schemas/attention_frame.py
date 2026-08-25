@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 AttentionTargetTypeV1 = Literal[
@@ -85,13 +85,41 @@ class OpenLoopV1(BaseModel):
     predictive_value: float = Field(default=0.0, ge=0.0, le=1.0)
     concept_value: float = Field(default=0.0, ge=0.0, le=1.0)
     autonomy_value: float = Field(default=0.0, ge=0.0, le=1.0)
-    emotional_charge: float = Field(default=0.0, ge=0.0, le=1.0)
     already_known: bool = False
     askability: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     provenance: dict[str, Any] = Field(default_factory=dict)
-    # Salience v2 (additive, back-compatible). The 7 legacy score fields above
+    # Salience v2 (additive, back-compatible). The legacy score fields above
     # remain populated for one deprecation release; new code reads these.
+    #
+    # emotional_charge REMOVED 2026-08-25 (kill means kill, CLAUDE.md Sec
+    # 0A) -- it was a bare regex over 11 emotion-adjacent words
+    # (_EMOTION_RE in orion/substrate/attention/scoring.py, added
+    # 2026-05-16) computed on every chat turn, but its only reader
+    # (score_loop()'s old hand-tuned formula, `+ loop.emotional_charge *
+    # 0.07`) was deleted 2026-07-31 in the same salience-v2 rewrite that
+    # trimmed SalienceFeaturesV1's other untethered fields (see that
+    # class's own docstring) -- that PR missed this sibling field on
+    # OpenLoopV1. Confirmed dead by full-repo grep before removal: no
+    # scoring, persistence (attention_salience_trace never stored it), or
+    # UI/debug consumer ever read it again after 2026-07-31. Found while
+    # investigating a suspected competing architecture for reading
+    # Juniper's affect -- this predates and was never reconciled with
+    # either JuniperAffectiveStateV1 (orion-cocreation-signals) or
+    # JuniperMultimodalAffectV1 (AffectGPT, PR #1865/#1871).
+    #
+    # novelty/continuity_relevance/relational_relevance appear similarly
+    # unread by the same grep (code review, 2026-08-25, corrected an
+    # earlier draft of this note that wrongly claimed `novelty` was still
+    # live -- it is not; `loop.novelty`/`OpenLoopV1.novelty` has no reader
+    # anywhere, only a comment describing the deleted pre-v2 formula that
+    # used to reference it). predictive_value/concept_value/autonomy_value
+    # ARE confirmed still live: orion/substrate/attention/policy.py reads
+    # loop.autonomy_value/loop.predictive_value directly in its ask-gating
+    # condition, and top_down.py's relevance() reads loop.concept_value.
+    # novelty/continuity_relevance/relational_relevance were NOT part of
+    # this patch's scope/approval -- flagged as a disclosed follow-up, not
+    # removed here.
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
     salience_features: dict[str, Any] = Field(default_factory=dict)
     # Voluntary attention (additive, back-compatible). top_down_bias is the
@@ -99,6 +127,40 @@ class OpenLoopV1(BaseModel):
     # gain·applied_bias. Both default 0.0 -> pure bottom-up when the feature is off.
     top_down_bias: float = Field(default=0.0, ge=0.0, le=1.0)
     combined_salience: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    # Fields removed from this model over time -- stripped from the raw
+    # payload BEFORE strict extra="forbid" validation runs, so a historical
+    # row still carrying one of these keys can still be replayed/read
+    # instead of raising. Review finding, 2026-08-25: OpenLoopV1 nests
+    # inside AttentionBroadcastProjectionV1 (orion/substrate/attention_
+    # broadcast.py), which is persisted as JSONB in both
+    # substrate_attention_broadcast_projection (live singleton) and
+    # substrate_attention_broadcast_log (168h append-only history) --
+    # without this, removing emotional_charge broke model_validate() on
+    # every pre-removal stored row: scripts/analysis/measure_ast_hot_
+    # reducer.py's replay silently counted every one as a skip (not
+    # surfaced as a schema break), and orion/hub/association.py /
+    # services/orion-thought/app/broadcast_reader.py would silently
+    # degrade to "no coalition"/stale during any window where a
+    # not-yet-redeployed producer writes a row shaped the old way. Add to
+    # this set (never remove an entry, even after the field it names is
+    # long gone from live traffic -- 168h of already-written history keeps
+    # needing it) the next time a field is removed from this model.
+    # ClassVar, not a field: an underscore-prefixed annotated attribute on a
+    # pydantic v2 BaseModel becomes a PrivateAttr by default, which is only
+    # reliably accessible on an INSTANCE (after __init__) -- but this needs
+    # to be readable from `cls` inside a mode="before" validator, which
+    # runs before any instance exists. ClassVar opts out of pydantic's
+    # field/private-attr machinery entirely, so it stays a plain class
+    # attribute.
+    _REMOVED_LEGACY_FIELDS: ClassVar[frozenset[str]] = frozenset({"emotional_charge"})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_removed_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict) and any(k in data for k in cls._REMOVED_LEGACY_FIELDS):
+            return {k: v for k, v in data.items() if k not in cls._REMOVED_LEGACY_FIELDS}
+        return data
 
 
 class VoluntaryOverrideV1(BaseModel):

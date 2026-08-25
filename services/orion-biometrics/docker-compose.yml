@@ -64,6 +64,8 @@ services:
       - PDU_REQUEST_TIMEOUT_SEC=${PDU_REQUEST_TIMEOUT_SEC:-5.0}
       - CABINET_SENSORS_PATH=${CABINET_SENSORS_PATH:-/run/orion-sensors/latest.json}
       - CABINET_SENSOR_STALE_AFTER_SEC=${CABINET_SENSOR_STALE_AFTER_SEC:-10.0}
+      - AMBIENT_AUDIO_PATH=${AMBIENT_AUDIO_PATH:-/run/orion-audio/latest.json}
+      - AMBIENT_AUDIO_STALE_AFTER_SEC=${AMBIENT_AUDIO_STALE_AFTER_SEC:-5.0}
 
     volumes:
       - ../../config/biometrics:/app/config/biometrics:ro
@@ -90,6 +92,8 @@ services:
       # Host cabinet sensor snapshot (systemd reader -> /run/orion-sensors/latest.json).
       # Create on host via scripts/setup_athena_cabinet_sensors.sh or RuntimeDirectory.
       - /run/orion-sensors:/run/orion-sensors:ro
+      # Host ambient audio snapshot (systemd ALSA reader -> /run/orion-audio/latest.json).
+      - /run/orion-audio:/run/orion-audio:ro
 
     deploy:
       resources:

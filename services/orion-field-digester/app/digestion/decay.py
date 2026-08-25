@@ -44,6 +44,8 @@ NODE_DECAY_CHANNELS = {
     "cabinet_vibration_activity",
     "cabinet_proximity_activity",
     "cabinet_sensor_staleness",
+    "cabinet_ambient_audio_activity",
+    "cabinet_ambient_audio_staleness",
     # execution
     "cortex_exec_step_load",
     "execution_friction",

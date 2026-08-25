@@ -1,0 +1,29 @@
+[Unit]
+Description=Orion Athena ambient audio ALSA level reader
+Documentation=file:///mnt/scripts/Orion-Sapienform/docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md
+After=local-fs.target sound.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+RuntimeDirectory=orion-audio
+RuntimeDirectoryMode=0755
+# Paths below are rewritten to the installing checkout by
+# scripts/setup_athena_ambient_audio.sh (@ORION_ROOT@ → real repo root).
+WorkingDirectory=@ORION_ROOT@
+Environment=PYTHONPATH=@ORION_ROOT@
+Environment=ORION_AMBIENT_AUDIO_PATH=/run/orion-audio/latest.json
+Environment=ORION_AMBIENT_AUDIO_DEVICE=plughw:CARD=CMTECK,DEV=0
+EnvironmentFile=-/etc/default/orion-ambient-audio
+ExecStart=@ORION_ROOT@/venv/bin/python @ORION_ROOT@/scripts/orion_ambient_audio_reader.py
+Restart=always
+RestartSec=2
+# audio group membership is granted by setup script; override User in
+# /etc/default/orion-ambient-audio if the Athena operator account differs.
+User=athena
+Group=audio
+SupplementaryGroups=audio
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

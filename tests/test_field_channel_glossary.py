@@ -22,16 +22,19 @@ def test_load_glossary_has_46_channels_matching_field_digester_channels_py():
     + tension_deviation_pressure added 2026-08-16 -- NOT a raw channel (the
     other entries before 2026-08-23 are), a derived scalar included in the
     glossary anyway for liveness observability. See that entry's own comment for why.
-    + 7 cabinet sensor channels added 2026-08-23 (6 activity + staleness)."""
+    + 7 cabinet sensor channels added 2026-08-23 (6 activity + staleness)
+    + 2 cabinet ambient audio channels added 2026-08-24 (activity + staleness)."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 46
+    assert len(entries) == 48
     names = {e.channel for e in entries}
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
     assert "cabinet_climate_activity" in names
     assert "cabinet_sensor_staleness" in names
+    assert "cabinet_ambient_audio_activity" in names
+    assert "cabinet_ambient_audio_staleness" in names
     # stream_backlog_pressure/contract_pressure are the two node+capability overlaps.
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
     assert {e.channel for e in overlap} == {"stream_backlog_pressure", "contract_pressure"}

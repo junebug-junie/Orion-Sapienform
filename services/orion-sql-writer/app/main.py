@@ -44,6 +44,10 @@ async def lifespan(app: FastAPI):
                 "ADD COLUMN IF NOT EXISTS measurements JSONB;"
             )
             conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
+                "ON orion_biometrics_summary (node, timestamp);"
+            )
+            conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )
             conn.exec_driver_sql(

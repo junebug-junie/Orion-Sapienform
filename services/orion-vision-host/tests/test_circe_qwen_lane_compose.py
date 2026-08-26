@@ -57,23 +57,32 @@ def test_circe_qwen_lane_disables_artifact_broadcast():
 
 
 def test_circe_qwen_lane_overrides_use_prefixed_keys_not_shared_names():
-    """Real regression, 2026-08-26: this file used to read
-    VISION_PERCEPT_STORE_URL, VISION_VRAM_RESERVE_MB/SOFT_FLOOR_MB/
-    HARD_FLOOR_MB, VISION_TIMEOUT_S, and ORION_BUS_ENFORCE_CATALOG as bare
-    `${VAR:-<circe-correct-default>}` hooks. The shared athena instance's
-    own .env_example sets every one of those same bare names to a DIFFERENT
-    value for its own (correct, for athena) purposes. The moment
-    services/orion-vision-host/.env exists at all (this compose file's own
-    bring-up instructions require passing it as a --env-file), those
-    athena-only values silently won over this lane's real defaults with no
-    error -- confirmed live via the reverie visual chain's tick log going
-    image_not_found on the athena-only docker-internal percept-store
-    hostname. CIRCE_QWEN_-prefixing every lane-specific override is what
-    actually closes the collision class; assert directly against the bare
-    names never appearing as a live override hook for these six keys, not
-    just that the CIRCE_QWEN_ prefixed ones exist (a future edit could add
-    the prefixed hook back as a second, redundant fallback while leaving
-    the bare one in place, keeping the bug)."""
+    """Real regression, 2026-08-26, two rounds: this file used to read
+    several lane-specific tunables as bare `${VAR:-<circe-correct-default>}`
+    hooks. The shared athena instance's own .env_example sets several of
+    those same bare names to a DIFFERENT value for its own (correct, for
+    athena) purposes. The moment services/orion-vision-host/.env exists at
+    all (this compose file's own bring-up instructions require passing it
+    as a --env-file), the athena-only values silently won over this lane's
+    real defaults with no error. Round 1 (caught live): VISION_PERCEPT_
+    STORE_URL/TOKEN/TIMEOUT_SEC, the three VISION_VRAM_* floors,
+    VISION_TIMEOUT_S, ORION_BUS_ENFORCE_CATALOG -- confirmed via the reverie
+    visual chain's tick log going image_not_found on the athena-only
+    docker-internal percept-store hostname. Round 2 (review finding, same
+    fix not yet applied to every bare hook): LOG_LEVEL, ORION_BUS_ENABLED,
+    HEARTBEAT_INTERVAL_SEC, TORCH_CUDA_ALLOC_CONF -- silently harmless only
+    because the values happened to coincide, same collision mechanism.
+    CIRCE_QWEN_-prefixing every lane-specific override, no exceptions, is
+    what actually closes the collision class. Assert directly against the
+    bare names never appearing as a live override hook for every key in
+    `bare_names` below, not just that the CIRCE_QWEN_ prefixed one exists
+    (a future edit could add the prefixed hook back as a second, redundant
+    fallback while leaving the bare one in place, keeping the bug) --
+    intentionally NOT a generic "any collision" scan, since that would
+    require parsing this file's YAML/shell-substitution syntax properly to
+    avoid false positives on genuinely-shared keys like ORION_BUS_URL and
+    PROJECT; extend this literal list instead when a new lane-specific
+    tunable is added."""
     text = COMPOSE_PATH.read_text()
     bare_names = [
         "VISION_PERCEPT_STORE_URL",
@@ -84,6 +93,10 @@ def test_circe_qwen_lane_overrides_use_prefixed_keys_not_shared_names():
         "VISION_VRAM_HARD_FLOOR_MB",
         "VISION_TIMEOUT_S",
         "ORION_BUS_ENFORCE_CATALOG",
+        "LOG_LEVEL",
+        "ORION_BUS_ENABLED",
+        "HEARTBEAT_INTERVAL_SEC",
+        "TORCH_CUDA_ALLOC_CONF",
     ]
     for name in bare_names:
         assert f"${{{name}:" not in text, (

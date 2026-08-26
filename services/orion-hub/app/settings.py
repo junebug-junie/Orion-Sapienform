@@ -108,6 +108,14 @@ class Settings(BaseSettings):
         default=8_388_608,
         alias="HUB_CHAT_ATTACHMENT_MAX_BYTES",
     )
+    # --- Reverie tab (read-only historical view of both reverie chains) ---
+    # Same path orion-thought's visual chain writes to
+    # (orion.reverie.visual_storage.DEFAULT_BASE_DIR) -- bind-mounted
+    # read-only into this container (docker-compose.yml).
+    REVERIE_VISUAL_STORAGE_DIR: str = Field(
+        default="/mnt/storage-lukewarm/orion/reverie-visual",
+        alias="REVERIE_VISUAL_STORAGE_DIR",
+    )
     HUB_CHAT_ATTACHMENT_ALLOWED_MIMES: str = Field(
         default="image/png,image/jpeg,image/webp,image/gif",
         alias="HUB_CHAT_ATTACHMENT_ALLOWED_MIMES",

@@ -1575,3 +1575,142 @@ def test_concurrent_ticks_persist_their_own_forced_flag_not_each_others(monkeypa
     assert organic_call["forced"] is False  # not clobbered by the forced call's True
     assert organic_call["tension_reason"] is not None
     assert organic_call["tension_reason"].target_id == "node:test"
+
+
+# ---------------------------------------------------------------------------
+# offer_message: delivering a message ANOTHER loop composed
+#
+# The curiosity loop uses this when Orion, inside an investigation turn,
+# decides a finding is worth saying unprompted. The property under test
+# throughout is that composing text elsewhere buys no exemption from anything
+# here -- the gates protect Juniper, not this module.
+# ---------------------------------------------------------------------------
+
+
+def _delivered(outreach) -> list:
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection("c1", queue, None)
+    return queue
+
+
+def _offer(outreach, text="something I found", tag="curiosity_outreach"):
+    return asyncio.run(
+        outreach.offer_message(text=text, correlation_id="corr-1", tag=tag)
+    )
+
+
+def test_offer_message_delivers_through_the_normal_rails(monkeypatch) -> None:
+    outreach = _outreach()
+    queue = _delivered(outreach)
+    sent: list = []
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_history",
+        lambda self, **kw: sent.append(kw) or asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_notification",
+        lambda self, **kw: asyncio.sleep(0),
+    )
+    result = _offer(outreach)
+    assert result["outreach"] is True and result["reason"] == "sent"
+    assert queue.get_nowait()["llm_response"] == "something I found"
+    assert sent[0]["source_tag"] == "curiosity_outreach"
+
+
+def test_a_curiosity_message_is_still_tagged_as_outreach(monkeypatch) -> None:
+    """One tag finds every unsolicited message however it was produced; the
+    source tag is ADDITIVE so it can also be traced to its investigation."""
+    outreach = _outreach()
+    _delivered(outreach)
+    import sys
+    import types
+
+    captured: dict = {}
+
+    async def fake_publish(bus, envelopes):
+        captured["tags"] = envelopes[0].payload.get("tags")
+
+    # A FAKE MODULE, not an import of the real one: `scripts.chat_history`
+    # constructs the real Hub `Settings` at import time, which needs the whole
+    # CHANNEL_* env surface. Same reasoning (and same mechanism) this suite
+    # already uses for `scripts.settings` and `scripts.pg_engine`.
+    fake = types.ModuleType("scripts.chat_history")
+    fake.publish_chat_history = fake_publish
+    fake.build_chat_history_envelope = lambda **kw: types.SimpleNamespace(payload=kw)
+    monkeypatch.setitem(sys.modules, "scripts.chat_history", fake)
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_notification",
+        lambda self, **kw: asyncio.sleep(0),
+    )
+    _offer(outreach)
+    assert captured["tags"] == ["endogenous_outreach", "curiosity_outreach"]
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        (dict(enabled=False), "disabled"),
+        (dict(quiet_start_hour=0, quiet_end_hour=24), "quiet_hours"),
+        (dict(daily_cap=0), "daily_cap"),
+    ],
+)
+def test_every_gate_still_applies_to_a_message_composed_elsewhere(
+    monkeypatch, kwargs, expected
+) -> None:
+    outreach = _outreach(**kwargs)
+    queue = _delivered(outreach)
+    result = _offer(outreach)
+    assert result["outreach"] is False and result["reason"] == expected
+    assert queue.empty()
+
+
+def test_a_turn_in_flight_blocks_a_curiosity_message_too() -> None:
+    outreach = _outreach()
+    queue: asyncio.Queue = asyncio.Queue()
+    outreach.register_connection(
+        "c1", queue, {"correlation_id": "live-turn", "kind": "orion"}
+    )
+    result = _offer(outreach)
+    assert result["reason"] == "turn_in_flight"
+
+
+def test_the_daily_cap_is_shared_because_the_interruption_is_the_same(
+    monkeypatch,
+) -> None:
+    """From Juniper's end a curiosity message and a tension-triggered outreach
+    are the same interruption, so they must not each get their own budget."""
+    outreach = _outreach(daily_cap=1)
+    _delivered(outreach)
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(
+        EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0)
+    )
+    assert _offer(outreach)["outreach"] is True
+    assert _offer(outreach)["reason"] == "daily_cap"
+
+
+def test_empty_text_is_never_shipped() -> None:
+    outreach = _outreach()
+    queue = _delivered(outreach)
+    assert _offer(outreach, text="   ")["reason"] == "empty_generation"
+    assert queue.empty()
+
+
+def test_orion_deciding_not_to_send_is_a_real_answer() -> None:
+    """The composition prompt explicitly offers this, so it must not be
+    delivered as a message that literally says "pass"."""
+    outreach = _outreach()
+    queue = _delivered(outreach)
+    assert _offer(outreach, text="pass")["reason"] == "orion_passed"
+    assert queue.empty()
+
+
+def test_blocked_reason_lets_a_caller_skip_composing_a_whole_turn() -> None:
+    assert _outreach().blocked_reason() is None
+    assert _outreach(enabled=False).blocked_reason() == "disabled"
+    assert (
+        _outreach(quiet_start_hour=0, quiet_end_hour=24).blocked_reason()
+        == "quiet_hours"
+    )

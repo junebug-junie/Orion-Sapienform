@@ -51,7 +51,6 @@ from typing import Any, Sequence
 # the material does not crowd out its own self-model in the turn's context.
 DEFAULT_CRYSTALLIZATION_SAMPLE = 12
 DEFAULT_RELATION_SAMPLE = 6
-DEFAULT_RECENT_STUDY_SAMPLE = 8
 
 # Subjects are free text and occasionally enormous (a whole pasted message).
 # Truncated for the menu only -- Orion can pull the full row itself once it has
@@ -110,7 +109,6 @@ class StudyMaterial:
     relation_resolvable: int = 0
     relation_by_kind: dict[str, int] = field(default_factory=dict)
     relations: list[RelationCard] = field(default_factory=list)
-    recently_studied: list[str] = field(default_factory=list)
     unavailable_reason: str | None = None
 
     @property
@@ -249,15 +247,23 @@ LEFT JOIN memory_crystallizations t
 WHERE c.crystallization_id IS NOT NULL OR t.crystallization_id IS NOT NULL
 """
 
-# What Orion has already looked into lately, so it can avoid repeating itself
-# BY CHOICE rather than by a gate deciding for it.
-RECENT_STUDY_SQL = """
-SELECT title
-FROM journal_entries
-WHERE source_kind = 'self_study' AND source_ref LIKE 'curiosity:%'
-ORDER BY created_at DESC
-LIMIT $1
-"""
+# WHAT ORION RECENTLY LOOKED INTO NO LONGER COMES FROM HERE. It used to be
+# `SELECT title FROM journal_entries WHERE source_ref LIKE 'curiosity:%'`, and
+# it was dead from the day it shipped: every entry this loop writes is titled
+# exactly "Curiosity" -- deliberately, because code does not know what Orion
+# chose and inventing a title would mean re-inferring that choice with a
+# heuristic. So the hint rendered as "Curiosity; Curiosity; Curiosity":
+# literally true, carrying no information.
+#
+# The obvious repair -- take the body's first line instead -- was tried and
+# rejected on live data. Both real entries open with the same fixed "What I
+# noticed:" heading the old prompt asked for, so first-line extraction returns
+# a heading, not a subject; it is the same heuristic re-inference one layer
+# down, and it would drift again the moment the prompt's shape changed.
+#
+# The honest source is structure Orion itself authored: priors it has SETTLED,
+# read from its own graph. See `worldview.RECENT_SETTLED_CYPHER`.
+
 
 
 def assemble_study_material(
@@ -268,7 +274,6 @@ def assemble_study_material(
     relation_counts: Sequence[Any],
     relation_rows: Sequence[Any],
     relation_resolvable: int = 0,
-    recent_titles: Sequence[Any],
 ) -> StudyMaterial:
     """Pure assembly, so the whole shape is testable without a database."""
     by_kind = {str(r["kind"]): int(r["n"]) for r in approved_counts}
@@ -282,5 +287,4 @@ def assemble_study_material(
         relation_by_kind=rel_by_kind,
         relation_resolvable=relation_resolvable,
         relations=[build_relation_card(r) for r in relation_rows],
-        recently_studied=[str(r["title"]) for r in recent_titles],
     )

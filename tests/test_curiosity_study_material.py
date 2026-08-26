@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from orion.curiosity import study_material
 from orion.curiosity.kickoff_prompt import build_kickoff_prompt
 from orion.curiosity.study_material import (
     APPROVED_SAMPLE_SQL,
@@ -57,7 +58,6 @@ def _material(**over) -> StudyMaterial:
         relation_counts=[{"relation": "same", "n": 316}],
         relation_rows=[_relation("d1", target_text="the other thought")],
         relation_resolvable=356,
-        recent_titles=[],
     )
     base.update(over)
     return assemble_study_material(**base)
@@ -186,7 +186,17 @@ def test_shown_ids_are_recorded_so_a_run_is_reconstructable() -> None:
     assert set(material.shown_ids()) == {"c0", "c1", "c2", "c3", "d1"}
 
 
-def test_recently_studied_is_offered_without_forbidding_it() -> None:
-    prompt = build_kickoff_prompt(_material(recent_titles=[{"title": "Curiosity"}]))
-    assert "already been there" in prompt
-    assert "No need to avoid these" in prompt
+def test_what_was_recently_studied_no_longer_comes_from_the_journal() -> None:
+    """The journal-title hint was dead from the day it shipped.
+
+    Every entry this loop writes is titled exactly "Curiosity" -- deliberately,
+    because code does not know what Orion chose. So the hint rendered as
+    "Curiosity; Curiosity; Curiosity". Its replacement reads settled priors out
+    of Orion's own graph (see `test_curiosity_worldview.py`); this test exists
+    to stop the Postgres version being reintroduced as an obvious repair.
+    """
+    assert not hasattr(_material(), "recently_studied")
+    assert not hasattr(study_material, "RECENT_STUDY_SQL")
+    assert "journal_entries" not in "".join(
+        v for v in vars(study_material).values() if isinstance(v, str)
+    )

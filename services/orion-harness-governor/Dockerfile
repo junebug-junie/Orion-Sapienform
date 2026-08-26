@@ -20,13 +20,29 @@ ENV IS_SANDBOX=1
 
 WORKDIR /app
 
-# MCP toolchain: docker CLI (GitHub MCP), node/npx (Firecrawl MCP), git
+# MCP toolchain: docker CLI (GitHub MCP), node/npx (Firecrawl MCP), git.
+#
+# `postgresql-client` and `redis-tools` are for ORION, not for this service's
+# own code: a curiosity turn is a `claude -p` subprocess in this image, and the
+# credentials it is handed (see orion/curiosity/sandbox_env.py) are useless
+# without a client to use them with. Measured live 2026-08-26 in the running
+# container before this line existed: `psql` MISSING, `psycopg2` MISSING,
+# `asyncpg` MISSING, `redis-cli` MISSING -- while `python3` and `redis-py` were
+# already present, which is why the FalkorDB half worked with no image change
+# and the Postgres half could not work at all.
+#
+# `redis-tools` earns its place separately from redis-py: Orion writes real
+# Cypher, and `redis-cli GRAPH.QUERY <graph> "<cypher>"` is one line where the
+# python equivalent is a script. Both are ~10 MB of apt, no network calls at
+# runtime, and neither is importable by this service's own app code.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg \
     git \
     openssh-client \
+    postgresql-client \
+    redis-tools \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \

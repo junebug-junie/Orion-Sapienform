@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 
 import httpx
 
@@ -636,7 +636,12 @@ def _fcc_context_env(env: dict[str, str]) -> None:
     )
 
 
-def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, str]:
+def _build_subprocess_env(
+    *,
+    fcc_server_url: str,
+    auth_token: str,
+    fcc_env: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
     env["ANTHROPIC_AUTH_TOKEN"] = auth_token
@@ -664,6 +669,19 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
         )
     env.pop("DISABLE_COMPACT", None)
     env.pop("DISABLE_AUTO_COMPACT", None)
+    # Orion's own read-only Postgres DSN and its FalkorDB graph credentials,
+    # allowlisted out of ~/.fcc/.env. `os.environ.copy()` above is the harness
+    # CONTAINER's environment and has never carried them (measured live
+    # 2026-08-26: 0 matches for ORION_CURIOSITY inside the container), while
+    # the file itself is already mounted and already readable from inside a
+    # turn -- so this makes reaching them ergonomic, not newly possible. The
+    # boundary is enforced by the role and the ACL, not here. See
+    # orion/curiosity/sandbox_env.py for the full account, including why the
+    # kill switch is the absence of the keys rather than a new flag.
+    if fcc_env:
+        from orion.curiosity.sandbox_env import inject_curiosity_credentials
+
+        inject_curiosity_credentials(env, fcc_env)
     return env
 
 
@@ -769,7 +787,13 @@ async def run_fcc_turn(
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=workspace,
-            env=_build_subprocess_env(fcc_server_url=fcc_server_url, auth_token=auth_token),
+            env=_build_subprocess_env(
+                fcc_server_url=fcc_server_url,
+                auth_token=auth_token,
+                # Already loaded above for the model label; passed on so the
+                # curiosity credentials reach the subprocess too.
+                fcc_env=env,
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=stream_read_limit,

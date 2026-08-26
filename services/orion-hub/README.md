@@ -394,6 +394,78 @@ including `disabled`, deliberately: this router carries no auth dependency, so a
 `force` carve-out would let one unauthenticated POST undo "off by default". To
 test, flip `HUB_ENDOGENOUS_OUTREACH_ENABLED` and restart.
 
+### 4.2 Curiosity investigation — Orion's own time, and its own graph
+
+`scripts/curiosity_investigation.py`. Code decides only **when** Orion gets
+time; Orion decides what to do with it, inside a real
+`execute_unified_turn`. Nothing in the loop names a subject.
+
+**What it shows Orion.** Its own open priors (ordered by how uncertain *it*
+said it was, and the prompt says the ordering is not neutral), a random sample
+of Juniper-approved crystallizations and concept-induction judgements, what it
+has recently settled, and — if the previous run left one — the note that run
+wrote to itself.
+
+**What Orion can reach inside the turn.** Real credentials against real stores,
+named in the prompt as possible and never as required:
+
+| store | credential | access |
+|---|---|---|
+| `memory_crystallizations`, `memory_concept_relation_decisions`, `chat_history_log`, `journal_entries` | Postgres role `orion_readonly` | `SELECT` only, those four tables only |
+| `orion_substrate` (the Concept Atlas) | FalkorDB ACL user `orion_curiosity` | `GRAPH.RO_QUERY` only |
+| `orion_worldview` (**Orion's own graph**) | same ACL user, via a selector | `GRAPH.QUERY` — read **and** write |
+
+The boundary is enforced by the databases, not by a wrapper: as
+`orion_curiosity`, a write to the Atlas is refused twice over (the key ACL, and
+`GRAPH.RO_QUERY` refusing a write command). The credentials reach the
+`claude -p` sandbox through an allowlist out of `~/.fcc/.env`
+(`orion/curiosity/sandbox_env.py`); removing a key from that file is the kill
+switch.
+
+**What accumulates.** Orion writes `:Prior`, `:Concept`, `:Finding`, `:Hop` and
+`:TurnOutcome` nodes into `orion_worldview` itself, in Cypher, in-turn. Hub only
+ever **reads** it back — every Hub query goes out as `GRAPH.RO_QUERY`. Nothing
+Orion puts there needs approval.
+
+- **Priors** are claims with a confidence and a status. A prior tested
+  `HUB_CURIOSITY_STALE_PRIOR_TESTS` times without its status moving leaves the
+  main list and is offered separately, with retiring it named as a real
+  outcome — so one claim cannot be re-litigated forever.
+- **Hops** are up to `HUB_CURIOSITY_MAX_HOPS` stopping points, recorded as they
+  happen rather than reconstructed at the end, so the journal entry can recount
+  the path actually taken.
+- **`:TurnOutcome`** is how a decision made *inside* the turn crosses back out:
+  `continue_line`/`continue_note` open the next run, `reach_out` asks for a
+  message to Juniper. **Absence is the safe default** — no node means no
+  continuation and no message. Nothing is inferred from the prose.
+
+**Gates, in order.** `disabled` → `daily_cap` → `cooldown` → `pg_role_missing`
+→ `graph_unavailable` → `stores_unavailable` / `no_approved_material` →
+`empty_generation` / `no_lookup`. The last one is load-bearing: a turn with
+fewer than `MIN_HARNESS_STEPS` harness steps did not look anything up, and its
+fluent prose is refused rather than journalled.
+
+**The ACL is re-asserted before every run**, not just at startup. `aclfile` is
+unset *and* immutable on this FalkorDB (`CONFIG SET aclfile` → "can't set
+immutable config"), so the grant lives only in the running process's memory and
+does not survive a restart. See `orion/curiosity/acl.py` — including why
+`clearselectors` is load-bearing there (without it, every Hub start appends a
+duplicate selector, measured live).
+
+**Outreach is a second turn** (`HUB_CURIOSITY_OUTREACH_ENABLED`, off by
+default). If Orion sets `reach_out`, a separate `execute_unified_turn` composes
+the message, so it gets its own `ThoughtClient.react()` stance check — Orion can
+find something worth saying and the system can still decide *not now*. Delivery
+goes through `EndogenousOutreach.offer_message`, which applies that module's own
+gates: quiet hours, daily cap and cooldown are **shared** with tension-triggered
+outreach, because from Juniper's end they are the same interruption.
+
+**Note on addresses.** Hub runs `network_mode: host`, so it reaches FalkorDB at
+`127.0.0.1:6380`; Orion's sandbox is on `app-net` and reaches the same server at
+`orion-athena-falkordb:6379`. Likewise `HUB_CURIOSITY_SANDBOX_HUB_URL` is Hub's
+address **as seen from the sandbox** (`host.docker.internal:8080`), because that
+value is only ever rendered into the prompt.
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.

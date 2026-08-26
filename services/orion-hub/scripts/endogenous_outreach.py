@@ -869,6 +869,101 @@ class EndogenousOutreach:
             tension_reason=tension_reason,
         )
 
+    # -- delivery on behalf of another loop --------------------------------
+
+    def blocked_reason(self) -> Optional[str]:
+        """The gate that would stop an outreach right now, or None.
+
+        Public so a caller can decide whether composing a message is worth a
+        whole unified turn BEFORE spending one. Advisory by design: the gates
+        are re-checked inside `offer_message` immediately before delivery,
+        because quiet hours can start and Juniper can start typing during the
+        seconds or minutes a composition turn takes.
+        """
+        return outreach_block_reason(self._gate_inputs())
+
+    async def offer_message(
+        self,
+        *,
+        text: str,
+        correlation_id: str,
+        tag: str,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Deliver a message ANOTHER loop composed, through this module's gates.
+
+        The curiosity loop (`scripts/curiosity_investigation.py`) uses this when
+        Orion, inside an investigation turn, decides a finding is worth saying
+        unprompted. It exists so that decision inherits every gate this module
+        already enforces -- quiet hours 23:00-08:00 on Juniper's own timezone,
+        the daily cap, the cooldown, and "not while a turn is in flight" --
+        instead of a second loop reimplementing them and drifting.
+
+        THE GATES PROTECT JUNIPER, NOT THIS MODULE, which is why they are not
+        optional for a caller that composed its text elsewhere. In particular
+        the daily cap and the cooldown are SHARED: a curiosity message and a
+        tension-triggered outreach both count, because from the receiving end
+        they are the same interruption.
+
+        Returns the same status-dict shape `maybe_outreach` does, and records a
+        decision-log row identically, so an operator sees one outreach history
+        rather than two.
+        """
+        body = str(text or "").strip()
+        if not body:
+            return self._record(
+                {"outreach": False, "reason": "empty_generation", "source": tag},
+                forced=False,
+            )
+        if is_pass_response(body):
+            # Orion wrote the message and concluded it was not worth sending.
+            # A real answer, and the composition prompt says so explicitly.
+            return self._record(
+                {"outreach": False, "reason": "orion_passed", "source": tag},
+                forced=False,
+            )
+        if self._send_lock.locked():
+            return self._record(
+                {"outreach": False, "reason": "already_sending", "source": tag},
+                forced=False,
+            )
+        async with self._send_lock:
+            blocked = outreach_block_reason(self._gate_inputs())
+            if blocked:
+                return self._record(
+                    {"outreach": False, "reason": blocked, "source": tag},
+                    forced=False,
+                )
+            session_id = self._active_session_id()
+            await self._deliver(
+                text=body,
+                session_id=session_id,
+                correlation_id=correlation_id,
+                model=model,
+                source_tag=tag,
+            )
+            self._last_outreach_at = time.time()
+            self._sent_today += 1
+            logger.info(
+                "endogenous_outreach_sent corr=%s session=%s chars=%d sent_today=%d source=%s",
+                correlation_id,
+                session_id,
+                len(body),
+                self._sent_today,
+                tag,
+            )
+            return self._record(
+                {
+                    "outreach": True,
+                    "reason": "sent",
+                    "source": tag,
+                    "correlation_id": correlation_id,
+                    "session_id": session_id,
+                    "chars": len(body),
+                },
+                forced=False,
+            )
+
     def _record(
         self, result: Dict[str, Any], *, forced: bool, tension_reason: Optional[Any] = None
     ) -> Dict[str, Any]:
@@ -1032,7 +1127,13 @@ class EndogenousOutreach:
     # -- delivery ----------------------------------------------------------
 
     async def _deliver(
-        self, *, text: str, session_id: str, correlation_id: str, model: Optional[str] = None
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        model: Optional[str] = None,
+        source_tag: Optional[str] = None,
     ) -> None:
         message_id = str(uuid4())
         self._push_to_sockets(text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id)
@@ -1042,6 +1143,7 @@ class EndogenousOutreach:
             correlation_id=correlation_id,
             message_id=message_id,
             model=model,
+            source_tag=source_tag,
         )
         await self._publish_notification(
             text=text, session_id=session_id, correlation_id=correlation_id, message_id=message_id
@@ -1071,7 +1173,14 @@ class EndogenousOutreach:
                 logger.warning("endogenous_outreach_push_failed connection=%s err=%s", connection_id, exc)
 
     async def _publish_history(
-        self, *, text: str, session_id: str, correlation_id: str, message_id: str, model: Optional[str] = None
+        self,
+        *,
+        text: str,
+        session_id: str,
+        correlation_id: str,
+        message_id: str,
+        model: Optional[str] = None,
+        source_tag: Optional[str] = None,
     ) -> None:
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
@@ -1092,7 +1201,11 @@ class EndogenousOutreach:
                 correlation_id=correlation_id,
                 speaker="Orion",
                 model=model,
-                tags=[OUTREACH_TAG],
+                # OUTREACH_TAG always, so every unsolicited message stays
+                # findable through one tag however it was produced; the source
+                # tag is ADDITIVE, so a curiosity-composed message can also be
+                # traced back to the investigation that prompted it.
+                tags=[OUTREACH_TAG] if not source_tag else [OUTREACH_TAG, source_tag],
                 message_id=message_id,
                 client_meta={"unsolicited": True},
             )

@@ -532,6 +532,30 @@ async def startup_event():
                     version=settings.SERVICE_VERSION,
                     node=settings.NODE_NAME,
                 ),
+                # Orion's own graph. Hub reads it back read-only and asserts
+                # the FalkorDB ACL that lets Orion write it -- see
+                # orion/curiosity/acl.py for why that assert is required rather
+                # than belt-and-braces (aclfile is unset AND immutable here, so
+                # the grant does not survive a FalkorDB restart).
+                graph_host=settings.HUB_CURIOSITY_GRAPH_HOST,
+                graph_port=settings.HUB_CURIOSITY_GRAPH_PORT,
+                graph_own=settings.HUB_CURIOSITY_GRAPH_OWN,
+                graph_atlas=settings.HUB_CURIOSITY_GRAPH_ATLAS,
+                graph_user=settings.HUB_CURIOSITY_GRAPH_ORION_USER,
+                graph_password=settings.HUB_CURIOSITY_GRAPH_ORION_PASSWORD,
+                hub_url=settings.HUB_CURIOSITY_SANDBOX_HUB_URL,
+                prior_sample=settings.HUB_CURIOSITY_PRIOR_SAMPLE,
+                stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
+                max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
+                pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
+                # A finding Orion judges worth saying goes through a SECOND
+                # turn (its own stance gate) and then through outreach's OWN
+                # gates -- quiet hours, daily cap, cooldown are SHARED with
+                # tension-triggered outreach, because from Juniper's end they
+                # are the same interruption. Read through a callable because
+                # `endogenous_outreach` is a module global reassigned above.
+                outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
+                outreach_provider=lambda: endogenous_outreach,
             )
             await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
 

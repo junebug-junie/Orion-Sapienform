@@ -61,6 +61,7 @@ from scripts.autonomy_payloads import extract_autonomy_payload, log_autonomy_pay
 from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 from scripts.presence_session import inject_session_presence
+from scripts import chat_turn_affect
 from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
 from scripts.repair_pressure_wiring import attach_repair_pressure_contract
 from scripts.warm_start import mini_personality_summary
@@ -1149,6 +1150,24 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 active_turn["correlation_id"] = trace_id
                 active_turn["kind"] = "orion"
+                # Affect bracket, leg 1 of 2. Fired here rather than earlier
+                # (right after voice.stt.done) on purpose: everything between
+                # those two points can still bail out with `continue`
+                # (harness_governor_disabled, the turn_orchestrator import
+                # guard), and a "pre" capture with no turn behind it and no
+                # "post" to pair with is worse than no capture at all -- it
+                # is a webcam recording of Juniper attributed to a
+                # conversation that never happened. By this line the turn is
+                # actually about to run. Never awaited: see
+                # scripts/chat_turn_affect.py for why (up to ~195s) and for
+                # the honest consequence (this capture colours the NEXT
+                # turn, not this one).
+                chat_turn_affect.fire(
+                    settings=settings,
+                    trigger=chat_turn_affect.TRIGGER_PRE,
+                    correlation_id=trace_id,
+                    is_voice_turn=not is_text_input,
+                )
                 try:
                     await run_awaitable_cancel_on_ws_disconnect(
                         websocket,
@@ -1176,6 +1195,36 @@ async def websocket_endpoint(websocket: WebSocket):
                 finally:
                     active_turn["correlation_id"] = None
                     active_turn["kind"] = None
+                    # Affect bracket, leg 2 of 2 -- in `finally`, not after
+                    # it, so a turn that ERRORS still gets its closing read.
+                    # An exchange that went wrong is exactly the one whose
+                    # after-state is worth having, and a pre with no post is
+                    # an unusable half of a matched pair.
+                    #
+                    # But NOT when the client is gone. run_awaitable_cancel_
+                    # on_ws_disconnect cancels the turn the moment
+                    # client_state leaves CONNECTED, and that cancellation
+                    # lands right here -- so without this check, closing the
+                    # tab mid-turn would start a live webcam+mic recording of
+                    # Juniper AFTER she left, attributed to a conversation
+                    # she had already walked away from. That is the same
+                    # objection the pre leg's own comment above makes, and it
+                    # applies just as hard on the cancel path (review
+                    # finding, 2026-08-26). A disconnect is the one case
+                    # where the missing half of the pair is the correct
+                    # outcome.
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        chat_turn_affect.fire(
+                            settings=settings,
+                            trigger=chat_turn_affect.TRIGGER_POST,
+                            correlation_id=trace_id,
+                            is_voice_turn=not is_text_input,
+                        )
+                    else:
+                        logger.info(
+                            "chat_turn_affect_post_skipped corr=%s reason=client_disconnected",
+                            trace_id,
+                        )
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical

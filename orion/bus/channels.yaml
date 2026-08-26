@@ -603,7 +603,17 @@ channels:
     consumer_services: ["orion-juniper-affective-state", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-08-22"
-
+    # 2026-08-25: `trigger` gained two values beyond manual/ambient --
+    # chat_turn_pre / chat_turn_post, the pair Hub fires around one
+    # Orion-mode chat turn (services/orion-hub/scripts/chat_turn_affect.py).
+    # Those two also carry `chat_correlation_id`, which is a DIFFERENT join
+    # axis from this event's existing `correlation_id`: correlation_id joins
+    # the three legs of one capture attempt (retina RPC, worker RPC, this
+    # event); chat_correlation_id joins a capture to the conversation turn
+    # that caused it, and joins a turn's pre/post pair to each other.
+    # Additive and backward-compatible: existing consumers matching on
+    # manual/ambient are unaffected, and chat_correlation_id is optional and
+    # absent on those two triggers.
   # Bus-reachable twin of orion-vision-retina's POST /capture/clip
   # (2026-08-22). Exists because the capturing node has no reachable HTTP
   # surface to a caller like Hub -- carbon accepts no inbound at all per

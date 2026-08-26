@@ -386,6 +386,22 @@ async def _build_situation_prompt_fragment(
             "session_id": session_id or "anonymous",
             "raw_user_text": user_message,
         }
+        # Carry the browser's surface_context through so a SPOKEN turn is
+        # distinguishable from a typed one. Confirmed live 2026-08-25: Hub
+        # already transcribes Juniper's microphone and feeds the transcript
+        # into this turn (websocket_handler's STT block runs before the
+        # Orion-mode branch), and app.js already sends
+        # `surface_context: {input_modality: "spoken"}` on the audio payload
+        # -- but this builder never passed it on, so
+        # `_build_surface_context` fell through to its "typed" default on
+        # EVERY unified turn. Orion received the words and had no way to
+        # know they had been said out loud rather than typed.
+        surface_context = payload.get("surface_context")
+        if isinstance(surface_context, dict) and surface_context:
+            # build_situation_for_ctx reads this from ctx["metadata"], not
+            # from the top level -- see _build_surface_context's own `md`
+            # lookup in orion/situational/context.py.
+            situation_ctx["metadata"] = {"surface_context": dict(surface_context)}
         presence_context = payload.get("presence_context")
         if not isinstance(presence_context, dict):
             # Fall back to the same stored per-session presence

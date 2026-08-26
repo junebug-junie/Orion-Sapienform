@@ -84,8 +84,12 @@ class JuniperMultimodalAffectSQL(Base):
     # already carries this key -- a column default here could never
     # actually fire and would misleadingly imply the value is optional.
     source = Column(String, nullable=False)
-    # "manual" (POST /trigger or /capture_and_assess) vs "ambient" (Hub's
-    # recurring toggle loop) -- see JuniperMultimodalAffectV1.trigger.
+    # "manual" (POST /trigger or /capture_and_assess), "ambient" (Hub's
+    # recurring toggle loop), or "chat_turn_pre"/"chat_turn_post" (Hub's
+    # per-chat-turn bracket, 2026-08-26) -- see
+    # JuniperMultimodalAffectV1.trigger. Plain String, not an enum/check
+    # constraint, so widening the producer's Literal never needs a
+    # coordinated DDL change.
     trigger = Column(String, nullable=True)
     subtitle_source = Column(String, nullable=True)
 
@@ -104,5 +108,21 @@ class JuniperMultimodalAffectSQL(Base):
     # since it is also this table's own event_id in the common case, but
     # kept as its own column for the fallback-generated-id path.
     correlation_id = Column(String, nullable=True, index=True)
+
+    # The Orion-mode chat turn this capture belonged to, on the
+    # chat_turn_pre/chat_turn_post pair only (NULL for manual/ambient).
+    # A DIFFERENT join axis from correlation_id above: that one joins the
+    # three RPC legs of a single capture attempt, this one joins a capture
+    # to the conversation that caused it AND joins a turn's pre/post pair
+    # to each other.
+    #
+    # Added 2026-08-26 in the same patch that introduced the field. Without
+    # a declared column here, _write_row's column-filter would silently
+    # drop the key -- the join would exist on the bus and in the 1h Redis
+    # mirror but never durably, which defeats the point: the pair is only
+    # worth capturing because you can go back and ask about it later.
+    # Indexed because the only query this column exists to serve is
+    # "give me both legs for turn X".
+    chat_correlation_id = Column(String, nullable=True, index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

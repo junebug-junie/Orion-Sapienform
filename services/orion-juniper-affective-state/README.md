@@ -32,12 +32,56 @@ described Hub's button as "a manual turn-scoped trigger, not a toggle" --
 that was true of the button that shipped first (2026-08-22, PR #1838), not
 of the toggle that replaced it as the primary control the same day.
 
-`trigger` (`"manual"` | `"ambient"`) and `correlation_id` on
-`JuniperMultimodalAffectV1` (`orion/schemas/affectgpt.py`) exist so a
-consumer can tell the two apart and, via `correlation_id`, join one
-attempt's retina-RPC/worker-RPC/event legs together -- `capture_and_assess()`
-generates ONE id per attempt and threads it through all three, rather than
-each leg getting its own independently-generated one.
+`trigger` (`"manual"` | `"ambient"` | `"chat_turn_pre"` | `"chat_turn_post"`)
+and `correlation_id` on `JuniperMultimodalAffectV1`
+(`orion/schemas/affectgpt.py`) exist so a consumer can tell them apart and,
+via `correlation_id`, join one attempt's retina-RPC/worker-RPC/event legs
+together -- `capture_and_assess()` generates ONE id per attempt and threads
+it through all three, rather than each leg getting its own
+independently-generated one.
+
+### The chat-turn bracket (2026-08-25)
+
+`chat_turn_pre` / `chat_turn_post` are a *pair*, fired by Hub around a single
+Orion-mode chat turn (`services/orion-hub/scripts/chat_turn_affect.py`, gated
+by `AFFECT_CHAT_TURN_SCOPE`, default `voice` = spoken turns only). They are
+what makes "how did Juniper's affect move across this exchange" answerable
+from stored events: manual and ambient captures are both untethered from any
+particular conversation, so neither can produce a matched pair around a known
+stimulus.
+
+Those two triggers additionally carry **`chat_correlation_id`** — a
+*different join axis* from `correlation_id` above, and deliberately not a
+reuse of it:
+
+| field | joins |
+| --- | --- |
+| `correlation_id` | the three legs of ONE capture attempt (retina RPC, worker RPC, event) |
+| `chat_correlation_id` | a capture to the conversation turn that caused it, and a turn's pre/post pair to each other |
+
+`observed_at`-proximity cannot substitute for the second one: a concurrent
+ambient tick lands in the same time window and is indistinguishable by
+timestamp alone.
+
+Two properties worth knowing before consuming these:
+
+- **Neither capture blocks the turn.** Both are detached; a capture can take
+  up to ~195s. So the `chat_turn_pre` read does **not** colour the turn that
+  fired it — it lands in the 300s situational mirror in time for the *next*
+  turn, and gives `chat_turn_post` something to be compared against.
+- **A pair can legitimately be half-present.** All callers share one
+  exclusive capture slot; a leg that loses it is dropped (logged, never
+  queued, never retried — same no-retry policy the ambient loop already
+  has). Treat a lone `chat_turn_pre` as a real, explainable gap rather than
+  corrupt data.
+
+`subtitle` is deliberately sent EMPTY by both legs, even though Hub already
+holds the microphone transcript. The clip retina records is captured live at
+request time — *after* Juniper finished speaking that sentence — so its audio
+is not that transcript, and supplying it would ground the model in text that
+does not belong to the footage. Empty means the worker Whisper-transcribes
+the clip's own audio (`subtitle_source="transcribed"`), which is the honest
+read.
 
 ## The cross-host bridge (built 2026-08-22)
 
@@ -110,7 +154,7 @@ docstring for the fallback-path fix).
 
 1. `GET /health`
 2. `POST /v1/juniper/affect/trigger` — `{"video_path": "...", "audio_path": "...", "subtitle": "..."}` (paths must be readable inside the *worker's* container).
-3. `POST /v1/juniper/affect/capture_and_assess` — optional `{"subtitle": "...", "user_message": "...", "trigger": "manual"|"ambient"}` (trigger defaults to "manual" if omitted). Synchronous, typically well under a minute but up to ~195s worst case (real capture + real GPU inference) — use a generous client timeout, not a quick one.
+3. `POST /v1/juniper/affect/capture_and_assess` — optional `{"subtitle": "...", "user_message": "...", "trigger": "manual"|"ambient"|"chat_turn_pre"|"chat_turn_post", "chat_correlation_id": "..."}` (trigger defaults to "manual" if omitted; `chat_correlation_id` is only meaningful with the two `chat_turn_*` triggers). Synchronous, typically well under a minute but up to ~195s worst case (real capture + real GPU inference) — use a generous client timeout, not a quick one.
 
 ## Tests
 

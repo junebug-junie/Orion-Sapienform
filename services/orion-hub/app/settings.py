@@ -334,6 +334,23 @@ class Settings(BaseSettings):
     # full interval later.
     AFFECT_AMBIENT_POLL_SEC: float = Field(default=5.0, alias="AFFECT_AMBIENT_POLL_SEC")
 
+    # Per-chat-turn affect bracket (scripts/chat_turn_affect.py): one capture
+    # fired as an Orion-mode turn starts, one as it finishes, joined by the
+    # turn's own correlation_id. Distinct from AFFECT_AMBIENT_* above, which
+    # is a wall-clock loop untethered from any conversation -- both can be on
+    # at once and share one exclusive capture slot.
+    #
+    #   off   -- never fire (fail-closed default for any unrecognized value)
+    #   voice -- only turns Juniper actually spoke into the mic  [default]
+    #   all   -- every Orion-mode turn, typed included
+    #
+    # "voice" is the default rather than "all" because the mic press is an
+    # explicit, physical, per-turn consent action; typing into an
+    # already-open tab is not. Widening is a deliberate operator decision.
+    AFFECT_CHAT_TURN_SCOPE: str = Field(
+        default="voice", alias="AFFECT_CHAT_TURN_SCOPE"
+    )
+
     # Vision panel camera dropdown -- "Carbon (live)" / "Carbon (affect
     # snapshot)" (2026-08-22, Juniper's ask: "port that into hub's camera
     # drop down"). scripts/vision_frame_cache.py subscribes to the bus

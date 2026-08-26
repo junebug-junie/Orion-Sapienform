@@ -475,7 +475,14 @@ async def test_fetch_percept_sends_no_token_header_when_unset(monkeypatch, tmp_p
 # validation. Both fixed via one helper + one pydantic request model.
 
 
-def test_normalize_trigger_only_accepts_the_literal_string_ambient():
+def test_normalize_trigger_clamps_anything_it_does_not_recognize():
+    # Renamed 2026-08-25: the set of accepted labels is no longer just
+    # {"manual", "ambient"} (chat_turn_pre/chat_turn_post were added for
+    # Hub's per-turn affect bracket), so the old name asserted something
+    # that is no longer true. Every assertion below still holds and is
+    # still the point: unrecognized input clamps, and never raises --
+    # including unhashable input, which is what caught the set-membership
+    # regression introduced alongside those new labels.
     assert _normalize_trigger("ambient") == "ambient"
     assert _normalize_trigger("manual") == "manual"
     assert _normalize_trigger("not-a-real-value") == "manual"

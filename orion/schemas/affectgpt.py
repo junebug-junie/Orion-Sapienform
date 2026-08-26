@@ -140,13 +140,34 @@ class JuniperMultimodalAffectV1(BaseModel):
     # Added 2026-08-22 for the ambient (recurring) capture toggle -- Juniper's
     # own ask: "ensure data model has good ability to be correlative with
     # other components in the mesh." Two distinct things:
-    trigger: Literal["manual", "ambient"] = Field(
+    trigger: Literal["manual", "ambient", "chat_turn_pre", "chat_turn_post"] = Field(
         default="manual",
         description=(
             "Which entry point produced this event -- POST /trigger or "
             "/capture_and_assess called directly (manual) vs Hub's recurring "
-            "toggle loop (ambient). Now two producers of the same event type; "
-            "a consumer needs this to tell them apart."
+            "toggle loop (ambient) vs the pair bracketing one Orion-mode "
+            "chat turn (chat_turn_pre, fired once Whisper has a transcript "
+            "and before the turn runs; chat_turn_post, fired once the turn's "
+            "reply has been handed back). Now four producers of the same "
+            "event type; a consumer needs this to tell them apart -- and the "
+            "chat_turn_* pair specifically is only meaningful AS a pair, "
+            "joined via chat_correlation_id below."
+        ),
+    )
+    chat_correlation_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The Orion-mode chat turn's OWN correlation_id (Hub's per-turn "
+            "trace_id), present only on trigger=chat_turn_pre/chat_turn_post. "
+            "Deliberately NOT reusing `correlation_id` above, which already "
+            "means something else and must keep meaning it: that one joins "
+            "the three legs of a single capture attempt (retina RPC, worker "
+            "RPC, this event). This one joins a capture to the conversation "
+            "that caused it, and joins the pre/post pair of one turn to each "
+            "other -- two different join axes, two fields. A consumer asking "
+            "'how did Juniper's affect move across this turn' needs exactly "
+            "this key; observed_at-proximity cannot answer it, because "
+            "concurrent ambient ticks land in the same time window."
         ),
     )
     correlation_id: Optional[str] = Field(

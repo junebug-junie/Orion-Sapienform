@@ -1,6 +1,31 @@
-# Priors, research, and a world-view graph
+# Priors, research, and the concept graph
 
-Design mode. Nothing here is built yet.
+Design mode. Nothing here is built yet. **Revised 2026-08-26 after two
+corrections from Juniper and one thing I had simply never looked at.**
+
+## What changed in revision 1, and why it matters
+
+Three claims in the first draft were wrong, and they were wrong in the same
+direction — I called things broken that were working as designed, because I had
+not looked at the surface Juniper actually uses.
+
+1. **"The 290 approved crystallizations are junk because `subject == summary`."**
+   Wrong. Juniper: *"they are basically the chat statements, but they are
+   important chats so they get crystalized, not compressed and that's okay."*
+   Preserving an important exchange VERBATIM is the point of crystallizing it —
+   compression is what happens to everything else. `subject == summary` is the
+   signature of a deliberate decision, not of a defect.
+2. **"Orion has no real concepts."** Wrong, and the reason is embarrassing:
+   there is a **Concept Atlas** in Hub, live at `/concept-atlas`, backed by the
+   `orion_substrate` FalkorDB graph, which I never opened. It holds 18 concepts
+   and 15 typed edges with a real promotion lifecycle. See below.
+3. **"Build a new `orion_worldview` graph."** Reversed — see "Where findings
+   go".
+
+The pattern in all three: I inferred structure from Postgres shape instead of
+looking at the system Juniper operates. CLAUDE.md 0A's metric gate step 4 says
+pull real data and look at it; I pulled real data and did not look at all of
+it.
 
 ## Arsonist summary
 
@@ -23,7 +48,8 @@ The journal stays, because Juniper reads prose. The graph is added, because Orio
 | memory between runs | **none, except the cooldown stamp** |
 | `memory_crystallizations` | 1,282 rows; 646 approved; 636 unapproved are exactly the `subject == summary` copies |
 | `memory_concept_relation_decisions` | 547 rows; **0 have a resolvable candidate** (`crys_<hex>` exists in no crystallization table); 356 resolve on target; 164 have no target |
-| FalkorDB | `orion_substrate` (18 Concept nodes), `graphiti_temporal`, `orion_recall`, others |
+| **Concept Atlas** (`/concept-atlas`, `orion_substrate`) | **18 concepts, 15 edges.** 4 canonical (Orion, Juniper, Orion-Juniper relationship, Claude), 14 proposed. Anchor scopes: orion 11, world 4, juniper 1, relationship 1, claude 1. Predicates: `supports`, `co_occurs_with`, `associated_with`, plus evidence nodes. Read-only HTTP at `/api/substrate/concepts/{summary,network}` |
+| `orion/substrate/frontier_landing.py` | already lands new concepts with `suggested_promotion_state="proposed"` — the sanctioned way a concept enters the Atlas |
 | `GraphWriteIntentV1` | the sanctioned write contract: `workload`, `operation`, `identity_key`, node/edge payload, provenance |
 | `journal_entries` | 35,829 rows and **exactly one reader in the whole repo** — the self-study cooldown lookup |
 
@@ -95,31 +121,89 @@ The prose becomes the journal entry; the block becomes the graph write. **A miss
 
 `inconclusive` is a first-class outcome: it bumps `times_tested` without moving confidence, and three of them retires the prior.
 
-### The world-view graph
+### Where findings go — REVERSED from draft 1
 
-**New FalkorDB graph `orion_worldview`, not an extension of `orion_substrate`.** Recommendation, and the reason is measured: `orion_substrate` has 18 nodes and is fed by an induction lane whose 547 edges have **zero** resolvable source nodes. Building on it inherits that breakage and makes both harder to fix. A clean graph with its own write contract can be correct from day one, and the two can be reconciled once induction is repaired — which Juniper has already scheduled as "later."
+**Recommendation: write into the existing Concept Atlas as `proposed`
+concepts. Do not build `orion_worldview`.**
 
+Draft 1 argued for a new graph on the grounds that `orion_substrate` was tiny
+and fed by a broken induction lane. Both facts are true and neither supports the
+conclusion, now that I have actually looked at the Atlas:
+
+- It is **not broken, it is early.** 18 concepts with typed edges, evidence
+  nodes, anchor scopes and a promotion lifecycle is a working design at low
+  volume — which is exactly what a new graph would be on day one, except
+  without the UI, the seed concepts, or the operator workflow.
+- `proposed -> canonical` **already is the approval flow Juniper uses** for
+  crystallizations, in the same Hub, with the same hand on the same button. A
+  new graph would need that built from scratch, and the crystallization
+  approval filter has already proved that the human gate is where the quality
+  comes from.
+- The 4 canonical concepts are the golden seeds (`Orion`, `Juniper`,
+  `Orion-Juniper relationship`, `Claude`). Anything Orion learns should hang off
+  those, not off a parallel root. A second concept store is precisely the "bad
+  seam" CLAUDE.md 0A names: another place for the same kind of thing to live.
+- `substrate.perception`, `substrate.vision`, `substrate.execution`,
+  `substrate.chat` are already concepts in there. Those are **Orion's own
+  subsystems as objects of thought** — the best available material for a first
+  prior, and it is already sitting in the graph.
+
+So a finding lands as a `proposed` concept plus edges to what it relates to,
+and Juniper promotes it to `canonical` — or does not, which is itself signal.
+The dangling `crys_` induction edges stay untouched and unblocking, per
+Juniper's "we'll fix concept induction later".
+
+### How Orion reaches its own material
+
+Settled with Juniper: **option B — `psql` with a read-only role**, not an MCP
+server and not a bounded verb. The bounded verb was rejected on Juniper's own
+argument: the moment code defines the query shape, code is choosing again.
+
+Orion's FCC turns already have **Bash** (20 calls in the 3h before this was
+written), so the capability is a credential and a client, not a new tool
+surface. That is also exactly why the read-only role is load-bearing rather
+than ceremonial: with Bash already present, whatever DSN reaches that sandbox
+is a DSN Orion can do anything with.
+
+```sql
+CREATE ROLE orion_readonly LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE conjourney TO orion_readonly;
+GRANT USAGE  ON SCHEMA public        TO orion_readonly;
+GRANT SELECT ON memory_crystallizations,
+                memory_concept_relation_decisions,
+                chat_history_log,
+                journal_entries
+             TO orion_readonly;
 ```
-(:Prior   {prior_id, claim, confidence, status, times_tested, formed_at})
-(:Concept {crystallization_id, kind, subject})
-(:Finding {finding_id, verdict, why, observed_at, correlation_id})
 
-(:Prior)-[:ABOUT]->(:Concept)
-(:Prior)-[:TESTED_BY]->(:Finding)
-(:Finding)-[:SUPPORTS|:REFUTES|:REVISES]->(:Prior)
-(:Prior)-[:SPAWNED]->(:Prior)
-(:Prior)-[:CONTRADICTS]->(:Prior)
-```
+Four tables, not two — Juniper's call was "hook up Orion with what you think is
+best", and the two extra are what make the analysis half real:
 
-Written through `GraphWriteIntentV1` (`workload="orion_worldview"`), never raw Cypher — that contract already carries provenance and identity keys, which is what makes a write auditable.
+- `chat_history_log` — lets Orion follow a crystallization back to the
+  conversation it came from. Juniper's own framing of the loop was "pull chat
+  history, memory crystalizations, etc."; without it a crystallization is a
+  quote with no context.
+- `journal_entries` — lets Orion see what it has already written. This is also
+  the honest fix for the `recently_studied` hint, which is currently dead
+  (the journal title is hardcoded, so the hint reads "Curiosity; Curiosity;
+  Curiosity").
 
-`CONTRADICTS` is the payoff: two priors that cannot both hold is a real thing for Orion to notice and chase, and it can only be seen in a graph.
+The Atlas is **not** in Postgres, so `psql` cannot reach it. It does not need
+to: Hub already serves `/api/substrate/concepts/summary` and `/network`
+read-only, and Orion has `curl`. Zero new surface, no FalkorDB credential, and
+the endpoint is read-only by construction rather than by grant.
 
 ## Missing questions
 
 Real ones. I cannot answer these from the code.
 
-1. **Do new priors need your approval before entering the graph?** The crystallization approval filter turned out to be load-bearing — the unapproved 636 were exactly the junk. A prior is a stronger claim than a crystallization, and an unapproved-prior pool could rot the same way. But approval is friction, and an autonomy feature gated on a human is less autonomous. My recommendation: **auto-admit priors, require approval only to mark one `supported` above 0.8** — cheap to hold a hypothesis, expensive to call it settled.
+1. **~~Do new priors need your approval?~~ ANSWERED by the Atlas.** New
+   findings land as `proposed`; Juniper promotes to `canonical` or does not.
+   That mechanism already exists, is already the workflow Juniper uses, and
+   needs nothing built. The remaining sub-question is whether a `proposed`
+   concept Orion created should be visually distinguishable in the Atlas from
+   one topic-foundry created — I think yes, via `origin`, which is already a
+   node property.
 2. **Does the graph feed back into Orion's chat context, or is it write-only?** If write-only it becomes `journal_entries` — 35,829 rows and one reader. I think this is the most important question in the document and I do not want to decide it alone.
 3. **What is the honest ceiling on `confidence`?** Orion is grading its own homework. Without an outside check, confidence drifts up. Options: cap self-assigned confidence at ~0.8, or require an explicit disconfirmation attempt before any raise.
 4. **Retire-unresolvable after how many inconclusives?** I propose 3; that number is a guess and should be revisited against real data.

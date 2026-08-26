@@ -41,7 +41,16 @@ OWNERS: dict[str, str] = {
 SAMPLE_MARKER = "env-key-single-source: sample"
 
 SCANNED_SUFFIXES = {".py", ".md", ".yml", ".yaml"}
-SCANNED_NAMES = {".env_example"}
+# The local `.env` is scanned too, and this is the point rather than an
+# afterthought: the 2026-08-26 drift was live `.env` at 1600 against a checked-in
+# `.env_example` at 900. A gate reading only committed files would have been
+# GREEN throughout that incident, because every committed copy agreed with every
+# other -- uniformly stale. CI runners have no `.env`, so there it simply finds
+# nothing to compare; the check has teeth exactly where the divergence lives.
+#
+# A diverged local value is a finding, not a presumed deliberate override --
+# `.env_example` is required to state the live INTENDED default.
+SCANNED_NAMES = {".env_example", ".env"}
 
 # Historical records, deliberately frozen at what was true when written. A PR
 # report or a design spec that silently rewrote itself when a config changed
@@ -66,6 +75,10 @@ def _iter_files() -> Iterator[Path]:
             continue
         if path.suffix in SCANNED_SUFFIXES or path.name in SCANNED_NAMES:
             yield path
+
+
+def _is_local_env(rel: str) -> bool:
+    return rel == ".env" or rel.endswith("/.env")
 
 
 def _same_number(a: str, b: str) -> bool:
@@ -125,10 +138,17 @@ def main() -> int:
                 continue
             for line, found in _literals(text, key):
                 if not _same_number(found, expected):
-                    failures.append(
-                        f"{rel}:{line}: {key} stated as {found}, but "
-                        f"{owner_rel} says {expected}"
-                    )
+                    if _is_local_env(rel):
+                        failures.append(
+                            f"{rel}:{line}: {key} is LIVE at {found} but "
+                            f"{owner_rel} still says {expected} -- the operator "
+                            f"contract has drifted from what is running"
+                        )
+                    else:
+                        failures.append(
+                            f"{rel}:{line}: {key} stated as {found}, but "
+                            f"{owner_rel} says {expected}"
+                        )
 
     if failures:
         print("Env key drift -- one owner per tuned key:\n", file=sys.stderr)

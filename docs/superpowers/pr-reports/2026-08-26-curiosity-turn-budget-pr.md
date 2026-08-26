@@ -108,6 +108,9 @@ errors from missing service deps, identical on main.
 ## Evals run
 
 ```text
+make check-env-key-single-source   (with .env present)
+  reproduces the 2026-08-26 drift when .env_example is set back to 900
+
 No eval harness exists for orion/curiosity/. The acceptance check for this
 feature is behavioural and takes ~20 runs (does confidence ever go DOWN), and is
 recorded in orion/curiosity/README.md §13 rather than as an eval.
@@ -172,6 +175,15 @@ this needs a rebuild plus a real turn, and the daily cap was exhausted.
     `docs/superpowers/` archives and are excluded on purpose.
   - Evidence: mutation-tested against the real `.env_example` — drifting the
     owner to 900 flags both real copies (compose default and `settings.py`).
+  - **Correction found while building it:** the first version scanned only
+    committed files, and so would have been GREEN throughout the very incident
+    it cites — every committed copy agreed with every other, uniformly stale at
+    900, while live `.env` was 1600. It now scans the local `.env` too and names
+    which side is live. Reproduced: with `.env_example` set back to 900 it
+    reports `services/orion-harness-governor/.env:23: HARNESS_FCC_TIMEOUT_SEC is
+    LIVE at 1600 but ... still says 900 -- the operator contract has drifted from
+    what is running`. CI runners have no `.env`, so there it finds nothing to
+    compare and the committed-copy check stands alone.
 - Finding: `test_build_subprocess_env_omits_the_deadline_when_it_is_not_known`
   is a near-tautology that passes with the `pop` lines deleted.
   - Fix: relabelled as a signature check; the monkeypatched sibling carries the

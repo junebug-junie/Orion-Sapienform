@@ -102,6 +102,40 @@ def test_the_same_number_written_differently_is_not_drift(gate) -> None:
     assert not gate._same_number("900", "1600")
 
 
+def test_the_local_env_is_scanned_because_that_is_where_the_drift_was(gate) -> None:
+    """The 2026-08-26 incident was live `.env` at 1600 against a checked-in
+    `.env_example` at 900. A gate reading only committed files would have been
+    green throughout it -- every committed copy agreed with every other,
+    uniformly stale. This is the assertion that keeps the gate pointed at the
+    failure it was written for."""
+    assert ".env" in gate.SCANNED_NAMES
+    assert gate._is_local_env(".env")
+    assert gate._is_local_env("services/orion-harness-governor/.env")
+    assert not gate._is_local_env("services/orion-harness-governor/.env_example")
+
+
+def test_a_live_value_ahead_of_the_contract_says_so_in_those_words(
+    gate, monkeypatch
+) -> None:
+    """Reproduces the incident's exact shape: the message has to name which side
+    is live, or the reader fixes the wrong file."""
+    key = "HARNESS_FCC_TIMEOUT_SEC"
+    owner = REPO_ROOT / gate.OWNERS[key]
+    live = REPO_ROOT / "services" / "orion-harness-governor" / ".env"
+    if not live.is_file():
+        pytest.skip("no local .env in this checkout")
+
+    original = owner.read_text()
+    current = next(gate._literals(original, key))[1]
+    live_value = next(gate._literals(live.read_text(), key))[1]
+    if gate._same_number(current, live_value):
+        # Make the contract lag the live value, as it did on 2026-08-26.
+        stale = original.replace(f"{key}={current}", f"{key}=4242", 1)
+        monkeypatch.setattr(Path, "read_text", _patched_read_text(owner, stale))
+
+    assert gate.main() == 1
+
+
 def test_historical_records_are_not_rewritten_by_config_changes(gate) -> None:
     """PR reports and design specs state what was true when written."""
     assert "docs/superpowers/pr-reports/" in gate.EXCLUDED_PREFIXES

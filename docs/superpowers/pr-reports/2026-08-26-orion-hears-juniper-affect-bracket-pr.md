@@ -143,27 +143,33 @@ services/orion-hub/tests/test_chat_turn_affect.py                   21 passed
 services/orion-hub/tests/test_unified_turn_surface_context.py        8 passed
 services/orion-juniper-affective-state/tests/                       44 passed
 
-services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py
-                                                                    19 passed
-services/orion-sql-writer/tests -k affect                           33 passed
+services/orion-cortex-exec/tests/test_situation_*.py (5 files)       85 passed
+services/orion-hub/tests/test_chat_turn_affect.py                   29 passed
+services/orion-hub/tests/test_unified_turn_surface_context.py        8 passed
+services/orion-juniper-affective-state/tests/                       44 passed
+
+services/orion-sql-writer/tests/  branch:  11 failed, 446 passed, 3 skipped
+services/orion-sql-writer/tests/  main:    11 failed, 443 passed, 3 skipped
+=> same 11 pre-existing failures; +3 are this patch's new tests.
 
 # whole hub suite, branch vs origin/main, identical subset comparison
 branch:        13 failed, 55 passed, 1 skipped   (the 7 files that fail)
 origin/main:   13 failed, 55 passed, 1 skipped   (same 7 files, same tests)
 => all failures pre-existing; none introduced here.
 
-# whole hub suite, full run, both branches
-branch:        34 failed, 1514 passed, 5 skipped
+# whole hub suite, full run, both branches (post-review-fix)
+branch:        33 failed, 1521 passed, 5 skipped
 origin/main:   33 failed, 1487 passed, 5 skipped
 
-The +27 passed are this patch's new tests. The failure-set DIFF is the
-honest part: 20 tests fail ONLY on the baseline run and 1 fails ONLY on the
-branch run -- a set that differs in BOTH directions is test-ordering
-pollution in this suite, not a signal about the diff. The single
-branch-only failure
-(test_substrate_mutation_manual_route_routing.py::test_routing_manual_apply_changes_real_live_routing_surface)
-was run in isolation on both: 1 passed on origin/main, 1 passed on the
-branch. Order-dependent flake, pre-existing, unrelated.
+The +34 passed are this patch's new tests. The two FAILED sets are
+byte-identical -- `comm` in both directions returns empty. No test fails on
+this branch that does not also fail on origin/main.
+
+(An earlier pre-fix run showed 34 vs 33 with sets that differed in BOTH
+directions -- 20 baseline-only, 1 branch-only. That was test-ordering
+pollution in this suite, confirmed by running the one branch-only failure,
+test_substrate_mutation_manual_route_routing.py::test_routing_manual_apply_changes_real_live_routing_surface,
+in isolation on both: passed on both.)
 
 # also confirmed pre-existing on origin/main:
 services/orion-cortex-exec/tests/test_situation_prompt_integration.py
@@ -214,6 +220,100 @@ The bracket itself has **not** run against the real webcam — that requires
 deploying Hub, which would also start recording Juniper on every spoken turn.
 Held deliberately for Juniper's call. Status is `DONE_WITH_CONCERNS`, not
 `DONE`, for exactly this reason.
+
+## Review findings fixed
+
+High-effort review over `main...HEAD`. Seven findings, all material, all
+fixed. Each was independently reproduced before fixing — none were taken on
+the reviewer's word.
+
+- **Finding: situation-brief cache key omitted `input_modality`.** The brief
+  is cached per session for 300s, so a spoken turn's brief was replayed on
+  the next *typed* turn — telling Orion "Juniper SPOKE this turn aloud" about
+  something she typed (and suppressing it on a real spoken turn in the
+  reverse order). Invisible before this PR only because the value was a
+  constant.
+  - Fix: `input_modality` is part of `_situation_cache_key`.
+  - Evidence: `test_cache_key_separates_spoken_from_typed`.
+
+- **Finding: the new spoken line pushed the fragment past the 1200 cap and
+  cut the affect privacy caution mid-sentence.** Reproduced exactly:
+  typed = 1021 chars (cautions intact), spoken = 1200 truncated, with
+  `"…don't announce it unprompted."` sliced in half — i.e. the guard on how
+  to handle a webcam reading of Juniper was dropped from precisely the turn
+  that fired one. My own truncation test asserted truncation *occurred* and
+  never checked what was lost.
+  - Fix: two parts. (1) The spoken line was shortened from 246 to ~140
+    chars, so at the production cap nothing truncates at all (spoken now
+    1175/1200 with a maximal 300-char affect summary). (2) Structurally,
+    cautions are now appended **whole or not at all**, never sliced, and are
+    ordered most-important-first so the affect guard is the last to go.
+  - Evidence: `test_nothing_is_truncated_at_the_live_cap_even_with_a_max_affect_summary`,
+    `test_a_caution_is_never_emitted_half_written` (six caps, 200→4000),
+    `test_the_affect_guard_is_the_last_caution_to_be_dropped`.
+  - Note: an intermediate fix reserved the *entire* caution block up front.
+    That was an over-correction — it starved the body to boilerplate at the
+    400-char cap `test_situation_provider`'s fixture uses, breaking 4
+    pre-existing tests. Body keeps first claim on the budget in the shipped
+    version.
+
+- **Finding: the post leg usually lost the capture slot to its own pre leg.**
+  `_capture_blocking` holds the lock for the whole round trip (~8s clip +
+  ~20s warm inference). The post leg fired the instant the turn returned, so
+  any turn shorter than that was dropped — meaning the matched pair the
+  feature exists to produce mostly would not exist.
+  - Fix: the post leg now *awaits* this turn's own pre leg (via
+    `_PENDING_PRE`, self-cleaning, bounded by the pre leg's own timeout)
+    rather than racing it. A failed pre leg does not skip the post leg.
+  - Evidence: `test_post_leg_waits_for_its_own_pre_leg_instead_of_racing_it`
+    asserts strict ordering; `test_post_leg_still_runs_when_the_pre_leg_failed`.
+
+- **Finding: the `finally` fired a webcam capture after the client
+  disconnected.** Closing the tab mid-turn cancels the turn, the
+  cancellation lands in the `finally`, and a live recording of Juniper
+  started *after she left* — the same objection the pre leg's own comment
+  makes.
+  - Fix: post leg is skipped (and logged) unless
+    `websocket.client_state == CONNECTED`. A disconnect is the one case
+    where the missing half of the pair is the correct outcome.
+
+- **Finding: the module docstring claimed "off by default at the service
+  boundary" while the code shipped `voice`.** A plain contradiction I wrote.
+  - Fix: docstring rewritten to state the truth and make the actual consent
+    argument — the right analogue is the manual "Check now" button (each
+    capture preceded by a deliberate human act: the mic press), not the
+    ambient loop (which resets to off on restart precisely because it runs
+    with no human in the loop). It also now names what that argument does
+    *not* cover: `all` fires on typed turns where no such act exists, and
+    there is no UI toggle.
+  - Default remains `voice` — Juniper asked for this directly.
+
+- **Finding: the compose `environment:` entry could *override* the kill
+  switch.** Compose gives `environment:` precedence over `env_file:`, and
+  `${AFFECT_CHAT_TURN_SCOPE:-voice}` interpolates from the compose
+  invocation's env-file context (the repo-root `.env`, which lacks the key),
+  not from `services/orion-hub/.env`. An operator setting `off` in the
+  service `.env` would have been silently overridden back to `voice`. The
+  comment I wrote claimed the opposite.
+  - Fix: the entry is removed entirely. `env_file: .env` already delivers
+    the key (`check_service_env_compose_parity.py orion-hub` → N/A). A
+    comment in its place explains why it must stay absent.
+
+- **Finding: chat-turn captures mutated the ambient loop's scheduling state
+  and the Vision panel.** `try_begin_capture` bumps `last_attempt_at`, from
+  which `affect_ambient_loop` computes whether a tick is due — so a
+  conversation with a spoken turn more often than every 5 minutes would
+  reset the ambient due-clock every turn, leaving the toggle reading
+  "enabled" while never firing. It also overwrote the panel's
+  `last_trigger`/`last_result_ok`/`last_raw_response`, which exist to report
+  what the *operator* started.
+  - Fix: `try_begin_capture(..., record_state=False)` / `end_capture(...,
+    record_state=False)` take the shared mutex without touching observable
+    state. The mutex is still shared — one physical camera.
+  - Evidence: `test_chat_capture_does_not_disturb_ambient_scheduling_or_the_panel`
+    (asserts the full state tuple is unchanged, then proves the lock was
+    genuinely taken and released) and `test_manual_capture_still_records_state`
+    (the default path is untouched).
 
 ## Restart required
 

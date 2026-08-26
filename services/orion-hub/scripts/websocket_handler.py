@@ -1196,20 +1196,35 @@ async def websocket_endpoint(websocket: WebSocket):
                     active_turn["correlation_id"] = None
                     active_turn["kind"] = None
                     # Affect bracket, leg 2 of 2 -- in `finally`, not after
-                    # it, so a turn that errors or is cancelled mid-flight
-                    # still gets its closing read. An exchange that went
-                    # wrong is exactly the one whose after-state is worth
-                    # having, and a pre with no post is an unusable half of
-                    # a matched pair. Same fire-and-forget contract as the
-                    # pre leg; if the pre capture is somehow still running,
-                    # this one loses the shared slot and is dropped with a
-                    # log line rather than queued.
-                    chat_turn_affect.fire(
-                        settings=settings,
-                        trigger=chat_turn_affect.TRIGGER_POST,
-                        correlation_id=trace_id,
-                        is_voice_turn=not is_text_input,
-                    )
+                    # it, so a turn that ERRORS still gets its closing read.
+                    # An exchange that went wrong is exactly the one whose
+                    # after-state is worth having, and a pre with no post is
+                    # an unusable half of a matched pair.
+                    #
+                    # But NOT when the client is gone. run_awaitable_cancel_
+                    # on_ws_disconnect cancels the turn the moment
+                    # client_state leaves CONNECTED, and that cancellation
+                    # lands right here -- so without this check, closing the
+                    # tab mid-turn would start a live webcam+mic recording of
+                    # Juniper AFTER she left, attributed to a conversation
+                    # she had already walked away from. That is the same
+                    # objection the pre leg's own comment above makes, and it
+                    # applies just as hard on the cancel path (review
+                    # finding, 2026-08-26). A disconnect is the one case
+                    # where the missing half of the pair is the correct
+                    # outcome.
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        chat_turn_affect.fire(
+                            settings=settings,
+                            trigger=chat_turn_affect.TRIGGER_POST,
+                            correlation_id=trace_id,
+                            is_voice_turn=not is_text_input,
+                        )
+                    else:
+                        logger.info(
+                            "chat_turn_affect_post_skipped corr=%s reason=client_disconnected",
+                            trace_id,
+                        )
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical

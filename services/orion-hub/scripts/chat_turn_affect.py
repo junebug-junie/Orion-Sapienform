@@ -39,13 +39,31 @@ already establishes for a live recording trigger, and for the same reason:
 hammering retries at a camera is the wrong instinct. A dropped post-turn
 capture is a real, logged gap, not a silent success.
 
-**Off by default at the service boundary, not just in the UI.** Gated by
-``AFFECT_CHAT_TURN_SCOPE`` (off | voice | all, default "voice"). "voice"
-means only turns Juniper actually spoke -- the mic press is an explicit,
-per-turn, physical consent action in a way that typing into an already-open
-tab is not, and that is the whole reason it is the default rather than
-"all". Widening to every Orion-mode text turn is one env change, deliberately
-left as a conscious operator decision.
+**Consent model: the mic press is the per-turn act, so this ships ON for
+spoken turns.** Gated by ``AFFECT_CHAT_TURN_SCOPE`` (off | voice | all),
+shipped default ``voice`` -- meaning it fires on turns Juniper actually
+spoke, and no others, from the first boot after deploy. Saying it plainly
+because an earlier draft of this docstring claimed "off by default at the
+service boundary" while the code shipped ``voice``, which was simply false
+(review finding, 2026-08-26).
+
+Why ``voice`` rather than ``off``: Juniper asked for this directly, and the
+right analogue is the manual "Check now" button, not the ambient toggle.
+The ambient loop resets ``state.enabled`` to False on every restart
+precisely because it records with no human in the loop for as long as it is
+on; the manual button needs no such reset because each capture is preceded
+by a deliberate human action. This path is the latter shape -- pressing the
+microphone is an explicit, physical, per-turn act, and a typed turn (which
+has no such act) is excluded for exactly that reason.
+
+What that consent argument does NOT cover, stated rather than buried:
+``all`` would fire on typed turns, where no per-turn physical act exists,
+and there is no UI toggle or per-session gate here -- ``off`` is an env
+change plus a restart, not a click. Widening is deliberately left as a
+conscious operator decision.
+
+The scope resolver fails CLOSED: anything not exactly off/voice/all becomes
+``off``, never the ``voice`` default. A typo must not start a camera.
 """
 from __future__ import annotations
 
@@ -85,6 +103,25 @@ _VALID_SCOPES = frozenset({"off", "voice", "all"})
 # capture lock already prevents more than one from actually running.
 _INFLIGHT: set[asyncio.Task] = set()
 
+# The in-flight PRE leg, keyed by chat correlation_id.
+#
+# Exists because the post leg would otherwise lose the shared capture slot
+# to its own pre leg on most turns, and the matched pair this whole module
+# exists to produce would simply not exist (review finding, 2026-08-26).
+# The arithmetic: _capture_blocking holds the lock for the entire
+# capture_and_assess round trip -- ~8s retina clip plus ~20s warm AffectGPT
+# inference, up to ~195s cold or degraded. Any turn that finishes inside
+# that window fires its post leg straight into a held lock and is dropped.
+# Plenty of Orion turns finish in well under 28s.
+#
+# So the post leg AWAITS the pre leg rather than racing it. That is a real
+# behavioural choice, not just a retry: the post capture is meant to read
+# Juniper AFTER the reply landed, and starting it a few seconds later than
+# the reply is fine, whereas not taking it at all is the failure mode that
+# makes the pair useless. Still bounded -- the pre leg has its own HTTP
+# timeout, so this cannot wait forever.
+_PENDING_PRE: dict[str, asyncio.Task] = {}
+
 
 def resolve_scope(settings: Any) -> str:
     """Normalize AFFECT_CHAT_TURN_SCOPE. An unrecognized value falls back to
@@ -121,7 +158,7 @@ def _capture_blocking(
     so a failure here can never strand the lock and wedge every later
     capture (manual, ambient, or chat-turn) behind it.
     """
-    if not vision_affect_ambient.try_begin_capture(trigger):
+    if not vision_affect_ambient.try_begin_capture(trigger, record_state=False):
         # Not an error worth raising: a capture is already in flight (the
         # ambient loop, the manual button, or this turn's own sibling
         # fire). Logged so a missing half of a pre/post pair is explainable
@@ -142,7 +179,11 @@ def _capture_blocking(
         ok, error = vision_affect_ambient.result_ok_and_error(body)
         raw_response, video_sha256 = vision_affect_ambient.result_content(body)
         vision_affect_ambient.end_capture(
-            ok=ok, error=error, raw_response=raw_response, video_sha256=video_sha256
+            ok=ok,
+            error=error,
+            raw_response=raw_response,
+            video_sha256=video_sha256,
+            record_state=False,
         )
         logger.info(
             "[HUB] chat_turn_affect_done trigger=%s corr=%s ok=%s error=%s",
@@ -152,7 +193,7 @@ def _capture_blocking(
             error,
         )
     except requests.RequestException as exc:
-        vision_affect_ambient.end_capture(ok=False, error=str(exc))
+        vision_affect_ambient.end_capture(ok=False, error=str(exc), record_state=False)
         logger.warning(
             "[HUB] chat_turn_affect_transport_error trigger=%s corr=%s error=%s",
             trigger,
@@ -160,7 +201,7 @@ def _capture_blocking(
             exc,
         )
     except Exception as exc:  # never let a detached task die unexplained
-        vision_affect_ambient.end_capture(ok=False, error=str(exc))
+        vision_affect_ambient.end_capture(ok=False, error=str(exc), record_state=False)
         logger.warning(
             "[HUB] chat_turn_affect_error trigger=%s corr=%s error=%s",
             trigger,
@@ -204,15 +245,44 @@ def fire(
     # no running loop or the loop is closing, which is exactly the state a
     # socket teardown can be in. An advisory capture must never be able to
     # corrupt the turn's own error reporting.
+    async def _run() -> None:
+        # The post leg waits for this turn's own pre leg to finish before
+        # asking for the slot. See _PENDING_PRE. Only ever waits on THIS
+        # turn's pre leg -- never on an unrelated capture -- so a busy
+        # ambient loop still just costs this leg its slot, as designed.
+        if trigger == TRIGGER_POST:
+            pre = _PENDING_PRE.get(correlation_id)
+            if pre is not None and not pre.done():
+                logger.info(
+                    "[HUB] chat_turn_affect_post_waiting_for_pre corr=%s",
+                    correlation_id,
+                )
+                # shield=False on purpose: if this post task is cancelled
+                # (Hub shutting down), stop waiting rather than pinning
+                # shutdown behind a GPU call.
+                try:
+                    await asyncio.wait_for(asyncio.shield(pre), timeout=timeout_sec)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[HUB] chat_turn_affect_post_gave_up_waiting corr=%s",
+                        correlation_id,
+                    )
+                except Exception:
+                    # The pre leg failing is not a reason to skip the post
+                    # leg -- it is a reason the post leg is the only read
+                    # this turn will have.
+                    pass
+        await asyncio.to_thread(
+            _capture_blocking,
+            base_url=base,
+            timeout_sec=timeout_sec,
+            trigger=trigger,
+            correlation_id=correlation_id,
+        )
+
     try:
         task = asyncio.create_task(
-            asyncio.to_thread(
-                _capture_blocking,
-                base_url=base,
-                timeout_sec=timeout_sec,
-                trigger=trigger,
-                correlation_id=correlation_id,
-            ),
+            _run(),
             name=f"chat-turn-affect-{trigger}-{correlation_id}",
         )
     except RuntimeError as exc:
@@ -225,6 +295,11 @@ def fire(
         return None
     _INFLIGHT.add(task)
     task.add_done_callback(_INFLIGHT.discard)
+    if trigger == TRIGGER_PRE:
+        _PENDING_PRE[correlation_id] = task
+        # Keyed by correlation_id, so this dict must self-clean or it is a
+        # slow leak across the life of a long-running Hub process.
+        task.add_done_callback(lambda _t: _PENDING_PRE.pop(correlation_id, None))
     logger.info(
         "[HUB] chat_turn_affect_fired trigger=%s corr=%s voice=%s",
         trigger,

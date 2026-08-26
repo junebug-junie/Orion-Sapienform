@@ -161,18 +161,21 @@ services:
       - AFFECT_AMBIENT_ENABLED=${AFFECT_AMBIENT_ENABLED:-true}
       - AFFECT_AMBIENT_INTERVAL_SEC=${AFFECT_AMBIENT_INTERVAL_SEC:-300}
       - AFFECT_AMBIENT_POLL_SEC=${AFFECT_AMBIENT_POLL_SEC:-5}
-      # Listed explicitly alongside its AFFECT_AMBIENT_* siblings for
-      # visibility, NOT because it would otherwise be unreachable: this
-      # service declares `env_file: .env` at the top of this block, so all
-      # 309 .env_example keys already reach the container without an
-      # allowlist entry (confirmed by scripts/check_service_env_compose_parity.py
-      # orion-hub, which reports "N/A" for this service for exactly that
-      # reason). The redundancy is deliberate -- it puts the shipped default
-      # in front of anyone reading the compose file, and it keeps the kill
-      # switch working even if env_file is ever narrowed. On a service that
-      # does NOT declare env_file, omitting this line WOULD silently strand
-      # the setting on its code default, which is the trap worth naming here.
-      - AFFECT_CHAT_TURN_SCOPE=${AFFECT_CHAT_TURN_SCOPE:-voice}
+      # AFFECT_CHAT_TURN_SCOPE is deliberately NOT listed here.
+      #
+      # It arrives via `env_file: .env` above (confirmed:
+      # scripts/check_service_env_compose_parity.py orion-hub reports all
+      # 309 .env_example keys reach the container regardless of this list).
+      # An entry here would ACTIVELY BREAK the kill switch rather than
+      # reinforce it -- review finding, 2026-08-26: compose gives
+      # `environment:` precedence over `env_file:`, and
+      # ${AFFECT_CHAT_TURN_SCOPE:-voice} interpolates from the compose
+      # invocation's env-file context (usually the repo-root .env, which
+      # does not define this key), not from services/orion-hub/.env. So an
+      # operator setting AFFECT_CHAT_TURN_SCOPE=off in the service .env
+      # would have it silently overridden back to "voice" and the container
+      # would come up recording. For a camera kill switch that is the wrong
+      # direction to fail, so the key is left to env_file alone.
       - VISION_FRAME_CACHE_ENABLED=${VISION_FRAME_CACHE_ENABLED:-true}
       - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon}
       - VISION_FRAME_CHANNEL=${VISION_FRAME_CHANNEL:-orion:vision:frames}

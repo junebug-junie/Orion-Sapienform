@@ -161,7 +161,13 @@ def test_transport_failure_still_releases_the_lock(monkeypatch):
 
     asyncio.run(_run())
     assert vision_affect_ambient.state.tick_in_progress is False
-    assert vision_affect_ambient.state.last_result_ok is False
+    # NOT asserting state.last_result_ok here: chat-turn captures pass
+    # record_state=False, so a transport failure must NOT write itself into
+    # the operator-facing Vision panel fields (see
+    # test_chat_capture_does_not_disturb_ambient_scheduling_or_the_panel).
+    # What matters on this path is only that the lock came back.
+    assert vision_affect_ambient.try_begin_capture("probe") is True
+    vision_affect_ambient.end_capture(ok=True, error=None)
 
 
 def test_unexpected_exception_still_releases_the_lock(monkeypatch):
@@ -266,6 +272,144 @@ def test_fire_never_raises_when_no_loop_is_running():
         )
         is None
     )
+
+
+# ------------------- review fixes, 2026-08-26 ------------------------------
+
+def test_post_leg_waits_for_its_own_pre_leg_instead_of_racing_it(monkeypatch):
+    """The finding: _capture_blocking holds the shared lock for the WHOLE
+    capture (~8s clip + ~20s warm inference, up to ~195s). The post leg
+    fires the instant the turn returns, so on any turn shorter than that it
+    used to hit a held lock and get dropped -- meaning the matched pair this
+    module exists to produce usually would not exist.
+    """
+    order = []
+    gate = {"open": False}
+
+    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None):
+        order.append(f"start:{trigger}")
+        if trigger == chat_turn_affect.TRIGGER_PRE:
+            import time
+
+            while not gate["open"]:
+                time.sleep(0.01)
+        order.append(f"end:{trigger}")
+        return {"result": {"ok": True}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake)
+
+    async def _run():
+        pre = chat_turn_affect.fire(
+            settings=_settings(),
+            trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-pair",
+            is_voice_turn=True,
+        )
+        # Let the pre leg actually take the lock before the post leg asks.
+        while "start:chat_turn_pre" not in order:
+            await asyncio.sleep(0.01)
+        post = chat_turn_affect.fire(
+            settings=_settings(),
+            trigger=chat_turn_affect.TRIGGER_POST,
+            correlation_id="corr-pair",
+            is_voice_turn=True,
+        )
+        await asyncio.sleep(0.05)  # post must NOT have run yet
+        assert "start:chat_turn_post" not in order
+        gate["open"] = True
+        await asyncio.gather(pre, post)
+
+    asyncio.run(_run())
+    # Both legs ran, and the post one strictly after the pre one finished.
+    assert order == [
+        "start:chat_turn_pre",
+        "end:chat_turn_pre",
+        "start:chat_turn_post",
+        "end:chat_turn_post",
+    ]
+    assert chat_turn_affect._PENDING_PRE == {}, "pre-leg registry leaked"
+
+
+def test_post_leg_still_runs_when_the_pre_leg_failed(monkeypatch):
+    """A failed pre leg is a reason the post leg is the ONLY read this turn
+    gets -- not a reason to skip it too."""
+    seen = []
+
+    def _fake(base_url, timeout_sec, trigger, *, chat_correlation_id=None):
+        if trigger == chat_turn_affect.TRIGGER_PRE:
+            raise requests.ConnectionError("affect down")
+        seen.append(trigger)
+        return {"result": {"ok": True}}
+
+    monkeypatch.setattr(vision_affect_ambient, "call_capture_and_assess", _fake)
+
+    async def _run():
+        pre = chat_turn_affect.fire(
+            settings=_settings(), trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-fail", is_voice_turn=True,
+        )
+        await pre
+        post = chat_turn_affect.fire(
+            settings=_settings(), trigger=chat_turn_affect.TRIGGER_POST,
+            correlation_id="corr-fail", is_voice_turn=True,
+        )
+        await post
+
+    asyncio.run(_run())
+    assert seen == [chat_turn_affect.TRIGGER_POST]
+
+
+def test_chat_capture_does_not_disturb_ambient_scheduling_or_the_panel(monkeypatch):
+    """affect_ambient_loop computes "is a tick due" from
+    state.last_attempt_at against a 300s interval, and the Vision panel
+    reports last_trigger/last_result_ok/last_raw_response as things the
+    OPERATOR started. A per-turn automatic capture must touch neither.
+    """
+    monkeypatch.setattr(
+        vision_affect_ambient,
+        "call_capture_and_assess",
+        lambda *a, **k: {"result": {"ok": True, "raw_response": "chat read"},
+                         "capture": {"video_sha256": "deadbeef"}},
+    )
+    before = (
+        vision_affect_ambient.state.last_attempt_at,
+        vision_affect_ambient.state.tick_count,
+        vision_affect_ambient.state.last_trigger,
+        vision_affect_ambient.state.last_result_ok,
+        vision_affect_ambient.state.last_raw_response,
+    )
+
+    async def _run():
+        await chat_turn_affect.fire(
+            settings=_settings(), trigger=chat_turn_affect.TRIGGER_PRE,
+            correlation_id="corr-noclobber", is_voice_turn=True,
+        )
+
+    asyncio.run(_run())
+
+    after = (
+        vision_affect_ambient.state.last_attempt_at,
+        vision_affect_ambient.state.tick_count,
+        vision_affect_ambient.state.last_trigger,
+        vision_affect_ambient.state.last_result_ok,
+        vision_affect_ambient.state.last_raw_response,
+    )
+    assert before == after, "chat-turn capture mutated operator-facing ambient state"
+    # ...but the lock was still genuinely taken and released.
+    assert vision_affect_ambient.try_begin_capture("probe") is True
+    vision_affect_ambient.end_capture(ok=True, error=None)
+
+
+def test_manual_capture_still_records_state(monkeypatch):
+    """record_state defaults to True -- the manual button and ambient loop
+    must be completely unaffected by the new parameter."""
+    vision_affect_ambient.state.tick_count = 0
+    assert vision_affect_ambient.try_begin_capture("manual") is True
+    assert vision_affect_ambient.state.tick_count == 1
+    assert vision_affect_ambient.state.last_trigger == "manual"
+    vision_affect_ambient.end_capture(ok=True, error=None, raw_response="operator read")
+    assert vision_affect_ambient.state.last_result_ok is True
+    assert vision_affect_ambient.state.last_raw_response == "operator read"
 
 
 def test_manual_and_ambient_request_bodies_are_unchanged(monkeypatch):

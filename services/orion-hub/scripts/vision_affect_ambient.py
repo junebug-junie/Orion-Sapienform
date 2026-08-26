@@ -104,20 +104,41 @@ state = AffectAmbientState()
 _capture_lock = threading.Lock()
 
 
-def try_begin_capture(trigger: str) -> bool:
+def try_begin_capture(trigger: str, *, record_state: bool = True) -> bool:
     """Non-blocking: returns True if this caller won the exclusive capture
-    slot (manual or ambient, whichever asks first), False if another
-    capture is already in flight. Never queues -- a caller that loses just
-    reports "busy" and, for the ambient loop, waits for its next scheduled
-    tick rather than retrying immediately.
+    slot (manual, ambient, or a chat-turn bracket leg -- whichever asks
+    first), False if another capture is already in flight. Never queues --
+    a caller that loses just reports "busy" and, for the ambient loop,
+    waits for its next scheduled tick rather than retrying immediately.
+
+    ``record_state=False`` takes the mutex WITHOUT touching this module's
+    observable state, and is what the chat-turn bracket
+    (scripts/chat_turn_affect.py) uses. Two real problems it avoids, both
+    review findings 2026-08-26:
+
+    1. ``affect_ambient_loop`` computes whether a tick is due from
+       ``state.last_attempt_at`` against a 300s interval. A chat-turn
+       capture bumping that field resets the ambient due-clock, so a
+       conversation with a spoken turn more often than every five minutes
+       would leave the ambient toggle reading "enabled" while never
+       actually firing a tick of its own.
+    2. ``last_trigger`` / ``last_result_ok`` / ``last_raw_response`` drive
+       the Vision panel's status line and its "Carbon (affect snapshot)"
+       view. Those exist to report what the OPERATOR started. The manual
+       button has the same coupling, but it is human-paced and rare; a
+       per-turn automatic capture would take the panel over.
+
+    The mutex itself is still shared by every caller -- that part is the
+    whole point, since all of them drive one physical camera.
     """
     acquired = _capture_lock.acquire(blocking=False)
     if not acquired:
         return False
-    state.tick_in_progress = True
-    state.last_trigger = trigger
-    state.last_attempt_at = time.time()
-    state.tick_count += 1
+    if record_state:
+        state.tick_in_progress = True
+        state.last_trigger = trigger
+        state.last_attempt_at = time.time()
+        state.tick_count += 1
     return True
 
 
@@ -127,7 +148,18 @@ def end_capture(
     error: Optional[str],
     raw_response: Optional[str] = None,
     video_sha256: Optional[str] = None,
+    record_state: bool = True,
 ) -> None:
+    """``record_state`` must match the value the paired try_begin_capture()
+    was given -- otherwise a chat-turn capture would still write its result
+    into the operator-facing panel fields it deliberately did not claim.
+    The lock is ALWAYS released either way; that is not optional."""
+    if not record_state:
+        try:
+            _capture_lock.release()
+        except RuntimeError:
+            logger.warning("[HUB] affect_end_capture_release_without_lock")
+        return
     state.last_result_ok = ok
     state.last_error = error
     if ok:

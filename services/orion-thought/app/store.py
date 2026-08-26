@@ -461,6 +461,114 @@ def load_latest_visual_chain_prior_description() -> str | None:
         return None
 
 
+# Cap on the interpretation text handed into a diffusion prompt (§ cap-all-
+# collections) -- SpontaneousThoughtV1.interpretation has no length bound of
+# its own (it's free LLM narration), but the diffusion model only needs a
+# short scene description, not the full text.
+MAX_REVERIE_CONTEXT_CHARS = 240
+
+# How many recent chain-linked candidates to pull before Python-side
+# hollow re-validation (below) picks the first real one. Not 1: the SQL
+# WHERE clause only filters on interpretation<>'' and chain-linkage -- the
+# hollow re-check happens after fetch (review finding), so a small batch is
+# needed in case the single most-recent candidate turns out stale-hollow.
+_REVERIE_CONTEXT_CANDIDATE_LIMIT = 10
+
+
+def load_latest_reverie_interpretation() -> str | None:
+    """Most recent real (non-hollow, non-empty) text-chain thought's
+    interpretation, already linked into a SETTLED chain -- the visual
+    chain's context-seed (design doc §8: "which specific recent-activity/
+    chat/dream sources feed a step", Patch 3).
+
+    Deliberately the text chain's own narration, not raw chat: it is already
+    the summary layer the coalition-grounding + hollow guard
+    (orion/schemas/reverie.py's `SpontaneousThoughtV1.is_hollow`) produce
+    before a row is ever written. The privacy claim this rests on --
+    "already reaches the same Hub Reverie tab" (`reverie_routes.py`'s
+    `text_recent`) -- only holds for a thought that is actually reachable
+    there, which requires its ENCLOSING CHAIN to have settled and persisted
+    (`chain.py`'s `persist_reverie_chain`, called once at chain end, not per
+    thought). `substrate_reverie_thought` rows are written immediately on
+    generation (`reverie.py::run_reverie_once`), well before that -- and if
+    `ORION_REVERIE_CHAIN_ENABLED=false` while `ORION_REVERIE_ENABLED=true`
+    (independent settings.py flags), a thought's chain never settles at all.
+    Reading the thought table directly would source content `text_recent`
+    might never surface, contradicting the "no new privacy surface" claim
+    (review finding). The `EXISTS` clause below closes that gap: a thought
+    only qualifies once some settled `substrate_reverie_chain` row's
+    `chain_json.thought_ids` already lists it -- the exact set `text_recent`
+    can already show, no earlier and no wider.
+
+    Widening the source set to raw chat/dream content is a separate, later
+    change that must redo this same privacy check, not something this
+    function does.
+
+    Hollow re-validation happens in Python, not SQL (review finding): a raw
+    `thought_json->>'hollow'` cast trusts a flag stamped at write time, which
+    `services/orion-cortex-exec/app/chat_stance.py::_project_reverie_glimpse`
+    -- the other real consumer of this same table -- explicitly does NOT do,
+    re-deriving via `SpontaneousThoughtV1.is_hollow()` because a stored flag
+    can go stale if the hollow-guard logic changes after the row was
+    written. Same discipline here: gate on BOTH the stored flag and a fresh
+    `is_hollow()` re-check.
+
+    Read-only, best-effort: None on any error, empty table, a table with no
+    chain-linked/non-hollow rows, or a row that no longer validates as
+    `SpontaneousThoughtV1` -- degrades to the fixed seed prompt exactly like
+    an absent prior_description does (visual_chain.build_visual_prompt).
+    """
+    try:
+        from sqlalchemy import text
+
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+        from orion.schemas.reverie import SpontaneousThoughtV1
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT thought_json FROM substrate_reverie_thought t "
+                        "WHERE t.interpretation <> '' "
+                        "AND EXISTS ( "
+                        "  SELECT 1 FROM substrate_reverie_chain c "
+                        "  WHERE c.chain_json -> 'thought_ids' ? t.thought_id "
+                        ") "
+                        "ORDER BY t.created_at DESC LIMIT :limit"
+                    ),
+                    {"limit": _REVERIE_CONTEXT_CANDIDATE_LIMIT},
+                )
+                .mappings()
+                .all()
+            )
+        for row in rows:
+            payload = row.get("thought_json")
+            if not isinstance(payload, dict):
+                continue
+            try:
+                thought = SpontaneousThoughtV1.model_validate(payload)
+            except Exception:
+                continue
+            if thought.hollow or thought.is_hollow():
+                continue
+            value = thought.interpretation.strip()
+            if value:
+                # Word-boundary truncation (review finding), not a raw slice
+                # -- same helper chat_history_compactor/github_compactor use
+                # for the identical "cap free-form narration for a
+                # downstream reader" problem, so a 240-char cut degrades to
+                # a coherent prefix instead of a mid-word fragment baked
+                # into the diffusion prompt and rendered verbatim in the Hub
+                # Reverie tab.
+                trimmed, _truncated = truncate_at_word_boundary(value, MAX_REVERIE_CONTEXT_CHARS)
+                return trimmed
+        return None
+    except Exception as exc:
+        logger.debug("reverie context-seed load failed: %s", exc)
+        return None
+
+
 def persist_compaction_request(request) -> bool:
     """Enqueue one compaction request (Phase E). Never raises; idempotent."""
     try:

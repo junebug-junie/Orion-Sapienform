@@ -83,25 +83,28 @@
   const PIPELINE_STAGES = [
     {
       id: "input",
-      title: "1 · Continuity input",
+      title: "1 · Continuity + context inputs",
       desc:
-        "The previous run's own caption (reverie_visual_chain.prior_description), " +
-        "or a fixed seed string on the very first run ever.",
+        "The previous run's own caption (reverie_visual_chain.prior_description), plus " +
+        "Orion's own most recent real reverie-thought interpretation (context_text).",
       detail:
-        'Seed (first run only): "a calm orion, soft abstract light, dreaming". ' +
-        "Every later run reads the prior row's prior_description straight from Postgres.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_prior_description",
+        'Fixed seed only when BOTH are empty (fresh install, no reverie history yet): ' +
+        '"a calm orion, soft abstract light, dreaming". Every later run reads prior_description ' +
+        "from Postgres and context_text from the text chain's own substrate_reverie_thought rows.",
+      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_prior_description, load_latest_reverie_interpretation",
     },
     {
       id: "prompt",
       title: "2 · Prompt construction",
       desc:
-        "The prior caption is embedded verbatim into the next prompt text -- " +
-        'nothing else feeds this yet ("prior. Continue this train of imagination, soft dreamlike style.").',
+        "Both inputs above are blended into one prompt text -- continuity keeps the image " +
+        "chain visually coherent frame-to-frame, the context-seed keeps it grounded in what " +
+        "Orion is actually narrating.",
       detail:
-        "Patch 3 (not built) is where chat/dream/attention context would seed this instead of " +
-        "just the previous caption -- this patch is deliberately the thinnest honest placeholder, " +
-        "not a fabricated stand-in for real context-seeding.",
+        "Patch 3 (shipped): a deliberately narrow first context-seed slice -- Orion's own " +
+        "reverie-thought interpretation, already surfaced by this tab's Text sub-view (no new " +
+        "privacy surface). Raw chat/dream sources per the design doc's full list are a separate, " +
+        "later change. Falls back to the fixed seed string only when both inputs are empty.",
       file: "services/orion-thought/app/visual_chain.py :: build_visual_prompt",
     },
     {
@@ -233,9 +236,15 @@
     const caption = artifact && artifact.description
       ? `<p class="text-sm text-gray-200 mt-2">“${escapeHtml(artifact.description)}”</p>`
       : `<p class="text-xs text-gray-500 italic mt-2">not captioned (re-observation failed or was rejected -- honest null, not fabricated)</p>`;
+    const contextBlock = chain.context_text
+      ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">Context-seed (Orion's own reverie thought)</div>
+           <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.context_text)}</div>
+         </div>`
+      : "";
     const promptBlock = chain.prompt
       ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
-           <div class="text-[10px] uppercase tracking-wide text-gray-600">Prompt used (embeds the prior run's own caption)</div>
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">Prompt used (blends the prior caption with the context-seed above)</div>
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.prompt)}</div>
          </div>`
       : "";
@@ -249,6 +258,7 @@
       <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-1">
         ${img}
         ${caption}
+        ${contextBlock}
         ${promptBlock}
         <div class="text-[11px] text-gray-600 mt-1">egress: ${egressLine}</div>
         <div class="flex justify-between items-center mt-2 text-[11px] text-gray-500">

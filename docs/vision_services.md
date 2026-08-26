@@ -25,6 +25,9 @@ The vision pipeline is a distributed system using the Titanium Contract Stack ov
 | **Host** | `CHANNEL_VISIONHOST_INTAKE` | `orion-exec:request:VisionHostService` | `vision.task.request` | In (Req) |
 | **Host** | `CHANNEL_VISIONHOST_PUB` | `orion:vision:artifacts` | `vision.artifact` | Out (Broadcast) |
 | **Host** | (Caller specified) | - | `vision.task.result` | Out (Reply) |
+| **Host (circe-qwen lane)** | `CHANNEL_VISIONHOST_INTAKE` | `orion:exec:request:VisionHostService:circe-vl` | `vision.task.request` | In (Req) |
+| **Host (circe-qwen lane)** | `CHANNEL_VISIONHOST_PUB` | `orion:vision:artifacts:circe-vl` | `vision.artifact` | Out (Broadcast) |
+| **Host (circe-qwen lane)** | (Caller specified) | - | `vision.task.result` | Out (Reply) |
 | **Retina** | `CHANNEL_RETINA_PUB` | `orion:vision:frames` | `vision.frame.pointer` | Out |
 | **Edge** | `CHANNEL_VISION_EDGE_ACTIVITY` | `orion:vision:edge:activity` | `vision.edge.activity.v1` | Out |
 | **Edge** | (artifact pub) | `orion:vision:artifacts` | `vision.artifact` | Out |

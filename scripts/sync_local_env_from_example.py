@@ -203,6 +203,9 @@ SYNC_PREFIXES = (
     "EDGE_ACTIVITY_",
     "EDGE_PUBLISH_",
     "VISION_VLM_",
+    # Circe Qwen2-VL lane (docker-compose.circe-qwen.yml, default-off in the
+    # sense that it's a separate compose file nobody brings up by accident)
+    "CIRCE_QWEN_",
     "COUNCIL_",
     "HOST_PORT",
     "SQL_WRITER_EMIT_MEMORY_",

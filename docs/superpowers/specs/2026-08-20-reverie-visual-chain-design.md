@@ -219,11 +219,15 @@ until that was added), a real `reverie_visual_chain` +
 `reverie_visual_artifact` row pair with the FK intact, and an honest
 `description=null` (never a fabricated caption) on all 3 ticks run so far.
 
-Known follow-up, not yet fixed: `visual_chain.py`'s `DEFAULT_SEED_PROMPT`
-("a calm orion, soft abstract light, dreaming") reliably produces images
-too abstract for `orion-vision-host`'s `caption_frame` to pass its own
-`sanitize_caption` quality gate — 3/3 live ticks came back uncaptioned, so
-`prior_description` has never yet advanced past `None` in production. Either
-rewrite the seed prompt to something more literal/photographic, or treat
-this as expected until Patch 3's real context-seeding replaces the
-placeholder prompt entirely.
+**Follow-up fixed same day (2026-08-26):** the "3/3 uncaptioned" gap above
+was athena's shared vision-host instance (BLIP-base), not the seed prompt
+-- confirmed by moving the caption RPC to a new dedicated
+`orion:exec:request:VisionHostService:circe-vl` lane
+(`services/orion-vision-host/docker-compose.circe-qwen.yml`,
+Qwen2-VL-2B-Instruct on circe's physical GPU 4, a P100 with real headroom;
+athena's P4 had none, 2.4GB free measured live). First tick against the new
+lane produced a real, detailed caption and `prior_description` advanced for
+the first time: "The image depicts a vast, nebulous sky with a mix of dark
+and light shades..." — against the exact same abstract-cloud-image style
+that BLIP-base could never caption. `DEFAULT_SEED_PROMPT` itself was never
+the problem and is unchanged.

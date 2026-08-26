@@ -217,14 +217,18 @@ class ThoughtSettings(BaseSettings):
     visual_chain_percept_upload_timeout_sec: float = Field(
         10.0, alias="ORION_VISUAL_CHAIN_PERCEPT_UPLOAD_TIMEOUT_SEC"
     )
-    # orion-vision-host's existing shared intake/reply channel pair (design
-    # doc §3: "a new task_type on its existing channel pair, not a second
-    # vision worker" -- caption_frame + percept_sha256 already captions any
-    # image, so no vision-host code change was needed at all, only a new
-    # producer). reply_to is built per-call as f"{prefix}:{corr_id}", matching
+    # Originally the shared orion:exec:request:VisionHostService channel
+    # (design doc §3: caption_frame + percept_sha256 already captions any
+    # image, no vision-host code change needed, only a new producer). Moved
+    # to circe's dedicated Qwen2-VL lane (services/orion-vision-host/
+    # docker-compose.circe-qwen.yml) 2026-08-26 after live-confirming
+    # athena's shared BLIP-base instance cannot produce a caption that
+    # clears sanitize_caption's quality bar for a generated (not
+    # camera-captured) image -- 3/3 real ticks came back uncaptioned.
+    # reply_to is built per-call as f"{prefix}:{corr_id}", matching
     # orion:vision:reply:*'s documented wildcard (orion/bus/channels.yaml).
     channel_vision_host_request: str = Field(
-        "orion:exec:request:VisionHostService", alias="CHANNEL_VISION_HOST_REQUEST"
+        "orion:exec:request:VisionHostService:circe-vl", alias="CHANNEL_VISION_HOST_REQUEST"
     )
     channel_vision_reply_prefix: str = Field(
         "orion:vision:reply", alias="CHANNEL_VISION_REPLY_PREFIX"

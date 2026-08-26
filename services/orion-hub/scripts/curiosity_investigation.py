@@ -246,6 +246,10 @@ def build_investigation_journal_entry(
     rather than letting fluent prose imply that structure was formed. Same
     contract as the harness step count next to it: if Orion says it worked
     something out, there is an inspectable artifact behind the claim.
+
+    `None` means the footprint could not be read (no graph configured, or the
+    graph did not answer) and prints NOTHING, which is different from `{}`
+    meaning Orion genuinely wrote nothing and saying so.
     """
     stamp = created_at or datetime.now(timezone.utc)
     offered = ", ".join(
@@ -272,6 +276,11 @@ def build_investigation_journal_entry(
             + (f", grounding: {harness_grounding_status}" if harness_grounding_status else "")
         )
     if graph_footprint is not None:
+        # `{}` and `None` are DIFFERENT here, and the distinction lands in the
+        # one artifact Juniper actually reads: `{}` is "Orion wrote nothing",
+        # `None` is "the graph could not answer", and printing the former for
+        # the latter would put a false claim about Orion's own work in its
+        # journal. `read_run_footprint` keeps them apart for this reason.
         lines[-1] += (
             f" Wrote to its own graph: {format_footprint(graph_footprint)}"
             if graph_footprint
@@ -447,7 +456,7 @@ class CuriosityInvestigation:
 
         def _apply() -> Optional[str]:
             return assert_orion_acl(
-                client=self._reader._redis(),  # noqa: SLF001 -- same package seam
+                client=self._reader.client(),
                 username=self.graph_user,
                 password=self.graph_password,
                 atlas_graph=self.graph_atlas,
@@ -491,13 +500,18 @@ class CuriosityInvestigation:
 
     async def _read_turn_result(
         self, run_id: str
-    ) -> Tuple[Optional[TurnOutcome], dict[str, int], list[tuple[int, str]]]:
-        """What the turn left behind in Orion's own graph."""
+    ) -> Tuple[Optional[TurnOutcome], Optional[dict[str, int]], list[tuple[int, str]]]:
+        """What the turn left behind in Orion's own graph.
+
+        A `None` footprint means the graph could not answer, which is NOT the
+        same as Orion having written nothing -- see `read_run_footprint`."""
         if self._reader is None:
-            return None, {}, []
+            return None, None, []
         reader = self._reader
 
-        def _read() -> Tuple[Optional[TurnOutcome], dict[str, int], list[tuple[int, str]]]:
+        def _read() -> Tuple[
+            Optional[TurnOutcome], Optional[dict[str, int]], list[tuple[int, str]]
+        ]:
             return (
                 read_turn_outcome(reader, run_id),
                 read_run_footprint(reader, run_id),
@@ -508,7 +522,7 @@ class CuriosityInvestigation:
             return await asyncio.to_thread(_read)
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_turn_result_read_failed run=%s err=%s", run_id, exc)
-            return None, {}, []
+            return None, None, []
 
     # --- the tick ----------------------------------------------------------
 
@@ -782,7 +796,7 @@ class CuriosityInvestigation:
             run_id=run_id,
             harness_step_count=debug.get("harness_step_count"),
             harness_grounding_status=debug.get("harness_grounding_status"),
-            graph_footprint=footprint if self.graph_enabled else None,
+            graph_footprint=footprint,
             hop_notes=hops,
         )
         logger.info(
@@ -790,7 +804,7 @@ class CuriosityInvestigation:
             "continue=%s reach_out=%s corr=%s",
             run_id,
             len(text),
-            format_footprint(footprint) or "nothing",
+            "unreadable" if footprint is None else (format_footprint(footprint) or "nothing"),
             len(hops),
             bool(outcome and outcome.continue_line),
             bool(outcome and outcome.reach_out),

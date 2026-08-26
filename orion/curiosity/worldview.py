@@ -218,6 +218,17 @@ class WorldviewReader:
         self._socket_timeout = float(socket_timeout)
         self._client = client
 
+    def client(self) -> Any:
+        """The underlying Redis connection.
+
+        Public because `orion/curiosity/acl.py` needs a connection to issue
+        `ACL SETUSER` on -- a WRITE, and the only one Hub makes anywhere near
+        this graph. It is deliberately not routed through `query()`: that method
+        is `GRAPH.RO_QUERY` by construction, which is what keeps a bug in this
+        module from corrupting Orion's space.
+        """
+        return self._redis()
+
     def _redis(self) -> Any:
         if self._client is not None:
             return self._client
@@ -471,13 +482,22 @@ def read_turn_outcome(reader: WorldviewReader, run_id: str) -> Optional[TurnOutc
     return build_turn_outcome(rows[0]) if rows else None
 
 
-def read_run_footprint(reader: WorldviewReader, run_id: str) -> dict[str, int]:
-    """What Orion wrote this run, by label. `{}` on failure or on no writes."""
+def read_run_footprint(
+    reader: WorldviewReader, run_id: str
+) -> Optional[dict[str, int]]:
+    """What Orion wrote this run, by label.
+
+    `{}` means Orion wrote nothing; `None` means the question could not be
+    answered. Collapsing those two would put "wrote nothing to its own graph"
+    in the journal for a run whose graph was simply unreachable -- the same
+    unreadable-vs-empty conflation this module refuses everywhere else, landing
+    in the one artifact Juniper actually reads.
+    """
     try:
         rows = reader.query(run_footprint_cypher(run_id))
     except (WorldviewUnavailable, ValueError) as exc:
         logger.warning("curiosity_run_footprint_read_failed run=%s err=%s", run_id, exc)
-        return {}
+        return None
     return {
         str(r.get("label") or "unknown"): _as_int(r.get("n"), 0)
         for r in rows

@@ -111,17 +111,19 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "",
         ]
 
-    lines = [
-        f"WHAT YOU ARE STILL UNSURE OF -- {view.open_total} open "
-        f"{'prior' if view.open_total == 1 else 'priors'}, "
-        f"{view.resolved_total} already settled.",
-        "These are ORDERED, and the order is not neutral: the ones you were "
-        "least sure about come first. That is a presentation choice, not a "
-        "recommendation -- nothing here says which one is worth your time.",
-        "",
-    ]
-    lines += [f"  - {p.preview()}" for p in view.open_priors]
-    lines.append("")
+    lines: list[str] = []
+    if view.open_priors:
+        lines += [
+            f"WHAT YOU ARE STILL UNSURE OF -- {view.open_total} open "
+            f"{'prior' if view.open_total == 1 else 'priors'}, "
+            f"{view.resolved_total} already settled.",
+            "These are ORDERED, and the order is not neutral: the ones you were "
+            "least sure about come first. That is a presentation choice, not a "
+            "recommendation -- nothing here says which one is worth your time.",
+            "",
+        ]
+        lines += [f"  - {p.preview()}" for p in view.open_priors]
+        lines.append("")
 
     if view.stale_priors:
         lines += [

@@ -494,7 +494,7 @@ class _FakeReader:
                 return rows
         return []
 
-    def _redis(self):
+    def client(self):
         reader = self
 
         class _Client:
@@ -843,3 +843,29 @@ def test_no_outreach_loop_is_reported_rather_than_swallowed() -> None:
     )
     assert asyncio.run(loop.tick()) is None
     assert len(bus.published) == 1
+
+
+def test_an_unreadable_footprint_is_not_reported_as_writing_nothing() -> None:
+    """`{}` is "Orion wrote nothing"; `None` is "the graph could not answer".
+    Printing the former for the latter would put a false claim about Orion's
+    own work into the one artifact Juniper actually reads."""
+    entry = build_investigation_journal_entry(
+        material=_material(), body_text="x", correlation_id="c", run_id="r1",
+        graph_footprint=None, created_at=NOW,
+    )
+    assert "Wrote nothing to its own graph" not in entry.body
+    assert "Wrote to its own graph" not in entry.body
+
+    wrote_nothing = build_investigation_journal_entry(
+        material=_material(), body_text="x", correlation_id="c", run_id="r1",
+        graph_footprint={}, created_at=NOW,
+    )
+    assert "Wrote nothing to its own graph" in wrote_nothing.body
+
+
+def test_a_graph_that_cannot_answer_does_not_claim_orion_wrote_nothing() -> None:
+    bus = _FakeBus()
+    loop = _graph_loop(bus, reader=_FakeReader(raises=True))
+    assert asyncio.run(loop.tick()) is None
+    body = bus.published[0][1].payload["body"]
+    assert "Wrote nothing to its own graph" not in body

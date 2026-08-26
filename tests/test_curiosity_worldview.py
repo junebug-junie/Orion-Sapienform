@@ -239,9 +239,16 @@ def test_a_bad_run_id_degrades_to_a_safe_default_rather_than_raising() -> None:
     """The loop must survive a junk id in Redis, not crash the tick."""
     reader = _FakeReader()
     assert read_turn_outcome(reader, "not-hex") is None
-    assert read_run_footprint(reader, "not-hex") == {}
+    assert read_run_footprint(reader, "not-hex") is None
     assert read_hop_notes(reader, "not-hex") == []
     assert reader.queries == []
+
+
+def test_an_unreadable_footprint_is_none_and_no_writes_is_empty() -> None:
+    """Collapsing these would put "wrote nothing to its own graph" in the
+    journal for a run whose graph was simply unreachable."""
+    assert read_run_footprint(_FakeReader(raises=True), "abc123") is None
+    assert read_run_footprint(_FakeReader(), "abc123") == {}
 
 
 # --- the run's own evidence -------------------------------------------------
@@ -313,3 +320,21 @@ def test_a_redis_error_becomes_a_typed_failure_not_a_bare_exception() -> None:
     reader = WorldviewReader(host="x", port=1, graph_name="g", client=_Client())
     with pytest.raises(WorldviewUnavailable):
         reader.query("MATCH (n) RETURN n")
+
+
+# --- the prompt must not print a header with nothing under it --------------
+
+
+def test_a_view_with_only_stale_priors_does_not_print_an_empty_heading() -> None:
+    from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    view = WorldviewSnapshot(
+        open_priors=[],
+        stale_priors=[Prior("p", "a stuck claim", 0.5, "open", 5)],
+        open_total=1,
+    )
+    text = "\n".join(_priors_section(view, stale_after=3))
+    assert "WHAT YOU ARE STILL UNSURE OF" not in text
+    assert "a stuck claim" in text
+    assert "retired_unresolvable" in text

@@ -112,7 +112,19 @@ def test_load_vlm_captioner_qwen_pixel_bounds_default_to_none():
     """Caller omitting the new kwargs (e.g. an older/simpler call site, or
     a test that doesn't care) must not accidentally pass a real numeric
     default into the processor -- None means "use the checkpoint's own
-    default", not "0 pixels"."""
+    default", not "0 pixels".
+
+    Regression guard (review finding, fixed before ship): the real
+    Qwen2VLImageProcessor.__init__ takes plain `int` params, not Optional --
+    passing min_pixels=None/max_pixels=None explicitly does NOT mean "use
+    the checkpoint default" the way this docstring/contract promises, it
+    OVERRIDES the default with a literal None that later crashes
+    transformers' own smart_resize() with a TypeError on real inference.
+    `kwargs.get("min_pixels") is None` alone doesn't distinguish "omitted"
+    from "explicitly passed as None" (dict.get returns None for a missing
+    key too) -- the asserts below on `"min_pixels" not in kwargs` are the
+    ones that actually pin the fix (only pass the kwarg when the caller gave
+    a real value)."""
     mgr = ModelManager()
     patches = _patched_loaders()
     with patches["auto_processor"] as processor_load, patches["blip2"], patches["blip"], \
@@ -123,8 +135,8 @@ def test_load_vlm_captioner_qwen_pixel_bounds_default_to_none():
         )
 
     _, kwargs = processor_load.call_args
-    assert kwargs.get("min_pixels") is None
-    assert kwargs.get("max_pixels") is None
+    assert "min_pixels" not in kwargs
+    assert "max_pixels" not in kwargs
 
 
 def test_load_vlm_captioner_unrecognized_model_id_still_falls_back_to_generic():

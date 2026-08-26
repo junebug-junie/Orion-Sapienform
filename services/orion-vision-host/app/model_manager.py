@@ -194,20 +194,31 @@ class ModelManager:
 
                 processor = BlipProcessor.from_pretrained(model_id)
                 model = BlipForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
-            elif is_qwen2_5_vl_model(model_id):
-                from transformers import Qwen2_5_VLForConditionalGeneration
+            elif is_qwen2_5_vl_model(model_id) or is_qwen2_vl_model(model_id):
+                if is_qwen2_5_vl_model(model_id):
+                    from transformers import Qwen2_5_VLForConditionalGeneration as _QwenModelClass
+                else:
+                    from transformers import Qwen2VLForConditionalGeneration as _QwenModelClass
 
-                processor = AutoProcessor.from_pretrained(
-                    model_id, min_pixels=qwen_min_pixels, max_pixels=qwen_max_pixels
-                )
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
-            elif is_qwen2_vl_model(model_id):
-                from transformers import Qwen2VLForConditionalGeneration
+                # Review finding: Qwen2VLImageProcessor.__init__ takes plain
+                # `int` params, not Optional -- passing min_pixels=None/
+                # max_pixels=None explicitly OVERRIDES the checkpoint's own
+                # default with a literal None, which later blows up as
+                # `TypeError: '>' not supported between 'int' and 'NoneType'`
+                # inside transformers' smart_resize() the first time this
+                # profile actually runs inference. Only pass the kwarg when
+                # the caller gave a real value, so an explicit None caller
+                # (this function's own documented contract) genuinely falls
+                # through to the processor's checkpoint default instead of a
+                # bound this loader silently poisoned to None.
+                pixel_kwargs: dict[str, int] = {}
+                if qwen_min_pixels is not None:
+                    pixel_kwargs["min_pixels"] = qwen_min_pixels
+                if qwen_max_pixels is not None:
+                    pixel_kwargs["max_pixels"] = qwen_max_pixels
 
-                processor = AutoProcessor.from_pretrained(
-                    model_id, min_pixels=qwen_min_pixels, max_pixels=qwen_max_pixels
-                )
-                model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
+                processor = AutoProcessor.from_pretrained(model_id, **pixel_kwargs)
+                model = _QwenModelClass.from_pretrained(model_id, torch_dtype=torch_dtype)
             else:
                 processor = AutoProcessor.from_pretrained(model_id)
                 model = AutoModelForVision2Seq.from_pretrained(model_id, torch_dtype=torch_dtype)

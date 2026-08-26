@@ -7,6 +7,12 @@ class CameraState(BaseModel):
     frames_seen: int = 0
     frames_dispatched: int = 0
     last_dispatch_ts: float | None = None
+    # Separate from last_dispatch_ts -- identity_face is a secondary,
+    # independently rate-limited dispatch alongside the primary tier's own
+    # task (policy.py's decide_identity), not a replacement for it. Sharing
+    # last_dispatch_ts would couple identity's cadence to whatever the
+    # primary task's own min_seconds_between_tasks_per_camera happens to be.
+    last_identity_dispatch_ts: float | None = None
     inflight: set[str] = Field(default_factory=set)
     last_skip_reason: str | None = None
 
@@ -56,11 +62,32 @@ class RouterState:
         now: float,
         frame_ts: float | None,
         stream_id: str | None = None,
+        is_primary: bool = True,
     ) -> None:
+        """``is_primary=False`` for the identity_face secondary dispatch
+        (dispatcher.py): review finding, 2026-08-26, independently
+        surfaced by three separate review passes -- an unconditional
+        ``cam.inflight.add()`` here meant identity's own corr_id consumed
+        the SAME per-camera slot ``max_inflight_per_camera`` gates for the
+        PRIMARY tier's own decide() calls (live cam0 config:
+        max_inflight_per_camera=1), so once identity fired, cam0 could not
+        dispatch another retina_fast until identity's own reply/timeout
+        cleared -- freezing primary detection for up to
+        TASK_TIMEOUT_SECONDS, exactly while a person is present. The same
+        unconditional stamp also re-paced ``last_dispatch_ts`` (the
+        PRIMARY tier's own ``min_seconds_between_tasks_per_camera`` clock),
+        contradicting ``last_identity_dispatch_ts``'s whole reason for
+        being a separate field. The task is still tracked in
+        ``self.pending`` either way (global inflight, corr_id lookup,
+        timeout sweep all still apply identically) -- only the PRIMARY-
+        tier-specific per-camera counters are skipped for a secondary
+        dispatch.
+        """
         cam = self.camera(camera_id)
-        cam.frames_dispatched += 1
-        cam.last_dispatch_ts = now
-        cam.inflight.add(correlation_id)
+        if is_primary:
+            cam.frames_dispatched += 1
+            cam.last_dispatch_ts = now
+            cam.inflight.add(correlation_id)
         self.pending[correlation_id] = PendingTask(
             correlation_id=correlation_id,
             camera_id=camera_id,

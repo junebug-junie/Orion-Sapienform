@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionArtifactPayload, VisionWindowPayload
@@ -41,6 +41,36 @@ def camera_id_from_artifact(art: VisionArtifactPayload) -> str | None:
     if v is not None and str(v).strip():
         return str(v).strip()
     return None
+
+
+def identity_hint_from_artifact(art: VisionArtifactPayload) -> Optional[Dict[str, Any]]:
+    """Best candidate from an identity_face artifact's ``outputs.identities``,
+    or None if there is nothing worth surfacing.
+
+    "Best" = highest similarity among candidates whose OWN ``state`` is
+    ``"probable"`` or ``"possible"``. A candidate stuck at ``"unsure"`` is
+    not a weaker hint -- it is the honest absence of one, same as an empty
+    candidate list (no face detected) or an unenrolled gallery. Downstream
+    consumers (presence.py, council's evidence) rely on this function never
+    handing them an unsure/no-match result to silently narrow on.
+    """
+    identities = getattr(art.outputs, "identities", None)
+    if not isinstance(identities, dict):
+        return None
+    candidates = identities.get("candidates") or []
+    usable = [
+        c
+        for c in candidates
+        if isinstance(c, dict) and c.get("state") in ("probable", "possible") and c.get("subject")
+    ]
+    if not usable:
+        return None
+    best = max(usable, key=lambda c: c.get("similarity") or 0.0)
+    return {
+        "subject": best["subject"],
+        "state": best["state"],
+        "similarity": best.get("similarity"),
+    }
 
 
 def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:

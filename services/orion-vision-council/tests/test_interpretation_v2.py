@@ -570,6 +570,48 @@ def test_build_interpretation_prompt_caps_artifact_bloat():
     assert len(prompt) < 4000
 
 
+def test_build_interpretation_prompt_passes_identity_hypothesis_through_evidence():
+    """orion-vision-window folds identity_hypothesis into
+    summary["evidence"] (2026-08-26); _compact_window_context already
+    passes summary.evidence through wholesale (`"evidence":
+    summary.get("evidence", {})`), so no NEW extraction code is needed
+    here -- only the prompt rule teaching the LLM how to hedge it. This
+    confirms both halves: the field reaches the prompt, and the hedging
+    rule is present."""
+    window = _window(
+        summary={
+            "top_labels": ["person"],
+            "captions": [],
+            "detection_count": 1,
+            "evidence": {
+                "hard_labels": ["person"],
+                "identity_hypothesis": {"subject": "juniper", "state": "probable", "similarity": 0.61},
+            },
+        },
+    )
+    prompt = build_interpretation_prompt(window)
+    assert '"identity_hypothesis"' in prompt
+    assert '"subject": "juniper"' in prompt
+    assert "identity_hypothesis" in prompt.split("Rules:", 1)[1], "hedging rule for it must be in Rules"
+    assert "never assert the identity as certain" in prompt
+
+
+def test_build_interpretation_prompt_omits_identity_hypothesis_when_absent():
+    """No identity_hypothesis key at all (the common case: not enrolled, no
+    face detected, or identity_face never dispatched for this window) --
+    must not appear as a null/empty placeholder."""
+    window = _window(
+        summary={
+            "top_labels": ["door"],
+            "captions": [],
+            "detection_count": 1,
+            "evidence": {"hard_labels": ["door"]},
+        },
+    )
+    prompt = build_interpretation_prompt(window)
+    assert "identity_hypothesis" not in prompt.split("Rules:", 1)[0]
+
+
 def test_misplaced_event_shape_in_salient_observations_parses_strict_v2():
     """Live failure mode: LLM put event_candidates fields under salient_observations."""
     window = _window(

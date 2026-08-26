@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     DEFAULT_EVERY_N_FRAMES: int = 10
     DEFAULT_MIN_SECONDS_PER_CAMERA: float = 5.0
 
+    # Fallback rate limit for the identity_face secondary dispatch (policy.py's
+    # decide_identity) when a stream's triggered.identity_dispatch block
+    # doesn't set its own min_seconds_between_dispatch. Opt-in per stream via
+    # config/vision_frame_router.yaml -- see decide_identity's own docstring
+    # for why this is a second, independent dispatch decision rather than a
+    # new task_type option on the existing single-task-per-tier decide().
+    DEFAULT_IDENTITY_MIN_SECONDS: float = 30.0
+
     MAX_INFLIGHT_TOTAL: int = 2
     MAX_INFLIGHT_PER_CAMERA: int = 1
     TASK_TIMEOUT_SECONDS: float = 30.0

@@ -14,12 +14,18 @@ module is `believed_labels` -- the vote-gated, flicker-resistant set
 top of raw per-window detections would duplicate hysteresis this service
 already pays for and already tuned.
 
-**`subject` stays `"unknown"`.** There is no identity signal yet
-(`identity_face` is unimplemented, per the seeing-Juniper design doc) --
-`person` is the only detector label available, so this counts *a* person, not
-*Juniper*. Naming that plainly here is the honest version of the design
-doc's `subject: juniper | unknown | none` field; wiring identity later
-narrows it, it does not need this module to change shape.
+**`subject` narrows from `"unknown"` only on a fresh, hedged identity hint.**
+2026-08-26: `identity_face` shipped (PR #1886/#1890) but is dispatched
+separately by `orion-vision-frame-router` and reaches this service over its
+own dedicated channel (`orion-vision-host`'s `CHANNEL_VISIONHOST_IDENTITY_PUB`
+-- see `main.py`'s `_consume_identity`), not through the `believed_labels`
+this tracker already reads. `person` alone still only proves *a* person, not
+*Juniper*; `observe()`'s `identity_hint` param is how a real identity
+hypothesis narrows that, and only when it is itself hedged as `"probable"`
+or `"possible"` (never `"unsure"`, never absent) and the caller has already
+checked it is fresh enough to speak to *now*. No hint, or a stale/unsure one,
+and this stays exactly the `"unknown"` the design doc's own honesty
+discipline requires.
 
 `state` mirrors `hub_presence`'s `active | idle | dormant` with camera-shaped
 names: `present` (seen in the most recent window), `recent` (not seen just
@@ -56,8 +62,31 @@ class PresenceTracker:
         self._state = "absent"
         self._state_since: Optional[float] = None
         self._last_present_ts: Optional[float] = None
+        self._last_snapshot: Optional[dict[str, Any]] = None
 
-    def observe(self, believed_labels: frozenset[str], *, now: float) -> dict[str, Any]:
+    def last_snapshot(self) -> Optional[dict[str, Any]]:
+        """Read-only: the most recent observe() result, or None before the
+        first call. Never triggers a new observation."""
+        return self._last_snapshot
+
+    def observe(
+        self,
+        believed_labels: frozenset[str],
+        *,
+        now: float,
+        identity_hint: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """``identity_hint``, when given, is ``{"subject": ..., "state": ...}``
+        from a FRESH identity_face hypothesis -- staleness is the caller's
+        job (this method has no clock of its own to judge freshness by; see
+        WindowService's own age gate before it calls this). Only ever
+        narrows `"unknown"` to a real subject, and only when the hint's own
+        state is `"probable"` or `"possible"` -- an `"unsure"` hypothesis is
+        the same honesty-preserving no-op as no hint at all. Never overrides
+        `"none"` (nobody believed present): an identity hint that arrived a
+        beat late for a person who already left is not evidence anyone is
+        here now.
+        """
         present_now = self._subject_label in believed_labels
         if present_now:
             self._last_present_ts = now
@@ -77,12 +106,24 @@ class PresenceTracker:
             self._state = new_state
             self._state_since = now
 
-        return {
+        subject = "unknown" if present_now or last_seen_sec is not None else "none"
+        if (
+            subject == "unknown"
+            and identity_hint
+            and identity_hint.get("state") in ("probable", "possible")
+            and identity_hint.get("subject")
+            and identity_hint["subject"] != "unknown"
+        ):
+            subject = str(identity_hint["subject"])
+
+        snapshot = {
             "state": self._state,
             "since_sec": round(now - self._state_since, 1),
             "last_seen_sec": last_seen_sec,
-            "subject": "unknown" if present_now or last_seen_sec is not None else "none",
+            "subject": subject,
         }
+        self._last_snapshot = snapshot
+        return snapshot
 
 
 class PresenceRegistry:
@@ -106,12 +147,30 @@ class PresenceRegistry:
         return self._trackers[stream_id]
 
     def record(
-        self, stream_id: str, believed_labels: frozenset[str], *, now: Optional[float] = None
+        self,
+        stream_id: str,
+        believed_labels: frozenset[str],
+        *,
+        now: Optional[float] = None,
+        identity_hint: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
-        """Update the tracker and return (snapshot, due_for_write) -- never raises."""
+        """Update the tracker and return the snapshot ONLY when a Postgres
+        write is due (rate-limited) -- unchanged contract, never raises.
+
+        For the ALWAYS-fresh snapshot (presence's own current state on
+        every flush, not just the write cadence) call current_snapshot()
+        right after this; record() already updated the tracker for this
+        call regardless of what it returns. Note: council's window
+        evidence (summary.evidence.identity_hypothesis) does NOT go
+        through this registry at all -- it reads WindowService's own
+        _identity_by_stream directly (main.py's _get_fresh_identity_hint).
+        This registry is presence-only; current_snapshot() exists for any
+        other same-flush consumer of presence's live state (a debug
+        surface, say), not for that specific field.
+        """
         try:
             ts = float(now if now is not None else time.time())
-            snapshot = self._tracker(stream_id).observe(believed_labels, now=ts)
+            snapshot = self._tracker(stream_id).observe(believed_labels, now=ts, identity_hint=identity_hint)
             last_write = self._last_write_at.get(stream_id, 0.0)
             due = (ts - last_write) >= self._write_min_interval_sec
             if due:
@@ -120,6 +179,14 @@ class PresenceRegistry:
         except Exception as exc:
             logger.warning("presence_record_failed stream=%s error=%s", stream_id, exc)
             return None
+
+    def current_snapshot(self, stream_id: str) -> Optional[dict[str, Any]]:
+        """The tracker's most recent observe() result for this stream,
+        regardless of record()'s write-rate-limit gate. None if record()
+        has never been called for this stream_id yet. Never triggers a new
+        observation -- call record() first for this flush."""
+        tracker = self._trackers.get(stream_id)
+        return tracker.last_snapshot() if tracker is not None else None
 
 
 def write_snapshot_to_postgres(stream_id: str, snapshot: dict[str, Any], *, postgres_uri: str) -> None:

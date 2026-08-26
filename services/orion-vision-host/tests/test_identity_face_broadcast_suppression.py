@@ -9,46 +9,68 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from app.artifacts import build_artifact_payload
-from app.main import VisionHostService, should_broadcast_artifact
+from app.main import VisionHostService, should_broadcast_artifact, should_broadcast_identity
 from app.models import VisionResult
 
 
-def test_every_publish_artifact_broadcast_call_site_is_guarded():
-    """Structural regression pin: found live, 2026-08-26, while verifying
-    the fix in _publish_result -- the /v1/vision/task HTTP endpoint has
-    its OWN, separate call to _publish_artifact_broadcast that bypassed
-    should_broadcast_artifact() entirely, still broadcasting identity data
-    unfiltered even after the bus-first path was fixed. Both real call
-    sites (2, confirmed) must have the guard on the same line as the call
-    -- a third call site added later without it would silently reopen the
-    same leak this exists to prevent."""
+def test_broadcast_guard_logic_lives_in_exactly_one_place():
+    """Structural regression pin, rewritten 2026-08-26 after consolidating
+    the guard logic into _maybe_broadcast (review finding: the guard used
+    to be hand-rolled at each call site independently, which is exactly
+    the shape that let a real bug ship once -- the /v1/vision/task HTTP
+    endpoint's own separate call bypassed should_broadcast_artifact()
+    entirely, still broadcasting identity data unfiltered even after the
+    bus-first path was fixed).
+
+    New invariant: _publish_artifact_broadcast and _publish_identity_
+    broadcast are each called from exactly ONE place now (_maybe_broadcast
+    itself), and _maybe_broadcast is called from exactly the 2 real
+    request paths (_publish_result, http_task). A future call site that
+    forgets to route through _maybe_broadcast broadcasts nothing --
+    fails safe, not fails open -- so this pins the shape that makes that
+    the failure mode, not just the historical call count."""
     main_py = Path(__file__).resolve().parents[1] / "app" / "main.py"
     lines = main_py.read_text(encoding="utf-8").splitlines()
 
-    call_sites = [i for i, line in enumerate(lines) if "await self._publish_artifact_broadcast(" in line
-                  or "await service._publish_artifact_broadcast(" in line]
-    definition_sites = [i for i, line in enumerate(lines) if "def _publish_artifact_broadcast(" in line]
+    def _call_sites(needle: str) -> list[int]:
+        return [i for i, line in enumerate(lines) if needle in line]
 
-    assert len(call_sites) == 2, (
-        f"expected exactly 2 call sites to _publish_artifact_broadcast, found {len(call_sites)} at "
-        f"lines {[i + 1 for i in call_sites]} -- update this test's expected count only after confirming "
-        f"the new call site is guarded by should_broadcast_artifact()"
+    artifact_calls = _call_sites("await self._publish_artifact_broadcast(")
+    identity_calls = _call_sites("await self._publish_identity_broadcast(")
+    maybe_broadcast_calls = _call_sites("await self._maybe_broadcast(") + _call_sites(
+        "await service._maybe_broadcast("
     )
-    assert len(definition_sites) == 1
 
-    for call_line in call_sites:
-        # 20-line lookback, not a tight 2-line one: the two real call
-        # sites have different shapes -- _publish_result's is a flat
-        # `if ...: await ...`, but the HTTP /v1/vision/task endpoint's is
-        # a nested `if should_broadcast_artifact(...): ... if art_payload:
-        # await ...`, ~14 lines between the real guard and the call. A
-        # tight window silently missed that second, nested shape when this
-        # test was first written -- confirmed live by mutation below.
-        guard_window = "\n".join(lines[max(0, call_line - 20) : call_line + 1])
-        assert "should_broadcast_artifact(" in guard_window, (
-            f"_publish_artifact_broadcast call at main.py:{call_line + 1} has no "
-            f"should_broadcast_artifact() guard within 20 lines above it"
-        )
+    assert len(artifact_calls) == 1, (
+        f"_publish_artifact_broadcast must be called from exactly one place "
+        f"(_maybe_broadcast) -- found {len(artifact_calls)} at lines {[i + 1 for i in artifact_calls]}"
+    )
+    assert len(identity_calls) == 1, (
+        f"_publish_identity_broadcast must be called from exactly one place "
+        f"(_maybe_broadcast) -- found {len(identity_calls)} at lines {[i + 1 for i in identity_calls]}"
+    )
+    assert len(maybe_broadcast_calls) == 2, (
+        f"_maybe_broadcast must be called from exactly the 2 real request paths "
+        f"(_publish_result, http_task) -- found {len(maybe_broadcast_calls)} at "
+        f"lines {[i + 1 for i in maybe_broadcast_calls]}"
+    )
+
+    # Both real predicate checks must still live inside _maybe_broadcast's
+    # own body, not scattered back out to the call sites. Next line at the
+    # SAME 4-space method-def indentation (async or not) ends the body --
+    # a naive "next def" search would stop early on should_broadcast_
+    # artifact/should_broadcast_identity's own nested `if` blocks, which
+    # don't start with "def " anyway, so this is just being explicit about
+    # matching only sibling method definitions.
+    maybe_broadcast_start = next(i for i, line in enumerate(lines) if "async def _maybe_broadcast(" in line)
+    maybe_broadcast_end = next(
+        i
+        for i, line in enumerate(lines[maybe_broadcast_start + 1 :], start=maybe_broadcast_start + 1)
+        if line.startswith("    def ") or line.startswith("    async def ")
+    )
+    body = "\n".join(lines[maybe_broadcast_start:maybe_broadcast_end])
+    assert "should_broadcast_artifact(" in body
+    assert "should_broadcast_identity(" in body
 
 
 def test_should_broadcast_artifact_suppresses_identity_data_reached_via_a_pipeline():
@@ -109,13 +131,68 @@ def test_should_broadcast_artifact_allows_everything_else(task_type):
     assert should_broadcast_artifact(task_type) is True
 
 
+# -- should_broadcast_identity: the mirror-image predicate for the dedicated
+# CHANNEL_VISIONHOST_IDENTITY_PUB lane -----------------------------------
+
+
+def test_should_broadcast_identity_true_for_identity_face_task_type():
+    assert should_broadcast_identity("identity_face") is True
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    ["caption_frame", "vqa", "detect_open_vocab", "embed_image", "retina_fast"],
+)
+def test_should_broadcast_identity_false_for_everything_else_by_task_type_alone(task_type):
+    assert should_broadcast_identity(task_type) is False
+
+
+def test_should_broadcast_identity_true_for_identity_data_reached_via_a_pipeline():
+    """Mirror of test_should_broadcast_artifact_suppresses_identity_data_
+    reached_via_a_pipeline above -- the same pipeline-composition path that
+    can smuggle identity data past a task_type-only check must also be
+    caught by should_broadcast_identity's content check, or a pipeline-
+    routed identity result would silently never reach the dedicated
+    channel at all (neither broadcast, nor suppressed -- just dropped)."""
+    res = VisionResult(
+        corr_id="c5",
+        ok=True,
+        task_type="pipeline_retina_dense",  # NOT "identity_face"
+        device="cuda:0",
+        artifacts={
+            "objects": [],
+            "identities": {
+                "candidates": [{"subject": "juniper", "similarity": 0.71, "state": "probable"}],
+                "enrolled_subject": "juniper",
+                "gallery_enrolled": True,
+            },
+        },
+    )
+    payload = build_artifact_payload(res)
+    assert should_broadcast_identity(res.task_type, payload) is True
+
+
+def test_should_broadcast_identity_false_for_non_identity_pipeline_result():
+    res = VisionResult(
+        corr_id="c6",
+        ok=True,
+        task_type="pipeline_retina_fast",
+        device="cuda:0",
+        artifacts={"objects": [{"label": "chair", "score": 0.9, "box_xyxy": [0, 0, 1, 1]}]},
+    )
+    payload = build_artifact_payload(res)
+    assert should_broadcast_identity(res.task_type, payload) is False
+
+
 @pytest.mark.asyncio
-async def test_publish_result_skips_broadcast_for_identity_face():
+async def test_publish_result_skips_general_broadcast_for_identity_face():
     """Integration-level check at the actual bus-call boundary, not just the
     pure predicate -- confirms _publish_result really doesn't invoke
-    _publish_artifact_broadcast for this task_type, and confirms the direct
-    RPC reply (result_payload with the full artifact) is still sent as
-    normal to the requester."""
+    _publish_artifact_broadcast (the general CHANNEL_VISIONHOST_PUB) for
+    this task_type. 2026-08-26: now expects TWO calls, not one -- the RPC
+    reply, plus the new dedicated CHANNEL_VISIONHOST_IDENTITY_PUB publish
+    (should_broadcast_identity, _publish_identity_broadcast). The general
+    broadcast is still and only ever skipped."""
     service = VisionHostService()
     service.bus = MagicMock()
     service.bus.publish = AsyncMock()
@@ -145,11 +222,11 @@ async def test_publish_result_skips_broadcast_for_identity_face():
 
     await service._publish_result(res, fake_envelope)
 
-    # Exactly one publish call -- the direct RPC reply. No second call to
-    # CHANNEL_VISIONHOST_PUB (the general broadcast).
-    assert service.bus.publish.call_count == 1
-    published_channel = service.bus.publish.call_args[0][0]
-    assert published_channel == "orion:vision:reply:c1"
+    assert service.bus.publish.call_count == 2
+    published_channels = [call.args[0] for call in service.bus.publish.call_args_list]
+    assert "orion:vision:reply:c1" in published_channels
+    assert "orion:vision:artifacts" not in published_channels, "general broadcast must stay suppressed"
+    assert "orion:vision:artifacts:identity" in published_channels, "dedicated identity channel must fire"
 
 
 @pytest.mark.asyncio

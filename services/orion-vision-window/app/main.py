@@ -22,7 +22,12 @@ from orion.schemas.vision import (
     VisionWindowResultPayload,
 )
 
-from .projection import build_window_payload, envelope_to_http_dict, stream_key_from_artifact
+from .projection import (
+    build_window_payload,
+    envelope_to_http_dict,
+    identity_hint_from_artifact,
+    stream_key_from_artifact,
+)
 from .recovery_store import RecoveryStore
 from .presence import PresenceRegistry, write_snapshot_to_postgres
 from .scene_belief import SceneBeliefRegistry
@@ -50,6 +55,7 @@ class WindowService:
             enforce_catalog=settings.ORION_BUS_ENFORCE_CATALOG,
         )
         self._consumer_task: Optional[asyncio.Task] = None
+        self._identity_consumer_task: Optional[asyncio.Task] = None
         self._rpc_task: Optional[asyncio.Task] = None
         self._emitter_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
@@ -57,6 +63,15 @@ class WindowService:
         # Per-stream ingest buffers: list of {artifact, ts, env}
         self._buffers: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self._buffer_lock = asyncio.Lock()
+
+        # Latest identity_face hint per stream: {"hint": {...}, "ts": float}.
+        # Separate from _buffers -- identity arrives on its own dedicated
+        # channel (CHANNEL_WINDOW_IDENTITY_INTAKE), at its own (rate-
+        # limited, opportunistic) cadence, not once per artifact like the
+        # detection buffer. Read-then-gate-by-age in _flush_and_publish;
+        # never grows unbounded (one entry per stream_id, overwritten).
+        self._identity_by_stream: Dict[str, Dict[str, Any]] = {}
+        self._identity_lock = asyncio.Lock()
 
         self._live_lock = asyncio.Lock()
         self._live_by_stream: Dict[str, VisionWindowPayload] = {}
@@ -130,16 +145,38 @@ class WindowService:
             self._recovery_ok = False
 
         self._consumer_task = asyncio.create_task(self._consume())
+        # WINDOW_IDENTITY_ENABLED alone is not sufficient (review finding,
+        # 2026-08-26): the identity hint is only ever READ inside the
+        # WINDOW_BELIEF_ENABLED branch of _flush_and_publish (presence and
+        # council evidence both derive from belief's output). An operator
+        # disabling belief (e.g. to debug scene-belief flapping) while
+        # leaving identity's own flag at its true default would otherwise
+        # get a consumer that keeps subscribing, keeps triggering real GPU
+        # dispatch upstream, keeps writing _identity_by_stream -- and never
+        # has any of it read by anything. CLAUDE.md section 0A names this
+        # failure shape directly: "reducers alive but cursors stale."
+        # Refusing to start the consumer is the deterministic gate instead
+        # of a comment nobody reads.
+        identity_consumer_enabled = settings.WINDOW_IDENTITY_ENABLED and settings.WINDOW_BELIEF_ENABLED
+        if settings.WINDOW_IDENTITY_ENABLED and not settings.WINDOW_BELIEF_ENABLED:
+            logger.warning(
+                "[WINDOW] WINDOW_IDENTITY_ENABLED=true but WINDOW_BELIEF_ENABLED=false -- "
+                "identity consumer NOT started (its output is only ever read inside the belief "
+                "branch of _flush_and_publish; running it anyway would be pure waste)."
+            )
+        if identity_consumer_enabled:
+            self._identity_consumer_task = asyncio.create_task(self._consume_identity())
         self._rpc_task = asyncio.create_task(self._consume_rpc())
         self._emitter_task = asyncio.create_task(self._emit_loop())
         logger.info(
             f"[WINDOW] Started. intake={settings.CHANNEL_WINDOW_INTAKE} "
+            f"identity_intake={settings.CHANNEL_WINDOW_IDENTITY_INTAKE if identity_consumer_enabled else 'disabled'} "
             f"pub={settings.CHANNEL_WINDOW_PUB} rpc={settings.CHANNEL_WINDOW_REQUEST}"
         )
 
     async def stop(self) -> None:
         self._shutdown_event.set()
-        for t in [self._consumer_task, self._rpc_task, self._emitter_task]:
+        for t in [self._consumer_task, self._identity_consumer_task, self._rpc_task, self._emitter_task]:
             if t:
                 try:
                     t.cancel()
@@ -191,6 +228,47 @@ class WindowService:
                 self._m_ingest += 1
                 async with self._buffer_lock:
                     self._buffers[sk].append({"artifact": payload, "ts": time.time(), "env": env})
+
+    async def _consume_identity(self) -> None:
+        """Separate loop, separate channel from _consume() above --
+        identity_face artifacts arrive on their own dedicated,
+        single-consumer lane (CHANNEL_WINDOW_IDENTITY_INTAKE, see
+        settings.py's docstring for why it is not the general
+        CHANNEL_WINDOW_INTAKE broadcast). Stores only the latest usable hint
+        per stream, overwriting the previous one -- this is presence-shaped
+        state (what does the LATEST evidence say), not a window buffer, so
+        it never accumulates and never needs a size cap.
+        """
+        async with self.bus.subscribe(settings.CHANNEL_WINDOW_IDENTITY_INTAKE) as pubsub:
+            async for msg in self.bus.iter_messages(pubsub):
+                if self._shutdown_event.is_set():
+                    break
+                data = msg.get("data")
+                decoded = self.bus.codec.decode(data)
+                if not decoded.ok:
+                    continue
+                env = decoded.envelope
+                try:
+                    if isinstance(env.payload, dict):
+                        payload = VisionArtifactPayload(**env.payload)
+                    else:
+                        payload = env.payload
+                except Exception as e:
+                    logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
+                    continue
+                hint = identity_hint_from_artifact(payload)
+                if hint is None:
+                    # unsure/no-match/no-face -- nothing to store. Does NOT
+                    # clear a still-fresh prior hint; the freshness gate in
+                    # _flush_and_publish is what decides whether an older
+                    # hint is still usable, not this arrival.
+                    continue
+                sk = stream_key_from_artifact(payload)
+                async with self._identity_lock:
+                    self._identity_by_stream[sk] = {"hint": hint, "ts": time.time()}
+                logger.debug(
+                    f"[WINDOW] identity_hint stream={sk} subject={hint['subject']} state={hint['state']}"
+                )
 
     async def _consume_rpc(self) -> None:
         async with self.bus.subscribe(settings.CHANNEL_WINDOW_REQUEST) as pubsub:
@@ -293,15 +371,49 @@ class WindowService:
             cursor=cursor,
             stale_after_ms=settings.STALE_AFTER_MS,
         )
+        identity_hint: Optional[Dict[str, Any]] = None
+        if settings.WINDOW_BELIEF_ENABLED and settings.WINDOW_IDENTITY_ENABLED:
+            # Fetched HERE, before the belief block below, not inside it
+            # (review finding, 2026-08-26): this is the one await in this
+            # method, and inserting it between SceneBeliefRegistry.observe()
+            # and _note_presence() broke what was previously an atomic
+            # (no-await) stretch. _flush_and_publish is genuinely reachable
+            # concurrently for the same stream_id (unserialized
+            # asyncio.create_task per RPC message in _handle_rpc, plus the
+            # independent periodic emit loop's _drain_stream), so two
+            # flushes could interleave exactly at that await point and apply
+            # belief/presence updates out of order. Fetching first keeps the
+            # belief block itself await-free, exactly as it was before this
+            # field existed.
+            identity_hint = await self._get_fresh_identity_hint(stream_id, now=window_end)
+
         if settings.WINDOW_BELIEF_ENABLED:
             summary = dict(payload.summary or {})
             evidence = dict(summary.get("evidence") or {})
             observed = frozenset(str(x).strip().lower() for x in evidence.get("hard_labels") or [] if str(x).strip())
             result = self._belief_registry.observe(stream_id, observed)
             summary["evidence"] = self._belief_registry.enrich_evidence(stream_id, evidence)
+
+            if identity_hint and "person" in observed:
+                # Code-enforced, not just prompt-trusted (review finding,
+                # 2026-08-26): council's hedging rule for this field
+                # (interpretation.py) is a prompt instruction, not a
+                # guarantee, and an identity hint can outlive the person it
+                # was about by up to WINDOW_IDENTITY_MAX_AGE_SEC (default
+                # 90s). Gating on THIS window's own raw hard_labels (not
+                # believed_labels, which lags behind by design -- and
+                # matches the existing "Activity verbs require person in
+                # hard_labels" rule's own semantics one line below) means a
+                # person-less window structurally cannot carry an
+                # identity_hypothesis, regardless of what the LLM does with
+                # a stray one. Only ever ADDS the key -- an absent/stale/
+                # unpersoned hint means no identity_hypothesis field at all,
+                # not a field asserting "unsure"/"unknown".
+                summary["evidence"] = {**summary["evidence"], "identity_hypothesis": identity_hint}
+
             payload = payload.model_copy(update={"summary": summary})
             if settings.WINDOW_PRESENCE_ENABLED:
-                self._note_presence(stream_id, result.believed_labels)
+                self._note_presence(stream_id, result.believed_labels, identity_hint=identity_hint)
             if result.added or result.removed:
                 added = ",".join(sorted(result.added)) or "-"
                 removed = ",".join(sorted(result.removed)) or "-"
@@ -394,14 +506,37 @@ class WindowService:
             self._m_inventory_failed += 1
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
-    def _note_presence(self, stream_id: str, believed_labels: frozenset[str]) -> None:
+    async def _get_fresh_identity_hint(self, stream_id: str, *, now: float) -> Optional[Dict[str, Any]]:
+        """The latest identity_face hint for this stream, or None if there
+        isn't one or it is too old to speak to "now" -- same staleness
+        discipline as orion/situational/context.py's percept gate. Age is
+        measured against ``now`` (the window's own end_ts), not wall-clock
+        time.time(), so a slow flush cannot make an otherwise-fresh hint
+        read as stale relative to the window it is being folded into.
+        """
+        async with self._identity_lock:
+            entry = self._identity_by_stream.get(stream_id)
+        if entry is None:
+            return None
+        age = now - entry["ts"]
+        if age > settings.WINDOW_IDENTITY_MAX_AGE_SEC:
+            return None
+        return entry["hint"]
+
+    def _note_presence(
+        self,
+        stream_id: str,
+        believed_labels: frozenset[str],
+        *,
+        identity_hint: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Update presence and, if due, fire a best-effort Postgres write.
 
         Best-effort end to end: `PresenceRegistry.record` never raises, and a
         failed or slow write cannot delay this window's flush -- the same
         contract as the scene-belief transition it rides alongside.
         """
-        snapshot = self._presence_registry.record(stream_id, believed_labels)
+        snapshot = self._presence_registry.record(stream_id, believed_labels, identity_hint=identity_hint)
         if snapshot is None:
             return
         if not settings.POSTGRES_URI:

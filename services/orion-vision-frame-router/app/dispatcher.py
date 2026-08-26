@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 from loguru import logger
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionFramePointerPayload, VisionTaskResultPayload
 
-from .envelopes import make_host_task_envelope
+from .envelopes import make_host_task_envelope, make_secondary_task_envelope
 from .host_trigger import extract_host_trigger_labels, stream_id_from_host_result
 from .metrics import RouterMetrics
 from .policy import FrameDispatchPolicy
@@ -104,6 +105,56 @@ class FrameDispatcher:
                 stream_id=frame.stream_id,
             )
             self.metrics.record_dispatch()
+
+            # Secondary, independent dispatch -- see policy.decide_identity's
+            # docstring for why this is not folded into decision/task above.
+            # Own corr_id (make_secondary_task_envelope), own reply_to, own
+            # RouterState.mark_dispatched call: the reply is handled by the
+            # same _handle_reply_envelope_inner as any other task this router
+            # owns (it clears pending / counts metrics identically), but its
+            # actual CONTENT reaches presence.py and orion-vision-council
+            # over orion-vision-host's dedicated identity broadcast channel,
+            # not through anything this dispatcher does with the reply.
+            now = time.time()
+            if self.policy.decide_identity(decision, camera_id=camera_id, state=self.state, now=now):
+                identity_task = self.policy.build_identity_task_request(frame, env, decision)
+                identity_corr = str(uuid.uuid4())
+                identity_reply_to = f"{self.settings.CHANNEL_REPLY_PREFIX}:{identity_corr}"
+                identity_env = make_secondary_task_envelope(
+                    frame_env=env,
+                    frame=frame,
+                    task=identity_task,
+                    service_name=self.settings.SERVICE_NAME,
+                    service_version=self.settings.SERVICE_VERSION,
+                    reply_to=identity_reply_to,
+                    correlation_id=identity_corr,
+                )
+                if not self.settings.DRY_RUN and self.bus:
+                    await self.bus.publish(self.settings.CHANNEL_HOST_INTAKE, identity_env)
+                self.state.mark_dispatched(
+                    correlation_id=identity_corr,
+                    camera_id=frame.camera_id or "unknown",
+                    image_path=frame.image_path or "",
+                    task_type=identity_task.task_type,
+                    reply_to=identity_reply_to,
+                    now=now,
+                    frame_ts=frame.frame_ts,
+                    stream_id=frame.stream_id,
+                    # is_primary=False: does not consume the primary tier's
+                    # per-camera inflight slot or re-pace its dispatch
+                    # clock -- see mark_dispatched's own docstring for the
+                    # real bug this prevents (three review passes found it
+                    # independently, 2026-08-26).
+                    is_primary=False,
+                )
+                self.state.camera(camera_id).last_identity_dispatch_ts = now
+                self.metrics.record_identity_dispatch()
+                logger.info(
+                    "[ROUTER] identity_dispatch camera_id={} stream_id={} corr={}",
+                    camera_id,
+                    frame.stream_id,
+                    identity_corr,
+                )
 
     async def handle_reply_envelope(self, env: BaseEnvelope) -> None:
         try:

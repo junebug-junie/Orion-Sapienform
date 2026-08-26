@@ -43,6 +43,27 @@ class Settings(BaseSettings):
     WINDOW_PRESENCE_WRITE_MIN_INTERVAL_SEC: float = 5.0
     POSTGRES_URI: str = ""
 
+    # Identity hypothesis intake -- separate channel and separate consumer
+    # loop from CHANNEL_WINDOW_INTAKE above (2026-08-26, docs/superpowers/
+    # specs/2026-08-21-seeing-juniper-identity-and-situated-observation-
+    # design.md section 4/6.1). identity_face is deliberately excluded from
+    # the general orion:vision:artifacts broadcast for privacy (orion-
+    # vision-host's should_broadcast_artifact); this is its own narrow,
+    # single-producer/single-consumer lane feeding presence.subject
+    # (app/presence.py) and the window evidence orion-vision-council reads.
+    # Value must match orion-vision-host's CHANNEL_VISIONHOST_IDENTITY_PUB.
+    CHANNEL_WINDOW_IDENTITY_INTAKE: str = "orion:vision:artifacts:identity"
+    WINDOW_IDENTITY_ENABLED: bool = True
+    # A hypothesis older than this is not evidence of who is there NOW --
+    # same staleness discipline as orion/situational/context.py's percept
+    # gate (a stale observation rendered as current is worse than none).
+    # Identity dispatch is rate-limited to roughly once per
+    # min_seconds_between_dispatch (config/vision_frame_router.yaml's
+    # identity_dispatch block, live default 30s) per camera, so this must
+    # comfortably exceed that cadence or a hypothesis would read as stale
+    # between its own refreshes.
+    WINDOW_IDENTITY_MAX_AGE_SEC: float = 90.0
+
     # Per-window scene census -> orion-sql-writer -> vision_scene_inventory.
     # Written on every window because the council only emits an event on a
     # label-SET change, so counts and departures are invisible in the event

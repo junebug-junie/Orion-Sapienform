@@ -164,6 +164,11 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "entities, relations, or event_candidates unless person is in summary.evidence.hard_labels.\n"
         "- Activity verbs (watching, reading, using, etc.) require person in hard_labels.\n"
         "- When hard_labels is non-empty, describe only those detected objects; do not infer occupants.\n"
+        "- When summary.evidence.identity_hypothesis is present AND person is in hard_labels, you "
+        "may refer to the detected person tentatively using its subject and state, e.g. "
+        "\"possibly Juniper\" for state=possible or \"probably Juniper\" for state=probable -- "
+        "never assert the identity as certain, never state a name when this field is absent, and "
+        "never invent an identity for a person not already in hard_labels.\n"
     )
 
 

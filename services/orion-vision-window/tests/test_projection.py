@@ -8,6 +8,7 @@ from app.projection import (
     artifact_uris_from_artifact,
     build_window_payload,
     envelope_to_http_dict,
+    identity_hint_from_artifact,
     stream_key_from_artifact,
 )
 
@@ -35,6 +36,61 @@ def test_stream_key_from_inputs():
 def test_stream_key_fallback_device():
     a = _artifact(inputs={}, device="edge-9")
     assert stream_key_from_artifact(a) == "edge-9"
+
+
+def _identity_artifact(candidates: list[dict]) -> VisionArtifactPayload:
+    return _artifact(
+        task_type="identity_face",
+        outputs=VisionArtifactOutputs(
+            objects=[],
+            identities={
+                "candidates": candidates,
+                "enrolled_subject": "juniper",
+                "gallery_enrolled": True,
+            },
+        ),
+    )
+
+
+def test_identity_hint_picks_highest_similarity_probable_candidate():
+    art = _identity_artifact(
+        [
+            {"subject": "juniper", "similarity": 0.4, "state": "possible", "detect_confidence": 0.9},
+            {"subject": "juniper", "similarity": 0.61, "state": "probable", "detect_confidence": 0.95},
+        ]
+    )
+    hint = identity_hint_from_artifact(art)
+    assert hint == {"subject": "juniper", "state": "probable", "similarity": 0.61}
+
+
+def test_identity_hint_none_when_only_unsure():
+    art = _identity_artifact(
+        [{"subject": "unknown", "similarity": 0.1, "state": "unsure", "detect_confidence": 0.9}]
+    )
+    assert identity_hint_from_artifact(art) is None
+
+
+def test_identity_hint_none_when_no_candidates():
+    art = _identity_artifact([])
+    assert identity_hint_from_artifact(art) is None
+
+
+def test_identity_hint_none_when_not_enrolled():
+    art = _artifact(
+        task_type="identity_face",
+        outputs=VisionArtifactOutputs(
+            objects=[],
+            identities={"candidates": [], "enrolled_subject": "juniper", "gallery_enrolled": False},
+        ),
+    )
+    assert identity_hint_from_artifact(art) is None
+
+
+def test_identity_hint_none_for_non_identity_artifact():
+    """A plain retina_fast artifact has no `identities` key at all -- must
+    not raise, must not fabricate a hint."""
+    art = _artifact(task_type="retina_fast")
+    assert identity_hint_from_artifact(art) is None
 
 
 def test_artifact_uris_caps():

@@ -47,6 +47,27 @@ global:
 streams:
   cam0:
     enabled: true
+    # Opt-in identity_face secondary dispatch (2026-08-26, docs/superpowers/
+    # specs/2026-08-21-...-design.md section 4/6.1) -- deliberately NOT in
+    # defaults.triggered above. This fully overrides defaults.triggered
+    # (resolve_stream_policy's shallow merge replaces the whole `triggered`
+    # key, not a per-field merge), so it repeats defaults.triggered's other
+    # fields rather than silently losing them. cam0 is the interior room
+    # camera; carbon (Juniper's laptop webcam) and every other camera stay
+    # opted out by default -- see policy.py's decide_identity docstring for
+    # why a global default would be wrong here.
+    triggered:
+      task_type: retina_fast
+      trigger_labels: [person]
+      trigger_ttl_seconds: 8
+      min_seconds_between_tasks_per_camera: 2
+      max_inflight_per_camera: 1
+      request:
+        want_caption: true
+        want_embeddings: true
+      identity_dispatch:
+        enabled: true
+        min_seconds_between_dispatch: 30
 
 cameras:
   mock-cam-01:

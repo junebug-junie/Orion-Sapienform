@@ -8,7 +8,12 @@ pyyaml==6.0.2
 loguru==0.7.2
 
 numpy==1.26.4
-pillow==10.4.0
+# 10.4.0 -> 10.2.0 (2026-08-26): facenet-pytorch==2.6.0 hard-pins
+# Pillow<10.3.0,>=10.2.0 (confirmed live -- the actual Docker build failed
+# with ResolutionImpossible at 10.4.0, not a guessed constraint). 10.2.0 is
+# the top of that allowed range. No other pin in this file touches Pillow;
+# checked no other requirement here needs >=10.3 either.
+pillow==10.2.0
 opencv-python-headless==4.10.0.84
 
 # 4.44.2 predates Qwen2-VL support (landed in transformers 4.45.0) --
@@ -52,6 +57,13 @@ protobuf==5.28.2
 timm==1.0.9
 einops==0.8.0
 scipy==1.11.4
+
+# identity_face (2026-08-25): MTCNN (detect+align) + InceptionResnetV1
+# (VGGFace2-pretrained, 512-dim embeddings) -- small, pure-torch, no
+# separate ONNX runtime. Live-verified: real face detection (99.99% prob)
+# and self-match (cosine similarity 1.0) on a real photo, mechanics
+# confirmed working end to end before shipping.
+facenet-pytorch==2.6.0
 
 # VRAM-aware GPU selection
 nvidia-ml-py==12.535.161

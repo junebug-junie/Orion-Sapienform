@@ -113,13 +113,19 @@ def compute_levels_from_pcm(pcm: bytes) -> tuple[float, int]:
 
 
 def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
-    """Write JSON atomically via temp file + rename in the destination dir."""
+    """Write JSON atomically via temp file + rename in the destination dir.
+
+    Mode is forced to ``0o644`` so Docker/biometrics (and any other reader of
+    the ro bind) can open the snapshot even when the host umask would leave a
+    ``0600`` file owned by the systemd service user.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", suffix=".json", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w") as fh:
             json.dump(data, fh, indent=2, sort_keys=True)
             fh.write("\n")
+        os.chmod(tmp_path, 0o644)
         os.replace(tmp_path, path)
     except BaseException:
         try:

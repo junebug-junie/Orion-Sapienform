@@ -171,10 +171,12 @@ def test_atomic_write_json_uses_replace(tmp_path: Path):
     atomic_write_json(dest, {"schema": AMBIENT_AUDIO_SCHEMA_V1, "rms": 1.0, "peak": 2})
     data = json.loads(dest.read_text())
     assert data["rms"] == 1.0
+    assert (dest.stat().st_mode & 0o777) == 0o644
 
     atomic_write_json(dest, {"schema": AMBIENT_AUDIO_SCHEMA_V1, "rms": 3.0, "peak": 4})
     data = json.loads(dest.read_text())
     assert data["rms"] == 3.0
+    assert (dest.stat().st_mode & 0o777) == 0o644
     assert list(tmp_path.glob(".tmp-*")) == []
 
 

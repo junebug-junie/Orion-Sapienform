@@ -33,6 +33,40 @@ from .settings import Settings
 
 settings = Settings()
 
+# Task types excluded from the general CHANNEL_VISIONHOST_PUB broadcast
+# (review finding, 2026-08-25/26). That channel has more real consumers
+# than any one file enumerates -- this suppression works by never
+# publishing in the first place, so it protects every one of them, known
+# or not, rather than requiring an accurate consumer inventory. See the
+# design doc's own section 6.5: identity-bearing data needs a retention
+# policy that ships WITH this feature, not after.
+_TASK_TYPES_EXCLUDED_FROM_BROADCAST = frozenset({"identity_face"})
+
+
+def should_broadcast_artifact(task_type: str, payload: Optional[VisionArtifactPayload] = None) -> bool:
+    """False suppresses the broadcast on EITHER of two independent checks:
+
+    1. ``task_type`` is directly excluded (the identity_face RPC/HTTP call
+       itself).
+    2. The artifact's own ``outputs`` carries an ``identities`` field
+       (review finding, 2026-08-26, second pass: a task_type-only check is
+       bypassable by a config-only change -- adding `- use: identity_face`
+       as a step in ANY pipeline in config/vision_profiles.yaml. runner.py's
+       `_run_pipeline` merges every step's dict output with zero content
+       filtering, and `artifacts.py`'s generic passthrough
+       (`setattr(outputs, k, v)` for any unreserved key) attaches
+       `identities` onto the merged artifact regardless of the outer
+       pipeline's own task_type name. Checking the artifact's real content,
+       not just the caller-supplied task_type string, closes that gap
+       structurally instead of hoping nobody ever adds that pipeline step.
+    """
+    if task_type in _TASK_TYPES_EXCLUDED_FROM_BROADCAST:
+        return False
+    if payload is not None and getattr(payload.outputs, "identities", None) is not None:
+        return False
+    return True
+
+
 class VisionHostService:
     def __init__(self):
         self.bus: Optional[OrionBusAsync] = None
@@ -422,7 +456,12 @@ class VisionHostService:
         reply_channel = source_envelope.reply_to or f"{settings.CHANNEL_VISIONHOST_REPLY_PREFIX}:{res.corr_id}"
         await self.bus.publish(reply_channel, reply_envelope)
 
-        if res.ok and artifact_payload and settings.VISION_ARTIFACT_BROADCAST_ENABLED:
+        if (
+            res.ok
+            and artifact_payload
+            and settings.VISION_ARTIFACT_BROADCAST_ENABLED
+            and should_broadcast_artifact(res.task_type, artifact_payload)
+        ):
              await self._publish_artifact_broadcast(artifact_payload, source_envelope)
 
     def _create_artifact_payload(self, res: VisionResult, source_envelope: BaseEnvelope) -> Optional[VisionArtifactPayload]:
@@ -555,7 +594,10 @@ async def http_task(payload: Dict[str, Any]):
     try:
         res: VisionResult = await service.run_vision_task(task)
 
-        # Also broadcast artifact if success
+        # Also broadcast artifact if success -- same should_broadcast_artifact
+        # guard as the bus-first path in _publish_result (found live while
+        # verifying that fix, 2026-08-26: this HTTP entrypoint has its own,
+        # separate _publish_artifact_broadcast call that bypassed it entirely).
         if res.ok and res.artifacts and service.bus:
              # Create dummy source envelope
              dummy_env = BaseEnvelope(
@@ -566,7 +608,10 @@ async def http_task(payload: Dict[str, Any]):
              )
              # Reuse creation logic
              art_payload = service._create_artifact_payload(res, dummy_env)
-             if art_payload:
+             # Built BEFORE the broadcast decision (not after, as this used
+             # to be structured) so should_broadcast_artifact can inspect
+             # its real content, not just the caller-supplied task_type.
+             if art_payload and should_broadcast_artifact(res.task_type, art_payload):
                  await service._publish_artifact_broadcast(art_payload, dummy_env)
 
         return res.model_dump()

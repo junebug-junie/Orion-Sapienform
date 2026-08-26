@@ -38,32 +38,64 @@ PY
 echo "== biometrics health =="
 curl -fsS "${BIO_URL}/health" | "${PY}" -c 'import json,sys; print(json.load(sys.stdin))'
 
-echo "== biometrics recent ambient sample =="
-curl -fsS "${BIO_URL}/raw/recent?limit=20" | "${PY}" -c '
-import json, sys
-items = json.load(sys.stdin).get("items", [])
-for item in items:
-    audio = (item.get("sample") or {}).get("ambient_audio")
-    if audio is not None:
-        assert "rms" in audio and "peak" in audio, audio
-        print("OK sample.ambient_audio present:", audio)
-        break
-else:
-    raise SystemExit("FAIL: no recent sample.ambient_audio; check reader and bind mount")
-'
+# Biometrics ticks every TELEMETRY_INTERVAL (default 30s). A fresh host
+# snapshot can exist for almost a full interval before the next sample
+# publish — wait rather than false-failing on the first empty ring buffer.
+WAIT_SEC="${BIOMETRICS_AMBIENT_WAIT_SEC:-75}"
 
-echo "== biometrics ambient summary pressure =="
-curl -fsS "${BIO_URL}/snapshot" | "${PY}" -c '
-import json, sys
-nodes = json.load(sys.stdin).get("nodes", {})
-for node_id, node in nodes.items():
-    pressures = ((node or {}).get("summary") or {}).get("pressures", {})
-    if "cabinet_ambient_audio_activity" in pressures:
-        print(f"OK {node_id} ambient activity pressure={pressures['"'"'cabinet_ambient_audio_activity'"'"']}")
-        break
-else:
-    raise SystemExit("FAIL: no cabinet_ambient_audio_activity in live node summaries")
-'
+echo "== biometrics recent ambient sample (wait up to ${WAIT_SEC}s) =="
+BIO_URL="${BIO_URL}" WAIT_SEC="${WAIT_SEC}" "${PY}" - <<'PY'
+import json
+import os
+import sys
+import time
+from urllib.request import urlopen
+
+base = os.environ["BIO_URL"].rstrip("/")
+deadline = time.monotonic() + float(os.environ["WAIT_SEC"])
+last_err = "no recent sample.ambient_audio"
+while time.monotonic() < deadline:
+    with urlopen(f"{base}/raw/recent?limit=20", timeout=5) as resp:
+        items = json.load(resp).get("items", [])
+    for item in items:
+        audio = (item.get("sample") or {}).get("ambient_audio")
+        if audio is not None:
+            assert "rms" in audio and "peak" in audio, audio
+            print("OK sample.ambient_audio present:", audio)
+            raise SystemExit(0)
+    last_err = (
+        "no recent sample.ambient_audio; check reader, bind mount, and that "
+        "orion-biometrics has ticked since the snapshot appeared"
+    )
+    time.sleep(2.0)
+raise SystemExit(f"FAIL: {last_err}")
+PY
+
+echo "== biometrics ambient summary pressure (wait up to ${WAIT_SEC}s) =="
+BIO_URL="${BIO_URL}" WAIT_SEC="${WAIT_SEC}" "${PY}" - <<'PY'
+import json
+import os
+import sys
+import time
+from urllib.request import urlopen
+
+base = os.environ["BIO_URL"].rstrip("/")
+deadline = time.monotonic() + float(os.environ["WAIT_SEC"])
+last_err = "no cabinet_ambient_audio_activity in live node summaries"
+while time.monotonic() < deadline:
+    with urlopen(f"{base}/snapshot", timeout=5) as resp:
+        nodes = json.load(resp).get("nodes", {})
+    for node_id, node in nodes.items():
+        pressures = ((node or {}).get("summary") or {}).get("pressures", {})
+        if "cabinet_ambient_audio_activity" in pressures:
+            print(
+                f"OK {node_id} ambient activity "
+                f"pressure={pressures['cabinet_ambient_audio_activity']}"
+            )
+            raise SystemExit(0)
+    time.sleep(2.0)
+raise SystemExit(f"FAIL: {last_err}")
+PY
 
 echo "== live ambient grammar publication =="
 "${PY}" - <<'PY' "${BIO_URL}"

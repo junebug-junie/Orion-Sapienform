@@ -5,6 +5,23 @@ services:
       dockerfile: services/orion-whisper-tts/Dockerfile
     container_name: ${PROJECT}-whisper-tts
     restart: unless-stopped
+    # Review finding, 2026-08-26: cuda_watchdog's restart_process() sends
+    # SIGTERM specifically so this service's own shutdown() handler can run
+    # cleanly (cancel background tasks, close the bus) before the process
+    # exits -- that claim was undefended without this. Docker's own default
+    # stop_grace_period is 10s; a synth request in flight
+    # (WHISPER_TTS_SYNTH_TIMEOUT_SEC default 120s) or an STT request
+    # (WHISPER_TTS_STT_TIMEOUT_SEC default 90s) would still be running well
+    # past that, so Docker would SIGKILL before shutdown() ever got to run --
+    # silently defeating the whole reason SIGTERM was chosen over
+    # os._exit(). Sized comfortably above the longer of the two timeouts.
+    stop_grace_period: 150s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7800/health"]
+      start_period: 15s
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - app-net
 
@@ -45,6 +62,18 @@ services:
       - WHISPER_TTS_STT_TIMEOUT_SEC=${WHISPER_TTS_STT_TIMEOUT_SEC:-90}
       - WHISPER_TTS_SYNTH_TIMEOUT_SEC=${WHISPER_TTS_SYNTH_TIMEOUT_SEC:-120}
       - STT_NEAR_SILENT_PEAK_INT16=${STT_NEAR_SILENT_PEAK_INT16:-50}
+
+      # CUDA_WATCHDOG_* (app/cuda_watchdog.py) intentionally NOT listed here.
+      # `env_file: .env` above already delivers every .env_example key
+      # regardless of this allowlist -- adding an explicit
+      # `${VAR:-default}` entry here would interpolate its default from
+      # THIS COMPOSE INVOCATION's env-file context (typically the repo-root
+      # .env), not from this service's own .env, so an operator override in
+      # the service .env could be silently reverted to the default the
+      # moment compose is invoked with a narrower --env-file set. Confirmed
+      # this exact failure mode on a different service's kill switch during
+      # review of PR #1881 (2026-08-26) -- same trap, left out here on
+      # purpose rather than repeated.
 
       # GPU visibility
       #- CUDA_VISIBLE_DEVICES=${GPU_INDEX}

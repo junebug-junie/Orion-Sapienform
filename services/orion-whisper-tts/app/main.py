@@ -18,6 +18,7 @@ from orion.schemas.telemetry.system_health import SystemHealthV1
 from .settings import settings
 from .tts_worker import listener_worker
 from .stt_worker import stt_listener_worker
+from .cuda_watchdog import cuda_watchdog_loop, restart_process
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +33,7 @@ bus: Optional[OrionBusAsync] = None
 listener_task: Optional[asyncio.Task] = None
 stt_task: Optional[asyncio.Task] = None
 heartbeat_task: Optional[asyncio.Task] = None
+cuda_watchdog_task: Optional[asyncio.Task] = None
 
 # Generate a unique Boot ID for this process instance
 BOOT_ID = str(uuid.uuid4())
@@ -86,7 +88,7 @@ async def heartbeat_loop(bus_instance: OrionBusAsync):
 
 @app.on_event("startup")
 async def startup() -> None:
-    global bus, listener_task, stt_task, heartbeat_task
+    global bus, listener_task, stt_task, heartbeat_task, cuda_watchdog_task
     logger.info(
         "Starting Whisper/TTS service %s v%s",
         settings.service_name,
@@ -102,6 +104,31 @@ async def startup() -> None:
         settings.tts_default_speaker_wav or "(none)",
     )
 
+    gpu_expected = settings.tts_use_gpu
+
+    # Advisory ONLY -- logs loud, never raises. Review finding, 2026-08-26:
+    # an earlier version of this patch let _require_cuda_or_die() raise here,
+    # which crashed the ENTIRE process -- bus, listener_task, stt_task, all
+    # of it -- before any of them started. STT (openai-whisper) does not
+    # need CUDA at all (stt.py falls back to CPU); the whole point of the
+    # incident this patch closes is that STT survived a CUDA staleness event
+    # that killed TTS. A hard crash-at-boot took away exactly the resilience
+    # this closes on. Boot with CUDA already broken must degrade the same
+    # way a break mid-uptime does -- loud logs, bus/STT keep running -- not
+    # worse.
+    #
+    # Enforcement (actually acting on a real GPU failure) is the
+    # cuda_watchdog's job alone, below -- ONE mechanism for both "broken at
+    # boot" and "broken mid-uptime" rather than two that can drift out of
+    # sync. A boot-broken GPU fails its first watchdog check almost
+    # immediately (poll_sec after boot) and restarts on the configured
+    # threshold, same as any other detected staleness.
+    if gpu_expected:
+        try:
+            _require_cuda_or_die()
+        except RuntimeError as exc:
+            logger.critical("[WHISPER-TTS] cuda_unavailable_at_boot %s", exc)
+
     bus = OrionBusAsync(
         url=settings.orion_bus_url,
         enabled=settings.orion_bus_enabled,
@@ -112,33 +139,34 @@ async def startup() -> None:
     listener_task = asyncio.create_task(listener_worker(bus))
     stt_task = asyncio.create_task(stt_listener_worker(bus))
     heartbeat_task = asyncio.create_task(heartbeat_loop(bus))
+    if gpu_expected and settings.cuda_watchdog_enabled:
+        cuda_watchdog_task = asyncio.create_task(
+            cuda_watchdog_loop(
+                poll_sec=settings.cuda_watchdog_poll_sec,
+                failure_threshold=settings.cuda_watchdog_failure_threshold,
+                is_cuda_available=torch.cuda.is_available,
+                on_trigger=restart_process,
+            )
+        )
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global bus, listener_task, stt_task, heartbeat_task
+    global bus, listener_task, stt_task, heartbeat_task, cuda_watchdog_task
     logger.info("Shutting down Whisper/TTS service...")
 
-    if listener_task:
-        listener_task.cancel()
-        try:
-            await listener_task
-        except asyncio.CancelledError:
-            pass
-
-    if stt_task:
-        stt_task.cancel()
-        try:
-            await stt_task
-        except asyncio.CancelledError:
-            pass
-
-    if heartbeat_task:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
+    # Review finding, 2026-08-26: these were four hand-copied cancel/await/
+    # except blocks (three pre-dating this patch, one added by it) that
+    # could drift independently -- a 5th background task added later means
+    # another hand-applied copy, easy to apply to some sites and silently
+    # miss one. One helper, applied uniformly to all four.
+    for task in (listener_task, stt_task, cuda_watchdog_task, heartbeat_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     if bus:
         await bus.close()
@@ -146,6 +174,19 @@ async def shutdown() -> None:
 
 @app.get("/health")
 async def health():
+    # Review finding, 2026-08-26: neither /health nor the heartbeat's own
+    # bus publish reflected CUDA state at all -- for the full poll_sec *
+    # failure_threshold window before a restart, both kept reporting
+    # "status: ok" while the watchdog was silently counting toward one.
+    # A fresh, direct read here (not the watchdog's own internal counter,
+    # which stays private to that loop) gives an operator or monitor
+    # polling /health real-time visibility without waiting on a log line.
+    cuda_status = None
+    if settings.tts_use_gpu:
+        try:
+            cuda_status = bool(torch.cuda.is_available())
+        except Exception:
+            cuda_status = False
     return JSONResponse(
         {
             "status": "ok",
@@ -153,5 +194,9 @@ async def health():
             "version": settings.service_version,
             "boot_id": BOOT_ID,
             "bus": "connected" if (bus and bus.redis) else "disconnected",
+            "cuda_available": cuda_status,
+            "cuda_watchdog_enabled": bool(
+                settings.tts_use_gpu and settings.cuda_watchdog_enabled
+            ),
         }
     )

@@ -85,6 +85,9 @@ class _FakeConn:
     def execute(self, stmt, params=None):
         sql = str(stmt)
         self.queries.append(sql)
+        if "count(*)" in sql.lower() and "reverie_visual_chain" in sql:
+            rows = self.table_rows.get("reverie_visual_chain", [])
+            return _FakeResult([{"total": len(rows)}])
         if "FROM reverie_visual_chain" in sql:
             return _FakeResult(self.table_rows.get("reverie_visual_chain", []))
         if "FROM reverie_visual_artifact" in sql and "sha256 =" in sql:
@@ -166,6 +169,105 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
     assert len(chain["artifacts"]) == 1
     assert chain["artifacts"][0]["sha256"] == "a" * 64
     assert chain["artifacts"][0]["image_url"] == f"/api/reverie/visual/image/{'a' * 64}"
+
+
+def test_visual_recent_has_more_true_when_extra_row_fetched(client, monkeypatch):
+    """_fetch_visual_recent asks for limit+1 rows and reports has_more from
+    whether that extra row showed up (the standard cursor-pagination trick,
+    avoiding a second COUNT(*) round trip). The fake conn returns all stored
+    rows regardless of the real WHERE/LIMIT clause, so what this test
+    actually pins is the trim-and-flag *logic* in Python: 3 stored rows,
+    limit=2 -> has_more True and exactly 2 chains returned, not 3."""
+    _set_tables(
+        monkeypatch,
+        reverie_visual_chain=[
+            {
+                "chain_id": f"c{i}",
+                "created_at": NOW,
+                "theme_key": None,
+                "terminal_reason": "max_steps",
+                "ema_salience": 0.0,
+                "prior_description": None,
+                "chain_json": {"prompt": "p"},
+            }
+            for i in range(3)
+        ],
+        reverie_visual_artifact=[],
+    )
+    resp = client.get("/api/reverie/visual/recent?limit=2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["chains"]) == 2
+    assert body["has_more"] is True
+    assert body["limit"] == 2
+    assert body["next_before"] == body["chains"][-1]["created_at"]
+
+
+def test_visual_recent_has_more_false_when_exactly_limit_rows(client, monkeypatch):
+    _set_tables(
+        monkeypatch,
+        reverie_visual_chain=[
+            {
+                "chain_id": "c0",
+                "created_at": NOW,
+                "theme_key": None,
+                "terminal_reason": "max_steps",
+                "ema_salience": 0.0,
+                "prior_description": None,
+                "chain_json": {"prompt": "p"},
+            }
+        ],
+        reverie_visual_artifact=[],
+    )
+    resp = client.get("/api/reverie/visual/recent?limit=5")
+    body = resp.json()
+    assert len(body["chains"]) == 1
+    assert body["has_more"] is False
+
+
+def test_visual_recent_accepts_before_cursor(client, monkeypatch):
+    """The `before` query param must parse as a real datetime and reach the
+    fetch function without erroring -- regression coverage for the
+    OFFSET -> cursor pagination switch. Uses `params=` (proper query-string
+    encoding) rather than string-interpolating the ISO timestamp directly --
+    an unencoded `+00:00` UTC offset decodes as a literal space in a raw
+    query string, which is exactly why the real JS client always wraps this
+    value in encodeURIComponent()."""
+    _set_tables(monkeypatch, reverie_visual_chain=[], reverie_visual_artifact=[])
+    resp = client.get("/api/reverie/visual/recent", params={"before": NOW.isoformat()})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chains"] == []
+    assert body["next_before"] is None
+
+
+def test_visual_recent_rejects_malformed_before(client):
+    resp = client.get("/api/reverie/visual/recent?before=not-a-timestamp")
+    assert resp.status_code == 422
+
+
+def test_visual_recent_surfaces_generation_error(client, monkeypatch):
+    """A generation_failed chain's chain_json carries "error", not
+    "artifact_sha256"/"description" -- the cockpit needs this to explain why
+    a run produced no image instead of rendering an unexplained empty card."""
+    _set_tables(
+        monkeypatch,
+        reverie_visual_chain=[
+            {
+                "chain_id": "c-err",
+                "created_at": NOW,
+                "theme_key": None,
+                "terminal_reason": "generation_failed",
+                "ema_salience": 0.0,
+                "prior_description": None,
+                "chain_json": {"prompt": "x", "error": "diffusion-host /generate returned HTTP 429"},
+            }
+        ],
+        reverie_visual_artifact=[],
+    )
+    resp = client.get("/api/reverie/visual/recent")
+    chain = resp.json()["chains"][0]
+    assert chain["error"] == "diffusion-host /generate returned HTTP 429"
 
 
 def test_visual_recent_chain_with_no_artifact_yet(client, monkeypatch):

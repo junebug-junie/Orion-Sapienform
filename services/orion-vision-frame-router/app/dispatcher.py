@@ -112,29 +112,48 @@ class FrameDispatcher:
             self.metrics.last_error = f"reply_handler_error: {exc}"
 
     async def _handle_reply_envelope_inner(self, env: BaseEnvelope) -> None:
-        try:
-            result = VisionTaskResultPayload.model_validate(env.payload)
-        except Exception as exc:
-            self.metrics.last_error = f"invalid_reply_payload: {exc}"
-            return
-
+        # Ownership (clear_pending, needs only env.correlation_id) is checked
+        # before the full VisionTaskResultPayload.model_validate -- narrows
+        # typed-object construction and trigger-label extraction to corr_ids
+        # this router actually dispatched, instead of running that for every
+        # reply on the orion:vision:reply:* wildcard pattern. See README.md's
+        # "Wildcard reply-channel fan-out" section for what this does and
+        # does not close, and test_reply_for_unowned_correlation_id_never_
+        # deserializes_payload / test_owned_reply_with_malformed_payload_is_
+        # not_counted_as_a_valid_reply below for the two behaviors it locks
+        # in. clear_pending itself still needs the lock (mutates self.state,
+        # shared with _handle_frame_envelope_inner); model_validate and the
+        # pure label/stream_id helpers do not, so they run lock-free.
         corr = str(env.correlation_id)
         async with self._state_lock:
             cleared = self.state.clear_pending(corr, now=time.time())
-            if not cleared:
-                return
-            self.metrics.host_replies_total += 1
-            if not result.ok:
-                self.metrics.host_errors_total += 1
-                return
+        if not cleared:
+            return
 
-            allowed = set(self.policy.default_trigger_labels())
-            labels = extract_host_trigger_labels(result, allowed=allowed)
-            stream_id = stream_id_from_host_result(result, fallback_stream_id=cleared.stream_id)
-            if labels and stream_id:
+        try:
+            result = VisionTaskResultPayload.model_validate(env.payload)
+        except Exception as exc:
+            # Owned corr_id, malformed payload: count as an error, not a
+            # silently-dropped timeout and not a valid reply -- the pending
+            # slot is already cleared above (no reason to hold it open for
+            # sweep_timeouts when vision-host demonstrably did respond).
+            self.metrics.last_error = f"invalid_reply_payload: {exc}"
+            self.metrics.host_errors_total += 1
+            return
+
+        self.metrics.host_replies_total += 1
+        if not result.ok:
+            self.metrics.host_errors_total += 1
+            return
+
+        allowed = set(self.policy.default_trigger_labels())
+        labels = extract_host_trigger_labels(result, allowed=allowed)
+        stream_id = stream_id_from_host_result(result, fallback_stream_id=cleared.stream_id)
+        if labels and stream_id:
+            async with self._state_lock:
                 self.state.record_activity(stream_id, labels, now=time.time())
-                self.metrics.host_trigger_updates_total += 1
-                logger.info("[ROUTER] host_trigger stream={} labels={}", stream_id, labels)
+            self.metrics.host_trigger_updates_total += 1
+            logger.info("[ROUTER] host_trigger stream={} labels={}", stream_id, labels)
 
     async def sweep_timeouts(self, *, now: float) -> int:
         async with self._state_lock:

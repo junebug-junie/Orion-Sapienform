@@ -107,6 +107,19 @@ def _frame_env(
     )
 
 
+def _reply_env(*, correlation_id: object, payload: dict | None = None) -> BaseEnvelope:
+    return BaseEnvelope(
+        kind="vision.task.result",
+        source=ServiceRef(name="vision-host", version="0.1.0"),
+        correlation_id=correlation_id,
+        payload=(
+            payload
+            if payload is not None
+            else VisionTaskResultPayload(ok=True, task_type="retina_fast").model_dump(mode="json")
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_valid_frame_publishes_host_task(policy_path: Path) -> None:
     dispatcher, bus, settings = _make_dispatcher(policy_path)
@@ -160,13 +173,7 @@ async def test_reply_clears_pending(policy_path: Path) -> None:
     corr = uuid4()
     await dispatcher.handle_frame_envelope(_frame_env(correlation_id=corr))
     assert dispatcher.state.inflight_total() == 1
-    reply = BaseEnvelope(
-        kind="vision.task.result",
-        source=ServiceRef(name="vision-host", version="0.1.0"),
-        correlation_id=corr,
-        payload=VisionTaskResultPayload(ok=True, task_type="retina_fast").model_dump(mode="json"),
-    )
-    await dispatcher.handle_reply_envelope(reply)
+    await dispatcher.handle_reply_envelope(_reply_env(correlation_id=corr))
     assert dispatcher.state.inflight_total() == 0
     assert dispatcher.metrics.host_replies_total == 1
 
@@ -188,16 +195,48 @@ async def test_reply_before_timeout_does_not_count_timeout(policy_path: Path) ->
     dispatcher, _, settings = _make_dispatcher(policy_path)
     corr = uuid4()
     await dispatcher.handle_frame_envelope(_frame_env(correlation_id=corr))
-    reply = BaseEnvelope(
-        kind="vision.task.result",
-        source=ServiceRef(name="vision-host", version="0.1.0"),
-        correlation_id=corr,
-        payload=VisionTaskResultPayload(ok=True, task_type="retina_fast").model_dump(mode="json"),
-    )
-    await dispatcher.handle_reply_envelope(reply)
+    await dispatcher.handle_reply_envelope(_reply_env(correlation_id=corr))
     cleared = await dispatcher.sweep_timeouts(now=time.time() + settings.TASK_TIMEOUT_SECONDS + 1)
     assert cleared == 0
     assert dispatcher.metrics.host_timeouts_total == 0
+
+
+@pytest.mark.asyncio
+async def test_reply_for_unowned_correlation_id_never_deserializes_payload(policy_path: Path) -> None:
+    """Ownership (clear_pending) must gate model_validate, not follow it --
+    an unowned corr_id's payload (an invalid one here) must be discarded
+    before any parse attempt, so last_error stays untouched."""
+    dispatcher, _, _ = _make_dispatcher(policy_path)
+    reply = _reply_env(
+        correlation_id=uuid4(),  # never dispatched by this router
+        payload={"ok": "not-a-bool", "task_type": "identity_face"},
+    )
+    await dispatcher.handle_reply_envelope(reply)
+    assert dispatcher.metrics.last_error is None
+    assert dispatcher.metrics.host_replies_total == 0
+
+
+@pytest.mark.asyncio
+async def test_owned_reply_with_malformed_payload_is_not_counted_as_a_valid_reply(
+    policy_path: Path,
+) -> None:
+    """Regression for the ownership-before-parse reorder itself: an OWNED
+    corr_id whose payload fails model_validate must surface as an error
+    (last_error set, host_errors_total incremented), never silently as a
+    successful reply (host_replies_total unchanged) -- the pending slot is
+    still freed immediately rather than left for sweep_timeouts, since
+    vision-host demonstrably did respond."""
+    dispatcher, _, _ = _make_dispatcher(policy_path)
+    corr = uuid4()
+    await dispatcher.handle_frame_envelope(_frame_env(correlation_id=corr))
+    assert dispatcher.state.inflight_total() == 1
+    reply = _reply_env(correlation_id=corr, payload={"ok": "not-a-bool", "task_type": "retina_fast"})
+    await dispatcher.handle_reply_envelope(reply)
+    assert dispatcher.state.inflight_total() == 0
+    assert dispatcher.metrics.last_error is not None
+    assert "invalid_reply_payload" in dispatcher.metrics.last_error
+    assert dispatcher.metrics.host_replies_total == 0
+    assert dispatcher.metrics.host_errors_total == 1
 
 
 @pytest.mark.asyncio

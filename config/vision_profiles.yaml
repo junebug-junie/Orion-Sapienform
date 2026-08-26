@@ -434,13 +434,21 @@ profiles:
   #      room's own (empty at the time) ceiling-camera frame correctly
   #      returned zero candidates (no_face_detected), not a false positive.
   #      Both directions verified with real data, not assumed.
-  #   2. orion-vision-frame-router (and any orion:vision:reply:* wildcard
-  #      subscriber) still fully Pydantic-deserializes every identity_face
-  #      reply before checking relevance, then discards it -- real,
-  #      transient (never logged/persisted/forwarded), NOT closed by this
-  #      patch. Accepted as a known, documented residual exposure rather
-  #      than blocking on it -- Juniper's own call to make, not mine to
-  #      keep gating on.
+  #   2. orion-vision-frame-router fully Pydantic-deserialized every
+  #      identity_face reply before checking relevance, then discarded it --
+  #      real, transient (never logged/persisted/forwarded), initially
+  #      shipped as an accepted-not-fixed residual exposure. Narrowed same-
+  #      day (Juniper: "you need to sort hte wildcard?"): dispatcher.py's
+  #      clear_pending() check only needs env.correlation_id, so it now
+  #      gates the full model_validate instead of following it -- typed
+  #      deserialization and label extraction now confined to corr_ids
+  #      frame-router actually dispatched. NOT fully closed: main.py's bus
+  #      codec already JSON-decodes every wildcard message's raw payload
+  #      before dispatch is even called, so the raw dict is resident in
+  #      memory regardless of ownership -- see
+  #      services/orion-vision-host/README.md's "Wildcard reply-channel
+  #      fan-out" section for the full accounting of what did and did not
+  #      change.
   - name: identity_face
     enabled: true
     warm_on_start: false

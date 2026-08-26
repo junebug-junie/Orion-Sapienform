@@ -231,3 +231,45 @@ the first time: "The image depicts a vast, nebulous sky with a mix of dark
 and light shades..." — against the exact same abstract-cloud-image style
 that BLIP-base could never caption. `DEFAULT_SEED_PROMPT` itself was never
 the problem and is unchanged.
+
+## 14. Patch 3 scope (this changeset, context-seeding)
+
+Closes §8/§12's non-goal: `build_visual_prompt` now takes a second input,
+`context_text`, alongside `prior_description`.
+
+- **Source, deliberately narrow**: `store.load_latest_reverie_interpretation`
+  — the text reverie chain's own most recent, real (non-hollow, non-empty)
+  `SpontaneousThoughtV1.interpretation` from `substrate_reverie_thought`.
+  Not the design doc §1's full "recent activity, chats, dreams" list — this
+  patch ships the one slice that crosses no new privacy boundary (next
+  bullet), and leaves widening the source set as a separate, later change
+  that must redo the privacy check below on its own merits.
+- **Why this slice first**: `interpretation` is already the summary layer
+  the coalition-grounding + hollow guard (`orion/schemas/reverie.py`)
+  produce before a row is ever written, and it already reaches the exact
+  same Hub Reverie tab this feeds (`reverie_routes.py`'s `text_recent`
+  endpoint) — a second consumer of an already-exposed field, not a new
+  exposure. Capped at 240 chars (`store.MAX_REVERIE_CONTEXT_CHARS`) — an LLM
+  narration has no length bound of its own, and the diffusion model only
+  needs a short scene description.
+- **Prompt construction**: continuity (`prior_description`) and the
+  context-seed are independent, blended when both are present, either one
+  alone when only one is, and the fixed seed string only when both are
+  empty (a fresh install with no reverie history yet). Rationale: pure
+  `prior_description`-only continuity is a closed loop with nothing
+  anchoring it to Orion's actual cognitive state — image N+1 dreaming about
+  image N forever, indefinitely, drifts away from anything real. The
+  context-seed re-grounds every run in what Orion is actually narrating.
+- **Traceability**: `context_text` is stored as its own `chain_json` key
+  (both the success and `generation_failed` paths), not just baked into
+  `prompt` prose — the design doc §9 acceptance-check discipline ("same-run
+  evidence, not schema presence") applied to this input too. Surfaced as its
+  own field on `/api/reverie/visual/recent` and rendered as its own block in
+  the Hub Reverie tab, distinct from the blended `prompt` text.
+- **Privacy note revisited** (§7, as required before this patch could ship):
+  see `reverie_routes.py`'s updated privacy-note docstring — no new
+  boundary, same reasoning as the "why this slice first" bullet above.
+- **Non-goals (still)**: raw chat/dream sourcing (§1's full list), any
+  weighting/salience-based selection among multiple candidate context
+  sources, and any downstream consumer of the visual chain's output beyond
+  this Hub tab and the chain's own next-run continuity — all still open.

@@ -141,7 +141,11 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
                 "terminal_reason": "max_steps",
                 "ema_salience": 0.0,
                 "prior_description": "a quiet room",
-                "chain_json": {"prompt": "a quiet room. Continue...", "description": "a quiet room"},
+                "chain_json": {
+                    "prompt": "a quiet room. Orion is currently thinking: curiosity about the mesh.",
+                    "context_text": "curiosity about the mesh",
+                    "description": "a quiet room",
+                },
             }
         ],
         reverie_visual_artifact=[
@@ -165,10 +169,35 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
     assert len(body["chains"]) == 1
     chain = body["chains"][0]
     assert chain["chain_id"] == "c1"
-    assert chain["prompt"] == "a quiet room. Continue..."
+    assert chain["prompt"] == "a quiet room. Orion is currently thinking: curiosity about the mesh."
+    # Patch 3: surfaced as its own field, not just prose inside `prompt`.
+    assert chain["context_text"] == "curiosity about the mesh"
     assert len(chain["artifacts"]) == 1
     assert chain["artifacts"][0]["sha256"] == "a" * 64
     assert chain["artifacts"][0]["image_url"] == f"/api/reverie/visual/image/{'a' * 64}"
+
+
+def test_visual_recent_context_text_absent_is_none_not_a_keyerror(client, monkeypatch):
+    """A chain_json written before Patch 3 has no context_text key at all --
+    `.get()` must degrade to None, never KeyError, on old rows."""
+    _set_tables(
+        monkeypatch,
+        reverie_visual_chain=[
+            {
+                "chain_id": "c1",
+                "created_at": NOW,
+                "theme_key": None,
+                "terminal_reason": "max_steps",
+                "ema_salience": 0.0,
+                "prior_description": "a quiet room",
+                "chain_json": {"prompt": "a quiet room. Continue...", "description": "a quiet room"},
+            }
+        ],
+        reverie_visual_artifact=[],
+    )
+    resp = client.get("/api/reverie/visual/recent")
+    assert resp.status_code == 200
+    assert resp.json()["chains"][0]["context_text"] is None
 
 
 def test_visual_recent_has_more_true_when_extra_row_fetched(client, monkeypatch):

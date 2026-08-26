@@ -9,12 +9,21 @@ description, persist both, and carry that description forward as the next
 run's `prior_description` — a real generate -> observe -> interpret loop
 (design doc §1).
 
-Scope of this patch (design doc §8 non-goals): the mechanical loop and the
-`prior_description` continuity wiring only. What specific recent-activity /
-chat / dream context seeds a run's prompt is Patch 3 -- `build_visual_prompt`
-below is deliberately the thinnest honest placeholder (prior_description, or
-a fixed seed prompt for the very first run), not a fabricated stand-in for
-context-seeding this patch does not own.
+Patch 2 scope (design doc §8 non-goals, shipped 2026-08-25): the mechanical
+loop and the `prior_description` continuity wiring only -- `build_visual_prompt`
+was deliberately the thinnest honest placeholder (prior_description, or a
+fixed seed prompt for the very first run), not a fabricated stand-in for the
+context-seeding that patch did not own.
+
+Patch 3 (this changeset): real context-seeding. `build_visual_prompt` now also
+takes `context_text` -- the text reverie chain's own most recent, real
+(non-hollow) narration (`store.load_latest_reverie_interpretation`), a
+deliberately narrow first slice of the design doc's full "recent activity /
+chat / dream" list (§1): already-summarized content that already reaches the
+same Hub Reverie tab this feeds, so no new privacy surface (see that store
+function's own docstring and reverie_routes.py's privacy note). Widening to
+raw chat/dream sources is a separate, later change that must redo that
+privacy check.
 
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
@@ -71,6 +80,7 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 
 from .settings import settings
 from .store import (
+    load_latest_reverie_interpretation,
     load_latest_visual_chain_prior_description,
     persist_reverie_visual_artifact,
     persist_reverie_visual_chain,
@@ -78,9 +88,10 @@ from .store import (
 
 logger = logging.getLogger("orion-thought.visual_chain")
 
-# First-ever run has no prior_description to continue from. Deliberately
-# small and neutral -- Patch 3 owns real context-seeding (module docstring);
-# this only needs to produce *something* real to generate and observe.
+# Last-resort fallback: no prior_description AND no real reverie-thought
+# interpretation yet exists (a fresh install, before the text chain has
+# written anything). Deliberately small and neutral -- this only needs to
+# produce *something* real to generate and observe.
 DEFAULT_SEED_PROMPT = "a calm orion, soft abstract light, dreaming"
 
 # Defense-in-depth single-flight guard (module docstring). Not the mechanism
@@ -102,12 +113,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_visual_prompt(prior_description: str | None) -> str:
-    """The diffusion prompt for one run. See module docstring for scope."""
+def build_visual_prompt(prior_description: str | None, context_text: str | None = None) -> str:
+    """The diffusion prompt for one run. See module docstring for scope.
+
+    `prior_description` (visual continuity -- the previous run's own
+    re-observed caption) and `context_text` (Patch 3's context-seed --
+    Orion's own most recent real reverie-thought interpretation) are
+    independent inputs: continuity keeps the image chain visually coherent
+    frame-to-frame; context-seeding keeps it grounded in what Orion is
+    actually narrating instead of drifting into purely self-referential
+    imagery with nothing anchoring it to a real cognitive state. Falls back
+    to DEFAULT_SEED_PROMPT only when both are empty.
+    """
     prior = (prior_description or "").strip()
-    if not prior:
-        return DEFAULT_SEED_PROMPT
-    return f"{prior}. Continue this train of imagination, soft dreamlike style."
+    context = (context_text or "").strip()
+    if prior and context:
+        return (
+            f"{prior}. Orion is currently thinking: {context}. "
+            "Continue this train of imagination, soft dreamlike style."
+        )
+    if prior:
+        return f"{prior}. Continue this train of imagination, soft dreamlike style."
+    if context:
+        return f"Orion is currently thinking: {context}. Soft abstract dreamlike style."
+    return DEFAULT_SEED_PROMPT
 
 
 class DiffusionGenerationError(RuntimeError):
@@ -247,14 +276,15 @@ async def run_visual_chain_once(
         return None
 
     async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
-                                  prior_description: str | None) -> ReverieVisualChainV1:
+                                  prior_description: str | None,
+                                  context_text: str | None) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
             created_at=now_fn(),
             terminal_reason="generation_failed",
             prior_description=prior_description,
-            chain_json={"prompt": prompt, "error": str(error)},
+            chain_json={"prompt": prompt, "context_text": context_text, "error": str(error)},
         )
         with suppress(Exception):
             await asyncio.to_thread(persist_reverie_visual_chain, chain)
@@ -263,7 +293,8 @@ async def run_visual_chain_once(
     async with _visual_chain_lock:
         chain_id = str(uuid4())
         prior_description = await asyncio.to_thread(load_latest_visual_chain_prior_description)
-        prompt = build_visual_prompt(prior_description)
+        context_text = await asyncio.to_thread(load_latest_reverie_interpretation)
+        prompt = build_visual_prompt(prior_description, context_text)
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -273,7 +304,7 @@ async def run_visual_chain_once(
                 timeout_sec=settings.visual_chain_diffusion_timeout_sec,
             )
         except Exception as exc:
-            return await _generation_failed(chain_id, exc, prompt, prior_description)
+            return await _generation_failed(chain_id, exc, prompt, prior_description, context_text)
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
         # network round trip) both operate on the same immutable png_bytes
@@ -297,7 +328,9 @@ async def run_visual_chain_once(
         )
 
         if isinstance(store_result, BaseException):
-            return await _generation_failed(chain_id, store_result, prompt, prior_description)
+            return await _generation_failed(
+                chain_id, store_result, prompt, prior_description, context_text
+            )
         stored: StoredVisualArtifact = store_result
 
         description: str | None = None
@@ -326,6 +359,7 @@ async def run_visual_chain_once(
             prior_description=next_prior_description,
             chain_json={
                 "prompt": prompt,
+                "context_text": context_text,
                 "artifact_sha256": stored.sha256,
                 "description": description,
             },

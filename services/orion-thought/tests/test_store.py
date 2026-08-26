@@ -233,3 +233,98 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
     # The bug this guards against: writing model_dump() instead would nest
     # the whole chain (including this same chain_json) one level deeper.
     assert "chain_json" not in written
+
+
+# --- load_latest_reverie_interpretation: Patch 3 context-seed ---------------
+#
+# The hollow/empty filtering itself lives in the SQL WHERE clause (needs a
+# real Postgres to exercise, same as this module's other read-filter
+# functions e.g. load_recent_chain_theme_events's theme_key filter) -- these
+# tests cover the Python-side contract: length cap, empty-row handling, and
+# never-raises, using the same _FakeEngine/_FakeConn pattern as the write
+# test above.
+
+
+def test_load_latest_reverie_interpretation_truncates_to_cap() -> None:
+    store = _fresh_store()
+    long_text = "x" * (store.MAX_REVERIE_CONTEXT_CHARS + 50)
+
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return {"interpretation": long_text}
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        value = store.load_latest_reverie_interpretation()
+    finally:
+        monkeypatch.undo()
+
+    assert value == long_text[: store.MAX_REVERIE_CONTEXT_CHARS]
+    assert len(value) == store.MAX_REVERIE_CONTEXT_CHARS
+
+
+def test_load_latest_reverie_interpretation_none_on_empty_table() -> None:
+    store = _fresh_store()
+
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return None
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_reverie_interpretation() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_reverie_interpretation_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        # Must degrade to None, exactly like an absent prior_description --
+        # never break the visual chain's tick over a DB hiccup.
+        assert store.load_latest_reverie_interpretation() is None
+    finally:
+        monkeypatch.undo()

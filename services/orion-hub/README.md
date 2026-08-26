@@ -1759,8 +1759,9 @@ live telemetry; one fetch on activate, plus a manual Refresh. Backed by
   per `reverie_visual_chain` row: the real generated image (served content-addressed from disk,
   same sniff-and-verify-on-read discipline as `chat_attachments.py`), its caption
   (`reverie_visual_artifact.description`, honestly `null` when re-observation failed or was
-  rejected -- never fabricated), the prompt, and whether it advanced `prior_description` for the
-  next run.
+  rejected -- never fabricated), the context-seed (Patch 3 -- Orion's own most recent real
+  reverie-thought interpretation, `context_text`), the blended prompt, and whether it advanced
+  `prior_description` for the next run.
 - **Text** -- `orion-thought`'s `app/chain.py` (attention-coalition narration). One card per
   `substrate_reverie_chain` row: its `substrate_reverie_thought` interpretations (joined via
   `chain_json.thought_ids`, a plain JSON list -- no FK), and real downstream badges computed from

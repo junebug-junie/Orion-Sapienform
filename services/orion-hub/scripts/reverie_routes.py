@@ -17,8 +17,9 @@ docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
 2. **Visual chain** (`services/orion-thought/app/visual_chain.py`, live
    since 2026-08-25): generate -> store -> caption. One `reverie_visual_chain`
    row per run, `reverie_visual_artifact` rows via a REAL FK on `chain_id`.
-   `prior_description` is the one continuity thread -- nothing downstream of
-   it exists yet (Patch 3 territory, not built).
+   `prior_description` is the continuity thread; `chain_json.context_text`
+   (Patch 3) is the context-seed -- nothing else downstream of either exists
+   yet.
 
 Everything here is a read. No writes, no bus publishes. Blocking SQLAlchemy
 calls are offloaded via `asyncio.to_thread` -- this is a UI-facing endpoint
@@ -43,11 +44,18 @@ must point at the exact same filesystem path as `orion-thought`'s
 enforces this at startup. If they drift, images 404 with "artifact file
 missing on disk" even though the DB rows are fine.
 
-**Privacy note** (design doc §7): visual-chain images are a lossy rendering
-of whatever context fed the prompt. Today that's only `prior_description`
-(a prior caption) or a fixed seed string -- no private chat/dream content
-reaches the prompt yet. This tab must be revisited before Patch 3 (real
-context-seeding) ships, not after.
+**Privacy note** (design doc §7, revisited for Patch 3 as this comment
+required): the prompt now also includes Orion's own reverie-thought
+interpretation (`orion-thought`'s `store.load_latest_reverie_interpretation`)
+as a context-seed. This crosses no NEW privacy boundary: interpretation text
+is the text chain's own narration, already gated by the coalition-grounding +
+hollow guard (`orion/schemas/reverie.py`) before a row is ever written, and
+already surfaced verbatim by this same tab's sibling `text_recent` endpoint
+below -- a second consumer of an already-exposed field, not a new exposure.
+No raw chat/dream content reaches the prompt (still a deliberately narrow
+first slice of design doc §1's full "recent activity, chats, dreams" list) --
+widening the source set further is a separate, later change that must redo
+this same check.
 """
 
 from __future__ import annotations
@@ -232,6 +240,12 @@ async def visual_recent(
                 "ema_salience": c["ema_salience"],
                 "prior_description": c["prior_description"],
                 "prompt": cj.get("prompt"),
+                # Patch 3: surfaced as its own field, not just prose baked into
+                # `prompt` above -- lets the UI show "what Orion was narrating"
+                # distinctly rather than requiring a reader to eyeball it out
+                # of a full sentence (CLAUDE.md §0A: inspectable evidence, not
+                # schema presence).
+                "context_text": cj.get("context_text"),
                 # A failed generation's chain_json carries "error" instead of
                 # "artifact_sha256"/"description" (visual_chain.py's
                 # _generation_failed) -- surfaced so the cockpit can show

@@ -461,6 +461,58 @@ def load_latest_visual_chain_prior_description() -> str | None:
         return None
 
 
+# Cap on the interpretation text handed into a diffusion prompt (§ cap-all-
+# collections) -- SpontaneousThoughtV1.interpretation has no length bound of
+# its own (it's free LLM narration), but the diffusion model only needs a
+# short scene description, not the full text.
+MAX_REVERIE_CONTEXT_CHARS = 240
+
+
+def load_latest_reverie_interpretation() -> str | None:
+    """Most recent real (non-hollow, non-empty) text-chain thought's
+    interpretation -- the visual chain's context-seed (design doc §8: "which
+    specific recent-activity/chat/dream sources feed a step", Patch 3).
+
+    Deliberately the text chain's own narration, not raw chat: it is already
+    the summary layer the coalition-grounding + hollow guard
+    (orion/schemas/reverie.py's `SpontaneousThoughtV1.is_hollow`) produce
+    before a row is ever written, and it already reaches the same Hub
+    Reverie tab this feeds (services/orion-hub/scripts/reverie_routes.py's
+    `text_recent` endpoint) -- no new privacy surface, just a second
+    consumer of an already-exposed field. Widening the source set to raw
+    chat/dream content is a separate, later change that must redo that
+    privacy check, not something this function does.
+
+    Read-only, best-effort: None on any error, empty table, or a table with
+    only hollow/empty rows -- degrades to the fixed seed prompt exactly like
+    an absent prior_description does (visual_chain.build_visual_prompt).
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT interpretation FROM substrate_reverie_thought "
+                        "WHERE interpretation <> '' "
+                        "AND COALESCE((thought_json->>'hollow')::boolean, false) = false "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = str(row.get("interpretation") or "").strip()
+        return value[:MAX_REVERIE_CONTEXT_CHARS] or None
+    except Exception as exc:
+        logger.debug("reverie context-seed load failed: %s", exc)
+        return None
+
+
 def persist_compaction_request(request) -> bool:
     """Enqueue one compaction request (Phase E). Never raises; idempotent."""
     try:

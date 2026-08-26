@@ -249,7 +249,7 @@ with a turn-level budget/circuit-breaker on the caller.
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
 
-## Reverie VISUAL chain (Patch 2)
+## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
@@ -274,12 +274,27 @@ ever read them). One run = one step (`step_index=0` always); the "chain" here
 is the sequence of runs over time, not a multi-step ladder like the text
 chain's — there is no coalition/pressure signal to climb.
 
-**Scope of this patch:** the mechanical loop and the `prior_description`
-wiring only. What specific recent-activity / chat / dream context seeds a
-run's prompt is Patch 3 (design doc §8) — `build_visual_prompt` is
-deliberately the thinnest honest placeholder (`prior_description`, or a fixed
-seed prompt for the very first run), not a fabricated stand-in for
-context-seeding this patch does not own.
+**Patch 2 scope (shipped 2026-08-25):** the mechanical loop and the
+`prior_description` wiring only — `build_visual_prompt` was deliberately the
+thinnest honest placeholder (`prior_description`, or a fixed seed prompt for
+the very first run), not a fabricated stand-in for the context-seeding that
+patch did not own.
+
+**Patch 3 context-seeding (design doc §14):** `build_visual_prompt` now also
+takes `context_text` — the text reverie chain's own most recent, real
+(non-hollow) `substrate_reverie_thought.interpretation`
+(`store.load_latest_reverie_interpretation`, capped at
+`MAX_REVERIE_CONTEXT_CHARS`=240 chars). A deliberately narrow first slice of
+the design doc §1's full "recent activity / chat / dream" list: already-
+summarized content that already reaches the Hub Reverie tab's Text sub-view,
+so no new privacy surface (see that store function's docstring and
+`reverie_routes.py`'s privacy note). Continuity and the context-seed are
+blended when both are present; the fixed seed string is now a true last
+resort, hit only when neither exists yet (a fresh install). `context_text` is
+recorded as its own `chain_json` key (not just baked into `prompt` prose) on
+both the success and `generation_failed` paths, and surfaced as its own field
+in the Hub Reverie tab. Raw chat/dream sourcing remains a separate, later
+change.
 
 **Single-flight, no backlog** (design doc §4 acceptance check): the worker
 loop's own sequential shape (run, then sleep, then run again — same as
@@ -339,7 +354,10 @@ Flags:
 | `ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC` | `60` | Vision-host RPC timeout |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
-percept upload, vision-host RPC, persistence); one test runs two sequential
-calls and asserts the second run's diffusion prompt demonstrably contains the
-first run's persisted description (design doc §9's "same-run evidence, not
-schema presence" acceptance check).
+percept upload, vision-host RPC, reverie context-seed, persistence); one test
+runs two sequential calls and asserts the second run's diffusion prompt
+demonstrably contains the first run's persisted description (design doc §9's
+"same-run evidence, not schema presence" acceptance check), and another
+asserts `context_text` reaches both the prompt and `chain_json`. Direct
+coverage for `load_latest_reverie_interpretation` itself (cap truncation,
+empty-row, never-raises) lives in `tests/test_store.py`.

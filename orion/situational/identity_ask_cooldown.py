@@ -12,25 +12,43 @@ angle) would re-surface on essentially every turn for as long as it lasts,
 since `_build_perception_context` rebuilds the situation brief fresh most
 turns.
 
-Precedent, deliberately reused rather than reinvented: `session_turn_phase.py`
-already had to fix the exact failure class an in-process flag would repeat
-here -- there are FOUR independent `orion-cortex-exec` replicas
+Precedent, mirrored (not code-shared -- see below) from `session_turn_phase.py`,
+which already had to fix the exact failure class an in-process flag would
+repeat here: there are FOUR independent `orion-cortex-exec` replicas
 (`orion-athena-cortex-exec`, `-chat`, `-background`, `-spark`), each with its
 own process memory, and a single conversation can be routed across more than
 one of them. An in-process "already asked" dict would let a different
-replica ask again on the very next turn. This module is the same
-bind-bus-at-startup / Redis-backed shape as `session_turn_phase.py`, just
-simpler: one boolean per stream (not two timestamps), so a single SET-with-
-TTL is the whole write path -- no read-modify-write race to worry about.
+replica ask again on the very next turn. This module uses the same
+bind-bus-at-startup / Redis-backed shape, but is NOT a shared abstraction
+with `session_turn_phase.py` (or `last_tool_fetch_cache.py`, which that
+module itself cites as ITS precedent) -- each is its own small copy with its
+own semantics (that one does two-field read-modify-write with an `.ok`
+flag; this one is a single boolean claim). A shared "namespaced Redis TTL
+flag" helper would be a reasonable follow-up if a fourth copy of this shape
+shows up, not before.
+
+**Single atomic claim, not check-then-set** (review finding, 2026-08-26): an
+earlier version of this module exposed a separate `identity_ask_in_cooldown`
+(GET) and `mark_identity_ask_offered` (SETEX) as two independent round-trips.
+With four concurrent replicas, two could both read "not in cooldown" before
+either had written its mark, asking twice -- exactly the awkward repetition
+this module exists to prevent. `try_claim_identity_ask` below is the single
+atomic `SET key val NX EX ttl` that replaces both: only the caller that
+actually sets the key gets `True` back.
 
 Keyed by camera STREAM, not chat session -- the thing being asked about
 ("do I recognize the person at this camera right now") is a property of the
 camera, not of which typed/spoken surface Juniper happens to be talking
-through.
+through. Also, deliberately, NOT keyed by subject: `identity_face`'s gallery
+is capped at exactly one enrolled subject by contract
+(`config/vision_profiles.yaml`), so "uncertain" only ever means one thing --
+"not confidently Juniper" -- and there is no second subject identity this
+cooldown could wrongly suppress an ask about.
 
-Fail-open toward asking, not toward silence: every read failure here returns
-False (not in cooldown), so a Redis hiccup costs at most one redundant ask,
-never a feature that goes permanently mute because of an infra blip.
+Fail-open toward asking, not toward silence: every read/write failure here
+returns True (claim succeeded, go ahead and ask), so a Redis hiccup costs at
+most one redundant ask, never a feature that goes permanently mute because
+of an infra blip.
 """
 
 from __future__ import annotations
@@ -65,37 +83,30 @@ def _key(stream_id: str) -> str:
     return f"{_KEY_PREFIX}:{stream_id}"
 
 
-async def identity_ask_in_cooldown(stream_id: str) -> bool:
-    """True if Orion has already offered the clarifying question for this
-    stream within the cooldown window and should stay quiet about it now.
+async def try_claim_identity_ask(stream_id: str, *, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> bool:
+    """Atomically claim the "ask about this camera's identity mismatch"
+    slot for `stream_id`. Returns True if THIS call claimed it -- safe to
+    surface the clarifying question now, and the cooldown is already
+    started. Returns False if another call (this replica moments ago, or a
+    different one racing right now) already holds the claim.
 
-    Never raises. Bus unbound or a Redis error both degrade to False (see
+    One `SET key val NX EX ttl` Redis round-trip, not a separate check then
+    a separate write -- see module docstring for why that split let two
+    replicas both ask.
+
+    Never raises. Bus unbound or a Redis error both fail open to True (see
     module docstring for why fail-open points toward asking, not silence).
     """
     bus = _BUS
     if bus is None:
-        logger.warning("identity_ask_cooldown_read_bus_unbound stream_id=%s", stream_id)
-        return False
+        logger.warning("identity_ask_cooldown_claim_bus_unbound stream_id=%s", stream_id)
+        return True
     key = _key(stream_id)
     try:
-        raw = await bus.redis.get(key)
+        claimed = await bus.redis.set(key, "1", nx=True, ex=ttl_seconds)
     except Exception:
-        logger.warning("identity_ask_cooldown_read_failed key=%s redis_error", key, exc_info=True)
-        return False
-    return raw is not None
-
-
-async def mark_identity_ask_offered(stream_id: str, *, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
-    """Best-effort, never raises. Call right after deciding to surface
-    `presence_identity_uncertain=True` for this stream in a turn, so every
-    replica sees the cooldown starting on the very next read."""
-    bus = _BUS
-    if bus is None:
-        logger.warning("identity_ask_cooldown_write_bus_unbound stream_id=%s", stream_id)
-        return
-    key = _key(stream_id)
-    try:
-        await bus.redis.setex(key, ttl_seconds, "1")
-        logger.info("identity_ask_cooldown_write key=%s ttl_seconds=%s", key, ttl_seconds)
-    except Exception:
-        logger.warning("identity_ask_cooldown_write_failed key=%s", key, exc_info=True)
+        logger.warning("identity_ask_cooldown_claim_failed key=%s redis_error", key, exc_info=True)
+        return True
+    result = bool(claimed)
+    logger.info("identity_ask_cooldown_claim key=%s claimed=%s ttl_seconds=%s", key, result, ttl_seconds)
+    return result

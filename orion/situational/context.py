@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
-from .identity_ask_cooldown import identity_ask_in_cooldown, mark_identity_ask_offered
+from .identity_ask_cooldown import try_claim_identity_ask
 from .juniper_affect_state import read_latest_juniper_affect
 from .perception_reader import (
     coarse_duration,
@@ -843,20 +843,23 @@ async def _build_perception_context(
         # believed present right now AND identity_face genuinely did not
         # match (see presence.py's own staleness/stickiness rules -- this is
         # already the freshest, sticky-against-flicker read). The cooldown
-        # check is the only thing standing between that and asking every
+        # claim is the only thing standing between that and asking every
         # single turn for as long as the mismatch persists -- see
         # identity_ask_cooldown.py's module docstring for why an in-process
-        # flag would repeat a bug this codebase already fixed once.
+        # flag would repeat a bug this codebase already fixed once, and why
+        # the claim is a SINGLE atomic call (review finding, 2026-08-26: a
+        # separate check-then-set let two concurrent cortex-exec replicas
+        # both read "not in cooldown" and both ask).
         #
         # No try/except here, matching this function's own established
-        # convention for fetch_presence above: both identity_ask_cooldown
-        # functions are themselves documented "never raises" (fail-open
-        # internally, logging a warning instead) -- double-wrapping an
-        # already-fail-open callee is ceremony this file doesn't otherwise
-        # carry, not extra safety.
-        if presence.get("identity_uncertain") and not await identity_ask_in_cooldown(cfg.perception_stream_id):
+        # convention for fetch_presence above: try_claim_identity_ask is
+        # itself documented "never raises" (fail-open internally, logging a
+        # warning instead) -- double-wrapping an already-fail-open callee is
+        # ceremony this file doesn't otherwise carry, not extra safety.
+        if presence.get("identity_uncertain") and await try_claim_identity_ask(
+            cfg.perception_stream_id, ttl_seconds=cfg.identity_ask_cooldown_seconds
+        ):
             presence_identity_uncertain = True
-            await mark_identity_ask_offered(cfg.perception_stream_id, ttl_seconds=cfg.identity_ask_cooldown_seconds)
 
     return PerceptionContextV1(
         available=True,

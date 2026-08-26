@@ -123,6 +123,24 @@ def test_identity_confidence_uncertain_for_a_real_unmatched_face():
     assert identity_confidence_from_artifact(art) == "uncertain"
 
 
+def test_identity_confidence_confirmed_even_when_an_unsure_face_has_higher_raw_similarity():
+    """Regression, 2026-08-26 review finding: an earlier version picked
+    "best" by raw similarity across ALL candidates (including unsure ones),
+    which was not provably consistent with identity_hint_from_artifact's
+    own probable/possible-only selection. This artifact is constructed so a
+    naive max-by-similarity would pick the unsure candidate (0.61 > 0.4) --
+    the fix delegates the "confirmed" check to identity_hint_from_artifact
+    directly, so a hint's mere existence always wins regardless of a lower-
+    similarity confirmed candidate elsewhere in the same frame."""
+    art = _identity_artifact(
+        [
+            {"subject": "unknown", "similarity": 0.61, "state": "unsure", "detect_confidence": 0.9},
+            {"subject": "juniper", "similarity": 0.4, "state": "possible", "detect_confidence": 0.95},
+        ]
+    )
+    assert identity_confidence_from_artifact(art) == "confirmed"
+
+
 def test_identity_confidence_picks_the_best_candidate_across_multiple_faces():
     art = _identity_artifact(
         [

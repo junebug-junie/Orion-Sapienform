@@ -264,10 +264,18 @@ class WindowService:
         identity_face artifacts arrive on their own dedicated,
         single-consumer lane (CHANNEL_WINDOW_IDENTITY_INTAKE, see
         settings.py's docstring for why it is not the general
-        CHANNEL_WINDOW_INTAKE broadcast). Stores only the latest usable hint
-        per stream, overwriting the previous one -- this is presence-shaped
-        state (what does the LATEST evidence say), not a window buffer, so
-        it never accumulates and never needs a size cap.
+        CHANNEL_WINDOW_INTAKE broadcast). Stores the latest usable reading
+        per stream -- this is presence-shaped state (what does the LATEST
+        evidence say), not a window buffer, so it never accumulates and
+        never needs a size cap.
+
+        NOT an unconditional overwrite as of 2026-08-26 (doc fixed per
+        review finding -- this used to claim it was): a fresh "uncertain"
+        reading is dropped instead of overwriting when a still-fresh
+        "confirmed" entry already holds the slot -- see
+        `_should_ignore_uncertain_reading`'s own docstring for the full
+        sticky-confirmed-vs-flicker reasoning. A fresh "confirmed" reading
+        is never subject to that hold-off and always overwrites.
         """
         async with self.bus.subscribe(settings.CHANNEL_WINDOW_IDENTITY_INTAKE) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -428,12 +436,17 @@ class WindowService:
             # flushes could interleave exactly at that await point and apply
             # belief/presence updates out of order. Fetching first keeps the
             # belief block itself await-free, exactly as it was before this
-            # field existed. Both fetches read the same underlying entry and
-            # the same age gate; two calls rather than one combined getter to
-            # keep each independently testable, matching the rest of this
-            # module's style.
-            identity_hint = await self._get_fresh_identity_hint(stream_id, now=window_end)
-            identity_confidence = await self._get_fresh_identity_confidence(stream_id, now=window_end)
+            # field existed. hint and confidence are fetched TOGETHER via one
+            # locked read (review finding, 2026-08-26): two separate
+            # lock-acquiring calls left a window where the concurrently
+            # running _consume_identity() task could overwrite
+            # _identity_by_stream[sk] between them, pairing an OLDER hint
+            # with a NEWER confidence (or vice versa) for the same flush --
+            # e.g. a confirmed name from one artifact alongside
+            # identity_uncertain=True from a later, different artifact.
+            identity_hint, identity_confidence = await self._get_fresh_identity_reading(
+                stream_id, now=window_end
+            )
 
         if settings.WINDOW_BELIEF_ENABLED:
             summary = dict(payload.summary or {})
@@ -559,37 +572,35 @@ class WindowService:
             self._m_inventory_failed += 1
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
-    async def _get_fresh_identity_hint(self, stream_id: str, *, now: float) -> Optional[Dict[str, Any]]:
-        """The latest identity_face hint for this stream, or None if there
-        isn't one or it is too old to speak to "now" -- same staleness
-        discipline as orion/situational/context.py's percept gate. Age is
-        measured against ``now`` (the window's own end_ts), not wall-clock
-        time.time(), so a slow flush cannot make an otherwise-fresh hint
-        read as stale relative to the window it is being folded into.
+    async def _get_fresh_identity_reading(
+        self, stream_id: str, *, now: float
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """The latest identity_face (hint, confidence) pair for this stream,
+        or (None, None) if there isn't one or it is too old to speak to
+        "now" -- same staleness discipline as orion/situational/context.py's
+        percept gate. Age is measured against ``now`` (the window's own
+        end_ts), not wall-clock time.time(), so a slow flush cannot make an
+        otherwise-fresh reading read as stale relative to the window it is
+        being folded into.
+
+        Returns BOTH fields from ONE lock acquisition (review finding,
+        2026-08-26: two separate getters, each with its own lock
+        acquisition, left a window where the concurrently-running
+        _consume_identity() task could overwrite the entry between them --
+        pairing an older hint with a newer confidence, or vice versa, for
+        the same flush). `hint` and `confidence` are independently either
+        present or None per their own producing functions' own contracts
+        (identity_hint_from_artifact / identity_confidence_from_artifact in
+        projection.py) -- this method does not otherwise couple them.
         """
         async with self._identity_lock:
             entry = self._identity_by_stream.get(stream_id)
         if entry is None:
-            return None
+            return None, None
         age = now - entry["ts"]
         if age > settings.WINDOW_IDENTITY_MAX_AGE_SEC:
-            return None
-        return entry["hint"]
-
-    async def _get_fresh_identity_confidence(self, stream_id: str, *, now: float) -> Optional[str]:
-        """The latest identity_face confidence classification for this
-        stream (``"confirmed"`` | ``"uncertain"`` | ``None``), or None if
-        there isn't one or it is too old -- same staleness contract as
-        `_get_fresh_identity_hint` above (same underlying entry, same
-        `WINDOW_IDENTITY_MAX_AGE_SEC` age gate, same clock parameter)."""
-        async with self._identity_lock:
-            entry = self._identity_by_stream.get(stream_id)
-        if entry is None:
-            return None
-        age = now - entry["ts"]
-        if age > settings.WINDOW_IDENTITY_MAX_AGE_SEC:
-            return None
-        return entry.get("confidence")
+            return None, None
+        return entry.get("hint"), entry.get("confidence")
 
     def _note_presence(
         self,

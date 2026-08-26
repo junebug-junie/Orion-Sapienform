@@ -421,6 +421,48 @@ like hard labels. The VL model is told "the face match says probably Juniper,
 similarity 0.61" and is expected to hedge accordingly — not told "this is
 Juniper."
 
+### 4.1 Uncertain identity reaching the unified turn (2026-08-26)
+
+Landed same-day as §5/§6.1's presence fusion below, per Juniper's direct ask:
+*"have Orion say something ... this is not Juniper with confidence ... friendly,
+hi i'm having trouble recognizing you. is that juniper? ... if is juniper just
+carry on and not mention it ... if broken or not running, don't say anything."*
+
+`identity_hint_from_artifact` (orion-vision-window's `projection.py`)
+deliberately collapses an `unsure` classification into "no signal" — correct
+for the presence/council consumers above, which must never narrow a name or
+narrate a shaky guess. A second function, `identity_confidence_from_artifact`,
+preserves exactly the distinction the first one throws away: `"confirmed"` |
+`"uncertain"` | `None` (genuinely no signal — no face detected, or a
+`not_enrolled` gallery config problem, never conflated with a real stranger).
+"Confirmed" is checked by delegating to `identity_hint_from_artifact` directly
+rather than re-deriving the same selection independently, so the two functions
+cannot disagree about the same artifact.
+
+That feeds a new `identity_uncertain` boolean onto the *same*
+`substrate_embodied_presence` row §5 already writes `subject` to — no new
+table. Only ever true when a person is believed **present right now** (never
+`recent` — asking about someone who already left is the exact awkwardness this
+exists to avoid), and a single flickery unsure frame cannot undo an
+already-fresh confirmed reading (sticky confirmed, flexible uncertain).
+
+`PerceptionContextV1` (§6.1) gains `presence_identity_uncertain: bool`. The
+confirmed and no-signal cases need **zero new prompt text** — §6.1's own
+presence fragment already never says a name, so "carry on, don't mention it"
+was already free. The uncertain case gets one new caution line instructing a
+single warm clarifying question.
+
+Repetition needed real care, not a good-faith prompt instruction alone: there
+are four independent `orion-cortex-exec` replicas (main/chat/spark/background),
+so an in-process "already asked" flag would repeat the exact cross-process bug
+`session_turn_phase.py` already had to fix once for a different field. A new
+module, `orion/situational/identity_ask_cooldown.py`, claims a single atomic
+Redis `SET key val NX EX ttl` per camera stream (not per chat session, and
+deliberately not per subject — the gallery is capped at exactly one enrolled
+subject by contract, so "uncertain" only ever means one thing). 20-minute
+default cooldown, fail-open toward asking (a Redis hiccup costs one redundant
+ask, never permanent silence).
+
 ---
 
 ## 5. Presence — reuse what's built, don't build a new one

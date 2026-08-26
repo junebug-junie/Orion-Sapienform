@@ -29,16 +29,20 @@ from orion.schemas.situation import PerceptionContextV1, SituationBriefV1
 
 
 class _FakeCooldownRedis:
+    """Matches real redis-py `SET ... NX` semantics: True the first time a
+    key is set, None (falsy) while it already exists -- see
+    identity_ask_cooldown.py's own atomic-claim contract."""
+
     def __init__(self, store: dict | None = None) -> None:
         self.store: dict = store if store is not None else {}
-        self.setex_calls: list = []
+        self.set_calls: list = []
 
-    async def get(self, key: str):
-        return self.store.get(key)
-
-    async def setex(self, key: str, ttl_seconds: int, payload: str):
-        self.setex_calls.append((key, ttl_seconds, payload))
-        self.store[key] = payload.encode("utf-8")
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        self.set_calls.append((key, value, nx, ex))
+        if nx and key in self.store:
+            return None
+        self.store[key] = value.encode("utf-8")
+        return True
 
 
 class _FakeCooldownBus:
@@ -47,10 +51,7 @@ class _FakeCooldownBus:
 
 
 class _RaisingCooldownRedis:
-    async def get(self, key: str):
-        raise ConnectionError("redis unreachable")
-
-    async def setex(self, key: str, ttl_seconds: int, payload: str):
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
         raise ConnectionError("redis unreachable")
 
 
@@ -368,7 +369,7 @@ def test_identity_uncertain_row_sets_the_context_field_and_marks_cooldown(monkey
     bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.presence_identity_uncertain is True
-    assert len(redis.setex_calls) == 1, "must mark the cooldown the first time this surfaces"
+    assert len(redis.set_calls) == 1, "must mark the cooldown the first time this surfaces"
 
 
 def test_identity_uncertain_suppressed_when_already_in_cooldown(monkeypatch) -> None:
@@ -384,7 +385,11 @@ def test_identity_uncertain_suppressed_when_already_in_cooldown(monkeypatch) -> 
 
     second = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert second.presence_identity_uncertain is False, "already asked -- next turn must stay quiet"
-    assert len(redis.setex_calls) == 1, "must not re-mark the cooldown while it is already active"
+    # The atomic claim is attempted again (SET ... NX is the check, not a
+    # separate read first) but does not win -- see _FakeCooldownRedis's own
+    # NX semantics. Two attempts, one actual claim; the *result* (asserted
+    # above) is what must not repeat, not the attempt count.
+    assert len(redis.set_calls) == 2
 
 
 def test_identity_uncertain_false_when_presence_row_lacks_the_field(monkeypatch) -> None:
@@ -412,9 +417,9 @@ def test_identity_uncertain_false_when_the_field_is_explicitly_false(monkeypatch
 def test_identity_uncertain_cooldown_read_failure_fails_open_to_asking(monkeypatch) -> None:
     """Fail-open points TOWARD asking, not toward silence (see
     identity_ask_cooldown.py's module docstring): a Redis hiccup on the
-    cooldown check must not silently suppress a genuine identity mismatch --
+    cooldown claim must not silently suppress a genuine identity mismatch --
     worst case is one redundant ask, not a feature that goes mute.
-    identity_ask_in_cooldown itself is documented "never raises" (fail-open
+    try_claim_identity_ask itself is documented "never raises" (fail-open
     internally), so this also proves _build_perception_context does not
     need -- and per this file's own established convention (see
     fetch_presence above), should not add -- a redundant try/except of its

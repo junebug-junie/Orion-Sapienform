@@ -82,31 +82,37 @@ def identity_confidence_from_artifact(art: VisionArtifactPayload) -> Optional[st
     protects presence/council from asserting a shaky guess as a name. This
     one exists for a different consumer (the unified-turn clarifying-
     question feature, `docs/superpowers/specs/2026-08-21-seeing-juniper-
-    identity-and-situated-observation-design.md` extended 2026-08-26) that
-    needs exactly the distinction the other function throws away: "a face
-    was detected and did not match" vs. "identity never ran at all."
+    identity-and-situated-observation-design.md` §4.1, added 2026-08-26)
+    that needs exactly the distinction the other function throws away: "a
+    face was detected and did not match" vs. "identity never ran at all."
+
+    **"confirmed" is checked by calling `identity_hint_from_artifact`
+    directly, not by re-deriving the same selection independently** (review
+    finding, 2026-08-26): an earlier version picked "best" by raw similarity
+    across every non-not_enrolled candidate INCLUDING unsure ones, which was
+    not provably consistent with `identity_hint_from_artifact`'s own
+    probable/possible-only selection -- a hand-built fixture (or a future
+    threshold change) could make the two functions disagree about the same
+    artifact. Delegating removes the possibility: if a hint exists, this is
+    always "confirmed", full stop, regardless of any lower-similarity
+    "unsure" candidate for a different face in the same frame.
 
     A candidate whose ``reason`` is ``"not_enrolled"`` (empty gallery -- a
-    config problem, not a stranger) is excluded from consideration entirely
-    -- it must read as no-signal, not as "uncertain," or an operator error
-    would masquerade as Orion not recognizing a real person.
+    config problem, not a stranger) never counts as "uncertain" -- it must
+    read as no-signal, or an operator error would masquerade as Orion not
+    recognizing a real person.
     """
+    if identity_hint_from_artifact(art) is not None:
+        return "confirmed"
     identities = getattr(art.outputs, "identities", None)
     if not isinstance(identities, dict):
         return None
     candidates = identities.get("candidates") or []
-    real_candidates = [
-        c for c in candidates if isinstance(c, dict) and c.get("reason") != "not_enrolled"
-    ]
-    if not real_candidates:
-        return None
-    best = max(real_candidates, key=lambda c: c.get("similarity") or 0.0)
-    state = best.get("state")
-    if state in ("probable", "possible") and best.get("subject") and best.get("subject") != "unknown":
-        return "confirmed"
-    if state == "unsure":
-        return "uncertain"
-    return None
+    has_real_unsure_face = any(
+        isinstance(c, dict) and c.get("state") == "unsure" and c.get("reason") != "not_enrolled"
+        for c in candidates
+    )
+    return "uncertain" if has_real_unsure_face else None
 
 
 def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:

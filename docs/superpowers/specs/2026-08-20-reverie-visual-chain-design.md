@@ -174,3 +174,56 @@ eventually built.
   yet), `Dockerfile`, `tests/`
 - Storage helper module (content-addressed write, following `chat_attachments.py`'s pattern)
 - No chain orchestration logic yet (Patch 2), no context-seeding (Patch 3)
+
+## 11. Patch 1.5 (real model, shipped 2026-08-25)
+
+`orion-diffusion-host` loads `stabilityai/sdxl-turbo` at startup (background,
+non-blocking) and answers real `POST /generate`. GPU assignment landed as
+circe's existing agent-lane slot (port 8014, physical GPU 2), not the
+originally-scoped new 4th card (§3 already noted this supersession). Two
+live-only bugs found and fixed during first deploy: a missing `redis`
+dependency masked by a contaminated dev venv, and a CUDA device-enumeration
+mismatch (`CUDA_DEVICE_ORDER=PCI_BUS_ID`) where `/health` reported clean
+success while the model had silently loaded onto the wrong physical card —
+same root cause, same day, independently hit by `orion-world-model` on the
+same host. See `services/orion-diffusion-host/README.md`.
+
+## 12. Patch 2 scope (this changeset, orchestration)
+
+- `services/orion-thought/app/visual_chain.py`: `run_visual_chain_once` /
+  `run_visual_chain_worker`, wired into `main.py`'s lifespan alongside
+  `chain.py`'s workers. Shipped default-off, enabled 2026-08-25 (§13).
+- `store.py`: `persist_reverie_visual_chain`, `persist_reverie_visual_artifact`,
+  `load_latest_visual_chain_prior_description` (chain row inserted before the
+  artifact row — `reverie_visual_artifact.chain_id` is a real FK).
+- New producer on the existing shared `orion:exec:request:VisionHostService`
+  channel (`orion/bus/channels.yaml`) — `caption_frame` + `percept_sha256`
+  already captions any image, so no vision-host code change was needed.
+- `prior_description` continuity wired for real: read at the start of a run,
+  only advanced on a genuine non-empty caption, carried forward unchanged on
+  a failed re-observation (§2's actual acceptance bar — a live consumer, not
+  a schema slot).
+- Single-flight via the worker loop's own sequential shape (§4), plus a
+  process-local lock in `run_visual_chain_once` as defense-in-depth.
+- Explicitly NOT in this patch: real context-seeding (§8, still Patch 3) —
+  the prompt is `prior_description` or a fixed seed string only.
+
+## 13. Live (2026-08-25)
+
+`ORION_VISUAL_CHAIN_ENABLED=true` on athena, after a live smoke: real image
+generated on circe, stored on the actual host disk (required a follow-up
+fix — Patch 2's `docker-compose.yml` shipped with no `volumes:` block at
+all, so `store_visual_artifact` was writing into the container's own
+ephemeral filesystem instead of `/mnt/storage-lukewarm/orion/reverie-visual`
+until that was added), a real `reverie_visual_chain` +
+`reverie_visual_artifact` row pair with the FK intact, and an honest
+`description=null` (never a fabricated caption) on all 3 ticks run so far.
+
+Known follow-up, not yet fixed: `visual_chain.py`'s `DEFAULT_SEED_PROMPT`
+("a calm orion, soft abstract light, dreaming") reliably produces images
+too abstract for `orion-vision-host`'s `caption_frame` to pass its own
+`sanitize_caption` quality gate — 3/3 live ticks came back uncaptioned, so
+`prior_description` has never yet advanced past `None` in production. Either
+rewrite the seed prompt to something more literal/photographic, or treat
+this as expected until Patch 3's real context-seeding replaces the
+placeholder prompt entirely.

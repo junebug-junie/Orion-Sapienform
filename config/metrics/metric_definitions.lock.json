@@ -1,8 +1,8 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 616,
+  "metric_count": 615,
   "_last_change": {
-    "base": "merge base f49886573 (origin/main)",
+    "base": "merge base ab448517a (origin/main)",
     "change_count": 0,
     "high_severity_count": 0,
     "changes": [
@@ -813,6 +813,7 @@
       "all_producers": [
         "orion-cortex-exec",
         "orion-hub",
+        "orion-thought",
         "orion-vision-frame-router",
         "orion-vision-host"
       ],
@@ -1637,7 +1638,8 @@
         "orion-juniper-affective-state"
       ],
       "declared_consumers": [
-        "orion-juniper-affective-state"
+        "orion-juniper-affective-state",
+        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2586,17 +2588,6 @@
         "orion-vector-writer"
       ],
       "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-vision-council/orion:exec:request:VisionHostService:*": {
-      "schema_id": "VisionTaskRequestPayload",
-      "all_producers": [
-        "orion-vision-council"
-      ],
-      "declared_consumers": [
-        "orion-vision-host"
-      ],
-      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-vision-council/orion:exec:request:VisionScribeService": {

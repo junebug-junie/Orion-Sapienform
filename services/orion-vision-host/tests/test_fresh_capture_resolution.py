@@ -51,14 +51,13 @@ def test_load_image_without_image_path_or_use_latest_frame_still_raises_as_befor
     use_latest_frame must keep the exact prior behavior (a clear error),
     not silently fall back to the latest frame -- opt-in, not implicit.
 
-    Assertion text updated (unrelated to this patch -- found stale while
-    verifying an unrelated change in the same file's test run): the
-    percept_sha256 pointer path (PR #1867) changed the real message from
-    "request.image_path is required" to the one below; this test never ran
-    against that real message before now because torch isn't importable in
-    this repo's shared dev venv, so pytest -q errors at collection instead
-    of reaching this assertion -- the drift was invisible until run in an
-    environment that actually has torch installed."""
+    Assertion text updated (pre-existing bug, unrelated to this patch --
+    found while running this file's suite to verify the vision_profiles.yaml
+    cleanup): the percept_sha256 pointer path (PR #1867) changed the real
+    message from "request.image_path is required" to the one below; this
+    test never ran against that real message before now because torch isn't
+    importable in this repo's shared dev venv, so pytest -q errors at
+    collection instead of reaching this assertion."""
     with pytest.raises(
         ValueError,
         match=r"request needs image_path or percept_sha256",

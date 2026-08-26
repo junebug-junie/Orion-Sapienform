@@ -179,3 +179,57 @@ async def test_warm_pool_outer_except_covers_non_timeout_wrapper_failure(monkeyp
 
     # Must not raise -- the outer except Exception must catch this too.
     await store.warm_pool()
+
+
+# --- persist_reverie_visual_chain: chain_json column content ---------------
+
+
+def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> None:
+    """Regression guard (review finding): unlike `persist_reverie_chain`
+    (whose `ReverieChainV1` has no `chain_json` field of its own, so a full
+    `model_dump()` IS the right thing to store), `ReverieVisualChainV1` has
+    its own small `chain_json: dict` field. Writing the full model dump here
+    self-nests the real prompt/description data one level deeper than every
+    reader (including `load_latest_visual_chain_prior_description`'s sibling
+    reads and any future consumer) expects."""
+    import json as _json
+
+    from orion.schemas.reverie_visual import ReverieVisualChainV1
+
+    store = _fresh_store()
+    captured: dict = {}
+
+    class _FakeConn:
+        def execute(self, _stmt, params):
+            captured.update(params)
+
+    class _FakeBegin:
+        def __enter__(self):
+            return _FakeConn()
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeEngine:
+        def begin(self):
+            return _FakeBegin()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        chain = ReverieVisualChainV1(
+            chain_id="c-1",
+            terminal_reason="max_steps",
+            prior_description="a warm room",
+            chain_json={"prompt": "p", "artifact_sha256": "s" * 64, "description": "a warm room"},
+        )
+        ok = store.persist_reverie_visual_chain(chain)
+    finally:
+        monkeypatch.undo()
+
+    assert ok is True
+    written = _json.loads(captured["chain_json"])
+    assert written == {"prompt": "p", "artifact_sha256": "s" * 64, "description": "a warm room"}
+    # The bug this guards against: writing model_dump() instead would nest
+    # the whole chain (including this same chain_json) one level deeper.
+    assert "chain_json" not in written

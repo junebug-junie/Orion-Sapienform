@@ -42,6 +42,7 @@ from orion.cognition.github_compactor.constants import PR_BODY_MAX_CHARS
 from .router import PlanRouter
 from . import self_study as self_study_module
 from .self_study import run_self_concept_induce, run_self_concept_reflect, run_self_repo_inspect, run_self_retrieve
+from .self_study_analysis import run_self_study_analysis
 from .self_study_policy import (
     build_self_study_consumer_context,
     build_self_study_consumer_request,
@@ -2888,6 +2889,63 @@ class SelfConceptReflectVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         )
         data = result.model_dump(mode="json")
         return _skill_result_output(skill_name="self_concept_reflect", result=data), []
+
+
+# ===========================================================================
+# skills.self_study.analyze.v1 (2026-08-25)
+#
+# ONE action shape, FOUR inputs. See app/self_study_analysis.py's module
+# docstring for the analysis and orion/schemas/self_study_analysis.py for why
+# this is one verb rather than four.
+#
+# `skill_args.source` is OPTIONAL and the live dispatch route deliberately
+# leaves it unset -- the verb then studies whichever input has gone longest
+# without being studied. The argument exists so an operator (or a test) can
+# pin a run to one lens, not because the proposal arena should be choosing.
+# ===========================================================================
+
+
+@verb("skills.self_study.analyze.v1")
+class SelfStudyAnalyzeVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        skill_args = _skill_args(payload)
+        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
+        raw_source = skill_args.get("source")
+        result = await run_self_study_analysis(
+            bus=ctx.meta.get("bus"),
+            source_ref=_actions_source(ctx.meta.get("source")),
+            source=str(raw_source).strip() if isinstance(raw_source, str) and raw_source.strip() else None,
+            window_hours=skill_args.get("window_hours"),
+            correlation_id=correlation_id,
+        )
+        data = result.model_dump(mode="json")
+        # `skipped_not_notable` / `skipped_recently_journaled` are SUCCESSES:
+        # refusing to write is the behaviour this action is built around, and
+        # reporting them as failures would drive the theater tripwire
+        # (services/orion-execution-dispatch-runtime/app/worker.py) straight
+        # into a latch on an action working exactly as designed.
+        ok = result.status in ("journaled", "skipped_not_notable", "skipped_recently_journaled")
+        return (
+            _skill_result_output(
+                skill_name="skills.self_study.analyze.v1",
+                result=data,
+                ok=ok,
+                status="success" if ok else "error",
+                error=(
+                    None
+                    if ok
+                    else {
+                        "message": result.unavailable_reason
+                        or (result.journal_write.detail if result.journal_write else result.status),
+                        "verb": "skills.self_study.analyze.v1",
+                    }
+                ),
+            ),
+            [],
+        )
 
 
 @verb("self_retrieve")

@@ -27,7 +27,6 @@ KNOWN_GUARD_FLAGS: Set[str] = {
     "want_caption",
     "want_embeddings",
     "want_masks",
-    "want_pose",
 }
 
 _ALLOWED_NODES = (

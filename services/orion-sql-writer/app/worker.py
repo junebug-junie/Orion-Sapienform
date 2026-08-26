@@ -84,6 +84,7 @@ from app.models import (
     DevEconomicsLedgerSQL,
     DocSemanticDriftSQL,
     JuniperAffectiveStateSQL,
+    JuniperMultimodalAffectSQL,
     GrammarEventSQL,
     EquilibriumServiceTransitionSQL,
     HarnessTurnTraceSQL,
@@ -108,6 +109,7 @@ from orion.schemas.field_goal import DominanceStreakTickV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 from orion.schemas.affective_state import JuniperAffectiveStateV1
+from orion.schemas.affectgpt import JuniperMultimodalAffectV1
 
 from app.route_coverage import log_route_coverage
 
@@ -469,6 +471,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "DevEconomicsLedgerSQL": (DevEconomicsLedgerSQL, DevEconomicsLedgerV1),
     "DocSemanticDriftSQL": (DocSemanticDriftSQL, DocSemanticDriftV1),
     "JuniperAffectiveStateSQL": (JuniperAffectiveStateSQL, JuniperAffectiveStateV1),
+    "JuniperMultimodalAffectSQL": (JuniperMultimodalAffectSQL, JuniperMultimodalAffectV1),
     "EquilibriumServiceTransitionSQL": (EquilibriumServiceTransitionSQL, EquilibriumServiceTransitionV1),
 }
 
@@ -1776,6 +1779,28 @@ def _extract_calibration_profile_id(actions: list[str]) -> str | None:
     return None
 
 
+def _affectgpt_multimodal_event_id(
+    data_to_process: Dict[str, Any], extra_sql_fields: Dict[str, Any], env: BaseEnvelope
+) -> str:
+    """JuniperMultimodalAffectV1 has no event_id field of its own (unlike
+    the tiling-window text signal) -- key on the correlation_id already
+    threading the retina-capture/worker-assess/this-event legs of one
+    tick, so a redelivery upserts instead of duplicating. Falls back to
+    the envelope id, then a fresh uuid4, in case a producer ever omits
+    correlation_id (BaseEnvelope's own field always carries one in
+    practice, so this is defensive, not a reachable normal path).
+
+    Extracted as a pure function so the fallback chain is unit-testable
+    without needing an invalid BaseEnvelope (correlation_id is a
+    required, always-generated uuid there)."""
+    return (
+        extra_sql_fields.get("correlation_id")
+        or data_to_process.get("correlation_id")
+        or (str(env.id) if getattr(env, "id", None) else None)
+        or str(uuid.uuid4())
+    )
+
+
 def _normalize_endogenous_runtime_record_payload(payload: Any) -> Dict[str, Any]:
     record = EndogenousRuntimeExecutionRecordV1.model_validate(payload)
     return {
@@ -2590,6 +2615,11 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 if not data_to_process.get("correlation_id") and not extra_sql_fields.get("correlation_id"):
                     extra_sql_fields["correlation_id"] = base_id
 
+            if sql_model is JuniperMultimodalAffectSQL and isinstance(data_to_process, dict):
+                extra_sql_fields["event_id"] = _affectgpt_multimodal_event_id(
+                    data_to_process, extra_sql_fields, env
+                )
+
             if sql_model is CollapseEnrichment and isinstance(data_to_process, dict):
                 extra_sql_fields["id"] = str(uuid.uuid4())
                 target_id = data_to_process.get("id") or data_to_process.get("collapse_id")
@@ -2784,7 +2814,21 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")
-            await asyncio.to_thread(_write_fallback, env.kind, extra_sql_fields.get("correlation_id", ""), env.payload, str(e))
+            fallback_payload = env.payload
+            if sql_model is JuniperMultimodalAffectSQL and isinstance(fallback_payload, dict):
+                # _write_row()'s column-filter is what keeps transcript out
+                # of juniper_multimodal_affect_log on the success path
+                # (JuniperMultimodalAffectSQL declares no transcript
+                # column) -- but _write_fallback() below takes the raw,
+                # unfiltered env.payload with no filtering of its own, so
+                # without this the privacy boundary broke completely on
+                # any exception (schema drift raising in _coerce_payload,
+                # a non-duplicate-key DB error, ...). Review finding,
+                # 2026-08-25: this except is the SHARED handler for every
+                # MODEL_MAP route, so the redaction is scoped to this one
+                # model rather than applied generically.
+                fallback_payload = {k: v for k, v in fallback_payload.items() if k != "transcript"}
+            await asyncio.to_thread(_write_fallback, env.kind, extra_sql_fields.get("correlation_id", ""), fallback_payload, str(e))
     else:
         if await _persist_evidence_units():
             logger.info("Written %s -> evidence_units (adapter-only path)", env.kind)

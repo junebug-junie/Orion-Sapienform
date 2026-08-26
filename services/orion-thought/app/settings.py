@@ -170,6 +170,69 @@ class ThoughtSettings(BaseSettings):
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 
+    # --- Reverie VISUAL chain (Patch 2 of docs/superpowers/specs/2026-08-20-
+    # reverie-visual-chain-design.md, default-off). A second, parallel reverie
+    # chain: generate an image via orion-diffusion-host, re-observe it via
+    # orion-vision-host's existing caption_frame task, persist both, and
+    # carry the caption forward as prior_description -- the enforced
+    # continuity column design doc §2 built specifically to avoid repeating
+    # the text chain's dead next_focus/drift fields. Independent worker loop
+    # from reverie_chain above; sequential single-flight by construction (see
+    # visual_chain.py module docstring), not a check-and-set marker.
+    visual_chain_enabled: bool = Field(False, alias="ORION_VISUAL_CHAIN_ENABLED")
+    # Slower than the text chain's ~90s cadence (design doc §4: "slower cadence
+    # than the text chain"). Real cadence is max(this, actual run duration) --
+    # intentional, not a bug (design doc §4).
+    visual_chain_interval_sec: float = Field(600.0, alias="ORION_VISUAL_CHAIN_INTERVAL_SEC")
+    # orion-diffusion-host on Circe (services/orion-diffusion-host README --
+    # HOST_PORT=8014, same tailnet address the LLM gateway's route table uses
+    # for circe-worker-agent-1, the llama.cpp worker this port used to serve).
+    diffusion_host_base_url: str = Field(
+        "http://100.112.254.99:8014", alias="ORION_DIFFUSION_HOST_BASE_URL"
+    )
+    visual_chain_diffusion_timeout_sec: float = Field(
+        30.0, alias="ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC"
+    )
+    # Content-addressed image storage (orion.reverie.visual_storage, design
+    # doc §6). Overridable so tests never touch the real mount.
+    visual_chain_storage_dir: str = Field(
+        "/mnt/storage-lukewarm/orion/reverie-visual",
+        alias="ORION_VISUAL_CHAIN_STORAGE_DIR",
+    )
+    # orion-percept-store: the cross-host hop that lets a generated image
+    # (produced on circe) reach orion-vision-host's caption_frame task
+    # (athena) without assuming a shared filesystem -- same mechanism
+    # orion-vision-council's foveal probe and orion-vision-frame-router
+    # already use (see runner.py::_load_image_from_percept_store). Same
+    # literal container hostname orion-vision-host's own
+    # VISION_PERCEPT_STORE_URL already resolves (both are athena-network
+    # services), not the tailnet address.
+    visual_chain_percept_store_url: str = Field(
+        "http://orion-athena-percept-store:8000/percepts",
+        alias="ORION_VISUAL_CHAIN_PERCEPT_STORE_URL",
+    )
+    visual_chain_percept_store_token: str | None = Field(
+        None, alias="ORION_VISUAL_CHAIN_PERCEPT_STORE_TOKEN"
+    )
+    visual_chain_percept_upload_timeout_sec: float = Field(
+        10.0, alias="ORION_VISUAL_CHAIN_PERCEPT_UPLOAD_TIMEOUT_SEC"
+    )
+    # orion-vision-host's existing shared intake/reply channel pair (design
+    # doc §3: "a new task_type on its existing channel pair, not a second
+    # vision worker" -- caption_frame + percept_sha256 already captions any
+    # image, so no vision-host code change was needed at all, only a new
+    # producer). reply_to is built per-call as f"{prefix}:{corr_id}", matching
+    # orion:vision:reply:*'s documented wildcard (orion/bus/channels.yaml).
+    channel_vision_host_request: str = Field(
+        "orion:exec:request:VisionHostService", alias="CHANNEL_VISION_HOST_REQUEST"
+    )
+    channel_vision_reply_prefix: str = Field(
+        "orion:vision:reply", alias="CHANNEL_VISION_REPLY_PREFIX"
+    )
+    visual_chain_caption_timeout_sec: float = Field(
+        60.0, alias="ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC"
+    )
+
     # --- Attention salience trace publish gate ---
     # 2026-07-31: `orion.substrate.attention.salience`'s hand-picked
     # SEED_WEIGHTS formula (this flag's original "v1 vs v2" reason for

@@ -13,7 +13,13 @@ from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from .juniper_affect_state import read_latest_juniper_affect
-from .perception_reader import fetch_latest_percept, fetch_presence, percept_age_seconds
+from .perception_reader import (
+    coarse_duration,
+    fetch_latest_percept,
+    fetch_presence,
+    percept_age_seconds,
+    presence_fragment,
+)
 from .session_turn_phase import read_session_turn_state, write_session_turn_state
 from orion.schemas.situation import (
     AffectContextV1,
@@ -797,7 +803,7 @@ def _build_perception_context(
         presence_state = presence.get("state")
         presence_since_sec = presence.get("since_sec")
         presence_subject = presence.get("subject")
-        fragment = _presence_fragment(presence_state, presence_since_sec)
+        fragment = presence_fragment(presence_state, presence_since_sec)
         if fragment:
             scene_summary = f"{fragment} {scene_summary}"
             diagnostics.provider_status["perception_presence"] = presence_state or "unknown"
@@ -813,35 +819,6 @@ def _build_perception_context(
         presence_since_sec=presence_since_sec,
         presence_subject=presence_subject,
     )
-
-
-def _presence_fragment(state: str | None, since_sec: float | None) -> str | None:
-    """One clause, or None. Never mentions 'absent' -- an empty room is the
-    default expectation for most rooms most of the time, and saying so every
-    turn would be noise, not care. Only `present`/`recent` are worth a word.
-
-    `since_sec` renders coarse on purpose: a felt-sense duration ("about 3
-    hours") is the actual payload here, not a precise timer.
-    """
-    if state not in ("present", "recent") or since_sec is None or since_sec < 0:
-        return None
-    duration = _coarse_duration(since_sec)
-    if state == "present":
-        return f"Someone has been in view for {duration}."
-    return f"Someone stepped out of view {duration} ago."
-
-
-def _coarse_duration(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    if seconds < 90:
-        return f"{int(seconds)} seconds"
-    minutes = seconds / 60.0
-    if minutes < 90:
-        return f"{int(round(minutes))} minutes"
-    hours = minutes / 60.0
-    if hours < 1.5:
-        return "about an hour"
-    return f"about {int(round(hours))} hours"
 
 
 def _build_surface_context(ctx: dict[str, Any]) -> SurfaceContextV1:

@@ -18,6 +18,7 @@ from .reasoning_activity import store as reasoning_store
 from .reverie import run_reverie_worker
 from .settings import settings
 from .store import warm_pool
+from .visual_chain import run_visual_chain_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,6 +82,12 @@ async def lifespan(app: FastAPI):
     app.state.reasoning_task = asyncio.create_task(
         run_reasoning_worker(app.state.reasoning_stop_event)
     )
+    # Reverie VISUAL chain (Patch 2) — no-op unless ORION_VISUAL_CHAIN_ENABLED
+    # (default off).
+    app.state.visual_chain_stop_event = asyncio.Event()
+    app.state.visual_chain_task = asyncio.create_task(
+        run_visual_chain_worker(app.state.visual_chain_stop_event)
+    )
     # Warm store.py's shared Postgres pool so the first real caller of any
     # kind (reverie/salience/etc. writes) doesn't pay a cold TCP+auth
     # handshake cost -- unconditional since every store.py consumer shares
@@ -99,6 +106,7 @@ async def lifespan(app: FastAPI):
     app.state.reverie_stop_event.set()
     app.state.reverie_chain_stop_event.set()
     app.state.reasoning_stop_event.set()
+    app.state.visual_chain_stop_event.set()
     with suppress(asyncio.TimeoutError):
         await asyncio.wait_for(app.state.bus_task, timeout=125.0)
     if not app.state.bus_task.done():
@@ -109,6 +117,7 @@ async def lifespan(app: FastAPI):
         app.state.reverie_task,
         app.state.reverie_chain_task,
         app.state.reasoning_task,
+        app.state.visual_chain_task,
         app.state.pool_warmup_task,
     ):
         task.cancel()

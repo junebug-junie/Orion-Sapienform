@@ -54,11 +54,11 @@ Interpretations are retained in an in-memory ring buffer (max 20 items) for loca
 ## Foveal probe
 
 `docs/superpowers/specs/2026-08-12-perception-frontier-design.md`'s Foveal
-tier: a manually-triggered, event-driven call to a dedicated VLM host for a
-real caption (or, with `?question=`, a real VQA answer) on the current
-frame — distinct from the always-on peripheral pipeline. Not on any
-automatic cadence yet (surprise-driven foveation is P2, blocked on
-`want_embeddings`); this exists to prove the lane works end to end.
+tier: a manually-triggered, event-driven call for a real caption (or, with
+`?question=`, a real VQA answer) on the current frame — distinct from the
+always-on peripheral pipeline. Not on any automatic cadence yet
+(surprise-driven foveation is P2, blocked on `want_embeddings`); this exists
+to prove the lane works end to end.
 
 ```
 POST /debug/foveal-probe
@@ -67,21 +67,39 @@ POST /debug/foveal-probe?question=is+the+door+open%3F
 
 Three real hops (`app/foveal_probe.py`): read the newest local frame
 (`FOVEAL_FRAMES_DIR`, read-only mount) → upload it to `orion-percept-store`
-(`FOVEAL_PERCEPT_STORE_URL`) → RPC the foveal host on
-`CHANNEL_FOVEAL_HOST_REQUEST` and return its real reply.
+(`FOVEAL_PERCEPT_STORE_URL`) → ask `orion-llm-gateway`'s vision-capable
+`FOVEAL_LLM_ROUTE` (default `chat`) route and return its real reply.
 
-**`CHANNEL_FOVEAL_HOST_REQUEST` must be an ISOLATED channel, never the
-shared `orion:exec:request:VisionHostService` the frame-router's continuous
-pipeline uses.** A second vision-host instance subscribed to the bare shared
-channel raced its fast local-path rejections against the real, slower
-replies and silently killed 2m13s of live `host_trigger` updates on
-2026-08-25 (PR #1859). `orion/bus/channels.yaml` registers
-`orion:exec:request:VisionHostService:*` (wildcard) specifically so every
-dedicated/foveal host gets its own suffixed channel (e.g. `...:circe-vl`)
-without a new catalog entry each time — `scripts/check_single_consumer_channels.py`
-resolves that glob against the live bus and checks each realized channel's
-subscriber count, so a second consumer accidentally reusing a suffix still
-gets caught.
+**2026-08-25 architecture change — no longer a dedicated vision-host RPC.**
+This originally targeted a second, isolated `orion-vision-host` instance
+(`CHANNEL_FOVEAL_HOST_REQUEST` → e.g. `orion:exec:request:VisionHostService:
+circe-vl`, deliberately never the shared channel the frame-router's
+continuous pipeline uses — a second host instance racing the shared channel
+had already killed 2m13s of live `host_trigger` updates, PR #1859). Live-
+tested end to end after real config landed for that path: it worked
+mechanically, but every call returned an **empty** caption/answer, rejected
+by `sanitize_caption`/`sanitize_answer` as too-short. Root cause:
+`config/vision_profiles.yaml`'s `vlm_caption`/`vlm_vqa` profiles still carry
+the unfilled placeholder `model_id: "REPLACE_ME/qwen2-vl_or_llava_next"`,
+which falls back to `orion-vision-host`'s own `VISION_VLM_MODEL_ID`
+default — itself another BLIP-family model (`blip2-opt-2.7b`), not a real
+VLM. The "richer-than-BLIP" tier had nothing richer behind it.
+
+Replaced with a call through `orion-llm-gateway` instead of standing up a
+second vision-host: the gateway's `chat` route already serves a real
+vision-capable model (`modalities.vision=true`, confirmed live via
+`/props`), and `orion-llm-gateway/app/vision.py` already implements a
+`kind="percept"` attachment path built specifically for camera frames.
+`orion-vision-council` was already a registered producer on
+`orion:exec:request:LLMGatewayService` (`CHANNEL_LLM_REQUEST` above — used
+for the council's own metacog interpretation calls), and the gateway's
+`LLM_GATEWAY_PERCEPT_BASE_URL`/`LLM_GATEWAY_ATTACHMENT_ALLOWED_HOSTS` already
+pointed at `orion-athena-percept-store`. So this needed zero new bus
+contract, zero new channel, and zero new gateway-side config — only a
+different envelope shape at the RPC hop. `CHANNEL_FOVEAL_HOST_REQUEST` and
+`CHANNEL_FOVEAL_HOST_REPLY_PREFIX` are retired; the probe now shares
+`CHANNEL_LLM_REQUEST`/`CHANNEL_LLM_REPLY_PREFIX` with the council's own
+metacog calls.
 
 No quality eval exists for this endpoint yet (unit tests cover the plumbing
 — upload/RPC/error-path correctness — not caption/answer quality).

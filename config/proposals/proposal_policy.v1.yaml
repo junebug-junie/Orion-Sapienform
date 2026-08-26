@@ -2,7 +2,6 @@ schema_version: proposal_policy.v1
 policy_id: proposal_policy.v1
 
 limits:
-  max_candidates: 10
   # 2026-08-16: 10 -> 20. This patch takes proposal_templates from 13 to 16;
   # `suppressed_candidates` exists precisely so a quiet tick's non-dispatched
   # candidates stay inspectable ("Quiet, not lost", orion/proposals/
@@ -15,6 +14,14 @@ limits:
   # slots). 20 gives headroom for all 16 templates plus several external
   # producers on one tick; revisit against real post-deploy suppressed-list
   # sizes, same discipline as every other disclosed constant in this arc.
+  # 2026-08-25: 10 -> 11, for the one template this patch adds
+  # (analyze_self_study_source, base_priority 0.34). Deliberately the smallest
+  # raise that keeps every existing template's arena position unchanged: the
+  # cut currently lands around 0.32-0.33, so a 17th candidate at 0.34 would
+  # otherwise have displaced whichever template held 10th place. Candidates per
+  # tick therefore go up by exactly one, which matters on a host whose Postgres
+  # I/O ceiling is already a known constraint.
+  max_candidates: 11
   max_suppressed: 20
 
 thresholds:
@@ -412,6 +419,54 @@ proposal_templates:
   # yaml. This is the "use the video work as a consumer of tension" wiring:
   # the camera-look competes harder when the field is genuinely deviating,
   # nothing about the perception ladder itself is touched.
+  # 2026-08-25: "analysis -> self-study journal entry". The 17th template.
+  #
+  # WHY ONE TEMPLATE FOR FOUR INPUTS. The action studies concept induction,
+  # vision events, affective state, or co-creation signals -- but which one is
+  # a scheduling question, not a proposal-arena question, so the verb picks the
+  # most overdue lens itself. Four templates here would have been four
+  # near-identical candidates competing for the same five dispatch slots, and
+  # would have pushed four existing templates out of a 10-candidate arena for
+  # no gain. `max_candidates` goes 10 -> 11 in this patch for the one added.
+  #
+  # NO `expected_signal`. Same honest position as summarize_transport_contract_
+  # drift and watch_transport_backpressure above: this is periodic bounded
+  # self-study surfacing on base_priority, and there is no evidence that any
+  # field dimension predicts "there is something notable in that table right
+  # now". Declaring one would repeat inspect_execution_pressure's defect --
+  # copy that says "elevated" on a template whose real firing baseline (0.1917)
+  # sits BELOW the population mean (0.2842).
+  #
+  # base_priority 0.34 = mid-pack, the same value inspect_node_resource_pressure
+  # and inspect_attended_target carry. Disclosed and uncalibrated: high enough
+  # to clear the ~0.32 candidate cut every tick, low enough not to displace the
+  # 0.38-0.42 leaders. Sharing a base_priority does NOT predict sharing a
+  # dispatch rate -- those two templates got 65 and 2,316 dispatches in the 24h
+  # to 2026-08-25, three orders of magnitude apart on an identical base, because
+  # the rest of the score is field-dependent. What this template DOES share with
+  # three proven-live templates is its whole gate-relevant tuple, traced through
+  # the real builders in review: conf=0.125, risk=0.150, rev=1.00,
+  # gate=read_only, kind=summarize, scope=summarize_only, base_risk=0.05 --
+  # identical to summarize_transport_contract_drift (2,828 dispatches/24h),
+  # inspect_bus_channel_catalog (2,864) and inspect_attended_target (2,316). It
+  # passes or fails the gates with them. Revisit base_priority against real
+  # post-deploy dispatch counts, not against this comment.
+  #
+  # RISK. Read-only against all four sources. The only write is an append-only
+  # journal entry on the existing journal.entry.write.v1 channel -- the same
+  # sink 34k entries already use -- and the verb refuses to write at all unless
+  # a rule fires AND no identical finding-set was journaled inside the cooldown.
+  analyze_self_study_source:
+    kind: summarize
+    target_kind: self_state
+    target_id: self_state:self_study
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.34
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions: {}
+
   observe_tension_via_camera:
     kind: inspect
     # 2026-08-21 (action-outcome ledger): this template's falsifiable claim.

@@ -45,7 +45,14 @@ def test_circe_qwen_lane_runs_qwen_not_blip():
 def test_circe_qwen_lane_has_no_camera_frame_dependencies():
     """circe shares no filesystem with athena (see README/.env_example) --
     this lane must never enable a profile or path that assumes local frame
-    access."""
+    access. Exact-line match (not a bare substring, review finding) -- a
+    substring check still passes if a future edit appends another profile
+    (e.g. "vlm_caption,retina_detect_open_vocab"), silently reintroducing a
+    frame-dependent profile on a host with nothing to read a frame from."""
     text = COMPOSE_PATH.read_text()
-    assert "VISION_ENABLED_PROFILES=vlm_caption" in text
+    profile_lines = [
+        line for line in text.splitlines() if "VISION_ENABLED_PROFILES=" in line
+    ]
+    assert len(profile_lines) == 1
+    assert profile_lines[0].strip().endswith("VISION_ENABLED_PROFILES=vlm_caption")
     assert "/mnt/telemetry" not in text

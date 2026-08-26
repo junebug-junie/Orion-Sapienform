@@ -14,12 +14,24 @@ async def main():
     parser.add_argument("--image", required=True, help="Path to image file")
     parser.add_argument("--prompts", default="person, cat", help="Comma sep prompts for detection")
     parser.add_argument("--url", default="redis://localhost:6379/0", help="Redis URL")
+    parser.add_argument(
+        "--channel",
+        default="orion:exec:request:VisionHostService",
+        help=(
+            "Intake channel to RPC. Defaults to the shared bare channel "
+            "(athena's instance) -- pass "
+            "orion:exec:request:VisionHostService:circe-vl to target the "
+            "dedicated circe Qwen2-VL lane instead (review finding: this "
+            "script had no way to target that lane, so a smoke test run "
+            "against it would silently hit athena's instance instead)."
+        ),
+    )
     args = parser.parse_args()
 
     bus = OrionBusAsync(url=args.url)
     await bus.connect()
 
-    request_channel = "orion:exec:request:VisionHostService"
+    request_channel = args.channel
     reply_channel = f"orion:vision:reply:{uuid.uuid4()}"
     correlation_id = str(uuid.uuid4())
 

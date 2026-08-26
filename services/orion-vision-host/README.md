@@ -69,6 +69,7 @@ nvidia-smi --query-gpu=index,name,memory.free --format=csv
 
 docker compose \
   --env-file .env \
+  --env-file services/orion-vision-host/.env \
   -f services/orion-vision-host/docker-compose.circe-qwen.yml \
   up -d --build
 
@@ -77,8 +78,11 @@ curl -fsS http://localhost:${CIRCE_QWEN_HOST_PORT:-6602}/ready
 ```
 
 Every `CIRCE_QWEN_*` key has a safe default baked into the compose file
-itself — no second `.env` file needed. Override one by exporting it before
-the command above (docker compose reads the real process environment too).
+itself, so the second `--env-file` above is optional for a first bring-up
+-- but include it anyway (AGENTS.md section 8's dual-env-file convention):
+an override made through the normal `sync_local_env_from_example.py`
+workflow lands in `services/orion-vision-host/.env`, and a bring-up that
+only passes the root `.env` would silently ignore it (review finding).
 
 Env keys: see `.env_example`'s "Circe Qwen2-VL lane" section.
 

@@ -6,22 +6,32 @@
 # shared bare one -- two consumers racing that channel already caused a
 # real incident, PR #1859/#1860).
 #
-# Same pattern as services/orion-llamacpp-host/docker-compose.atlas-workers.yml:
-# one compose file per additional named lane, hardcoded container name and
-# port -- not a second copy of the service directory. Every value this file
-# needs beyond the shared root .env (ORION_BUS_URL, PROJECT, LOG_LEVEL) has
-# a real default baked in below via ${VAR:-default} -- no second .env file
-# is required to bring this up.
+# Similar spirit to services/orion-llamacpp-host/docker-compose.atlas-workers.yml
+# (a second, differently-configured deployment of the same service image) --
+# not identical structure: that file puts FOUR named lanes as separate
+# service blocks in ONE compose file. This is the first circe-qwen-style
+# vision-host lane, so it gets its own file; if a second one is ever added,
+# put it as a second service block in THIS file (matching atlas-workers.yml's
+# real precedent), not a third top-level file.
+#
+# Every value this file needs beyond the shared root .env (ORION_BUS_URL,
+# PROJECT, LOG_LEVEL) has a real default baked in below via ${VAR:-default}
+# -- a second --env-file is optional, for overriding a default without
+# editing this file (e.g. CIRCE_QWEN_* keys already live in
+# services/orion-vision-host/.env via the normal sync script, same as any
+# other env override in this repo -- AGENTS.md section 8's "load BOTH the
+# root .env and the service's own .env" convention, so include it here too).
 #
 # Bring up from a worktree ON CIRCE (never the shared checkout):
 #   docker compose \
 #     --env-file .env \
+#     --env-file services/orion-vision-host/.env \
 #     -f services/orion-vision-host/docker-compose.circe-qwen.yml \
 #     up -d --build
 #
-# To override a default (e.g. a different physical GPU index) without
-# editing this file, export it before the command above -- docker compose
-# reads the real process environment too, not just --env-file:
+# To override a default one-off without touching either .env, export it
+# before the command above -- docker compose reads the real process
+# environment too, not just --env-file:
 #   CIRCE_QWEN_CUDA_VISIBLE_DEVICES=5 docker compose ...
 
 services:
@@ -50,7 +60,16 @@ services:
       # orion:exec:request:VisionHostService (athena's instance owns that).
       - CHANNEL_VISIONHOST_INTAKE=orion:exec:request:VisionHostService:circe-vl
       - CHANNEL_VISIONHOST_REPLY_PREFIX=orion:vision:reply
-      - CHANNEL_VISIONHOST_PUB=orion:vision:artifacts
+      # Isolated for the same reason as the intake channel above (review
+      # finding) -- main.py publishes an artifact broadcast on EVERY
+      # successful task unconditionally, and orion-vision-window's consumer
+      # falls back to a default stream key for an artifact with no
+      # stream_id/camera_id (which caption_frame calls never set), so a
+      # shared CHANNEL_VISIONHOST_PUB would let a synthetic dream caption
+      # land in the same projection bucket as a real camera frame. The
+      # caller (orion-thought) already gets the full result via the RPC
+      # reply -- nothing needs to consume this broadcast for this lane.
+      - CHANNEL_VISIONHOST_PUB=orion:vision:artifacts:circe-vl
 
       - MODEL_CACHE_DIR=/mnt/storage-warm/models/vision-circe-qwen
       - HF_HOME=/mnt/storage-warm/models/vision-circe-qwen/hf
@@ -88,6 +107,14 @@ services:
       - VISION_QUEUE_WHEN_BUSY=false
       - VISION_MAX_QUEUE=0
 
+      # Deliberately LOWER than settings.py's own tuned defaults
+      # (1200/1000/800) -- those were calibrated for athena's shared P4,
+      # co-hosting 4+ warm profiles at once (see .env_example's 2026-08-21
+      # recalibration note there). This lane is one small model alone on a
+      # 16GB card (~5.4GB used, ~11GB free measured live) -- no co-hosted
+      # workload to reserve headroom against, so lower floors are correct
+      # for this deployment, not merely un-migrated (review finding: this
+      # divergence had no comment explaining it before).
       - VISION_VRAM_RESERVE_MB=${VISION_VRAM_RESERVE_MB:-512}
       - VISION_VRAM_SOFT_FLOOR_MB=${VISION_VRAM_SOFT_FLOOR_MB:-1024}
       - VISION_VRAM_HARD_FLOOR_MB=${VISION_VRAM_HARD_FLOOR_MB:-512}

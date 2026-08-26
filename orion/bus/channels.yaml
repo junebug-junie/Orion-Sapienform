@@ -1100,6 +1100,22 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  # Isolated for the circe-qwen lane (2026-08-26) -- same reasoning as the
+  # isolated intake channel above: a caption_frame artifact never carries a
+  # stream_id/camera_id, and orion-vision-window's consumer falls back to a
+  # default stream key for one, so broadcasting on the SHARED
+  # orion:vision:artifacts would let a synthetic dream caption land in the
+  # same projection bucket as a real camera frame. No consumer needed --
+  # the only caller (orion-thought) already gets the full result via the
+  # RPC reply, not this broadcast.
+  - name: "orion:vision:artifacts:circe-vl"
+    kind: "event"
+    schema_id: "VisionArtifactPayload"
+    producer_services: ["orion-vision-host"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-08-26"
+
   - name: "orion:vision:edge:raw"
     kind: "event"
     schema_id: "VisionEdgeArtifact"

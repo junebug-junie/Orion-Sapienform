@@ -1,13 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 616,
+  "metric_count": 617,
   "_last_change": {
     "base": "merge base 921b66cb8 (origin/main)",
-    "change_count": 2,
+    "change_count": 3,
     "high_severity_count": 1,
     "changes": [
       "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:exec:request:VisionHostService (all_producers: \u2026ub', 'orion-thought', 'orion-vision-frame\u2026 -> \u2026ub', 'orion-vision-frame\u2026)",
-      "medium added metric://bus_channel/orion-thought/orion:exec:request:VisionHostService:circe-vl"
+      "medium added metric://bus_channel/orion-thought/orion:exec:request:VisionHostService:circe-vl",
+      "medium added metric://bus_channel/orion-vision-host/orion:vision:artifacts:circe-vl"
     ]
   },
   "definitions": {
@@ -2723,6 +2724,14 @@
         "orion-vision-frame-router",
         "orion-vision-host",
         "orion-vision-window"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-host/orion:vision:artifacts:circe-vl": {
+      "schema_id": "VisionArtifactPayload",
+      "all_producers": [
+        "orion-vision-host"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

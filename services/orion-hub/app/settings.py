@@ -494,37 +494,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
         default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"
     )
-    # How long a term stays "already investigated". A week, so Orion does not
-    # rediscover the same word every day it stays hot.
-    HUB_CURIOSITY_INVESTIGATION_TERM_TTL_SEC: int = Field(
-        default=604800, alias="HUB_CURIOSITY_INVESTIGATION_TERM_TTL_SEC"
+    # How much of Orion's own material to put in front of it. Enough to choose
+    # between, few enough that the menu does not crowd out its self-model in
+    # the turn's context. Sampled at RANDOM, not ranked -- any ordering would
+    # be this code choosing for Orion by the back door.
+    HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE: int = Field(
+        default=12, alias="HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE"
     )
-    # The comparison windows: "today" against "the fortnight before it".
-    HUB_CURIOSITY_INVESTIGATION_RECENT_HOURS: float = Field(
-        default=24.0, alias="HUB_CURIOSITY_INVESTIGATION_RECENT_HOURS"
-    )
-    HUB_CURIOSITY_INVESTIGATION_BASELINE_DAYS: float = Field(
-        default=14.0, alias="HUB_CURIOSITY_INVESTIGATION_BASELINE_DAYS"
-    )
-    # Where the transcript corpus is mounted. MUST equal the host path -- see
-    # the docker-compose volume comment for why remapping silently breaks
-    # cross-project subagent symlinks.
-    HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH: str = Field(
-        default="/home/athena/.claude/projects",
-        alias="HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH",
-    )
-    # Comma-separated fnmatch patterns of project directory names under
-    # PROJECTS_PATH that the detector may read. Empty = every project, which is
-    # the historical behaviour and NOT what the live value should be -- see the
-    # reader's own comment in scripts/main.py for why this exists.
-    HUB_CURIOSITY_INVESTIGATION_PROJECT_ALLOW: str = Field(
-        default="", alias="HUB_CURIOSITY_INVESTIGATION_PROJECT_ALLOW"
-    )
-    # Re-parse the transcript corpus at most this often. The parse is the
-    # expensive part; the loop's own cooldown means a stale-by-minutes corpus
-    # cannot change any decision.
-    HUB_CURIOSITY_INVESTIGATION_CORPUS_TTL_SEC: float = Field(
-        default=900.0, alias="HUB_CURIOSITY_INVESTIGATION_CORPUS_TTL_SEC"
+    HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE: int = Field(
+        default=6, alias="HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE"
     )
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(

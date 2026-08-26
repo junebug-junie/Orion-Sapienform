@@ -279,87 +279,6 @@ biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 
-def _build_curiosity_corpus_reader(
-    *, ttl_sec: float, projects_root: str, project_allow: str = ""
-):
-    """TTL-cached reader for Juniper's own typed words.
-
-    Two things this must not do, both measured 2026-08-26: parsing the local
-    Claude Code transcripts is ~7.8s of blocking IO over ~1.1 GB, so it must
-    never run on Hub's event loop (the loop calls this inside
-    `asyncio.to_thread`), and it must not re-run per tick. The loop's own
-    cooldown is hours long, so a corpus that is stale by minutes cannot change
-    any decision this feeds.
-
-    `iter_all_human_messages` is the already-in-production parser behind the
-    Juniper affective-state signal -- Juniper's typed turns only, never tool
-    results, hook output, slash-command scaffolding, or assistant text. No new
-    collection surface is opened here.
-    """
-    from fnmatch import fnmatch
-
-    from orion.dev_economics.claude_code_ingest import iter_all_human_messages
-
-    # PROJECT ALLOWLIST. `~/.claude/projects` is mounted wholesale, and
-    # `iter_all_human_messages` walks every project under it. Today that tree
-    # happens to contain only Orion's own directories, so today's exposure is
-    # "Orion's own dev vocabulary enters Orion's own journal" -- which is the
-    # point. But that is true by accident of current usage, not by
-    # construction, and this detector is tuned to surface precisely the thing
-    # that is unusual today. The first Claude Code session on a personal,
-    # medical, financial or third-party-confidential project would make that
-    # project's hottest word a candidate for a journal TITLE and an LLM prompt,
-    # with no config change and no notice.
-    #
-    # This is where the Hub mount genuinely differs from the
-    # orion-cocreation-signals one it mirrors: that service's only output is a
-    # NUMBER ("raw transcript content never leaves this container"), while this
-    # one puts verbatim terms into a prompt and a persisted journal entry. Same
-    # mount, categorically different downstream. Empty = allow everything,
-    # which is the historical behaviour and is what the live value avoids.
-    patterns = [p.strip() for p in (project_allow or "").split(",") if p.strip()]
-
-    def _allowed(path) -> bool:
-        if not patterns:
-            return True
-        try:
-            rel = path.relative_to(projects_root)
-            project = rel.parts[0] if rel.parts else ""
-        except (ValueError, AttributeError):
-            project = ""
-        return any(fnmatch(project, pattern) for pattern in patterns)
-
-    cache: dict[str, object] = {"at": 0.0, "messages": []}
-
-    def _read():
-        now = time.monotonic()
-        age = now - float(cache["at"])
-        if cache["messages"] and age < ttl_sec:
-            return cache["messages"]
-        try:
-            messages = [
-                (m.timestamp, m.text)
-                for m in iter_all_human_messages(projects_root)
-                if m.timestamp and _allowed(m.transcript_path)
-            ]
-        except Exception:  # noqa: BLE001 -- a corpus read must never break the loop
-            logger.warning("curiosity_corpus_read_failed", exc_info=True)
-            # Serve the stale copy rather than an empty one: an empty corpus
-            # reads as `underpowered`, which is honest, but throwing away a
-            # good cache on one bad read is worse than using it a little longer.
-            return cache["messages"]
-        # Messages BEFORE timestamp. Review finding 2026-08-26: written the
-        # other way round, a second caller could observe a fresh timestamp
-        # alongside the stale list and serve stale data for a full TTL. Only
-        # one caller exists today (the loop awaits ticks serially), so this is
-        # latent rather than live -- but the ordering costs nothing to get right.
-        cache["messages"] = messages
-        cache["at"] = now
-        return messages
-
-    return _read
-
-
 endogenous_outreach: Optional[EndogenousOutreach] = None
 curiosity_investigation: Optional[CuriosityInvestigation] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
@@ -601,15 +520,13 @@ async def startup_event():
                 daily_cap=settings.HUB_CURIOSITY_INVESTIGATION_DAILY_CAP,
                 timeout_sec=settings.HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC,
                 session_id=settings.HUB_CURIOSITY_INVESTIGATION_SESSION_ID,
-                term_mark_ttl_sec=settings.HUB_CURIOSITY_INVESTIGATION_TERM_TTL_SEC,
-                recent_hours=settings.HUB_CURIOSITY_INVESTIGATION_RECENT_HOURS,
-                baseline_days=settings.HUB_CURIOSITY_INVESTIGATION_BASELINE_DAYS,
+                crystallization_sample=settings.HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE,
+                relation_sample=settings.HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
-                message_source=_build_curiosity_corpus_reader(
-                    ttl_sec=settings.HUB_CURIOSITY_INVESTIGATION_CORPUS_TTL_SEC,
-                    projects_root=settings.HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH,
-                    project_allow=settings.HUB_CURIOSITY_INVESTIGATION_PROJECT_ALLOW,
-                ),
+                # The same asyncpg pool crystallization_routes.py reads. Passed
+                # as a callable rather than a value because the pool is created
+                # later in startup than this construction.
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
                 source_ref=ServiceRef(
                     name=settings.SERVICE_NAME,
                     version=settings.SERVICE_VERSION,

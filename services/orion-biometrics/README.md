@@ -310,13 +310,51 @@ Setup / flash / smokes: `scripts/setup_athena_cabinet_sensors.sh`,
 and the extended `scripts/smoke_field_digester_biometrics.sh`.
 
 **Non-goals:** Arduino audio; absolute comfort/AQI thresholds in v1; overloading host
-`thermal_pressure` / `fan_pressure`. Athena's USB microphone is a separate host-audio path;
-see `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md`.
+`thermal_pressure` / `fan_pressure`.
 
 Env: `CABINET_SENSORS_PATH` (default `/run/orion-sensors/latest.json`),
 `CABINET_SENSOR_STALE_AFTER_SEC` (default `10`). Missing/stale ⇒ omit cabinet measurement keys
 (never zero-fill).
 
-Ambient audio env: `AMBIENT_AUDIO_PATH` (default `/run/orion-audio/latest.json`) and
+## Cabinet ambient audio (Athena USB mic, levels-only)
+
+Continuous CMTECK (or configured ALSA) noise levels — RMS/peak only, no Whisper.
+Design: `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md`.
+
+```text
+CMTECK ALSA → host systemd reader → /run/orion-audio/latest.json
+  → orion-biometrics (ro bind) sample.ambient_audio
+  → measurements cabinet_ambient_rms / cabinet_ambient_peak
+  → pressure cabinet_ambient_audio_activity (baseline-relative EWMA)
+  → grammar → substrate pressure_hints → field-digester (mode=replace)
+```
+
+**Host setup (once per Athena):**
+
+```bash
+sudo scripts/setup_athena_ambient_audio.sh
+# re-login or: newgrp audio
+scripts/smoke_athena_ambient_audio.sh
+```
+
+Then rebuild/restart this service so the `/run/orion-audio` bind and env are live, and:
+
+```bash
+scripts/smoke_biometrics_ambient_audio.sh
+```
+
+That smoke waits up to ~75s for a biometrics tick (`TELEMETRY_INTERVAL` default 30s).
+A fresh host snapshot alone is not enough — ambient only appears on
+`/raw/recent` after the next publish.
+
+Env: `AMBIENT_AUDIO_PATH` (default `/run/orion-audio/latest.json`),
 `AMBIENT_AUDIO_STALE_AFTER_SEC` (default `5`). Missing/stale snapshots omit ambient
 measurement and pressure keys; ambient activity never participates in host `peak_pressure`.
+
+**Quick live checks:**
+
+```bash
+cat /run/orion-audio/latest.json
+curl -fsS http://127.0.0.1:8100/raw/recent?limit=3 | jq '.items[].sample.ambient_audio'
+curl -fsS http://127.0.0.1:8100/snapshot | jq '.nodes.athena.summary.pressures.cabinet_ambient_audio_activity'
+```

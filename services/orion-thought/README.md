@@ -306,11 +306,21 @@ initial merge — the compose file shipped with no `volumes:` block at all)
 `/mnt/storage-lukewarm/orion/reverie-visual` — without it,
 `store_visual_artifact` writes into the container's own ephemeral
 filesystem at that path, not the real host disk, and every generated image
-silently vanishes on the next container restart/recreate. New producer on the existing
-shared `orion:exec:request:VisionHostService` / `orion:vision:reply:*`
-channel pair (`orion/bus/channels.yaml`) — that channel already supports
-multiple producers (`single_consumer: true` means one *consumer*, not one
-producer).
+silently vanishes on the next container restart/recreate.
+
+**Re-observation target moved 2026-08-26.** Originally a new producer on
+the existing shared `orion:exec:request:VisionHostService` channel
+(`single_consumer: true` means one *consumer*, not one producer, so this
+was a safe multi-producer addition at the time). Moved to circe's
+dedicated `orion:exec:request:VisionHostService:circe-vl` lane
+(`services/orion-vision-host/docker-compose.circe-qwen.yml`) after live
+confirmation that athena's shared instance (BLIP-base) cannot produce a
+caption real enough to clear `sanitize_caption`'s quality bar for a
+*generated* image — 3/3 real ticks on the shared channel came back
+uncaptioned; the very first tick against circe's Qwen2-VL-2B-Instruct
+produced a real, detailed caption and `prior_description` advanced for the
+first time in this feature's life. Replies still land on the shared
+`orion:vision:reply:*` wildcard pattern either way.
 
 Flags:
 
@@ -324,7 +334,7 @@ Flags:
 | `ORION_VISUAL_CHAIN_PERCEPT_STORE_URL` | `http://orion-athena-percept-store:8000/percepts` | Cross-host hop to vision-host |
 | `ORION_VISUAL_CHAIN_PERCEPT_STORE_TOKEN` | *(empty)* | `X-Orion-Percept-Token`, if the store requires one |
 | `ORION_VISUAL_CHAIN_PERCEPT_UPLOAD_TIMEOUT_SEC` | `10` | Percept upload timeout |
-| `CHANNEL_VISION_HOST_REQUEST` | `orion:exec:request:VisionHostService` | Shared vision-host intake |
+| `CHANNEL_VISION_HOST_REQUEST` | `orion:exec:request:VisionHostService:circe-vl` | circe's dedicated Qwen2-VL vision-host lane |
 | `CHANNEL_VISION_REPLY_PREFIX` | `orion:vision:reply` | Per-call reply channel prefix |
 | `ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC` | `60` | Vision-host RPC timeout |
 

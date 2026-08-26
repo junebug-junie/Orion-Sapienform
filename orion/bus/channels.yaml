@@ -513,11 +513,13 @@ channels:
   - name: "orion:exec:request:VisionHostService"
     kind: "request"
     schema_id: "VisionTaskRequestPayload"
-    # orion-thought added 2026-08-25 (reverie visual chain, Patch 2 of
-    # docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md) --
-    # re-observes a generated image via the existing caption_frame task +
-    # percept_sha256, no vision-host code change needed.
-    producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host", "orion-vision-frame-router", "orion-thought"]
+    # orion-thought was briefly a producer here 2026-08-25 (reverie visual
+    # chain, Patch 2) -- moved to the dedicated
+    # "orion:exec:request:VisionHostService:circe-vl" lane below 2026-08-26
+    # after live-confirming this shared instance's BLIP-base cannot produce
+    # a caption real enough to clear sanitize_caption for a *generated*
+    # image (3/3 real ticks came back uncaptioned).
+    producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host", "orion-vision-frame-router"]
     consumer_services: ["orion-vision-host"]
     single_consumer: true
     stability: "experimental"

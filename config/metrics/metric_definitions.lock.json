@@ -3,9 +3,10 @@
   "metric_count": 616,
   "_last_change": {
     "base": "merge base 921b66cb8 (origin/main)",
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 2,
+    "high_severity_count": 1,
     "changes": [
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:exec:request:VisionHostService (all_producers: \u2026ub', 'orion-thought', 'orion-vision-frame\u2026 -> \u2026ub', 'orion-vision-frame\u2026)",
       "medium added metric://bus_channel/orion-thought/orion:exec:request:VisionHostService:circe-vl"
     ]
   },
@@ -813,7 +814,6 @@
       "all_producers": [
         "orion-cortex-exec",
         "orion-hub",
-        "orion-thought",
         "orion-vision-frame-router",
         "orion-vision-host"
       ],

@@ -203,19 +203,42 @@ larger, riskier work than this patch's scope. MTCNN already does its own
 face localization on a full image without needing a person crop first, so
 this is a real simplification, not a silently dropped requirement.
 
-**Known, accepted residual exposure:** `orion-vision-frame-router` (and any
-other `orion:vision:reply:*` wildcard subscriber) fully Pydantic-
-deserializes every `identity_face` reply -- including the real
-subject/similarity/state hypothesis -- before checking whether the
-correlation id belongs to a request it made, then discards it. Confirmed
-live in `dispatcher.py`. Real, but transient: never logged, persisted, or
-forwarded downstream. `CHANNEL_VISIONHOST_PUB`'s broadcast is closed (see
-the non-negotiable above, content-based not just task-type-keyed); this
-reply-channel fan-out is a separate, narrower, still-open surface --
-closing it properly needs either a non-wildcarded reply lane for this
-task_type or a redesign of frame-router's own subscribe-then-filter
-pattern, both out of scope here. Accepted as a known trade-off (Juniper's
-explicit call, 2026-08-26) rather than left unmentioned.
+**Wildcard reply-channel fan-out -- narrowed 2026-08-26, not fully closed:**
+`orion-vision-frame-router`'s `dispatcher.py::_handle_reply_envelope_inner`
+was found to fully Pydantic-deserialize every `identity_face` reply --
+including the real subject/similarity/state hypothesis -- before checking
+whether the correlation id belonged to a request it made, then discard it.
+Fixed by reordering: `RouterState.clear_pending()` only needs
+`env.correlation_id` (already on the envelope, no payload parsing
+required), so it now runs before `VisionTaskResultPayload.model_validate`
+instead of after -- typed deserialization and trigger-label extraction now
+only happen for corr_ids frame-router actually dispatched.
+
+**What this does NOT close, verified live:** `main.py`'s `_reply_loop`
+calls `self.bus.codec.decode(data)` -- a full JSON decode into
+`BaseEnvelope.payload: Dict[str, Any]` -- for every message on the
+wildcard pattern *before* `dispatcher.handle_reply_envelope` is ever
+invoked. That raw dict, containing the same subject/similarity/state
+fields as plain values, is already resident in process memory by the time
+this fix's ownership check runs; the fix narrows *further* processing
+(the typed model, label extraction) for unowned replies, it does not
+prevent the bus client itself from decoding an unowned reply's payload in
+the first place. Closing that fully would mean either a non-wildcarded
+reply lane for `identity_face` or changing what the bus codec decodes
+before per-message dispatch -- both out of scope here. `orion/bus/
+channels.yaml` documents `orion:vision:reply:*` as an intentional
+multi-subscriber fan-out channel (`consumer_services: ["*"]`), and nothing
+bus-level enforces "check ownership before parsing payload" as a property
+of that channel -- a future wildcard subscriber implementing its own
+reply handler could reintroduce the narrower (typed-deserialize) version
+of this exposure without violating any existing gate. Pre-existing
+property of every task_type's reply channel, not identity_face-specific --
+addressed here because identity_face is the first task_type where the
+content is privacy-sensitive. See
+`services/orion-vision-frame-router/app/dispatcher.py` and its
+`test_reply_for_unowned_correlation_id_never_deserializes_payload` /
+`test_owned_reply_with_malformed_payload_is_not_counted_as_a_valid_reply`
+tests.
 
 **Not built here:** wiring the resulting hypothesis into
 `orion-vision-council`'s evidence-grounding context as the design doc's

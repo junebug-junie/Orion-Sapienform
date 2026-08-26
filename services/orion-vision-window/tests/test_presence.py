@@ -161,6 +161,48 @@ def test_identity_hint_with_subject_unknown_is_a_no_op() -> None:
     assert snap["subject"] == "unknown"
 
 
+# -- identity_uncertain -------------------------------------------------------
+
+
+def test_uncertain_confidence_sets_identity_uncertain_when_present() -> None:
+    t = _tracker()
+    snap = t.observe(PERSON, now=0.0, identity_confidence="uncertain")
+    assert snap["identity_uncertain"] is True
+
+
+def test_confirmed_confidence_does_not_set_identity_uncertain() -> None:
+    t = _tracker()
+    snap = t.observe(PERSON, now=0.0, identity_confidence="confirmed")
+    assert snap["identity_uncertain"] is False
+
+
+def test_no_confidence_at_all_is_not_uncertain() -> None:
+    """The subsystem simply not running/no fresh read must render as silence,
+    not as a false 'I don't recognize you' -- this is the exact distinction
+    Juniper asked for: broken/not-running must never speak up."""
+    t = _tracker()
+    snap = t.observe(PERSON, now=0.0, identity_confidence=None)
+    assert snap["identity_uncertain"] is False
+
+
+def test_uncertain_confidence_while_only_recent_is_not_uncertain() -> None:
+    """Asking about someone who already stepped out of frame is exactly the
+    awkwardness identity_uncertain exists to avoid -- only present_now
+    qualifies, never 'recent'."""
+    t = _tracker(grace_sec=120.0)
+    t.observe(PERSON, now=0.0, identity_confidence="uncertain")
+    snap = t.observe(EMPTY, now=60.0, identity_confidence="uncertain")  # recent, not present
+    assert snap["state"] == "recent"
+    assert snap["identity_uncertain"] is False
+
+
+def test_uncertain_confidence_while_absent_is_not_uncertain() -> None:
+    t = _tracker()
+    snap = t.observe(EMPTY, now=0.0, identity_confidence="uncertain")
+    assert snap["state"] == "absent"
+    assert snap["identity_uncertain"] is False
+
+
 def test_registry_current_snapshot_reflects_last_observe_regardless_of_write_gate() -> None:
     """current_snapshot() must return the fresh subject on every call, not
     just on the Postgres-write-rate-limited cadence record() itself gates."""

@@ -295,11 +295,25 @@ class PerceptionContextV1(BaseModel):
 
     **The exposed-field list is the privacy contract, and it is short on
     purpose.** Only a natural-language scene summary and its age cross into the
-    prompt. Deliberately absent, and not to be added without proposal-mode
-    sign-off: raw frames or frame paths, bounding boxes, per-object detections,
-    embeddings, and anything identity-bearing (`vision_events.entities`, faces,
-    re-ID). The perception design doc lists identity/face/re-ID as a non-goal;
-    this schema is where that promise is kept or broken.
+    prompt by default. Deliberately absent, and not to be added without
+    proposal-mode sign-off: raw frames or frame paths, bounding boxes,
+    per-object detections, embeddings, names of anyone other than the one
+    enrolled subject, and any raw identity artifact (`vision_events.entities`,
+    faces, re-ID vectors). The perception design doc lists identity/face/re-ID
+    as a non-goal for THAT surface; this schema is where that promise is kept
+    or broken.
+
+    **Narrowed 2026-08-26, Juniper's direct ask**: two coarse,
+    already-hedged identity SIGNALS now do cross this boundary --
+    `presence_subject` (a name, only ever the one enrolled subject, only ever
+    on a probable/possible match -- see `presence.py`'s own docstring) and
+    `presence_identity_uncertain` (a bare boolean, gated by a cross-process
+    cooldown so it can drive at most one "is that you?" per sit-down, never a
+    repeating one). Neither carries a frame, a box, an embedding, or a raw
+    model score -- both are the SAME kind of derived, hedged fact this
+    schema already exposed for camera presence duration before identity
+    entered the picture at all. Everything else in the excluded list above
+    remains excluded.
 
     `available=False` is a real state, not an error state: it is how "I have not
     seen anything recently" is represented, and it must render as exactly that
@@ -325,19 +339,25 @@ class PerceptionContextV1(BaseModel):
 
     # Embodied presence (orion-vision-window's `substrate_embodied_presence`,
     # see that service's app/presence.py) folded into `scene_summary` as a
-    # sentence fragment -- "someone has been in view for..." -- AND exposed
-    # here as small structured fields for a non-prompt consumer (a debug
-    # surface, say) that would rather read a number than parse prose.
+    # sentence fragment -- "someone has been in view for..." (never a name,
+    # by that fragment builder's own design) -- AND exposed here as small
+    # structured fields for a non-prompt consumer (a debug surface, say)
+    # that would rather read a number than parse prose.
     #
-    # `presence_subject` stays within the SAME "unknown" honesty the writer
-    # already commits to: no identity signal exists yet, so this is never
-    # "juniper". Adding it here does not widen the privacy contract this
-    # schema's docstring names -- a duration and a state are not raw frames,
-    # boxes, detections, embeddings, or identity, which is the actual list
-    # that clause gates.
+    # `presence_subject` is "unknown" or "none" UNLESS `identity_face` has
+    # produced a fresh probable/possible match for the one enrolled subject,
+    # in which case it is that subject's real name -- see `presence.py`'s
+    # own docstring for the exact narrowing rule and its staleness/stickiness
+    # guards. `presence_identity_uncertain` is True only when a real person
+    # is currently believed present AND the most recent identity_face read
+    # genuinely did not match (not "never ran") -- see the class docstring
+    # above for the 2026-08-26 scope note and `identity_ask_cooldown.py` for
+    # the anti-repetition gate that decides whether this ever reaches True in
+    # a given turn.
     presence_state: Optional[str] = None            # "present" | "recent" | "absent"
     presence_since_sec: Optional[float] = None
-    presence_subject: Optional[str] = None           # "unknown" | "none"
+    presence_subject: Optional[str] = None           # "unknown" | "none" | a real name
+    presence_identity_uncertain: bool = False
 
 
 class AffectContextV1(BaseModel):

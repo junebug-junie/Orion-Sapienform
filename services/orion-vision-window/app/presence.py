@@ -27,6 +27,21 @@ checked it is fresh enough to speak to *now*. No hint, or a stale/unsure one,
 and this stays exactly the `"unknown"` the design doc's own honesty
 discipline requires.
 
+**`identity_uncertain` is the mirror-image signal, added the same day the
+unified turn started reading `subject`** (Juniper, 2026-08-26: "have Orion
+say something ... this is not Juniper with confidence" -- a friendly
+clarifying question, never asked when it IS Juniper, never asked when the
+subsystem isn't running). `identity_confidence` (from `projection.
+identity_confidence_from_artifact`, `"confirmed"` | `"uncertain"` | `None`)
+carries the one distinction `identity_hint` above deliberately throws away:
+a face that was DETECTED and did NOT match, vs. no signal at all. `observe()`
+only ever sets `identity_uncertain=True` when a person is believed present
+RIGHT NOW (`present_now`, not merely `"recent"`) -- asking about someone who
+already stepped out of frame is exactly the awkwardness this exists to
+avoid. The caller (WindowService) also owns a cross-process cooldown so this
+question gets asked at most once per sit-down, not every turn -- see
+`orion.situational.identity_ask_cooldown`.
+
 `state` mirrors `hub_presence`'s `active | idle | dormant` with camera-shaped
 names: `present` (seen in the most recent window), `recent` (not seen just
 now, but within `grace_sec` -- covers a bathroom break without flapping to
@@ -75,6 +90,7 @@ class PresenceTracker:
         *,
         now: float,
         identity_hint: Optional[dict[str, Any]] = None,
+        identity_confidence: Optional[str] = None,
     ) -> dict[str, Any]:
         """``identity_hint``, when given, is ``{"subject": ..., "state": ...}``
         from a FRESH identity_face hypothesis -- staleness is the caller's
@@ -86,6 +102,12 @@ class PresenceTracker:
         `"none"` (nobody believed present): an identity hint that arrived a
         beat late for a person who already left is not evidence anyone is
         here now.
+
+        ``identity_confidence`` (``"confirmed"`` | `"uncertain"`` | `None``,
+        same freshness contract as ``identity_hint`` -- caller's job) drives
+        the separate ``identity_uncertain`` output field. Only ever True when
+        `present_now` -- see the module docstring for why `"recent"` doesn't
+        qualify.
         """
         present_now = self._subject_label in believed_labels
         if present_now:
@@ -116,11 +138,14 @@ class PresenceTracker:
         ):
             subject = str(identity_hint["subject"])
 
+        identity_uncertain = bool(present_now and identity_confidence == "uncertain")
+
         snapshot = {
             "state": self._state,
             "since_sec": round(now - self._state_since, 1),
             "last_seen_sec": last_seen_sec,
             "subject": subject,
+            "identity_uncertain": identity_uncertain,
         }
         self._last_snapshot = snapshot
         return snapshot
@@ -153,6 +178,7 @@ class PresenceRegistry:
         *,
         now: Optional[float] = None,
         identity_hint: Optional[dict[str, Any]] = None,
+        identity_confidence: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Update the tracker and return the snapshot ONLY when a Postgres
         write is due (rate-limited) -- unchanged contract, never raises.
@@ -170,7 +196,9 @@ class PresenceRegistry:
         """
         try:
             ts = float(now if now is not None else time.time())
-            snapshot = self._tracker(stream_id).observe(believed_labels, now=ts, identity_hint=identity_hint)
+            snapshot = self._tracker(stream_id).observe(
+                believed_labels, now=ts, identity_hint=identity_hint, identity_confidence=identity_confidence
+            )
             last_write = self._last_write_at.get(stream_id, 0.0)
             due = (ts - last_write) >= self._write_min_interval_sec
             if due:

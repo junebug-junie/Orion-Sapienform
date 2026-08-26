@@ -8,6 +8,7 @@ from app.projection import (
     artifact_uris_from_artifact,
     build_window_payload,
     envelope_to_http_dict,
+    identity_confidence_from_artifact,
     identity_hint_from_artifact,
     stream_key_from_artifact,
 )
@@ -91,6 +92,67 @@ def test_identity_hint_none_for_non_identity_artifact():
     not raise, must not fabricate a hint."""
     art = _artifact(task_type="retina_fast")
     assert identity_hint_from_artifact(art) is None
+
+
+# -- identity_confidence_from_artifact ----------------------------------------
+# Unlike identity_hint_from_artifact above, this one is deliberately NOT
+# silent about "unsure" -- see its own docstring for why (the unified-turn
+# clarifying-question feature needs exactly that distinction).
+
+
+def test_identity_confidence_confirmed_for_probable_match():
+    art = _identity_artifact(
+        [{"subject": "juniper", "similarity": 0.61, "state": "probable", "detect_confidence": 0.95}]
+    )
+    assert identity_confidence_from_artifact(art) == "confirmed"
+
+
+def test_identity_confidence_confirmed_for_possible_match():
+    art = _identity_artifact(
+        [{"subject": "juniper", "similarity": 0.4, "state": "possible", "detect_confidence": 0.9}]
+    )
+    assert identity_confidence_from_artifact(art) == "confirmed"
+
+
+def test_identity_confidence_uncertain_for_a_real_unmatched_face():
+    """A face WAS detected and genuinely did not match -- the case
+    identity_hint_from_artifact discards, this one exists to preserve."""
+    art = _identity_artifact(
+        [{"subject": "unknown", "similarity": 0.1, "state": "unsure", "detect_confidence": 0.9}]
+    )
+    assert identity_confidence_from_artifact(art) == "uncertain"
+
+
+def test_identity_confidence_picks_the_best_candidate_across_multiple_faces():
+    art = _identity_artifact(
+        [
+            {"subject": "unknown", "similarity": 0.1, "state": "unsure", "detect_confidence": 0.9},
+            {"subject": "juniper", "similarity": 0.61, "state": "probable", "detect_confidence": 0.95},
+        ]
+    )
+    assert identity_confidence_from_artifact(art) == "confirmed"
+
+
+def test_identity_confidence_none_when_no_face_detected():
+    """No candidates at all -- genuinely no signal, not "uncertain"."""
+    art = _identity_artifact([])
+    assert identity_confidence_from_artifact(art) is None
+
+
+def test_identity_confidence_none_for_not_enrolled_reason():
+    """A candidate whose `reason` is `not_enrolled` reflects an empty
+    gallery (a config problem), not a stranger at the camera -- must read
+    as no-signal, never as 'uncertain', or an operator error would
+    masquerade as Orion failing to recognize a real person."""
+    art = _identity_artifact(
+        [{"subject": "unknown", "similarity": None, "state": "unsure", "reason": "not_enrolled"}]
+    )
+    assert identity_confidence_from_artifact(art) is None
+
+
+def test_identity_confidence_none_for_non_identity_artifact():
+    art = _artifact(task_type="retina_fast")
+    assert identity_confidence_from_artifact(art) is None
 
 
 def test_artifact_uris_caps():

@@ -73,6 +73,42 @@ def identity_hint_from_artifact(art: VisionArtifactPayload) -> Optional[Dict[str
     }
 
 
+def identity_confidence_from_artifact(art: VisionArtifactPayload) -> Optional[str]:
+    """Coarse identity-match confidence for this artifact's best detected
+    face: ``"confirmed"`` | ``"uncertain"`` | ``None`` (no usable signal).
+
+    Deliberately does NOT collapse ``"unsure"`` into ``None`` the way
+    ``identity_hint_from_artifact`` does above -- that function's silence
+    protects presence/council from asserting a shaky guess as a name. This
+    one exists for a different consumer (the unified-turn clarifying-
+    question feature, `docs/superpowers/specs/2026-08-21-seeing-juniper-
+    identity-and-situated-observation-design.md` extended 2026-08-26) that
+    needs exactly the distinction the other function throws away: "a face
+    was detected and did not match" vs. "identity never ran at all."
+
+    A candidate whose ``reason`` is ``"not_enrolled"`` (empty gallery -- a
+    config problem, not a stranger) is excluded from consideration entirely
+    -- it must read as no-signal, not as "uncertain," or an operator error
+    would masquerade as Orion not recognizing a real person.
+    """
+    identities = getattr(art.outputs, "identities", None)
+    if not isinstance(identities, dict):
+        return None
+    candidates = identities.get("candidates") or []
+    real_candidates = [
+        c for c in candidates if isinstance(c, dict) and c.get("reason") != "not_enrolled"
+    ]
+    if not real_candidates:
+        return None
+    best = max(real_candidates, key=lambda c: c.get("similarity") or 0.0)
+    state = best.get("state")
+    if state in ("probable", "possible") and best.get("subject") and best.get("subject") != "unknown":
+        return "confirmed"
+    if state == "unsure":
+        return "uncertain"
+    return None
+
+
 def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:
     """Lightweight URI/path pointers only; no frame bytes (spec §3, §9)."""
     out: List[str] = []

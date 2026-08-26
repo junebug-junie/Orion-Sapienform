@@ -52,7 +52,16 @@ services:
       - SERVICE_NAME=orion-vision-host-circe-qwen
 
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
-      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      # CIRCE_QWEN_-prefixed: same collision class as the VRAM/percept-store
+      # keys below -- a bare name here reads whatever
+      # services/orion-vision-host/.env sets for the shared athena instance
+      # (true) the moment that file is bootstrapped from .env_example,
+      # silently discarding this lane's own intended default. Confirmed live
+      # 2026-08-26 alongside the other two collisions; harmless so far (no
+      # catalog rejections observed -- this lane's payload schemas are
+      # already fleet-registered) but fixed for the same reason, not left as
+      # a known-benign exception to an otherwise-fixed bug class.
+      - ORION_BUS_ENFORCE_CATALOG=${CIRCE_QWEN_ORION_BUS_ENFORCE_CATALOG:-false}
       - ORION_BUS_URL=${ORION_BUS_URL}
       - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
 
@@ -100,7 +109,7 @@ services:
       - VISION_DEVICE_STRATEGY=fixed
       - VISION_DEFAULT_DEVICE=cuda:0
       - VISION_DTYPE=fp16
-      - VISION_TIMEOUT_S=${VISION_TIMEOUT_S:-30}
+      - VISION_TIMEOUT_S=${CIRCE_QWEN_VISION_TIMEOUT_S:-30}
 
       # No queueing needed -- single caller (orion-thought's visual chain),
       # single-flight by its own design (services/orion-thought/app/
@@ -118,9 +127,20 @@ services:
       # workload to reserve headroom against, so lower floors are correct
       # for this deployment, not merely un-migrated (review finding: this
       # divergence had no comment explaining it before).
-      - VISION_VRAM_RESERVE_MB=${VISION_VRAM_RESERVE_MB:-512}
-      - VISION_VRAM_SOFT_FLOOR_MB=${VISION_VRAM_SOFT_FLOOR_MB:-1024}
-      - VISION_VRAM_HARD_FLOOR_MB=${VISION_VRAM_HARD_FLOOR_MB:-512}
+      #
+      # CIRCE_QWEN_-prefixed, not the bare VISION_VRAM_* name: a bare name
+      # here reads whatever services/orion-vision-host/.env sets for the
+      # SHARED athena instance (1200/1000/800) the moment that file is
+      # bootstrapped from .env_example, silently discarding these lane-
+      # specific defaults with no error. Confirmed live, 2026-08-26: a fresh
+      # `.env` on circe (copied from .env_example to satisfy this file's own
+      # documented --env-file requirement) put 1200/1000/800 into this
+      # container instead of 512/1024/512 -- harmless here only because the
+      # P100 has enough headroom to absorb it, but the same shadowing broke
+      # VISION_PERCEPT_STORE_URL below in a way that was NOT harmless.
+      - VISION_VRAM_RESERVE_MB=${CIRCE_QWEN_VISION_VRAM_RESERVE_MB:-512}
+      - VISION_VRAM_SOFT_FLOOR_MB=${CIRCE_QWEN_VISION_VRAM_SOFT_FLOOR_MB:-1024}
+      - VISION_VRAM_HARD_FLOOR_MB=${CIRCE_QWEN_VISION_VRAM_HARD_FLOOR_MB:-512}
 
       - TORCH_CUDA_ALLOC_CONF=${TORCH_CUDA_ALLOC_CONF:-}
 
@@ -134,10 +154,20 @@ services:
       # the docker-internal service name (orion-athena-percept-store) only
       # resolves on athena's OWN docker network. Live-caught deploying this
       # lane: "Temporary failure in name resolution" the first time this
-      # exact default was a bare hostname. Must be the real tailscale IP.
-      - VISION_PERCEPT_STORE_URL=${VISION_PERCEPT_STORE_URL:-http://100.92.216.81:8021/percepts}
-      - VISION_PERCEPT_STORE_TOKEN=${VISION_PERCEPT_STORE_TOKEN:-}
-      - VISION_PERCEPT_TIMEOUT_SEC=${VISION_PERCEPT_TIMEOUT_SEC:-10.0}
+      # exact default was a bare hostname.
+      #
+      # CIRCE_QWEN_-prefixed (real regression, not hypothetical, 2026-08-26):
+      # the bare VISION_PERCEPT_STORE_URL name was silently overridden back
+      # to the athena-only docker-internal hostname the moment
+      # services/orion-vision-host/.env was bootstrapped from .env_example
+      # for this host -- confirmed live in the reverie visual chain's own
+      # tick log (error_code=image_not_found, "Temporary failure in name
+      # resolution") despite this compose file's own default being correct.
+      # Same collision class as the VRAM floors above, just with a real
+      # functional break instead of a silent, harmless overshoot.
+      - VISION_PERCEPT_STORE_URL=${CIRCE_QWEN_VISION_PERCEPT_STORE_URL:-http://100.92.216.81:8021/percepts}
+      - VISION_PERCEPT_STORE_TOKEN=${CIRCE_QWEN_VISION_PERCEPT_STORE_TOKEN:-}
+      - VISION_PERCEPT_TIMEOUT_SEC=${CIRCE_QWEN_VISION_PERCEPT_TIMEOUT_SEC:-10.0}
 
       # No camera here -- liveness alerting (built for "is the camera still
       # producing frames") doesn't apply to an on-demand re-observation lane.

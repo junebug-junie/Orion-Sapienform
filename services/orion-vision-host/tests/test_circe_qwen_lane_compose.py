@@ -56,6 +56,44 @@ def test_circe_qwen_lane_disables_artifact_broadcast():
     assert "CHANNEL_VISIONHOST_PUB=" not in text
 
 
+def test_circe_qwen_lane_overrides_use_prefixed_keys_not_shared_names():
+    """Real regression, 2026-08-26: this file used to read
+    VISION_PERCEPT_STORE_URL, VISION_VRAM_RESERVE_MB/SOFT_FLOOR_MB/
+    HARD_FLOOR_MB, VISION_TIMEOUT_S, and ORION_BUS_ENFORCE_CATALOG as bare
+    `${VAR:-<circe-correct-default>}` hooks. The shared athena instance's
+    own .env_example sets every one of those same bare names to a DIFFERENT
+    value for its own (correct, for athena) purposes. The moment
+    services/orion-vision-host/.env exists at all (this compose file's own
+    bring-up instructions require passing it as a --env-file), those
+    athena-only values silently won over this lane's real defaults with no
+    error -- confirmed live via the reverie visual chain's tick log going
+    image_not_found on the athena-only docker-internal percept-store
+    hostname. CIRCE_QWEN_-prefixing every lane-specific override is what
+    actually closes the collision class; assert directly against the bare
+    names never appearing as a live override hook for these six keys, not
+    just that the CIRCE_QWEN_ prefixed ones exist (a future edit could add
+    the prefixed hook back as a second, redundant fallback while leaving
+    the bare one in place, keeping the bug)."""
+    text = COMPOSE_PATH.read_text()
+    bare_names = [
+        "VISION_PERCEPT_STORE_URL",
+        "VISION_PERCEPT_STORE_TOKEN",
+        "VISION_PERCEPT_TIMEOUT_SEC",
+        "VISION_VRAM_RESERVE_MB",
+        "VISION_VRAM_SOFT_FLOOR_MB",
+        "VISION_VRAM_HARD_FLOOR_MB",
+        "VISION_TIMEOUT_S",
+        "ORION_BUS_ENFORCE_CATALOG",
+    ]
+    for name in bare_names:
+        assert f"${{{name}:" not in text, (
+            f"{name} must be read via its CIRCE_QWEN_{name} override hook, "
+            "not the bare shared name -- see the collision this regression "
+            "guard is named for"
+        )
+        assert f"CIRCE_QWEN_{name}" in text
+
+
 def test_circe_qwen_lane_has_no_camera_frame_dependencies():
     """circe shares no filesystem with athena (see README/.env_example) --
     this lane must never enable a profile or path that assumes local frame

@@ -1,8 +1,8 @@
 # Hub Cabinet ambient audio charts (multi-day) — design
 
 Date: 2026-08-26  
-Status: draft pending Juniper review of written spec  
-Worktree intent: `/mnt/scripts/Orion-Sapienform-hub-cabinet-ambient-charts` → `feat/hub-cabinet-ambient-charts`
+Status: implemented on `feat/hub-cabinet-ambient-charts` — awaiting merge
+Worktree: `/mnt/scripts/Orion-Sapienform-hub-cabinet-ambient-charts` on `feat/hub-cabinet-ambient-charts`
 
 ## Arsonist summary
 
@@ -208,9 +208,8 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS orion_biometrics_summary_node_ts_idx
 
 ## Recommended next patch
 
-1. Writing-plans → implementation plan from this spec.
-2. Worktree `feat/hub-cabinet-ambient-charts`: index + history/latest APIs + Cabinet UI + tests.
-3. Live Hub smoke: open `#cabinet`, toggle 24h/3d, confirm RMS/activity charts against known noisy cabinet.
+1. Merge `feat/hub-cabinet-ambient-charts` after operator smoke on Athena Hub (`#cabinet` → ambient chips + 24h/3d/7d charts).
+2. Optional v2: Nano channel sparklines (explicitly out of scope here).
 
 ## Related
 

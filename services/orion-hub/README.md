@@ -1635,6 +1635,34 @@ Open Hub → **Cabinet**. Missing snapshot shows a no-snapshot message naming
 `orion-cabinet-sensors.service`. Pressure strip is labeled **activity (Hub)** (process-local
 baselines; operator-debug only).
 
+### Cabinet ambient audio (live + multi-day charts)
+
+Below the Nano tiles, **Cabinet ambient audio** shows live RMS/peak/age from the host ALSA
+reader and 24h / 3d / 7d RMS + activity charts from Postgres `orion_biometrics_summary`
+(~30s biometrics grain — not 1 Hz host reader). Spec:
+`docs/superpowers/specs/2026-08-26-hub-cabinet-ambient-audio-charts-design.md`.
+
+**Operator setup (in addition to Nano sensors above)**
+
+1. Host reader writing `/run/orion-audio/latest.json` via `orion-ambient-audio-reader.service`
+   (see `docs/superpowers/specs/2026-08-24-athena-ambient-audio-levels-design.md`).
+2. Compose bind-mount already in `docker-compose.yml`:
+   `/run/orion-audio:/run/orion-audio:ro` plus `AMBIENT_AUDIO_PATH` /
+   `AMBIENT_AUDIO_STALE_AFTER_SEC` / `CABINET_AMBIENT_HISTORY_*` from `.env_example`.
+3. History requires `orion_biometrics_summary` rows with `cabinet_ambient_rms` /
+   `cabinet_ambient_audio_activity` (written by biometrics → sql-writer) and the
+   `(node, timestamp)` index from `orion-sql-writer` boot DDL.
+4. After mount or env change, restart Hub so the container sees the bind:
+
+```bash
+# from a worktree (not shared checkout):
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+API: `GET /api/cabinet/ambient/latest`, `GET /api/cabinet/ambient/history?window=24h|3d|7d`
+(`scripts/cabinet_ambient_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
+while `#cabinet` is visible; history fetches on tab activation, window toggle, or Refresh.
+
 ## Bus synaptic graph debug routes
 
 Read-only view into `services/orion-bus-mirror`'s live FalkorDB graph (`orion_bus_synapse`) —

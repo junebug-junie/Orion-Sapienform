@@ -320,3 +320,8 @@ Env: `CABINET_SENSORS_PATH` (default `/run/orion-sensors/latest.json`),
 Ambient audio env: `AMBIENT_AUDIO_PATH` (default `/run/orion-audio/latest.json`) and
 `AMBIENT_AUDIO_STALE_AFTER_SEC` (default `5`). Missing/stale snapshots omit ambient
 measurement and pressure keys; ambient activity never participates in host `peak_pressure`.
+
+**Hub operator surface:** live chips read the host snapshot; multi-day RMS/activity charts read
+this service's summary history in Postgres (`cabinet_ambient_rms`,
+`cabinet_ambient_audio_activity` on `orion_biometrics_summary`). See Hub README **Cabinet ambient
+audio** and `docs/superpowers/specs/2026-08-26-hub-cabinet-ambient-audio-charts-design.md`.

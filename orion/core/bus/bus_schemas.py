@@ -124,9 +124,23 @@ class BaseEnvelope(BaseModel):
         source: ServiceRef,
         payload: Any,
         reply_to: str | None = None,
+        correlation_id: Optional[UUID] = None,
     ) -> "BaseEnvelope":
         """
         Create a child envelope that extends the causality chain with this message as a parent.
+
+        ``correlation_id``: override for the CHILD's own correlation_id.
+        Defaults to ``self.correlation_id`` (the normal case: a child
+        continues the same causal thread as its parent) -- every existing
+        caller is unaffected. Pass an explicit value for the rare case of a
+        SECOND, independently-tracked child derived from the same parent
+        event (2026-08-26: orion-vision-frame-router dispatching a
+        secondary identity_face task alongside a frame's primary task --
+        each needs its own correlation_id so replies route independently;
+        sharing one would collide in the dispatcher's own pending-task map
+        keyed by corr_id). The ``parent_link`` always records THIS
+        envelope's own correlation_id (the true causal parent) regardless
+        of the child's own id.
         """
         parent_link = CausalityLink(
             correlation_id=self.correlation_id,
@@ -138,7 +152,7 @@ class BaseEnvelope(BaseModel):
         return BaseEnvelope(
             kind=kind,
             source=source,
-            correlation_id=self.correlation_id,
+            correlation_id=correlation_id if correlation_id is not None else self.correlation_id,
             causality_chain=[*self.causality_chain, parent_link],
             reply_to=reply_to,
             payload=payload_dict,

@@ -106,9 +106,10 @@ def test_since_sec_resets_on_a_real_state_transition() -> None:
     assert r3["state"] == "absent" and r3["since_sec"] == 0.0
 
 
-def test_subject_stays_unknown_no_identity_wired() -> None:
-    """Honest placeholder: person != Juniper until identity_face exists.
-    'none' only when nothing has ever been seen at all."""
+def test_subject_stays_unknown_with_no_identity_hint() -> None:
+    """No identity_hint given at all -- the honest default, same as before
+    identity_face was wired in. 'none' only when nothing has ever been
+    seen at all."""
     t = _tracker()
     assert t.observe(PERSON, now=0.0)["subject"] == "unknown"
     assert t.observe(EMPTY, now=1.0)["subject"] == "unknown"   # recent, still someone
@@ -118,6 +119,71 @@ def test_ignores_labels_other_than_the_subject() -> None:
     t = _tracker()
     snap = t.observe(frozenset({"chair", "desk"}), now=0.0)
     assert snap["state"] == "absent"
+
+
+# -- identity_hint narrowing --------------------------------------------------
+
+
+def test_probable_identity_hint_narrows_subject() -> None:
+    t = _tracker()
+    snap = t.observe(PERSON, now=0.0, identity_hint={"subject": "juniper", "state": "probable"})
+    assert snap["subject"] == "juniper"
+
+
+def test_possible_identity_hint_narrows_subject() -> None:
+    t = _tracker()
+    snap = t.observe(PERSON, now=0.0, identity_hint={"subject": "juniper", "state": "possible"})
+    assert snap["subject"] == "juniper"
+
+
+def test_unsure_identity_hint_does_not_narrow_subject() -> None:
+    """An 'unsure' hint is the same honesty-preserving no-op as no hint at
+    all -- this is presence.py's own contract, not a re-test of
+    identity_hint_from_artifact (which already filters unsure out before a
+    hint ever reaches here; this asserts the tracker's own defense in
+    depth, in case a future caller passes one through anyway)."""
+    t = _tracker()
+    snap = t.observe(PERSON, now=0.0, identity_hint={"subject": "juniper", "state": "unsure"})
+    assert snap["subject"] == "unknown"
+
+
+def test_identity_hint_does_not_narrow_subject_none() -> None:
+    """Nobody believed present -- an identity hint (stale, arrived late for
+    someone who already left) must not manufacture a sighting."""
+    t = _tracker()
+    snap = t.observe(EMPTY, now=0.0, identity_hint={"subject": "juniper", "state": "probable"})
+    assert snap["subject"] == "none"
+
+
+def test_identity_hint_with_subject_unknown_is_a_no_op() -> None:
+    t = _tracker()
+    snap = t.observe(PERSON, now=0.0, identity_hint={"subject": "unknown", "state": "probable"})
+    assert snap["subject"] == "unknown"
+
+
+def test_registry_current_snapshot_reflects_last_observe_regardless_of_write_gate() -> None:
+    """current_snapshot() must return the fresh subject on every call, not
+    just on the Postgres-write-rate-limited cadence record() itself gates."""
+    reg = PresenceRegistry(grace_sec=120.0, write_min_interval_sec=999.0)  # write never due again after first
+    # First call's own due-check is (now - 0.0) >= 999.0 -- last_write_at
+    # defaults to 0.0, so now=0.0 would spuriously read as NOT due (same
+    # gotcha test_write_is_rate_limited_independently_per_stream's own
+    # comment names). now=1000.0 clears it unambiguously.
+    first = reg.record("cam0", PERSON, now=1000.0, identity_hint={"subject": "juniper", "state": "probable"})
+    assert first is not None, "first call for a stream is always due"
+    second = reg.record("cam0", PERSON, now=1001.0)  # no hint this call, write suppressed by the gate
+    assert second is None
+    # Despite record() returning None (write not due) and this call passing
+    # no hint, current_snapshot() must reflect this LATEST observe() call --
+    # which correctly dropped the subject back to "unknown" since no hint
+    # was given this time. Proves it reads the tracker's live state, not a
+    # cached copy of the last WRITE.
+    assert reg.current_snapshot("cam0")["subject"] == "unknown"
+
+
+def test_registry_current_snapshot_none_before_any_record() -> None:
+    reg = PresenceRegistry(grace_sec=120.0)
+    assert reg.current_snapshot("never-seen") is None
 
 
 # -- the registry: per-stream isolation + write throttling -------------------

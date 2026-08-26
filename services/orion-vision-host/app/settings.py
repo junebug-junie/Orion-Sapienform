@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     # True preserves every existing deployment's behavior unchanged.
     VISION_ARTIFACT_BROADCAST_ENABLED: bool = True
 
+    # Dedicated, single-consumer lane for identity_face results ONLY.
+    # identity_face is deliberately excluded from CHANNEL_VISIONHOST_PUB's
+    # general broadcast (should_broadcast_artifact in main.py) -- that
+    # channel has multiple, generic, task-type-agnostic subscribers
+    # (orion-security-watcher, orion-vision-window, orion-vision-council per
+    # orion/bus/channels.yaml) and identity data should not ride on a lane
+    # any current or future subscriber gets by default. The one legitimate
+    # consumer (orion-vision-window, for presence.subject + the window
+    # evidence orion-vision-council reads) gets its own narrow channel
+    # instead. Same "isolated INTAKE channel, real producer and consumer on
+    # both ends" pattern already used elsewhere in this file/channels.yaml,
+    # not a new precedent.
+    CHANNEL_VISIONHOST_IDENTITY_PUB: str = "orion:vision:artifacts:identity"
+
     # Caches
     MODEL_CACHE_DIR: str = "/mnt/telemetry/models/vision"
     HF_HOME: str = "/mnt/telemetry/models/vision/hf"

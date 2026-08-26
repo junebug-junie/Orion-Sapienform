@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 616,
+  "metric_count": 617,
   "_last_change": {
-    "base": "merge base 70d9868bf (origin/main)",
-    "change_count": 0,
+    "base": "merge base cef07e68e (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-vision-host/orion:vision:artifacts:identity"
     ]
   },
   "definitions": {
@@ -2721,6 +2721,17 @@
         "orion-vision-edge",
         "orion-vision-frame-router",
         "orion-vision-host",
+        "orion-vision-window"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-vision-host/orion:vision:artifacts:identity": {
+      "schema_id": "VisionArtifactPayload",
+      "all_producers": [
+        "orion-vision-host"
+      ],
+      "declared_consumers": [
         "orion-vision-window"
       ],
       "notes": "kind=event stability=experimental",

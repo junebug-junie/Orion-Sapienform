@@ -67,6 +67,27 @@ def should_broadcast_artifact(task_type: str, payload: Optional[VisionArtifactPa
     return True
 
 
+def should_broadcast_identity(task_type: str, payload: Optional[VisionArtifactPayload] = None) -> bool:
+    """True only for a real identity artifact -- the mirror image of
+    should_broadcast_artifact's exclusion, not a parameterized variant of
+    it. Deliberately checks real content (``outputs.identities``), not just
+    ``task_type``, for the same reason should_broadcast_artifact's second
+    check exists: a pipeline step can carry identity data under a different
+    outer task_type (config/vision_profiles.yaml pipeline composition).
+    Feeds CHANNEL_VISIONHOST_IDENTITY_PUB -- a dedicated, narrow,
+    single-consumer lane (orion-vision-window only), not
+    CHANNEL_VISIONHOST_PUB's general broadcast. 2026-08-26: identity is
+    excluded from that general channel on purpose (settings.
+    CHANNEL_VISIONHOST_IDENTITY_PUB's own docstring); this is the one
+    deliberate, narrow path identity data is allowed to reach a consumer
+    through instead."""
+    if task_type == "identity_face":
+        return True
+    if payload is not None and getattr(payload.outputs, "identities", None) is not None:
+        return True
+    return False
+
+
 class VisionHostService:
     def __init__(self):
         self.bus: Optional[OrionBusAsync] = None
@@ -456,13 +477,37 @@ class VisionHostService:
         reply_channel = source_envelope.reply_to or f"{settings.CHANNEL_VISIONHOST_REPLY_PREFIX}:{res.corr_id}"
         await self.bus.publish(reply_channel, reply_envelope)
 
-        if (
-            res.ok
-            and artifact_payload
-            and settings.VISION_ARTIFACT_BROADCAST_ENABLED
-            and should_broadcast_artifact(res.task_type, artifact_payload)
+        if res.ok:
+            await self._maybe_broadcast(res.task_type, artifact_payload, source_envelope)
+
+    async def _maybe_broadcast(
+        self,
+        task_type: str,
+        artifact_payload: Optional[VisionArtifactPayload],
+        source_envelope: BaseEnvelope,
+    ) -> None:
+        """Single choke point for both broadcast decisions (general +
+        dedicated identity), called from both real call sites
+        (_publish_result's bus-first path, http_task's HTTP path).
+
+        Review finding, 2026-08-26: this file's own history already shows
+        the failure mode of hand-rolling this guard logic separately at
+        each call site -- an earlier patch's should_broadcast_artifact
+        guard was added to _publish_result but the HTTP endpoint's own
+        separate call bypassed it entirely until caught live. Consolidating
+        to one method changes that failure mode from "a new/edited call
+        site forgets the guard and leaks" to "a new/edited call site
+        forgets to call this method and broadcasts nothing" -- fails safe
+        instead of fails open.
+        """
+        if not artifact_payload:
+            return
+        if settings.VISION_ARTIFACT_BROADCAST_ENABLED and should_broadcast_artifact(
+            task_type, artifact_payload
         ):
-             await self._publish_artifact_broadcast(artifact_payload, source_envelope)
+            await self._publish_artifact_broadcast(artifact_payload, source_envelope)
+        if should_broadcast_identity(task_type, artifact_payload):
+            await self._publish_identity_broadcast(artifact_payload, source_envelope)
 
     def _create_artifact_payload(self, res: VisionResult, source_envelope: BaseEnvelope) -> Optional[VisionArtifactPayload]:
         return build_artifact_payload(res)
@@ -476,6 +521,21 @@ class VisionHostService:
         )
 
         await self.bus.publish(settings.CHANNEL_VISIONHOST_PUB, envelope)
+
+    async def _publish_identity_broadcast(self, payload: VisionArtifactPayload, source_envelope: BaseEnvelope):
+        """Dedicated, narrow lane for identity artifacts only. Deliberately
+        a separate method/channel from _publish_artifact_broadcast rather
+        than a parameterized variant of it, so the two publish decisions
+        (should_broadcast_artifact vs. should_broadcast_identity) stay
+        independently auditable instead of one function silently gaining a
+        second, oppositely-selective mode."""
+        host_ref = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
+        envelope = source_envelope.derive_child(
+            kind="vision.artifact.identity",
+            source=host_ref,
+            payload=payload,
+        )
+        await self.bus.publish(settings.CHANNEL_VISIONHOST_IDENTITY_PUB, envelope)
 
 service = VisionHostService()
 heartbeat_chassis: HeartbeatOnly | None = None
@@ -594,25 +654,21 @@ async def http_task(payload: Dict[str, Any]):
     try:
         res: VisionResult = await service.run_vision_task(task)
 
-        # Also broadcast artifact if success -- same should_broadcast_artifact
-        # guard as the bus-first path in _publish_result (found live while
-        # verifying that fix, 2026-08-26: this HTTP entrypoint has its own,
-        # separate _publish_artifact_broadcast call that bypassed it entirely).
+        # Same choke point as the bus-first path in _publish_result
+        # (_maybe_broadcast) -- consolidated 2026-08-26 after this
+        # endpoint's own separate, hand-rolled guard logic was found live
+        # to have bypassed an earlier fix entirely. One shared method now
+        # means a future third call site that forgets to call it broadcasts
+        # nothing (fails safe) rather than broadcasting unguarded.
         if res.ok and res.artifacts and service.bus:
-             # Create dummy source envelope
              dummy_env = BaseEnvelope(
                  kind="http.direct",
                  source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
                  correlation_id=uuid.UUID(corr_id),
                  payload={},
              )
-             # Reuse creation logic
              art_payload = service._create_artifact_payload(res, dummy_env)
-             # Built BEFORE the broadcast decision (not after, as this used
-             # to be structured) so should_broadcast_artifact can inspect
-             # its real content, not just the caller-supplied task_type.
-             if art_payload and should_broadcast_artifact(res.task_type, art_payload):
-                 await service._publish_artifact_broadcast(art_payload, dummy_env)
+             await service._maybe_broadcast(res.task_type, art_payload, dummy_env)
 
         return res.model_dump()
     except Exception as e:

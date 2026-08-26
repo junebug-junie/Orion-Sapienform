@@ -23,6 +23,11 @@ class RouterMetrics:
     host_errors_total: int = 0
     host_timeouts_total: int = 0
     decode_errors_total: int = 0
+    # Separate from frames_dispatched_total (2026-08-26) -- conflating the
+    # two would make frames_dispatched_total ambiguous (was this a
+    # retina_fast dispatch, or the identity_face secondary one?) for a
+    # metric other consumers already read.
+    identity_dispatched_total: int = 0
     last_error: str | None = None
 
     def record_skip(self, reason: str) -> None:
@@ -31,6 +36,9 @@ class RouterMetrics:
 
     def record_dispatch(self) -> None:
         self.frames_dispatched_total += 1
+
+    def record_identity_dispatch(self) -> None:
+        self.identity_dispatched_total += 1
 
     def record_seen(self) -> None:
         self.frames_seen_total += 1
@@ -56,6 +64,7 @@ def make_health_envelope(
         details={
             "frames_seen_total": metrics.frames_seen_total,
             "frames_dispatched_total": metrics.frames_dispatched_total,
+            "identity_dispatched_total": metrics.identity_dispatched_total,
             "frames_skipped_total": metrics.frames_skipped_total,
             "inflight_total": state.inflight_total(),
             "pending_count": len(state.pending),

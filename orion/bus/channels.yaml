@@ -1100,6 +1100,26 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:vision:artifacts:identity"
+    kind: "event"
+    schema_id: "VisionArtifactPayload"
+    producer_services: ["orion-vision-host"]
+    consumer_services:
+      - "orion-vision-window"
+    stability: "experimental"
+    since: "2026-08-26"
+    # identity_face is deliberately excluded from orion:vision:artifacts
+    # above (should_broadcast_artifact / should_broadcast_identity, app/
+    # main.py) -- that channel's consumer_services list is real but not
+    # exhaustive in practice (a future subscriber could join it without a
+    # registry update), and identity data should not ride a lane any
+    # current or future subscriber gets by default. This channel exists so
+    # the one legitimate consumer (orion-vision-window, which folds it into
+    # presence.subject and the window evidence orion-vision-council reads
+    # for a hedged identity_hypothesis) has a real, narrow, single-producer/
+    # single-consumer path instead. Real producer and real consumer on both
+    # ends -- not the orphan-channel shape CLAUDE.md section 0A bans.
+
   # The circe-qwen lane (2026-08-26, docker-compose.circe-qwen.yml) does NOT
   # get an isolated channel here -- it sets VISION_ARTIFACT_BROADCAST_ENABLED
   # =false instead and publishes no artifact broadcast at all. A caption_frame

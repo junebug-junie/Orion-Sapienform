@@ -33,6 +33,11 @@ class FrameDispatchDecision(BaseModel):
     policy_name: str = "defaults"
     dispatch_tier: str = "baseline"
     reason: str = ""
+    # This tier's `identity_dispatch:` config block, verbatim (may be empty).
+    # Carried on the decision rather than re-resolved by the caller so
+    # decide_identity() can be a small, pure function operating on already-
+    # computed data instead of re-walking policy internals.
+    identity_dispatch_cfg: dict[str, Any] = Field(default_factory=dict)
 
 
 def load_policy_file(path: str | Path) -> dict[str, Any]:
@@ -250,7 +255,63 @@ class FrameDispatchPolicy:
             policy_name=policy_name,
             dispatch_tier=dispatch_tier,
             reason="dispatch",
+            identity_dispatch_cfg=dict(tier_cfg.get("identity_dispatch") or {}),
         )
+
+    def decide_identity(
+        self,
+        decision: FrameDispatchDecision,
+        *,
+        camera_id: str,
+        state: RouterState,
+        now: float,
+    ) -> bool:
+        """Whether to ALSO dispatch identity_face for this frame, alongside
+        the tier's own primary task -- a second, independent decision, not
+        a mode of decide() above. decide()'s model is one task_type per
+        tier; identity augments the primary detection rather than replacing
+        it, so it needed its own decision rather than overloading task_type
+        (which would mean a triggered frame gets identity_face INSTEAD of
+        retina_fast, losing the object detection that still matters).
+
+        Deliberately opt-in per stream (config's `triggered.identity_dispatch.
+        enabled: true`), not a global default: every stream that never
+        overrides `triggered` (e.g. porch_eye's `trigger_labels: []`)
+        already never reaches the "triggered" tier at all and is therefore
+        already safe regardless of a permissive default, but a bare
+        `defaults.triggered.identity_dispatch.enabled: true` would still
+        reach every stream that DOES use plain trigger_labels defaults --
+        including carbon, which the design doc (docs/superpowers/specs/
+        2026-08-21-...-design.md §9B) explicitly says must not inherit
+        cam0's policy. Opt-in per stream keeps that a deliberate choice,
+        not an accident of shallow-merge inheritance.
+
+        Only ever considered on the SAME "triggered" condition the tier
+        already computed (e.g. person seen recently) -- piggybacks on
+        existing trigger state rather than running a second detector just
+        to decide whether to look for a face. Rate-limited independently
+        of the primary task's own min_seconds_between_tasks_per_camera
+        (CameraState.last_identity_dispatch_ts, a separate field) since
+        identity_face is real GPU cost that should not fire on every single
+        triggered frame. Gated on the GLOBAL inflight cap only, not
+        max_inflight_per_camera -- that cap is usually 1 and the primary
+        task for THIS SAME frame already occupies it by the time this is
+        called, which would make the feature permanently inert on exactly
+        the config it targets.
+        """
+        if decision.dispatch_tier != "triggered":
+            return False
+        cfg = decision.identity_dispatch_cfg
+        if not cfg.get("enabled", False):
+            return False
+        min_s = float(cfg.get("min_seconds_between_dispatch", self.settings.DEFAULT_IDENTITY_MIN_SECONDS))
+        cam = state.camera(camera_id)
+        if cam.last_identity_dispatch_ts is not None and (now - cam.last_identity_dispatch_ts) < min_s:
+            return False
+        max_total = int(self.global_cfg.get("max_inflight_total", self.settings.MAX_INFLIGHT_TOTAL))
+        if state.inflight_total() >= max_total:
+            return False
+        return True
 
     def build_task_request(
         self,
@@ -262,11 +323,7 @@ class FrameDispatchPolicy:
         # node with no shared filesystem has only a sha256, and the host
         # resolves it from orion-percept-store; a local frame keeps its path,
         # which stays the cheap route (no HTTP hop, no copy).
-        base_request: dict[str, Any] = {}
-        if frame.image_path:
-            base_request["image_path"] = frame.image_path
-        if frame.sha256:
-            base_request["percept_sha256"] = frame.sha256
+        base_request = self._frame_address(frame)
         base_request.update(decision.request_overrides or {})
         meta = {
             "camera_id": frame.camera_id,
@@ -279,6 +336,51 @@ class FrameDispatchPolicy:
         }
         return VisionTaskRequestPayload(
             task_type=decision.task_type or "retina_fast",
+            request=base_request,
+            meta=meta,
+        )
+
+    @staticmethod
+    def _frame_address(frame: VisionFramePointerPayload) -> dict[str, Any]:
+        # image_path / percept_sha256 -- shared by build_task_request above
+        # and build_identity_task_request below, factored out rather than
+        # duplicated. Note for the structural test in test_content_
+        # addressed_frames.py (greps from "def build_task_request" onward):
+        # this must stay defined AFTER build_task_request in this file, or
+        # the "percept_sha256"/"image_path" literals it checks for fall
+        # outside that slice again.
+        base_request: dict[str, Any] = {}
+        if frame.image_path:
+            base_request["image_path"] = frame.image_path
+        if frame.sha256:
+            base_request["percept_sha256"] = frame.sha256
+        return base_request
+
+    def build_identity_task_request(
+        self,
+        frame: VisionFramePointerPayload,
+        env: BaseEnvelope,
+        decision: FrameDispatchDecision,
+    ) -> VisionTaskRequestPayload:
+        """The secondary identity_face task alongside `decision`'s own
+        primary task. Same frame address, own task_type, no
+        request_overrides -- those are the PRIMARY tier's own request
+        knobs (want_caption, want_embeddings, ...), not identity_face
+        params (identity's thresholds/max_candidates live in config/
+        vision_profiles.yaml's profile block, not per-request)."""
+        base_request = self._frame_address(frame)
+        meta = {
+            "camera_id": frame.camera_id,
+            "stream_id": frame.stream_id,
+            "frame_ts": frame.frame_ts,
+            "source_frame_envelope_id": str(env.id),
+            "source_frame_correlation_id": str(env.correlation_id),
+            "router_policy": decision.policy_name,
+            "dispatch_tier": decision.dispatch_tier,
+            "identity_secondary_dispatch": True,
+        }
+        return VisionTaskRequestPayload(
+            task_type="identity_face",
             request=base_request,
             meta=meta,
         )

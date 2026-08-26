@@ -39,7 +39,7 @@ from typing import Literal, Optional
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from loguru import logger
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -71,13 +71,40 @@ class PerceptFetchError(Exception):
     received)."""
 
 
-def _normalize_trigger(value: object) -> Literal["manual", "ambient"]:
+_VALID_TRIGGERS: frozenset[str] = frozenset(
+    {"manual", "ambient", "chat_turn_pre", "chat_turn_post"}
+)
+
+
+def _normalize_trigger(
+    value: object,
+) -> Literal["manual", "ambient", "chat_turn_pre", "chat_turn_post"]:
     """One place deciding what counts as a valid trigger label -- review
     finding, 2026-08-22: this clamp used to be duplicated verbatim in two
     call sites (capture_and_assess() and _wrap_event()), so a future third
     trigger value added to only one of them would silently miscategorize
-    events with nothing to catch the mismatch."""
-    return "ambient" if value == "ambient" else "manual"
+    events with nothing to catch the mismatch.
+
+    Membership-tested against _VALID_TRIGGERS rather than the original
+    ``"ambient" if value == "ambient" else "manual"`` chain: that shape
+    silently degrades every unrecognized value to "manual", which was
+    harmless with two labels but is actively wrong with four -- a typo'd
+    "chat_turn_pre" would have been published as a manual "Check now"
+    press that never happened, and no consumer could tell. Anything
+    genuinely unknown still clamps to "manual" (the Literal on
+    JuniperMultimodalAffectV1 has no handler around it deep inside
+    _wrap_event), but the set is now the single place a new label gets
+    added."""
+    # isinstance(str) FIRST, not just `value in _VALID_TRIGGERS`: a bare set
+    # membership test raises TypeError on an unhashable value, and a list or
+    # dict reaching here is a real, already-anticipated case -- the existing
+    # test_capture_and_assess.py suite asserts _normalize_trigger(["ambient"])
+    # clamps rather than raises, which is precisely how this regression was
+    # caught when the original `== "ambient"` chain (type-agnostic by
+    # accident) was replaced with a set lookup.
+    if isinstance(value, str) and value in _VALID_TRIGGERS:
+        return value  # type: ignore[return-value]
+    return "manual"
 
 
 class CaptureAndAssessRequest(BaseModel):
@@ -92,7 +119,16 @@ class CaptureAndAssessRequest(BaseModel):
 
     subtitle: str = ""
     user_message: Optional[str] = None
-    trigger: Literal["manual", "ambient"] = "manual"
+    trigger: Literal["manual", "ambient", "chat_turn_pre", "chat_turn_post"] = "manual"
+    chat_correlation_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Hub's per-turn trace_id, supplied only by the chat_turn_pre/"
+            "chat_turn_post callers. Threaded straight through to "
+            "JuniperMultimodalAffectV1.chat_correlation_id -- see that "
+            "field for why it is a separate join axis from correlation_id."
+        ),
+    )
 
 
 class JuniperAffectiveStateService:
@@ -119,6 +155,7 @@ class JuniperAffectiveStateService:
         *,
         trigger: str = "manual",
         corr_id: "uuid.UUID | None" = None,
+        chat_correlation_id: str | None = None,
     ) -> tuple[AffectGptAssessResultPayload, JuniperMultimodalAffectV1]:
         # Every path through this method falls through to the single
         # publish call at the bottom -- a real bug caught in review
@@ -144,7 +181,10 @@ class JuniperAffectiveStateService:
         else:
             result = await self._call_worker(req, corr_id=corr_id)
 
-        event = self._wrap_event(result, req, trigger=trigger, corr_id=corr_id)
+        event = self._wrap_event(
+            result, req, trigger=trigger, corr_id=corr_id,
+            chat_correlation_id=chat_correlation_id,
+        )
         await self._publish_event(event)
         return result, event
 
@@ -206,6 +246,7 @@ class JuniperAffectiveStateService:
         subtitle: str = "",
         user_message: str | None = None,
         trigger: str = "manual",
+        chat_correlation_id: str | None = None,
     ) -> tuple[RetinaClipCaptureResultPayload, AffectGptAssessResultPayload, JuniperMultimodalAffectV1]:
         """Full loop: bus RPC to retina for a live clip -> fetch both blobs
         from percept-store into a local temp dir on circe -> the same
@@ -242,6 +283,7 @@ class JuniperAffectiveStateService:
                 AffectGptAssessRequestPayload(video_path="", audio_path=""),
                 trigger=trigger,
                 corr_id=corr_id,
+                            chat_correlation_id=chat_correlation_id,
             )
             await self._publish_event(event)
             return capture, result, event
@@ -284,6 +326,7 @@ class JuniperAffectiveStateService:
                     AffectGptAssessRequestPayload(video_path="", audio_path=""),
                     trigger=trigger,
                     corr_id=corr_id,
+                                    chat_correlation_id=chat_correlation_id,
                 )
                 await self._publish_event(event)
                 return capture, result, event
@@ -294,7 +337,12 @@ class JuniperAffectiveStateService:
                 subtitle=subtitle,
                 user_message=user_message,
             )
-            result, event = await self.trigger_assessment(req, trigger=trigger, corr_id=corr_id)
+            result, event = await self.trigger_assessment(
+                req,
+                trigger=trigger,
+                corr_id=corr_id,
+                chat_correlation_id=chat_correlation_id,
+            )
             # tmpdir (and the fetched clip bytes) is removed here on context
             # exit, always -- same "nothing survives past a temp dir"
             # discipline as retina's own clip_capture.py. The assess call
@@ -396,6 +444,7 @@ class JuniperAffectiveStateService:
         *,
         trigger: str = "manual",
         corr_id: "uuid.UUID | None" = None,
+        chat_correlation_id: str | None = None,
     ) -> JuniperMultimodalAffectV1:
         return JuniperMultimodalAffectV1(
             observed_at=datetime.now(timezone.utc),
@@ -411,6 +460,7 @@ class JuniperAffectiveStateService:
             input_ref={"video_path": req.video_path, "audio_path": req.audio_path},
             trigger=_normalize_trigger(trigger),
             correlation_id=str(corr_id) if corr_id else None,
+            chat_correlation_id=chat_correlation_id,
         )
 
     async def _publish_event(self, event: JuniperMultimodalAffectV1):
@@ -529,11 +579,24 @@ async def capture_and_assess(payload: dict | None = None):
     its ambient toggle both call.
 
     No required body. Optional ``{"subtitle": "...", "user_message": "...",
-    "trigger": "manual" | "ambient"}`` -- subtitle/user_message are the same
+    "trigger": "manual" | "ambient" | "chat_turn_pre" | "chat_turn_post",
+    "chat_correlation_id": "..."}`` -- subtitle/user_message are the same
     fields /trigger's request has, minus the paths (those are filled in
     internally from the live capture, not caller-supplied). ``trigger``
-    defaults to "manual"; Hub's ambient loop passes "ambient" explicitly so
-    the published event can tell the two apart.
+    defaults to "manual"; Hub's ambient loop passes "ambient" explicitly and
+    Hub's per-chat-turn bracket (scripts/chat_turn_affect.py) passes
+    "chat_turn_pre"/"chat_turn_post" plus the turn's own
+    ``chat_correlation_id``, so the published event can tell all four apart
+    and a consumer can join the pre/post pair of one turn.
+
+    Note on ``subtitle`` for the chat_turn_* callers: they deliberately pass
+    "" rather than the microphone transcript Hub already has in hand. The
+    clip retina captures here is recorded live at request time -- i.e.
+    AFTER Juniper finished speaking that sentence -- so its audio is NOT
+    that transcript. Passing it would ground the model in text that does
+    not belong to the footage it is looking at. Empty means the worker
+    Whisper-transcribes the clip's own audio (subtitle_source="transcribed"),
+    which is the honest read.
 
     Synchronous and can take up to ~195s worst case: retina's capture (~8s clip +
     RETINA_CLIP_TIMEOUT_SEC ceiling + RPC overhead) followed by the worker's
@@ -550,7 +613,10 @@ async def capture_and_assess(payload: dict | None = None):
         return JSONResponse({"ok": False, "error": f"invalid request: {e}"}, status_code=422)
 
     capture, result, event = await service.capture_and_assess(
-        subtitle=req.subtitle, user_message=req.user_message, trigger=req.trigger
+        subtitle=req.subtitle,
+        user_message=req.user_message,
+        trigger=req.trigger,
+        chat_correlation_id=req.chat_correlation_id,
     )
     return {
         "capture": capture.model_dump(exclude_none=True),

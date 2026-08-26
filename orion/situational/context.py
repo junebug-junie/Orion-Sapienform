@@ -968,6 +968,24 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         f"Conversation phase: {brief.conversation_phase.phase_change}; continuity={brief.conversation_phase.continuity_mode}.",
         f"Presence: requestor={brief.requestor.display_name}, audience_mode={brief.presence.audience_mode}.",
     ]
+    # Only rendered for a non-typed modality. SurfaceContextV1.input_modality
+    # has existed since this brief was first built, but nothing ever put it
+    # in the prompt -- a schema field with no consumer. It earns a line here
+    # because the answer changes behaviour: a spoken turn was dictated, so
+    # homophones and run-on phrasing are transcription artifacts rather than
+    # things Juniper wrote, and Orion should not read into them. "typed"
+    # stays silent rather than emitting a line on every single turn to say
+    # nothing happened -- same only-when-it-means-something discipline the
+    # relevance/affordance lines below already follow.
+    if brief.surface.input_modality == "spoken":
+        lines.append(
+            "Input modality: Juniper SPOKE this turn aloud; it reached you as a "
+            "Whisper transcript. Wording quirks, homophones and missing "
+            "punctuation are transcription artifacts, not word choice -- read "
+            "through them, and do not quote them back as if written."
+        )
+    elif brief.surface.input_modality not in ("typed", "unknown"):
+        lines.append(f"Input modality: {brief.surface.input_modality}.")
     if brief.environment.available:
         rain = brief.environment.forecast_next_6h.precipitation_probability_pct
         lines.append(f"Weather next 6h: precip_prob={rain}%, summary={brief.environment.forecast_next_6h.summary}.")

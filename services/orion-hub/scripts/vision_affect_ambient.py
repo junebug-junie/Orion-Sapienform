@@ -145,12 +145,24 @@ def end_capture(
         logger.warning("[HUB] affect_ambient_end_capture_release_without_lock")
 
 
-def call_capture_and_assess(base_url: str, timeout_sec: float, trigger: str) -> Dict[str, Any]:
+def call_capture_and_assess(
+    base_url: str,
+    timeout_sec: float,
+    trigger: str,
+    *,
+    chat_correlation_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Blocking HTTP call to the orchestrator -- callers off the event loop
     (the ambient loop below) run this via asyncio.to_thread. Shared by the
-    manual "Check now" route (api_routes.py) and this module's own tick so
-    there is exactly ONE call site for "hit capture_and_assess", not two
-    that can drift.
+    manual "Check now" route (api_routes.py), this module's own tick, and
+    the per-chat-turn bracket (scripts/chat_turn_affect.py) so there is
+    exactly ONE call site for "hit capture_and_assess", not three that can
+    drift.
+
+    ``chat_correlation_id`` is sent only when supplied (chat_turn_pre/
+    chat_turn_post callers) -- omitted entirely otherwise rather than sent
+    as an explicit null, so the manual/ambient request bodies on the wire
+    are byte-identical to what they were before this parameter existed.
 
     Always returns a dict shaped like the orchestrator's real response
     (``{"capture": ..., "result": {"ok": ..., "error": ...}, "event": ...}``)
@@ -160,9 +172,12 @@ def call_capture_and_assess(base_url: str, timeout_sec: float, trigger: str) -> 
     ``ok`` nor ``error``; the ambient loop's status line showed a generic
     "failed (unknown)" with no diagnostic value).
     """
+    body: Dict[str, Any] = {"trigger": trigger}
+    if chat_correlation_id:
+        body["chat_correlation_id"] = chat_correlation_id
     resp = requests.post(
         f"{base_url.rstrip('/')}/v1/juniper/affect/capture_and_assess",
-        json={"trigger": trigger},
+        json=body,
         timeout=timeout_sec,
     )
     resp.raise_for_status()

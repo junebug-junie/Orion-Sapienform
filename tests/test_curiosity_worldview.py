@@ -407,3 +407,116 @@ def test_unreadable_priors_are_never_reported_as_none_outstanding() -> None:
     assert "NO OPEN PRIORS" not in text
     assert "COULD NOT BE READ BACK" in text
     assert "4 OPEN PRIORS" in text
+
+
+# ---------------------------------------------------------------- the clock
+
+
+def test_the_prompt_states_the_budget_by_pointing_at_the_enforcer() -> None:
+    """The real budget is HARNESS_FCC_TIMEOUT_SEC, in the harness-governor's
+    env, which Hub cannot read. Any literal minute count in the prompt would be
+    a second copy free to drift from the wall that actually kills the turn, so
+    the prompt must name the env vars the motor stamps and nothing else."""
+    text = _prompt()
+    assert "ORION_TURN_BUDGET_SEC" in text
+    assert "ORION_TURN_DEADLINE_EPOCH" in text
+    assert "date +%s" in text
+
+
+# Deliberately permissive. An earlier, narrower version of this pattern was
+# mutation-tested and let through "a ~26-minute budget", "roughly 26 min",
+# "900 sec" and "26m" -- and "a ~26-minute budget" is the exact phrasing used in
+# this feature's own source comments, so it is the one most likely to be pasted
+# into the prompt by someone being helpful.
+_DURATION_RE = r"\b\d+\s*[-\s]?(seconds?|secs?|minutes?|mins?|hours?|hrs?|[msh])\b"
+
+
+@pytest.mark.parametrize("graph_enabled", [True, False])
+def test_the_budget_is_never_stated_as_a_hardcoded_duration(graph_enabled) -> None:
+    """Regression guard for the drift this design exists to prevent: if anyone
+    ever writes the number in, this fails.
+
+    Scans the WHOLE assembled prompt, not just `_budget_section`. A duration
+    written into the header or the hops section drifts exactly as badly, and
+    scoping the guard to one function is how a gate ends up inert on the file
+    it was written for.
+    """
+    import re
+
+    text = _prompt(graph_enabled=graph_enabled)
+    hit = re.search(_DURATION_RE, text)
+    assert hit is None, f"hardcoded duration in prompt: {hit.group(0)!r}"
+
+
+def test_the_continuation_note_is_only_named_when_it_can_be_written() -> None:
+    """`continue_note` lives in a :TurnOutcome node, and `_outcome_section` is
+    gated on `writable`. Naming the note in a state where no such node can be
+    created promises a mechanism that is not there -- the exact failure the
+    three-state split exists to prevent."""
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    readable = _prompt()
+    assert "that is what the continuation note is for" in readable
+    assert "continue_note" in readable
+
+    for text in (
+        _prompt(graph_enabled=False),
+        _prompt(view=WorldviewSnapshot(unavailable_reason="ConnectionError")),
+    ):
+        assert "continuation note" not in text
+        assert "continue_note" not in text
+        # The thread still has somewhere to go -- Orion's own prose.
+        assert "say where you would pick it up" in text
+
+
+def test_a_sixth_hop_points_somewhere_real_in_every_state() -> None:
+    """"Leave yourself a note (below)" pointed at a section that is not
+    rendered when there is nothing to write to."""
+    assert "a note (below)" in _prompt()
+    assert "(below)" not in _prompt(graph_enabled=False)
+
+
+def test_the_per_step_stall_wall_is_disclosed_next_to_the_turn_clock() -> None:
+    """The whole-turn deadline is not the only wall. A single step that goes
+    quiet past ORION_TURN_STEP_STALL_SEC kills the turn on its own while the
+    outer clock still reads generous -- so showing only the outer number
+    encourages the unbounded query that trips the inner one."""
+    text = _prompt()
+    assert "ORION_TURN_STEP_STALL_SEC" in text
+    assert "per step, not per turn" in text
+    assert "Keep individual queries bounded" in text
+
+
+def test_the_clock_commands_survive_the_variables_being_unset() -> None:
+    """Bash expands before it evaluates, so `$(( $UNSET - $(date +%s) ))`
+    prints a confident negative and exits 0. The prompt must test for
+    emptiness, and must say what absence looks like."""
+    text = _prompt()
+    assert 'test -n "$ORION_TURN_DEADLINE_EPOCH"' in text
+    assert "no clock" in text
+    assert "do not infer a deadline from a negative" in text
+
+
+def test_the_clock_is_stated_even_with_no_graph_to_write_to() -> None:
+    """A prose-only run is killed by the same wall. Gating the clock on
+    writability would silence it in exactly the state where the whole result
+    lives in the draft."""
+    text = _prompt(graph_enabled=False)
+    assert "YOUR CLOCK" in text
+    assert "ORION_TURN_DEADLINE_EPOCH" in text
+
+
+def test_writing_is_instructed_to_happen_at_formation_not_at_the_end() -> None:
+    """Run 32b42392f495 was killed mid-writeup with one hop of five recorded.
+    The write section previously read as an end-of-turn form."""
+    text = _prompt()
+    assert "AT THE MOMENT YOU FORM IT" in text
+    assert "KEEP THE LAST QUARTER OF THE BUDGET FOR WRITING" in text
+
+
+def test_the_number_checking_habit_is_stated_because_it_is_what_went_wrong() -> None:
+    """The surviving finding compared rejected `stance` against active
+    `semantic` and called it one population."""
+    text = _prompt()
+    assert "comparing like with like" in text
+    assert "which population each number is over" in text

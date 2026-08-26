@@ -241,11 +241,72 @@ can recount the path actually taken — *I started here, found X, which made me
 look at Y* — instead of presenting a conclusion with the working thrown away.
 
 Five is Juniper's number; it is disclosed rather than derived. The real ceiling
-is time (`HARNESS_FCC_TIMEOUT_SEC=900`, observed turns reach 31–40 steps), not
-steps. A sixth hop is not granted inside the turn — Orion leaves itself a
-continuation note and the next run opens there. That is the difference between
-thinking about something for an afternoon and coming back to it tomorrow, and it
-is what lets a world view accumulate rather than having to fit in one sitting.
+is time (`HARNESS_FCC_TIMEOUT_SEC`, observed turns reach 31–40 steps), not steps.
+A sixth hop is not granted inside the turn — Orion leaves itself a continuation
+note and the next run opens there. That is the difference between thinking about
+something for an afternoon and coming back to it tomorrow, and it is what lets a
+world view accumulate rather than having to fit in one sitting.
+
+### The clock is told to Orion, not assumed
+
+Run `32b42392f495` — the first run that completed the whole loop — spent its
+entire budget investigating and was killed mid-writeup: `grounding=fcc_timeout`,
+`draft_len=66`, one hop of five recorded. What survived was a prior whose counts
+were wrong in two separate ways: an intake gate's *trigger* (`substantive_shift`,
+`orion/memory/consolidation_gate.py:74`) read as a rejection *filter*, and two
+different crystallization kinds — rejected `stance` against active `semantic` —
+compared against each other as one population. The investigation was sound. The
+transcription was done against a wall.
+
+Two changes, and neither is a bigger timeout:
+
+**Orion can read its own deadline.** The motor stamps it into the sandbox at
+spawn time (`orion/harness/fcc_motor.py:_build_subprocess_env`):
+
+```bash
+echo ${ORION_TURN_BUDGET_SEC:-no clock}
+test -n "$ORION_TURN_DEADLINE_EPOCH" \
+  && echo $(( $ORION_TURN_DEADLINE_EPOCH - $(date +%s) )) \
+  || echo "no clock"
+echo ${ORION_TURN_STEP_STALL_SEC:-unknown}   # per STEP, not per turn
+```
+
+The values are **not** written into the prompt as literals. `HARNESS_FCC_TIMEOUT_SEC`
+lives in the harness-governor's env and Hub — which builds the prompt — cannot
+read it, so any number stated there would be a second copy free to drift the
+moment the governor is retuned. This is not hypothetical: on 2026-08-26 live was
+`1600` while `.env_example`, the compose default, and the governor's own
+`settings.py` default all still said `900`. A prompt that confidently states the
+wrong deadline is worse than one that states none. So the whole-turn number
+Orion sees is the one the whole-turn timeout loop enforces against, and a test
+(`test_the_budget_is_never_stated_as_a_hardcoded_duration`, which scans the
+entire assembled prompt in both graph states) fails if anyone writes a duration
+back in.
+
+**`ORION_TURN_STEP_STALL_SEC` is disclosed because the whole-turn deadline is
+not the only wall.** `_stream_stall_timeout_sec` bounds a *single* `readline`,
+and the CLI emits no stream-json line until a step completes — so one unbounded
+query dies with `fcc_stream_stalled` while the outer clock still reads generous.
+Showing only the outer number would actively encourage the step that trips the
+inner one. Two further walls are *not* stamped and remain undisclosed to the
+turn: the accumulated-context ceiling (`fcc_draft_length_ceiling_exceeded`) and
+Hub's own outer `asyncio.wait_for`.
+
+**The `test -n` guard is load-bearing, not decoration.** Bash expands before it
+evaluates, so `$(( $UNSET - $(date +%s) ))` prints a confident negative and exits
+0 — measured, `-1787785130`. When the caller has no deadline the keys are
+**cleared** rather than left unset, but clearing does not make absence
+self-evident to a shell; it only makes the wrong number absurd (~-1.8e9) rather
+than plausible (~-3000). The prompt carries the real guard, and says what `no
+clock` means. That state is not reachable in production today —
+`run_fcc_turn` is the only production caller and always passes all three — the
+clearing is there so the prompt stays honest wherever it is reused.
+
+**The last quarter of the budget belongs to writing**, and each node is written
+at the moment it is formed rather than at the end. A prior in the graph at a
+confidence Orion can raise later beats a perfect one that never got written. If
+the thread is still live when the clock says stop, that is what the continuation
+note is for.
 
 ---
 

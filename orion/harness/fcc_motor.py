@@ -641,6 +641,9 @@ def _build_subprocess_env(
     fcc_server_url: str,
     auth_token: str,
     fcc_env: Optional[Mapping[str, str]] = None,
+    turn_budget_sec: Optional[float] = None,
+    turn_deadline_epoch: Optional[float] = None,
+    turn_step_stall_sec: Optional[float] = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
@@ -682,6 +685,45 @@ def _build_subprocess_env(
         from orion.curiosity.sandbox_env import inject_curiosity_credentials
 
         inject_curiosity_credentials(env, fcc_env)
+    # The turn's own deadline, in the sandbox, sourced from the code that
+    # enforces it. HARNESS_FCC_TIMEOUT_SEC lives in the harness-governor's env
+    # and no other service can read it, so any budget a *prompt builder* stated
+    # would be a second copy free to drift from the real wall. Stamping it here
+    # means the only number Orion ever sees is the one the killer is using.
+    #
+    # Wall-clock (`time.time()`), not the monotonic clock the timeout loop runs
+    # on, because the consumer is `date +%s` inside a Bash tool call. The two
+    # can disagree if the host clock steps mid-turn; that is a rounding-level
+    # risk on a ~26-minute budget and the alternative is a number the sandbox
+    # cannot compare against anything.
+    #
+    # THE WHOLE-TURN DEADLINE IS NOT THE ONLY WALL, which is why the per-step
+    # stall cap is stamped alongside it. `_stream_stall_timeout_sec` bounds a
+    # SINGLE readline, and the CLI emits no stream-json line until a step
+    # completes -- so one query that runs past it dies with
+    # `fcc_stream_stalled` while the whole-turn clock still reads generous. A
+    # prompt that showed only the outer number would be encouraging exactly the
+    # unbounded single step that trips the inner one.
+    #
+    # Cleared rather than merely left unset when the caller does not know these:
+    # `os.environ.copy()` above would otherwise pass through a value inherited
+    # from an enclosing process. Clearing does NOT make the absent state
+    # self-evident to a shell -- `$(( $UNSET - $(date +%s) ))` prints a
+    # confident negative and exits 0 -- it only makes the wrong number absurd
+    # (~-1.8e9) instead of plausible (~-3000). The prompt carries the actual
+    # guard, testing for emptiness before doing the arithmetic.
+    if turn_budget_sec is not None:
+        env["ORION_TURN_BUDGET_SEC"] = str(int(turn_budget_sec))
+    else:
+        env.pop("ORION_TURN_BUDGET_SEC", None)
+    if turn_deadline_epoch is not None:
+        env["ORION_TURN_DEADLINE_EPOCH"] = str(int(turn_deadline_epoch))
+    else:
+        env.pop("ORION_TURN_DEADLINE_EPOCH", None)
+    if turn_step_stall_sec is not None:
+        env["ORION_TURN_STEP_STALL_SEC"] = str(int(turn_step_stall_sec))
+    else:
+        env.pop("ORION_TURN_STEP_STALL_SEC", None)
     return env
 
 
@@ -761,6 +803,9 @@ async def run_fcc_turn(
 
     started = time.monotonic()
     deadline = started + float(timeout_sec)
+    # Same instant, wall clock -- for the subprocess env only. The loop below
+    # still enforces against `deadline` (monotonic).
+    deadline_epoch = time.time() + float(timeout_sec)
     stall_timeout_sec = _stream_stall_timeout_sec(timeout_sec)
     steps_seen = 0
     proc: Optional[asyncio.subprocess.Process] = None
@@ -793,6 +838,9 @@ async def run_fcc_turn(
                 # Already loaded above for the model label; passed on so the
                 # curiosity credentials reach the subprocess too.
                 fcc_env=env,
+                turn_budget_sec=float(timeout_sec),
+                turn_deadline_epoch=deadline_epoch,
+                turn_step_stall_sec=stall_timeout_sec,
             ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

@@ -495,6 +495,139 @@ class Settings(BaseSettings):
     # chat text nobody asked for. Enabled in .env_example / the live .env; this
     # Field default stays False so an absent key fails closed rather than
     # silently enabling outreach.
+    # --- Curiosity investigation (2026-08-26) -----------------------------
+    # Orion spends a REAL unified turn looking at what it has been forming,
+    # picks its own subject, researches it against its own stores, and records
+    # what it worked out in its OWN FalkorDB graph so the next run is less
+    # ignorant than this one. See scripts/curiosity_investigation.py for the
+    # loop and the safety posture.
+    # Default False so an absent key can never start it; the live value lives
+    # in .env_example / .env like every other Hub loop.
+    HUB_CURIOSITY_INVESTIGATION_ENABLED: bool = Field(
+        default=False, alias="HUB_CURIOSITY_INVESTIGATION_ENABLED"
+    )
+    # How often the loop wakes to consider investigating. Cheap: the corpus is
+    # only read once the cooldown/cap gates pass (that read is ~7.8s of
+    # blocking IO over ~1.1 GB, so it must not happen per tick).
+    HUB_CURIOSITY_INVESTIGATION_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_CURIOSITY_INVESTIGATION_TICK_SEC"
+    )
+    # Minimum gap between two investigations. Deliberately long: this is a real
+    # turn on the same pipeline that serves Juniper, and an Orion that
+    # investigates hourly is not curious, it is noisy.
+    HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC: float = Field(
+        default=14400.0, alias="HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC"
+    )
+    # Max investigations per day; -1 disables the cap.
+    HUB_CURIOSITY_INVESTIGATION_DAILY_CAP: int = Field(
+        default=3, alias="HUB_CURIOSITY_INVESTIGATION_DAILY_CAP"
+    )
+    # Budgeted from the harness's OWN ceilings, not copied from outreach.
+    # Measured live 2026-08-26: outreach's 300s is far too short for an
+    # investigation, because an investigation actually uses tools. The first
+    # real run spent 1.3s on pre-turn appraisal, 81s on the Thought stance, and
+    # was still working at harness step 29 (Read, ToolSearch) when 300s cut it
+    # off -- so Orion did the whole investigation and the answer was discarded.
+    # A too-short ceiling here does not fail safe, it burns real compute and
+    # throws the result away. The governor's own budgets are
+    # HARNESS_FCC_TIMEOUT_SEC=900 + VOICE_FINALIZE_TIMEOUT_SEC=300 +
+    # FINALIZE_REFLECT_TIMEOUT_SEC=180, so this has to sit above their sum plus
+    # the stance leg. Nobody is waiting on this turn; the loop's cooldown is 4h.
+    HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC: float = Field(
+        default=1500.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
+    )
+    HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
+        default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"
+    )
+    # How much of Orion's own material to put in front of it. Enough to choose
+    # between, few enough that the menu does not crowd out its self-model in
+    # the turn's context. Sampled at RANDOM, not ranked -- any ordering would
+    # be this code choosing for Orion by the back door.
+    HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE: int = Field(
+        default=12, alias="HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE"
+    )
+    HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE: int = Field(
+        default=6, alias="HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE"
+    )
+
+    # --- Orion's own graph ------------------------------------------------
+    # `orion_worldview` is Orion's alone: it reads AND writes there, nothing in
+    # it needs approval, and Hub only ever reads it back (every Hub query goes
+    # out as GRAPH.RO_QUERY). `orion_substrate` is the shared, Juniper-curated
+    # Concept Atlas, which Orion may read and must not corrupt -- enforced by a
+    # FalkorDB ACL, not by convention. See orion/curiosity/worldview.py.
+    #
+    # HOST DEFAULTS TO THE LOOPBACK PORT MAPPING, NOT THE CONTAINER NAME, and
+    # that is not a style choice: orion-athena-hub runs with
+    # `network_mode: host`, so it cannot resolve `orion-athena-falkordb` at
+    # all. Confirmed live 2026-08-26 -- name resolution fails, 127.0.0.1:6380
+    # answers. The FCC sandbox reaches the same server as
+    # `orion-athena-falkordb:6379` because IT is on app-net; the two halves of
+    # this feature legitimately use different addresses for one server.
+    HUB_CURIOSITY_GRAPH_HOST: str = Field(
+        default="127.0.0.1", alias="HUB_CURIOSITY_GRAPH_HOST"
+    )
+    HUB_CURIOSITY_GRAPH_PORT: int = Field(default=6380, alias="HUB_CURIOSITY_GRAPH_PORT")
+    HUB_CURIOSITY_GRAPH_OWN: str = Field(
+        default="orion_worldview", alias="HUB_CURIOSITY_GRAPH_OWN"
+    )
+    HUB_CURIOSITY_GRAPH_ATLAS: str = Field(
+        default="orion_substrate", alias="HUB_CURIOSITY_GRAPH_ATLAS"
+    )
+    # The ACL user Hub asserts on Orion's behalf. Hub itself connects as the
+    # unrestricted `default` user (nopass on this deployment) -- these two are
+    # the credential Hub GRANTS, never the one it uses.
+    HUB_CURIOSITY_GRAPH_ORION_USER: str = Field(
+        default="orion_curiosity", alias="HUB_CURIOSITY_GRAPH_ORION_USER"
+    )
+    HUB_CURIOSITY_GRAPH_ORION_PASSWORD: str = Field(
+        default="", alias="HUB_CURIOSITY_GRAPH_ORION_PASSWORD"
+    )
+    # Hub serves the Atlas read-only over HTTP too; named in the prompt so
+    # Orion has a second, credential-free way in.
+    #
+    # AS SEEN FROM ORION'S SANDBOX, which is why the name says so. This value
+    # is only ever rendered INTO the prompt, and the prompt is executed by a
+    # `claude -p` subprocess inside orion-athena-harness-governor on app-net --
+    # not by Hub. Measured live 2026-08-26 from that container:
+    # `host.docker.internal:8080` -> 200, `127.0.0.1:8080` -> connection
+    # refused. Hub's own address for itself is the wrong answer here.
+    HUB_CURIOSITY_SANDBOX_HUB_URL: str = Field(
+        default="http://host.docker.internal:8080",
+        alias="HUB_CURIOSITY_SANDBOX_HUB_URL",
+    )
+    # How many open priors to put in front of Orion, ordered by how uncertain
+    # it said it was. Uncertainty orders the presentation; Orion still chooses.
+    HUB_CURIOSITY_PRIOR_SAMPLE: int = Field(
+        default=8, alias="HUB_CURIOSITY_PRIOR_SAMPLE"
+    )
+    # A prior tested this many times with no status change stops competing for
+    # the main list and is offered separately, with retiring it named as a real
+    # outcome. 3 is a guess from the design doc and should be revisited against
+    # real data -- it is not derived from anything measured.
+    HUB_CURIOSITY_STALE_PRIOR_TESTS: int = Field(
+        default=3, alias="HUB_CURIOSITY_STALE_PRIOR_TESTS"
+    )
+    # Stopping points inside one turn: places Orion states what it just learned
+    # and decides whether to keep pulling. Juniper's number. A cap exists so
+    # the reasoning is inspectable rather than one long ramble; the real
+    # ceiling is time (HARNESS_FCC_TIMEOUT_SEC=900), not steps.
+    HUB_CURIOSITY_MAX_HOPS: int = Field(default=5, alias="HUB_CURIOSITY_MAX_HOPS")
+    # The Postgres role the FCC sandbox's DSN authenticates as. Hub checks it
+    # still EXISTS (through its own privileged pool) before spending a turn --
+    # a dropped role would otherwise burn the whole budget discovering it
+    # cannot authenticate and then journal an articulate paragraph about it.
+    HUB_CURIOSITY_PG_READONLY_ROLE: str = Field(
+        default="orion_readonly", alias="HUB_CURIOSITY_PG_READONLY_ROLE"
+    )
+    # May a finding turn into an unprompted message to Juniper? Off by default:
+    # this is the only part of the feature that reaches her, and it inherits
+    # every endogenous-outreach gate (quiet hours, daily cap, cooldown) rather
+    # than having its own.
+    HUB_CURIOSITY_OUTREACH_ENABLED: bool = Field(
+        default=False, alias="HUB_CURIOSITY_OUTREACH_ENABLED"
+    )
+
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )

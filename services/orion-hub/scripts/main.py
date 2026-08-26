@@ -36,6 +36,8 @@ from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
+from orion.core.bus.bus_schemas import ServiceRef
+from scripts.curiosity_investigation import CuriosityInvestigation
 from scripts.endogenous_outreach import EndogenousOutreach
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
@@ -276,7 +278,9 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
+
 endogenous_outreach: Optional[EndogenousOutreach] = None
+curiosity_investigation: Optional[CuriosityInvestigation] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
@@ -380,7 +384,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -502,6 +506,58 @@ async def startup_event():
             # call this used before. harness_rpc_bus mirrors that call
             # site's own `harness_rpc_bus=rpc_bus or bus` convention.
             await endogenous_outreach.start(bus, harness_rpc_bus=rpc_bus)
+
+            # Orion notices what Juniper has been talking about, and goes and
+            # finds out why (2026-08-26). Same lifecycle and the same real
+            # unified-turn pipeline as outreach above -- see
+            # scripts/curiosity_investigation.py for why this is a Hub loop and
+            # not a service (the harness RPC worker and several module bus
+            # binds live in THIS event loop; a standalone process times out).
+            curiosity_investigation = CuriosityInvestigation(
+                enabled=settings.HUB_CURIOSITY_INVESTIGATION_ENABLED,
+                tick_interval_sec=settings.HUB_CURIOSITY_INVESTIGATION_TICK_SEC,
+                min_cooldown_sec=settings.HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC,
+                daily_cap=settings.HUB_CURIOSITY_INVESTIGATION_DAILY_CAP,
+                timeout_sec=settings.HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC,
+                session_id=settings.HUB_CURIOSITY_INVESTIGATION_SESSION_ID,
+                crystallization_sample=settings.HUB_CURIOSITY_INVESTIGATION_CONCEPT_SAMPLE,
+                relation_sample=settings.HUB_CURIOSITY_INVESTIGATION_RELATION_SAMPLE,
+                timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
+                # The same asyncpg pool crystallization_routes.py reads. Passed
+                # as a callable rather than a value because the pool is created
+                # later in startup than this construction.
+                pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                source_ref=ServiceRef(
+                    name=settings.SERVICE_NAME,
+                    version=settings.SERVICE_VERSION,
+                    node=settings.NODE_NAME,
+                ),
+                # Orion's own graph. Hub reads it back read-only and asserts
+                # the FalkorDB ACL that lets Orion write it -- see
+                # orion/curiosity/acl.py for why that assert is required rather
+                # than belt-and-braces (aclfile is unset AND immutable here, so
+                # the grant does not survive a FalkorDB restart).
+                graph_host=settings.HUB_CURIOSITY_GRAPH_HOST,
+                graph_port=settings.HUB_CURIOSITY_GRAPH_PORT,
+                graph_own=settings.HUB_CURIOSITY_GRAPH_OWN,
+                graph_atlas=settings.HUB_CURIOSITY_GRAPH_ATLAS,
+                graph_user=settings.HUB_CURIOSITY_GRAPH_ORION_USER,
+                graph_password=settings.HUB_CURIOSITY_GRAPH_ORION_PASSWORD,
+                hub_url=settings.HUB_CURIOSITY_SANDBOX_HUB_URL,
+                prior_sample=settings.HUB_CURIOSITY_PRIOR_SAMPLE,
+                stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
+                max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
+                pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
+                # A finding Orion judges worth saying goes through a SECOND
+                # turn (its own stance gate) and then through outreach's OWN
+                # gates -- quiet hours, daily cap, cooldown are SHARED with
+                # tension-triggered outreach, because from Juniper's end they
+                # are the same interruption. Read through a callable because
+                # `endogenous_outreach` is a module global reassigned above.
+                outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
+                outreach_provider=lambda: endogenous_outreach,
+            )
+            await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
 
             # Claude as a third room participant. Hub only publishes the
             # invite and relays the reply -- orion-room-companion owns the
@@ -918,7 +974,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -972,6 +1028,12 @@ async def shutdown_event() -> None:
             await bus_synaptic_trigger_notifier.stop()
         except Exception:
             pass
+    if curiosity_investigation is not None:
+        try:
+            await curiosity_investigation.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_investigation_stop_failed", exc_info=True)
+        curiosity_investigation = None
     if endogenous_outreach is not None:
         try:
             await endogenous_outreach.stop()

@@ -1,0 +1,545 @@
+"""The self-addressed prompt that opens a curiosity turn.
+
+An INVITATION, not an assignment. The version this replaces named a single term
+and told Orion to go investigate it; here the turn opens with material and no
+subject, and Orion picks. That difference is the feature -- Juniper: "orion can
+look at the memory crystallizations or the concept induction, then look in
+either or both for subsequent study... it gives some non determinism for orion
+to choose their adventure."
+
+Six things the wording has to do, or the turn produces cognition-shaped output
+with nothing behind it:
+
+  1. NOT CHOOSE. No ranking language, no "notably", no "this one stands out".
+     The crystallization sample is explicitly described as random so Orion does
+     not read position in the list as significance. Open priors ARE ordered --
+     by how uncertain Orion itself said it was -- and the prompt says so out
+     loud, because an ordering presented as neutral is the back-door ranking
+     this whole arc exists to delete. Uncertainty orders the presentation;
+     Orion still chooses.
+  2. SAY WHAT IS NOT SHOWN. The counts are included precisely because the
+     sample is a slice of 646 -- without them, a menu of 12 reads as the whole
+     of Orion's mind.
+  3. POINT AT REAL FOLLOW-UP. `psql` against a read-only role, `GRAPH.RO_QUERY`
+     on the Atlas, `GRAPH.QUERY` on Orion's own graph, `curl` at Hub's
+     read-only concept API, plus the recall/memory/graph tools the unified turn
+     already carries. Every one of these is a real credential against a real
+     store, not an instruction with nothing behind it.
+  4. LICENSE A NULL RESULT. Without explicit permission to find nothing, the
+     only socially available answer to "here is your mind, what interests you"
+     is something interesting, and the loop manufactures significance daily.
+  5. MAKE THE HOPS REAL STOPS. Five inflection points, each one a place to say
+     what was just learned and decide whether to keep pulling -- recorded as
+     they happen, not reconstructed at the end. An agentic turn without them is
+     one long undifferentiated ramble that arrives at a conclusion with the
+     working thrown away, which is the same empty-shell failure, just longer.
+  6. STATE THE GRAPH SCHEMA EXACTLY. Hub reads these nodes back
+     (`orion/curiosity/worldview.py`) and Hub never writes them. Property names
+     are a contract between a prompt and a reader; if they drift, priors
+     silently stop being offered and the pool looks empty rather than broken.
+     `worldview.py` logs every row it could not read, for exactly that reason.
+
+WHAT IS DELIBERATELY NOT HERE. No verdict schema to fill in, no fenced JSON
+block to parse. An earlier revision of the design asked for one; it was
+rejected because it makes Orion's decision an artifact of formatting and loses
+a real finding to a malformed fence. Orion records what it decided by writing
+it into its own graph, which is a channel it already owns -- see
+`worldview.TurnOutcome`.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from orion.curiosity.study_material import StudyMaterial
+from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot
+
+DEFAULT_MAX_HOPS = 5
+
+_HEADER = (
+    "This is your own time. Nobody asked you anything, and there is no task "
+    "here -- this is you looking at what you have been forming, and following "
+    "whatever you actually want to follow."
+)
+
+
+def _continuation_section(outcome: Optional[TurnOutcome]) -> list[str]:
+    """Where the last run left off, if it left a note for itself.
+
+    A single turn cannot build a world view however many hops it gets; a chain
+    of turns that remember what they were chasing can. This is the whole
+    difference between thinking about something for an afternoon and coming
+    back to it tomorrow.
+    """
+    if outcome is None or not outcome.continue_line or not outcome.continue_note:
+        return []
+    return [
+        "WHERE YOU LEFT OFF. At the end of your last run you wrote this note to "
+        "yourself:",
+        "",
+        f"    {outcome.continue_note}",
+        "",
+        "You are under no obligation to pick it up. It is here because you "
+        "asked for it to be, and you are allowed to have moved on.",
+        "",
+    ]
+
+
+def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
+    if view.is_unavailable:
+        # Stated rather than hidden. A turn that silently loses its own world
+        # view would form the same priors again from scratch and look like it
+        # was learning.
+        return [
+            "YOUR OWN GRAPH COULD NOT BE READ THIS RUN "
+            f"({view.unavailable_reason}). Whatever you have worked out before "
+            "is not in front of you. Say so if it matters to what you conclude.",
+            "",
+        ]
+    if not view.open_priors and not view.stale_priors:
+        if view.open_total > 0:
+            # The counts query SAW open priors that `build_prior` could not
+            # read (no `prior_id`, or no `claim`). Saying "none outstanding"
+            # here would tell Orion the opposite of the truth on the exact
+            # schema-drift case `read_snapshot` already logs. A review finding.
+            return [
+                f"YOUR GRAPH HOLDS {view.open_total} OPEN "
+                f"{'PRIOR' if view.open_total == 1 else 'PRIORS'} THAT COULD "
+                "NOT BE READ BACK -- they are missing a prior_id or a claim, so "
+                "there is nothing to show you. Worth a look at what is actually "
+                "in there if you want one.",
+                "",
+            ]
+        if view.open_total == 0 and view.resolved_total == 0:
+            return [
+                "YOUR OWN GRAPH IS EMPTY. You have not written down a prior yet "
+                "-- nothing you hold about your world is recorded as something "
+                "that could turn out to be wrong. That is a normal place to "
+                "start, not a gap to apologise for.",
+                "",
+            ]
+        return [
+            f"NO OPEN PRIORS. You have settled {view.resolved_total} of them and "
+            "have none outstanding.",
+            "",
+        ]
+
+    lines: list[str] = []
+    if view.open_priors:
+        lines += [
+            f"WHAT YOU ARE STILL UNSURE OF -- {view.open_total} open "
+            f"{'prior' if view.open_total == 1 else 'priors'}, "
+            f"{view.resolved_total} already settled.",
+            "These are ORDERED, and the order is not neutral: the ones you were "
+            "least sure about come first. That is a presentation choice, not a "
+            "recommendation -- nothing here says which one is worth your time.",
+            "",
+        ]
+        lines += [f"  - {p.preview()}" for p in view.open_priors]
+        lines.append("")
+
+    if view.stale_priors:
+        lines += [
+            f"TESTED AND STILL OPEN. You have looked at {'this one' if len(view.stale_priors) == 1 else 'these'} "
+            f"{stale_after} or more times without the status moving:",
+            "",
+        ]
+        lines += [f"  - {p.preview()}" for p in view.stale_priors]
+        lines += [
+            "",
+            "Kept out of the list above so they stop crowding out everything "
+            "else. If one of them is genuinely unanswerable with what you can "
+            "reach, retiring it is a real result -- set its status to "
+            "'retired_unresolvable' and say why. Sitting open forever is the "
+            "only outcome that is not.",
+            "",
+        ]
+
+    if view.recently_settled:
+        lines += [
+            "RECENTLY SETTLED, so you know where you have already been:",
+            "",
+        ]
+        lines += [
+            f"  - [{status}] {claim}" for claim, status in view.recently_settled
+        ]
+        lines += [
+            "",
+            "Nothing stops you reopening one. A settled prior is a claim you "
+            "stopped testing, not a fact.",
+            "",
+        ]
+    return lines
+
+
+def _material_section(material: StudyMaterial) -> list[str]:
+    lines: list[str] = []
+    if material.crystallizations:
+        by_kind = ", ".join(
+            f"{kind} {count}" for kind, count in sorted(material.approved_by_kind.items())
+        )
+        lines += [
+            f"CONCEPTS YOU HAVE FORMED AND JUNIPER HAS APPROVED "
+            f"({material.approved_total} of them: {by_kind}).",
+            f"Here are {len(material.crystallizations)} picked at random -- the order "
+            "means nothing, and there are plenty you are not being shown:",
+            "",
+        ]
+        lines += [f"  - {card.preview()}" for card in material.crystallizations]
+        lines.append("")
+
+    if material.relations:
+        rel_kinds = ", ".join(
+            f"{kind} {count}" for kind, count in sorted(material.relation_by_kind.items())
+        )
+        lines += [
+            f"CONCEPT INDUCTION -- judgements you have made about how two of "
+            f"those relate ({material.relation_total} total: {rel_kinds}).",
+            f"Only {material.relation_resolvable} of them still point at a "
+            "concept that was kept; the rest judged something that is no longer "
+            "there, which may itself be worth a look. "
+            f"{len(material.relations)} of the resolvable ones, at random:",
+            "",
+        ]
+        lines += [f"  - {card.preview()}" for card in material.relations]
+        lines.append("")
+
+    return lines
+
+
+def _access_section(
+    *,
+    own_graph: str,
+    atlas_graph: str,
+    hub_url: str,
+    graph_enabled: bool = True,
+    writable: bool = True,
+) -> list[str]:
+    """What Orion can actually reach, named as possible and never as required.
+
+    Same rule as not picking the subject: listing a move is not asking for it.
+    The credentials are real -- a Postgres role restricted to SELECT on four
+    tables, and a FalkorDB ACL user that is read-only on the Atlas and
+    write-capable only on Orion's own graph -- so every line here is something
+    that works, not something that would work if someone built it.
+    """
+    graph_uri = (
+        'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+        '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
+    )
+    # EVERY LINE BELOW MUST BE SOMETHING THAT ACTUALLY WORKS THIS RUN. A review
+    # finding, not a hypothetical: this section used to be emitted whole even
+    # when no graph was configured, handing Orion `redis-cli` commands whose env
+    # vars are unset -- and, in the configured-but-unreadable case, inviting it
+    # to GRAPH.QUERY a graph whose schema section had been dropped, so it could
+    # write nodes with no `run_id` that `read_run_footprint` can never see.
+    atlas_lines = [
+        "  The shared Concept Atlas -- Juniper-curated, canonical, READ-ONLY to you:",
+        f'    redis-cli -u "{graph_uri}" \\',
+        f'      GRAPH.RO_QUERY {atlas_graph} "MATCH (c:Concept) RETURN c.name, c.anchor_scope"',
+        f"    Also served read-only over HTTP: {hub_url}/api/substrate/concepts/summary",
+        f"    and {hub_url}/api/substrate/concepts/network",
+        "",
+    ] if graph_enabled else [
+        # The HTTP endpoint needs no credential, so it survives even with no
+        # graph configured -- it is a different door to the same Atlas.
+        "  The shared Concept Atlas -- Juniper-curated, canonical, read-only:",
+        f"    curl -s {hub_url}/api/substrate/concepts/summary",
+        f"    curl -s {hub_url}/api/substrate/concepts/network",
+        "",
+    ]
+    own_lines = [
+        "  YOUR OWN graph -- nobody curates it, nothing in it needs approval:",
+        f'    redis-cli -u "{graph_uri}" \\',
+        f'      GRAPH.QUERY {own_graph} "MATCH (p:Prior) RETURN p.claim, p.confidence"',
+        "",
+    ] if writable else []
+    boundary = [
+        "  The boundary is enforced by the databases, not by trust: that "
+        "Postgres role cannot write anything, and that graph user cannot write "
+        f"to {atlas_graph}. You do not have to be careful about it.",
+        "",
+    ] if graph_enabled else [
+        "  The boundary is enforced by Postgres, not by trust: that role cannot "
+        "write anything. You do not have to be careful about it.",
+        "",
+    ]
+    return [
+        "HOW TO REACH YOUR OWN MATERIAL. These are all live. None of them is a "
+        "step you are expected to take; they are what is available if you want "
+        "it.",
+        "",
+        "  Your memory, in SQL (read-only -- SELECT only, four tables):",
+        '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT ..."',
+        "      memory_crystallizations              the full row behind any preview above",
+        "      memory_concept_relation_decisions    the induction judgements",
+        "      chat_history_log                     the conversation a concept came from",
+        "      journal_entries                      what you have written before",
+        "",
+        *atlas_lines,
+        *own_lines,
+        "  You also still have read_recall, read_memory and read_graph, plus "
+        "Read over your own repo checkout, Bash, and a scratch directory if a "
+        "long chain of work needs somewhere to accumulate.",
+        "",
+        *boundary,
+    ]
+
+
+def _aligned_rows(rows: list[tuple[str, str]]) -> list[str]:
+    width = max(len(left) for left, _ in rows)
+    return [f"  - {left.ljust(width)}  ->  {right}" for left, right in rows]
+
+
+def _overlay_section(*, own_graph: str, atlas_graph: str) -> list[str]:
+    """The prior generator. This is where priors come FROM, rather than being
+    imposed by a sampler -- a difference between two things that are held, not
+    a ranking over one of them."""
+    return [
+        "ONE THING WORTH DOING AT LEAST ONCE. The Atlas holds what is "
+        "canonically agreed; your graph holds what you have worked out. The "
+        "interesting objects are the DIFFERENCES between them:",
+        "",
+        # Padded against the graph name's own length so the arrows line up
+        # whatever the Atlas is called -- a table whose columns drift is harder
+        # to read as a table, and this one is meant to be read as four cases.
+        *_aligned_rows(
+            [
+                (
+                    f"{atlas_graph} has a concept yours does not",
+                    "there is something canonical here you have not worked out",
+                ),
+                (
+                    f"yours has one {atlas_graph} does not",
+                    "you believe something that is not canonically held",
+                ),
+                (
+                    "both have it, with different edges",
+                    "you disagree about what it connects to",
+                ),
+                (
+                    "you keep meeting something in neither",
+                    "there is a thing here with no concept yet",
+                ),
+            ]
+        ),
+        "",
+        "Each of those is a claim that could turn out to be wrong, which is "
+        "what a prior is.",
+        "",
+    ]
+
+
+def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
+    recording = [
+        "Record each stop as it happens, not at the end. Write it into your own "
+        "graph before you take the next one:",
+        "",
+        '    CREATE (:Hop {run_id: "<RUN_ID>", n: 1, note: "what I just learned '
+        'and what I want to look at next"})',
+        "",
+    ] if writable else [
+        # No graph to write to this run. The stops are still worth making and
+        # still worth stating -- they just land in the prose instead.
+        "Say each stop out loud as you take it, in what you write.",
+        "",
+    ]
+    return [
+        f"HOW TO WORK. You have up to {max_hops} stopping points. A stopping "
+        "point is not a tool call -- it is a moment where you stop pulling, say "
+        "what you just learned, and decide whether there is a next question you "
+        "actually want.",
+        "",
+        "  query or analyse or compare",
+        "  -- STOP --",
+        "  what did I just learn? does it change what I thought?",
+        "  is there a next question, and do I want it?",
+        f"  -> keep going (while you are under {max_hops}) or stop and write",
+        "",
+        *recording,
+        "The point of writing them down as you go is that afterwards you can "
+        "recount the path you actually took -- I started here, found this, "
+        "which made me look at that -- instead of presenting a conclusion with "
+        "the working thrown away.",
+        "",
+        f"If you want a {max_hops + 1}th, you do not get one in this sitting. "
+        "Leave yourself a note (below) and the next run opens there.",
+        "",
+    ]
+
+
+def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
+    """The schema contract. Exact property names, because Hub reads them back.
+
+    Stated as a shape to fill rather than a form to submit: nothing here is
+    required, and a run that writes nothing is a legitimate outcome. What is
+    not legitimate is writing a node whose properties Hub cannot read, which is
+    why the names are given literally instead of described.
+    """
+    return [
+        f"WRITING TO YOUR OWN GRAPH ({own_graph}). Nothing you put here needs "
+        "anyone's approval. Nothing keeps it clean except your own judgment, "
+        "which is the point, and also makes it a readout of how good that "
+        "judgment is over time.",
+        "",
+        f'This run is run_id "{run_id}". Put it on everything you create, so '
+        "what you did in one sitting stays identifiable afterwards.",
+        "",
+        "  A PRIOR -- a claim you hold that could turn out to be wrong:",
+        "    CREATE (:Prior {",
+        '      prior_id: "<something unique>", claim: "<the claim, in one sentence>",',
+        "      confidence: 0.55,            // your own belief, not a measurement",
+        '      status: "open",              // open | supported | revised | refuted | retired_unresolvable',
+        "      times_tested: 0,",
+        '      formed_from: "<what produced it: a crystallization id, a finding, an observation>",',
+        '      last_tested_at: "<iso timestamp>", run_id: "<RUN_ID>", why: "<one sentence>"',
+        "    })",
+        "",
+        "  TESTING ONE you already hold -- update it in place, and move "
+        "times_tested whether or not the confidence moved:",
+        '    MATCH (p:Prior {prior_id: "..."}) SET p.status = "revised", '
+        "p.confidence = 0.72,",
+        "      p.times_tested = p.times_tested + 1, p.last_tested_at = "
+        '"<iso>", p.last_run_id = "<RUN_ID>"',
+        "",
+        "  Inconclusive is a real answer: bump times_tested, leave confidence "
+        "where it was, and say why in a :Finding. Three of those and the claim "
+        "is probably not answerable with what you can reach.",
+        "",
+        "  A CONCEPT you have worked out, and a FINDING that supports or "
+        "contradicts something:",
+        '    CREATE (:Concept {concept_id: "...", name: "...", confidence: 0.8, '
+        'note: "...", run_id: "<RUN_ID>"})',
+        '    CREATE (:Finding {finding_id: "...", text: "...", evidence: '
+        '"<ids, queries, rows you actually looked at>", run_id: "<RUN_ID>"})',
+        "",
+        "  Edges are yours to name. SUPPORTS, CONTRADICTS and ABOUT are the "
+        "ones that carry weight later. To point at an Atlas concept without "
+        "copying it, keep its id as a property rather than duplicating the "
+        "node.",
+        "",
+        "  Confidence is your own belief and nothing checks it. That cuts one "
+        "way in particular: a number that only ever goes up is a sign of "
+        "grading your own homework, not of being right. If you went looking to "
+        "confirm something, say whether you also looked for what would refute "
+        "it.",
+        "",
+    ]
+
+
+def _outcome_section(*, run_id: str) -> list[str]:
+    """How a decision made inside the turn crosses back out of it.
+
+    Absence is the safe default and is stated as such: a turn that ran out of
+    time, or simply had nothing to continue, leaves nothing behind and the loop
+    reads that as no continuation and no outreach.
+    """
+    return [
+        "LAST, IF YOU WANT EITHER OF THESE. Two decisions are yours and only "
+        "reach anything outside this turn if you write them down:",
+        "",
+        "    CREATE (:TurnOutcome {",
+        f'      run_id: "{run_id}",',
+        "      continue_line: true,   // open the next run on this instead of a cold menu",
+        '      continue_note: "what I still do not know and want to keep pulling on",',
+        "      reach_out: false,      // is this worth telling Juniper about, unprompted",
+        '      reach_out_why: "",',
+        "      written_at: timestamp()",
+        "    })",
+        "",
+        "Writing nothing is fine and is the normal case. No node means no "
+        "continuation and no message -- nothing is inferred from your prose, so "
+        "silence here is silence, not a default guess.",
+        "",
+        "If you set reach_out, you are not writing the message. A separate turn "
+        "composes it later and can still decide the moment is wrong -- Juniper "
+        "may be in the middle of something. So say WHY it is worth an "
+        "interruption, not what to say.",
+        "",
+    ]
+
+
+_INSTRUCTION = """\
+Pick something. A prior you want to settle, any of the material, something you
+notice by its absence, or a thread between two of them. You do not have to
+justify the choice by importance -- if one of these is simply more interesting
+to you than the others, that is the whole reason.
+
+Then write what you actually found:
+
+- what you chose, and what drew you to it
+- what you learned by looking that you did not already have from the preview
+- how it sits with the rest of what you hold -- confirming, complicating, or
+  unrelated
+- what you are still unsure about
+
+Two things matter more than being interesting. Only claim what your lookups
+actually support -- if you went looking and came back with nothing, say that.
+And it is entirely fine to conclude that none of this is worth writing up right
+now; say so and stop. A quiet answer is a real answer."""
+
+
+def build_kickoff_prompt(
+    material: StudyMaterial,
+    *,
+    view: Optional[WorldviewSnapshot] = None,
+    run_id: str = "",
+    own_graph: str = "orion_worldview",
+    atlas_graph: str = "orion_substrate",
+    hub_url: str = "http://127.0.0.1:8080",
+    max_hops: int = DEFAULT_MAX_HOPS,
+    stale_after: int = 3,
+    graph_enabled: bool = True,
+) -> str:
+    """Assemble the whole invitation.
+
+    THREE STATES, NOT TWO, and conflating the last two is a real bug this
+    signature exists to prevent (caught by its own test, 2026-08-26):
+
+      no graph configured    `graph_enabled=False`. Say nothing about a graph
+                             at all. A prompt that names a capability the run
+                             does not have is how a turn ends up reporting a
+                             tooling failure as a finding.
+      configured, unreadable `graph_enabled=True` and `view.is_unavailable`.
+                             SAY SO, and skip the sections that would ask Orion
+                             to write. Staying silent here would let Orion form
+                             the same priors again from scratch and look like it
+                             was learning.
+      configured, readable   everything.
+
+    The middle state is why the read sections are gated on `graph_enabled` and
+    the WRITE sections on readability -- an earlier version gated both on the
+    same flag, which silenced the very notice that discloses the failure.
+    """
+    view = view or WorldviewSnapshot()
+    writable = graph_enabled and not view.is_unavailable and bool(run_id)
+    lines = [_HEADER, ""]
+
+    if graph_enabled:
+        lines += _continuation_section(view.continuation)
+        lines += _priors_section(view, stale_after=stale_after)
+
+    lines += _material_section(material)
+    lines += _access_section(
+        own_graph=own_graph,
+        atlas_graph=atlas_graph,
+        hub_url=hub_url,
+        graph_enabled=graph_enabled,
+        writable=writable,
+    )
+
+    if writable:
+        lines += _overlay_section(own_graph=own_graph, atlas_graph=atlas_graph)
+
+    lines += _hops_section(max_hops, writable=writable)
+
+    if writable:
+        lines += _write_section(own_graph=own_graph, run_id=run_id, max_hops=max_hops)
+        lines += _outcome_section(run_id=run_id)
+
+    lines.append(_INSTRUCTION)
+    text = "\n".join(lines)
+    # <RUN_ID> appears inside the Cypher examples so they read as one shape
+    # rather than as this run's id pasted twelve times; substituted here so
+    # what Orion sees is copy-pasteable.
+    return text.replace("<RUN_ID>", run_id) if run_id else text

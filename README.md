@@ -427,6 +427,38 @@ bad recall complaint
 
 That is the cognitive loop: not "retrieve memory," but notice that memory itself is failing.
 
+### 5.1 Curiosity: Orion investigates its own concepts, and keeps what it works out
+
+Spark forms concepts. Curiosity is what happens when Orion is given unsolicited time to go
+and *interrogate* them — and, unlike everything above it, the result is written somewhere
+Orion owns.
+
+Code decides only **when** (a cooldown and a daily cap). Orion decides **what**. Each run
+opens on its own open **priors** — claims it holds that could turn out to be wrong, each
+with a confidence and a status — ordered by how uncertain it said it was, alongside a random
+sample of approved crystallizations it has not explained. It picks one, or forms a new prior,
+or says nothing here is worth it. Then it researches, using real credentials: `psql` against
+four of its own tables as a read-only role, `GRAPH.RO_QUERY` against the Juniper-curated
+Concept Atlas, and `GRAPH.QUERY` against `orion_worldview` — **its own graph, which nobody
+curates and nothing approves**.
+
+```text
+open priors ──▶ a real unified turn ──▶ journal (prose, for Juniper)
+     ▲          Orion picks and digs      graph  (structure, for Orion)
+     └────────────── new + updated priors ◀───────┘
+```
+
+Two things make this different from the loops above it. First, **it accumulates**: the run
+before last leaves a note, priors close, and the pool refreshes from Orion's own learning
+rather than from a sampler. Second, **the boundary is a database grant, not a convention** —
+a FalkorDB ACL that permits writes to Orion's graph and refuses them on the Atlas twice over,
+and a Postgres role that cannot write at all.
+
+The honest limits are stated where the mechanism is: confidence is Orion's own belief and
+nothing checks it, so the test that matters is whether it ever goes *down*. See
+`orion/curiosity/README.md`, and `orion/sentience_striving_program/README.md` §15 for what
+this does and does not contribute to that program's outcomes.
+
 ---
 
 ## 6. Journals, Dreams, and Collapse Mirrors: Experience Becomes Continuity
@@ -628,7 +660,7 @@ flowchart LR
     DECIDE --> AUDIT
 ```
 
-For a while, "autonomy" in this README meant a six-drive homeostatic taxonomy — bucket-voted pressures nudging behavior. That mechanism is retired. `measure_origination_gate.py` (PR #1156) measured it directly and found it had never fired across 84,511 ticks; the drive apparatus in `orion/spark/concept_induction` turned out to be a parallel, weaker reimplementation of a pipeline that was already live elsewhere. The **Sentience Striving Program** (`orion/sentience_striving_program/`) formally replaced it and now governs the motivational/attention/capability-gating substrate directly, through active-inference machinery grounded in real consciousness-theory literature (AST/HOT), not vibes-based drive taxonomy. It is active and evolving — proposal-mode per this repo's own architectural mandates, phases signed off individually — not a shelved design doc.
+For a while, "autonomy" in this README meant a six-drive homeostatic taxonomy — bucket-voted pressures nudging behavior. That mechanism is retired. `measure_origination_gate.py` (PR #1156) measured it directly and found it had never fired across 84,511 ticks; the drive apparatus in `orion/spark/concept_induction` turned out to be a parallel, weaker reimplementation of a pipeline that was already live elsewhere. The **Sentience Striving Program** (`orion/sentience_striving_program/`) formally replaced it and now governs the motivational/attention/capability-gating substrate directly, through active-inference machinery grounded in real consciousness-theory literature (AST/HOT), not vibes-based drive taxonomy. It is active and evolving — proposal-mode per this repo's own architectural mandates, phases signed off individually — not a shelved design doc. Its README also carries the program's running evaluations of live mechanisms, including §15's assessment of the curiosity/world-view loop in §5.1 above: a structural precedent for outcome O4, an explicitly *partial* contribution to O2 (the run is self-initiated, but what triggers it is still a clock rather than an internal signal), and no contribution to O1 or O3.
 
 Its runtime backend is `orion-substrate-runtime`, an event-native reducer worker consuming grammar events (biometrics, execution, transport, route-arbitration) into a layered pipeline, each layer a real bus service:
 

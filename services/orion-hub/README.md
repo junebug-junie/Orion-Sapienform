@@ -400,6 +400,12 @@ test, flip `HUB_ENDOGENOUS_OUTREACH_ENABLED` and restart.
 time; Orion decides what to do with it, inside a real
 `execute_unified_turn`. Nothing in the loop names a subject.
 
+> This section covers the loop **from Hub's side** — the gates, the wiring, the
+> addresses. The program itself (what a prior is, why Orion gets a graph nobody
+> curates, where priors come from, and what this does not establish) lives in
+> `orion/curiosity/README.md`. `orion/sentience_striving_program/README.md` §15
+> evaluates it against that program's own outcomes.
+
 **What it shows Orion.** Its own open priors (ordered by how uncertain *it*
 said it was, and the prompt says the ordering is not neutral), a random sample
 of Juniper-approved crystallizations and concept-induction judgements, what it

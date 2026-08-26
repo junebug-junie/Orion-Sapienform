@@ -1383,3 +1383,106 @@ to prevent. It should land alongside #1543's own implementation, if and when tha
 
 **Sign-off.** Reviewed and directed by Juniper: "re 2 have a look at pr 1543" surfaced the
 label-update connection above; "oky take it forward" authorized this fix.
+
+---
+
+## 15. Orion's own world-view graph — self-directed enquiry as a program instrument, 2026-08-26
+
+**What landed.** `orion/curiosity/` plus `services/orion-hub/scripts/curiosity_investigation.py`
+(PR #1894, building `docs/superpowers/specs/2026-08-26-orion-priors-and-worldview-design.md`).
+Orion is periodically given unsolicited time, chooses its own subject, researches it with
+real credentials against its own stores, and records what it worked out as **priors** — claims
+with a confidence and a status — in `orion_worldview`, a FalkorDB graph it reads and writes
+and nobody curates. Hub only ever reads it back. Full account: `orion/curiosity/README.md`.
+
+**Why it belongs in this program's file rather than only in a service README.** This program
+exists to stop hand-authored proxies being asserted as internal state, and to replace
+"what are Orion's drives" with something measured rather than declared (§5, O4). This loop
+is the first mechanism in the repo where **Orion itself, not a design chat, is the author of
+a persistent claim about its own world, and that claim carries a falsifiable status**. That
+is close enough to O4's shape that it needs to be evaluated by this program's rules, not
+adopted by them uncritically.
+
+### 15a. What it does and does not contribute to the outcomes
+
+Stated against §5 explicitly, because the vocabulary here ("priors", "world view",
+"curiosity") is exactly the kind that gets adopted as evidence without earning it.
+
+- **O2 — self-initiation attributable to a live signal.** *Partial, and honestly so.* The
+  run is self-initiated in a real sense: Thought's own `react()` can defer or refuse it, and
+  the subject is chosen inside the turn rather than handed in. But **what triggers a run is
+  still a timer**, not an internal signal — a 4h cooldown and a daily cap. Nothing in this
+  loop is yet attributable to a currently-firing internal pressure, which is precisely what
+  O2 requires. Wiring the *trigger* to a live field signal (rather than a clock) is the
+  obvious next step and is deliberately **not** claimed here.
+- **O4 — the drives question answered empirically.** *A structural precedent, not an
+  answer.* Priors are versioned, re-derivable, authored from observation, and can be
+  refuted — the properties O4 demands of any surviving category. They are not drives and
+  make no claim to be. What they demonstrate is that a category Orion authored about its own
+  world can be held with a confidence, tested, and closed, which is the mechanism O4 says any
+  future taxonomy must have.
+- **O1 and O3 — no contribution.** Capability does not vary with anything here, and no
+  consciousness-theory instrument is involved. Said plainly so this is not later cited as
+  having moved either.
+
+### 15b. The self-grading problem, named as this program's own failure mode
+
+Confidence in `orion_worldview` is **Orion's own belief and nothing outside the loop checks
+it**. This program has been bitten before by exactly this shape — a number that looks like a
+measurement, is treated as one downstream, and turns out to be an artifact of how it was
+produced (§12's `precision=640000` from two real samples; PR #1171's own cross-check, where a
+channel the field-digester glossary called "the cleanest in the corpus" turned out to read
+that way only because of a `max()`-merge across two entities sharing a channel name; and the
+whole reason §7's `self_state_id` rule exists).
+
+The falsifiable detector, and it should be run before anything is built on these numbers:
+
+> **Across 20 real runs there must be at least one `refuted` and at least one downward
+> confidence revision. If confidence is monotonic, the loop is not learning — it is
+> accumulating agreement with itself, and the graph makes that permanent.**
+
+```bash
+docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
+  "MATCH (p:Prior) RETURN p.status, count(p)"
+docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
+  "MATCH (p:Prior) WHERE p.status IN ['refuted','revised'] RETURN p.claim, p.confidence"
+```
+
+A second check with the same standing: **does anything outside the loop read this graph?**
+`journal_entries` has 36,649 rows (measured 2026-08-26) and exactly one reader; a write-only world view is that
+again with better vocabulary. Today `orion_worldview` is read by Hub (to build the next
+prompt) and by Orion (in-turn), and by nothing else — in particular it does **not** reach
+Orion's chat context. Whether it should is an open question the design deliberately left to
+Juniper rather than deciding alone.
+
+### 15c. Two process lessons this build produced, both live-measured
+
+Recorded here because both are the class of thing this program keeps rediscovering.
+
+1. **A grant that is configured is not a grant that exists.** The FalkorDB ACL giving Orion
+   write access to its own graph does not survive a restart — `aclfile` is unset *and*
+   immutable at runtime, so the rule lives only in the running process's memory. Hub
+   therefore re-asserts it before every run. The re-assert itself had a real bug found by
+   measurement rather than by reading: `resetkeys nocommands` does **not** clear ACL
+   *selectors*, so each replay appended a duplicate (1 → 2 → 3, one more per Hub start,
+   forever). Same family as §14's restart-persistence gap and the `ORION_ATTENTION_TOPDOWN_ENABLED`
+   compose-allowlist gap — "built, tested, never actually present at runtime", one layer
+   further down each time.
+2. **A capability that reads as unavailable can be unavailable *because* it reads that way.**
+   `GRAPH.RO_QUERY` against a graph FalkorDB has never seen returns
+   `ERR Invalid graph operation on empty key`, not an empty result. On a fresh deployment
+   that made the graph read as *unavailable*, which correctly caused the prompt to drop the
+   schema section, which meant Orion was never shown how to write a node, which meant the
+   graph was never created — a closed loop with a warning as its only symptom. Found by a
+   review that probed the live database instead of trusting the docstring. **A degradation
+   path that removes the only mechanism that could end the degradation is not a degradation,
+   it is a deadlock** — worth checking for wherever this program's own instruments
+   "gracefully" disable themselves.
+
+### 15d. Status
+
+Merged into `main`? Not as of writing — PR #1894 open. **Not deployed**:
+`HUB_CURIOSITY_INVESTIGATION_ENABLED=false` and `HUB_CURIOSITY_OUTREACH_ENABLED=false` in the
+live `.env`, nothing restarted. So there are **zero real runs**, and every claim in §15a is
+about the mechanism, not about observed behaviour. Nothing in this section should be cited as
+evidence until the 20-run check in §15b has actually been run.

@@ -24,6 +24,68 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 7. **Models:** Override `VISION_VLM_MODEL_ID` per node for your VRAM budget — default (`Salesforce/blip-image-captioning-base`) is sized for a shared/small card (e.g. athena's P4). `model_manager.py`'s `load_vlm_captioner` also supports BLIP2, Qwen2-VL, and Qwen2.5-VL model_ids (selected by substring match — see `.env_example` comment); Qwen2-VL-class models need real headroom (~4-5GB fp16) and route through a chat-template prompt, unlike BLIP's plain image+text call. Enable only profiles you need via `VISION_ENABLED_PROFILES`.
 8. **Caption quality:** VLM captions use a factual prompt and `caption_sanitize` rejects prompt-echo and stoplist garbage before artifacts are stored. Rejected captions append `caption_rejected:{reason}` to task meta warnings.
 
+## Circe Qwen2-VL lane (`docker-compose.circe-qwen.yml`)
+
+A second, independent instance of this same service, deployed on **circe's
+physical GPU index 4 (Tesla P100-PCIE-16GB)** running `Qwen/Qwen2-VL-2B-Instruct`
+instead of the shared athena instance's BLIP-base. Not a replacement for
+the athena instance above — that one keeps doing retina/detection/embedding
+work on athena's P4. This lane exists for exactly one job: re-observing a
+generated image for `orion-thought`'s reverie visual chain
+(`services/orion-thought/app/visual_chain.py`), which needs a real,
+non-degenerate caption that BLIP-base's quality ceiling cannot reliably
+produce (live-evidenced 3/3 ticks on 2026-08-25/26 — every real GPU call
+rejected by `sanitize_caption` as too-short/empty) and that athena's P4 has
+no VRAM headroom to fix in place (2.4GB free measured live; Qwen2-VL-2B
+needs ~4-5GB fp16).
+
+**Why a second instance, not just a bigger model on athena:** checked and
+ruled out — see the paragraph above. **Why its own channel, not the shared
+one:** two vision-host instances racing the same shared
+`orion:exec:request:VisionHostService` channel already caused a real
+incident (PR #1859/#1860, 2m13s of dropped presence updates) — every
+dedicated instance gets its own isolated channel, no exceptions
+(`orion/bus/channels.yaml`'s `orion:exec:request:VisionHostService:*`
+convention).
+
+**No shared filesystem with athena** (`/mnt/telemetry` is local ext4, not
+NFS-exported) — this lane never reads a frame by path. The caller
+(`orion-thought`) uploads the generated image's bytes to
+`orion-percept-store` first and hands this lane a `percept_sha256`; this
+service's own `runner.py::_load_image_from_percept_store` is what fetches
+those bytes back, server-side, to run inference on. That means
+`VISION_PERCEPT_STORE_URL` **must be the real tailscale IP**
+(`http://100.92.216.81:8021/percepts`), never the docker-internal service
+name (`orion-athena-percept-store`) the shared athena instance uses — that
+hostname only resolves on athena's own docker network. Live-caught
+deploying this lane the first time: `Temporary failure in name resolution`.
+
+**Bring up (from a worktree ON CIRCE, never the shared checkout):**
+
+```bash
+# Confirm the GPU is actually free RIGHT NOW -- do not trust an earlier
+# session's snapshot, this host's GPU assignments have moved before:
+nvidia-smi --query-gpu=index,name,memory.free --format=csv
+
+docker compose \
+  --env-file .env \
+  --env-file services/orion-vision-host/.env \
+  -f services/orion-vision-host/docker-compose.circe-qwen.yml \
+  up -d --build
+
+curl -fsS http://localhost:${CIRCE_QWEN_HOST_PORT:-6602}/health
+curl -fsS http://localhost:${CIRCE_QWEN_HOST_PORT:-6602}/ready
+```
+
+Every `CIRCE_QWEN_*` key has a safe default baked into the compose file
+itself, so the second `--env-file` above is optional for a first bring-up
+-- but include it anyway (AGENTS.md section 8's dual-env-file convention):
+an override made through the normal `sync_local_env_from_example.py`
+workflow lands in `services/orion-vision-host/.env`, and a bring-up that
+only passes the root `.env` would silently ignore it (review finding).
+
+Env keys: see `.env_example`'s "Circe Qwen2-VL lane" section.
+
 ## Caption sanitizer
 
 `retina_fast` caption path (`_run_caption_frame`):

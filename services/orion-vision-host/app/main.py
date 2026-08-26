@@ -456,7 +456,12 @@ class VisionHostService:
         reply_channel = source_envelope.reply_to or f"{settings.CHANNEL_VISIONHOST_REPLY_PREFIX}:{res.corr_id}"
         await self.bus.publish(reply_channel, reply_envelope)
 
-        if res.ok and artifact_payload and should_broadcast_artifact(res.task_type, artifact_payload):
+        if (
+            res.ok
+            and artifact_payload
+            and settings.VISION_ARTIFACT_BROADCAST_ENABLED
+            and should_broadcast_artifact(res.task_type, artifact_payload)
+        ):
              await self._publish_artifact_broadcast(artifact_payload, source_envelope)
 
     def _create_artifact_payload(self, res: VisionResult, source_envelope: BaseEnvelope) -> Optional[VisionArtifactPayload]:

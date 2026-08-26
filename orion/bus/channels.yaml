@@ -513,29 +513,43 @@ channels:
   - name: "orion:exec:request:VisionHostService"
     kind: "request"
     schema_id: "VisionTaskRequestPayload"
-    # orion-thought added 2026-08-25 (reverie visual chain, Patch 2 of
-    # docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md) --
-    # re-observes a generated image via the existing caption_frame task +
-    # percept_sha256, no vision-host code change needed.
-    producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host", "orion-vision-frame-router", "orion-thought"]
+    # orion-thought was briefly a producer here 2026-08-25 (reverie visual
+    # chain, Patch 2) -- moved to the dedicated
+    # "orion:exec:request:VisionHostService:circe-vl" lane below 2026-08-26
+    # after live-confirming this shared instance's BLIP-base cannot produce
+    # a caption real enough to clear sanitize_caption for a *generated*
+    # image (3/3 real ticks came back uncaptioned).
+    producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host", "orion-vision-frame-router"]
     consumer_services: ["orion-vision-host"]
     single_consumer: true
     stability: "experimental"
     since: "2026-01-08"
 
-  # RETIRED 2026-08-25 (same day it was added): "orion:exec:request:
-  # VisionHostService:*", an isolated per-host suffix channel (e.g.
-  # ":circe-vl") for orion-vision-council's Foveal probe to RPC a dedicated
-  # vision-host instance without racing the shared channel above (see PR
-  # #1859). Live-tested end to end once real config landed and found it
-  # returned an EMPTY caption -- config/vision_profiles.yaml's vlm_caption
-  # profile still had the unfilled REPLACE_ME model_id placeholder, so
-  # nothing richer than the shared pipeline's own BLIP captioner was
-  # actually behind it. Replaced with a call through orion-llm-gateway's
-  # already-live, already-vision-capable `chat` route instead (see
-  # app/foveal_probe.py's module docstring in orion-vision-council) --
-  # orion-vision-council was this channel's only producer, so removing the
-  # entry here retires it outright rather than leaving a dead registration.
+  # The isolated ":circe-vl" suffix was RETIRED 2026-08-25 for
+  # orion-vision-council's Foveal probe (config/vision_profiles.yaml's
+  # vlm_caption profile still had the unfilled REPLACE_ME model_id
+  # placeholder, so nothing richer than the shared pipeline's own BLIP
+  # captioner was actually behind it -- replaced with a call through
+  # orion-llm-gateway's chat route instead, see app/foveal_probe.py's
+  # module docstring in orion-vision-council). Re-added the SAME DAY for a
+  # different producer/purpose, not a reversal of that retirement: the
+  # reverie visual chain (orion-thought) needs to re-observe a *generated*
+  # image via a real, non-degenerate captioner, which the shared athena
+  # instance's BLIP-base cannot provide (2026-08-25 live smoke: 3/3 ticks
+  # rejected by sanitize_caption) and no VRAM headroom exists on athena's
+  # P4 to upgrade it in place (2.4GB free, Qwen2-VL-2B needs ~4-5GB). This
+  # producer's REPLACE_ME placeholder problem does not apply -- its
+  # dedicated instance sets VISION_VLM_MODEL_ID explicitly, live-verified
+  # inside the built image before this channel was wired
+  # (services/orion-vision-host/docker-compose.circe-qwen.yml).
+  - name: "orion:exec:request:VisionHostService:circe-vl"
+    kind: "request"
+    schema_id: "VisionTaskRequestPayload"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-vision-host"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-08-26"
 
   - name: "orion:vision:reply:*"
     kind: "result"
@@ -1085,6 +1099,20 @@ channels:
       - "orion-vision-council"
     stability: "experimental"
     since: "2026-01-08"
+
+  # The circe-qwen lane (2026-08-26, docker-compose.circe-qwen.yml) does NOT
+  # get an isolated channel here -- it sets VISION_ARTIFACT_BROADCAST_ENABLED
+  # =false instead and publishes no artifact broadcast at all. A caption_frame
+  # artifact never carries a stream_id/camera_id, and orion-vision-window's
+  # consumer falls back to a default stream key for one, so a shared
+  # CHANNEL_VISIONHOST_PUB would let a synthetic dream caption land in the
+  # same projection bucket as a real camera frame -- but the only caller
+  # (orion-thought) already gets the full result via the RPC reply, so this
+  # broadcast has no real consumer for this lane. Registering a channel with
+  # an empty consumer_services list to solve that was tried first and
+  # reverted: scripts/check_metric_lineage.py's orphan-ratchet gate correctly
+  # caught it as exactly the class of thing CLAUDE.md section 0A bans (a
+  # registered channel feeding nothing).
 
   - name: "orion:vision:edge:raw"
     kind: "event"

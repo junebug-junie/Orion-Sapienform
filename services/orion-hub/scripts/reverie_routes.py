@@ -1,0 +1,397 @@
+"""Read-only Hub API for the Reverie tab -- a historical, human-visible view
+of both reverie chains (CLAUDE.md section 0A: "if Orion says it reasoned,
+remembered, perceived, reflected, or decided, there must be inspectable
+evidence for that claim" -- until this tab, neither chain had one).
+
+Two independent chains, no shared code between them (see
+docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
+
+1. **Text chain** (`services/orion-thought/app/chain.py`, live since
+   mid-July): a self-driven tick narrates the current attention coalition.
+   A settled run closes into one `substrate_reverie_chain` row referencing
+   its `substrate_reverie_thought` rows (via `chain_json.thought_ids`, a
+   plain JSON list -- no FK). Downstream: a settled chain queues a
+   `dream_compaction_request_queue` row (`origin_chain_id`); a re-igniting
+   theme fires a `substrate_reverie_resonance_alert` (`theme_key`).
+
+2. **Visual chain** (`services/orion-thought/app/visual_chain.py`, live
+   since 2026-08-25): generate -> store -> caption. One `reverie_visual_chain`
+   row per run, `reverie_visual_artifact` rows via a REAL FK on `chain_id`.
+   `prior_description` is the one continuity thread -- nothing downstream of
+   it exists yet (Patch 3 territory, not built).
+
+Everything here is a read. No writes, no bus publishes. Blocking SQLAlchemy
+calls are offloaded via `asyncio.to_thread` -- this is a UI-facing endpoint
+on Hub's shared event loop, and `text_recent` alone makes up to 4 sequential
+round trips; running them inline would stall unrelated concurrent async work
+(e.g. chat streaming) for the duration.
+
+Images are served from the same content-addressed disk path
+`orion.reverie.visual_storage.store_visual_artifact` writes to (bind-mounted
+read-only into this container -- see docker-compose.yml), following
+`chat_attachments.py`'s exact discipline: the declared DB `mime` is
+re-verified against the actual bytes (never trusted blindly -- a stale or
+corrupted DB value falls back to a fresh sniff, then to
+`application/octet-stream`, exactly like `chat_attachments.load_bytes`), and
+the read bytes' own sha256 is checked against the requested id before
+serving (chain-of-custody, same pattern
+`api_vision_carbon_latest_frame_image` uses for a cross-host proxy).
+
+**Cross-service path coupling**: this file's `REVERIE_VISUAL_STORAGE_DIR`
+must point at the exact same filesystem path as `orion-thought`'s
+`ORION_VISUAL_CHAIN_STORAGE_DIR` (see both `.env_example`s) -- nothing
+enforces this at startup. If they drift, images 404 with "artifact file
+missing on disk" even though the DB rows are fine.
+
+**Privacy note** (design doc §7): visual-chain images are a lossy rendering
+of whatever context fed the prompt. Today that's only `prior_description`
+(a prior caption) or a fixed seed string -- no private chat/dream content
+reaches the prompt yet. This tab must be revisited before Patch 3 (real
+context-seeding) ships, not after.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import os
+import re
+from datetime import datetime, timezone
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query, Response
+from sqlalchemy import create_engine, text
+
+from orion.reverie.visual_storage import SUPPORTED_MIMES, load_visual_artifact, sniff_image
+
+from app.settings import settings
+
+logger = logging.getLogger("orion-hub.reverie")
+
+router = APIRouter(prefix="/api/reverie", tags=["reverie"])
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+DEFAULT_LIMIT = 20
+MAX_LIMIT = 100
+
+_engine_instance: Any = None
+
+
+def _engine():
+    global _engine_instance
+    if _engine_instance is None:
+        uri = os.getenv("POSTGRES_URI", "").strip()
+        if not uri:
+            raise HTTPException(status_code=503, detail="postgres_uri_not_configured")
+        _engine_instance = create_engine(uri, pool_pre_ping=True)
+    return _engine_instance
+
+
+def _clamp_limit(limit: int) -> int:
+    return max(1, min(int(limit), MAX_LIMIT))
+
+
+def _iso(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        v = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return v.isoformat()
+    return None
+
+
+def _thought_ids_of(chain_json: Any) -> list[str]:
+    """Normalize chain_json.thought_ids to a list[str] -- the one place both
+    the batch-fetch and the per-chain lookup read this field from, so they
+    can never disagree on key type (review finding: they previously did --
+    the batch query str()-cast, the per-chain lookup didn't, so a
+    non-string id would silently vanish from every chain's thought list with
+    no error)."""
+    cj = chain_json if isinstance(chain_json, dict) else {}
+    ids = cj.get("thought_ids") or []
+    if not isinstance(ids, list):
+        return []
+    return [str(i) for i in ids]
+
+
+# ───────────────────────────────────────────────────────────────
+# Visual chain
+# ───────────────────────────────────────────────────────────────
+
+
+def _fetch_visual_recent(limit: int) -> tuple[list[dict], dict[str, list[dict]]]:
+    with _engine().connect() as conn:
+        chain_rows = (
+            conn.execute(
+                text(
+                    "SELECT chain_id, created_at, theme_key, terminal_reason, "
+                    "ema_salience, prior_description, chain_json "
+                    "FROM reverie_visual_chain "
+                    "ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"limit": limit},
+            )
+            .mappings()
+            .all()
+        )
+        chain_ids = [r["chain_id"] for r in chain_rows]
+        artifacts_by_chain: dict[str, list[dict[str, Any]]] = {}
+        if chain_ids:
+            artifact_rows = (
+                conn.execute(
+                    text(
+                        "SELECT sha256, chain_id, step_index, mime, bytes, "
+                        "width, height, description, created_at "
+                        "FROM reverie_visual_artifact "
+                        "WHERE chain_id = ANY(:chain_ids) "
+                        "ORDER BY step_index ASC"
+                    ),
+                    {"chain_ids": chain_ids},
+                )
+                .mappings()
+                .all()
+            )
+            for a in artifact_rows:
+                artifacts_by_chain.setdefault(a["chain_id"], []).append(dict(a))
+    return list(chain_rows), artifacts_by_chain
+
+
+@router.get("/visual/recent")
+async def visual_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, Any]:
+    limit = _clamp_limit(limit)
+    try:
+        chain_rows, artifacts_by_chain = await asyncio.to_thread(_fetch_visual_recent, limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("reverie visual_recent query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="reverie_visual_query_failed") from exc
+
+    chains = []
+    for c in chain_rows:
+        cj = c["chain_json"] if isinstance(c["chain_json"], dict) else {}
+        artifacts = [
+            {
+                "sha256": a["sha256"],
+                "step_index": a["step_index"],
+                "mime": a["mime"],
+                "bytes": a["bytes"],
+                "width": a["width"],
+                "height": a["height"],
+                "description": a["description"],
+                "created_at": _iso(a["created_at"]),
+                "image_url": f"/api/reverie/visual/image/{a['sha256']}",
+            }
+            for a in artifacts_by_chain.get(c["chain_id"], [])
+        ]
+        chains.append(
+            {
+                "chain_id": c["chain_id"],
+                "created_at": _iso(c["created_at"]),
+                "theme_key": c["theme_key"],
+                "terminal_reason": c["terminal_reason"],
+                "ema_salience": c["ema_salience"],
+                "prior_description": c["prior_description"],
+                "prompt": cj.get("prompt"),
+                "artifacts": artifacts,
+            }
+        )
+    return {"ok": True, "chains": chains}
+
+
+def _fetch_artifact_mime(sha256: str) -> dict | None:
+    with _engine().connect() as conn:
+        row = (
+            conn.execute(
+                text("SELECT mime FROM reverie_visual_artifact WHERE sha256 = :sha256"),
+                {"sha256": sha256},
+            )
+            .mappings()
+            .first()
+        )
+    return dict(row) if row else None
+
+
+@router.get("/visual/image/{sha256}")
+async def visual_image(sha256: str) -> Response:
+    if not _SHA256_RE.match(sha256):
+        raise HTTPException(status_code=400, detail="invalid artifact id")
+    try:
+        row = await asyncio.to_thread(_fetch_artifact_mime, sha256)
+    except Exception as exc:
+        logger.warning("reverie visual_image lookup failed sha=%s err=%s", sha256[:12], exc)
+        raise HTTPException(status_code=503, detail="reverie_visual_query_failed") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="artifact not found")
+
+    try:
+        data = await asyncio.to_thread(
+            load_visual_artifact, sha256, base_dir=settings.REVERIE_VISUAL_STORAGE_DIR
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="artifact file missing on disk") from exc
+
+    # Chain-of-custody: the sha256 is the caller-supplied filename, so verify
+    # the bytes actually hash to it rather than trusting the filesystem
+    # lookup alone (same discipline orion-percept-store's own docstring
+    # describes: "a content-addressed store returning the wrong content is
+    # worse than one returning nothing").
+    if hashlib.sha256(data).hexdigest() != sha256:
+        logger.error("reverie visual_image hash mismatch sha=%s", sha256[:12])
+        raise HTTPException(status_code=500, detail="artifact integrity check failed")
+
+    # Never trust the stored DB mime blindly (review finding -- this
+    # module's own docstring claimed chat_attachments.py's discipline but
+    # didn't apply it here yet): re-sniff and fall back exactly like
+    # chat_attachments.load_bytes does for a missing/edited sidecar.
+    mime = row["mime"]
+    if mime not in SUPPORTED_MIMES:
+        sniffed = sniff_image(data)
+        mime = sniffed[0] if sniffed else "application/octet-stream"
+
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+# ───────────────────────────────────────────────────────────────
+# Text chain
+# ───────────────────────────────────────────────────────────────
+
+
+def _fetch_text_recent(limit: int) -> dict[str, Any]:
+    with _engine().connect() as conn:
+        chain_rows = (
+            conn.execute(
+                text(
+                    "SELECT chain_id, created_at, theme_key, terminal_reason, "
+                    "ema_salience, committed_proposal_id, chain_json "
+                    "FROM substrate_reverie_chain "
+                    "ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"limit": limit},
+            )
+            .mappings()
+            .all()
+        )
+        chain_ids = [r["chain_id"] for r in chain_rows]
+        theme_keys = sorted(
+            {r["theme_key"] for r in chain_rows if r["theme_key"] and r["theme_key"] != "unknown"}
+        )
+        all_thought_ids = sorted({tid for r in chain_rows for tid in _thought_ids_of(r["chain_json"])})
+
+        thoughts_by_id: dict[str, dict[str, Any]] = {}
+        if all_thought_ids:
+            thought_rows = (
+                conn.execute(
+                    text(
+                        "SELECT thought_id, created_at, salience, interpretation "
+                        "FROM substrate_reverie_thought "
+                        "WHERE thought_id = ANY(:ids)"
+                    ),
+                    {"ids": all_thought_ids},
+                )
+                .mappings()
+                .all()
+            )
+            for t in thought_rows:
+                thoughts_by_id[t["thought_id"]] = dict(t)
+
+        compaction_chain_ids: set[str] = set()
+        if chain_ids:
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT DISTINCT origin_chain_id FROM dream_compaction_request_queue "
+                        "WHERE origin_chain_id = ANY(:chain_ids)"
+                    ),
+                    {"chain_ids": chain_ids},
+                )
+                .mappings()
+                .all()
+            )
+            compaction_chain_ids = {r["origin_chain_id"] for r in rows}
+
+        resonance_counts: dict[str, int] = {}
+        if theme_keys:
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT theme_key, count(*) AS n FROM substrate_reverie_resonance_alert "
+                        "WHERE theme_key = ANY(:themes) GROUP BY theme_key"
+                    ),
+                    {"themes": theme_keys},
+                )
+                .mappings()
+                .all()
+            )
+            resonance_counts = {r["theme_key"]: int(r["n"]) for r in rows}
+
+    return {
+        "chain_rows": list(chain_rows),
+        "thoughts_by_id": thoughts_by_id,
+        "compaction_chain_ids": compaction_chain_ids,
+        "resonance_counts": resonance_counts,
+    }
+
+
+@router.get("/text/recent")
+async def text_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, Any]:
+    limit = _clamp_limit(limit)
+    try:
+        fetched = await asyncio.to_thread(_fetch_text_recent, limit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("reverie text_recent query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="reverie_text_query_failed") from exc
+
+    thoughts_by_id = fetched["thoughts_by_id"]
+    compaction_chain_ids = fetched["compaction_chain_ids"]
+    resonance_counts = fetched["resonance_counts"]
+
+    chains = []
+    for c in fetched["chain_rows"]:
+        ids = _thought_ids_of(c["chain_json"])
+        thoughts = [
+            {
+                "thought_id": tid,
+                "created_at": _iso(thoughts_by_id[tid]["created_at"]),
+                "salience": thoughts_by_id[tid]["salience"],
+                "interpretation": thoughts_by_id[tid]["interpretation"],
+            }
+            for tid in ids
+            if tid in thoughts_by_id
+        ]
+        chains.append(
+            {
+                "chain_id": c["chain_id"],
+                "created_at": _iso(c["created_at"]),
+                "theme_key": c["theme_key"],
+                "terminal_reason": c["terminal_reason"],
+                "ema_salience": c["ema_salience"],
+                "thoughts": thoughts,
+                "downstream": {
+                    # dream_compaction_request_queue.consumed_at is never set
+                    # anywhere in the codebase today (confirmed live,
+                    # 2026-08-26) -- REM re-folds the same backlog every
+                    # pass. Reported honestly as "queued", not "applied":
+                    # nothing downstream of this queue ever mutates memory
+                    # (Phase G's applier is separate and gated).
+                    "compaction_queued": c["chain_id"] in compaction_chain_ids,
+                    # A count over the whole theme, not this specific chain
+                    # -- the resonance detector operates over a window of
+                    # chains sharing a theme, not one chain in isolation, so
+                    # attributing a single alert to a single chain would
+                    # overclaim causality.
+                    "theme_resonance_alert_count": resonance_counts.get(c["theme_key"], 0),
+                },
+            }
+        )
+    return {"ok": True, "chains": chains}

@@ -126,6 +126,13 @@
             role="button"
           >Attention Organ</a>
           <a
+            id="reverieTabButton"
+            href="#reverie"
+            data-hash-target="#reverie"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Reverie</a>
+          <a
             id="cocreationSignalsTabButton"
             href="#cocreation-signals"
             data-hash-target="#cocreation-signals"
@@ -895,6 +902,34 @@
             <div class="text-[10px] uppercase tracking-wide text-gray-500">Selection / trace</div>
             <pre id="organSignalsDetail" class="flex-1 min-h-[12rem] text-[11px] leading-relaxed text-gray-200 bg-gray-950/50 border border-gray-800 rounded-lg p-2 overflow-auto whitespace-pre-wrap font-mono">Tap a node for JSON. If <code class="text-gray-500">otel_trace_id</code> is set, Hub trace chain loads here.</pre>
           </div>
+        </div>
+      </section>
+
+      <section id="reverie" data-panel="reverie" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[40rem]">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-100">Reverie</h2>
+            <p class="text-xs text-gray-500 mt-1">
+              Historical view of both reverie chains -- the text chain (attention coalition narration,
+              <code class="text-gray-500">services/orion-thought/app/chain.py</code>) and the visual chain
+              (generate → observe → interpret, <code class="text-gray-500">app/visual_chain.py</code>).
+              Served by <code class="text-gray-500">/api/reverie/*</code>. Design spec:
+              <code class="text-gray-500">docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md</code>.
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button type="button" id="reverieSubtabVisual" class="px-2 py-1 rounded border border-gray-600 bg-gray-700 text-gray-200 hover:bg-gray-700 text-xs">Visual</button>
+            <button type="button" id="reverieSubtabText" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs">Text</button>
+            <button type="button" id="reverieRefreshBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700 text-xs">Refresh</button>
+          </div>
+        </div>
+        <div id="reverieStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this tab to load reverie history.</div>
+
+        <div id="reverieVisualPanel">
+          <div id="reverieVisualGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+        </div>
+        <div id="reverieTextPanel" class="hidden">
+          <div id="reverieTextGrid" class="flex flex-col gap-3"></div>
         </div>
       </section>
 
@@ -3665,6 +3700,7 @@
   <script src="/static/js/collapse-mirror.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/aitown-panel.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/attention-organ.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/reverie-tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cocreation-signals.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/field-attention.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cabinet-sensors.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

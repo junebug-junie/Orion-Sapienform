@@ -143,6 +143,14 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
 
     assert Path(artifact.path).exists()
 
+    # Review finding: every test here mocks bus.rpc_request, so nothing
+    # previously caught a bad merge silently reverting the RPC target back
+    # to the shared bare channel -- assert the real setting was actually
+    # used, not a hardcoded string in request_caption().
+    bus.rpc_request.assert_called_once()
+    called_channel = bus.rpc_request.call_args.args[0]
+    assert called_channel == visual_chain.settings.channel_vision_host_request
+
 
 @pytest.mark.asyncio
 async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_path, monkeypatch):

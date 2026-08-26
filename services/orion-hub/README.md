@@ -1663,6 +1663,56 @@ API: `GET /api/cabinet/ambient/latest`, `GET /api/cabinet/ambient/history?window
 (`scripts/cabinet_ambient_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; history fetches on tab activation, window toggle, or Refresh.
 
+## Reverie tab
+
+Top-level Hub nav **Reverie** (`#reverie`) -- historical, human-visible view of both reverie
+chains (design spec: `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md`).
+No poll loop (unlike Cabinet/Attention Organ above) -- this is a historical browsing tool, not
+live telemetry; one fetch on activate, plus a manual Refresh. Backed by
+`GET /api/reverie/visual/recent`, `GET /api/reverie/visual/image/{sha256}`, and
+`GET /api/reverie/text/recent` (`scripts/reverie_routes.py`) and `/static/js/reverie-tab.js`.
+
+**Two sub-views, two independent chains, no shared code between them:**
+
+- **Visual** -- `orion-thought`'s `app/visual_chain.py` (generate → store → caption). One card
+  per `reverie_visual_chain` row: the real generated image (served content-addressed from disk,
+  same sniff-and-verify-on-read discipline as `chat_attachments.py`), its caption
+  (`reverie_visual_artifact.description`, honestly `null` when re-observation failed or was
+  rejected -- never fabricated), the prompt, and whether it advanced `prior_description` for the
+  next run.
+- **Text** -- `orion-thought`'s `app/chain.py` (attention-coalition narration). One card per
+  `substrate_reverie_chain` row: its `substrate_reverie_thought` interpretations (joined via
+  `chain_json.thought_ids`, a plain JSON list -- no FK), and real downstream badges computed from
+  the actual queue/alert tables: **queued for dream compaction**
+  (`dream_compaction_request_queue.origin_chain_id`) and **N resonance alert(s) on this theme**
+  (`substrate_reverie_resonance_alert.theme_key`, a per-theme count across the chain's cohort, not
+  a per-chain causal claim -- the detector operates over a window, not one chain in isolation).
+
+**Operator setup**
+
+1. Compose bind-mount already in `docker-compose.yml`:
+   `${REVERIE_VISUAL_STORAGE_DIR}:${REVERIE_VISUAL_STORAGE_DIR}:ro` (default
+   `/mnt/storage-lukewarm/orion/reverie-visual`, the same path `orion-thought`'s visual chain
+   writes to) plus `REVERIE_VISUAL_STORAGE_DIR` from `.env_example`. Read-only -- Hub is not the
+   producer.
+2. After mount/env change, restart Hub so the container sees the bind:
+
+```bash
+# from a worktree (not shared checkout):
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+Open Hub → **Reverie**. If the visual sub-view is empty, `ORION_VISUAL_CHAIN_ENABLED` may be off
+on `orion-thought`, or no chain has run yet. `dream_compaction_request_queue.consumed_at` is
+never set anywhere in the codebase today (confirmed live, 2026-08-26) -- REM re-folds the same
+backlog every pass, so "queued" here means exactly that, not "applied" (Phase G's applier is
+separate and gated, and never runs on this queue's contents automatically).
+
+**Privacy note** (design doc §7): visual-chain images are a lossy rendering of whatever context
+fed the prompt. Today that's only `prior_description` (a prior caption) or a fixed seed string --
+no private chat/dream content reaches the prompt yet. This tab must be revisited before Patch 3
+(real context-seeding) ships, not after.
+
 ## Bus synaptic graph debug routes
 
 Read-only view into `services/orion-bus-mirror`'s live FalkorDB graph (`orion_bus_synapse`) —

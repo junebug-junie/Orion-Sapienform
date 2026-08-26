@@ -724,6 +724,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const fieldAttentionPanel = document.getElementById("field-attention");
   const cabinetTabButton = document.getElementById("cabinetTabButton");
   const cabinetPanel = document.getElementById("cabinet");
+  const reverieTabButton = document.getElementById("reverieTabButton");
+  const reveriePanel = document.getElementById("reverie");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
   const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
   const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
@@ -1031,6 +1033,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tabKey === "cabinet" && !cabinetPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "reverie" && !reveriePanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -1050,6 +1055,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isCocreationSignals = effectiveTab === "cocreation-signals";
     const isFieldAttention = effectiveTab === "field-attention";
     const isCabinet = effectiveTab === "cabinet";
+    const isReverie = effectiveTab === "reverie";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -1201,6 +1207,19 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionCabinetSensors.deactivate();
       }
     }
+    if (reveriePanel) {
+      reveriePanel.classList.toggle("hidden", !isReverie);
+      // No poll loop (historical browsing tool, not live telemetry) --
+      // activate/deactivate still follow the same lifecycle contract so a
+      // return to the tab shows the last-loaded render immediately.
+      if (isReverie) {
+        if (window.OrionReverie && typeof window.OrionReverie.activate === "function") {
+          window.OrionReverie.activate();
+        }
+      } else if (window.OrionReverie && typeof window.OrionReverie.deactivate === "function") {
+        window.OrionReverie.deactivate();
+      }
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
@@ -1246,6 +1265,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (fieldAttentionTabButton) {
       styleTabButton(fieldAttentionTabButton, isFieldAttention);
+    }
+    if (reverieTabButton) {
+      styleTabButton(reverieTabButton, isReverie);
     }
     if (cabinetTabButton) {
       styleTabButton(cabinetTabButton, isCabinet);
@@ -1840,6 +1862,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("field-attention");
     } else if (h === "#cabinet" && cabinetPanel && cabinetTabButton) {
       setActiveTab("cabinet");
+    } else if (h === "#reverie" && reveriePanel && reverieTabButton) {
+      setActiveTab("reverie");
     } else {
       if (
         h === "#pressure"
@@ -1856,6 +1880,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#cocreation-signals"
         || h === "#field-attention"
         || h === "#cabinet"
+        || h === "#reverie"
       ) {
         history.replaceState(null, "", "#hub");
       }
@@ -12496,6 +12521,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("attention-organ");
         history.replaceState(null, "", "#attention-organ");
+      });
+    }
+    if (reverieTabButton && reveriePanel) {
+      reverieTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("reverie");
+        history.replaceState(null, "", "#reverie");
       });
     }
     if (cocreationSignalsTabButton && cocreationSignalsPanel) {

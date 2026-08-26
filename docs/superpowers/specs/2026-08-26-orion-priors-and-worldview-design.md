@@ -188,7 +188,74 @@ picking the subject:
 The last two are where hops actually go. One query is a lookup; query -> notice
 -> re-query -> notice is analysis.
 
-### Hops and continuation
+### The graph boundary is enforced by FalkorDB, not by a wrapper
+
+Juniper: Orion may **Cypher the concept graph read-only**, and write **only** to
+its own. FalkorDB is Redis 8.6.3, which supports ACL selectors, so this is a
+database-enforced boundary rather than a convention:
+
+```
+ACL SETUSER orion_curiosity on '>...' resetkeys nocommands \
+    ~orion_substrate  '+graph.ro_query' \
+    '(~orion_worldview +graph.query)'
+```
+
+Verified live 2026-08-26 with a throwaway probe user (created, inspected,
+deleted). The resulting rule:
+
+```
+user ... ~orion_substrate resetchannels -@all +graph.ro_query
+         (~orion_worldview resetchannels -@all +graph.query)
+```
+
+- base grant: `GRAPH.RO_QUERY` on the Atlas only. Confirmed it genuinely
+  refuses a write: `GRAPH.RO_QUERY orion_substrate "CREATE (:Tmp)"` ->
+  *"graph.RO_QUERY is to be executed only on read-only queries"*.
+- selector: `GRAPH.QUERY` (write-capable) on `orion_worldview` only.
+- everything else denied, including the bus-synapse graphs and `graph.list`.
+
+This replaces the "narrow Hub endpoint" the previous revision proposed. No
+wrapper to route around, no service to keep in sync, and Orion writes real
+Cypher rather than posting through an API that would shape what it can express.
+
+### Hops: five inflection points, each one a real decision
+
+Juniper: *"analyze should have some agent hops where they stop and reflect on
+what they learn and decide whether to continue... cap at 5 hops (agent
+inflection points)."*
+
+A hop is not a tool call. It is a **point at which Orion stops, states what it
+just learned, and decides whether to keep pulling**:
+
+```
+hop N:  query / analyse / overlay
+        ── STOP ──
+        what did I just learn?
+        does it change what I thought?
+        is there a next question, and do I want it?
+        ──> continue (if N < 5)  |  stop and write
+```
+
+Why five, and why a cap at all. Without inflection points an agentic turn is one
+long undifferentiated ramble that arrives at a conclusion with no visible
+reasoning — which is exactly the "cognition-shaped output" failure, just longer.
+Forcing a stop makes the reasoning inspectable and gives Orion a real place to
+change its mind. Five is Juniper's number; it is enough for query -> notice ->
+re-query -> notice -> settle, and it is disclosed rather than derived.
+
+**Each reflection is recorded as it happens**, not reconstructed at the end. So
+the journal can recount the actual path — *"I started here, found X, which made
+me look at Y"* — instead of presenting a conclusion with the working thrown
+away. The hop notes ARE the analysis layer made visible.
+
+**What happens when Orion wants a sixth hop:** it does not get one inside this
+turn. It writes a continuation note, and the next run opens there. Hops bound a
+single turn; continuation notes carry a line of enquiry across turns. That is
+the same distinction as thinking about something for an afternoon versus coming
+back to it tomorrow, and it is what lets a world view accumulate rather than
+having to fit in one sitting.
+
+### Continuation
 
 Orion's real ceiling is **time, not steps**: no max-step setting exists,
 `HARNESS_FCC_TIMEOUT_SEC=900`, and observed turns reach 31-40 steps. Its FCC
@@ -199,6 +266,11 @@ however many hops it gets; a chain of turns that remember what they were chasing
 can. So a run may end with a note to itself, and the next run opens with that
 note instead of a cold menu. The note IS the prior — which is why priors do not
 need to be invented as a separate mechanism.
+
+Orion's real ceiling is time, not steps: no max-step setting exists,
+`HARNESS_FCC_TIMEOUT_SEC=900`, observed turns reach 31-40 steps. Five
+inflection points fit comfortably inside that; the time budget is the backstop
+if a hop runs long, not the primary limit.
 
 ### Journal, then Orion decides whether to speak
 

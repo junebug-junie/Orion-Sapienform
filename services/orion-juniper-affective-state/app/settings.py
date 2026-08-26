@@ -98,3 +98,57 @@ class Settings(BaseSettings):
     # /mnt/scripts/orion-affectgpt-scratch:/mnt/scripts/orion-affectgpt-scratch:ro
     # at the same path this service mounts read-write.
     AFFECTGPT_SCRATCH_DIR: str = "/mnt/scripts/orion-affectgpt-scratch"
+
+    # ── Vision backend (2026-08-26) ─────────────────────────────────────
+    # Which inference path a capture actually takes. "vision" reads the clip's
+    # frames through orion-llm-gateway's VL route; "affectgpt" is the retired
+    # AffectGPT worker path, kept ONLY as a one-env-key rollback for the first
+    # days after cutover. See app/vision_backend.py's docstring for the three
+    # confirmed live failures that motivated the swap.
+    #
+    # Not deleting the affectgpt path outright is a deliberate, bounded
+    # exception to CLAUDE.md's "kill means kill, no fallback to the thing being
+    # killed" rule, and it is bounded in the way that rule actually cares
+    # about: nothing *automatically* falls back to affectgpt. A vision failure
+    # publishes ok=False; it does not quietly retry on the old backend. Only a
+    # human editing this key can select it.
+    AFFECT_BACKEND: str = "vision"
+
+    # Gateway intake channel -- must match orion-llm-gateway's own
+    # CHANNEL_LLM_INTAKE (services/orion-llm-gateway/app/settings.py:26).
+    CHANNEL_LLM_INTAKE: str = "orion:exec:request:LLMGatewayService"
+    # Route name from orion/llm/routes.py's vocabulary. "chat" is circe:8011,
+    # the 35B lane confirmed multimodal live 2026-08-26 (GET /v1/models reports
+    # capabilities ["completion","multimodal"]). The gateway re-checks that
+    # against the live worker's /props and refuses rather than sending images
+    # at a blind worker, so a wrong value here fails loudly, not silently.
+    AFFECT_VISION_LLM_ROUTE: str = "chat"
+    # Generous: covers gateway queueing plus VL prefill of N images. A single
+    # 640x480 frame measured 5.7s end to end on an idle lane.
+    AFFECT_VISION_RPC_TIMEOUT_S: float = 180.0
+
+    # How many stills go to the model. More than one because affect is
+    # temporal -- a still cannot distinguish an expression settling from one
+    # tightening. Five rather than more because each frame costs real prefill
+    # on a shared lane, and the read sits in front of a live chat turn.
+    AFFECT_VISION_MAX_FRAMES: int = 5
+    AFFECT_VISION_JPEG_QUALITY: int = 85
+    AFFECT_VISION_MAX_TOKENS: int = 400
+
+    # ── Trust gates on the mirror write ─────────────────────────────────
+    # A read below EITHER threshold is still published as a real event (it is
+    # part of the record) but is NOT mirrored into the Redis key
+    # orion/situational/context.py reads, so it never colours a chat turn.
+    # Orion falls back to "no recent capture; do not infer", which is the
+    # honest line.
+    #
+    # Both defaults are deliberately permissive-but-real, chosen from the only
+    # live data that exists (two instrumented captures, 2026-08-26: detection
+    # rates of 1.0 and 0.052). 0.15 admits the good capture and rejects the
+    # one where 170 of 231 frames contained no detectable face -- the capture
+    # the old backend still produced a confident "anger, frustration, or
+    # sadness" from. These are starting points on n=2 and should be revisited
+    # once real rows accumulate; they are env keys precisely so that does not
+    # need a redeploy.
+    AFFECT_MIRROR_MIN_CONFIDENCE: float = 0.35
+    AFFECT_MIRROR_MIN_DETECTION_RATE: float = 0.15

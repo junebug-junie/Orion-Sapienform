@@ -1,6 +1,7 @@
 # orion-juniper-affective-state
 
-Thin CPU orchestrator in front of `orion-affectgpt-worker`. Two ways in:
+Thin CPU orchestrator in front of whichever affect backend is selected. Two
+ways in:
 
 - `POST /v1/juniper/affect/trigger` — given an already-written video+audio
   pair, does a real bus RPC round-trip to the worker.
@@ -19,6 +20,83 @@ filesystem (`/mnt/telemetry` is athena-local ext4, no NFS/exports;
 `/mnt/scripts` is a separate per-host clone, not synced — see
 `reference_circe_gpu_inventory_and_lane_map`). Co-locating sidesteps that
 gap for the worker call; see `app/settings.py`'s `NODE_NAME` comment.
+
+## The AffectGPT backend was replaced (2026-08-26)
+
+`AFFECT_BACKEND` selects the inference path. Default `vision`.
+
+**What broke.** Chat turn `ddddfe40` put this into Juniper's own prompt:
+
+> Juniper's affect (captured just now (no speech detected)): In the text,
+> based on the provided information, it is not possible to infer the
+> character's emotional state from the subtitle content...
+
+Three independent defects had to line up for that, all confirmed live against
+`juniper_multimodal_affect_log` and two instrumented captures:
+
+1. **AffectGPT answered from its text branch and ignored the face.** Its only
+   obtainable checkpoint is `multiface_audio_face_text`. Handed an empty
+   subtitle it refused — while holding a face crop with a **100% detection
+   rate** (231/231 frames). The face was right there and it never looked.
+2. **The subtitle is empty by design on every chat-turn capture.** The clip is
+   recorded *after* Juniper stops speaking (see `chat_turn_affect.py`), so
+   `subtitle_source="none"` is the normal case, not an edge case. Whisper was
+   added to fix exactly this and cannot: there is nothing to transcribe.
+3. **`ok=True` over meaningless content, and no input-quality gate.** A second
+   capture scored `detection_rate=0.052` — 170 of 231 frames contained no
+   detectable face — and AffectGPT still returned a confident "anger,
+   frustration, or sadness", citing "the acoustic characteristics of the
+   voice" from an audio track measured at **-49.2 dB peak**, i.e. silence.
+
+And the finding that settles it: **every AffectGPT read that committed to
+anything called the subject "the man" — 3 of 3 in the stored log.** Juniper is
+female. A model asserting the wrong sex from a clean frontal crop is not a
+cosmetic quirk; it is evidence the face branch was not reading her at all.
+
+**What replaced it.** A VL read of the clip's own frames through
+`orion-llm-gateway`'s `chat` route (circe:8011, Qwen3.6-35B-A3B). Same clip,
+same frame:
+
+> Eyes slightly narrowed or half-lidded... mouth closed in a straight line...
+> best described as neutral-to-mildly-negative, with cues pointing toward
+> fatigue, boredom, or emotional restraint.
+
+Specific, hedged, and it asserted no gender at all. ~7-10s end to end.
+
+**Five design calls, and why:**
+
+1. **Five frames, not one.** Affect is temporal — a still cannot distinguish
+   an expression settling from one tightening.
+2. **Full frames, not face crops.** Reverses AffectGPT's approach, which
+   cropped only because its checkpoint was trained on OpenFace crops. A
+   general VL model cites posture, gaze and head tilt, none of which survive a
+   tight crop. Haar still runs — it gates trust, it no longer picks pixels.
+3. **Structured output** (`AffectReadV1`), not prose. The prompt line is now
+   rendered from fields. Raw prose in a prompt is what broke this.
+4. **Identity inference is forbidden in the system prompt**, first rule, not a
+   trailing caveat.
+5. **Two trust gates on the mirror write.** Every read is still *published*;
+   only reads clearing `AFFECT_MIRROR_MIN_CONFIDENCE` and
+   `AFFECT_MIRROR_MIN_DETECTION_RATE` reach the Redis key
+   `orion/situational/context.py` polls. Below either, Orion gets "no recent
+   capture; do not infer" — the honest line. Structural gates, not a regex
+   hunting for hedging phrases.
+
+**Audio is gone from this path entirely.** Not optional — gone. The audio blob
+is no longer even fetched from percept-store on the vision path, so Juniper's
+recorded voice never crosses a host boundary. `subtitle_source` can only be
+`caller` or `none` here, never `transcribed`.
+
+**Rollback.** `AFFECT_BACKEND=affectgpt` restores the old path. Nothing falls
+back to it automatically — a vision failure publishes `ok=False`; only a human
+editing that key selects it. Backend selection otherwise fails closed *to*
+vision, including on a typo.
+
+**Still open:** the clip's audio capture on carbon is genuinely broken and this
+patch does not fix it (it removes the dependency on it). Carbon's default
+PulseAudio source is the built-in Digital Microphone at `vol: 0.50`, which
+measures ~21 dB colder than the headset mic on identical ambient captures. See
+the PR report for the outstanding test.
 
 ## Ambient mode exists now, but it does not live here (2026-08-22)
 

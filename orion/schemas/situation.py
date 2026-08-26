@@ -343,7 +343,8 @@ class PerceptionContextV1(BaseModel):
 class AffectContextV1(BaseModel):
     """Juniper's most recent facial+vocal affect read, for the situation brief.
 
-    Source: `orion-affectgpt-worker`'s inference, relayed through
+    Source (since 2026-08-26): a VL read of the clip's own frames via
+    `orion-llm-gateway`, relayed through
     `orion-juniper-affective-state` (`JuniperMultimodalAffectV1`, published on
     `orion:affectgpt:assessment`) and mirrored into a single Redis key by
     `orion/situational/juniper_affect_state.py` -- see that module's
@@ -351,8 +352,11 @@ class AffectContextV1(BaseModel):
     contract, same role `PerceptionContextV1`'s docstring plays for camera
     content.
 
-    **`summary` is a truncated excerpt of the model's own `raw_response`
-    reasoning, never the verbatim spoken transcript.** Juniper's actual
+    **`summary` is a short rendered line built from the model's STRUCTURED
+    read (`AffectReadV1`), never the verbatim spoken transcript, and -- since
+    2026-08-26 -- no longer the model's raw prose either.** Passing raw prose
+    is what put "it is not possible to infer the character's emotional state
+    from the subtitle content" into Juniper's chat prompt for turn ddddfe40. Juniper's actual
     words (`JuniperMultimodalAffectV1.transcript`) are deliberately NOT
     forwarded into a chat prompt -- Orion gets the model's inferred
     affect description, not a transcript of private speech. Do not widen
@@ -379,6 +383,18 @@ class AffectContextV1(BaseModel):
     # signal reached the model at all, which materially changes how much to
     # trust the read.
     subtitle_source: Optional[str] = None
+    # The producing model's own confidence, 0.0-1.0. Only ever populated by
+    # backend="vision" (2026-08-26); the retired affectgpt backend reported
+    # none. Present so the prompt line can hedge PROPORTIONALLY rather than
+    # presenting every surviving read with identical certainty -- the
+    # write-side gate has already dropped everything below
+    # AFFECT_MIRROR_MIN_CONFIDENCE, so what arrives here is above the bar,
+    # which is not the same as being sure.
+    confidence: Optional[float] = None
+    # Which inference backend produced the read: "vision" | "affectgpt" |
+    # None (a payload written before the field existed). Carried so a debug
+    # surface can attribute a read without joining back to the event log.
+    backend: Optional[str] = None
     # "live" | "stale" | "disabled" | "unavailable" | "error" -- same
     # vocabulary as PerceptionContextV1.source, so a missing read is never
     # ambiguous about why.

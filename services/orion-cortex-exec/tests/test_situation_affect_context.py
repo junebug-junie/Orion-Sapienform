@@ -206,10 +206,16 @@ def test_available_capture_renders_with_its_age() -> None:
         )
     )
     text = _build_prompt_fragment(brief, 4000).compact_text
-    assert "Juniper's affect (captured 2 min ago): Juniper appears relaxed and smiling." in text
+    # "read", not "captured" (2026-08-26): the verb now describes what the
+    # model did, not what the camera did, because a capture can succeed while
+    # the read is withheld by the producer's trust gate.
+    assert "Juniper's affect (read 2 min ago): Juniper appears relaxed and smiling." in text
 
 
-def test_no_speech_detected_is_noted_inline() -> None:
+def test_no_speech_detected_is_noted_inline_for_the_affectgpt_backend() -> None:
+    """Only meaningful for a backend that was actually GIVEN audio. Kept
+    covering the affectgpt rollback path -- see the vision case below for why
+    the same wording would be a lie on the default path."""
     brief = _brief(
         AffectContextV1(
             available=True,
@@ -218,10 +224,89 @@ def test_no_speech_detected_is_noted_inline() -> None:
             observation_age_seconds=30,
             trigger="ambient",
             subtitle_source="none",
+            backend="affectgpt",
         )
     )
     text = _build_prompt_fragment(brief, 4000).compact_text
-    assert "(no speech detected)" in text
+    assert "no speech detected" in text
+
+
+def test_vision_backend_says_visual_only_never_no_speech_detected() -> None:
+    """The vision backend is handed no audio at all. "no speech detected"
+    would claim we listened and heard silence -- a different, false claim, and
+    exactly the not-seeing vs seeing-nothing distinction the Room line is
+    careful about. subtitle_source is "none" here precisely because that is
+    what the vision path always reports, so the old wording would have fired
+    on every single read."""
+    brief = _brief(
+        AffectContextV1(
+            available=True,
+            source="live",
+            summary="tired, subdued | valence -0.2, arousal 0.3 | confidence 0.70",
+            observation_age_seconds=10,
+            trigger="chat_turn_pre",
+            subtitle_source="none",
+            backend="vision",
+            confidence=0.7,
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "visual only" in text
+    assert "no speech detected" not in text
+
+
+def test_low_confidence_read_is_hedged_in_the_prompt() -> None:
+    brief = _brief(
+        AffectContextV1(
+            available=True,
+            source="live",
+            summary="uncertain | confidence 0.40",
+            observation_age_seconds=10,
+            trigger="ambient",
+            subtitle_source="none",
+            backend="vision",
+            confidence=0.4,
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "hold loosely" in text
+
+
+def test_confident_read_is_not_hedged() -> None:
+    brief = _brief(
+        AffectContextV1(
+            available=True,
+            source="live",
+            summary="alert, engaged | confidence 0.90",
+            observation_age_seconds=10,
+            trigger="ambient",
+            subtitle_source="none",
+            backend="vision",
+            confidence=0.9,
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "hold loosely" not in text
+
+
+def test_missing_confidence_is_not_treated_as_low() -> None:
+    """A pre-2026-08-26 mirror payload carries no confidence. Absent must not
+    read as uncertain -- that would hedge every legacy row for the wrong
+    reason."""
+    brief = _brief(
+        AffectContextV1(
+            available=True,
+            source="live",
+            summary="Juniper appears neutral.",
+            observation_age_seconds=10,
+            trigger="ambient",
+            subtitle_source="transcribed",
+            backend=None,
+            confidence=None,
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "hold loosely" not in text
 
 
 def test_unavailable_renders_as_no_recent_capture_not_a_guess() -> None:

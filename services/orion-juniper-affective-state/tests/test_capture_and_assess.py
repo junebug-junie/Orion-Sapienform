@@ -6,6 +6,19 @@ builds on; that file's FakeBus supports only one configured RPC reply,
 insufficient here since capture_and_assess makes two DIFFERENT RPC calls
 (retina, then the worker) -- this file's FakeBus keys replies by the
 request channel instead.
+
+**Every test in this file pins AFFECT_BACKEND="affectgpt"** (see the autouse
+fixture below). These tests describe the AffectGPT round trip specifically --
+two RPC legs, a worker reply, an audio blob fetched alongside the video -- and
+none of that is what a capture does by default since the 2026-08-26 vision
+cutover. Pinning is deliberate rather than rewriting them to the new path:
+the affectgpt path still exists as a rollback and still needs coverage, and
+the vision path gets its own file (test_vision_backend.py) instead of these
+being contorted to cover both.
+
+The pin is explicit and per-file, NOT a conftest default, so it can never
+silently mask the default flipping back. test_vision_backend.py asserts the
+unpinned default independently.
 """
 from __future__ import annotations
 
@@ -25,6 +38,12 @@ from app.main import (
 from orion.schemas.affectgpt import AffectGptAssessResultPayload
 from orion.schemas.vision import RetinaClipCaptureResultPayload
 from pydantic import ValidationError
+
+
+@pytest.fixture(autouse=True)
+def _pin_affectgpt_backend(monkeypatch):
+    """See module docstring -- this file covers the affectgpt rollback path."""
+    monkeypatch.setattr(settings, "AFFECT_BACKEND", "affectgpt", raising=False)
 
 
 class FakeEnvelope:

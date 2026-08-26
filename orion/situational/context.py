@@ -973,6 +973,8 @@ async def _build_affect_context(
         observation_age_seconds=age,
         trigger=state.trigger,
         subtitle_source=state.subtitle_source,
+        confidence=state.confidence,
+        backend=state.backend,
         source="live",
     )
 
@@ -1024,9 +1026,24 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     if brief.affect.available and brief.affect.summary:
         age_min = round((brief.affect.observation_age_seconds or 0) / 60)
         seen = "just now" if age_min < 1 else f"{age_min} min ago"
-        no_voice = " (no speech detected)" if brief.affect.subtitle_source == "none" else ""
+        if brief.affect.backend == "vision":
+            # The vision backend is handed NO audio at all. Saying "no speech
+            # detected" here would claim we listened and heard silence, which
+            # is a different and false claim -- exactly the not-seeing vs
+            # seeing-nothing distinction the Room line above is careful about.
+            modality = ", visual only"
+        elif brief.affect.subtitle_source == "none":
+            modality = ", no speech detected"
+        else:
+            modality = ""
+        # Proportional hedging. Everything reaching here already cleared the
+        # producer's confidence gate, so this is not a second gate -- it is the
+        # difference between a read Orion may lean on and one it should hold
+        # loosely, which a single boolean "available" cannot express.
+        low = brief.affect.confidence is not None and brief.affect.confidence < 0.6
+        hedge = ", low confidence -- hold loosely" if low else ""
         lines.append(
-            f"Juniper's affect (captured {seen}{no_voice}): {brief.affect.summary}"
+            f"Juniper's affect (read {seen}{modality}{hedge}): {brief.affect.summary}"
         )
     else:
         # Same honesty rule as Room above -- no recent capture and a

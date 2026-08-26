@@ -73,6 +73,16 @@ class JuniperAffectState(NamedTuple):
     observed_at: datetime | None
     trigger: str | None
     subtitle_source: str | None
+    # The producing backend's own confidence in this read, 0.0-1.0, or None
+    # for a read written before backends were distinguished (2026-08-26) or
+    # by the legacy affectgpt path, which had no confidence to report.
+    # Present here so the PROMPT can hedge proportionally -- the write-side
+    # gate in orion-juniper-affective-state has already rejected anything
+    # below AFFECT_MIRROR_MIN_CONFIDENCE, so a value that arrives here is
+    # above the bar but not necessarily near 1.0.
+    confidence: float | None = None
+    # "vision" | "affectgpt" | None (pre-2026-08-26 payload).
+    backend: str | None = None
     # True: read genuinely completed (key found and parsed, or confirmed
     # absent) -- the other fields are trustworthy as-is. False: read FAILED
     # (unbound bus, Redis error, malformed payload) -- all other fields are
@@ -157,6 +167,10 @@ async def read_latest_juniper_affect() -> JuniperAffectState:
         subtitle_source=parsed.get("subtitle_source")
         if isinstance(parsed.get("subtitle_source"), str)
         else None,
+        confidence=float(parsed["confidence"])
+        if isinstance(parsed.get("confidence"), (int, float))
+        else None,
+        backend=parsed.get("backend") if isinstance(parsed.get("backend"), str) else None,
         ok=True,
     )
 
@@ -168,6 +182,8 @@ async def write_latest_juniper_affect(
     observed_at: datetime,
     trigger: str,
     subtitle_source: str | None,
+    confidence: float | None = None,
+    backend: str | None = None,
     ttl_seconds: int = _WRITE_TTL_SECONDS,
 ) -> None:
     """Fail-open write of the latest affect read. Never raises -- a failed
@@ -179,6 +195,8 @@ async def write_latest_juniper_affect(
                 "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
                 "trigger": trigger,
                 "subtitle_source": subtitle_source,
+                "confidence": confidence,
+                "backend": backend,
             }
         )
         await bus.redis.setex(_KEY, ttl_seconds, payload)

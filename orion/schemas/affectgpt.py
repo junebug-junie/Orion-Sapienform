@@ -109,6 +109,74 @@ class AffectGptAssessResultPayload(BaseModel):
     meta: Optional[Dict[str, Any]] = None
 
 
+class AffectReadV1(BaseModel):
+    """One structured affect read, produced by the ``vision`` backend.
+
+    **Why this exists at all, given the module docstring above says "no
+    emotion taxonomy field on purpose".** That rule was written when
+    ``raw_response`` (AffectGPT's free-text reasoning) was the only signal,
+    and it was the right call then: inventing a label set ahead of data is
+    the keyword cathedral CLAUDE.md bans. What changed on 2026-08-26 is that
+    free text turned out to be actively unusable *as a prompt input*, for a
+    reason no taxonomy debate would have surfaced -- the read Orion actually
+    received for chat turn ``ddddfe40`` was a 400-character essay opening
+    "In the text, based on the provided information, it is not possible to
+    infer the character's emotional state from the subtitle content."
+    Schema-valid, ``ok=True``, and mirrored verbatim into Juniper's chat
+    prompt.
+
+    So this is NOT a taxonomy. ``primary_affect`` is a free string, not an
+    enum, precisely because no label set has been earned yet -- whatever the
+    model says goes in, capped for length. What IS structured here is only
+    the machinery a consumer needs to decide *whether to believe the read at
+    all*: a confidence the mirror gate can threshold on, an explicit
+    ``cannot_tell`` list, and the ``cues`` the model claims to have used.
+    Every field has a live consumer in the same changeset
+    (``orion/situational/context.py``) or it would not be here.
+
+    **``cues`` is the anti-confabulation field.** The replaced backend
+    asserted "the acoustic characteristics of the voice indicate a negative
+    emotion" about an audio track measured at -49.2 dB peak -- i.e. silence.
+    Forcing the model to name the evidence it used makes that failure
+    visible in the record instead of laundering it into a confident mood.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    # -1.0 (strongly negative) .. +1.0 (strongly positive).
+    valence: float = Field(..., ge=-1.0, le=1.0)
+    # 0.0 (calm/still) .. 1.0 (highly activated).
+    arousal: float = Field(..., ge=0.0, le=1.0)
+    primary_affect: str = Field(
+        ...,
+        max_length=64,
+        description=(
+            "The model's own short label. Deliberately NOT an enum -- see "
+            "class docstring. Capped only so a runaway generation cannot "
+            "smuggle an essay through this field the way raw_response did."
+        ),
+    )
+    cues: list[str] = Field(
+        default_factory=list,
+        description="Specific observations the read rests on, model's own words.",
+    )
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The gate orion/situational/context.py thresholds on before this "
+            "read is allowed to colour a chat turn. A low value here is a "
+            "SUCCESSFUL read reporting honest uncertainty -- distinct from "
+            "ok=False, which means the pipeline itself failed."
+        ),
+    )
+    cannot_tell: list[str] = Field(
+        default_factory=list,
+        description="What the model explicitly declined to judge from this input.",
+    )
+
+
 class JuniperMultimodalAffectV1(BaseModel):
     """Domain event published by orion-juniper-affective-state after wrapping
     one worker assessment. See module docstring for why this is NOT the same
@@ -118,7 +186,36 @@ class JuniperMultimodalAffectV1(BaseModel):
 
     schema_version: Literal["juniper_multimodal_affect.v1"] = "juniper_multimodal_affect.v1"
     observed_at: datetime
-    source: Literal["affectgpt"] = "affectgpt"
+    # Widened from Literal["affectgpt"] on 2026-08-26. Additive: "affectgpt"
+    # remains the default, so every stored row and every existing consumer
+    # keeps validating unchanged.
+    source: Literal["affectgpt", "vision"] = "affectgpt"
+    backend: Literal["affectgpt", "vision"] = Field(
+        default="affectgpt",
+        description=(
+            "Which inference backend produced this read. Exists as a field, "
+            "not just an env setting, because the two are not "
+            "interchangeable in quality and a stored row must say which one "
+            "it came from -- the affectgpt rows in "
+            "juniper_multimodal_affect_log predating 2026-08-26 include "
+            "three reads that confidently misgendered the subject, and a "
+            "later analysis needs to be able to exclude them by provenance "
+            "rather than by date arithmetic."
+        ),
+    )
+    affect: Optional["AffectReadV1"] = Field(
+        default=None,
+        description=(
+            "Structured read. Populated by backend='vision'; always None for "
+            "backend='affectgpt', which only ever produced free text. "
+            "Consumers must treat None as 'no structured read available' and "
+            "fall back to raw_response, never as 'affect was neutral'."
+        ),
+    )
+    frames_used: Optional[int] = Field(
+        default=None,
+        description="How many frames the vision backend actually sent to the model.",
+    )
     ok: bool
     raw_response: Optional[str] = None
     error: Optional[str] = None

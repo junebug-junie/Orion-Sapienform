@@ -34,6 +34,17 @@ services:
       - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
       - AFFECTGPT_SCRATCH_DIR=${AFFECTGPT_SCRATCH_DIR:-/mnt/scripts/orion-affectgpt-scratch}
 
+      # Vision backend (2026-08-26) -- see .env_example comments.
+      - AFFECT_BACKEND=${AFFECT_BACKEND:-vision}
+      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE:-orion:exec:request:LLMGatewayService}
+      - AFFECT_VISION_LLM_ROUTE=${AFFECT_VISION_LLM_ROUTE:-chat}
+      - AFFECT_VISION_RPC_TIMEOUT_S=${AFFECT_VISION_RPC_TIMEOUT_S:-180}
+      - AFFECT_VISION_MAX_FRAMES=${AFFECT_VISION_MAX_FRAMES:-5}
+      - AFFECT_VISION_JPEG_QUALITY=${AFFECT_VISION_JPEG_QUALITY:-85}
+      - AFFECT_VISION_MAX_TOKENS=${AFFECT_VISION_MAX_TOKENS:-400}
+      - AFFECT_MIRROR_MIN_CONFIDENCE=${AFFECT_MIRROR_MIN_CONFIDENCE:-0.35}
+      - AFFECT_MIRROR_MIN_DETECTION_RATE=${AFFECT_MIRROR_MIN_DETECTION_RATE:-0.15}
+
     volumes:
       # Shared scratch: this service fetches percept-store blobs and writes
       # them here (capture_and_assess()'s tempfile, dir=AFFECTGPT_SCRATCH_DIR)

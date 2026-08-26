@@ -49,8 +49,8 @@ from typing import Any, Sequence
 
 # How much to put in front of Orion. Enough to choose between, few enough that
 # the material does not crowd out its own self-model in the turn's context.
-DEFAULT_CRYSTALLIZATION_SAMPLE = 12
-DEFAULT_RELATION_SAMPLE = 6
+DEFAULT_CRYSTALLIZATION_SAMPLE = 6
+DEFAULT_RELATION_SAMPLE = 12
 DEFAULT_RECENT_STUDY_SAMPLE = 8
 
 # Subjects are free text and occasionally enormous (a whole pasted message).

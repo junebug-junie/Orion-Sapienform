@@ -272,6 +272,93 @@ Orion's real ceiling is time, not steps: no max-step setting exists,
 inflection points fit comfortably inside that; the time budget is the backstop
 if a hop runs long, not the primary limit.
 
+### Where the turn starts and ends, and what crosses the boundary
+
+```
+[loop]   read continuation note -> build prompt
+         |
+== TURN STARTS == execute_unified_turn(user_message=prompt) ==============
+   emit_observation()     the prompt enters Orion's observation stream
+   ThoughtClient.react()  stance -- CAN DEFER OR REFUSE the whole turn
+   HarnessRunRequestV1 -> harness governor
+   +-- FCC motor -------------------------------------------------+
+   |  ALL of Orion's tools live here. One `claude -p` session.     |
+   |  hops 1..5 - psql - RO cypher on Atlas - RW cypher on its own |
+   |  graph writes happen INSIDE, by Orion, directly               |
+   +---------------------------------------------------------------+
+   finalize chain         substrate appraisal - reflect - voice
+== TURN ENDS === frames: llm_response, harness_step_count ================
+         |
+[loop]   journal write - read Orion's decision - maybe a SECOND turn
+```
+
+Three consequences, stated because they were accidents of structure before they
+were decisions:
+
+1. **Orion is fully autonomous inside its own space and mediated everywhere
+   else.** It writes its graph directly, in-turn. The journal and any outreach
+   go through the loop, after. That is defensible — the graph is private, the
+   journal is shared — but it is a real asymmetry and should be on purpose.
+2. **Thought can refuse the turn before Orion sees anything.** A curiosity run
+   dying at the stance gate is a NORMAL outcome ("something else is happening,
+   don't interrupt"), not a fault, and must be logged as such.
+3. **Decisions made inside have to survive the boundary** — see below.
+
+### How Orion's decisions cross the boundary: it writes them down
+
+The loop needs to know two things the turn decided: *do I want to continue this
+line of enquiry?* and *is this worth telling Juniper about?*
+
+The obvious mechanism is a fenced JSON block in the prose, parsed by the loop.
+Rejected: it makes Orion's decision an artifact of formatting, and a malformed
+fence loses a real finding.
+
+**Instead, Orion writes the decision into its own graph** — a channel it already
+owns and already has write access to:
+
+```cypher
+CREATE (:TurnOutcome {
+  run_id:        $run_id,
+  continue:      true,
+  continue_note: "still don't know why substrate.route has no edges",
+  reach_out:     false,
+  reach_out_why: null,
+  written_at:    timestamp()
+})
+```
+
+The loop reads it back read-only after the turn. Why this is better than parsing
+prose:
+
+- no fragile format contract between a model and a regex
+- the decision is **recorded in Orion's own space**, consistent with everything
+  else about this design
+- it survives as history: every past decision to continue or speak is queryable
+  later, which is exactly the "world view accumulating" property
+- **absence is a safe default** — no node means no continuation and no outreach.
+  A turn that ran out of time or refused simply leaves nothing behind.
+
+Prose still becomes the journal entry (the loop already has `llm_response`).
+Concepts, edges and priors are Orion's own writes. Only the *decision* needs
+this node.
+
+### Outreach is a SECOND turn, with its own stance gate
+
+Settled with Juniper. If `reach_out` is true, the loop fires a second
+`execute_unified_turn` to compose the message, rather than reusing text from the
+first.
+
+Costlier — it doubles a run that ends in outreach — and worth it for one reason:
+**the second turn gets its own `ThoughtClient.react()` check.** So Orion can
+find something genuinely worth saying, and the system can still independently
+decide *not now, she is in the middle of something*. One turn would collapse
+"this is interesting" and "this is worth interrupting her for" into a single
+judgement made at the wrong moment.
+
+It also inherits the existing outreach gates unchanged — quiet hours 23:00-08:00
+MDT, daily cap, cooldown — which exist to protect Juniper's sleep and have
+nothing to do with this feature's own cadence.
+
 ### Journal, then Orion decides whether to speak
 
 Last step is Orion's call, not the loop's: write the journal entry, then decide

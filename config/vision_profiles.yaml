@@ -406,18 +406,40 @@ profiles:
   # CLI, can write a gallery entry), non-matches are never stored, `unsure`
   # is a real reachable third band (see probable_threshold/match_threshold
   # below), and the result is always a hypothesis dict
-  # ({subject, similarity, state}), never a bare label.
+  # ({subject, similarity, state}), never a bare label. Two rounds of code
+  # review (findings fixed, mutation-tested, live-verified against the real
+  # production container) -- see the PR report for the full record.
   #
-  # NOT YET LIVE-VALIDATED against real photos of the actual enrolled
-  # subject -- match_threshold/probable_threshold below are a reasoned
-  # starting point (VGGFace2 same-person cosine similarity commonly lands
-  # 0.5-0.8+ under good conditions; the design doc's own worked example is
-  # similarity=0.61 -> "probable"), not empirically tuned, per AGENTS.md's
-  # metric-quality-gate item 4 ("live-data sanity check") -- that check
-  # genuinely cannot run until someone enrolls with real photos. Revisit
-  # these two numbers once real enrollment + live camera data exists.
+  # `enabled: false` -- deliberately NOT live-dispatchable by default,
+  # despite being fully built/tested, per AGENTS.md's own metric-quality-
+  # gate and the second review pass's own findings, both unresolved as of
+  # this comment:
+  #   1. match_threshold/probable_threshold below are a reasoned starting
+  #      point (VGGFace2 same-person cosine similarity commonly lands
+  #      0.5-0.8+ under good conditions; the design doc's own worked
+  #      example is similarity=0.61 -> "probable"), NOT empirically tuned
+  #      against real enrolled photos. Metric-quality-gate item 4
+  #      ("live-data sanity check") cannot run until someone enrolls --
+  #      "A metric that fails 1-4 does not get wired in" applies literally
+  #      here, not just to aggregate telemetry.
+  #   2. orion-vision-frame-router (and any other orion:vision:reply:*
+  #      wildcard subscriber) fully Pydantic-deserializes every
+  #      identity_face reply -- including the real subject/similarity/state
+  #      hypothesis -- before checking whether the correlation id even
+  #      belongs to a request it made, then discards it. Confirmed live:
+  #      real, transient (not logged/persisted/forwarded), but a genuine
+  #      violation of "only the direct requester sees this" for any process
+  #      matching that reply-channel pattern. CHANNEL_VISIONHOST_PUB's
+  #      broadcast is closed (should_broadcast_artifact() in app/main.py,
+  #      content-based, not just task-type-keyed) -- this reply-channel
+  #      fan-out is a separate, still-open surface, and closing it properly
+  #      means either a non-wildcarded reply lane for this task_type or a
+  #      redesign of frame-router's own subscribe-then-filter pattern,
+  #      neither of which is in scope here.
+  # Flip to `enabled: true` and add `identity_face` back to
+  # VISION_ENABLED_PROFILES only after a real decision on both.
   - name: identity_face
-    enabled: true
+    enabled: false
     warm_on_start: false
     kind: identity
     backend: custom

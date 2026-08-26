@@ -164,7 +164,13 @@ def test_run_identity_face_never_returns_raw_embedding(monkeypatch, tmp_path):
 
     result = runner._run_identity_face(profile, {"image_path": _image_path(tmp_path)}, "cpu", [])
 
+    # Review finding, 2026-08-26: the original version of this assertion
+    # (`"embedding" not in result_str.lower() or "embedding_ref" not in
+    # result`) was vacuously always-true -- `result` never has a top-level
+    # "embedding_ref" key under any code path, so the right side of the
+    # `or` was unconditionally True regardless of the left side. This is
+    # the real check.
     result_str = str(result)
-    assert "embedding" not in result_str.lower() or "embedding_ref" not in result
+    assert "embedding" not in result_str.lower()
     for candidate in result["identities"]["candidates"]:
         assert set(candidate.keys()) <= {"subject", "similarity", "state", "reason", "detect_confidence"}

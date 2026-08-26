@@ -63,13 +63,17 @@ def test_dead_task_types_no_longer_route_anywhere(vision_profiles):
 
 def test_identity_face_deliberately_survives(vision_profiles):
     """The one profile from the same original batch that is NOT dead weight
-    -- design doc section 4. Implemented and enabled 2026-08-26 (Juniper's
-    direct go-ahead); see test_run_identity_face.py/test_identity_gallery.py
-    for the real behavior this now pins."""
+    -- design doc section 4. Implemented 2026-08-26 (Juniper's direct
+    go-ahead) -- see test_run_identity_face.py/test_identity_gallery.py for
+    the real, working behavior. Still `enabled: false` by deliberate
+    choice, not because it's unbuilt: two open findings (unvalidated live
+    thresholds; a reply-channel wildcard fan-out, both documented on the
+    profile's own comment in config/vision_profiles.yaml) gate live
+    dispatch, independent of whether the code itself works."""
     assert "identity_face" in vision_profiles.profiles
     identity = vision_profiles.get_profile("identity_face")
     assert identity.kind == "identity"
-    assert identity.enabled is True
+    assert identity.enabled is False
     assert vision_profiles.resolve_target("identity_face") == "identity_face"
 
 

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 
+from app.artifacts import build_artifact_payload
 from app.main import VisionHostService, should_broadcast_artifact
 from app.models import VisionResult
 
@@ -48,6 +49,49 @@ def test_every_publish_artifact_broadcast_call_site_is_guarded():
             f"_publish_artifact_broadcast call at main.py:{call_line + 1} has no "
             f"should_broadcast_artifact() guard within 20 lines above it"
         )
+
+
+def test_should_broadcast_artifact_suppresses_identity_data_reached_via_a_pipeline():
+    """Review finding, 2026-08-26, second pass: a task_type-only check is
+    bypassable by a config-only change -- adding `- use: identity_face` as
+    a step in ANY pipeline. runner.py's _run_pipeline merges every step's
+    dict output with zero content filtering, and artifacts.py's generic
+    passthrough attaches the merged `identities` key onto the outer
+    artifact regardless of the pipeline's own task_type name. This builds
+    a REAL VisionArtifactPayload (not a hand-built stand-in) the same way
+    a pipeline result actually would, with an outer task_type that is
+    NOT "identity_face" -- confirming the content check, not the task_type
+    check, is what catches this."""
+    res = VisionResult(
+        corr_id="c3",
+        ok=True,
+        task_type="pipeline_retina_dense",  # NOT "identity_face"
+        device="cuda:0",
+        artifacts={
+            "objects": [],
+            "identities": {
+                "candidates": [{"subject": "juniper", "similarity": 0.71, "state": "probable"}],
+                "enrolled_subject": "juniper",
+                "gallery_enrolled": True,
+            },
+        },
+    )
+    payload = build_artifact_payload(res)
+
+    assert should_broadcast_artifact(res.task_type, payload) is False
+
+
+def test_should_broadcast_artifact_allows_non_identity_pipeline_result():
+    res = VisionResult(
+        corr_id="c4",
+        ok=True,
+        task_type="pipeline_retina_fast",
+        device="cuda:0",
+        artifacts={"objects": [{"label": "chair", "score": 0.9, "box_xyxy": [0, 0, 1, 1]}]},
+    )
+    payload = build_artifact_payload(res)
+
+    assert should_broadcast_artifact(res.task_type, payload) is True
 
 
 def test_should_broadcast_artifact_excludes_identity_face():

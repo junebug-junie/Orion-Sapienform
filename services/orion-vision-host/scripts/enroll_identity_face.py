@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def enroll(subject: str, image_paths: list[str], gallery_dir: str) -> Path:
+def enroll(subject: str, image_paths: list[str], gallery_dir: str, *, model_cache_dir: str) -> Path:
     import numpy as np
     from PIL import Image
 
@@ -38,7 +38,15 @@ def enroll(subject: str, image_paths: list[str], gallery_dir: str) -> Path:
     from app.model_manager import ModelManager
 
     manager = ModelManager()
-    model, mtcnn = manager.load_face_identity_models(profile_name="identity_face_enroll", device="cpu")
+    # torch_home=model_cache_dir: review finding, 2026-08-26 -- without
+    # this, facenet-pytorch's ~107MB torch.hub weights land in the
+    # ephemeral ~/.cache/torch/hub instead of the persistent
+    # MODEL_CACHE_DIR mount runner.py's own call to this same function
+    # already uses, so every enrollment run pays the download cost again
+    # (and could fail outright offline).
+    model, mtcnn = manager.load_face_identity_models(
+        profile_name="identity_face_enroll", device="cpu", torch_home=model_cache_dir
+    )
 
     embeddings = []
     for image_path in image_paths:
@@ -47,8 +55,11 @@ def enroll(subject: str, image_paths: list[str], gallery_dir: str) -> Path:
         if faces is None:
             print(f"  SKIP {image_path}: no face detected", file=sys.stderr)
             continue
-        if faces.dim() == 3:
-            faces = faces.unsqueeze(0)
+        # keep_all=True (model_manager.py's construction) always stacks
+        # detections into a 4D tensor, even for a single face -- no 3D
+        # single-face case to unwrap (same reasoning as runner.py's
+        # _run_identity_face, which had the identical dead branch removed
+        # in the same review pass this comment documents).
         # Keep only the highest-confidence face per photo -- an enrollment
         # photo should have exactly one clear subject in frame; a second
         # detected face (someone in the background) must not silently pull
@@ -82,14 +93,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    gallery_dir = args.gallery_dir
-    if gallery_dir is None:
-        from app.settings import Settings
+    from app.settings import Settings
 
-        gallery_dir = Settings().IDENTITY_GALLERY_DIR
+    settings = Settings()
+    gallery_dir = args.gallery_dir if args.gallery_dir is not None else settings.IDENTITY_GALLERY_DIR
 
     print(f"Enrolling subject={args.subject!r} from {len(args.images)} image(s) -> {gallery_dir}")
-    path = enroll(args.subject, args.images, gallery_dir)
+    path = enroll(args.subject, args.images, gallery_dir, model_cache_dir=settings.MODEL_CACHE_DIR)
     print(f"Wrote gallery entry: {path}")
     return 0
 

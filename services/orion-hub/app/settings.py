@@ -452,6 +452,64 @@ class Settings(BaseSettings):
     # chat text nobody asked for. Enabled in .env_example / the live .env; this
     # Field default stays False so an absent key fails closed rather than
     # silently enabling outreach.
+    # --- Curiosity investigation (2026-08-26) -----------------------------
+    # Orion notices a word Juniper has been using far more than usual, then
+    # spends a REAL unified turn going and finding out what it is about. See
+    # scripts/curiosity_investigation.py for the loop and the safety posture.
+    # Default False so an absent key can never start it; the live value lives
+    # in .env_example / .env like every other Hub loop.
+    HUB_CURIOSITY_INVESTIGATION_ENABLED: bool = Field(
+        default=False, alias="HUB_CURIOSITY_INVESTIGATION_ENABLED"
+    )
+    # How often the loop wakes to consider investigating. Cheap: the corpus is
+    # only read once the cooldown/cap gates pass (that read is ~7.8s of
+    # blocking IO over ~1.1 GB, so it must not happen per tick).
+    HUB_CURIOSITY_INVESTIGATION_TICK_SEC: float = Field(
+        default=300.0, alias="HUB_CURIOSITY_INVESTIGATION_TICK_SEC"
+    )
+    # Minimum gap between two investigations. Deliberately long: this is a real
+    # turn on the same pipeline that serves Juniper, and an Orion that
+    # investigates hourly is not curious, it is noisy.
+    HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC: float = Field(
+        default=14400.0, alias="HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC"
+    )
+    # Max investigations per day; -1 disables the cap.
+    HUB_CURIOSITY_INVESTIGATION_DAILY_CAP: int = Field(
+        default=3, alias="HUB_CURIOSITY_INVESTIGATION_DAILY_CAP"
+    )
+    # Same budget outreach gives a real unified turn.
+    HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC: float = Field(
+        default=300.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
+    )
+    HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
+        default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"
+    )
+    # How long a term stays "already investigated". A week, so Orion does not
+    # rediscover the same word every day it stays hot.
+    HUB_CURIOSITY_INVESTIGATION_TERM_TTL_SEC: int = Field(
+        default=604800, alias="HUB_CURIOSITY_INVESTIGATION_TERM_TTL_SEC"
+    )
+    # The comparison windows: "today" against "the fortnight before it".
+    HUB_CURIOSITY_INVESTIGATION_RECENT_HOURS: float = Field(
+        default=24.0, alias="HUB_CURIOSITY_INVESTIGATION_RECENT_HOURS"
+    )
+    HUB_CURIOSITY_INVESTIGATION_BASELINE_DAYS: float = Field(
+        default=14.0, alias="HUB_CURIOSITY_INVESTIGATION_BASELINE_DAYS"
+    )
+    # Where the transcript corpus is mounted. MUST equal the host path -- see
+    # the docker-compose volume comment for why remapping silently breaks
+    # cross-project subagent symlinks.
+    HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH: str = Field(
+        default="/home/athena/.claude/projects",
+        alias="HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH",
+    )
+    # Re-parse the transcript corpus at most this often. The parse is the
+    # expensive part; the loop's own cooldown means a stale-by-minutes corpus
+    # cannot change any decision.
+    HUB_CURIOSITY_INVESTIGATION_CORPUS_TTL_SEC: float = Field(
+        default=900.0, alias="HUB_CURIOSITY_INVESTIGATION_CORPUS_TTL_SEC"
+    )
+
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=False, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
     )

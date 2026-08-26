@@ -30,6 +30,23 @@ services:
       - ../..:/mnt/scripts/Orion-Sapienform:ro
       - ${HOME}/.fcc:/root/.fcc:ro
       - ${HOME}/.claude.json:/root/.claude.json:ro
+      # Read-only mount of Juniper's real local ~/.claude/projects tree, for
+      # scripts/curiosity_investigation.py's term-surfacing detector. Mirrors
+      # orion-cocreation-signals' identical mount (Juniper's explicit call,
+      # 2026-08-11) rather than opening a second, differently-shaped access
+      # path to the same data -- the parser
+      # (orion/dev_economics/claude_code_ingest.py) surfaces Juniper's typed
+      # turns only, never tool results, hook output, or assistant text.
+      #
+      # MOUNTED AT THE IDENTICAL HOST PATH, not remapped, and that is load-
+      # bearing: Claude Code represents a cross-project subagent transcript as
+      # an ABSOLUTE-path symlink, which resolves against the container's own
+      # root filesystem. Remap the mount point and every such symlink silently
+      # breaks -- gracefully skipped by the parser's OSError handling, so the
+      # only symptom is messages quietly never being counted. See
+      # services/orion-cocreation-signals/docker-compose.yml for the live
+      # 2026-08-11 confirmation of this.
+      - ${HUB_CURIOSITY_CLAUDE_PROJECTS_HOST_PATH:-${HOME}/.claude/projects}:${HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH:-/home/athena/.claude/projects}:ro
       # Orion's disposable FCC sandbox checkout (see orion/fcc/sandbox_sync.py). A
       # standalone git clone, not a worktree -- no shared .git object store with the
       # primary checkout at /mnt/scripts/Orion-Sapienform. Mounted rw so Orion can

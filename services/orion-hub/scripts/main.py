@@ -36,6 +36,8 @@ from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
+from orion.core.bus.bus_schemas import ServiceRef
+from scripts.curiosity_investigation import CuriosityInvestigation
 from scripts.endogenous_outreach import EndogenousOutreach
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
@@ -276,7 +278,52 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
+
+def _build_curiosity_corpus_reader(*, ttl_sec: float, projects_root: str):
+    """TTL-cached reader for Juniper's own typed words.
+
+    Two things this must not do, both measured 2026-08-26: parsing the local
+    Claude Code transcripts is ~7.8s of blocking IO over ~1.1 GB, so it must
+    never run on Hub's event loop (the loop calls this inside
+    `asyncio.to_thread`), and it must not re-run per tick. The loop's own
+    cooldown is hours long, so a corpus that is stale by minutes cannot change
+    any decision this feeds.
+
+    `iter_all_human_messages` is the already-in-production parser behind the
+    Juniper affective-state signal -- Juniper's typed turns only, never tool
+    results, hook output, slash-command scaffolding, or assistant text. No new
+    collection surface is opened here.
+    """
+    from orion.dev_economics.claude_code_ingest import iter_all_human_messages
+
+    cache: dict[str, object] = {"at": 0.0, "messages": []}
+
+    def _read():
+        now = time.monotonic()
+        age = now - float(cache["at"])
+        if cache["messages"] and age < ttl_sec:
+            return cache["messages"]
+        try:
+            messages = [
+                (m.timestamp, m.text)
+                for m in iter_all_human_messages(projects_root)
+                if m.timestamp
+            ]
+        except Exception:  # noqa: BLE001 -- a corpus read must never break the loop
+            logger.warning("curiosity_corpus_read_failed", exc_info=True)
+            # Serve the stale copy rather than an empty one: an empty corpus
+            # reads as `underpowered`, which is honest, but throwing away a
+            # good cache on one bad read is worse than using it a little longer.
+            return cache["messages"]
+        cache["at"] = now
+        cache["messages"] = messages
+        return messages
+
+    return _read
+
+
 endogenous_outreach: Optional[EndogenousOutreach] = None
+curiosity_investigation: Optional[CuriosityInvestigation] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
@@ -380,7 +427,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -502,6 +549,34 @@ async def startup_event():
             # call this used before. harness_rpc_bus mirrors that call
             # site's own `harness_rpc_bus=rpc_bus or bus` convention.
             await endogenous_outreach.start(bus, harness_rpc_bus=rpc_bus)
+
+            # Orion notices what Juniper has been talking about, and goes and
+            # finds out why (2026-08-26). Same lifecycle and the same real
+            # unified-turn pipeline as outreach above -- see
+            # scripts/curiosity_investigation.py for why this is a Hub loop and
+            # not a service (the harness RPC worker and several module bus
+            # binds live in THIS event loop; a standalone process times out).
+            curiosity_investigation = CuriosityInvestigation(
+                enabled=settings.HUB_CURIOSITY_INVESTIGATION_ENABLED,
+                tick_interval_sec=settings.HUB_CURIOSITY_INVESTIGATION_TICK_SEC,
+                min_cooldown_sec=settings.HUB_CURIOSITY_INVESTIGATION_MIN_COOLDOWN_SEC,
+                daily_cap=settings.HUB_CURIOSITY_INVESTIGATION_DAILY_CAP,
+                timeout_sec=settings.HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC,
+                session_id=settings.HUB_CURIOSITY_INVESTIGATION_SESSION_ID,
+                term_mark_ttl_sec=settings.HUB_CURIOSITY_INVESTIGATION_TERM_TTL_SEC,
+                recent_hours=settings.HUB_CURIOSITY_INVESTIGATION_RECENT_HOURS,
+                baseline_days=settings.HUB_CURIOSITY_INVESTIGATION_BASELINE_DAYS,
+                message_source=_build_curiosity_corpus_reader(
+                    ttl_sec=settings.HUB_CURIOSITY_INVESTIGATION_CORPUS_TTL_SEC,
+                    projects_root=settings.HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH,
+                ),
+                source_ref=ServiceRef(
+                    name=settings.SERVICE_NAME,
+                    version=settings.SERVICE_VERSION,
+                    node=settings.NODE_NAME,
+                ),
+            )
+            await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
 
             # Claude as a third room participant. Hub only publishes the
             # invite and relays the reply -- orion-room-companion owns the
@@ -918,7 +993,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
+    global bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, curiosity_investigation, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -972,6 +1047,12 @@ async def shutdown_event() -> None:
             await bus_synaptic_trigger_notifier.stop()
         except Exception:
             pass
+    if curiosity_investigation is not None:
+        try:
+            await curiosity_investigation.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_investigation_stop_failed", exc_info=True)
+        curiosity_investigation = None
     if endogenous_outreach is not None:
         try:
             await endogenous_outreach.stop()

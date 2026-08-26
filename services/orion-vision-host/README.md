@@ -67,33 +67,53 @@ subject** -- not a growing gallery, not a stranger tracker.
   now). Only the direct RPC/HTTP reply to whoever explicitly requested
   `task_type=identity_face` carries the real result.
 
-**Enrollment** (must be run by hand, with real photos -- ships with zero
-enrolled by default). Two ways to run it, since the container has no
-arbitrary host path mounted -- photos have to reach it through the one
-read-write mount it does have:
+**Enrollment** (real photos required -- ships with zero enrolled by
+default; `scripts/` is copied into the image, confirmed live 2026-08-26
+after an earlier version of this Dockerfile omitted it entirely). The
+`/mnt/telemetry/orion-vision-host` host mount is not reliably writable by
+an operator's own shell user (confirmed live: `athena`'s own user got
+`Permission denied` there) -- `docker cp` into the container's own
+filesystem is the tested, working path:
 
 ```bash
 # Locally, against a dev checkout with facenet-pytorch installed:
 cd services/orion-vision-host
 python3 scripts/enroll_identity_face.py --subject juniper photo1.jpg photo2.jpg photo3.jpg
 
-# Against the real running container: place photos under the existing
-# host-side bind mount first, then run the script inside the container.
-cp photo1.jpg photo2.jpg photo3.jpg /mnt/telemetry/orion-vision-host/enrollment_photos/
+# Against the real running container -- docker cp, not the host mount:
+docker exec orion-athena-vision-host mkdir -p /tmp/enrollment_photos
+docker cp photo1.jpg orion-athena-vision-host:/tmp/enrollment_photos/
+docker cp photo2.jpg orion-athena-vision-host:/tmp/enrollment_photos/
+docker cp photo3.jpg orion-athena-vision-host:/tmp/enrollment_photos/
 docker exec orion-athena-vision-host python3 scripts/enroll_identity_face.py \
   --subject juniper \
-  /mnt/telemetry/orion-vision-host/enrollment_photos/photo1.jpg \
-  /mnt/telemetry/orion-vision-host/enrollment_photos/photo2.jpg \
-  /mnt/telemetry/orion-vision-host/enrollment_photos/photo3.jpg
+  /tmp/enrollment_photos/photo1.jpg \
+  /tmp/enrollment_photos/photo2.jpg \
+  /tmp/enrollment_photos/photo3.jpg
+docker exec orion-athena-vision-host rm -rf /tmp/enrollment_photos  # cleanup
 ```
 
 Writes one JSON file (mean embedding across all usable photos) to
 `IDENTITY_GALLERY_DIR` (default `/mnt/telemetry/orion-vision-host/identity_gallery`,
 the existing bind mount -- no new volume). Re-running with the same
-`--subject` overwrites the entry (re-enrollment, not accumulation). Delete
-the `enrollment_photos/` source images afterward if they shouldn't
-persist on disk -- the script only ever reads them, never copies or
-retains them itself.
+`--subject` overwrites the entry (re-enrollment, not accumulation). The
+script only ever reads its source images, never copies or retains them
+itself -- the `rm -rf` above is on the operator, matching the real
+enrollment this repo shipped with (see below).
+
+**Where the real enrollment's photos came from:** no photos of Juniper
+were sourced or requested directly. `orion-juniper-affective-state`
+already runs a real, already-approved, already-live capture path (Hub's
+own "Check now" button) -- `POST /v1/juniper/affect/capture_and_assess`
+triggers a real ~8s clip from Juniper's own carbon webcam and returns
+`capture.video_sha256`. That video is fetchable from `orion-percept-store`
+(`GET {PERCEPT_STORE_BASE_URL}/{sha256}`, hash re-verified on receipt) the
+same way `orion-juniper-affective-state`'s own `_fetch_percept` does.
+`ffmpeg -i clip.mp4 -vf "select='not(mod(n\,40))'" -vsync vfr frame_%02d.jpg`
+extracted 6 evenly-spaced frames, enrolled via `docker cp` + the script
+above, then deleted from the container (`rm -rf /tmp/enrollment_photos`).
+No new capture infrastructure -- this reuses a capability that already
+exists and is already consented to for a different purpose.
 
 **Unenrolled behavior:** `task_type=identity_face` still runs face
 detection; every candidate comes back `{"subject": "unknown", "similarity":
@@ -102,10 +122,14 @@ null, "state": "unsure", "reason": "not_enrolled"}` and the artifact's
 
 **Thresholds** (`config/vision_profiles.yaml`'s `identity_face.params`):
 `match_threshold` (below = `unsure`) and `probable_threshold` (at/above =
-`probable`; between the two = `possible`). Both are a reasoned starting
-point, **not yet live-validated against real enrolled photos** -- AGENTS.md's
-metric-quality-gate item 4 (live-data sanity check) genuinely cannot run
-until someone enrolls. Revisit once real camera data exists.
+`probable`; between the two = `possible`). Live-validated 2026-08-26 against
+real enrolled photos (a real `orion-juniper-affective-state` capture,
+6 frames enrolled, a held-out 7th frame from the same clip queried):
+`similarity=0.9585, state="probable"` -- comfortably clears
+`probable_threshold` (0.55) with real margin. Negative control (the empty
+room's own ceiling-camera frame) correctly returned zero candidates
+(`no_face_detected`), not a false positive. Both directions checked, not
+just the positive case.
 
 **Deviation from the design doc's literal prose, noted honestly:** the doc
 describes running face detection on the person crop GroundingDINO already
@@ -117,20 +141,33 @@ larger, riskier work than this patch's scope. MTCNN already does its own
 face localization on a full image without needing a person crop first, so
 this is a real simplification, not a silently dropped requirement.
 
+**Known, accepted residual exposure:** `orion-vision-frame-router` (and any
+other `orion:vision:reply:*` wildcard subscriber) fully Pydantic-
+deserializes every `identity_face` reply -- including the real
+subject/similarity/state hypothesis -- before checking whether the
+correlation id belongs to a request it made, then discards it. Confirmed
+live in `dispatcher.py`. Real, but transient: never logged, persisted, or
+forwarded downstream. `CHANNEL_VISIONHOST_PUB`'s broadcast is closed (see
+the non-negotiable above, content-based not just task-type-keyed); this
+reply-channel fan-out is a separate, narrower, still-open surface --
+closing it properly needs either a non-wildcarded reply lane for this
+task_type or a redesign of frame-router's own subscribe-then-filter
+pattern, both out of scope here. Accepted as a known trade-off (Juniper's
+explicit call, 2026-08-26) rather than left unmentioned.
+
 **Not built here:** wiring the resulting hypothesis into
 `orion-vision-council`'s evidence-grounding context as the design doc's
 section 4 describes ("passed to the gateway call as grounding context,
-exactly like hard labels") -- that is the next integration step, in a
-different service, once this capability is live-validated with a real
-enrollment. Also not built: a `vision_events` table-level retention policy
-(design doc section 6.5: "identity-bearing rows are the most sensitive
-this system will hold. Ships WITH section 4, not after"). The immediate
-leak path that requirement was guarding against -- identity data reaching
-every consumer of the general artifact broadcast unfiltered -- is closed
-(see the non-negotiable above); what remains open is retention for
-identity data that reaches `vision_events` through some *future* real
-integration (e.g. the council-grounding wiring above), which does not
-exist yet either. Flagged, not silently skipped.
+exactly like hard labels") -- a real next integration step, in a
+different service. Also not built: a `vision_events` table-level retention
+policy (design doc section 6.5: "identity-bearing rows are the most
+sensitive this system will hold. Ships WITH section 4, not after"). The
+immediate leak path that requirement was guarding against -- identity data
+reaching every consumer of the general artifact broadcast unfiltered -- is
+closed; what remains open is retention for identity data that reaches
+`vision_events` through some *future* real integration (e.g. the
+council-grounding wiring above), which does not exist yet either. Flagged,
+not silently skipped.
 
 ### VLM model families
 

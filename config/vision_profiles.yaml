@@ -410,36 +410,39 @@ profiles:
   # review (findings fixed, mutation-tested, live-verified against the real
   # production container) -- see the PR report for the full record.
   #
-  # `enabled: false` -- deliberately NOT live-dispatchable by default,
-  # despite being fully built/tested, per AGENTS.md's own metric-quality-
-  # gate and the second review pass's own findings, both unresolved as of
-  # this comment:
-  #   1. match_threshold/probable_threshold below are a reasoned starting
-  #      point (VGGFace2 same-person cosine similarity commonly lands
-  #      0.5-0.8+ under good conditions; the design doc's own worked
-  #      example is similarity=0.61 -> "probable"), NOT empirically tuned
-  #      against real enrolled photos. Metric-quality-gate item 4
-  #      ("live-data sanity check") cannot run until someone enrolls --
-  #      "A metric that fails 1-4 does not get wired in" applies literally
-  #      here, not just to aggregate telemetry.
-  #   2. orion-vision-frame-router (and any other orion:vision:reply:*
-  #      wildcard subscriber) fully Pydantic-deserializes every
-  #      identity_face reply -- including the real subject/similarity/state
-  #      hypothesis -- before checking whether the correlation id even
-  #      belongs to a request it made, then discards it. Confirmed live:
-  #      real, transient (not logged/persisted/forwarded), but a genuine
-  #      violation of "only the direct requester sees this" for any process
-  #      matching that reply-channel pattern. CHANNEL_VISIONHOST_PUB's
-  #      broadcast is closed (should_broadcast_artifact() in app/main.py,
-  #      content-based, not just task-type-keyed) -- this reply-channel
-  #      fan-out is a separate, still-open surface, and closing it properly
-  #      means either a non-wildcarded reply lane for this task_type or a
-  #      redesign of frame-router's own subscribe-then-filter pattern,
-  #      neither of which is in scope here.
-  # Flip to `enabled: true` and add `identity_face` back to
-  # VISION_ENABLED_PROFILES only after a real decision on both.
+  # `enabled: true` -- Juniper's explicit call, 2026-08-26 ("shipping
+  # enabled true... there should be some affective state that has photos
+  # of me"), after both open items below were addressed rather than left
+  # blocking:
+  #   1. match_threshold/probable_threshold WERE unvalidated against real
+  #      enrolled photos when this comment first shipped disabled. Closed
+  #      the same day: triggered a real, live capture_and_assess() on
+  #      orion-juniper-affective-state (the SAME already-approved, already-
+  #      running capture path Hub's own "Check now" button uses -- no new
+  #      capture infrastructure), fetched the resulting video from
+  #      orion-percept-store by its own reported sha256 (hash re-verified
+  #      on receipt, chain-of-custody), extracted 6 real frames, enrolled
+  #      via scripts/enroll_identity_face.py (all 6 frames: real face
+  #      detected at 0.996-0.9996 confidence each). AffectGPT's own face
+  #      detector independently found a face in 85% of that clip's frames
+  #      (face_detection.detection_rate=0.8485), corroborating a real,
+  #      usable subject before enrollment ever ran. Then real end-to-end
+  #      validation, not just enrollment: a HELD-OUT frame from the same
+  #      clip (not one of the 6 enrollment frames) matched at
+  #      similarity=0.9585, state="probable" -- comfortably clearing
+  #      probable_threshold (0.55) with real margin. Negative control: the
+  #      room's own (empty at the time) ceiling-camera frame correctly
+  #      returned zero candidates (no_face_detected), not a false positive.
+  #      Both directions verified with real data, not assumed.
+  #   2. orion-vision-frame-router (and any orion:vision:reply:* wildcard
+  #      subscriber) still fully Pydantic-deserializes every identity_face
+  #      reply before checking relevance, then discards it -- real,
+  #      transient (never logged/persisted/forwarded), NOT closed by this
+  #      patch. Accepted as a known, documented residual exposure rather
+  #      than blocking on it -- Juniper's own call to make, not mine to
+  #      keep gating on.
   - name: identity_face
-    enabled: false
+    enabled: true
     warm_on_start: false
     kind: identity
     backend: custom

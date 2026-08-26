@@ -196,16 +196,33 @@ def fire(
         )
         return None
     timeout_sec = float(getattr(settings, "JUNIPER_AFFECTIVE_STATE_TIMEOUT_SEC", 240.0))
-    task = asyncio.create_task(
-        asyncio.to_thread(
-            _capture_blocking,
-            base_url=base,
-            timeout_sec=timeout_sec,
-            trigger=trigger,
-            correlation_id=correlation_id,
-        ),
-        name=f"chat-turn-affect-{trigger}-{correlation_id}",
-    )
+    # Guarded because the POST-turn call site is inside websocket_handler's
+    # `finally` block. An exception escaping from there does not just lose
+    # the capture -- it REPLACES whatever exception the turn was already
+    # unwinding with, so a real turn failure would be reported as an affect
+    # error instead. asyncio.create_task raises RuntimeError when there is
+    # no running loop or the loop is closing, which is exactly the state a
+    # socket teardown can be in. An advisory capture must never be able to
+    # corrupt the turn's own error reporting.
+    try:
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                _capture_blocking,
+                base_url=base,
+                timeout_sec=timeout_sec,
+                trigger=trigger,
+                correlation_id=correlation_id,
+            ),
+            name=f"chat-turn-affect-{trigger}-{correlation_id}",
+        )
+    except RuntimeError as exc:
+        logger.warning(
+            "[HUB] chat_turn_affect_not_scheduled trigger=%s corr=%s error=%s",
+            trigger,
+            correlation_id,
+            exc,
+        )
+        return None
     _INFLIGHT.add(task)
     task.add_done_callback(_INFLIGHT.discard)
     logger.info(

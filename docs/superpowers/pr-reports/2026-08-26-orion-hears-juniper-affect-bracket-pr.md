@@ -17,6 +17,10 @@
 - **Fixed a latent crash** introduced mid-change and caught by the existing
   suite: the new `_normalize_trigger` set-membership test raised `TypeError`
   on unhashable input.
+- **Made the join durable.** `JuniperMultimodalAffectSQL` had no column for
+  `chat_correlation_id`, and `_write_row` filters payload keys against the
+  mapper's columns — the key would have been silently dropped. Added the
+  column plus boot-time DDL.
 
 ## Outcome moved
 
@@ -85,7 +89,10 @@ the code:
 - `services/orion-hub/scripts/vision_affect_ambient.py`: the single shared call site gains an optional `chat_correlation_id`, omitted from the body when unset so manual/ambient requests stay byte-identical on the wire.
 - `services/orion-hub/scripts/websocket_handler.py`: pre fire before `run_unified_turn`, post fire in its `finally`.
 - `services/orion-hub/app/settings.py`, `.env_example`, `docker-compose.yml`: `AFFECT_CHAT_TURN_SCOPE`.
-- 4 test files (3 new, 1 renamed-and-annotated).
+- `services/orion-sql-writer/app/models/juniper_multimodal_affect.py`: `chat_correlation_id` column (indexed, nullable).
+- `services/orion-sql-writer/app/main.py`: boot-time `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` + index, following the existing `chat_*` convention (`create_all` does not alter existing tables).
+- `services/orion-sql-writer/README.md`: the new column and why it is a separate join axis.
+- 5 test files (4 new, 1 renamed-and-annotated; plus 3 cases added to the sql-writer shape test).
 
 ## Schema / bus / API changes
 
@@ -136,10 +143,27 @@ services/orion-hub/tests/test_chat_turn_affect.py                   21 passed
 services/orion-hub/tests/test_unified_turn_surface_context.py        8 passed
 services/orion-juniper-affective-state/tests/                       44 passed
 
+services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py
+                                                                    19 passed
+services/orion-sql-writer/tests -k affect                           33 passed
+
 # whole hub suite, branch vs origin/main, identical subset comparison
 branch:        13 failed, 55 passed, 1 skipped   (the 7 files that fail)
 origin/main:   13 failed, 55 passed, 1 skipped   (same 7 files, same tests)
 => all failures pre-existing; none introduced here.
+
+# whole hub suite, full run, both branches
+branch:        34 failed, 1514 passed, 5 skipped
+origin/main:   33 failed, 1487 passed, 5 skipped
+
+The +27 passed are this patch's new tests. The failure-set DIFF is the
+honest part: 20 tests fail ONLY on the baseline run and 1 fails ONLY on the
+branch run -- a set that differs in BOTH directions is test-ordering
+pollution in this suite, not a signal about the diff. The single
+branch-only failure
+(test_substrate_mutation_manual_route_routing.py::test_routing_manual_apply_changes_real_live_routing_surface)
+was run in isolation on both: 1 passed on origin/main, 1 passed on the
+branch. Order-dependent flake, pre-existing, unrelated.
 
 # also confirmed pre-existing on origin/main:
 services/orion-cortex-exec/tests/test_situation_prompt_integration.py
@@ -206,10 +230,26 @@ docker compose --env-file .env \
   -f services/orion-juniper-affective-state/docker-compose.yml up -d --build
 ```
 
-Both must be redeployed. Hub alone would send `chat_turn_pre` to an affect
-service whose `CaptureAndAssessRequest` still rejects it — `extra="ignore"`
-would drop `chat_correlation_id` silently and the Literal would 422 the
-trigger.
+```bash
+# orion-sql-writer (applies the boot-time ALTER on startup)
+cd /mnt/scripts/Orion-Sapienform-orion-hears-juniper-affect-bracket
+bash scripts/safe_docker_build.sh orion-sql-writer up -d --build
+```
+
+**Order matters.** Deploy `orion-juniper-affective-state` and
+`orion-sql-writer` BEFORE Hub:
+
+- Hub alone would send `chat_turn_pre` to an affect service whose
+  `CaptureAndAssessRequest` still rejects it — `extra="ignore"` drops
+  `chat_correlation_id` silently and the `Literal` 422s the trigger.
+- The affect service alone, publishing a `chat_correlation_id` an
+  un-migrated `orion-sql-writer` has no column for, is safe in that
+  direction (`_write_row` filters it out) — but the *reverse* is not: a
+  sql-writer running the new model against a table lacking the column
+  raises `UndefinedColumn`, which its handlers do not catch, halting ALL
+  `juniper_multimodal_affect_log` writes. The boot-time DDL is what closes
+  that, so sql-writer must be restarted (not just rebuilt) for the ALTER to
+  run.
 
 ## Risks / concerns
 

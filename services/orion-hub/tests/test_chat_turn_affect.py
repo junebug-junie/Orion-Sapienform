@@ -251,6 +251,23 @@ def test_inflight_task_is_strongly_referenced_then_released(monkeypatch):
     assert chat_turn_affect._INFLIGHT == set()
 
 
+def test_fire_never_raises_when_no_loop_is_running():
+    """The post-turn call site is inside a `finally`. If fire() raised there
+    it would REPLACE the exception the turn was already unwinding, turning a
+    real turn failure into a misleading affect error. Called with no running
+    event loop, asyncio.create_task raises RuntimeError -- fire() must
+    swallow it and return None instead."""
+    assert (
+        chat_turn_affect.fire(
+            settings=_settings(),
+            trigger=chat_turn_affect.TRIGGER_POST,
+            correlation_id="corr-noloop",
+            is_voice_turn=True,
+        )
+        is None
+    )
+
+
 def test_manual_and_ambient_request_bodies_are_unchanged(monkeypatch):
     """chat_correlation_id must be OMITTED, not sent as null, for the two
     pre-existing callers -- so their wire format is byte-identical to

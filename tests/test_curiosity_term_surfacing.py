@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from orion.curiosity.term_surfacing import (
     MIN_LIFT,
     MIN_RECENT_COUNT,
@@ -123,6 +125,96 @@ def test_worktree_and_branch_shaped_tokens_are_never_subjects() -> None:
     assert _terms(report) & set(noisy) == set()
 
 
+def test_the_count_bars_are_pinned_to_their_actual_values() -> None:
+    """Review finding 2026-08-26: the two bar tests below express their
+    fixtures as `MIN_X - 1`, so they move WITH the constant -- setting
+    MIN_RECENT_COUNT to 1 makes the fixture contain zero mentions and the test
+    passes vacuously. A test that imports the constant it exists to pin cannot
+    pin it."""
+    assert MIN_RECENT_COUNT == 5
+    assert MIN_RECENT_MESSAGES == 3
+    assert MIN_LIFT == 3.0
+
+
+def test_the_count_bar_is_inclusive_at_exactly_the_threshold() -> None:
+    """Off-by-one: `count < MIN_RECENT_COUNT` must reject 4 and accept 5."""
+    base = ["unrelated filler words here"] * 60
+    at_bar = _report(recent=[f"kestrel circling overhead {i}" for i in range(5)], baseline=base)
+    below = _report(recent=[f"kestrel circling overhead {i}" for i in range(4)], baseline=base)
+    assert "kestrel" in _terms(at_bar)
+    assert "kestrel" not in _terms(below)
+
+
+def test_the_message_bar_is_inclusive_at_exactly_the_threshold() -> None:
+    base = ["unrelated filler words here"] * 60
+    at_bar = _report(recent=["kestrel kestrel"] * 3, baseline=base)
+    below = _report(recent=["kestrel kestrel kestrel"] * 2, baseline=base)
+    assert "kestrel" in _terms(at_bar)
+    assert "kestrel" not in _terms(below)
+
+
+def test_the_lift_arithmetic_is_hand_checkable() -> None:
+    """`expected = (baseline_count / baseline_tokens) * recent_tokens`.
+
+    Hand-computed against the numbers the report itself reports, so this fails
+    if the formula changes even when the pass/fail verdict happens not to."""
+    messages = [(YESTERDAY, "kestrel " * 20)] * 5
+    messages += [(YESTERDAY, _FILLER)] * 40
+    messages += [(LONG_AGO, "kestrel")] * 10
+    messages += [(LONG_AGO, _FILLER)] * 400
+    report = build_surfacing_report(messages, now=NOW)
+    found = next(t for t in report.terms if t.term == "kestrel")
+    expected = (found.baseline_count / report.baseline_tokens) * report.recent_tokens
+    assert found.expected_count == pytest.approx(expected)
+    assert found.lift == pytest.approx(found.recent_count / expected)
+    # And the rate normalisation is genuinely doing work: dropping it (i.e.
+    # `expected = baseline_count`) would give a materially different number.
+    assert found.expected_count != pytest.approx(float(found.baseline_count))
+
+
+def test_the_underpowered_thresholds_are_pinned() -> None:
+    """Only "always False" was caught before; the specific numbers were not."""
+    from orion.curiosity.term_surfacing import build_surfacing_report as build
+
+    just_under = build(
+        [(YESTERDAY, _FILLER)] * 16 + [(LONG_AGO, _FILLER)] * 400, now=NOW
+    )
+    assert just_under.recent_tokens < 200 and just_under.underpowered
+    just_over = build(
+        [(YESTERDAY, _FILLER)] * 20 + [(LONG_AGO, _FILLER)] * 400, now=NOW
+    )
+    assert just_over.recent_tokens >= 200 and not just_over.underpowered
+    thin_baseline = build(
+        [(YESTERDAY, _FILLER)] * 40 + [(LONG_AGO, _FILLER)] * 100, now=NOW
+    )
+    assert thin_baseline.baseline_tokens < 2000 and thin_baseline.underpowered
+
+
+def test_window_boundaries_do_not_double_count() -> None:
+    """`since <= stamp < until` -- a message exactly on the recent boundary
+    belongs to exactly one window."""
+    boundary = NOW - timedelta(hours=24)
+    messages = [(boundary, "kestrel " * 5)] * 5
+    messages += [(YESTERDAY, _FILLER)] * 40 + [(LONG_AGO, _FILLER)] * 400
+    report = build_surfacing_report(messages, now=NOW)
+    total = report.recent_messages + report.baseline_messages
+    assert total == 445, f"a boundary message was counted twice or not at all: {total}"
+
+
+def test_the_limit_actually_truncates() -> None:
+    """The old limit test asserted `<= 4` on a fixture producing fewer than 4,
+    so removing the slice entirely survived."""
+    words = [
+        "kestrel", "gannet", "petrel", "fulmar", "shrike", "merlin",
+        "osprey", "curlew", "godwit", "avocet",
+    ]
+    recent = [f"{w} " * 6 for w in words] * 4
+    unlimited = _report(recent=recent, baseline=["filler words here"] * 60, limit=50)
+    assert len(unlimited.terms) > 4, "fixture must produce more candidates than the limit"
+    limited = _report(recent=recent, baseline=["filler words here"] * 60, limit=4)
+    assert len(limited.terms) == 4
+
+
 def test_a_term_said_only_a_few_times_does_not_surface() -> None:
     said = MIN_RECENT_COUNT - 1
     report = _report(
@@ -142,22 +234,37 @@ def test_a_term_below_the_message_bar_does_not_surface() -> None:
 
 
 def test_a_busy_day_alone_does_not_surface_everything() -> None:
-    """The statistic is a RATE, not a count. The same conversation at ten times
-    the volume must not make every word in it look like a new obsession.
+    """The statistic is a RATE, not a count -- `expected = (baseline_count /
+    baseline_tokens) * recent_tokens`, the single load-bearing line in the
+    module.
 
-    Built WITHOUT the shared `_report` padding on purpose: that helper pads the
-    two windows unequally (40 vs 400 filler messages), which by itself dilutes
-    the baseline and lifts every real term's recent share. That asymmetry is
-    fine for the other fixtures -- it is what makes a genuinely-new term stand
-    out -- but it would make this test pass or fail for the wrong reason. Here
-    both windows must have IDENTICAL composition and differ only in size, which
-    is the actual claim being tested."""
+    THE RECENT WINDOW MUST BE THE BIG ONE. Review finding 2026-08-26: this test
+    was built with the BASELINE as the large window (100 recent vs 1000
+    baseline), which means deleting rate normalisation entirely
+    (`expected = baseline_count`) still yielded lift = 100/1000 = 0.1, below the
+    bar, and the test passed. A "busy day" is by definition a day when the
+    RECENT window is the large one -- inverted, the mutant yields lift = 10.0
+    and surfaces three words from a conversation that never changed."""
     line = "the usual thing we always talk about here"
-    messages = [(YESTERDAY, line) for _ in range(100)]
-    messages += [(LONG_AGO, line) for _ in range(1000)]
+    messages = [(YESTERDAY, line) for _ in range(1000)]
+    messages += [(LONG_AGO, line) for _ in range(700)]
     report = build_surfacing_report(messages, now=NOW)
     assert not report.underpowered, "fixture must be big enough to be measurable"
+    assert report.recent_tokens > report.baseline_tokens, (
+        "the RECENT window must be the larger one or this cannot catch the "
+        "mutation it exists for"
+    )
     assert report.terms == [], f"same conversation, more of it, surfaced: {_terms(report)}"
+
+
+def test_the_same_conversation_at_lower_volume_also_surfaces_nothing() -> None:
+    """The mirror of the above -- a quiet day is not a collapse."""
+    line = "the usual thing we always talk about here"
+    messages = [(YESTERDAY, line) for _ in range(700)]
+    messages += [(LONG_AGO, line) for _ in range(1000)]
+    report = build_surfacing_report(messages, now=NOW)
+    assert not report.underpowered
+    assert report.terms == []
 
 
 def test_stopwords_never_surface() -> None:

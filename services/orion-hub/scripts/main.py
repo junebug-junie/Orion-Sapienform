@@ -279,7 +279,9 @@ biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 bus_synaptic_trigger_notifier: Optional[BusSynapticTriggerNotifier] = None
 
-def _build_curiosity_corpus_reader(*, ttl_sec: float, projects_root: str):
+def _build_curiosity_corpus_reader(
+    *, ttl_sec: float, projects_root: str, project_allow: str = ""
+):
     """TTL-cached reader for Juniper's own typed words.
 
     Two things this must not do, both measured 2026-08-26: parsing the local
@@ -294,7 +296,38 @@ def _build_curiosity_corpus_reader(*, ttl_sec: float, projects_root: str):
     results, hook output, slash-command scaffolding, or assistant text. No new
     collection surface is opened here.
     """
+    from fnmatch import fnmatch
+
     from orion.dev_economics.claude_code_ingest import iter_all_human_messages
+
+    # PROJECT ALLOWLIST. `~/.claude/projects` is mounted wholesale, and
+    # `iter_all_human_messages` walks every project under it. Today that tree
+    # happens to contain only Orion's own directories, so today's exposure is
+    # "Orion's own dev vocabulary enters Orion's own journal" -- which is the
+    # point. But that is true by accident of current usage, not by
+    # construction, and this detector is tuned to surface precisely the thing
+    # that is unusual today. The first Claude Code session on a personal,
+    # medical, financial or third-party-confidential project would make that
+    # project's hottest word a candidate for a journal TITLE and an LLM prompt,
+    # with no config change and no notice.
+    #
+    # This is where the Hub mount genuinely differs from the
+    # orion-cocreation-signals one it mirrors: that service's only output is a
+    # NUMBER ("raw transcript content never leaves this container"), while this
+    # one puts verbatim terms into a prompt and a persisted journal entry. Same
+    # mount, categorically different downstream. Empty = allow everything,
+    # which is the historical behaviour and is what the live value avoids.
+    patterns = [p.strip() for p in (project_allow or "").split(",") if p.strip()]
+
+    def _allowed(path) -> bool:
+        if not patterns:
+            return True
+        try:
+            rel = path.relative_to(projects_root)
+            project = rel.parts[0] if rel.parts else ""
+        except (ValueError, AttributeError):
+            project = ""
+        return any(fnmatch(project, pattern) for pattern in patterns)
 
     cache: dict[str, object] = {"at": 0.0, "messages": []}
 
@@ -307,7 +340,7 @@ def _build_curiosity_corpus_reader(*, ttl_sec: float, projects_root: str):
             messages = [
                 (m.timestamp, m.text)
                 for m in iter_all_human_messages(projects_root)
-                if m.timestamp
+                if m.timestamp and _allowed(m.transcript_path)
             ]
         except Exception:  # noqa: BLE001 -- a corpus read must never break the loop
             logger.warning("curiosity_corpus_read_failed", exc_info=True)
@@ -315,8 +348,13 @@ def _build_curiosity_corpus_reader(*, ttl_sec: float, projects_root: str):
             # reads as `underpowered`, which is honest, but throwing away a
             # good cache on one bad read is worse than using it a little longer.
             return cache["messages"]
-        cache["at"] = now
+        # Messages BEFORE timestamp. Review finding 2026-08-26: written the
+        # other way round, a second caller could observe a fresh timestamp
+        # alongside the stale list and serve stale data for a full TTL. Only
+        # one caller exists today (the loop awaits ticks serially), so this is
+        # latent rather than live -- but the ordering costs nothing to get right.
         cache["messages"] = messages
+        cache["at"] = now
         return messages
 
     return _read
@@ -566,9 +604,11 @@ async def startup_event():
                 term_mark_ttl_sec=settings.HUB_CURIOSITY_INVESTIGATION_TERM_TTL_SEC,
                 recent_hours=settings.HUB_CURIOSITY_INVESTIGATION_RECENT_HOURS,
                 baseline_days=settings.HUB_CURIOSITY_INVESTIGATION_BASELINE_DAYS,
+                timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
                 message_source=_build_curiosity_corpus_reader(
                     ttl_sec=settings.HUB_CURIOSITY_INVESTIGATION_CORPUS_TTL_SEC,
                     projects_root=settings.HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH,
+                    project_allow=settings.HUB_CURIOSITY_INVESTIGATION_PROJECT_ALLOW,
                 ),
                 source_ref=ServiceRef(
                     name=settings.SERVICE_NAME,

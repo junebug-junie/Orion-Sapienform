@@ -51,6 +51,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, Optional, Sequence, Tuple
 from uuid import NAMESPACE_URL, uuid5
 
@@ -75,6 +76,31 @@ _AUTHOR = "orion"
 # reason: rotation/dedup state is ephemeral, and losing it should mean "look
 # again", which is the safe direction to fail.
 _TERM_MARK_PREFIX = "orion:curiosity:investigated:"
+# Cooldown/daily-count state lives in Redis, not in the process. Review finding
+# 2026-08-26: both were plain instance fields, so every Hub restart reset the
+# cooldown to "never" and the daily counter to 0 -- demonstrated live, six
+# consecutive restarts produced six journal entries against a configured cap of
+# 3/day with 4h between. A redeploy is not a licence to investigate again.
+_COOLDOWN_KEY = "orion:curiosity:last_investigation_at"
+_DAILY_COUNT_KEY_PREFIX = "orion:curiosity:count:"
+
+# The turn has to show evidence it actually went and looked. `harness_step_count`
+# is already on the final frame (orion/hub/turn_orchestrator.py) and costs
+# nothing to read.
+#
+# THIS IS THE LOAD-BEARING GATE OF THE WHOLE FEATURE. The prompt asks Orion to
+# only say what a lookup supports, but a prompt is an instruction, not a
+# mechanism: a turn that called no tools and simply wrote four fluent paragraphs
+# about "foveal" from parametric knowledge produces a perfectly well-formed
+# `llm_response` and, without this check, lands in the journal byte-for-byte
+# indistinguishable from a real investigation. That is CLAUDE.md 0A's
+# no-empty-shell-cognition clause verbatim -- "if Orion says it remembered or
+# reflected, there must be inspectable evidence for that claim."
+#
+# 3 rather than 1: a turn that merely answers takes a step or two on its own.
+# The first real live investigation reached 29 steps with Read and ToolSearch,
+# so this bar is far below a genuine run and only excludes the degenerate case.
+MIN_HARNESS_STEPS = 3
 
 
 @dataclass(frozen=True)
@@ -95,6 +121,9 @@ class SignalGateInputs:
     has_signal: bool
     underpowered: bool
     term_recently_investigated: bool
+    # Zero messages parsed at all. Distinct from `underpowered` on purpose --
+    # see `signal_block_reason`.
+    corpus_empty: bool = False
 
 
 def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
@@ -120,10 +149,20 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
 
 def signal_block_reason(inp: SignalGateInputs) -> Optional[str]:
     """First corpus-derived reason this tick must not investigate, or None."""
+    if inp.corpus_empty:
+        # A BROKEN MOUNT, not a quiet fortnight. `iter_all_human_messages` on a
+        # missing root returns [] without raising, so this is the ONLY place
+        # that failure is distinguishable -- and it stays distinguishable only
+        # because it is a separate reason with its own log level. Review finding
+        # 2026-08-26: previously this collapsed into `corpus_underpowered` and
+        # was logged at DEBUG under an INFO root logger, so a broken mount
+        # disabled Orion's curiosity permanently and the only visible symptom
+        # was the absence of journal entries -- which is also what a genuinely
+        # quiet fortnight looks like. Same shape as the 21h vision blackout.
+        return "corpus_empty"
     if inp.underpowered:
-        # NOT the same as "nothing surfaced" -- too little was said for the
-        # comparison to mean anything. Collapsing these two would make a broken
-        # transcript reader indistinguishable from a quiet day.
+        # Real messages, just not enough of them for a rate comparison to mean
+        # anything. Honest, expected, and NOT the same as the case above.
         return "corpus_underpowered"
     if not inp.has_signal:
         return "no_surfaced_term"
@@ -138,6 +177,8 @@ def build_investigation_journal_entry(
     target: SurfacedTerm,
     body_text: str,
     correlation_id: str,
+    harness_step_count: Optional[int] = None,
+    harness_grounding_status: Optional[str] = None,
     created_at: Optional[datetime] = None,
 ) -> JournalEntryWriteV1:
     """Orion's own written result, with the finding that prompted it attached.
@@ -146,14 +187,22 @@ def build_investigation_journal_entry(
     Orion was reacting to, and can check the claim -- an entry that only carries
     the conclusion is not inspectable."""
     stamp = created_at or datetime.now(timezone.utc)
-    body = "\n".join(
-        [
-            "What I noticed:",
-            f"  {target.describe()}",
+    lines = [
+        "What I noticed:",
+        f"  {target.describe()}",
+        "",
+        body_text.strip(),
+    ]
+    if harness_step_count is not None:
+        # The evidence that this was a lookup and not a recollection, recorded
+        # in the artifact itself so the claim stays checkable after the fact.
+        lines += [
             "",
-            body_text.strip(),
+            f"(Investigated over {harness_step_count} harness steps"
+            + (f", grounding: {harness_grounding_status}" if harness_grounding_status else "")
+            + ".)",
         ]
-    )
+    body = "\n".join(lines)
     return JournalEntryWriteV1(
         created_at=stamp,
         author=_AUTHOR,
@@ -183,6 +232,7 @@ class CuriosityInvestigation:
         term_mark_ttl_sec: int,
         recent_hours: float,
         baseline_days: float,
+        timezone_name: str = "UTC",
         message_source: Callable[[], Sequence[Tuple[datetime, str]]],
         source_ref: ServiceRef,
     ) -> None:
@@ -195,6 +245,12 @@ class CuriosityInvestigation:
         self.term_mark_ttl_sec = term_mark_ttl_sec
         self.recent_hours = recent_hours
         self.baseline_days = baseline_days
+        self.timezone_name = timezone_name
+        try:
+            self._tz = ZoneInfo(timezone_name)
+        except Exception:  # noqa: BLE001 -- a bad zone must not stop the loop
+            logger.warning("curiosity_bad_timezone name=%s falling back to UTC", timezone_name)
+            self._tz = timezone.utc
         self._message_source = message_source
         self._source_ref = source_ref
         self._bus: Any = None
@@ -255,7 +311,7 @@ class CuriosityInvestigation:
             self._done_today_date = today
             self._done_today = 0
 
-    def _seconds_since_last(self) -> Optional[float]:
+    def _seconds_since_last_in_process(self) -> Optional[float]:
         if self._last_investigation_monotonic is None:
             return None
         return time.monotonic() - self._last_investigation_monotonic
@@ -273,6 +329,55 @@ class CuriosityInvestigation:
             logger.warning("curiosity_term_mark_read_failed term=%s", term, exc_info=True)
             return False
 
+    def _daily_key(self, now: datetime) -> str:
+        # Keyed on the operator's LOCAL date, not UTC. "3 per day" meaning
+        # 18:00-to-18:00 for someone in MDT is not what the setting says.
+        local = now.astimezone(self._tz) if self._tz else now
+        return f"{_DAILY_COUNT_KEY_PREFIX}{local.date().isoformat()}"
+
+    async def _read_persisted_state(self, now: datetime) -> tuple[Optional[float], int]:
+        """(seconds since last investigation, count so far today) from Redis.
+
+        Fail-open to (None, 0) -- an unreadable store must not silently freeze
+        Orion's curiosity. The per-term mark is the backstop in that case."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return self._seconds_since_last_in_process(), self._done_today
+        since: Optional[float] = None
+        count = 0
+        try:
+            raw = await redis.get(_COOLDOWN_KEY)
+            if raw is not None:
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", errors="replace")
+                last = datetime.fromisoformat(str(raw))
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                since = max(0.0, (now - last).total_seconds())
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_cooldown_read_failed", exc_info=True)
+        try:
+            raw_count = await redis.get(self._daily_key(now))
+            if raw_count is not None:
+                count = int(raw_count)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_daily_count_read_failed", exc_info=True)
+        return since, count
+
+    async def _record_investigation(self, now: datetime) -> None:
+        """Persist the cooldown stamp and bump today's counter."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            # Two days of TTL so the counter cannot outlive its own date key.
+            await redis.setex(_COOLDOWN_KEY, 172800, now.isoformat())
+            key = self._daily_key(now)
+            await redis.incr(key)
+            await redis.expire(key, 172800)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_state_write_failed", exc_info=True)
+
     async def _mark_term(self, term: str, *, now: datetime) -> None:
         redis = getattr(self._bus, "redis", None)
         if redis is None:
@@ -287,17 +392,26 @@ class CuriosityInvestigation:
         now = datetime.now(timezone.utc)
         self._roll_daily_counter(now)
 
+        # Read from Redis, not from instance fields. Review finding 2026-08-26:
+        # both gates were pure in-process state, so a Hub restart reset the
+        # cooldown to "never" and the daily counter to 0 -- six consecutive
+        # restarts produced six journal entries against a configured cap of 3.
+        # `.env_example` states the cap as a guarantee; it has to be one.
+        since_last, done_today = await self._read_persisted_state(now)
         reason = scheduling_block_reason(
             SchedulingGateInputs(
                 enabled=self.enabled,
-                seconds_since_last=self._seconds_since_last(),
+                seconds_since_last=since_last,
                 min_cooldown_sec=self.min_cooldown_sec,
-                done_today=self._done_today,
+                done_today=done_today,
                 daily_cap=self.daily_cap,
             )
         )
         if reason is not None:
-            logger.debug("curiosity_investigation_blocked reason=%s", reason)
+            # INFO, not DEBUG. These fire at most once per tick (5 min), so the
+            # volume is trivial, and a loop whose every refusal is invisible is
+            # indistinguishable from a loop that is dead.
+            logger.info("curiosity_investigation_blocked reason=%s", reason)
             return reason
 
         # Only now is the corpus worth reading. Off the event loop: this is
@@ -309,26 +423,55 @@ class CuriosityInvestigation:
             recent_hours=self.recent_hours,
             baseline_days=self.baseline_days,
         )
-        target = report.terms[0] if report.terms else None
-        term_seen = (
-            await self._term_recently_investigated(target.term) if target else False
-        )
+        # Walk the ranking rather than looking only at rank 1. Review finding
+        # 2026-08-26, demonstrated by replaying the real corpus day by day: on
+        # 2 of 16 otherwise-eligible days the top term was inside its own 7-day
+        # mark and the whole day produced nothing, while a perfectly good rank-2
+        # candidate sat unexamined in the same report -- including 2026-08-20,
+        # the single hottest day in the window ("chat", 546 mentions), lost
+        # because that term had been rank 1 five days earlier.
+        target = None
+        for candidate in report.terms:
+            if not await self._term_recently_investigated(candidate.term):
+                target = candidate
+                break
+        all_marked = bool(report.terms) and target is None
         reason = signal_block_reason(
             SignalGateInputs(
                 has_signal=report.has_signal,
                 underpowered=report.underpowered,
-                term_recently_investigated=term_seen,
+                term_recently_investigated=all_marked,
+                corpus_empty=report.recent_messages == 0 and report.baseline_messages == 0,
             )
         )
         if reason is not None or target is None:
-            logger.debug("curiosity_investigation_blocked reason=%s", reason)
-            return reason or "no_surfaced_term"
+            reason = reason or "no_surfaced_term"
+            if reason == "corpus_empty":
+                # Loudest of the refusals: this one means Orion cannot see
+                # anything at all, and the usual cause is the read-only mount
+                # of ~/.claude/projects being absent or remapped.
+                logger.warning(
+                    "curiosity_investigation_blocked reason=corpus_empty -- parsed 0 "
+                    "messages; check the ~/.claude/projects read-only mount"
+                )
+            else:
+                logger.info(
+                    "curiosity_investigation_blocked reason=%s recent_msgs=%s "
+                    "recent_tokens=%s baseline_tokens=%s candidates=%s",
+                    reason,
+                    report.recent_messages,
+                    report.recent_tokens,
+                    report.baseline_tokens,
+                    len(report.terms),
+                )
+            return reason
 
         # Marked and counted BEFORE the turn, so a turn that errors, times out,
         # or gets deferred by Thought still consumes its slot. Otherwise a term
         # that reliably fails would be retried every tick forever.
         self._last_investigation_monotonic = time.monotonic()
-        self._done_today += 1
+        self._done_today = done_today + 1
+        await self._record_investigation(now)
         await self._mark_term(target.term, now=now)
 
         # UUID-shaped, because `BaseEnvelope.correlation_id` validates as one --
@@ -357,7 +500,14 @@ class CuriosityInvestigation:
             )
             return "empty_generation"
 
-        await self._journal(report=report, target=target, text=text, correlation_id=correlation_id)
+        await self._journal(
+            report=report,
+            target=target,
+            text=text,
+            correlation_id=correlation_id,
+            harness_step_count=debug.get("harness_step_count"),
+            harness_grounding_status=debug.get("harness_grounding_status"),
+        )
         logger.info(
             "curiosity_investigation_journaled term=%s chars=%s corr=%s",
             target.term,
@@ -420,7 +570,34 @@ class CuriosityInvestigation:
         if looks_like_error_text(text):
             logger.warning("curiosity_error_shaped_text corr=%s", correlation_id)
             return "", {"error": "error_shaped_text", "elapsed_sec": elapsed}
-        return text, {"elapsed_sec": elapsed}
+
+        # Did it actually look? See MIN_HARNESS_STEPS.
+        steps = final.get("harness_step_count")
+        grounding = final.get("harness_grounding_status")
+        try:
+            step_count = int(steps) if steps is not None else 0
+        except (TypeError, ValueError):
+            step_count = 0
+        if step_count < MIN_HARNESS_STEPS:
+            logger.warning(
+                "curiosity_no_lookup corr=%s steps=%s grounding=%s chars=%s -- "
+                "refusing to journal a turn that did not look anything up",
+                correlation_id,
+                step_count,
+                grounding,
+                len(text),
+            )
+            return "", {
+                "error": "no_lookup",
+                "harness_step_count": step_count,
+                "harness_grounding_status": grounding,
+                "elapsed_sec": elapsed,
+            }
+        return text, {
+            "elapsed_sec": elapsed,
+            "harness_step_count": step_count,
+            "harness_grounding_status": grounding,
+        }
 
     async def _journal(
         self,
@@ -429,9 +606,16 @@ class CuriosityInvestigation:
         target: SurfacedTerm,
         text: str,
         correlation_id: str,
+        harness_step_count: Optional[int] = None,
+        harness_grounding_status: Optional[str] = None,
     ) -> None:
         entry = build_investigation_journal_entry(
-            report=report, target=target, body_text=text, correlation_id=correlation_id
+            report=report,
+            target=target,
+            body_text=text,
+            correlation_id=correlation_id,
+            harness_step_count=harness_step_count,
+            harness_grounding_status=harness_grounding_status,
         )
         try:
             await self._bus.publish(

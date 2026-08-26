@@ -85,6 +85,19 @@ _STOPWORDS = frozenset(
     thing things other same does doesnt didnt isnt arent lets make gonna maybe
     even said says tell look
     """.split()
+) | frozenset(
+    # The tokenizer keeps apostrophes (`[a-zA-Z][a-zA-Z'-]{3,}`), so it emits
+    # "don't", not "dont". Review finding 2026-08-26: eight entries above were
+    # written in the stripped form and were therefore unreachable -- live
+    # `_tokenize("I don't think that doesn't work")` yields ["don't",
+    # "doesn't"]. Low impact (contractions are frequent in the baseline too, so
+    # MIN_LIFT rejects them) but they were live candidates the author believed
+    # were filtered. Both spellings are now listed rather than changing the
+    # tokenizer, which would also drop genuine hyphenated terms.
+    """
+    don't can't won't that's doesn't didn't isn't aren't wasn't weren't
+    haven't hasn't hadn't wouldn't couldn't shouldn't you're they're
+    """.split()
 )
 
 

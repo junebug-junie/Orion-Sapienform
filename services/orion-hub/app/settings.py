@@ -513,6 +513,13 @@ class Settings(BaseSettings):
         default="/home/athena/.claude/projects",
         alias="HUB_CURIOSITY_INVESTIGATION_PROJECTS_PATH",
     )
+    # Comma-separated fnmatch patterns of project directory names under
+    # PROJECTS_PATH that the detector may read. Empty = every project, which is
+    # the historical behaviour and NOT what the live value should be -- see the
+    # reader's own comment in scripts/main.py for why this exists.
+    HUB_CURIOSITY_INVESTIGATION_PROJECT_ALLOW: str = Field(
+        default="", alias="HUB_CURIOSITY_INVESTIGATION_PROJECT_ALLOW"
+    )
     # Re-parse the transcript corpus at most this often. The parse is the
     # expensive part; the loop's own cooldown means a stale-by-minutes corpus
     # cannot change any decision.

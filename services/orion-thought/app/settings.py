@@ -58,7 +58,13 @@ class ThoughtSettings(BaseSettings):
         validation_alias=AliasChoices("CHANNEL_CORTEX_EXEC_RESULT_PREFIX", "CORTEX_EXEC_RESULT_PREFIX"),
         alias="CHANNEL_CORTEX_EXEC_RESULT_PREFIX",
     )
-    stance_react_timeout_sec: float = Field(120.0, alias="STANCE_REACT_TIMEOUT_SEC")
+    # 360, not 120 (2026-08-26). A shorter default is NOT the safe direction for
+    # this key: an under-budgeted stance does not fail closed, it reports
+    # `turn_deferred` -- which reads as "Orion judged the moment wrong" and is
+    # indistinguishable from it at the Hub layer. Measured live: a stance that
+    # completed correctly at 122s was thrown away at 120.006s. Must stay under
+    # Hub's own TIMEOUT_SEC=400 outer wait. See services/orion-thought/.env_example.
+    stance_react_timeout_sec: float = Field(360.0, alias="STANCE_REACT_TIMEOUT_SEC")
 
     # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
     reverie_enabled: bool = Field(False, alias="ORION_REVERIE_ENABLED")

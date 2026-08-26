@@ -68,17 +68,32 @@ subject** -- not a growing gallery, not a stranger tracker.
   `task_type=identity_face` carries the real result.
 
 **Enrollment** (must be run by hand, with real photos -- ships with zero
-enrolled by default):
+enrolled by default). Two ways to run it, since the container has no
+arbitrary host path mounted -- photos have to reach it through the one
+read-write mount it does have:
 
 ```bash
+# Locally, against a dev checkout with facenet-pytorch installed:
 cd services/orion-vision-host
 python3 scripts/enroll_identity_face.py --subject juniper photo1.jpg photo2.jpg photo3.jpg
+
+# Against the real running container: place photos under the existing
+# host-side bind mount first, then run the script inside the container.
+cp photo1.jpg photo2.jpg photo3.jpg /mnt/telemetry/orion-vision-host/enrollment_photos/
+docker exec orion-athena-vision-host python3 scripts/enroll_identity_face.py \
+  --subject juniper \
+  /mnt/telemetry/orion-vision-host/enrollment_photos/photo1.jpg \
+  /mnt/telemetry/orion-vision-host/enrollment_photos/photo2.jpg \
+  /mnt/telemetry/orion-vision-host/enrollment_photos/photo3.jpg
 ```
 
 Writes one JSON file (mean embedding across all usable photos) to
 `IDENTITY_GALLERY_DIR` (default `/mnt/telemetry/orion-vision-host/identity_gallery`,
 the existing bind mount -- no new volume). Re-running with the same
-`--subject` overwrites the entry (re-enrollment, not accumulation).
+`--subject` overwrites the entry (re-enrollment, not accumulation). Delete
+the `enrollment_photos/` source images afterward if they shouldn't
+persist on disk -- the script only ever reads them, never copies or
+retains them itself.
 
 **Unenrolled behavior:** `task_type=identity_face` still runs face
 detection; every candidate comes back `{"subject": "unknown", "similarity":

@@ -394,30 +394,85 @@ profiles:
   # juniper-identity-and-situated-observation-design.md section 3.1's
   # blast-radius-checked table. identity_face is the one survivor: that same
   # doc's verdict is IMPLEMENT, not delete ("the one thing that cannot leave
-  # the node") -- its section 4 is the design for filling this in. Still
-  # `enabled: false` because that section is proposal-mode per AGENTS.md
-  # section 0A (identity), not yet implemented or approved.
+  # the node") -- its section 4 is the design for filling this in.
+  #
+  # Implemented 2026-08-26, Juniper's direct go-ahead ("yeah build it"),
+  # satisfying AGENTS.md section 0A's "unless Juniper directly asks to
+  # implement" exception to proposal-mode-first. Real MTCNN + InceptionResnetV1
+  # (facenet-pytorch, VGGFace2-pretrained) -- see app/identity_gallery.py and
+  # app/runner.py's _run_identity_face. Non-negotiables from section 4 are
+  # enforced in code, not just in this comment: ONE enrolled subject, gallery
+  # never grows at runtime (only scripts/enroll_identity_face.py, a human-run
+  # CLI, can write a gallery entry), non-matches are never stored, `unsure`
+  # is a real reachable third band (see probable_threshold/match_threshold
+  # below), and the result is always a hypothesis dict
+  # ({subject, similarity, state}), never a bare label. Two rounds of code
+  # review (findings fixed, mutation-tested, live-verified against the real
+  # production container) -- see the PR report for the full record.
+  #
+  # `enabled: true` -- Juniper's explicit call, 2026-08-26 ("shipping
+  # enabled true... there should be some affective state that has photos
+  # of me"), after both open items below were addressed rather than left
+  # blocking:
+  #   1. match_threshold/probable_threshold WERE unvalidated against real
+  #      enrolled photos when this comment first shipped disabled. Closed
+  #      the same day: triggered a real, live capture_and_assess() on
+  #      orion-juniper-affective-state (the SAME already-approved, already-
+  #      running capture path Hub's own "Check now" button uses -- no new
+  #      capture infrastructure), fetched the resulting video from
+  #      orion-percept-store by its own reported sha256 (hash re-verified
+  #      on receipt, chain-of-custody), extracted 6 real frames, enrolled
+  #      via scripts/enroll_identity_face.py (all 6 frames: real face
+  #      detected at 0.996-0.9996 confidence each). AffectGPT's own face
+  #      detector independently found a face in 85% of that clip's frames
+  #      (face_detection.detection_rate=0.8485), corroborating a real,
+  #      usable subject before enrollment ever ran. Then real end-to-end
+  #      validation, not just enrollment: a HELD-OUT frame from the same
+  #      clip (not one of the 6 enrollment frames) matched at
+  #      similarity=0.9585, state="probable" -- comfortably clearing
+  #      probable_threshold (0.55) with real margin. Negative control: the
+  #      room's own (empty at the time) ceiling-camera frame correctly
+  #      returned zero candidates (no_face_detected), not a false positive.
+  #      Both directions verified with real data, not assumed.
+  #   2. orion-vision-frame-router (and any orion:vision:reply:* wildcard
+  #      subscriber) still fully Pydantic-deserializes every identity_face
+  #      reply before checking relevance, then discards it -- real,
+  #      transient (never logged/persisted/forwarded), NOT closed by this
+  #      patch. Accepted as a known, documented residual exposure rather
+  #      than blocking on it -- Juniper's own call to make, not mine to
+  #      keep gating on.
   - name: identity_face
-    enabled: false
+    enabled: true
     warm_on_start: false
     kind: identity
     backend: custom
     description: >
-      Face embeddings + identity hypotheses. Keep disabled until privacy policy is locked.
-    model_id: "REPLACE_ME/face_embedder"
+      Face detection + identity hypothesis for the one enrolled subject.
+      Returns {subject, similarity, state} per detected face, never a bare
+      label. Empty/unenrolled gallery degrades to "not_enrolled", not an
+      error -- this ships with zero real photos of anyone.
+    model_id: "facenet-pytorch/vggface2"
     device: auto
     dtype: auto
     cost:
-      vram_estimate_mb: 2600
-      latency_class: medium
-      gpu_class: medium
+      vram_estimate_mb: 600
+      latency_class: low
+      gpu_class: light
     params:
+      # Below this cosine similarity: state="unsure", subject="unknown".
       match_threshold: 0.35
+      # At/above this: state="probable". Between the two: state="possible".
+      probable_threshold: 0.55
+      # Reinterpreted from "gallery candidate count" (the gallery is capped
+      # at exactly one subject by contract) to "max detected faces per
+      # frame to report a hypothesis for".
       max_candidates: 5
-      store_embeddings: true
     outputs:
       identities:
         include_candidates: true
         include_confidence: true
-        include_embedding_ref: true
+        # Embedding vectors are never returned or stored for any request --
+        # see app/identity_gallery.py's module docstring. This flag stays
+        # false; it is not a toggle, it documents the contract.
+        include_embedding_ref: false
 

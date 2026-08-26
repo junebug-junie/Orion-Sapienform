@@ -48,6 +48,13 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY services/orion-vision-host/app ./app
 COPY orion ./orion
 
+# scripts/ (enroll_identity_face.py, publish_test_task.py, tap_artifacts.py,
+# verify_cortex_vision.py) -- real bug, caught live 2026-08-26: this
+# directory was never copied into the image at all, so the README's own
+# documented `docker exec ... python3 scripts/enroll_identity_face.py`
+# enrollment path silently could not work against any real deployment.
+COPY services/orion-vision-host/scripts ./scripts
+
 # Copy ROOT config into image (no volume mount)
 COPY config/vision_profiles.yaml /app/config/vision_profiles.yaml
 

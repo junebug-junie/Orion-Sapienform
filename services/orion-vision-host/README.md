@@ -34,6 +34,141 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 
 Env: `VISION_VLM_MODEL_ID`, `VISION_VLM_TEMPERATURE` (default `0.2`).
 
+## Identity hypothesis (`identity_face`)
+
+`docs/superpowers/specs/2026-08-21-seeing-juniper-identity-and-situated-observation-design.md`
+section 4. Real face detection + embedding (MTCNN + InceptionResnetV1,
+VGGFace2-pretrained, `facenet-pytorch`) matched against **one enrolled
+subject** -- not a growing gallery, not a stranger tracker.
+
+**Non-negotiables, enforced in code, not just here:**
+
+- **One enrolled subject. Gallery does not grow at runtime.**
+  `app/identity_gallery.py::save_gallery_embedding` is only ever called
+  from `scripts/enroll_identity_face.py` (a human-run CLI) --
+  `tests/test_identity_gallery_never_grows_at_runtime.py` structurally
+  pins that no file under `app/` references it.
+- **Non-matches are never stored.** A query embedding is compared in
+  memory and discarded; it is never written to disk or returned to the
+  caller, matched or not.
+- **`unsure` is a real, reachable third state.** `match_embedding` returns
+  `{"subject", "similarity", "state"}` with `state` one of
+  `probable` / `possible` / `unsure` -- never a binary match/no-match. A
+  `subject` other than `"unknown"` is returned only for `probable`/`possible`.
+- **Never reaches the general artifact broadcast.** `CHANNEL_VISIONHOST_PUB`
+  (`orion:vision:artifacts`) is consumed by `orion-security-watcher`,
+  `orion-vision-window`, and `orion-vision-council` (`orion/bus/
+  channels.yaml`) -- none identity-aware or retention-gated. `app/main.py`'s
+  `should_broadcast_artifact()` excludes `identity_face` from both real
+  broadcast call sites (found live, 2026-08-26: the bus-first path and the
+  `/v1/vision/task` HTTP endpoint each had their own, and the second one
+  was still unguarded after the first fix landed --
+  `test_every_publish_artifact_broadcast_call_site_is_guarded` pins both
+  now). Only the direct RPC/HTTP reply to whoever explicitly requested
+  `task_type=identity_face` carries the real result.
+
+**Enrollment** (real photos required -- ships with zero enrolled by
+default; `scripts/` is copied into the image, confirmed live 2026-08-26
+after an earlier version of this Dockerfile omitted it entirely). The
+`/mnt/telemetry/orion-vision-host` host mount is not reliably writable by
+an operator's own shell user (confirmed live: `athena`'s own user got
+`Permission denied` there) -- `docker cp` into the container's own
+filesystem is the tested, working path:
+
+```bash
+# Locally, against a dev checkout with facenet-pytorch installed:
+cd services/orion-vision-host
+python3 scripts/enroll_identity_face.py --subject juniper photo1.jpg photo2.jpg photo3.jpg
+
+# Against the real running container -- docker cp, not the host mount:
+docker exec orion-athena-vision-host mkdir -p /tmp/enrollment_photos
+docker cp photo1.jpg orion-athena-vision-host:/tmp/enrollment_photos/
+docker cp photo2.jpg orion-athena-vision-host:/tmp/enrollment_photos/
+docker cp photo3.jpg orion-athena-vision-host:/tmp/enrollment_photos/
+docker exec orion-athena-vision-host python3 scripts/enroll_identity_face.py \
+  --subject juniper \
+  /tmp/enrollment_photos/photo1.jpg \
+  /tmp/enrollment_photos/photo2.jpg \
+  /tmp/enrollment_photos/photo3.jpg
+docker exec orion-athena-vision-host rm -rf /tmp/enrollment_photos  # cleanup
+```
+
+Writes one JSON file (mean embedding across all usable photos) to
+`IDENTITY_GALLERY_DIR` (default `/mnt/telemetry/orion-vision-host/identity_gallery`,
+the existing bind mount -- no new volume). Re-running with the same
+`--subject` overwrites the entry (re-enrollment, not accumulation). The
+script only ever reads its source images, never copies or retains them
+itself -- the `rm -rf` above is on the operator, matching the real
+enrollment this repo shipped with (see below).
+
+**Where the real enrollment's photos came from:** no photos of Juniper
+were sourced or requested directly. `orion-juniper-affective-state`
+already runs a real, already-approved, already-live capture path (Hub's
+own "Check now" button) -- `POST /v1/juniper/affect/capture_and_assess`
+triggers a real ~8s clip from Juniper's own carbon webcam and returns
+`capture.video_sha256`. That video is fetchable from `orion-percept-store`
+(`GET {PERCEPT_STORE_BASE_URL}/{sha256}`, hash re-verified on receipt) the
+same way `orion-juniper-affective-state`'s own `_fetch_percept` does.
+`ffmpeg -i clip.mp4 -vf "select='not(mod(n\,40))'" -vsync vfr frame_%02d.jpg`
+extracted 6 evenly-spaced frames, enrolled via `docker cp` + the script
+above, then deleted from the container (`rm -rf /tmp/enrollment_photos`).
+No new capture infrastructure -- this reuses a capability that already
+exists and is already consented to for a different purpose.
+
+**Unenrolled behavior:** `task_type=identity_face` still runs face
+detection; every candidate comes back `{"subject": "unknown", "similarity":
+null, "state": "unsure", "reason": "not_enrolled"}` and the artifact's
+`gallery_enrolled` flag is `false` -- not an error.
+
+**Thresholds** (`config/vision_profiles.yaml`'s `identity_face.params`):
+`match_threshold` (below = `unsure`) and `probable_threshold` (at/above =
+`probable`; between the two = `possible`). Live-validated 2026-08-26 against
+real enrolled photos (a real `orion-juniper-affective-state` capture,
+6 frames enrolled, a held-out 7th frame from the same clip queried):
+`similarity=0.9585, state="probable"` -- comfortably clears
+`probable_threshold` (0.55) with real margin. Negative control (the empty
+room's own ceiling-camera frame) correctly returned zero candidates
+(`no_face_detected`), not a false positive. Both directions checked, not
+just the positive case.
+
+**Deviation from the design doc's literal prose, noted honestly:** the doc
+describes running face detection on the person crop GroundingDINO already
+produces. `_run_identity_face` runs MTCNN directly on the full frame
+instead -- `runner.py`'s pipeline steps do not currently pass one step's
+artifacts into the next step's request (`_run_pipeline` hands every step
+the same original request dict), and building that plumbing is separate,
+larger, riskier work than this patch's scope. MTCNN already does its own
+face localization on a full image without needing a person crop first, so
+this is a real simplification, not a silently dropped requirement.
+
+**Known, accepted residual exposure:** `orion-vision-frame-router` (and any
+other `orion:vision:reply:*` wildcard subscriber) fully Pydantic-
+deserializes every `identity_face` reply -- including the real
+subject/similarity/state hypothesis -- before checking whether the
+correlation id belongs to a request it made, then discards it. Confirmed
+live in `dispatcher.py`. Real, but transient: never logged, persisted, or
+forwarded downstream. `CHANNEL_VISIONHOST_PUB`'s broadcast is closed (see
+the non-negotiable above, content-based not just task-type-keyed); this
+reply-channel fan-out is a separate, narrower, still-open surface --
+closing it properly needs either a non-wildcarded reply lane for this
+task_type or a redesign of frame-router's own subscribe-then-filter
+pattern, both out of scope here. Accepted as a known trade-off (Juniper's
+explicit call, 2026-08-26) rather than left unmentioned.
+
+**Not built here:** wiring the resulting hypothesis into
+`orion-vision-council`'s evidence-grounding context as the design doc's
+section 4 describes ("passed to the gateway call as grounding context,
+exactly like hard labels") -- a real next integration step, in a
+different service. Also not built: a `vision_events` table-level retention
+policy (design doc section 6.5: "identity-bearing rows are the most
+sensitive this system will hold. Ships WITH section 4, not after"). The
+immediate leak path that requirement was guarding against -- identity data
+reaching every consumer of the general artifact broadcast unfiltered -- is
+closed; what remains open is retention for identity data that reaches
+`vision_events` through some *future* real integration (e.g. the
+council-grounding wiring above), which does not exist yet either. Flagged,
+not silently skipped.
+
 ### VLM model families
 
 `app/vlm_family.py` is the single source of truth both `model_manager.py`

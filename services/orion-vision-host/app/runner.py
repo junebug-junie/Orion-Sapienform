@@ -456,6 +456,9 @@ class VisionRunner:
         if p.kind == "vlm":
             return self._run_vlm_vqa(p, request, device, warnings)
 
+        if p.kind == "identity":
+            return self._run_identity_face(p, request, device, warnings)
+
         # Everything else remains contract-only for now (no fake inference).
         warnings.append(f"kind not implemented yet: {p.kind}")
         return {
@@ -532,6 +535,112 @@ class VisionRunner:
                 # cosine similarity get a real unit vector, not a raw one.
                 "vector": [float(x) for x in vec.tolist()],
             }
+        }
+
+    # -----------------------------------
+    # Real identity hypothesis (face detect + embed + gallery match)
+    # -----------------------------------
+    def _run_identity_face(
+        self, p: ProfileDef, request: Dict[str, Any], device: str, warnings: List[str]
+    ) -> Dict[str, Any]:
+        """docs/superpowers/specs/2026-08-21-seeing-juniper-identity-and-
+        situated-observation-design.md section 4. Returns hypotheses, never
+        labels -- see app/identity_gallery.py's own docstring for the
+        non-negotiables this enforces (one enrolled subject, gallery does
+        not grow at runtime, non-matches never stored, `unsure` must stay
+        reachable via a real three-band classification, not a binary
+        match/no-match).
+
+        Runs MTCNN directly on the full frame rather than cropping a
+        GroundingDINO "person" box first, as the design doc's prose
+        describes -- runner.py's pipeline steps do not currently pass one
+        step's artifacts into the next step's request (`_run_pipeline`
+        hands every step the SAME original request dict), and building
+        that plumbing is separate, larger, riskier work than this patch's
+        scope. MTCNN already does its own face localization on a full
+        image without needing a person crop first, so this is a real
+        simplification, not a shortcut that silently drops functionality.
+        """
+        from .identity_gallery import load_gallery_embedding, match_embedding
+
+        img = _load_image_from_request(request)
+
+        dtype = self._resolve_dtype(p)
+        model, mtcnn = self.models.load_face_identity_models(
+            profile_name=p.name, device=device, dtype=dtype, torch_home=settings.MODEL_CACHE_DIR
+        )
+
+        match_threshold = float(p.params.get("match_threshold", 0.35))
+        probable_threshold = float(p.params.get("probable_threshold", 0.55))
+        # Reinterpreted from this profile's original design (a candidate
+        # gallery size) -- the gallery is now capped at exactly one
+        # enrolled subject by contract, so this instead bounds how many
+        # DETECTED FACES in one frame get an identity hypothesis each.
+        max_faces = int(p.params.get("max_candidates", 5))
+
+        enrolled_subject = settings.IDENTITY_ENROLLED_SUBJECT
+        gallery_embedding = load_gallery_embedding(settings.IDENTITY_GALLERY_DIR, enrolled_subject)
+        if gallery_embedding is None:
+            warnings.append("identity_gallery_not_enrolled")
+
+        faces, probs = mtcnn(img, return_prob=True)
+        candidates: List[Dict[str, Any]] = []
+
+        if faces is not None:
+            # keep_all=True (model_manager.py's construction) always stacks
+            # detections into a 4D (N, 3, H, W) tensor, even for a single
+            # face -- no 3D single-face case to unwrap here.
+            probs = list(probs)
+            # Sort by detection confidence descending before truncating to
+            # max_faces (review finding, 2026-08-26): MTCNN's own return
+            # order is not confidence-ordered, so a plain faces[:max_faces]
+            # could silently drop the enrolled subject's own face in a
+            # crowded frame in favor of lower-confidence detections that
+            # merely came first.
+            order = sorted(range(len(probs)), key=lambda i: (probs[i] if probs[i] is not None else -1.0), reverse=True)
+            order = order[:max_faces]
+            faces = faces[order]
+            probs = [probs[i] for i in order]
+            if device.startswith("cuda"):
+                # Must match the embedder's own resident dtype (now
+                # dtype-aware per the review finding above) -- a plain
+                # fp32 tensor against fp16 weights raises a dtype
+                # mismatch, unlike the fp32-only path this replaces.
+                model_dtype = next(model.parameters()).dtype
+                faces = faces.to(device=device, dtype=model_dtype)
+            with torch.inference_mode():
+                embeddings = model(faces)
+            embeddings_np = embeddings.detach().float().cpu().numpy()
+
+            for i in range(embeddings_np.shape[0]):
+                result = match_embedding(
+                    embeddings_np[i],
+                    gallery_embedding,
+                    subject=enrolled_subject,
+                    match_threshold=match_threshold,
+                    probable_threshold=probable_threshold,
+                )
+                detect_prob = probs[i] if i < len(probs) else None
+                candidates.append(
+                    {
+                        **result,
+                        "detect_confidence": round(float(detect_prob), 4) if detect_prob is not None else None,
+                    }
+                )
+        else:
+            warnings.append("no_face_detected")
+
+        return {
+            "configured": True,
+            "implemented": True,
+            "kind": "identity",
+            "model_id": "facenet-pytorch/vggface2",
+            "device": device,
+            "identities": {
+                "candidates": candidates,
+                "enrolled_subject": enrolled_subject,
+                "gallery_enrolled": gallery_embedding is not None,
+            },
         }
 
     # -----------------------------------

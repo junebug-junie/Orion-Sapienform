@@ -108,51 +108,145 @@ model-quality behavior an eval would measure.
 ## Docker/build/smoke checks
 
 ```text
+# Pre-review-fix build/deploy (superseded by the post-fix one below):
+docker compose ... build   => built clean, image sha256:f06faec711ec...
+docker compose ... up -d   => TTS confirmed working, audio_b64 len=187152
+
+# Post-review-fix rebuild/redeploy (the version actually shipping):
 docker compose --env-file <primary>/.env --env-file services/orion-whisper-tts/.env \
   -f services/orion-whisper-tts/docker-compose.yml config
-  => CUDA_WATCHDOG_ENABLED: "true", CUDA_WATCHDOG_FAILURE_THRESHOLD: "2",
-     CUDA_WATCHDOG_POLL_SEC: "30"   (resolves correctly through env_file -> compose -> settings)
+  => stop_grace_period: 2m30s, healthcheck present (resolves correctly)
 
 docker compose ... build
-  => built clean, image sha256:f06faec711ec...
+  => built clean, image sha256:7d9a81524e58...
 
-docker compose ... up -d   (REAL deploy, replacing the live orion-athena-whisper-tts container)
+docker compose ... up -d   (REAL redeploy of the live orion-athena-whisper-tts container)
   => boot log:
-     [WHISPER-TTS] INFO - TTS configured backend=coqui ... gpu=True ...
-     [WHISPER-TTS] INFO - Heartbeat loop started. boot_id=1d019cc4-...
+     [WHISPER-TTS] INFO - Heartbeat loop started. boot_id=9a4a41a5-...
      [WHISPER-TTS] INFO - cuda_watchdog_started poll_sec=30.0 failure_threshold=2
+       check_timeout_sec=30.0
      Application startup complete.
-  => _require_cuda_or_die() passed silently (real GPU was healthy) -- no
-     regression on the healthy path.
-  => Real TTS synth call against the new image succeeded:
-     "CUDA watchdog deployed and running." -> audio_b64 len=187152
+  => advisory boot guard passed silently (real GPU healthy) -- no
+     regression on the healthy path; STT/listener tasks confirmed alive
+     via the corresponding unit test, not re-tested live (would need a
+     real CUDA outage to observe against production).
+  => curl localhost:7800/health ->
+     {"status":"ok",...,"cuda_available":true,"cuda_watchdog_enabled":true}
+  => docker inspect --format '{{.State.Health.Status}}' -> healthy
+  => Real TTS synth call against the rebuilt image succeeded:
+     "All review findings fixed and verified." -> audio_b64 len=196028
 ```
 
 The watchdog's actual restart-on-staleness behavior was NOT re-triggered
 live (that would mean deliberately breaking CUDA on the production GPU
 again) -- it is covered by `test_cuda_watchdog.py`'s loop tests with fully
-injected `is_cuda_available`/`on_trigger`, exercising the real async loop
-and real debounce logic, just not a real NVML failure.
+injected `is_cuda_available`/`on_trigger`, exercising the real async loop,
+the real debounce logic, the timeout path, and the whole-tick exception
+guard, just not a real NVML failure.
 
 ## Review findings fixed
 
-Self-reviewed before commit (no separate reviewer agent run for this
-smaller, mechanical patch -- flagging honestly rather than claiming a review
-pass that didn't happen):
+High-effort `/code-review` run (fanned into ~8 parallel sub-reviews). 10
+findings; 1 verified false positive, 9 real and fixed.
 
-- Finding: `_require_cuda_or_die()` unconditional would force a GPU on a
-  deliberate CPU-mode deployment.
-  - Fix: gated on `settings.tts_use_gpu`, matching the watchdog's own gate.
-- Finding: `docker-compose.yml`'s `environment:` allowlist is the exact
-  shape that broke a kill switch on a sibling PR earlier the same day
-  (`environment:` overriding `env_file:` with the wrong interpolation
-  context).
-  - Fix: did not add the new keys there at all; left a comment explaining
-    why, referencing the concrete incident.
-  - Not a live risk either way for THIS feature specifically (worst case
-    if it recurred would be the watchdog staying at its safe default,
-    not a kill switch reverting to "recording on") but the pattern itself
-    is worth never repeating.
+- **False positive**: docstring cited `curiosity_investigation.py`'s
+  `_consecutive_not_ready` as prior art, reviewer claimed the symbol
+  doesn't exist. Verified live via direct grep: it does (lines
+  432/761/775-790) -- the reviewing subagent's own grep must have hit a
+  stale checkout. No change made; citation was accurate.
+
+- **Most severe -- Finding**: `_require_cuda_or_die()` raising at startup
+  crashed the ENTIRE process (bus, `listener_task`, `stt_task`, everything)
+  before any of them started. STT does not need CUDA at all; the whole
+  incident this patch closes is STT SURVIVING a CUDA outage that killed
+  TTS. A boot-time crash regressed exactly that resilience.
+  - Fix: the boot check is now advisory-only (logs `CRITICAL`, never
+    raises). The watchdog became the single enforcement mechanism for
+    both "broken at boot" and "broken mid-uptime" -- a boot-broken GPU
+    fails its first watchdog check almost immediately and restarts on the
+    normal threshold, rather than two mechanisms that could drift apart.
+  - Evidence: `test_startup_logs_critical_but_does_not_raise_when_cuda_unavailable`
+    asserts `startup()` does not raise, `stt_task`/`listener_task` are
+    both alive, and the critical log fired.
+
+- **Finding**: `torch.cuda.is_available()` ran synchronously in-line on the
+  event loop, no timeout. A genuine NVML wedge (the exact state targeted)
+  is documented to hang rather than fast-return -- freezing
+  `heartbeat_loop`/`listener_task`/`stt_task` right along with the
+  watchdog, and the failure-counting logic never even running.
+  - Fix: runs via `asyncio.to_thread` + `asyncio.wait_for`; a timeout counts
+    as a real failure (a raised exception still does not -- different
+    failure modes, kept distinct on purpose).
+  - Evidence: `test_a_hanging_check_is_treated_as_a_failure_not_skipped`,
+    `test_check_does_not_freeze_the_event_loop_while_hanging` (asserts a
+    sibling task kept making real progress throughout the hang).
+
+- **Finding**: only the check itself was guarded -- `on_trigger()` (e.g.
+  `os.kill` raising under a restricted sandbox) or any other exception in
+  the tick body could kill this fire-and-forget task silently, with
+  nothing left supervising the very outage this feature exists to catch.
+  - Fix: the whole tick is now guarded; `on_trigger` may be sync or async.
+  - Evidence: `test_an_exception_from_on_trigger_does_not_kill_the_loop_silently`,
+    `test_on_trigger_may_be_async`.
+
+- **Finding**: no `stop_grace_period`/`healthcheck`. Docker's default 10s
+  grace period could SIGKILL before `shutdown()` ever ran, defeating the
+  whole reason `SIGTERM` was chosen over `os._exit()`.
+  - Fix: `stop_grace_period: 150s` (above the 120s synth timeout) and a
+    `healthcheck` matching 20 other services' convention.
+  - Evidence: live-deployed; `docker inspect` reports `healthy`.
+
+- **Finding**: no `Field` validation bounds on `poll_sec`/`failure_threshold`
+  -- 0 or negative either busy-loops the check or defeats the debounce on
+  the first failure.
+  - Fix: `gt=0` / `ge=1`.
+  - Evidence: `test_poll_sec_zero_or_negative_is_rejected`,
+    `test_failure_threshold_zero_or_negative_is_rejected`. **Caught a real
+    bug in my own first attempt at this test**: `env="..."` binds OS
+    environ, not constructor kwargs -- the first draft's rejection test
+    "passed" for the wrong reason (a leaked `os.environ` mutation from an
+    earlier ad hoc terminal check made it look like validation was firing
+    when the bad value was never reaching the field at all). Added
+    `test_the_env_alias_itself_actually_works_via_real_environ` to close
+    that gap for real.
+
+- **Finding**: `/health` and the heartbeat's bus publish reported
+  `status: ok` for the entire `poll_sec * failure_threshold` window before
+  a restart, with no visibility into CUDA state at all.
+  - Fix: added `cuda_available` (fresh direct check, `null` in CPU mode)
+    and `cuda_watchdog_enabled` to `/health`.
+  - Evidence: `test_health_endpoint_reports_cuda_state`,
+    `test_health_endpoint_omits_cuda_state_in_cpu_mode`; live-verified via
+    `curl localhost:7800/health` against the redeployed container.
+
+- **Finding**: 4 near-identical hand-copied `shutdown()` cancel blocks (3
+  pre-existing, 1 added by this patch) that could drift independently.
+  - Fix: deduped into one loop applied uniformly to all four.
+
+- **Finding**: reinvents `orion-mesh-guardian`'s existing
+  cooldown/max-attempts-per-hour remediation instead of reusing it.
+  - Assessment: correct in principle, but mesh-guardian is an EXTERNAL,
+    cross-restart-*persistent* supervisor; this watchdog is IN-PROCESS and
+    dies with the very restart it triggers, so it cannot borrow
+    mesh-guardian's in-memory state directly. Registering whisper-tts there
+    properly is a real, separate architectural change (new roster entry,
+    understanding its probe-mode contract), not a quick fix to bolt onto
+    this PR.
+  - Fix: documented as a named, deliberately deferred risk in the README's
+    "GPU liveness" section and in Risks/concerns below, rather than
+    silently left uncovered. Not fixed in this patch.
+
+**Self-caught, not from the review**: while writing the settings-bounds
+test, an early draft of the hang-simulation test used `time.sleep(3600)`
+inside `asyncio.to_thread` -- `asyncio.wait_for`'s timeout stops AWAITING a
+thread, it does not kill the underlying OS thread, so that leaked a real
+hour-long-sleeping thread and hung the whole test process (confirmed live:
+the test run had to be force-terminated). Fixed with a bounded (0.3s)
+simulated hang; documented in the test's own docstring why production is
+not exposed to this the same way (a real sustained wedge crosses
+`failure_threshold` within a couple of poll intervals and `restart_process()`
+then exits the whole process, which reaps every thread at the OS level
+regardless of Python-side cleanup).
 
 ## Restart required
 
@@ -172,6 +266,15 @@ docker compose --env-file <repo-root>/.env \
   failures, not 1) and by the check itself raising being treated as
   "unknown", not "failed" (a broken check must not count toward the
   threshold).
+- Severity: medium -- **no cross-restart rate limit** (review finding,
+  deliberately deferred -- see "Review findings fixed" and the README's
+  "GPU liveness" section). Each restart is a brand-new process with fresh
+  in-memory state, so a genuinely PERMANENT GPU failure would restart the
+  container roughly every `poll_sec * failure_threshold` seconds
+  indefinitely, no backoff. `orion-mesh-guardian` already has proper
+  cross-restart-persistent remediation with cooldown/max-attempts-per-hour;
+  whisper-tts is not registered there. Follow-up: register it, rather than
+  building a second, in-process, un-persisted rate limiter here.
 - Severity: low -- this cannot fix the underlying host/nvidia-container-
   toolkit quirk, only make its symptom self-healing. If the quirk is
   itself caused by something recurring frequently (e.g., a sibling GPU

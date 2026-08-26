@@ -171,7 +171,13 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
     assert chain["artifacts"][0]["image_url"] == f"/api/reverie/visual/image/{'a' * 64}"
 
 
-def test_visual_recent_reports_total_and_echoes_pagination_params(client, monkeypatch):
+def test_visual_recent_has_more_true_when_extra_row_fetched(client, monkeypatch):
+    """_fetch_visual_recent asks for limit+1 rows and reports has_more from
+    whether that extra row showed up (the standard cursor-pagination trick,
+    avoiding a second COUNT(*) round trip). The fake conn returns all stored
+    rows regardless of the real WHERE/LIMIT clause, so what this test
+    actually pins is the trim-and-flag *logic* in Python: 3 stored rows,
+    limit=2 -> has_more True and exactly 2 chains returned, not 3."""
     _set_tables(
         monkeypatch,
         reverie_visual_chain=[
@@ -188,17 +194,56 @@ def test_visual_recent_reports_total_and_echoes_pagination_params(client, monkey
         ],
         reverie_visual_artifact=[],
     )
-    resp = client.get("/api/reverie/visual/recent?limit=1&offset=1")
+    resp = client.get("/api/reverie/visual/recent?limit=2")
     assert resp.status_code == 200
     body = resp.json()
-    # The fake conn returns all 3 rows regardless of LIMIT/OFFSET (it doesn't
-    # execute real SQL) -- what this test actually pins is that `total` comes
-    # from the dedicated count query (3, the full table) rather than from
-    # len(chains) (which would also read 3 here and hide a real bug), and
-    # that limit/offset are echoed back for the client to compute page state.
-    assert body["total"] == 3
-    assert body["limit"] == 1
-    assert body["offset"] == 1
+    assert len(body["chains"]) == 2
+    assert body["has_more"] is True
+    assert body["limit"] == 2
+    assert body["next_before"] == body["chains"][-1]["created_at"]
+
+
+def test_visual_recent_has_more_false_when_exactly_limit_rows(client, monkeypatch):
+    _set_tables(
+        monkeypatch,
+        reverie_visual_chain=[
+            {
+                "chain_id": "c0",
+                "created_at": NOW,
+                "theme_key": None,
+                "terminal_reason": "max_steps",
+                "ema_salience": 0.0,
+                "prior_description": None,
+                "chain_json": {"prompt": "p"},
+            }
+        ],
+        reverie_visual_artifact=[],
+    )
+    resp = client.get("/api/reverie/visual/recent?limit=5")
+    body = resp.json()
+    assert len(body["chains"]) == 1
+    assert body["has_more"] is False
+
+
+def test_visual_recent_accepts_before_cursor(client, monkeypatch):
+    """The `before` query param must parse as a real datetime and reach the
+    fetch function without erroring -- regression coverage for the
+    OFFSET -> cursor pagination switch. Uses `params=` (proper query-string
+    encoding) rather than string-interpolating the ISO timestamp directly --
+    an unencoded `+00:00` UTC offset decodes as a literal space in a raw
+    query string, which is exactly why the real JS client always wraps this
+    value in encodeURIComponent()."""
+    _set_tables(monkeypatch, reverie_visual_chain=[], reverie_visual_artifact=[])
+    resp = client.get("/api/reverie/visual/recent", params={"before": NOW.isoformat()})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["chains"] == []
+    assert body["next_before"] is None
+
+
+def test_visual_recent_rejects_malformed_before(client):
+    resp = client.get("/api/reverie/visual/recent?before=not-a-timestamp")
+    assert resp.status_code == 422
 
 
 def test_visual_recent_surfaces_generation_error(client, monkeypatch):

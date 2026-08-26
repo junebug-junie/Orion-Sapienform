@@ -27,10 +27,23 @@
   let active = false;
   let subview = "visual"; // "visual" | "text"
   let loaded = { visual: false, text: false };
-  let visualOffset = 0;
   const VISUAL_PAGE_SIZE = 9;
-  let visualTotal = 0;
   let diagramRendered = false;
+  // Cursor-based paging (review finding: OFFSET has no stable meaning
+  // against a table that gets a new row every ~600s from the live worker --
+  // a concurrent insert shifts every row's offset mid-session). cursorStack
+  // holds the `before` value used to fetch each page already visited --
+  // index 0 is always null (first/newest page) -- so "← Newer" replays an
+  // already-known cursor instead of re-deriving one, and "Older →" only
+  // ever needs the cursor the server just handed back (`next_before`).
+  let cursorStack = [null];
+  let pageIndex = 0;
+  let visualHasMore = false;
+  // Out-of-order fetch guard (review finding): a double Prev/Next click or a
+  // Refresh mid-flight can let an older request's response resolve after a
+  // newer one already rendered. Only the response matching the most recently
+  // issued request is allowed to touch the DOM.
+  let visualRequestSeq = 0;
 
   function el(id) {
     return document.getElementById(id);
@@ -245,17 +258,13 @@
       </div>`;
   }
 
-  function renderVisualPager(data) {
+  function renderVisualPager() {
     const pager = el("reverieVisualPager");
     if (!pager) return;
-    visualTotal = typeof data.total === "number" ? data.total : visualTotal;
-    const shown = (data.chains || []).length;
-    const start = shown ? visualOffset + 1 : 0;
-    const end = visualOffset + shown;
-    const hasPrev = visualOffset > 0;
-    const hasNext = visualOffset + VISUAL_PAGE_SIZE < visualTotal;
+    const hasPrev = pageIndex > 0;
+    const hasNext = visualHasMore;
     pager.innerHTML = `
-      <span>Showing ${start}–${end} of ${visualTotal} run(s)</span>
+      <span>Page ${pageIndex + 1}</span>
       <span class="flex gap-2">
         <button type="button" id="reveriePagerPrev" class="px-2 py-1 rounded border border-gray-700 ${hasPrev ? "hover:bg-gray-800 text-gray-300" : "opacity-40 cursor-not-allowed text-gray-600"}" ${hasPrev ? "" : "disabled"}>← Newer</button>
         <button type="button" id="reveriePagerNext" class="px-2 py-1 rounded border border-gray-700 ${hasNext ? "hover:bg-gray-800 text-gray-300" : "opacity-40 cursor-not-allowed text-gray-600"}" ${hasNext ? "" : "disabled"}>Older →</button>
@@ -264,13 +273,16 @@
     const nextBtn = el("reveriePagerNext");
     if (prevBtn && hasPrev) {
       prevBtn.addEventListener("click", () => {
-        visualOffset = Math.max(0, visualOffset - VISUAL_PAGE_SIZE);
+        pageIndex = Math.max(0, pageIndex - 1);
         loadVisual();
       });
     }
     if (nextBtn && hasNext) {
       nextBtn.addEventListener("click", () => {
-        visualOffset = visualOffset + VISUAL_PAGE_SIZE;
+        // Only ever pages forward into a cursor the server itself just
+        // handed back in the current page's response (pushed in loadVisual
+        // below) -- never derived/guessed client-side.
+        pageIndex = pageIndex + 1;
         loadVisual();
       });
     }
@@ -284,19 +296,32 @@
       diagramRendered = true;
     }
     setStatus("Loading visual reverie chain…");
+    const seq = ++visualRequestSeq;
+    const before = cursorStack[pageIndex];
     try {
-      const resp = await fetch(`/api/reverie/visual/recent?limit=${VISUAL_PAGE_SIZE}&offset=${visualOffset}`);
+      const url = before
+        ? `/api/reverie/visual/recent?limit=${VISUAL_PAGE_SIZE}&before=${encodeURIComponent(before)}`
+        : `/api/reverie/visual/recent?limit=${VISUAL_PAGE_SIZE}`;
+      const resp = await fetch(url);
       const data = await resp.json();
+      if (seq !== visualRequestSeq) return; // a newer request already won -- discard this stale response
       if (!data.ok) throw new Error("bad response");
-      if (!data.chains.length && visualOffset === 0) {
-        container.innerHTML = `<div class="text-sm text-gray-500 italic p-4">No visual reverie chains yet -- ORION_VISUAL_CHAIN_ENABLED may be off, or none have run.</div>`;
+      if (!data.chains.length) {
+        container.innerHTML = pageIndex === 0
+          ? `<div class="text-sm text-gray-500 italic p-4">No visual reverie chains yet -- ORION_VISUAL_CHAIN_ENABLED may be off, or none have run.</div>`
+          : `<div class="text-sm text-gray-500 italic p-4">No more runs on this page.</div>`;
       } else {
         container.innerHTML = data.chains.map(renderVisualChain).join("");
       }
-      renderVisualPager(data);
+      visualHasMore = !!data.has_more;
+      if (data.next_before && cursorStack[pageIndex + 1] === undefined) {
+        cursorStack[pageIndex + 1] = data.next_before;
+      }
+      renderVisualPager();
       loaded.visual = true;
-      setStatus(`Loaded ${data.chains.length} of ${data.total} visual chain(s).`);
+      setStatus(`Loaded ${data.chains.length} visual chain(s) (page ${pageIndex + 1}).`);
     } catch (e) {
+      if (seq !== visualRequestSeq) return;
       setStatus("Failed to load visual reverie chain: " + e.message);
     }
   }
@@ -373,7 +398,8 @@
 
   function refresh() {
     if (subview === "visual") {
-      visualOffset = 0;
+      cursorStack = [null];
+      pageIndex = 0;
       loaded.visual = false;
       loadVisual();
     } else {

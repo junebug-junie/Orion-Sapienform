@@ -534,7 +534,7 @@ class Settings(BaseSettings):
     # FINALIZE_REFLECT_TIMEOUT_SEC=180, so this has to sit above their sum plus
     # the stance leg. Nobody is waiting on this turn; the loop's cooldown is 4h.
     HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC: float = Field(
-        default=1500.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
+        default=2700.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
     )
     HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
         default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"
@@ -1020,8 +1020,16 @@ class Settings(BaseSettings):
     # --- Unified Orion turn (orion-thought + harness governor) ---
     ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
     ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
+    # 2160, not 960 (2026-08-26). The old default was derived as "900 + 60" --
+    # the FCC motor plus slack, as if the finalize chain running AFTER the motor
+    # were free. It is not: substrate 5 + reflect 180 + voice 300 = 485s more.
+    # With the motor at 1600 the worst case is 2085. Sized to cover that WITHOUT
+    # leaning on the liveness extension below, because the finalize chain emits
+    # no harness steps -- liveness reads False for exactly the stretch this most
+    # needs to cover. Measured: a turn published a real verdict five seconds
+    # after Hub abandoned the RPC at 960s.
     HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC: float = Field(
-        default=960.0,
+        default=2160.0,
         alias="HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC",
         description="Hub bus RPC wait for unified-turn harness governor (FCC motor + finalize chain).",
     )

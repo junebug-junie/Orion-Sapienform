@@ -320,7 +320,8 @@ always finds something worth writing up manufactures significance daily.
 | `cooldown` | less than 4h since the last run |
 | `pg_role_missing` | `orion_readonly` does not exist — checked through Hub's **own** privileged pool, so the credential is not validating itself |
 | `graph_unavailable` | the ACL could not be asserted |
-| `stores_unavailable` | the memory tables could not be read — **never** the same state as an empty mind |
+| `stores_not_ready` | `app.state.memory_pg_pool` does not exist **yet** — INFO on the first tick after a Hub start, WARNING from the second on. Found on the first real deploy: the loop's first tick lost a race with pool construction by 139 ms |
+| `stores_unavailable` | the memory tables could not be **read** — a fault, not a race, and **never** the same state as an empty mind |
 | `no_approved_material` | genuinely nothing to show |
 | `empty_generation` | the turn produced nothing, was deferred, timed out, or returned error-shaped text |
 | `no_lookup` | **the load-bearing one** — see below |

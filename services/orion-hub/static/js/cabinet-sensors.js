@@ -17,6 +17,9 @@
   "use strict";
 
   var LATEST_URL = "/api/cabinet/sensors/latest";
+  var AMBIENT_LATEST_URL = "/api/cabinet/ambient/latest";
+  var AMBIENT_HISTORY_URL = "/api/cabinet/ambient/history?window=";
+  var SVG_NS = "http://www.w3.org/2000/svg";
 
   // Nano reader ticks ~1 Hz; poll at the same cadence while the tab is visible.
   var POLL_MS = 1000;
@@ -97,6 +100,13 @@
     inFlight: false,
     lastFetchedAt: 0,
     lastPayload: null,
+    ambientLatestInFlight: false,
+    ambientLatest: null,
+    ambientHistory: null,
+    ambientHistoryRequest: 0,
+    ambientWindow: "24h",
+    ambientLatestNote: "Live values not loaded.",
+    ambientHistoryNote: "History not loaded.",
   };
 
   var els = {};
@@ -111,6 +121,16 @@
     els.grid = $("cabinetSensorGrid");
     els.pressures = $("cabinetPressureStrip");
     els.refreshBtn = $("cabinetRefreshBtn");
+    els.ambientStatus = $("cabinetAmbientStatus");
+    els.ambientRms = $("cabinetAmbientRms");
+    els.ambientPeak = $("cabinetAmbientPeak");
+    els.ambientAge = $("cabinetAmbientAge");
+    els.ambientLiveStatus = $("cabinetAmbientLiveStatus");
+    els.ambientRmsChart = $("cabinetAmbientRmsChart");
+    els.ambientActivityChart = $("cabinetAmbientActivityChart");
+    els.ambientWindowButtons = els.panel
+      ? els.panel.querySelectorAll("[data-cabinet-ambient-window]")
+      : [];
     return !!els.panel;
   }
 
@@ -148,6 +168,23 @@
       text
     );
     if (title) node.title = title;
+    return node;
+  }
+
+  function svg(viewBox, heightClass) {
+    var node = document.createElementNS(SVG_NS, "svg");
+    node.setAttribute("viewBox", viewBox);
+    node.setAttribute("preserveAspectRatio", "none");
+    node.setAttribute("class", "w-full " + (heightClass || "h-28"));
+    node.setAttribute("aria-hidden", "true");
+    return node;
+  }
+
+  function svgEl(tag, attrs) {
+    var node = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(function (key) {
+      node.setAttribute(key, attrs[key]);
+    });
     return node;
   }
 
@@ -311,6 +348,195 @@
     );
   }
 
+  function renderAmbientStatus() {
+    if (!els.ambientStatus) return;
+    els.ambientStatus.textContent = state.ambientLatestNote + " · " + state.ambientHistoryNote;
+    els.ambientStatus.className =
+      "text-[11px] min-h-[1rem] " +
+      (state.ambientLatestNote.indexOf("error") !== -1 ||
+      state.ambientHistoryNote.indexOf("error") !== -1
+        ? "text-amber-400"
+        : "text-gray-500");
+  }
+
+  function renderAmbientLatest(payload) {
+    var snapshot = payload && payload.snapshot;
+    if (!snapshot) return;
+    if (els.ambientRms) els.ambientRms.textContent = num(snapshot.rms, 1) || "—";
+    if (els.ambientPeak) els.ambientPeak.textContent = num(snapshot.peak, 0) || "—";
+    if (els.ambientAge) els.ambientAge.textContent = age(payload.age_sec);
+    if (els.ambientLiveStatus) {
+      var statusText = String(snapshot.status || (payload.ok ? "ok" : "stale"));
+      els.ambientLiveStatus.textContent = payload.ok ? statusText : statusText + " / stale";
+      els.ambientLiveStatus.className =
+        "mt-1 font-mono text-sm " + (payload.ok ? "text-emerald-300" : "text-amber-300");
+    }
+  }
+
+  function renderAmbientSeries(host, points, key, options) {
+    if (!host) return;
+    host.textContent = "";
+    options = options || {};
+    var samples = (Array.isArray(points) ? points : []).map(function (point, index) {
+        var rawValue = point && point[key];
+        var value =
+          rawValue === null || rawValue === undefined || rawValue === ""
+            ? null
+            : Number(rawValue);
+        var timestamp = point && point.t ? Date.parse(point.t) : NaN;
+        return {
+          t: point && point.t,
+          value: value !== null && isFinite(value) ? value : null,
+          timestamp: isFinite(timestamp) ? timestamp : null,
+          index: index,
+        };
+      });
+    var validSamples = samples.filter(function (point) {
+      return point.value !== null;
+    });
+
+    if (!validSamples.length) {
+      host.setAttribute("role", "img");
+      host.setAttribute("aria-label", (options.label || key) + " chart: no samples in this window.");
+      host.appendChild(
+        el("div", "h-28 flex items-center justify-center text-[11px] text-gray-500", "No samples in this window.")
+      );
+      return;
+    }
+
+    var values = validSamples.map(function (point) {
+      return point.value;
+    });
+    var minValue = options.min !== undefined ? options.min : Math.min.apply(null, values);
+    var maxValue = options.max !== undefined ? options.max : Math.max.apply(null, values);
+    if (maxValue <= minValue) maxValue = minValue + 1;
+    var pad = options.fixedScale ? 0 : (maxValue - minValue) * 0.08;
+    minValue = options.fixedScale ? minValue : Math.max(0, minValue - pad);
+    maxValue = options.fixedScale ? maxValue : maxValue + pad;
+
+    var timedSamples = samples.filter(function (point) {
+      return point.timestamp !== null;
+    });
+    var minTime = timedSamples.length ? timedSamples[0].timestamp : null;
+    var maxTime = timedSamples.length ? timedSamples[timedSamples.length - 1].timestamp : null;
+    function x(point) {
+      if (point.timestamp !== null && maxTime !== null && maxTime > minTime) {
+        return ((point.timestamp - minTime) / (maxTime - minTime)) * 100;
+      }
+      return samples.length === 1 ? 50 : (point.index / (samples.length - 1)) * 100;
+    }
+    function y(value) {
+      return 38 - ((value - minValue) / (maxValue - minValue)) * 36;
+    }
+
+    var chart = svg("0 0 100 40", options.heightClass || "h-28");
+    [0, 20, 40].forEach(function (y) {
+      chart.appendChild(
+        svgEl("line", {
+          x1: 0,
+          y1: y,
+          x2: 100,
+          y2: y,
+          stroke: "#1f2937",
+          "stroke-width": 0.5,
+          "vector-effect": "non-scaling-stroke",
+        })
+      );
+    });
+    var segments = [];
+    var currentSegment = [];
+    samples.forEach(function (point) {
+      if (point.value === null) {
+        if (currentSegment.length) segments = segments.concat([currentSegment]);
+        currentSegment = [];
+        return;
+      }
+      currentSegment = currentSegment.concat([x(point) + "," + y(point.value)]);
+    });
+    if (currentSegment.length) segments = segments.concat([currentSegment]);
+    segments.forEach(function (segment) {
+      if (segment.length > 1) {
+        chart.appendChild(
+          svgEl("polyline", {
+            points: segment.join(" "),
+            fill: "none",
+            stroke: options.color || "#818cf8",
+            "stroke-width": 1,
+            "vector-effect": "non-scaling-stroke",
+          })
+        );
+      } else {
+        var only = segment[0].split(",");
+        chart.appendChild(
+          svgEl("circle", {
+            cx: only[0],
+            cy: only[1],
+            r: 1.4,
+            fill: options.color || "#818cf8",
+          })
+        );
+      }
+    });
+    host.appendChild(chart);
+
+    var firstTime = validSamples[0].t ? new Date(validSamples[0].t).toLocaleString() : "—";
+    var lastTime = validSamples[validSamples.length - 1].t
+      ? new Date(validSamples[validSamples.length - 1].t).toLocaleString()
+      : "—";
+    host.setAttribute("role", "img");
+    host.setAttribute(
+      "aria-label",
+      (options.label || key) +
+        " chart. " +
+        validSamples.length +
+        " samples from " +
+        firstTime +
+        " to " +
+        lastTime +
+        " range " +
+        Math.min.apply(null, values).toFixed(options.digits || 2) +
+        " to " +
+        Math.max.apply(null, values).toFixed(options.digits || 2) +
+        "."
+    );
+    host.appendChild(
+      el(
+        "div",
+        "mt-1 flex justify-between gap-2 text-[9px] font-mono text-gray-600",
+        firstTime + "  →  " + lastTime + " · n=" + validSamples.length
+      )
+    );
+  }
+
+  function renderAmbientHistory(payload) {
+    var points = payload && Array.isArray(payload.points) ? payload.points : [];
+    renderAmbientSeries(els.ambientRmsChart, points, "rms", {
+      label: "Ambient RMS",
+      digits: 1,
+      color: "#818cf8",
+      heightClass: "h-32",
+    });
+    renderAmbientSeries(els.ambientActivityChart, points, "activity", {
+      label: "Ambient activity",
+      digits: 3,
+      min: 0,
+      max: 1,
+      fixedScale: true,
+      color: "#34d399",
+      heightClass: "h-32",
+    });
+  }
+
+  function renderAmbientWindowButtons() {
+    Array.prototype.forEach.call(els.ambientWindowButtons || [], function (button) {
+      var selected = button.getAttribute("data-cabinet-ambient-window") === state.ambientWindow;
+      button.className = selected
+        ? "px-2 py-1 rounded border border-indigo-500 bg-indigo-950/60 text-[11px] font-mono text-indigo-200"
+        : "px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200";
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
   function renderPayload(payload) {
     if (els.status) renderStatus(els.status, payload);
     if (els.grid) renderSensorGrid(els.grid, payload);
@@ -382,6 +608,70 @@
     }
   }
 
+  async function pollAmbientLatest() {
+    if (state.ambientLatestInFlight) return;
+    state.ambientLatestInFlight = true;
+    try {
+      var resp = await fetch(AMBIENT_LATEST_URL, { headers: { Accept: "application/json" } });
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + " from " + AMBIENT_LATEST_URL);
+      }
+      var payload = await resp.json();
+      if (!payload.snapshot) {
+        throw new Error(payload.error || "ambient snapshot missing");
+      }
+      state.ambientLatest = payload;
+      renderAmbientLatest(payload);
+      state.ambientLatestNote =
+        "Live updated " + new Date().toLocaleTimeString() + (payload.ok ? "" : " (stale)");
+    } catch (err) {
+      state.ambientLatestNote =
+        "live error — " +
+        (state.ambientLatest
+          ? "keeping last good live values"
+          : "no live values yet") +
+        " (" +
+        (err.message || err) +
+        ")";
+    } finally {
+      state.ambientLatestInFlight = false;
+      renderAmbientStatus();
+    }
+  }
+
+  async function fetchAmbientHistory() {
+    var requestId = ++state.ambientHistoryRequest;
+    var requestedWindow = state.ambientWindow;
+    state.ambientHistoryNote = "Loading " + requestedWindow + " history…";
+    renderAmbientStatus();
+    try {
+      var url = AMBIENT_HISTORY_URL + encodeURIComponent(requestedWindow);
+      var resp = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + " from ambient history");
+      }
+      var payload = await resp.json();
+      if (!payload.ok) {
+        throw new Error(payload.error || "ambient history unavailable");
+      }
+      if (requestId !== state.ambientHistoryRequest) return;
+      state.ambientHistory = payload;
+      renderAmbientHistory(payload);
+      state.ambientHistoryNote =
+        requestedWindow + " history · n=" + (Array.isArray(payload.points) ? payload.points.length : 0);
+    } catch (err) {
+      if (requestId !== state.ambientHistoryRequest) return;
+      state.ambientHistoryNote =
+        "history error — " +
+        (state.ambientHistory ? "keeping last good charts" : "no chart data yet") +
+        " (" +
+        (err.message || err) +
+        ")";
+    } finally {
+      if (requestId === state.ambientHistoryRequest) renderAmbientStatus();
+    }
+  }
+
   function stopTimer() {
     if (state.timer !== null) {
       clearInterval(state.timer);
@@ -404,6 +694,7 @@
         return;
       }
       poll();
+      pollAmbientLatest();
     }, POLL_MS);
   }
 
@@ -411,6 +702,8 @@
     if (!els.panel && !bindElements()) return;
     state.active = true;
     poll();
+    pollAmbientLatest();
+    fetchAmbientHistory();
     startTimer();
   }
 
@@ -425,8 +718,20 @@
     if (els.refreshBtn) {
       els.refreshBtn.addEventListener("click", function () {
         poll();
+        pollAmbientLatest();
+        fetchAmbientHistory();
       });
     }
+    Array.prototype.forEach.call(els.ambientWindowButtons || [], function (button) {
+      button.addEventListener("click", function () {
+        var nextWindow = button.getAttribute("data-cabinet-ambient-window");
+        if (!nextWindow || nextWindow === state.ambientWindow) return;
+        state.ambientWindow = nextWindow;
+        renderAmbientWindowButtons();
+        fetchAmbientHistory();
+      });
+    });
+    renderAmbientWindowButtons();
   }
 
   function init() {
@@ -442,6 +747,8 @@
     deactivate: deactivate,
     refresh: function () {
       poll();
+      pollAmbientLatest();
+      fetchAmbientHistory();
     },
   };
 

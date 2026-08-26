@@ -119,17 +119,24 @@ def _thought_ids_of(chain_json: Any) -> list[str]:
 # ───────────────────────────────────────────────────────────────
 
 
-def _fetch_visual_recent(limit: int) -> tuple[list[dict], dict[str, list[dict]]]:
+def _fetch_visual_recent(
+    limit: int, offset: int
+) -> tuple[list[dict], dict[str, list[dict]], int]:
     with _engine().connect() as conn:
+        total = int(
+            conn.execute(text("SELECT count(*) AS total FROM reverie_visual_chain"))
+            .mappings()
+            .first()["total"]
+        )
         chain_rows = (
             conn.execute(
                 text(
                     "SELECT chain_id, created_at, theme_key, terminal_reason, "
                     "ema_salience, prior_description, chain_json "
                     "FROM reverie_visual_chain "
-                    "ORDER BY created_at DESC LIMIT :limit"
+                    "ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
                 ),
-                {"limit": limit},
+                {"limit": limit, "offset": offset},
             )
             .mappings()
             .all()
@@ -153,14 +160,18 @@ def _fetch_visual_recent(limit: int) -> tuple[list[dict], dict[str, list[dict]]]
             )
             for a in artifact_rows:
                 artifacts_by_chain.setdefault(a["chain_id"], []).append(dict(a))
-    return list(chain_rows), artifacts_by_chain
+    return list(chain_rows), artifacts_by_chain, total
 
 
 @router.get("/visual/recent")
-async def visual_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, Any]:
+async def visual_recent(
+    limit: int = Query(DEFAULT_LIMIT, ge=1), offset: int = Query(0, ge=0)
+) -> dict[str, Any]:
     limit = _clamp_limit(limit)
     try:
-        chain_rows, artifacts_by_chain = await asyncio.to_thread(_fetch_visual_recent, limit)
+        chain_rows, artifacts_by_chain, total = await asyncio.to_thread(
+            _fetch_visual_recent, limit, offset
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -193,10 +204,15 @@ async def visual_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, An
                 "ema_salience": c["ema_salience"],
                 "prior_description": c["prior_description"],
                 "prompt": cj.get("prompt"),
+                # A failed generation's chain_json carries "error" instead of
+                # "artifact_sha256"/"description" (visual_chain.py's
+                # _generation_failed) -- surfaced so the cockpit can show
+                # *why* a run produced no image instead of just an empty card.
+                "error": cj.get("error"),
                 "artifacts": artifacts,
             }
         )
-    return {"ok": True, "chains": chains}
+    return {"ok": True, "chains": chains, "total": total, "limit": limit, "offset": offset}
 
 
 def _fetch_artifact_mime(sha256: str) -> dict | None:

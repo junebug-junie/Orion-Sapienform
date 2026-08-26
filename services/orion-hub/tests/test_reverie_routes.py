@@ -85,6 +85,9 @@ class _FakeConn:
     def execute(self, stmt, params=None):
         sql = str(stmt)
         self.queries.append(sql)
+        if "count(*)" in sql.lower() and "reverie_visual_chain" in sql:
+            rows = self.table_rows.get("reverie_visual_chain", [])
+            return _FakeResult([{"total": len(rows)}])
         if "FROM reverie_visual_chain" in sql:
             return _FakeResult(self.table_rows.get("reverie_visual_chain", []))
         if "FROM reverie_visual_artifact" in sql and "sha256 =" in sql:
@@ -166,6 +169,60 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
     assert len(chain["artifacts"]) == 1
     assert chain["artifacts"][0]["sha256"] == "a" * 64
     assert chain["artifacts"][0]["image_url"] == f"/api/reverie/visual/image/{'a' * 64}"
+
+
+def test_visual_recent_reports_total_and_echoes_pagination_params(client, monkeypatch):
+    _set_tables(
+        monkeypatch,
+        reverie_visual_chain=[
+            {
+                "chain_id": f"c{i}",
+                "created_at": NOW,
+                "theme_key": None,
+                "terminal_reason": "max_steps",
+                "ema_salience": 0.0,
+                "prior_description": None,
+                "chain_json": {"prompt": "p"},
+            }
+            for i in range(3)
+        ],
+        reverie_visual_artifact=[],
+    )
+    resp = client.get("/api/reverie/visual/recent?limit=1&offset=1")
+    assert resp.status_code == 200
+    body = resp.json()
+    # The fake conn returns all 3 rows regardless of LIMIT/OFFSET (it doesn't
+    # execute real SQL) -- what this test actually pins is that `total` comes
+    # from the dedicated count query (3, the full table) rather than from
+    # len(chains) (which would also read 3 here and hide a real bug), and
+    # that limit/offset are echoed back for the client to compute page state.
+    assert body["total"] == 3
+    assert body["limit"] == 1
+    assert body["offset"] == 1
+
+
+def test_visual_recent_surfaces_generation_error(client, monkeypatch):
+    """A generation_failed chain's chain_json carries "error", not
+    "artifact_sha256"/"description" -- the cockpit needs this to explain why
+    a run produced no image instead of rendering an unexplained empty card."""
+    _set_tables(
+        monkeypatch,
+        reverie_visual_chain=[
+            {
+                "chain_id": "c-err",
+                "created_at": NOW,
+                "theme_key": None,
+                "terminal_reason": "generation_failed",
+                "ema_salience": 0.0,
+                "prior_description": None,
+                "chain_json": {"prompt": "x", "error": "diffusion-host /generate returned HTTP 429"},
+            }
+        ],
+        reverie_visual_artifact=[],
+    )
+    resp = client.get("/api/reverie/visual/recent")
+    chain = resp.json()["chains"][0]
+    assert chain["error"] == "diffusion-host /generate returned HTTP 429"
 
 
 def test_visual_recent_chain_with_no_artifact_yet(client, monkeypatch):

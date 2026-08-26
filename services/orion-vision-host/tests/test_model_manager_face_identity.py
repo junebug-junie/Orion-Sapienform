@@ -76,3 +76,30 @@ def test_load_face_identity_models_without_torch_home_does_not_set_env(monkeypat
         mgr.load_face_identity_models(profile_name="identity_face_no_torchhome", device="cpu")
 
     assert "TORCH_HOME" not in os.environ
+
+
+def test_load_face_identity_models_casts_embedder_to_dtype_on_cuda():
+    """Review finding, 2026-08-26: this loader previously always ran the
+    embedder in fp32 on CUDA, unlike every other CUDA-loaded profile in
+    this file, which get a real fp16 cast via _torch_dtype's own "auto"
+    default. Confirms the resnet's own .to() actually receives the
+    resolved dtype, not just that dtype is accepted as a parameter."""
+    import torch
+
+    mgr = ModelManager()
+    patches, _, fake_resnet = _patched_facenet()
+    with patches["mtcnn"], patches["resnet"]:
+        mgr.load_face_identity_models(profile_name="identity_face_cuda", device="cuda:0", dtype="auto")
+
+    fake_resnet.to.assert_called_once_with(device="cuda:0", dtype=torch.float16)
+
+
+def test_load_face_identity_models_cpu_never_calls_to():
+    """CPU path must not call .to() at all -- matches every other loader's
+    own `if device.startswith("cuda")` guard in this file."""
+    mgr = ModelManager()
+    patches, _, fake_resnet = _patched_facenet()
+    with patches["mtcnn"], patches["resnet"]:
+        mgr.load_face_identity_models(profile_name="identity_face_cpu_dtype", device="cpu", dtype="auto")
+
+    fake_resnet.to.assert_not_called()

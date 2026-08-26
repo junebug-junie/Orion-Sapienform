@@ -148,6 +148,7 @@ class ModelManager:
         *,
         profile_name: str,
         device: str,
+        dtype: str = "auto",
         torch_home: Optional[str] = None,
     ):
         """
@@ -163,6 +164,14 @@ class ModelManager:
         this one two-model case; MTCNN plays the "processor" role here
         (detect + align feeding the embedder), same shape every other
         loader in this file already uses.
+
+        ``dtype`` follows this class's usual ``_torch_dtype`` convention
+        (review finding, 2026-08-26: this loader previously ignored the
+        profile's own ``dtype: auto`` and always ran the embedder in fp32,
+        unlike every other CUDA-loaded profile here) -- applies only to
+        the InceptionResnetV1 embedder; MTCNN's own detection networks are
+        used at their standard facenet-pytorch precision, which the
+        library does not expose a dtype override for.
 
         ``torch_home``, when given, is set as the ``TORCH_HOME`` env var
         before import -- facenet-pytorch's weights download via
@@ -187,13 +196,16 @@ class ModelManager:
             if m is not None and p is not None:
                 return m, p
 
-            logger.info(f"[MODEL] loading face-identity profile={profile_name} device={device}")
+            torch_dtype = self._torch_dtype(dtype, device)
+            logger.info(
+                f"[MODEL] loading face-identity profile={profile_name} device={device} dtype={torch_dtype}"
+            )
 
             mtcnn_device = device if device.startswith("cuda") else "cpu"
             mtcnn = MTCNN(keep_all=True, device=mtcnn_device)
             resnet = InceptionResnetV1(pretrained="vggface2").eval()
             if device.startswith("cuda"):
-                resnet.to(device)
+                resnet.to(device=device, dtype=torch_dtype)
 
             self.set(key, resnet, mtcnn)
             return resnet, mtcnn

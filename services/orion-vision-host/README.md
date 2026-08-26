@@ -55,6 +55,17 @@ subject** -- not a growing gallery, not a stranger tracker.
   `{"subject", "similarity", "state"}` with `state` one of
   `probable` / `possible` / `unsure` -- never a binary match/no-match. A
   `subject` other than `"unknown"` is returned only for `probable`/`possible`.
+- **Never reaches the general artifact broadcast.** `CHANNEL_VISIONHOST_PUB`
+  (`orion:vision:artifacts`) is consumed by `orion-security-watcher`,
+  `orion-vision-window`, and `orion-vision-council` (`orion/bus/
+  channels.yaml`) -- none identity-aware or retention-gated. `app/main.py`'s
+  `should_broadcast_artifact()` excludes `identity_face` from both real
+  broadcast call sites (found live, 2026-08-26: the bus-first path and the
+  `/v1/vision/task` HTTP endpoint each had their own, and the second one
+  was still unguarded after the first fix landed --
+  `test_every_publish_artifact_broadcast_call_site_is_guarded` pins both
+  now). Only the direct RPC/HTTP reply to whoever explicitly requested
+  `task_type=identity_face` carries the real result.
 
 **Enrollment** (must be run by hand, with real photos -- ships with zero
 enrolled by default):
@@ -96,10 +107,15 @@ this is a real simplification, not a silently dropped requirement.
 section 4 describes ("passed to the gateway call as grounding context,
 exactly like hard labels") -- that is the next integration step, in a
 different service, once this capability is live-validated with a real
-enrollment. Also not built: `vision_events` retention policy (design doc
-section 6.5: "identity-bearing rows are the most sensitive this system
-will hold. Ships WITH section 4, not after") -- a real, separate gap this
-patch did not close; flagged, not silently skipped.
+enrollment. Also not built: a `vision_events` table-level retention policy
+(design doc section 6.5: "identity-bearing rows are the most sensitive
+this system will hold. Ships WITH section 4, not after"). The immediate
+leak path that requirement was guarding against -- identity data reaching
+every consumer of the general artifact broadcast unfiltered -- is closed
+(see the non-negotiable above); what remains open is retention for
+identity data that reaches `vision_events` through some *future* real
+integration (e.g. the council-grounding wiring above), which does not
+exist yet either. Flagged, not silently skipped.
 
 ### VLM model families
 

@@ -119,6 +119,35 @@ def test_run_identity_face_caps_at_max_candidates(monkeypatch, tmp_path):
     assert len(result["identities"]["candidates"]) == 2
 
 
+def test_run_identity_face_keeps_highest_confidence_faces_not_first_n(monkeypatch, tmp_path):
+    """Review finding, 2026-08-26: MTCNN's own detection order is not
+    confidence-ordered. A plain faces[:max_faces] would keep whichever
+    faces happen to be first, silently dropping the enrolled subject's own
+    (possibly lower-listed) face in a crowded frame. This uses
+    out-of-order probs -- the highest confidence face is NOT first -- and
+    checks the surviving candidates by their real detect_confidence, not
+    just by count."""
+    runner = _runner()
+    profile = runner.profiles.get_profile("identity_face")
+    profile.params = dict(profile.params, max_candidates=2)
+
+    fake_faces = torch.zeros((5, 3, 4, 4))
+    fake_model = MagicMock(side_effect=lambda faces: torch.zeros((faces.shape[0], 512)))
+    # Deliberately unsorted -- the two highest (0.95, 0.9) are NOT first.
+    fake_mtcnn = MagicMock(return_value=(fake_faces, [0.5, 0.95, 0.6, 0.9, 0.4]))
+    monkeypatch.setattr(runner.models, "load_face_identity_models", lambda **kw: (fake_model, fake_mtcnn))
+    monkeypatch.setattr(runner_module, "settings", MagicMock(
+        MODEL_CACHE_DIR="/tmp", IDENTITY_ENROLLED_SUBJECT="juniper", IDENTITY_GALLERY_DIR=str(tmp_path)
+    ))
+
+    result = runner._run_identity_face(profile, {"image_path": _image_path(tmp_path)}, "cpu", [])
+
+    candidates = result["identities"]["candidates"]
+    assert len(candidates) == 2
+    kept_confidences = sorted(c["detect_confidence"] for c in candidates)
+    assert kept_confidences == [0.9, 0.95]
+
+
 def test_run_identity_face_never_returns_raw_embedding(monkeypatch, tmp_path):
     """Non-negotiable, checked at this method's actual output boundary, not
     just inside identity_gallery.match_embedding's own unit tests."""

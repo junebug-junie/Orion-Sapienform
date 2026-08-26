@@ -565,8 +565,9 @@ class VisionRunner:
 
         img = _load_image_from_request(request)
 
+        dtype = self._resolve_dtype(p)
         model, mtcnn = self.models.load_face_identity_models(
-            profile_name=p.name, device=device, torch_home=settings.MODEL_CACHE_DIR
+            profile_name=p.name, device=device, dtype=dtype, torch_home=settings.MODEL_CACHE_DIR
         )
 
         match_threshold = float(p.params.get("match_threshold", 0.35))
@@ -586,13 +587,27 @@ class VisionRunner:
         candidates: List[Dict[str, Any]] = []
 
         if faces is not None:
-            if faces.dim() == 3:
-                faces = faces.unsqueeze(0)
-                probs = [probs] if not isinstance(probs, list) else probs
-            faces = faces[:max_faces]
-            probs = list(probs)[:max_faces]
+            # keep_all=True (model_manager.py's construction) always stacks
+            # detections into a 4D (N, 3, H, W) tensor, even for a single
+            # face -- no 3D single-face case to unwrap here.
+            probs = list(probs)
+            # Sort by detection confidence descending before truncating to
+            # max_faces (review finding, 2026-08-26): MTCNN's own return
+            # order is not confidence-ordered, so a plain faces[:max_faces]
+            # could silently drop the enrolled subject's own face in a
+            # crowded frame in favor of lower-confidence detections that
+            # merely came first.
+            order = sorted(range(len(probs)), key=lambda i: (probs[i] if probs[i] is not None else -1.0), reverse=True)
+            order = order[:max_faces]
+            faces = faces[order]
+            probs = [probs[i] for i in order]
             if device.startswith("cuda"):
-                faces = faces.to(device)
+                # Must match the embedder's own resident dtype (now
+                # dtype-aware per the review finding above) -- a plain
+                # fp32 tensor against fp16 weights raises a dtype
+                # mismatch, unlike the fp32-only path this replaces.
+                model_dtype = next(model.parameters()).dtype
+                faces = faces.to(device=device, dtype=model_dtype)
             with torch.inference_mode():
                 embeddings = model(faces)
             embeddings_np = embeddings.detach().float().cpu().numpy()

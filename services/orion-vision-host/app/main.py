@@ -33,6 +33,23 @@ from .settings import Settings
 
 settings = Settings()
 
+# Task types excluded from the general CHANNEL_VISIONHOST_PUB broadcast
+# (review finding, 2026-08-26). That channel's consumers -- orion-security-
+# watcher, orion-vision-window, orion-vision-council (orion/bus/channels.yaml)
+# -- are not identity-aware or retention-gated; broadcasting a real
+# subject/similarity hypothesis there would reach all of them unfiltered,
+# contradicting the design doc's own requirement that a retention policy for
+# identity-bearing data ships WITH this feature, not after (docs/superpowers/
+# specs/2026-08-21-seeing-juniper-identity-and-situated-observation-design.md
+# section 6.5). The direct RPC reply to whoever explicitly requested the task
+# is unaffected -- only this broadcast-to-everyone-else path is suppressed.
+_TASK_TYPES_EXCLUDED_FROM_BROADCAST = frozenset({"identity_face"})
+
+
+def should_broadcast_artifact(task_type: str) -> bool:
+    return task_type not in _TASK_TYPES_EXCLUDED_FROM_BROADCAST
+
+
 class VisionHostService:
     def __init__(self):
         self.bus: Optional[OrionBusAsync] = None
@@ -422,7 +439,7 @@ class VisionHostService:
         reply_channel = source_envelope.reply_to or f"{settings.CHANNEL_VISIONHOST_REPLY_PREFIX}:{res.corr_id}"
         await self.bus.publish(reply_channel, reply_envelope)
 
-        if res.ok and artifact_payload:
+        if res.ok and artifact_payload and should_broadcast_artifact(res.task_type):
              await self._publish_artifact_broadcast(artifact_payload, source_envelope)
 
     def _create_artifact_payload(self, res: VisionResult, source_envelope: BaseEnvelope) -> Optional[VisionArtifactPayload]:
@@ -555,8 +572,11 @@ async def http_task(payload: Dict[str, Any]):
     try:
         res: VisionResult = await service.run_vision_task(task)
 
-        # Also broadcast artifact if success
-        if res.ok and res.artifacts and service.bus:
+        # Also broadcast artifact if success -- same should_broadcast_artifact
+        # guard as the bus-first path in _publish_result (found live while
+        # verifying that fix, 2026-08-26: this HTTP entrypoint has its own,
+        # separate _publish_artifact_broadcast call that bypassed it entirely).
+        if res.ok and res.artifacts and service.bus and should_broadcast_artifact(res.task_type):
              # Create dummy source envelope
              dummy_env = BaseEnvelope(
                  kind="http.direct",

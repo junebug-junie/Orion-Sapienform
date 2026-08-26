@@ -1102,6 +1102,53 @@
           </div>
         </div>
         <div id="cabinetStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open this tab to start polling.</div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 class="text-sm font-semibold text-gray-100">Ambient audio</h3>
+              <p class="text-[11px] text-gray-500">
+                Live cabinet level plus Postgres biometrics-summary history at ~30s grain.
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-1" aria-label="Ambient history window">
+              <button type="button" data-cabinet-ambient-window="24h" class="px-2 py-1 rounded border border-indigo-500 bg-indigo-950/60 text-[11px] font-mono text-indigo-200">24h</button>
+              <button type="button" data-cabinet-ambient-window="3d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">3d</button>
+              <button type="button" data-cabinet-ambient-window="7d" class="px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200">7d</button>
+            </div>
+          </div>
+          <div id="cabinetAmbientStatus" class="text-[11px] text-gray-500 min-h-[1rem]">Open this tab to load ambient audio.</div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">RMS</div>
+              <div id="cabinetAmbientRms" class="mt-1 font-mono text-sm text-gray-200">—</div>
+            </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">peak</div>
+              <div id="cabinetAmbientPeak" class="mt-1 font-mono text-sm text-gray-200">—</div>
+            </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">age</div>
+              <div id="cabinetAmbientAge" class="mt-1 font-mono text-sm text-gray-200">—</div>
+            </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">status</div>
+              <div id="cabinetAmbientLiveStatus" class="mt-1 font-mono text-sm text-gray-200">—</div>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 xl:grid-cols-3 gap-3">
+            <div class="xl:col-span-2 rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+              <div class="text-xs font-semibold text-gray-300 mb-2">RMS</div>
+              <div id="cabinetAmbientRmsChart" class="min-h-[8rem]"></div>
+            </div>
+            <div class="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+              <div class="text-xs font-semibold text-gray-300 mb-2">activity (0–1)</div>
+              <div id="cabinetAmbientActivityChart" class="min-h-[8rem]"></div>
+            </div>
+          </div>
+          <p class="text-[10px] text-gray-500">
+            Charts use the biometrics summary at ~30s grain; they are not the 1 Hz live host-reader stream.
+          </p>
+        </div>
         <div id="cabinetSensorGrid" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
         <div id="cabinetPressureStrip" class="rounded-xl border border-gray-800 bg-gray-950/40 p-4"></div>
       </section>

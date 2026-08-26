@@ -269,8 +269,15 @@ Expected new keys (exact names at implementation; parity required — mirror cab
 2. Worktree `feat/athena-ambient-audio-levels`: reader + biometrics + grammar + field + tests + smokes + setup.
 3. Live Athena smoke with CMTECK attached (group + alsa-utils first).
 
+## Hub charts (implemented separately)
+
+Multi-day Cabinet ambient RMS/activity charts in Hub read **biometrics-summary history**
+(`orion_biometrics_summary` via Hub `GET /api/cabinet/ambient/history`), not the 1 Hz host
+reader. Live chips still use `/run/orion-audio/latest.json`. Implemented on
+`feat/hub-cabinet-ambient-charts` — see
+`docs/superpowers/specs/2026-08-26-hub-cabinet-ambient-audio-charts-design.md`.
+
 ## Deferred (v2+)
 
 - Spike-gated short clip → `STTRequestPayload` on `orion:stt:intake` for “what was that?”
 - Lagged correlation / mutual information between `cabinet_ambient_audio_activity` and host `fan_pressure` / TTS playback / load
-- Hub debug surface for ambient levels

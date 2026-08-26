@@ -43,8 +43,29 @@ def test_template_declares_nav_button_panel_and_script_tag() -> None:
         "cabinetSensorGrid",
         "cabinetPressureStrip",
         "cabinetRefreshBtn",
+        "cabinetAmbientStatus",
+        "cabinetAmbientRms",
+        "cabinetAmbientPeak",
+        "cabinetAmbientAge",
+        "cabinetAmbientLiveStatus",
+        "cabinetAmbientRmsChart",
+        "cabinetAmbientActivityChart",
     ):
         assert f'id="{mount_id}"' in INDEX_HTML, mount_id
+
+
+def test_template_declares_ambient_windows_and_biometrics_grain_caption() -> None:
+    section_start = INDEX_HTML.index('id="cabinet" data-panel="cabinet"')
+    section_end = INDEX_HTML.index("</section>", section_start)
+    section_html = INDEX_HTML[section_start:section_end]
+
+    for window in ("24h", "3d", "7d"):
+        assert f'data-cabinet-ambient-window="{window}"' in section_html
+    assert "Ambient audio" in section_html
+    assert "RMS" in section_html
+    assert "activity" in section_html.lower()
+    assert "~30s" in section_html
+    assert "biometrics" in section_html.lower()
 
 
 def test_template_panel_does_not_reuse_field_attention_naming() -> None:
@@ -104,6 +125,74 @@ def test_cabinet_sensors_js_is_standalone_and_reads_only_its_own_api() -> None:
     assert "var POLL_MS = 1000;" in CABINET_SENSORS_JS
     assert "window.OrionHub" not in CABINET_SENSORS_JS
     assert '"POST"' not in CABINET_SENSORS_JS and "method: 'POST'" not in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_wires_ambient_latest_and_history_contracts() -> None:
+    assert '"/api/cabinet/ambient/latest"' in CABINET_SENSORS_JS
+    assert '"/api/cabinet/ambient/history?window="' in CABINET_SENSORS_JS
+    assert "function pollAmbientLatest(" in CABINET_SENSORS_JS
+    assert "function fetchAmbientHistory(" in CABINET_SENSORS_JS
+    assert "function renderAmbientLatest(" in CABINET_SENSORS_JS
+    assert "function renderAmbientHistory(" in CABINET_SENSORS_JS
+    assert 'querySelectorAll("[data-cabinet-ambient-window]")' in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_polls_only_latest_and_bounds_history_state() -> None:
+    timer_region = CABINET_SENSORS_JS[
+        CABINET_SENSORS_JS.index("function startTimer") : CABINET_SENSORS_JS.index(
+            "function activate"
+        )
+    ]
+    assert "pollAmbientLatest();" in timer_region
+    assert "fetchAmbientHistory" not in timer_region
+    assert ".push(" not in CABINET_SENSORS_JS
+    assert "state.ambientHistory =" in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_fetches_history_only_on_explicit_ui_events() -> None:
+    activate_region = CABINET_SENSORS_JS[
+        CABINET_SENSORS_JS.index("function activate") : CABINET_SENSORS_JS.index(
+            "function deactivate"
+        )
+    ]
+    controls_region = CABINET_SENSORS_JS[
+        CABINET_SENSORS_JS.index("function wireControls") : CABINET_SENSORS_JS.index(
+            "function init"
+        )
+    ]
+    assert "fetchAmbientHistory();" in activate_region
+    assert controls_region.count("fetchAmbientHistory();") >= 2
+
+
+def test_cabinet_sensors_js_preserves_last_good_ambient_data_on_errors() -> None:
+    assert "state.ambientLatest =" in CABINET_SENSORS_JS
+    assert "state.ambientHistory =" in CABINET_SENSORS_JS
+    assert "keeping last good live values" in CABINET_SENSORS_JS
+    assert "keeping last good charts" in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_renders_svg_polylines_for_both_ambient_charts() -> None:
+    assert 'document.createElementNS(SVG_NS, "svg")' in CABINET_SENSORS_JS
+    assert 'svgEl("polyline"' in CABINET_SENSORS_JS
+    assert '"rms"' in CABINET_SENSORS_JS
+    assert '"activity"' in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_does_not_zero_fill_absent_history_values() -> None:
+    assert "rawValue === null" in CABINET_SENSORS_JS
+    assert "rawValue === undefined" in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_uses_timestamps_and_preserves_series_gaps() -> None:
+    assert "Date.parse(point.t)" in CABINET_SENSORS_JS
+    assert "var segments = [];" in CABINET_SENSORS_JS
+    assert "segments.forEach(function (segment)" in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_exposes_an_accessible_chart_summary() -> None:
+    assert 'host.setAttribute("role", "img")' in CABINET_SENSORS_JS
+    assert 'host.setAttribute("aria-label"' in CABINET_SENSORS_JS
+    assert '" range "' in CABINET_SENSORS_JS
 
 
 def test_cabinet_sensors_js_renders_status_grid_and_pressure_strip() -> None:

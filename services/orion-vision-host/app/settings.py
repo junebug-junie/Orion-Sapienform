@@ -46,6 +46,20 @@ class Settings(BaseSettings):
     VISION_VLM_MAX_TOKENS: int = 128
     VISION_VLM_TEMPERATURE: float = 0.4
 
+    # Qwen2-VL/Qwen2.5-VL only (vlm_family.is_chat_template_vlm) -- BLIP/BLIP2
+    # use fixed-size preprocessing and ignore these. Qwen's own "naive dynamic
+    # resolution" processor scales visual-token count (and VRAM/compute) with
+    # native input resolution; nothing upstream in this service resizes a
+    # frame before it reaches the VLM (_load_image_from_request is a plain
+    # Image.open().convert("RGB")). Defaults are the Qwen team's own
+    # documented min_pixels/max_pixels (256*28*28 / 1280*28*28, ~0.2-1.0
+    # megapixel) -- not guessed -- explicitly bounding what was otherwise an
+    # unbounded-by-this-service input on a host that may have as little as a
+    # few GB of free VRAM once other warm profiles are loaded (review
+    # finding, 2026-08-25).
+    VISION_VLM_QWEN_MIN_PIXELS: int = 200704
+    VISION_VLM_QWEN_MAX_PIXELS: int = 1003520
+
     # Fresh-capture resolution (P1's "on-demand capture, bypassing window/
     # council" work -- docs/superpowers/specs/2026-08-12-perception-frontier-
     # design.md). orion-vision-edge writes every captured frame here

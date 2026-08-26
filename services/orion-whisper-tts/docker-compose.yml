@@ -5,6 +5,23 @@ services:
       dockerfile: services/orion-whisper-tts/Dockerfile
     container_name: ${PROJECT}-whisper-tts
     restart: unless-stopped
+    # Review finding, 2026-08-26: cuda_watchdog's restart_process() sends
+    # SIGTERM specifically so this service's own shutdown() handler can run
+    # cleanly (cancel background tasks, close the bus) before the process
+    # exits -- that claim was undefended without this. Docker's own default
+    # stop_grace_period is 10s; a synth request in flight
+    # (WHISPER_TTS_SYNTH_TIMEOUT_SEC default 120s) or an STT request
+    # (WHISPER_TTS_STT_TIMEOUT_SEC default 90s) would still be running well
+    # past that, so Docker would SIGKILL before shutdown() ever got to run --
+    # silently defeating the whole reason SIGTERM was chosen over
+    # os._exit(). Sized comfortably above the longer of the two timeouts.
+    stop_grace_period: 150s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7800/health"]
+      start_period: 15s
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - app-net
 

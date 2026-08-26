@@ -62,11 +62,18 @@ class Settings(BaseSettings):
     # unless-stopped" compose policy recovers automatically instead of the
     # failure sitting silent until a human notices a broken voice reply.
     cuda_watchdog_enabled: bool = Field(True, env="CUDA_WATCHDOG_ENABLED")
-    cuda_watchdog_poll_sec: float = Field(30.0, env="CUDA_WATCHDOG_POLL_SEC")
+    # gt=0, not ge=0: review finding, 2026-08-26 -- 0 or negative turns the
+    # loop's own asyncio.sleep into an unthrottled busy-loop hammering the
+    # NVML/driver layer every event-loop tick, which is a plausible way to
+    # WORSEN a real staleness condition rather than detect it.
+    cuda_watchdog_poll_sec: float = Field(30.0, gt=0, env="CUDA_WATCHDOG_POLL_SEC")
     # Consecutive failed checks required before restarting -- absorbs a
     # single transient NVML hiccup rather than restarting on one bad poll.
+    # ge=1: review finding, 2026-08-26 -- 0 makes should_trigger_restart(1, 0)
+    # True on the very first check, silently defeating the whole point of a
+    # debounce threshold.
     cuda_watchdog_failure_threshold: int = Field(
-        2, env="CUDA_WATCHDOG_FAILURE_THRESHOLD"
+        2, ge=1, env="CUDA_WATCHDOG_FAILURE_THRESHOLD"
     )
 
     class Config:

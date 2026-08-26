@@ -76,19 +76,42 @@ def _cleanup_sys_modules():
         sys.modules.pop(mod_name, None)
 
 
-def test_startup_raises_when_gpu_expected_but_cuda_unavailable(monkeypatch):
-    """The actual incident this closes: a container that boots with CUDA
-    already broken must fail LOUD at startup, not silently serve requests
-    until the first real TTS call crashes."""
+def test_startup_logs_critical_but_does_not_raise_when_cuda_unavailable(monkeypatch, caplog):
+    """Review finding, 2026-08-26: an earlier version of this patch let this
+    raise and crash the WHOLE process -- bus, listener_task, stt_task, all
+    of it -- before any of them started. STT does not need CUDA at all
+    (stt.py falls back to CPU); the incident this patch closes is that STT
+    SURVIVED a CUDA staleness event that killed TTS. A hard crash-at-boot
+    took away exactly that resilience. The boot guard must log loud and let
+    startup continue -- enforcement is the watchdog's job alone."""
+    import logging
+
     module, _ = _load_main_module(monkeypatch, cuda_available=False)
     module.settings.tts_use_gpu = True
-    bus_cls, _ = _fake_bus_cls()
+    module.settings.cuda_watchdog_enabled = True
+    bus_cls, bus_instance = _fake_bus_cls()
     monkeypatch.setattr(module, "OrionBusAsync", bus_cls)
-    monkeypatch.setattr(module, "listener_worker", AsyncMock())
-    monkeypatch.setattr(module, "stt_listener_worker", AsyncMock())
 
-    with pytest.raises(RuntimeError, match="CUDA is not available"):
-        asyncio.run(module.startup())
+    async def _hang(*a, **k):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(module, "listener_worker", _hang)
+    monkeypatch.setattr(module, "stt_listener_worker", _hang)
+
+    async def _run():
+        with caplog.at_level(logging.CRITICAL, logger="orion-whisper-tts"):
+            await module.startup()  # must NOT raise
+        assert module.listener_task is not None and not module.listener_task.done()
+        assert module.stt_task is not None and not module.stt_task.done()
+        # The watchdog still starts -- it is the actual enforcement path,
+        # and will restart the process once its own failure_threshold is
+        # reached (covered by test_cuda_watchdog.py's loop tests).
+        assert module.cuda_watchdog_task is not None
+        await module.shutdown()
+
+    asyncio.run(_run())
+    assert any("cuda_unavailable_at_boot" in r.getMessage() for r in caplog.records)
+    bus_instance.connect.assert_awaited_once()
 
 
 def test_startup_succeeds_and_starts_watchdog_when_cuda_available(monkeypatch):
@@ -136,6 +159,46 @@ def test_startup_skips_both_gpu_checks_when_gpu_mode_is_off(monkeypatch):
         await module.shutdown()
 
     asyncio.run(_run())
+
+
+def test_health_endpoint_reports_cuda_state(monkeypatch):
+    """Review finding, 2026-08-26: neither /health nor the heartbeat's bus
+    publish reflected CUDA state before this -- an operator polling /health
+    during the poll_sec*failure_threshold window before a restart would see
+    'status: ok' the whole time. This is the fix, tested directly against
+    the real FastAPI route function, not a reimplementation of it."""
+    module, _ = _load_main_module(monkeypatch, cuda_available=False)
+    module.settings.tts_use_gpu = True
+    module.settings.cuda_watchdog_enabled = True
+
+    async def _run():
+        resp = await module.health()
+        return resp
+
+    resp = asyncio.run(_run())
+    import json
+
+    body = json.loads(bytes(resp.body))
+    assert body["cuda_available"] is False
+    assert body["cuda_watchdog_enabled"] is True
+
+
+def test_health_endpoint_omits_cuda_state_in_cpu_mode(monkeypatch):
+    """A deliberate CPU-mode deployment should not report a misleading
+    cuda_available=False as though it were a fault -- there is no GPU
+    expected in the first place."""
+    module, _ = _load_main_module(monkeypatch, cuda_available=False)
+    module.settings.tts_use_gpu = False
+
+    async def _run():
+        return await module.health()
+
+    resp = asyncio.run(_run())
+    import json
+
+    body = json.loads(bytes(resp.body))
+    assert body["cuda_available"] is None
+    assert body["cuda_watchdog_enabled"] is False
 
 
 def test_watchdog_disabled_flag_suppresses_the_task_even_with_gpu_on(monkeypatch):

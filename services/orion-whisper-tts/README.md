@@ -51,31 +51,58 @@ and its already-running model had likely established a CUDA context before
 the staleness set in; Coqui's `TTS` library hard-asserts CUDA with no such
 fallback. A plain container restart fixed it immediately.
 
-Two checks close this, at the two different moments a boot-time-only check
-cannot both cover:
+One mechanism enforces this, at both moments a single check cannot cover
+alone -- unified deliberately, after a review (2026-08-26) caught that two
+separate hard-fail paths regressed the exact resilience this closes:
 
 - **`_require_cuda_or_die()`** (`app/main.py`), called once at startup when
   `TTS_USE_GPU=true`. Existed as dead code for an unknown period -- defined,
   documented with a comment saying to call it during startup, never actually
-  called -- until this patch wired it in. Catches "boots already broken":
-  fails loud immediately instead of serving requests that will crash on
-  first real TTS use.
+  called -- until this patch wired it in. **Advisory only**: logs
+  `CRITICAL` and lets `startup()` continue -- it does NOT raise. An earlier
+  draft of this patch let it raise, which crashed the whole process (bus,
+  `listener_task`, `stt_task`, all of it) before any of them started --
+  taking STT down too, on a component that does not need CUDA at all and is
+  exactly what survived the real incident. Boot-broken must degrade the
+  same way mid-uptime-broken does, not worse.
 - **The CUDA watchdog** (`app/cuda_watchdog.py`), a background task started
-  alongside the existing heartbeat loop. Catches the case the boot-time
-  check cannot see by definition: staleness developing mid-uptime, which is
-  what actually happened in the 2026-08-26 incident. Polls
-  `torch.cuda.is_available()` every `CUDA_WATCHDOG_POLL_SEC`; on
+  alongside the existing heartbeat loop -- the single real enforcement path
+  for BOTH "broken at boot" and "broken mid-uptime". Polls
+  `torch.cuda.is_available()` (off the event loop, under a timeout -- a
+  genuine NVML wedge can hang rather than fast-return, and an in-line
+  synchronous call would freeze `heartbeat_loop`/`listener_task`/`stt_task`
+  right along with itself) every `CUDA_WATCHDOG_POLL_SEC`. On
   `CUDA_WATCHDOG_FAILURE_THRESHOLD` consecutive failures (debounced against
-  a single transient NVML hiccup), it sends itself `SIGTERM` -- not
-  `os._exit()`, so the app's own `shutdown()` handler still runs cleanly
-  first -- and `restart: unless-stopped` (docker-compose.yml) brings the
-  container back with a fresh device mapping.
+  a single transient hiccup; a hang counts as a failure, a raised exception
+  from the check itself does not), it sends itself `SIGTERM` -- not
+  `os._exit()`, so `shutdown()` still runs cleanly first -- and
+  `restart: unless-stopped` brings the container back with a fresh device
+  mapping. A GPU broken from the very first boot simply fails its first
+  check almost immediately and restarts on the normal threshold.
 
-Neither check can fix the underlying host/driver quirk; that is outside
-this service's code entirely. What they do is turn a silent, multi-hour
-"TTS is just broken and nobody noticed" outage into a self-healing,
-few-second one. Both are gated on `TTS_USE_GPU` -- a deliberate CPU-mode
-deployment is not forced to have a GPU by either check.
+Neither closes the underlying host/driver quirk; that is outside this
+service's code entirely. What they do is turn a silent, multi-hour "TTS is
+just broken and nobody noticed" outage into a self-healing, few-second one.
+Both are gated on `TTS_USE_GPU` -- a deliberate CPU-mode deployment is not
+forced to have a GPU by either.
+
+`GET /health` reports `cuda_available` (a fresh, direct check, `null` in
+CPU mode) and `cuda_watchdog_enabled` -- an operator no longer has to wait
+for a log line to see CUDA state mid-outage.
+
+**Known, deliberately deferred risk**: the watchdog has no cross-restart
+rate limit. Each restart is a brand-new process with fresh in-memory state,
+so a genuinely PERMANENT GPU failure (not the transient staleness this was
+built for) would restart the container roughly every
+`poll_sec * failure_threshold` seconds indefinitely, with no backoff.
+`services/orion-mesh-guardian` already has exactly this kind of
+`cooldown_sec`/`max_attempts_per_hour` remediation state machine
+(`config/mesh_remediation_roster.yaml`) -- whisper-tts is not registered
+there. Not fixed here: mesh-guardian is an external, cross-restart-persistent
+supervisor and doing this properly means registering with it (or exposing
+CUDA state through a probe it can reach), not reinventing a second,
+in-process, un-persisted rate limiter. Left as a named follow-up rather
+than silently uncovered.
 
 ## Running
 

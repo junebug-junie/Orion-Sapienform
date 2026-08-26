@@ -236,6 +236,23 @@ class ThoughtSettings(BaseSettings):
     visual_chain_caption_timeout_sec: float = Field(
         60.0, alias="ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC"
     )
+    # Mesh-context seeding (visual_chain.py module docstring, 2026-08-26):
+    # how much of the text-reverie chain's `interpretation` gets woven into
+    # the diffusion prompt. Same env-parity convention as every other
+    # tunable in this block (unlike a bare module constant, an operator can
+    # widen/narrow this without a redeploy).
+    visual_chain_mesh_context_char_limit: int = Field(
+        400, alias="ORION_VISUAL_CHAIN_MESH_CONTEXT_CHAR_LIMIT"
+    )
+    # Staleness bound on the mesh-context read (store.py::
+    # load_recent_reverie_interpretation) -- mirrors reverie_perception_
+    # max_age_sec above. Without this, a stalled/disabled text-reverie
+    # worker leaves the same old row readable forever, and both the prompt
+    # and the cockpit would keep presenting it as "what's influencing
+    # reverie right now" long after it stopped being true.
+    visual_chain_mesh_context_max_age_sec: float = Field(
+        900.0, alias="ORION_VISUAL_CHAIN_MESH_CONTEXT_MAX_AGE_SEC"
+    )
 
     # --- Attention salience trace publish gate ---
     # 2026-07-31: `orion.substrate.attention.salience`'s hand-picked

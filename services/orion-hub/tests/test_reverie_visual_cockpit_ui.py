@@ -52,6 +52,9 @@ def test_js_renders_pipeline_diagram_with_real_code_pointers() -> None:
     assert "services/orion-thought/app/visual_chain.py" in REVERIE_JS
     assert "services/orion-thought/app/store.py" in REVERIE_JS
     assert "renderPipelineDiagram" in REVERIE_JS
+    # Mesh-context seeding (2026-08-26) must point at the real reader, not
+    # just describe it in prose -- same inspectable-evidence bar.
+    assert "load_recent_reverie_interpretation" in REVERIE_JS
 
 
 def test_js_uses_cursor_based_pagination_not_offset() -> None:
@@ -103,3 +106,22 @@ def test_js_shows_the_realized_prompt_and_error_state() -> None:
     assert "chain.prompt" in REVERIE_JS
     assert "chain.error" in REVERIE_JS
     assert "egress" in REVERIE_JS
+
+
+def test_js_shows_the_real_mesh_context_that_influenced_the_prompt() -> None:
+    """2026-08-26: the visual chain now weaves a real mesh signal (the
+    parallel text-reverie chain's own interpretation) into its prompt to
+    break the pure self-referential loop that fell into multi-hour attractor
+    basins. The cockpit must show it in `renderVisualChain`'s own body, not
+    just as a decorative string elsewhere in the file."""
+    body = _function_body("renderVisualChain")
+    assert "chain.mesh_context" in body
+    # Real explicit disclosure when a run had no mesh signal available --
+    # never silently renders nothing with no explanation.
+    assert "no mesh context available" in body
+    # Review finding: the fallback message must be driven by the server's own
+    # ground-truth flags (visual_chain.py::_prompt_source_flags), never
+    # guessed client-side -- guessing produced a false "fell back to
+    # continuity-only" claim on runs that used neither prior nor mesh context.
+    assert "chain.used_mesh" in body
+    assert "chain.used_prior" in body

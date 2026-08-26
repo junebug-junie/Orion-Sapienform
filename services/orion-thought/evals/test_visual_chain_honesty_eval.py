@@ -81,6 +81,14 @@ async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: "old")
+    # Mesh-context seeding (2026-08-26): mocked here too, not left to hit the
+    # real (unmocked) DB engine -- review finding: this eval was updated for
+    # the new load_recent_reverie_interpretation dependency, but the honesty
+    # invariants it was written to police were not yet extended to cover the
+    # new mesh_context/used_prior/used_mesh chain_json fields until this diff.
+    monkeypatch.setattr(
+        visual_chain, "load_recent_reverie_interpretation", lambda **kw: "mesh signal for this scenario"
+    )
 
     def fake_generate(prompt, **kw):
         if not scenario.generate_ok:
@@ -129,6 +137,21 @@ def _check(chain, persisted_artifacts, scenario: Scenario) -> list[str]:
             f"{scenario.name}: terminal_reason={chain.terminal_reason!r}, "
             f"expected {scenario.expected_terminal!r}"
         )
+
+    # Mesh-context honesty (2026-08-26): every scenario here has both a real
+    # prior_description ("old") and a real mesh_context mocked in -- the
+    # persisted chain_json must say so truthfully in every scenario,
+    # including the failure ones (an operator inspecting a failed run still
+    # needs to see what was going to influence it -- module docstring's
+    # inspectable-evidence bar applies to failures too, not just successes).
+    cj = chain.chain_json
+    if cj.get("mesh_context") != "mesh signal for this scenario":
+        problems.append(f"{scenario.name}: mesh_context not persisted as-given: {cj.get('mesh_context')!r}")
+    if cj.get("used_prior") is not True:
+        problems.append(f"{scenario.name}: used_prior flag wrong: {cj.get('used_prior')!r} (prior was real)")
+    if cj.get("used_mesh") is not True:
+        problems.append(f"{scenario.name}: used_mesh flag wrong: {cj.get('used_mesh')!r} (mesh was real)")
+
     if scenario.expected_terminal == "generation_failed":
         if chain.prior_description != "old":
             problems.append(

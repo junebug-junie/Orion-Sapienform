@@ -63,6 +63,8 @@ def test_build_visual_prompt_uses_seed_when_no_prior():
 
     assert visual_chain.build_visual_prompt(None) == visual_chain.DEFAULT_SEED_PROMPT
     assert visual_chain.build_visual_prompt("   ") == visual_chain.DEFAULT_SEED_PROMPT
+    assert visual_chain.build_visual_prompt(None, None) == visual_chain.DEFAULT_SEED_PROMPT
+    assert visual_chain.build_visual_prompt("  ", "  ") == visual_chain.DEFAULT_SEED_PROMPT
 
 
 def test_build_visual_prompt_continues_prior():
@@ -71,6 +73,89 @@ def test_build_visual_prompt_continues_prior():
     prompt = visual_chain.build_visual_prompt("a quiet room, warm light")
     assert "a quiet room, warm light" in prompt
     assert prompt != visual_chain.DEFAULT_SEED_PROMPT
+
+
+def test_build_visual_prompt_mesh_context_only_when_no_prior():
+    """First-ever run (or a run whose own continuity read failed) with a real
+    mesh_context available -- uses it directly rather than falling back to
+    the placeholder DEFAULT_SEED_PROMPT."""
+    from app import visual_chain
+
+    prompt = visual_chain.build_visual_prompt(None, "the mesh is quiet tonight, low traffic")
+    assert "the mesh is quiet tonight, low traffic" in prompt
+    assert prompt != visual_chain.DEFAULT_SEED_PROMPT
+
+
+def test_build_visual_prompt_weaves_both_prior_and_mesh_context():
+    """The real breaking-the-self-loop case: both inputs present, both must
+    actually appear in the resulting prompt (not one silently dropped)."""
+    from app import visual_chain
+
+    prompt = visual_chain.build_visual_prompt(
+        "a fox curled by the fire", "open loop: the deploy queue is backed up"
+    )
+    assert "a fox curled by the fire" in prompt
+    assert "open loop: the deploy queue is backed up" in prompt
+
+
+def test_truncate_mesh_context_bounds_length_and_normalizes_blank():
+    from app import visual_chain
+
+    # Real prose with word boundaries -- a hard character slice would cut
+    # mid-word (review finding); truncate_at_word_boundary breaks on
+    # whitespace instead, so the result must not exceed the limit but also
+    # must not end mid-word.
+    long_text = "the mesh is busy right now " * 40  # far past the 400-char default
+    truncated = visual_chain._truncate_mesh_context(long_text, max_chars=50)
+    assert truncated is not None
+    assert len(truncated) <= 51  # <= limit + the "…" truncation marker
+    # Delegates to the shared word-boundary helper (existing-mechanism check)
+    # -- confirm it's really that function's behavior, not a coincidence:
+    # every word in the source text is one of these five, so an ending on
+    # any of them (not a mid-word fragment) proves the boundary held.
+    stripped = truncated.rstrip("…").rstrip()
+    assert stripped.split()[-1] in {"the", "mesh", "is", "busy", "right", "now"}
+
+    assert visual_chain._truncate_mesh_context(None) is None
+    assert visual_chain._truncate_mesh_context("   ") is None
+    assert visual_chain._truncate_mesh_context("") is None
+
+
+def test_prompt_source_flags_reflect_what_was_actually_passed():
+    from app import visual_chain
+
+    assert visual_chain._prompt_source_flags(None, None) == {
+        "used_prior": False,
+        "used_mesh": False,
+    }
+    assert visual_chain._prompt_source_flags("  ", None) == {
+        "used_prior": False,
+        "used_mesh": False,
+    }
+    assert visual_chain._prompt_source_flags("a fox by the fire", None) == {
+        "used_prior": True,
+        "used_mesh": False,
+    }
+    assert visual_chain._prompt_source_flags(None, "mesh signal") == {
+        "used_prior": False,
+        "used_mesh": True,
+    }
+    assert visual_chain._prompt_source_flags("prior", "mesh") == {
+        "used_prior": True,
+        "used_mesh": True,
+    }
+
+
+def test_truncate_mesh_context_uses_the_settings_char_limit_by_default(monkeypatch):
+    """No module-level constant anymore (review finding: every other tunable
+    in this file is a settings.py field with an ORION_ env alias) -- confirm
+    the default actually comes from settings, not a bare magic number."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_mesh_context_char_limit", 10)
+    truncated = visual_chain._truncate_mesh_context("this text is much longer than ten chars")
+    assert truncated is not None
+    assert len(truncated) <= 11
 
 
 # --- _extract_caption -----------------------------------------------------
@@ -98,7 +183,12 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain,
+        "load_recent_reverie_interpretation",
+        lambda **kw: "the substrate is quiet, one open loop about a stalled deploy",
+    )
 
     generate_calls: list[str] = []
 
@@ -128,7 +218,21 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     assert chain is not None
     assert chain.terminal_reason == "max_steps"
     assert chain.prior_description == "a calm room with soft light"
-    assert generate_calls == [visual_chain.DEFAULT_SEED_PROMPT]  # no prior -> seed prompt
+    # No prior_description, but a real mesh_context WAS available -- the
+    # prompt must be built from it, not silently fall back to the seed.
+    assert generate_calls != [visual_chain.DEFAULT_SEED_PROMPT]
+    assert "stalled deploy" in generate_calls[0]
+    # And the exact mesh_context used must be persisted alongside the prompt
+    # (cockpit "what's influencing reverie" -- must match what was embedded).
+    assert (
+        persisted_chains[0].chain_json["mesh_context"]
+        == "the substrate is quiet, one open loop about a stalled deploy"
+    )
+    # Ground-truth prompt-source flags (review finding, replaces the cockpit
+    # guessing from prompt text): no prior_description this run, but mesh
+    # context WAS used.
+    assert persisted_chains[0].chain_json["used_prior"] is False
+    assert persisted_chains[0].chain_json["used_mesh"] is True
 
     assert len(persisted_chains) == 1
     assert persisted_chains[0].chain_id == chain.chain_id
@@ -153,6 +257,41 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_visual_chain_once_neither_prior_nor_mesh_uses_seed_and_records_both_flags_false(
+    tmp_path, monkeypatch
+):
+    """Review finding: the true first-ever-run branch (both reads empty,
+    DEFAULT_SEED_PROMPT used) was only unit-tested for _prompt_source_flags
+    in isolation -- nothing exercised it end-to-end through
+    run_visual_chain_once to confirm the persisted chain_json actually says
+    used_prior=False AND used_mesh=False together, not just individually."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_recent_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "d" * 64)
+
+    persisted_chains = []
+    monkeypatch.setattr(
+        visual_chain, "persist_reverie_visual_chain", lambda c: persisted_chains.append(c) or True
+    )
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    bus = _fake_bus(_vision_result_payload("something new"))
+    chain = await visual_chain.run_visual_chain_once(bus)
+
+    assert chain is not None
+    assert len(persisted_chains) == 1
+    cj = persisted_chains[0].chain_json
+    assert cj["prompt"] == visual_chain.DEFAULT_SEED_PROMPT
+    assert cj["used_prior"] is False
+    assert cj["used_mesh"] is False
+    assert cj["mesh_context"] is None
+
+
+@pytest.mark.asyncio
 async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_path, monkeypatch):
     from app import visual_chain
 
@@ -160,6 +299,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
     )
+    monkeypatch.setattr(visual_chain, "load_recent_reverie_interpretation", lambda **kw: "mesh signal")
 
     def fake_generate(prompt, *, base_url, timeout_sec):
         raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
@@ -185,6 +325,11 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
     # Nothing was generated, so prior_description is carried forward as-is.
     assert chain.prior_description == "old description"
     assert len(persisted_chains) == 1
+    # mesh_context was resolved and embedded in the (failed) attempted
+    # prompt -- it must still be visible in the failure's chain_json so the
+    # cockpit can show what was going to influence this run.
+    assert persisted_chains[0].chain_json["mesh_context"] == "mesh signal"
+    assert "mesh signal" in persisted_chains[0].chain_json["prompt"]
     assert persisted_artifacts == []  # no artifact row for a chain with no image
     bus.rpc_request.assert_not_called()  # never reached the vision-host hop
 
@@ -200,6 +345,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
     )
+    monkeypatch.setattr(visual_chain, "load_recent_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png()
     )
@@ -256,6 +402,7 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_prior_description", lambda: db["prior_description"]
     )
+    monkeypatch.setattr(visual_chain, "load_recent_reverie_interpretation", lambda **kw: None)
 
     def fake_persist_chain(chain):
         db["prior_description"] = chain.prior_description

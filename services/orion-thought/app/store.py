@@ -454,10 +454,108 @@ def load_latest_visual_chain_prior_description() -> str | None:
             )
         if not row:
             return None
-        value = row.get("prior_description")
-        return str(value).strip() or None if value else None
+        return _strip_or_none(row.get("prior_description"))
     except Exception as exc:
         logger.debug("visual chain prior_description load failed: %s", exc)
+        return None
+
+
+def _strip_or_none(value: Any) -> str | None:
+    """Shared normalization for both `load_latest_visual_chain_prior_
+    description` and `load_recent_reverie_interpretation` below (review
+    finding: the two previously duplicated a precedence-fragile one-liner
+    verbatim) -- an explicit two-step strip-then-or, not a single ternary
+    riding on `if`/`or` precedence to do both jobs at once."""
+    if not value:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def load_recent_reverie_interpretation(max_age_sec: float | None = None) -> str | None:
+    """Most recent TEXT-reverie thought's `interpretation` (written by
+    `persist_reverie_thought` above, same table, same engine) -- real prose
+    already assembled from live mesh state (open loops, percepts, concern
+    cards -- see `reverie.py::build_reverie_context`), refreshed on
+    `chain.py`'s own ~90s cadence.
+
+    This is the mesh-context seed for the VISUAL chain's prompt
+    (`visual_chain.py::build_visual_prompt`) -- reading it is what breaks the
+    visual chain's otherwise pure self-referential loop (its own module
+    docstring names this "Patch 3": "What specific recent-activity / chat /
+    dream context seeds a run's prompt"). Confirmed live 2026-08-26: without
+    an external seed, the pure prior-caption-only loop fell into multi-hour
+    attractor basins (28 straight runs describing "ancient Roman aqueduct")
+    -- a textbook entropy-starved fixed point, not a bug in either chain.
+
+    Privacy (review finding, checked not assumed): `build_reverie_context`
+    always sets `user_message: None` for this call -- "the defining
+    difference from stance_react" per its own docstring -- so no raw chat
+    turn ever reaches the LLM call that produces `interpretation`, only
+    Orion's own internal coalition/open-loop/percept/concern-card state.
+    That same `interpretation` value is ALSO already returned verbatim to
+    the Hub operator today by `reverie_routes.py`'s existing `text_recent`
+    route -- this function surfaces no data the Hub didn't already expose.
+
+    `max_age_sec`: if given, rows older than this are treated as absent
+    (returns None) rather than presented as current -- a stalled/disabled
+    text-reverie worker must not leave the same old row readable forever
+    while the prompt and cockpit keep calling it "right now" (visual_chain
+    passes `settings.visual_chain_mesh_context_max_age_sec`; None here means
+    unbounded, used by direct callers/tests that don't care about freshness).
+    This also bounds the query's worst case to the age window instead of an
+    unbounded scan back through a run of empty-interpretation rows (e.g.
+    during an LLM outage -- `parse_reverie_payload` writes `interpretation=
+    ""` on failure, not a skipped row).
+
+    Deliberately the SAME table/engine `persist_reverie_thought`/
+    `load_pending_expectations` already use in this module -- no new DB
+    connection, no new schema, no new bus channel (CLAUDE.md §0A
+    existing-mechanism check). Read-only, best-effort: None on any error or
+    empty/null interpretation, so a lookup failure degrades to "no mesh
+    context this run" (the visual chain's prior behavior) rather than
+    breaking the tick.
+
+    Review finding, declined: `vision_reader.py::read_recent_vision_events`
+    hand-rolls a similar "fresh row within a max-age window" SQL shape. Not
+    unified into one shared helper here -- `vision_reader.py`'s own
+    docstring explains it deliberately does NOT share this module's
+    `_get_engine()`, since each reader in this service needs its own
+    `statement_timeout` GUC, which only takes effect on first-use engine
+    construction for a given DSN. A shared SQL-building helper could still
+    be extracted independent of engine choice, but with exactly two call
+    sites and no evidence yet that this idiom needs to change in lockstep,
+    that's speculative plumbing for now -- revisit if a third reader needs
+    the same shape.
+    """
+    try:
+        from sqlalchemy import text
+
+        clauses = ["interpretation IS NOT NULL", "interpretation <> ''"]
+        params: dict[str, Any] = {}
+        if max_age_sec is not None:
+            clauses.append("created_at > now() - make_interval(secs => :max_age_sec)")
+            params["max_age_sec"] = float(max_age_sec)
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT interpretation FROM substrate_reverie_thought "
+                        f"WHERE {' AND '.join(clauses)} "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    params,
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        return _strip_or_none(row.get("interpretation"))
+    except Exception as exc:
+        logger.debug("recent reverie interpretation load failed: %s", exc)
         return None
 
 

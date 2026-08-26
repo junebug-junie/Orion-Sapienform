@@ -141,7 +141,11 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
                 "terminal_reason": "max_steps",
                 "ema_salience": 0.0,
                 "prior_description": "a quiet room",
-                "chain_json": {"prompt": "a quiet room. Continue...", "description": "a quiet room"},
+                "chain_json": {
+                    "prompt": "a quiet room. Continue...",
+                    "description": "a quiet room",
+                    "mesh_context": "open loop: a stalled deploy",
+                },
             }
         ],
         reverie_visual_artifact=[
@@ -166,6 +170,7 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
     chain = body["chains"][0]
     assert chain["chain_id"] == "c1"
     assert chain["prompt"] == "a quiet room. Continue..."
+    assert chain["mesh_context"] == "open loop: a stalled deploy"
     assert len(chain["artifacts"]) == 1
     assert chain["artifacts"][0]["sha256"] == "a" * 64
     assert chain["artifacts"][0]["image_url"] == f"/api/reverie/visual/image/{'a' * 64}"
@@ -268,6 +273,9 @@ def test_visual_recent_surfaces_generation_error(client, monkeypatch):
     resp = client.get("/api/reverie/visual/recent")
     chain = resp.json()["chains"][0]
     assert chain["error"] == "diffusion-host /generate returned HTTP 429"
+    # No mesh_context key in this row's chain_json (older/pre-wiring row) ->
+    # None, not a KeyError.
+    assert chain["mesh_context"] is None
 
 
 def test_visual_recent_chain_with_no_artifact_yet(client, monkeypatch):

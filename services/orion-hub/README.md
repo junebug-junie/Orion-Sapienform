@@ -1786,10 +1786,21 @@ never set anywhere in the codebase today (confirmed live, 2026-08-26) -- REM re-
 backlog every pass, so "queued" here means exactly that, not "applied" (Phase G's applier is
 separate and gated, and never runs on this queue's contents automatically).
 
-**Privacy note** (design doc §7): visual-chain images are a lossy rendering of whatever context
-fed the prompt. Today that's only `prior_description` (a prior caption) or a fixed seed string --
-no private chat/dream content reaches the prompt yet. This tab must be revisited before Patch 3
-(real context-seeding) ships, not after.
+**Privacy note** (design doc §7, revisited 2026-08-26 for Patch 3's mesh-context seeding, as this
+note itself required): visual-chain images are a lossy rendering of whatever context fed the
+prompt. As of Patch 3 that's `prior_description` (a prior caption), a fixed seed string, AND
+`mesh_context` -- the parallel TEXT-reverie chain's own `interpretation` (`substrate_reverie_
+thought.interpretation`, `orion-thought/app/store.py::load_recent_reverie_interpretation`), woven
+in to break the pure self-referential loop that otherwise falls into multi-hour attractor basins
+(see `visual_chain.py`'s module docstring).
+
+Checked, not assumed: `reverie.py::build_reverie_context` (the call that produces `interpretation`)
+always sets `user_message: None` -- "the defining difference from stance_react" per its own
+docstring -- so no raw chat turn ever reaches that LLM call. Its actual inputs are Orion's own
+internal coalition/open-loop/percept/concern-card state, not private chat or journal content. That
+same `interpretation` value is also already returned verbatim to the Hub operator today by this
+same tab's TEXT sub-view (`reverie_routes.py`'s `text_recent` route) -- mesh-context seeding
+surfaces no data through the visual cockpit that wasn't already Hub-visible through the text one.
 
 ## Bus synaptic graph debug routes
 

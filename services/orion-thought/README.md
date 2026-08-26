@@ -337,6 +337,8 @@ Flags:
 | `CHANNEL_VISION_HOST_REQUEST` | `orion:exec:request:VisionHostService:circe-vl` | circe's dedicated Qwen2-VL vision-host lane |
 | `CHANNEL_VISION_REPLY_PREFIX` | `orion:vision:reply` | Per-call reply channel prefix |
 | `ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC` | `60` | Vision-host RPC timeout |
+| `ORION_VISUAL_CHAIN_MESH_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the text-reverie chain's `interpretation` woven into the prompt (mesh-context seeding, 2026-08-26) |
+| `ORION_VISUAL_CHAIN_MESH_CONTEXT_MAX_AGE_SEC` | `900` | How stale that `interpretation` row can be before it's treated as absent rather than "current" |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, persistence); one test runs two sequential

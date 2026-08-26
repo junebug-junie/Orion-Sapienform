@@ -233,3 +233,166 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
     # The bug this guards against: writing model_dump() instead would nest
     # the whole chain (including this same chain_json) one level deeper.
     assert "chain_json" not in written
+
+
+# --- load_recent_reverie_interpretation: mesh-context read ------------------
+
+
+def test_load_recent_reverie_interpretation_returns_latest_nonempty_row() -> None:
+    store = _fresh_store()
+
+    class _FakeMappingResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return {"interpretation": "  the mesh is busy right now  "}
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt, params=None):
+            return _FakeMappingResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        result = store.load_recent_reverie_interpretation()
+    finally:
+        monkeypatch.undo()
+
+    # Stripped, like load_latest_visual_chain_prior_description's sibling read.
+    assert result == "the mesh is busy right now"
+
+
+def test_load_recent_reverie_interpretation_max_age_sec_adds_and_binds_the_clause() -> None:
+    """Staleness bound (review finding): without an age filter, a stalled
+    text-reverie worker leaves the same old row readable forever while the
+    prompt/cockpit keep presenting it as current. Confirm the SQL actually
+    carries the bound and the parameter is really passed through -- not just
+    that the function accepts the argument."""
+    store = _fresh_store()
+
+    class _FakeMappingResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return {"interpretation": "fresh enough"}
+
+    captured: dict = {}
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt, params=None):
+            captured["stmt"] = str(stmt)
+            captured["params"] = params
+            return _FakeMappingResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        result = store.load_recent_reverie_interpretation(max_age_sec=900.0)
+    finally:
+        monkeypatch.undo()
+
+    assert result == "fresh enough"
+    assert "make_interval" in captured["stmt"]
+    assert captured["params"] == {"max_age_sec": 900.0}
+
+
+def test_load_recent_reverie_interpretation_no_max_age_sec_omits_the_clause() -> None:
+    store = _fresh_store()
+
+    class _FakeMappingResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return {"interpretation": "whatever's there"}
+
+    captured: dict = {}
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt, params=None):
+            captured["stmt"] = str(stmt)
+            captured["params"] = params
+            return _FakeMappingResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        store.load_recent_reverie_interpretation()  # max_age_sec=None, default
+    finally:
+        monkeypatch.undo()
+
+    assert "make_interval" not in captured["stmt"]
+    assert captured["params"] == {}
+
+
+def test_load_recent_reverie_interpretation_none_on_empty_row_or_error() -> None:
+    store = _fresh_store()
+
+    class _EmptyResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return None
+
+    class _FakeConnEmpty:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt, params=None):
+            return _EmptyResult()
+
+    class _FakeEngineEmpty:
+        def connect(self):
+            return _FakeConnEmpty()
+
+    class _FakeEngineBoom:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngineEmpty())
+        assert store.load_recent_reverie_interpretation() is None
+
+        monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngineBoom())
+        # Fail-open, not raise -- a lookup failure must degrade to "no mesh
+        # context this run", never break the tick.
+        assert store.load_recent_reverie_interpretation() is None
+    finally:
+        monkeypatch.undo()

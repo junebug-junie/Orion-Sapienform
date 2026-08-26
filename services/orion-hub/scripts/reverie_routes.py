@@ -43,11 +43,18 @@ must point at the exact same filesystem path as `orion-thought`'s
 enforces this at startup. If they drift, images 404 with "artifact file
 missing on disk" even though the DB rows are fine.
 
-**Privacy note** (design doc §7): visual-chain images are a lossy rendering
-of whatever context fed the prompt. Today that's only `prior_description`
-(a prior caption) or a fixed seed string -- no private chat/dream content
-reaches the prompt yet. This tab must be revisited before Patch 3 (real
-context-seeding) ships, not after.
+**Privacy note** (design doc §7, revisited 2026-08-26 for Patch 3's
+mesh-context seeding -- see the identical note in services/orion-hub/
+README.md for the full evidence, kept in sync here): visual-chain images
+are a lossy rendering of whatever context fed the prompt. As of Patch 3
+that's `prior_description`, a fixed seed string, AND `mesh_context` --
+`orion-thought/app/store.py::load_recent_reverie_interpretation`'s output,
+surfaced in this route's own response below. Checked, not assumed:
+`reverie.py::build_reverie_context` always sets `user_message: None` for
+that call, so no raw chat turn reaches it, and the same `interpretation`
+value is already returned verbatim by this file's own `text_recent` route
+-- mesh-context seeding exposes no data through the visual cockpit that
+wasn't already Hub-visible through the text one.
 """
 
 from __future__ import annotations
@@ -237,6 +244,21 @@ async def visual_recent(
                 # _generation_failed) -- surfaced so the cockpit can show
                 # *why* a run produced no image instead of just an empty card.
                 "error": cj.get("error"),
+                # The real, live mesh signal (text-reverie chain's own
+                # interpretation) that was woven into `prompt` alongside
+                # prior_description -- see visual_chain.py::build_visual_prompt.
+                # None on runs before this was wired, or when nothing was
+                # available to read -- never fabricated.
+                "mesh_context": cj.get("mesh_context"),
+                # Ground truth for which inputs build_visual_prompt actually
+                # used (visual_chain.py::_prompt_source_flags) -- the cockpit
+                # must not re-derive this by guessing from prompt text (review
+                # finding: that produced a false "fell back to continuity-only"
+                # disclosure on runs that used neither input). None (not
+                # False) on rows written before this was wired -- "unknown",
+                # not "false".
+                "used_prior": cj.get("used_prior"),
+                "used_mesh": cj.get("used_mesh"),
                 "artifacts": artifacts,
             }
         )

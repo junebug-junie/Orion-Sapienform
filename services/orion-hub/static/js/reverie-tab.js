@@ -17,11 +17,14 @@
  * diagram (PIPELINE_STAGES below, one node per real function this chain
  * actually calls -- see services/orion-thought/app/visual_chain.py, the
  * ground truth this diagram is drawn from, not an idealized version of it),
- * then one detail card per run showing the exact prompt used, the image it
- * produced, the caption/description that came back, and this run's real
- * egress -- what happens to the output, including the honest disclosure
- * that nothing consumes it further today (design doc §8, Patch 3
- * territory). Real offset-based pagination, not a single fixed-limit fetch.
+ * then one detail card per run showing the exact prompt used, the real mesh
+ * context (2026-08-26: the parallel text-reverie chain's own interpretation)
+ * that was woven into it, the image it produced, the caption/description
+ * that came back, and this run's real egress -- what happens to the output,
+ * including the honest disclosure that nothing consumes it further today
+ * (design doc §8; the OUTPUT side is still Patch 3 territory, only the
+ * INPUT/context-seeding side has real mesh data now). Cursor-based
+ * pagination, not offset (see cursorStack below).
  */
 (function () {
   let active = false;
@@ -83,25 +86,34 @@
   const PIPELINE_STAGES = [
     {
       id: "input",
-      title: "1 · Continuity input",
+      title: "1 · Continuity + mesh input",
       desc:
-        "The previous run's own caption (reverie_visual_chain.prior_description), " +
-        "or a fixed seed string on the very first run ever.",
+        "Two independent reads: the previous run's own caption (reverie_visual_chain.prior_description) " +
+        "for visual continuity, AND the parallel text-reverie chain's latest interpretation " +
+        "(substrate_reverie_thought.interpretation, ~90s-fresh) as a real external mesh signal.",
       detail:
-        'Seed (first run only): "a calm orion, soft abstract light, dreaming". ' +
-        "Every later run reads the prior row's prior_description straight from Postgres.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_prior_description",
+        'Seed (first run ever, both reads empty): "a calm orion, soft abstract light, dreaming". ' +
+        "The mesh-context read exists because the pure prior-only loop is an entropy-starved Markov " +
+        "chain -- confirmed live 2026-08-26 falling into multi-hour attractor basins (28 straight runs " +
+        'describing "ancient Roman aqueduct") with nothing to perturb it. The text-reverie chain\'s ' +
+        "own interpretation already bundles open loops / percepts / concern cards (reverie.py::" +
+        "build_reverie_context), so reading it is a real signal, not decoration.",
+      file:
+        "services/orion-thought/app/store.py :: load_latest_visual_chain_prior_description / " +
+        "load_recent_reverie_interpretation",
     },
     {
       id: "prompt",
       title: "2 · Prompt construction",
       desc:
-        "The prior caption is embedded verbatim into the next prompt text -- " +
-        'nothing else feeds this yet ("prior. Continue this train of imagination, soft dreamlike style.").',
+        "prior_description and mesh_context (truncated to 400 chars) are woven into one prompt -- " +
+        'e.g. "{prior}. Something else stirring in the mesh right now: {mesh}. Let both threads ' +
+        'bleed into one image, soft dreamlike style."',
       detail:
-        "Patch 3 (not built) is where chat/dream/attention context would seed this instead of " +
-        "just the previous caption -- this patch is deliberately the thinnest honest placeholder, " +
-        "not a fabricated stand-in for real context-seeding.",
+        "Either input can be missing (a failed read, or the text-reverie chain hasn't produced an " +
+        "interpretation yet) -- build_visual_prompt degrades to whichever one is present, or the fixed " +
+        "seed if both are empty. mesh_context is stored in this run's chain_json exactly as truncated, " +
+        "so what the cockpit shows below matches what was actually in the prompt.",
       file: "services/orion-thought/app/visual_chain.py :: build_visual_prompt",
     },
     {
@@ -220,6 +232,7 @@
           <div class="text-xs text-red-400 font-semibold">Generation failed -- no image produced</div>
           <p class="text-xs text-gray-400">${escapeHtml(chain.error)}</p>
           ${chain.prompt ? `<p class="text-xs text-gray-500">attempted prompt: <span class="text-gray-400">${escapeHtml(chain.prompt)}</span></p>` : ""}
+          ${chain.mesh_context ? `<p class="text-xs text-gray-500">mesh context that fed it: <span class="text-gray-400">${escapeHtml(chain.mesh_context)}</span></p>` : ""}
           <div class="flex justify-between items-center mt-1 text-[11px] text-gray-500">
             <span>${fmtTime(chain.created_at)}</span>
             <span class="px-2 py-0.5 rounded-full border border-red-800 text-red-400">${escapeHtml(chain.terminal_reason)}</span>
@@ -235,10 +248,31 @@
       : `<p class="text-xs text-gray-500 italic mt-2">not captioned (re-observation failed or was rejected -- honest null, not fabricated)</p>`;
     const promptBlock = chain.prompt
       ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
-           <div class="text-[10px] uppercase tracking-wide text-gray-600">Prompt used (embeds the prior run's own caption)</div>
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">Prompt used (prior caption + mesh context, see below)</div>
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.prompt)}</div>
          </div>`
       : "";
+    // Ground truth for the fallback message comes from the server's own
+    // used_prior/used_mesh flags (visual_chain.py::_prompt_source_flags),
+    // never guessed from prompt text -- review finding: guessing produced a
+    // false "fell back to continuity-only" disclosure on runs that actually
+    // used neither input and got the fixed seed prompt instead.
+    let meshBlock;
+    if (chain.mesh_context) {
+      meshBlock = `<div class="mt-1.5 rounded border border-indigo-900/50 bg-indigo-950/10 px-2 py-1.5">
+           <div class="text-[10px] uppercase tracking-wide text-indigo-400">What's influencing reverie right now</div>
+           <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.mesh_context)}</div>
+           <div class="text-[10px] text-gray-600 mt-0.5">from the parallel text-reverie chain's own latest interpretation</div>
+         </div>`;
+    } else if (chain.used_mesh === false && chain.used_prior === false) {
+      meshBlock = `<div class="mt-1.5 text-[10px] text-gray-600 italic">no mesh context available for this run -- used the fixed seed prompt (no continuity input either)</div>`;
+    } else if (chain.used_mesh === false) {
+      meshBlock = `<div class="mt-1.5 text-[10px] text-gray-600 italic">no mesh context available for this run -- fell back to continuity-only</div>`;
+    } else {
+      // used_prior/used_mesh absent (row predates this field) -- unknown,
+      // not a guess.
+      meshBlock = `<div class="mt-1.5 text-[10px] text-gray-600 italic">no mesh context recorded for this run</div>`;
+    }
     const egressLine = artifact && artifact.description
       ? `stored on disk + orion-percept-store, captioned via orion-vision-host, this caption becomes the <em>next</em> run's prompt input. Nothing else reads it today.`
       : artifact
@@ -250,6 +284,7 @@
         ${img}
         ${caption}
         ${promptBlock}
+        ${meshBlock}
         <div class="text-[11px] text-gray-600 mt-1">egress: ${egressLine}</div>
         <div class="flex justify-between items-center mt-2 text-[11px] text-gray-500">
           <span>${fmtTime(chain.created_at)}</span>

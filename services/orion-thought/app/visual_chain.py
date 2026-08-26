@@ -11,10 +11,39 @@ run's `prior_description` — a real generate -> observe -> interpret loop
 
 Scope of this patch (design doc §8 non-goals): the mechanical loop and the
 `prior_description` continuity wiring only. What specific recent-activity /
-chat / dream context seeds a run's prompt is Patch 3 -- `build_visual_prompt`
-below is deliberately the thinnest honest placeholder (prior_description, or
-a fixed seed prompt for the very first run), not a fabricated stand-in for
-context-seeding this patch does not own.
+chat / dream context seeds a run's prompt was Patch 3 -- `build_visual_prompt`
+below started as the thinnest honest placeholder (prior_description, or a
+fixed seed prompt for the very first run).
+
+Mesh-context seeding (Patch 3, partial, 2026-08-26): `build_visual_prompt`
+now also takes `mesh_context`, sourced from
+`store.py::load_recent_reverie_interpretation` -- the parallel TEXT-reverie
+chain's own most recent `interpretation`, already real prose assembled from
+live mesh state (open loops, percepts, concern cards -- see
+`reverie.py::build_reverie_context`). This is ONE real source, not the full
+"recent-activity / chat / dream" enumeration above -- chosen because it's
+already-live infrastructure this service already holds a DB connection to
+(CLAUDE.md §0A existing-mechanism check), not because the fuller context
+problem is solved.
+
+Deliberately NOT generalized into a `sources: dict[str, str | None]`
+composition layer for future sources (review suggestion, declined): with
+exactly one source, a generic composition point is speculative plumbing
+with no second caller to prove it's the right shape yet (prime directive --
+no cathedrals). Adding a second source later means touching this function's
+signature, `_generation_failed`, both `chain_json` dicts, the Hub route
+response, and the JS renderer again either way; deferring the abstraction
+until a second real source exists is the cheaper bet, not a missed step now.
+
+Why this exists: confirmed live 2026-08-26 that the pure
+prior-caption-only loop (no external seed) is an entropy-starved length-1
+Markov chain over caption-vocabulary space -- it fell into multi-hour
+attractor basins (28 straight runs describing "ancient Roman aqueduct",
+before that a multi-hour run describing sunset/water/silhouette imagery)
+because nothing outside the loop's own prior output ever perturbed it.
+Injecting a real, independently-changing signal each run is what breaks a
+self-referential fixed point; a fabricated or static "context" string would
+not (it would just be a different fixed point).
 
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
@@ -72,16 +101,64 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 from .settings import settings
 from .store import (
     load_latest_visual_chain_prior_description,
+    load_recent_reverie_interpretation,
     persist_reverie_visual_artifact,
     persist_reverie_visual_chain,
 )
 
 logger = logging.getLogger("orion-thought.visual_chain")
 
-# First-ever run has no prior_description to continue from. Deliberately
-# small and neutral -- Patch 3 owns real context-seeding (module docstring);
-# this only needs to produce *something* real to generate and observe.
+# First-ever run has no prior_description and no mesh_context to seed from
+# (e.g. the text-reverie chain hasn't produced an interpretation yet either).
+# Deliberately small and neutral -- this only needs to produce *something*
+# real to generate and observe, not a meaningful seed.
 DEFAULT_SEED_PROMPT = "a calm orion, soft abstract light, dreaming"
+
+def _truncate_mesh_context(mesh_context: str | None, *, max_chars: int | None = None) -> str | None:
+    """Single source of truth for mesh_context truncation -- called once at
+    the run_visual_chain_once call site so the exact same (already-truncated)
+    string is both what build_visual_prompt embeds AND what gets persisted
+    into chain_json, keeping the cockpit's displayed "what's influencing
+    reverie" value truthful to what the prompt actually contained.
+
+    Word-boundary truncation (review finding), not a raw character slice --
+    a hard cut mid-word both feeds a broken fragment into the diffusion
+    prompt and renders one in the cockpit. Reuses the same helper the
+    compactor already uses for exactly this (existing-mechanism check,
+    CLAUDE.md §0A), not a second bespoke implementation.
+    """
+    mesh = (mesh_context or "").strip()
+    if not mesh:
+        return None
+    try:
+        limit = settings.visual_chain_mesh_context_char_limit if max_chars is None else max_chars
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+
+        trimmed, _was_truncated = truncate_at_word_boundary(mesh, limit)
+        return trimmed or None
+    except Exception as exc:
+        # Every other read/normalize step in this run is best-effort and
+        # never raises (module docstring) -- this one must be too (review
+        # finding: it previously wasn't, so a broken settings field or import
+        # here would escape run_visual_chain_once entirely and silently drop
+        # the whole tick, not even a generation_failed row). Degrades to "no
+        # mesh context this run", same as a failed DB read.
+        logger.warning("mesh_context truncation failed, dropping mesh context: %s", exc)
+        return None
+
+
+def _prompt_source_flags(prior_description: str | None, mesh_context: str | None) -> dict[str, bool]:
+    """Ground truth for what `build_visual_prompt` actually used, computed at
+    the one place that knows for certain -- not re-derived downstream by
+    string-matching `prompt` against DEFAULT_SEED_PROMPT (review finding:
+    the cockpit's prior fallback message claimed "continuity-only" for every
+    run with no mesh_context, including first-ever runs that used neither
+    input and got the fixed seed instead -- a false disclosure in the exact
+    UI meant to be honest inspectable evidence, CLAUDE.md §0A)."""
+    return {
+        "used_prior": bool((prior_description or "").strip()),
+        "used_mesh": bool(mesh_context),
+    }
 
 # Defense-in-depth single-flight guard (module docstring). Not the mechanism
 # that makes overlap structurally impossible -- the worker loop's own
@@ -102,11 +179,26 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_visual_prompt(prior_description: str | None) -> str:
-    """The diffusion prompt for one run. See module docstring for scope."""
+def build_visual_prompt(prior_description: str | None, mesh_context: str | None = None) -> str:
+    """The diffusion prompt for one run. See module docstring for scope and
+    provenance of `mesh_context` -- callers must pass it already-truncated
+    (`_truncate_mesh_context`), this function does no truncation of its own.
+
+    `prior_description` gives visual continuity (the "chain"). `mesh_context`
+    is what breaks the pure self-referential loop (module docstring). Both
+    empty -> DEFAULT_SEED_PROMPT (first-ever run, or both reads failed).
+    """
     prior = (prior_description or "").strip()
-    if not prior:
+    mesh = (mesh_context or "").strip()
+    if not prior and not mesh:
         return DEFAULT_SEED_PROMPT
+    if mesh and prior:
+        return (
+            f"{prior}. Something else stirring in the mesh right now: {mesh}. "
+            "Let both threads bleed into one image, soft dreamlike style."
+        )
+    if mesh:
+        return f"{mesh}. Render this as a soft, dreamlike image."
     return f"{prior}. Continue this train of imagination, soft dreamlike style."
 
 
@@ -247,14 +339,20 @@ async def run_visual_chain_once(
         return None
 
     async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
-                                  prior_description: str | None) -> ReverieVisualChainV1:
+                                  prior_description: str | None,
+                                  mesh_context: str | None) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
             created_at=now_fn(),
             terminal_reason="generation_failed",
             prior_description=prior_description,
-            chain_json={"prompt": prompt, "error": str(error)},
+            chain_json={
+                "prompt": prompt,
+                "error": str(error),
+                "mesh_context": mesh_context,
+                **_prompt_source_flags(prior_description, mesh_context),
+            },
         )
         with suppress(Exception):
             await asyncio.to_thread(persist_reverie_visual_chain, chain)
@@ -262,8 +360,18 @@ async def run_visual_chain_once(
 
     async with _visual_chain_lock:
         chain_id = str(uuid4())
-        prior_description = await asyncio.to_thread(load_latest_visual_chain_prior_description)
-        prompt = build_visual_prompt(prior_description)
+        # Two independent read-only lookups against the same engine -- no
+        # data dependency between them, run concurrently (same reasoning as
+        # the store/upload gather below).
+        prior_description, mesh_context_raw = await asyncio.gather(
+            asyncio.to_thread(load_latest_visual_chain_prior_description),
+            asyncio.to_thread(
+                load_recent_reverie_interpretation,
+                max_age_sec=settings.visual_chain_mesh_context_max_age_sec,
+            ),
+        )
+        mesh_context = _truncate_mesh_context(mesh_context_raw)
+        prompt = build_visual_prompt(prior_description, mesh_context)
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -273,7 +381,7 @@ async def run_visual_chain_once(
                 timeout_sec=settings.visual_chain_diffusion_timeout_sec,
             )
         except Exception as exc:
-            return await _generation_failed(chain_id, exc, prompt, prior_description)
+            return await _generation_failed(chain_id, exc, prompt, prior_description, mesh_context)
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
         # network round trip) both operate on the same immutable png_bytes
@@ -297,7 +405,9 @@ async def run_visual_chain_once(
         )
 
         if isinstance(store_result, BaseException):
-            return await _generation_failed(chain_id, store_result, prompt, prior_description)
+            return await _generation_failed(
+                chain_id, store_result, prompt, prior_description, mesh_context
+            )
         stored: StoredVisualArtifact = store_result
 
         description: str | None = None
@@ -328,6 +438,8 @@ async def run_visual_chain_once(
                 "prompt": prompt,
                 "artifact_sha256": stored.sha256,
                 "description": description,
+                "mesh_context": mesh_context,
+                **_prompt_source_flags(prior_description, mesh_context),
             },
         )
         # Chain row before artifact row: reverie_visual_artifact.chain_id is a

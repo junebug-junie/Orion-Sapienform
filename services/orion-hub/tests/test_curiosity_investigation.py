@@ -1020,3 +1020,46 @@ def test_the_counter_resets_once_the_pool_answers() -> None:
     loop._pool_provider = lambda: _FakePool(_FakeConn())
     asyncio.run(loop.tick())
     assert loop._consecutive_not_ready == 0
+
+
+# --- liveness: the soft ceiling was hard for this loop ---------------------
+
+
+def test_the_step_relay_is_passed_so_hubs_soft_ceiling_can_extend() -> None:
+    """`turn_orchestrator` builds its `liveness_check` from the RELAY, and
+    `_liveness_alive` returns False when that is None. Passing None therefore
+    made Hub's deliberately-soft governor RPC ceiling HARD for every curiosity
+    run -- the one mechanism built to stop a long, genuinely-working turn being
+    killed was unreachable by construction. Measured 2026-08-26:
+    `harness governor RPC timeout elapsed_sec=960.0 alive=False`."""
+    bus = _FakeBus()
+    relay = object()
+    loop = _loop(bus, step_relay_provider=lambda: relay)
+    seen = {}
+
+    async def fake_turn(**kwargs):
+        seen.update(kwargs)
+        return [{"type": "final", "llm_response": "found it", "harness_step_count": 9}]
+
+    import orion.hub.turn_orchestrator as turn_orchestrator
+
+    original = turn_orchestrator.execute_unified_turn
+    turn_orchestrator.execute_unified_turn = fake_turn
+    try:
+        del loop._generate
+        asyncio.run(loop.tick())
+    finally:
+        turn_orchestrator.execute_unified_turn = original
+    assert seen["harness_step_relay"] is relay
+    # The QUEUE stays None on purpose: it only fans steps out to a watching
+    # browser, which an unattended loop does not have. Liveness needs the relay.
+    assert seen["harness_step_queue"] is None
+
+
+def test_no_relay_configured_still_runs() -> None:
+    """The loop must not require a relay to function -- it degrades to the old
+    behaviour (no liveness extension), it does not break."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    assert asyncio.run(loop.tick()) is None
+    assert len(bus.published) == 1

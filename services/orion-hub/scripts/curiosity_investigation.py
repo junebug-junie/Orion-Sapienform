@@ -352,6 +352,9 @@ class CuriosityInvestigation:
         # --- second turn --------------------------------------------------
         outreach_enabled: bool = False,
         outreach_provider: Optional[Callable[[], Any]] = None,
+        # Read through a callable because the relay is a module global in
+        # main.py assigned during startup, after this object is constructed.
+        step_relay_provider: Optional[Callable[[], Any]] = None,
         reader: Optional[WorldviewReader] = None,
     ) -> None:
         self.enabled = enabled
@@ -384,6 +387,7 @@ class CuriosityInvestigation:
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
         self._outreach_provider = outreach_provider
+        self._step_relay_provider = step_relay_provider
 
         # Injectable so the whole loop is testable without a FalkorDB. When it
         # is None AND no host is configured, the graph half is off and the
@@ -933,7 +937,26 @@ class CuriosityInvestigation:
                     payload={"no_write": True, "source": source},
                     continuity_messages=None,
                     harness_rpc_bus=self._harness_rpc_bus or self._bus,
-                    harness_step_relay=None,
+                    # THE RELAY IS PASSED, THE QUEUE IS NOT, and that pairing is
+                    # the whole point. `turn_orchestrator` builds its
+                    # `liveness_check` from the RELAY alone; the queue is only
+                    # for fanning steps out to a watching browser, which an
+                    # unattended loop has none of. `_dispatch_step` records
+                    # `_last_seen[cid]` BEFORE any queue fan-out, so liveness
+                    # works with no queue registered.
+                    #
+                    # Passing None here -- copied from endogenous_outreach, which
+                    # still does -- made `liveness_check` None, and
+                    # `_liveness_alive` returns False for that. So Hub's
+                    # DELIBERATELY SOFT governor RPC ceiling
+                    # (HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC, extendable to a hard
+                    # HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC=3600 while the turn is
+                    # visibly stepping) was effectively HARD for every curiosity
+                    # run. The one mechanism built to stop a long, genuinely
+                    # working turn being killed was unreachable by construction.
+                    harness_step_relay=(
+                        self._step_relay_provider() if self._step_relay_provider else None
+                    ),
                     harness_step_queue=None,
                 ),
                 timeout=self.timeout_sec,

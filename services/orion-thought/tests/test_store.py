@@ -237,24 +237,51 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
 
 # --- load_latest_reverie_interpretation: Patch 3 context-seed ---------------
 #
-# The hollow/empty filtering itself lives in the SQL WHERE clause (needs a
+# The SQL WHERE/EXISTS clause (interpretation<>'' and chain-linkage) needs a
 # real Postgres to exercise, same as this module's other read-filter
-# functions e.g. load_recent_chain_theme_events's theme_key filter) -- these
-# tests cover the Python-side contract: length cap, empty-row handling, and
-# never-raises, using the same _FakeEngine/_FakeConn pattern as the write
-# test above.
+# functions (e.g. load_recent_chain_theme_events's theme_key filter). But the
+# hollow re-validation is real Python logic (review finding: moved out of a
+# raw SQL cast so it re-derives via SpontaneousThoughtV1.is_hollow() instead
+# of trusting a stored flag that can go stale) -- fully testable here with
+# real SpontaneousThoughtV1 fixtures, same construction pattern as
+# test_reverie_spontaneous_thought.py.
 
 
-def test_load_latest_reverie_interpretation_truncates_to_cap() -> None:
-    store = _fresh_store()
-    long_text = "x" * (store.MAX_REVERIE_CONTEXT_CHARS + 50)
+def _grounded_thought_json(thought_id: str, interpretation: str, **overrides) -> dict:
+    """A real, non-hollow SpontaneousThoughtV1 payload -- same fixture shape
+    as test_reverie_spontaneous_thought.py's _coalition()/GROUNDED_TEXT
+    pattern, not a hand-rolled dict that might not match the real schema's
+    validation rules. `overrides` replaces (not adds to) the evidence_refs
+    default -- pass evidence_refs=[...] explicitly to build a deliberately
+    un-anchored/hollow fixture."""
+    from orion.schemas.reverie import SpontaneousThoughtV1
+    from orion.schemas.thought import CoalitionSnapshotV1
 
+    coalition = CoalitionSnapshotV1(
+        attended_node_ids=["n-1"],
+        selected_open_loop_id="ol-1",
+        open_loop_ids=["ol-1"],
+        generated_at="2026-07-06T00:00:00Z",
+    )
+    fields = {
+        "thought_id": thought_id,
+        "correlation_id": "c",
+        "coalition": coalition,
+        "interpretation": interpretation,
+        "evidence_refs": ["ol-1"],
+        **overrides,
+    }
+    thought = SpontaneousThoughtV1(**fields).marked_hollow()
+    return thought.model_dump(mode="json")
+
+
+def _rows_result(payloads: list[dict]):
     class _FakeResult:
         def mappings(self):
             return self
 
-        def first(self):
-            return {"interpretation": long_text}
+        def all(self):
+            return [{"thought_json": p} for p in payloads]
 
     class _FakeConn:
         def __enter__(self):
@@ -263,50 +290,122 @@ def test_load_latest_reverie_interpretation_truncates_to_cap() -> None:
         def __exit__(self, *exc):
             return False
 
-        def execute(self, _stmt):
+        def execute(self, _stmt, *args):
             return _FakeResult()
 
     class _FakeEngine:
         def connect(self):
             return _FakeConn()
 
+    return _FakeEngine()
+
+
+def test_load_latest_reverie_interpretation_returns_grounded_candidate() -> None:
+    store = _fresh_store()
+    payload = _grounded_thought_json("t-1", "a real, grounded reverie thought about the mesh")
+
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
+    try:
+        assert store.load_latest_reverie_interpretation() == (
+            "a real, grounded reverie thought about the mesh"
+        )
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_reverie_interpretation_rejects_stale_hollow_flag() -> None:
+    """Review finding: a raw SQL `thought_json->>'hollow'` cast would trust a
+    stale stored flag. Build a payload where the STORED `hollow` field is
+    False (as if written before a schema/guard change) but a fresh
+    `is_hollow()` re-derivation says True (no coalition) -- must be
+    rejected, matching chat_stance.py::_project_reverie_glimpse's own
+    "gate on BOTH" discipline for this exact table."""
+    from orion.schemas.reverie import SpontaneousThoughtV1
+
+    stale = SpontaneousThoughtV1(
+        thought_id="t-stale",
+        correlation_id="c",
+        coalition=None,  # is_hollow() -> "absent_coalition" -> True
+        interpretation="a real, grounded reverie thought about the mesh",
+        evidence_refs=["ol-1"],
+        hollow=False,  # the stale, no-longer-trustworthy stored flag
+    )
+    payload = stale.model_dump(mode="json")
+    assert payload["hollow"] is False  # sanity: this is the trap the fix closes
+
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
+    try:
+        assert store.load_latest_reverie_interpretation() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_reverie_interpretation_skips_hollow_falls_through_to_next() -> None:
+    """The most recent candidate is stale-hollow; the next one is real --
+    the function must keep scanning, not stop at the first row."""
+    store = _fresh_store()
+    hollow_payload = _grounded_thought_json(
+        "t-hollow", "hmm", evidence_refs=[]  # too short + unanchored -> hollow
+    )
+    real_payload = _grounded_thought_json("t-real", "a real, grounded reverie thought about the mesh")
+
+    monkeypatch = pytest.MonkeyPatch()
+    # ORDER BY created_at DESC -- hollow_payload is the newer (first) row.
+    monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([hollow_payload, real_payload]))
+    try:
+        assert store.load_latest_reverie_interpretation() == "a real, grounded reverie thought about the mesh"
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_reverie_interpretation_skips_unparsable_row() -> None:
+    """A row whose thought_json no longer validates as SpontaneousThoughtV1
+    (schema drift, corruption) is skipped, not raised -- best-effort."""
+    store = _fresh_store()
+    real_payload = _grounded_thought_json("t-real", "a real, grounded reverie thought about the mesh")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _rows_result([{"not": "a valid payload"}, real_payload])
+    )
+    try:
+        assert store.load_latest_reverie_interpretation() == "a real, grounded reverie thought about the mesh"
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_reverie_interpretation_truncates_at_word_boundary() -> None:
+    """Review finding: a raw slice can cut mid-word. Use real prose (not a
+    uniform 'x'*N string, which can never reveal a mid-word cut) and assert
+    the same truncate_at_word_boundary contract chat_history_compactor/
+    github_compactor rely on -- an ellipsis, no partial trailing word."""
+    store = _fresh_store()
+    word = "wondering "  # 10 chars incl. space, divides evenly for a clean boundary check
+    long_text = (word * 30).strip()  # well over the 240-char cap, all real words
+    payload = _grounded_thought_json("t-1", long_text)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
     try:
         value = store.load_latest_reverie_interpretation()
     finally:
         monkeypatch.undo()
 
-    assert value == long_text[: store.MAX_REVERIE_CONTEXT_CHARS]
-    assert len(value) == store.MAX_REVERIE_CONTEXT_CHARS
+    assert value is not None
+    assert len(value) <= store.MAX_REVERIE_CONTEXT_CHARS + 1  # +1 for the ellipsis char
+    assert value.endswith("…")
+    # The word before the ellipsis is whole ("wondering"), never a fragment
+    # like "wonderin" -- what a raw `[:240]` slice would have produced here.
+    assert value[:-1].endswith("wondering")
 
 
 def test_load_latest_reverie_interpretation_none_on_empty_table() -> None:
     store = _fresh_store()
-
-    class _FakeResult:
-        def mappings(self):
-            return self
-
-        def first(self):
-            return None
-
-    class _FakeConn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def execute(self, _stmt):
-            return _FakeResult()
-
-    class _FakeEngine:
-        def connect(self):
-            return _FakeConn()
-
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([]))
     try:
         assert store.load_latest_reverie_interpretation() is None
     finally:

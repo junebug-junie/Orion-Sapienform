@@ -292,8 +292,15 @@ async def run_visual_chain_once(
 
     async with _visual_chain_lock:
         chain_id = str(uuid4())
-        prior_description = await asyncio.to_thread(load_latest_visual_chain_prior_description)
-        context_text = await asyncio.to_thread(load_latest_reverie_interpretation)
+        # Two independent reads (different tables, no data dependency) --
+        # concurrent so the cost is max() of the two round trips, not sum()
+        # (review finding: this function already makes exactly this
+        # argument a few lines below for store_visual_artifact/
+        # upload_to_percept_store; the same reasoning applies here).
+        prior_description, context_text = await asyncio.gather(
+            asyncio.to_thread(load_latest_visual_chain_prior_description),
+            asyncio.to_thread(load_latest_reverie_interpretation),
+        )
         prompt = build_visual_prompt(prior_description, context_text)
 
         try:

@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     CHANNEL_VISIONHOST_INTAKE: str = "orion:exec:request:VisionHostService"
     CHANNEL_VISIONHOST_REPLY_PREFIX: str = "orion:vision:reply"
     CHANNEL_VISIONHOST_PUB: str = "orion:vision:artifacts"
+    # Off-switch for the artifact broadcast (main.py's _publish_artifact_
+    # broadcast, fired unconditionally on every successful task otherwise).
+    # Exists for a dedicated single-caller instance (e.g. the circe-qwen
+    # lane) whose caller already gets its full result via the RPC reply and
+    # has no consumer for the broadcast at all -- giving such a lane its own
+    # CHANNEL_VISIONHOST_PUB value would register a bus channel with zero
+    # real consumers, exactly the orphan class CLAUDE.md section 0A bans and
+    # scripts/check_metric_lineage.py's orphan ratchet gate catches. Default
+    # True preserves every existing deployment's behavior unchanged.
+    VISION_ARTIFACT_BROADCAST_ENABLED: bool = True
 
     # Caches
     MODEL_CACHE_DIR: str = "/mnt/telemetry/models/vision"

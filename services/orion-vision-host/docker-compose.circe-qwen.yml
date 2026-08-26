@@ -60,16 +60,19 @@ services:
       # orion:exec:request:VisionHostService (athena's instance owns that).
       - CHANNEL_VISIONHOST_INTAKE=orion:exec:request:VisionHostService:circe-vl
       - CHANNEL_VISIONHOST_REPLY_PREFIX=orion:vision:reply
-      # Isolated for the same reason as the intake channel above (review
-      # finding) -- main.py publishes an artifact broadcast on EVERY
-      # successful task unconditionally, and orion-vision-window's consumer
-      # falls back to a default stream key for an artifact with no
-      # stream_id/camera_id (which caption_frame calls never set), so a
-      # shared CHANNEL_VISIONHOST_PUB would let a synthetic dream caption
-      # land in the same projection bucket as a real camera frame. The
-      # caller (orion-thought) already gets the full result via the RPC
-      # reply -- nothing needs to consume this broadcast for this lane.
-      - CHANNEL_VISIONHOST_PUB=orion:vision:artifacts:circe-vl
+      # Artifact broadcast disabled outright for this lane (review finding,
+      # revised): main.py publishes on EVERY successful task unconditionally,
+      # and orion-vision-window's consumer falls back to a default stream key
+      # for an artifact with no stream_id/camera_id (which caption_frame
+      # calls never set), so a shared CHANNEL_VISIONHOST_PUB would let a
+      # synthetic dream caption land in the same projection bucket as a real
+      # camera frame. Originally isolated onto its own channel instead --
+      # reverted after scripts/check_metric_lineage.py's orphan-ratchet gate
+      # correctly caught that a channel with zero registered consumers is
+      # exactly the class of thing CLAUDE.md section 0A bans. The caller
+      # (orion-thought) already gets the full result via the RPC reply, so
+      # nothing needs this broadcast to exist at all for this lane.
+      - VISION_ARTIFACT_BROADCAST_ENABLED=false
 
       - MODEL_CACHE_DIR=/mnt/storage-warm/models/vision-circe-qwen
       - HF_HOME=/mnt/storage-warm/models/vision-circe-qwen/hf

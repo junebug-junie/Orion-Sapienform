@@ -42,6 +42,20 @@ def test_circe_qwen_lane_runs_qwen_not_blip():
     )
 
 
+def test_circe_qwen_lane_disables_artifact_broadcast():
+    """No isolated PUB channel exists for this lane on purpose -- registering
+    one with zero real consumers is exactly the orphan class
+    scripts/check_metric_lineage.py's ratchet gate (CLAUDE.md section 0A)
+    catches. The caller (orion-thought) gets its full result via the RPC
+    reply; this must stay disabled outright, not silently re-enabled onto
+    the shared orion:vision:artifacts channel (which would pollute
+    orion-vision-window's real-camera projections -- see the compose
+    file's own comment)."""
+    text = COMPOSE_PATH.read_text()
+    assert "VISION_ARTIFACT_BROADCAST_ENABLED=false" in text
+    assert "CHANNEL_VISIONHOST_PUB=" not in text
+
+
 def test_circe_qwen_lane_has_no_camera_frame_dependencies():
     """circe shares no filesystem with athena (see README/.env_example) --
     this lane must never enable a profile or path that assumes local frame

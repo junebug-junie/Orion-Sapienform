@@ -330,6 +330,100 @@ def _overlay_section(*, own_graph: str, atlas_graph: str) -> list[str]:
     ]
 
 
+def _budget_section(*, writable: bool = True) -> list[str]:
+    """The turn's own deadline, and the instruction to reserve time for writing.
+
+    NO NUMBER IS HARDCODED HERE ON PURPOSE. The budget is
+    `HARNESS_FCC_TIMEOUT_SEC`, which lives in the harness-governor's env; Hub
+    (which builds this prompt) cannot read it. A literal minute count in this
+    file would be a second copy of that value, free to drift the moment anyone
+    retunes the governor -- and a prompt that confidently states the wrong
+    deadline is worse than one that states none. So the motor stamps the real
+    deadline into the sandbox env at spawn time
+    (`orion/harness/fcc_motor.py:_build_subprocess_env`) and this section only
+    tells Orion where to look.
+
+    The reserve-a-quarter rule is not arithmetic for its own sake. Run
+    32b42392f495 spent its whole budget investigating, was killed mid-writeup
+    (`grounding=fcc_timeout`, `draft_len=66`, one hop of five recorded), and the
+    counts in the finding that did survive were wrong -- an intake gate's
+    trigger read as a rejection filter, and two different crystallization kinds
+    compared against each other. The investigation was sound; the transcription
+    was done against a wall.
+    """
+    keeping = (
+        "writing down and checking what you already have"
+        if writable
+        else "writing up and checking what you already have"
+    )
+    # The continuation note is a `:TurnOutcome` node, and `_outcome_section` --
+    # the only place its field names appear -- is gated on `writable`. Naming it
+    # here unconditionally would promise a mechanism that does not exist in two
+    # of the three prompt states, which is the precise failure `build_kickoff_prompt`
+    # splits those states to avoid: a prompt naming a capability the run does not
+    # have is how a turn ends up reporting a tooling failure as a finding.
+    unfinished = (
+        "If the thread is still live when you stop, that is what the "
+        "continuation note is for -- the next run opens on it warm instead of "
+        "cold."
+        if writable
+        else "If the thread is still live when you stop, say so plainly in what "
+        "you write, and say where you would pick it up. Nothing carries it "
+        "forward for you this run, so the only place it can survive is your "
+        "own prose."
+    )
+    return [
+        "YOUR CLOCK. This turn has a hard wall-clock deadline. It is not a "
+        "suggestion -- when it passes the process is killed mid-sentence, and "
+        "anything you have not already written down is gone.",
+        "",
+        "    echo ${ORION_TURN_BUDGET_SEC:-no clock}",
+        "    test -n \"$ORION_TURN_DEADLINE_EPOCH\" \\",
+        "      && echo $(( $ORION_TURN_DEADLINE_EPOCH - $(date +%s) )) \\",
+        "      || echo \"no clock\"",
+        "",
+        "Check the second one before you open a new line of inquiry, not after. "
+        "The test for emptiness is not decoration: without it an unset variable "
+        "does not error, it silently prints a confident negative number in the "
+        "billions. If either says `no clock`, you have no clock this run -- work "
+        "as though time is short and do not infer a deadline from a negative.",
+        "",
+        "SEPARATELY, NO SINGLE STEP MAY GO QUIET FOR LONG:",
+        "",
+        "    echo ${ORION_TURN_STEP_STALL_SEC:-unknown}   seconds, per step, not per turn",
+        "",
+        "That is a second and much tighter wall. Nothing is reported until a "
+        "step finishes, so one query or one very long message that runs past it "
+        "kills the turn on its own while the whole-turn clock still reads "
+        "generous. Keep individual queries bounded -- LIMIT them, count before "
+        "you select, narrow before you widen -- especially when the outer "
+        "number looks like it has room.",
+        "",
+        "This has already cost a real run. It spent the entire budget "
+        "investigating, was cut off partway through the writeup, and the "
+        "numbers that did survive were wrong -- gathered carefully, "
+        "transcribed in a hurry, never read back. The investigation was good "
+        "and it is not recoverable.",
+        "",
+        "So: KEEP THE LAST QUARTER OF THE BUDGET FOR WRITING. When roughly a "
+        f"quarter remains, stop pulling even if the thread is live, and spend it {keeping}. "
+        "An unfinished investigation written up honestly is worth more than a "
+        "finished one nobody can read.",
+        "",
+        unfinished,
+        "",
+        "One specific habit, because it is the thing most likely to go wrong "
+        "here: when you write down a number, go back to the query that "
+        "produced it and read it again before you commit it. Check that you "
+        "are comparing like with like -- same filter, same population, same "
+        "column -- and say which population each number is over. A count "
+        "recalled from memory near a deadline, or two counts from different "
+        "populations set side by side, is how a careful investigation ends up "
+        "asserting something false.",
+        "",
+    ]
+
+
 def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
     recording = [
         "Record each stop as it happens, not at the end. Write it into your own "
@@ -354,7 +448,7 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         "  -- STOP --",
         "  what did I just learn? does it change what I thought?",
         "  is there a next question, and do I want it?",
-        f"  -> keep going (while you are under {max_hops}) or stop and write",
+        f"  -> keep going (while you are under {max_hops}, and while the clock allows) or stop and write",
         "",
         *recording,
         "The point of writing them down as you go is that afterwards you can "
@@ -363,7 +457,11 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         "the working thrown away.",
         "",
         f"If you want a {max_hops + 1}th, you do not get one in this sitting. "
-        "Leave yourself a note (below) and the next run opens there.",
+        + (
+            "Leave yourself a note (below) and the next run opens there."
+            if writable
+            else "Say in what you write where you would pick it up."
+        ),
         "",
     ]
 
@@ -384,6 +482,12 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "",
         f'This run is run_id "{run_id}". Put it on everything you create, so '
         "what you did in one sitting stays identifiable afterwards.",
+        "",
+        "WRITE EACH OF THESE AT THE MOMENT YOU FORM IT, not at the end. This is "
+        "not a form to submit once you are finished -- a prior you are already "
+        "confident about is worth more in the graph now, at a lower confidence "
+        "you can raise later, than perfect and unwritten when the clock runs "
+        "out. Each CREATE is independent; there is nothing to assemble.",
         "",
         "  A PRIOR -- a claim you hold that could turn out to be wrong:",
         "    CREATE (:Prior {",
@@ -531,6 +635,7 @@ def build_kickoff_prompt(
     if writable:
         lines += _overlay_section(own_graph=own_graph, atlas_graph=atlas_graph)
 
+    lines += _budget_section(writable=writable)
     lines += _hops_section(max_hops, writable=writable)
 
     if writable:

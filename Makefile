@@ -53,6 +53,16 @@ test-actions:
 check-inner-state-registry:
 	@python scripts/check_inner_state_registry.py
 
+# One owner per tuned env key. Some numbers are restated in a service's
+# .env_example, its compose default, a Field(...) default, and prose deriving a
+# budget from them -- every restatement is a copy, and copies drift. Measured
+# 2026-08-26: HARNESS_FCC_TIMEOUT_SEC was live at 1600 while six other places
+# still said 900, and nothing failed because nothing was checking. The gate
+# never hardcodes the number; it reads the owner file, so retuning a key stays
+# a one-line change.
+check-env-key-single-source:
+	@$(METRIC_PYTHON) scripts/check_env_key_single_source.py
+
 # Metric semantic layer (phases 1+2 of docs/superpowers/specs/
 # 2026-08-12-metric-semantic-layer-design.md). Joins the four metric-bearing
 # registries into one URN space and mechanically discovers each metric's

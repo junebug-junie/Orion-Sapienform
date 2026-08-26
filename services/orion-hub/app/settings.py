@@ -477,9 +477,19 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_INVESTIGATION_DAILY_CAP: int = Field(
         default=3, alias="HUB_CURIOSITY_INVESTIGATION_DAILY_CAP"
     )
-    # Same budget outreach gives a real unified turn.
+    # Budgeted from the harness's OWN ceilings, not copied from outreach.
+    # Measured live 2026-08-26: outreach's 300s is far too short for an
+    # investigation, because an investigation actually uses tools. The first
+    # real run spent 1.3s on pre-turn appraisal, 81s on the Thought stance, and
+    # was still working at harness step 29 (Read, ToolSearch) when 300s cut it
+    # off -- so Orion did the whole investigation and the answer was discarded.
+    # A too-short ceiling here does not fail safe, it burns real compute and
+    # throws the result away. The governor's own budgets are
+    # HARNESS_FCC_TIMEOUT_SEC=900 + VOICE_FINALIZE_TIMEOUT_SEC=300 +
+    # FINALIZE_REFLECT_TIMEOUT_SEC=180, so this has to sit above their sum plus
+    # the stance leg. Nobody is waiting on this turn; the loop's cooldown is 4h.
     HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC: float = Field(
-        default=300.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
+        default=1500.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
     )
     HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
         default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"

@@ -170,6 +170,102 @@ Two further corrections to the spec's framing, for the record:
   all — which is how a kill switch ends up configured everywhere and present
   nowhere.
 
+## Tests run
+
+```text
+# The touched suites, on this branch
+pytest services/orion-hub/tests/test_curiosity_investigation.py \
+       services/orion-hub/tests/test_endogenous_outreach.py \
+       tests/test_curiosity_worldview.py \
+       tests/test_curiosity_acl_and_credentials.py \
+       tests/test_curiosity_study_material.py -q
+-> 263 passed
+
+# Full harness + Hub suites, BASELINE on the parent branch
+# (feat/curiosity-investigation, same env symlinks, same runner)
+-> 35 failed, 1748 passed, 5 skipped in 232.79s
+
+# Full harness + Hub suites, THIS branch
+-> 34 failed, 1883 passed, 5 skipped in 233.45s
+
+# Failures introduced by this branch, by set difference on the FAILED lines:
+-> 0
+```
+
++135 passing, one fewer failure. The 34 remaining failures are all present on
+the parent branch too (`test_substrate_effect_*`, `test_recall_strategy_
+profiles_runtime`, `test_response_feedback_ui`, `test_substrate_review_runtime_
+hub_debug` and friends) and are untouched by this patch.
+
+**A methodology note worth recording, because it nearly became a false
+regression report.** An earlier comparison showed 44 vs 35 with ten new
+failures in `test_workflow_schedule_runtime_paths.py`. That was an artifact of
+my own process, not the code: the background suite was executing while the
+review fixes were mid-edit and caught `curiosity_investigation.py` importing
+`ensure_graph_exists` before `acl.py` had it. The file passed in isolation,
+which is what prompted digging into the traceback instead of reporting it.
+Never diff a full-suite run against a tree that is still being written to.
+
+## Evals run
+
+```text
+No eval harness exists for orion-hub (no services/orion-hub/evals/).
+```
+
+Not created here. The design's own acceptance checks are behavioural and need
+real runs rather than a fixture: checks 1, 2, 3 and 6 (does the open-prior pool
+shrink; is anything re-litigated; do new priors come from findings; does
+confidence ever go DOWN) are only measurable against 20 real runs of the live
+loop. Check 6 is the one to watch first -- see Risks.
+
+## Docker/build/smoke checks
+
+```text
+scripts/safe_docker_build.sh orion-harness-governor build   -> Built (twice: once
+    on the initial patch, again on the final post-review code)
+scripts/safe_docker_build.sh orion-hub config               -> OK
+python scripts/check_service_env_compose_parity.py orion-hub -> N/A (env_file:,
+    all 328 .env_example keys reach the container)
+```
+
+Live smoke, run from a THROWAWAY container off the rebuilt image (never against
+the running harness governor):
+
+```text
+clients            psql present, redis-cli present   (both MISSING before this patch)
+SQL read           memory_crystallizations 1282, memory_concept_relation_decisions 547,
+                   chat_history_log 232, journal_entries 36603
+SQL write          INSERT journal_entries   -> permission denied for table
+                   UPDATE memory_crystallizations -> permission denied for table
+                   DELETE chat_history_log  -> permission denied for table
+                   CREATE TABLE             -> permission denied for schema public
+SQL scope          SELECT substrate_dispatch_results -> permission denied (not granted)
+Atlas read         GRAPH.RO_QUERY orion_substrate -> 18 concepts
+Atlas write        GRAPH.QUERY   orion_substrate -> NOPERM (key ACL)
+                   GRAPH.RO_QUERY + a CREATE     -> refused, read-only command
+Other graphs       GRAPH.RO_QUERY orion_bus_synapse -> NOPERM
+Own graph          CREATE (:Prior ...) as Orion  -> Labels added: 1
+Round trip         Hub's WorldviewReader read the Prior, the :Hop, the
+                   :TurnOutcome and the run footprint {'Prior':1,'TurnOutcome':1,'Hop':1}
+                   back out -- the prompt's stated schema and the reader agree
+Cleanup            probe nodes deleted; orion_worldview back to one :Bootstrap node
+```
+
+Two live checks that changed the design rather than confirming it:
+
+```text
+ACL replay without clearselectors -> 1 selector, then 2, then 3 (unbounded)
+ACL replay with    clearselectors -> byte-identical across 3 replays
+GRAPH.RO_QUERY <graph FalkorDB has never seen>
+    -> ERR Invalid graph operation on empty key    (NOT an empty result)
+    -> read_snapshot unavailable -> ensure_graph_exists -> available, open_total=0
+    -> replay is a no-op; probe graph deleted
+```
+
+Every Cypher this patch builds was also executed against the live FalkorDB
+rather than only unit-tested: `sum(CASE WHEN ...)` is accepted, and it returns
+its sums as STRINGS (`'0'`), which `_as_int` already handled.
+
 ## Review findings fixed
 
 Code review at `high` on `74958c622`. Eight findings; seven acted on, one had
@@ -284,3 +380,30 @@ the live FalkorDB before being accepted, not reasoned from docstrings.
   `redis-cli` are now present in every FCC turn's sandbox, not just curiosity
   ones. They are inert without a credential, and the credentials are
   allowlisted; but the tools are there.
+
+## Restart required
+
+Nothing is running this code yet, and nothing was restarted by this patch.
+To deploy, in this order (the harness image must carry `psql`/`redis-cli`
+before a curiosity turn can use its credentials):
+
+```bash
+cd /mnt/scripts/Orion-Sapienform-curiosity-priors-worldview
+scripts/safe_docker_build.sh orion-harness-governor up -d --build
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+Then, and only when you want the loop live, flip it in the local `.env` and
+restart Hub:
+
+```bash
+# services/orion-hub/.env
+HUB_CURIOSITY_INVESTIGATION_ENABLED=true    # currently false
+HUB_CURIOSITY_OUTREACH_ENABLED=false        # leave off until check 6 has data
+```
+
+Deliberately not done here: enabling the loop, and cycling a container that
+serves live Orion turns, are operational calls rather than ones this patch
+should make.
+
+## PR link

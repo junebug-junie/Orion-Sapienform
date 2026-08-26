@@ -119,21 +119,56 @@ def _thought_ids_of(chain_json: Any) -> list[str]:
 # ───────────────────────────────────────────────────────────────
 
 
-def _fetch_visual_recent(limit: int) -> tuple[list[dict], dict[str, list[dict]]]:
+def _fetch_visual_recent(
+    limit: int, before: datetime | None
+) -> tuple[list[dict], dict[str, list[dict]], bool]:
+    """Cursor-paginated on ``created_at`` rather than OFFSET (review finding):
+    ``reverie_visual_chain`` gets a new row every ~600s from the live worker,
+    so OFFSET's "skip N rows in the current ORDER BY" has no stable meaning
+    across two requests a real operator's Prev/Next clicks are seconds to
+    minutes apart -- a concurrent insert shifts every row's offset by one,
+    silently re-showing or skipping a row. A ``created_at <`` cursor has no
+    such window: a row already fetched keeps its position relative to the
+    cursor no matter what else gets inserted.
+
+    Also avoids a second COUNT(*) round trip (former ``total``, itself racy
+    against this same SELECT on two separate queries) -- fetches one extra
+    row past ``limit`` and reports ``has_more`` from whether it showed up,
+    the standard cursor-pagination trick.
+    """
+    fetch_limit = limit + 1
     with _engine().connect() as conn:
-        chain_rows = (
-            conn.execute(
-                text(
-                    "SELECT chain_id, created_at, theme_key, terminal_reason, "
-                    "ema_salience, prior_description, chain_json "
-                    "FROM reverie_visual_chain "
-                    "ORDER BY created_at DESC LIMIT :limit"
-                ),
-                {"limit": limit},
+        if before is not None:
+            chain_rows = (
+                conn.execute(
+                    text(
+                        "SELECT chain_id, created_at, theme_key, terminal_reason, "
+                        "ema_salience, prior_description, chain_json "
+                        "FROM reverie_visual_chain "
+                        "WHERE created_at < :before "
+                        "ORDER BY created_at DESC LIMIT :limit"
+                    ),
+                    {"limit": fetch_limit, "before": before},
+                )
+                .mappings()
+                .all()
             )
-            .mappings()
-            .all()
-        )
+        else:
+            chain_rows = (
+                conn.execute(
+                    text(
+                        "SELECT chain_id, created_at, theme_key, terminal_reason, "
+                        "ema_salience, prior_description, chain_json "
+                        "FROM reverie_visual_chain "
+                        "ORDER BY created_at DESC LIMIT :limit"
+                    ),
+                    {"limit": fetch_limit},
+                )
+                .mappings()
+                .all()
+            )
+        has_more = len(chain_rows) > limit
+        chain_rows = list(chain_rows)[:limit]
         chain_ids = [r["chain_id"] for r in chain_rows]
         artifacts_by_chain: dict[str, list[dict[str, Any]]] = {}
         if chain_ids:
@@ -153,14 +188,18 @@ def _fetch_visual_recent(limit: int) -> tuple[list[dict], dict[str, list[dict]]]
             )
             for a in artifact_rows:
                 artifacts_by_chain.setdefault(a["chain_id"], []).append(dict(a))
-    return list(chain_rows), artifacts_by_chain
+    return chain_rows, artifacts_by_chain, has_more
 
 
 @router.get("/visual/recent")
-async def visual_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, Any]:
+async def visual_recent(
+    limit: int = Query(DEFAULT_LIMIT, ge=1), before: datetime | None = Query(None)
+) -> dict[str, Any]:
     limit = _clamp_limit(limit)
     try:
-        chain_rows, artifacts_by_chain = await asyncio.to_thread(_fetch_visual_recent, limit)
+        chain_rows, artifacts_by_chain, has_more = await asyncio.to_thread(
+            _fetch_visual_recent, limit, before
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -193,10 +232,24 @@ async def visual_recent(limit: int = Query(DEFAULT_LIMIT, ge=1)) -> dict[str, An
                 "ema_salience": c["ema_salience"],
                 "prior_description": c["prior_description"],
                 "prompt": cj.get("prompt"),
+                # A failed generation's chain_json carries "error" instead of
+                # "artifact_sha256"/"description" (visual_chain.py's
+                # _generation_failed) -- surfaced so the cockpit can show
+                # *why* a run produced no image instead of just an empty card.
+                "error": cj.get("error"),
                 "artifacts": artifacts,
             }
         )
-    return {"ok": True, "chains": chains}
+    return {
+        "ok": True,
+        "chains": chains,
+        "has_more": has_more,
+        "limit": limit,
+        # Cursor for the *next* ("older") page -- the last row's own
+        # created_at, echoed back so the client doesn't need to parse
+        # timestamps itself, just round-trip this value as `before`.
+        "next_before": chains[-1]["created_at"] if chains else None,
+    }
 
 
 def _fetch_artifact_mime(sha256: str) -> dict | None:

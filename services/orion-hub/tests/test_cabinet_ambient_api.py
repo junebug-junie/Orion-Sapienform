@@ -122,6 +122,40 @@ def test_rows_to_points_preserves_peak_as_integer():
     assert isinstance(points[0]["peak"], int)
 
 
+def test_rows_to_points_accepts_float_peak_from_biometrics_json():
+    """Biometrics stores cabinet_ambient_peak as float; Postgres ->> yields '16213.0'."""
+    points = cabinet_ambient_routes.rows_to_points(
+        [
+            {
+                "t": datetime(2026, 8, 26, 2, 54, 9, tzinfo=timezone.utc),
+                "rms": 4132.5,
+                "peak": 16213.0,
+                "activity": 0.3,
+            }
+        ]
+    )
+    assert points[0]["peak"] == 16213
+
+
+def test_rows_to_points_accepts_sql_writer_varchar_timestamp():
+    points = cabinet_ambient_routes.rows_to_points(
+        [
+            {
+                "t": "2026-08-26 02:41:42.067071+00",
+                "rms": 3806.35,
+                "peak": 16213.0,
+                "activity": 0.3,
+            }
+        ]
+    )
+    assert points[0]["t"] == "2026-08-26T02:41:42.067071Z"
+
+
+def test_parse_db_timestamp_pads_variable_fraction_for_python310():
+    parsed = cabinet_ambient_routes._parse_db_timestamp("2026-08-26 02:46:53.36052+00")
+    assert parsed.isoformat() == "2026-08-26T02:46:53.360520+00:00"
+
+
 def test_downsample_points_averages_each_bucket_and_respects_cap():
     points = [
         {"t": f"2026-08-26T00:00:0{i}Z", "rms": float(i), "activity": i / 10}
@@ -163,6 +197,8 @@ def test_history_query_uses_index_compatible_timestamp_range(monkeypatch):
     assert "timestamp >= $2" in captured["sql"]
     assert "ORDER BY timestamp ASC" in captured["sql"]
     assert "timestamp::timestamptz" not in captured["sql"]
+    assert "cabinet_ambient_peak')::double precision" in captured["sql"]
+    assert "cabinet_ambient_peak')::bigint" not in captured["sql"]
     assert captured["closed"] is True
 
 

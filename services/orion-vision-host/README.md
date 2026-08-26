@@ -49,10 +49,16 @@ dedicated instance gets its own isolated channel, no exceptions
 convention).
 
 **No shared filesystem with athena** (`/mnt/telemetry` is local ext4, not
-NFS-exported) — this lane never reads a frame by path. The only caller
+NFS-exported) — this lane never reads a frame by path. The caller
 (`orion-thought`) uploads the generated image's bytes to
-`orion-percept-store` first and hands this lane a `percept_sha256`; nothing
-here needs its own percept-store client.
+`orion-percept-store` first and hands this lane a `percept_sha256`; this
+service's own `runner.py::_load_image_from_percept_store` is what fetches
+those bytes back, server-side, to run inference on. That means
+`VISION_PERCEPT_STORE_URL` **must be the real tailscale IP**
+(`http://100.92.216.81:8021/percepts`), never the docker-internal service
+name (`orion-athena-percept-store`) the shared athena instance uses — that
+hostname only resolves on athena's own docker network. Live-caught
+deploying this lane the first time: `Temporary failure in name resolution`.
 
 **Bring up (from a worktree ON CIRCE, never the shared checkout):**
 

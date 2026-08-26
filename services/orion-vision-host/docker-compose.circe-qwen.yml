@@ -94,11 +94,18 @@ services:
 
       - TORCH_CUDA_ALLOC_CONF=${TORCH_CUDA_ALLOC_CONF:-}
 
-      # This lane never reads a local frame -- no use_latest_frame path, no
-      # percept-store client of its own needed on the vision-host side
-      # (the CALLER, orion-thought, is the one that uploads to percept-store
-      # and hands this lane a percept_sha256).
-      - VISION_PERCEPT_STORE_URL=${VISION_PERCEPT_STORE_URL:-http://orion-athena-percept-store:8000/percepts}
+      # This lane never reads a local frame -- no use_latest_frame path. It
+      # DOES need to reach percept-store, though: the caller (orion-thought)
+      # uploads bytes and hands this lane a percept_sha256, but
+      # runner.py::_load_image_from_percept_store is what actually
+      # downloads those bytes back, server-side, to run inference on.
+      #
+      # Cross-host: this container runs on circe, percept-store on athena --
+      # the docker-internal service name (orion-athena-percept-store) only
+      # resolves on athena's OWN docker network. Live-caught deploying this
+      # lane: "Temporary failure in name resolution" the first time this
+      # exact default was a bare hostname. Must be the real tailscale IP.
+      - VISION_PERCEPT_STORE_URL=${VISION_PERCEPT_STORE_URL:-http://100.92.216.81:8021/percepts}
       - VISION_PERCEPT_STORE_TOKEN=${VISION_PERCEPT_STORE_TOKEN:-}
       - VISION_PERCEPT_TIMEOUT_SEC=${VISION_PERCEPT_TIMEOUT_SEC:-10.0}
 

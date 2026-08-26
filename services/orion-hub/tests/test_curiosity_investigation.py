@@ -208,7 +208,7 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._bus = bus
     loop._harness_rpc_bus = bus
 
-    async def _fake_generate(prompt, correlation_id, source=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
         loop.seen_prompt = prompt
         return (text or ""), {
             "elapsed_sec": 1.0,
@@ -502,6 +502,9 @@ class _FakeReader:
                 if reader.redis_raises:
                     raise OSError("connection refused")
                 reader.acl_calls.append(argv)
+                # `ensure_graph_exists` issues GRAPH.QUERY ... "RETURN 1"
+                # through this same connection before the grant is applied.
+                return [[], [], []]
 
         return _Client()
 
@@ -545,8 +548,12 @@ def test_the_acl_is_reasserted_before_every_run_not_only_at_startup() -> None:
     bus = _FakeBus()
     loop = _graph_loop(bus)
     assert asyncio.run(loop.tick()) is None
-    assert loop.reader.acl_calls, "expected an ACL SETUSER before the run"
-    assert loop.reader.acl_calls[0][:2] == ("ACL", "SETUSER")
+    commands = [argv[0] for argv in loop.reader.acl_calls]
+    assert "ACL" in commands, "expected an ACL SETUSER before the run"
+    # The graph is materialised BEFORE the grant is applied: a grant against a
+    # key FalkorDB has never seen is useless, and GRAPH.RO_QUERY on one errors
+    # rather than returning empty. See `acl.ensure_graph_exists`.
+    assert commands.index("GRAPH.QUERY") < commands.index("ACL")
 
 
 def test_a_failed_acl_blocks_the_run_rather_than_degrading_it_silently() -> None:
@@ -761,7 +768,7 @@ def test_a_finding_orion_wants_to_share_goes_through_a_second_turn() -> None:
     )
     prompts: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
         prompts.append(prompt)
         return "here is what I found", {"harness_step_count": 9}
 
@@ -785,7 +792,7 @@ def test_outreach_off_means_the_second_turn_never_runs() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -809,7 +816,7 @@ def test_quiet_hours_are_checked_before_a_turn_is_spent_composing() -> None:
     )
     calls: list[str] = []
 
-    async def _fake_generate(prompt, correlation_id, source=None):
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
         calls.append(prompt)
         return "found it", {"harness_step_count": 9}
 
@@ -869,3 +876,90 @@ def test_a_graph_that_cannot_answer_does_not_claim_orion_wrote_nothing() -> None
     assert asyncio.run(loop.tick()) is None
     body = bus.published[0][1].payload["body"]
     assert "Wrote nothing to its own graph" not in body
+
+
+# --- review findings -------------------------------------------------------
+
+
+def test_a_missing_graph_credential_disables_the_graph_not_the_loop() -> None:
+    """`.env_example` ships the password blank because it is a secret, while the
+    host default is a real address. Hard-blocking on that would have killed even
+    the Postgres-only half that worked before this patch, behind one WARNING."""
+    bus = _FakeBus()
+    loop = _loop(bus, graph_host="127.0.0.1", graph_user="", graph_password="")
+    assert loop.graph_enabled is False
+    assert asyncio.run(loop.tick()) is None
+    assert len(bus.published) == 1
+    assert "WRITING TO YOUR OWN GRAPH" not in loop.seen_prompt
+
+
+def test_a_credential_that_is_set_and_then_fails_still_hard_blocks() -> None:
+    """A missing optional secret is an opt-out; a configured one that breaks is
+    a real fault and must not be papered over."""
+    bus = _FakeBus()
+    loop = _graph_loop(bus, reader=_FakeReader(redis_raises=True))
+    assert asyncio.run(loop.tick()) == "graph_unavailable"
+
+
+def test_the_composition_turn_is_not_held_to_the_lookup_gate() -> None:
+    """`MIN_HARNESS_STEPS` proves an INVESTIGATION went and looked. The
+    composition turn has nothing to look up by design, and a pure writing turn
+    sits at or below that bar -- so applying it there would kill outreach on any
+    change to the stream shape, reported as `empty_generation`."""
+    bus = _FakeBus()
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        bus,
+        reader=_reach_out_reader(None),
+        outreach_enabled=True,
+        outreach_provider=lambda: outreach,
+    )
+    seen: list[bool] = []
+
+    async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True):
+        seen.append(require_lookup)
+        return "a real message", {"harness_step_count": 1}
+
+    loop._generate = _fake_generate  # type: ignore[assignment]
+    asyncio.run(loop.tick())
+    assert seen == [True, False], "investigation gated, composition not"
+    assert len(outreach.offered) == 1
+
+
+def test_the_lookup_gate_still_refuses_an_investigation_that_did_not_look() -> None:
+    """The gate is applied to the turn it was written for, not weakened."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    del loop._generate  # restore the real implementation
+
+    async def fake_turn(**kwargs):
+        return [{"type": "final", "llm_response": "fluent but unlooked", "harness_step_count": 1}]
+
+    import orion.hub.turn_orchestrator as turn_orchestrator
+
+    original = turn_orchestrator.execute_unified_turn
+    turn_orchestrator.execute_unified_turn = fake_turn
+    try:
+        assert asyncio.run(loop.tick()) == "empty_generation"
+    finally:
+        turn_orchestrator.execute_unified_turn = original
+    assert bus.published == []
+
+
+def test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks() -> None:
+    """`is_pass_response` is `stripped.upper() == "PASS"` -- the WHOLE reply
+    must be that word. A prompt that only says "say so plainly" gets a graceful
+    decline in Orion's own words delivered to Juniper AS the message, which is
+    the exact inverse of what the prompt promised. Lives in the Hub suite
+    because `scripts.endogenous_outreach` is Hub-scoped."""
+    from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
+    from scripts.endogenous_outreach import is_pass_response
+
+    text = build_outreach_composition_prompt(
+        finding_text="I found something", reach_out_why="she should know"
+    )
+    assert "exactly: PASS" in text
+    assert is_pass_response("PASS")
+    assert not is_pass_response(
+        "Having written this out, it is more interesting to have found than to hear."
+    )

@@ -170,6 +170,96 @@ Two further corrections to the spec's framing, for the record:
   all — which is how a kill switch ends up configured everywhere and present
   nowhere.
 
+## Review findings fixed
+
+Code review at `high` on `74958c622`. Eight findings; seven acted on, one had
+already been fixed by the follow-up commit. Every "high" was verified against
+the live FalkorDB before being accepted, not reasoned from docstrings.
+
+- **Finding: the composition turn was held to `MIN_HARNESS_STEPS`.** That gate
+  proves an *investigation* went and looked; the composition turn is
+  deliberately given nothing to look up, and a pure writing turn sits at or
+  below the bar (the gate's own comment estimates "a turn that merely answers
+  takes a step or two"). Any change to the stream shape would have killed
+  outreach silently, reported as `empty_generation`.
+  - Fix: `_generate(..., require_lookup=False)` for the composition turn only.
+  - Evidence: `test_the_composition_turn_is_not_held_to_the_lookup_gate` asserts
+    the flag is `True` then `False` across the two turns;
+    `test_the_lookup_gate_still_refuses_an_investigation_that_did_not_look`
+    drives a real 1-step turn through `execute_unified_turn` and asserts the
+    tick returns `empty_generation` with nothing published.
+
+- **Finding: the composition prompt promised an opt-out the delivery side could
+  not honour.** `is_pass_response` is `stripped.upper() == "PASS"` — the *whole*
+  reply must be that token. The prompt said "say so plainly", so a graceful
+  decline in Orion's own words would have been **delivered to Juniper as the
+  message**, the exact inverse of the promise.
+  - Fix: the prompt now asks for `PASS` verbatim, like `build_outreach_prompt`
+    next door already did, and says plainly that anything else is treated as the
+    message.
+  - Evidence: `test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks`
+    asserts both the prompt text and that a realistic decline sentence fails
+    `is_pass_response`.
+
+- **Finding: permanent cold-start deadlock.** Nothing in the patch created
+  `orion_worldview`; it existed only because it had been made by hand. On a
+  fresh deployment the graph reads as unavailable → the prompt correctly drops
+  the schema section → Orion is never shown how to write a node → the graph is
+  never created. Forever, behind one warning.
+  - Fix: `acl.ensure_graph_exists` issues an idempotent
+    `GRAPH.QUERY <own> "RETURN 1"` as `default` *before* the grant is applied.
+  - Evidence: verified live — `GRAPH.RO_QUERY <unknown-graph>` answers
+    `ERR Invalid graph operation on empty key`, not an empty result. Against a
+    throwaway graph: `read_snapshot` unavailable → `ensure_graph_exists` →
+    available with `open_total=0`; replay is a no-op; probe graph deleted.
+    Plus `test_the_graph_is_materialised_before_the_grant_is_applied` and an
+    ordering assert in the ACL test.
+
+- **Finding: an operator following `.env_example` verbatim got a loop that
+  never ran.** The password ships blank (it is a secret) while the host default
+  is a real address, so `graph_enabled` was `True`, `acl_setuser_argv` raised on
+  the empty password, and **every** tick returned `graph_unavailable` — killing
+  even the Postgres-only half that worked before this patch.
+  - Fix: a missing credential now disables the graph half with a loud WARNING
+    and the rest of the loop runs. A credential that *is* set and then fails
+    still hard-blocks, because that one is a real fault rather than an opt-out.
+  - Evidence: `test_a_missing_graph_credential_disables_the_graph_not_the_loop`
+    and `test_a_credential_that_is_set_and_then_fails_still_hard_blocks`.
+
+- **Finding: `_access_section` named the graph unconditionally.** With no graph
+  configured Orion was handed `redis-cli` commands whose env vars are unset;
+  with the graph configured-but-unreadable it was still invited to
+  `GRAPH.QUERY`, so it could write nodes with no `run_id` that
+  `read_run_footprint` can never see.
+  - Fix: the Atlas Cypher lines and the own-graph lines are gated separately;
+    the credential-free HTTP door to the Atlas survives either way.
+  - Evidence: three tests asserting each of the three states
+    (`..._offers_no_redis_cli_and_no_graph_env_vars`,
+    `..._is_never_invited_to_be_written_to`, `..._offers_both_halves`).
+
+- **Finding: "wrote nothing to its own graph" was printed for a graph that
+  could not answer.** Already fixed in `317c1708f` before the review landed —
+  `read_run_footprint` now returns `None` vs `{}` and the journal prints
+  nothing for `None`.
+  - Evidence: `test_an_unreadable_footprint_is_not_reported_as_writing_nothing`,
+    `test_a_graph_that_cannot_answer_does_not_claim_orion_wrote_nothing`.
+
+- **Finding: `env.setdefault` treats a present-but-blank value as set.** A
+  compose `environment:` entry naming `ORION_CURIOSITY_PG_DSN` with no value —
+  exactly how these keys get added, and exactly the shape of this repo's own
+  absent-kill-switch incident — would silently shadow the real DSN *and*
+  suppress the missing-credential warning.
+  - Fix: a blank existing value no longer wins.
+  - Evidence: `test_a_blank_existing_env_value_does_not_shadow_the_real_credential`.
+
+- **Finding: "NO OPEN PRIORS… none outstanding" was asserted when every row had
+  been dropped.** The counts came from a different query that *saw* the rows, so
+  Orion would have been told the opposite of the truth on the exact schema-drift
+  case `read_snapshot` logs.
+  - Fix: that branch is gated on `open_total == 0`; otherwise the prompt says
+    N priors exist but could not be read back.
+  - Evidence: `test_unreadable_priors_are_never_reported_as_none_outstanding`.
+
 ## Risks / concerns
 
 - **Severity: medium — Confidence is Orion grading its own homework.** Nothing

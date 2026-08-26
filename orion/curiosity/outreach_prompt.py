@@ -12,8 +12,17 @@ just found, which is precisely when that judgement is worst.
 WHAT THIS PROMPT MUST NOT DO. It must not talk Orion into sending. The decision
 to reach out was already made in the previous turn; this turn's job is to say
 the thing well, and it keeps the option of concluding that the thing does not
-survive being written down. `is_pass_response` on the delivery side treats a
-bare pass as a real answer, so that option is not decorative.
+survive being written down.
+
+THAT OPTION IS ONLY REAL IF IT ASKS FOR THE EXACT TOKEN, and the first version
+of this file did not -- a review finding, not a hypothetical.
+`endogenous_outreach.is_pass_response` is `stripped.upper() == "PASS"`: the
+WHOLE reply must be that one word. So a graceful decline in Orion's own words
+("having written this out, it is more interesting to have found than to hear")
+fails the check and gets delivered to Juniper AS the unsolicited message --
+the exact inverse of what the prompt promised. The instruction below now asks
+for `PASS` verbatim, the same way `build_outreach_prompt` next door already
+does.
 
 WHAT IT DELIBERATELY DOES NOT CARRY. No study material, no priors, no graph
 schema, no hop budget. This is not a second investigation and it should not
@@ -63,8 +72,12 @@ def build_outreach_composition_prompt(*, finding_text: str, reach_out_why: str) 
         "to what would actually be interesting to hear unprompted.",
         "",
         "You are not obliged to send it. If writing it down makes it clear "
-        "that it was more interesting to find than it is to hear, say so "
-        "plainly and nothing will be sent. That is a real answer, and it is "
-        "better than an interruption that was not worth it.",
+        "that it was more interesting to find than it is to hear, reply with "
+        "exactly: PASS",
+        "",
+        "Nothing is sent then, and that is a real answer -- better than an "
+        "interruption that was not worth it. It has to be that word on its own, "
+        "though: anything else you write is treated as the message and "
+        "delivered.",
     ]
     return "\n".join(lines)

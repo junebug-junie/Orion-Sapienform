@@ -91,6 +91,34 @@ def acl_setuser_argv(
     ]
 
 
+def ensure_graph_exists(*, client: Any, graph_name: str) -> Optional[str]:
+    """Create `graph_name` if FalkorDB has never seen it. Idempotent.
+
+    WITHOUT THIS THE FIRST EVER RUN DEADLOCKS, and it is a real deadlock rather
+    than a slow start. Verified live 2026-08-26: `GRAPH.RO_QUERY <unknown-graph>`
+    answers `ERR Invalid graph operation on empty key`, not an empty result. So
+    on a fresh deployment `read_snapshot` reports the graph as UNAVAILABLE, the
+    prompt therefore drops the schema and `:TurnOutcome` sections (correctly --
+    it must not name a store this run cannot reach), Orion is never shown how to
+    write a node, no node is ever written, and the graph is never created. The
+    only symptom is a `curiosity_worldview_degraded` warning, forever.
+
+    `GRAPH.QUERY ... "RETURN 1"` is the cheapest write-capable no-op that
+    materialises the key; on an existing graph it changes nothing. Run as
+    FalkorDB's `default` user, which is the one connection Hub holds that can
+    write -- Orion's own ACL user could do it too, but Hub asserting the grant
+    and then depending on Orion to use it would make the bootstrap depend on a
+    turn happening first, which is the deadlock again one step out.
+    """
+    if not str(graph_name or "").strip():
+        return "misconfigured: no graph name"
+    try:
+        client.execute_command("GRAPH.QUERY", graph_name, "RETURN 1")
+    except Exception as exc:  # noqa: BLE001 -- reported, never raised
+        return f"{type(exc).__name__}: {str(exc)[:160]}"
+    return None
+
+
 def assert_orion_acl(
     *,
     client: Any,

@@ -97,6 +97,19 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "",
         ]
     if not view.open_priors and not view.stale_priors:
+        if view.open_total > 0:
+            # The counts query SAW open priors that `build_prior` could not
+            # read (no `prior_id`, or no `claim`). Saying "none outstanding"
+            # here would tell Orion the opposite of the truth on the exact
+            # schema-drift case `read_snapshot` already logs. A review finding.
+            return [
+                f"YOUR GRAPH HOLDS {view.open_total} OPEN "
+                f"{'PRIOR' if view.open_total == 1 else 'PRIORS'} THAT COULD "
+                "NOT BE READ BACK -- they are missing a prior_id or a claim, so "
+                "there is nothing to show you. Worth a look at what is actually "
+                "in there if you want one.",
+                "",
+            ]
         if view.open_total == 0 and view.resolved_total == 0:
             return [
                 "YOUR OWN GRAPH IS EMPTY. You have not written down a prior yet "
@@ -194,7 +207,14 @@ def _material_section(material: StudyMaterial) -> list[str]:
     return lines
 
 
-def _access_section(*, own_graph: str, atlas_graph: str, hub_url: str) -> list[str]:
+def _access_section(
+    *,
+    own_graph: str,
+    atlas_graph: str,
+    hub_url: str,
+    graph_enabled: bool = True,
+    writable: bool = True,
+) -> list[str]:
     """What Orion can actually reach, named as possible and never as required.
 
     Same rule as not picking the subject: listing a move is not asking for it.
@@ -203,6 +223,47 @@ def _access_section(*, own_graph: str, atlas_graph: str, hub_url: str) -> list[s
     write-capable only on Orion's own graph -- so every line here is something
     that works, not something that would work if someone built it.
     """
+    graph_uri = (
+        'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+        '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
+    )
+    # EVERY LINE BELOW MUST BE SOMETHING THAT ACTUALLY WORKS THIS RUN. A review
+    # finding, not a hypothetical: this section used to be emitted whole even
+    # when no graph was configured, handing Orion `redis-cli` commands whose env
+    # vars are unset -- and, in the configured-but-unreadable case, inviting it
+    # to GRAPH.QUERY a graph whose schema section had been dropped, so it could
+    # write nodes with no `run_id` that `read_run_footprint` can never see.
+    atlas_lines = [
+        "  The shared Concept Atlas -- Juniper-curated, canonical, READ-ONLY to you:",
+        f'    redis-cli -u "{graph_uri}" \\',
+        f'      GRAPH.RO_QUERY {atlas_graph} "MATCH (c:Concept) RETURN c.name, c.anchor_scope"',
+        f"    Also served read-only over HTTP: {hub_url}/api/substrate/concepts/summary",
+        f"    and {hub_url}/api/substrate/concepts/network",
+        "",
+    ] if graph_enabled else [
+        # The HTTP endpoint needs no credential, so it survives even with no
+        # graph configured -- it is a different door to the same Atlas.
+        "  The shared Concept Atlas -- Juniper-curated, canonical, read-only:",
+        f"    curl -s {hub_url}/api/substrate/concepts/summary",
+        f"    curl -s {hub_url}/api/substrate/concepts/network",
+        "",
+    ]
+    own_lines = [
+        "  YOUR OWN graph -- nobody curates it, nothing in it needs approval:",
+        f'    redis-cli -u "{graph_uri}" \\',
+        f'      GRAPH.QUERY {own_graph} "MATCH (p:Prior) RETURN p.claim, p.confidence"',
+        "",
+    ] if writable else []
+    boundary = [
+        "  The boundary is enforced by the databases, not by trust: that "
+        "Postgres role cannot write anything, and that graph user cannot write "
+        f"to {atlas_graph}. You do not have to be careful about it.",
+        "",
+    ] if graph_enabled else [
+        "  The boundary is enforced by Postgres, not by trust: that role cannot "
+        "write anything. You do not have to be careful about it.",
+        "",
+    ]
     return [
         "HOW TO REACH YOUR OWN MATERIAL. These are all live. None of them is a "
         "step you are expected to take; they are what is available if you want "
@@ -215,24 +276,13 @@ def _access_section(*, own_graph: str, atlas_graph: str, hub_url: str) -> list[s
         "      chat_history_log                     the conversation a concept came from",
         "      journal_entries                      what you have written before",
         "",
-        "  The shared Concept Atlas -- Juniper-curated, canonical, READ-ONLY to you:",
-        f'    redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" \\',
-        f'      GRAPH.RO_QUERY {atlas_graph} "MATCH (c:Concept) RETURN c.name, c.anchor_scope"',
-        f"    Also served read-only over HTTP: {hub_url}/api/substrate/concepts/summary",
-        f"    and {hub_url}/api/substrate/concepts/network",
-        "",
-        "  YOUR OWN graph -- nobody curates it, nothing in it needs approval:",
-        f'    redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" \\',
-        f'      GRAPH.QUERY {own_graph} "MATCH (p:Prior) RETURN p.claim, p.confidence"',
-        "",
+        *atlas_lines,
+        *own_lines,
         "  You also still have read_recall, read_memory and read_graph, plus "
         "Read over your own repo checkout, Bash, and a scratch directory if a "
         "long chain of work needs somewhere to accumulate.",
         "",
-        "  The boundary is enforced by the databases, not by trust: that "
-        "Postgres role cannot write anything, and that graph user cannot write "
-        f"to {atlas_graph}. You do not have to be careful about it.",
-        "",
+        *boundary,
     ]
 
 
@@ -471,7 +521,11 @@ def build_kickoff_prompt(
 
     lines += _material_section(material)
     lines += _access_section(
-        own_graph=own_graph, atlas_graph=atlas_graph, hub_url=hub_url
+        own_graph=own_graph,
+        atlas_graph=atlas_graph,
+        hub_url=hub_url,
+        graph_enabled=graph_enabled,
+        writable=writable,
     )
 
     if writable:

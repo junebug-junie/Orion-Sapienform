@@ -224,3 +224,51 @@ def test_a_turn_with_no_fcc_env_is_unaffected(monkeypatch) -> None:
     monkeypatch.setattr(fcc_motor.os, "environ", {"PATH": "/usr/bin"})
     env = fcc_motor._build_subprocess_env(fcc_server_url="http://x:8082", auth_token="t")
     assert not any(k.startswith("ORION_CURIOSITY") for k in env)
+
+
+# --- review findings --------------------------------------------------------
+
+
+def test_a_blank_existing_env_value_does_not_shadow_the_real_credential() -> None:
+    """`env.setdefault` treats "" as set. A compose `environment:` entry naming
+    the key with no value -- exactly how these get added, and exactly the shape
+    of this repo's own absent-kill-switch incident -- would then hand the
+    subprocess an empty DSN AND suppress the missing-credential warning."""
+    env = {"ORION_CURIOSITY_PG_DSN": ""}
+    inject_curiosity_credentials(env, {"ORION_CURIOSITY_PG_DSN": "postgresql://ro@db/x"})
+    assert env["ORION_CURIOSITY_PG_DSN"] == "postgresql://ro@db/x"
+
+    env = {"ORION_CURIOSITY_PG_DSN": "   "}
+    inject_curiosity_credentials(env, {"ORION_CURIOSITY_PG_DSN": "postgresql://ro@db/x"})
+    assert env["ORION_CURIOSITY_PG_DSN"] == "postgresql://ro@db/x"
+
+
+def test_the_graph_is_materialised_before_the_grant_is_applied() -> None:
+    """Verified live 2026-08-26: `GRAPH.RO_QUERY <unknown-graph>` answers
+    `ERR Invalid graph operation on empty key`, NOT an empty result. Without an
+    idempotent create, a fresh deployment deadlocks: the graph reads as
+    unavailable, so the prompt drops the schema section, so Orion never writes
+    a node, so the graph is never created."""
+    from orion.curiosity.acl import ensure_graph_exists
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def execute_command(self, *argv):
+            self.calls.append(argv)
+
+    client = _Client()
+    assert ensure_graph_exists(client=client, graph_name="orion_worldview") is None
+    assert client.calls == [("GRAPH.QUERY", "orion_worldview", "RETURN 1")]
+
+
+def test_a_graph_create_failure_is_reported_not_raised() -> None:
+    from orion.curiosity.acl import ensure_graph_exists
+
+    class _Client:
+        def execute_command(self, *argv):
+            raise OSError("connection refused")
+
+    assert "OSError" in (ensure_graph_exists(client=_Client(), graph_name="g") or "")
+    assert "misconfigured" in (ensure_graph_exists(client=_Client(), graph_name="") or "")

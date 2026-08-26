@@ -73,10 +73,18 @@ def inject_curiosity_credentials(
     ("I tried to query Postgres but the DSN was empty"), which is the
     empty-shell-cognition failure with a helpful tone.
 
-    An already-set value in `env` WINS over the file. That ordering exists so
-    an operator can override a single key through the container's own
+    An already-set NON-BLANK value in `env` wins over the file. That ordering
+    exists so an operator can override a single key through the container's own
     environment for a one-off without editing the shared credentials file, and
     so this function is safe to call twice.
+
+    A BLANK existing value does NOT win, and that is a review finding rather
+    than a nicety. `env.setdefault` treats `""` as set, so a compose
+    `environment:` entry naming `ORION_CURIOSITY_PG_DSN` with no value -- which
+    is exactly how these keys get added, and exactly the shape of this repo's
+    own absent-kill-switch incident -- would silently shadow the real DSN from
+    the file AND suppress the `curiosity_credentials_absent` warning, because
+    the key was present in `fcc_env` and never counted as missing.
     """
     missing: list[str] = []
     for key in CURIOSITY_ENV_KEYS:
@@ -84,7 +92,9 @@ def inject_curiosity_credentials(
         if not value:
             missing.append(key)
             continue
-        env.setdefault(key, value)
+        if str(env.get(key) or "").strip():
+            continue  # a real operator override; leave it alone
+        env[key] = value
     if _REQUIRED_FOR_SQL in missing:
         logger.warning(
             "curiosity_credentials_absent missing=%s -- the FCC sandbox will "

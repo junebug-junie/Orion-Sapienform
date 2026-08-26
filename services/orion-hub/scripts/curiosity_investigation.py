@@ -81,7 +81,7 @@ from typing import Any, Callable, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.curiosity.acl import assert_orion_acl
+from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_prompt
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
 from orion.curiosity.study_material import (
@@ -372,9 +372,31 @@ class CuriosityInvestigation:
         # prompt degrades to material-only rather than naming a store Orion
         # cannot reach.
         self._reader = reader
-        if self._reader is None and graph_host:
+        if self._reader is None and graph_host and graph_user and graph_password:
             self._reader = WorldviewReader(
                 host=graph_host, port=self.graph_port, graph_name=graph_own
+            )
+        elif self._reader is None and graph_host:
+            # CONFIGURED HOST, NO CREDENTIAL -> the graph half is OFF, and the
+            # rest of the loop still runs. A review finding, and a sharp one:
+            # `.env_example` ships HUB_CURIOSITY_GRAPH_ORION_PASSWORD blank (it
+            # is a secret) while the host default is a real address, so an
+            # operator following the template verbatim would have had
+            # `graph_enabled` True, `acl_setuser_argv` raising on the empty
+            # password, and EVERY tick returning `graph_unavailable` -- killing
+            # even the Postgres-only half that worked before this patch, behind
+            # one WARNING.
+            #
+            # A missing optional secret is an opt-out, not a breakage. A
+            # credential that IS set and then fails still hard-blocks, because
+            # that one is a real fault.
+            logger.warning(
+                "curiosity_graph_credential_missing host=%s user=%s -- Orion's "
+                "own graph is DISABLED for this process (priors, hops and "
+                "continuation notes are all off); the Postgres half still runs. "
+                "Set HUB_CURIOSITY_GRAPH_ORION_USER/PASSWORD to enable it.",
+                graph_host,
+                graph_user or "<unset>",
             )
 
         self._bus: Any = None
@@ -455,8 +477,16 @@ class CuriosityInvestigation:
             return self._acl_error
 
         def _apply() -> Optional[str]:
+            client = self._reader.client()
+            # Order matters: the grant is useless against a key FalkorDB has
+            # never seen, and `GRAPH.RO_QUERY` on one errors rather than
+            # returning empty -- see `ensure_graph_exists` for the deadlock
+            # that produces on a fresh deployment.
+            created = ensure_graph_exists(client=client, graph_name=self.graph_own)
+            if created:
+                return created
             return assert_orion_acl(
-                client=self._reader.client(),
+                client=client,
                 username=self.graph_user,
                 password=self.graph_password,
                 atlas_graph=self.graph_atlas,
@@ -818,11 +848,27 @@ class CuriosityInvestigation:
     # --- the turn ----------------------------------------------------------
 
     async def _generate(
-        self, prompt: str, correlation_id: str, source: str = INVESTIGATION_TAG
+        self,
+        prompt: str,
+        correlation_id: str,
+        source: str = INVESTIGATION_TAG,
+        require_lookup: bool = True,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
-        positive" contract `endogenous_outreach._generate` uses."""
+        positive" contract `endogenous_outreach._generate` uses.
+
+        `require_lookup=False` for the COMPOSITION turn, and that is not a
+        loosening of the gate -- it is the gate being applied to the turn it was
+        written for. `MIN_HARNESS_STEPS` proves an INVESTIGATION went and
+        looked; the composition turn is deliberately the opposite (see
+        `orion/curiosity/outreach_prompt.py`: no material, no priors, no
+        schema, nothing to look up). A pure writing turn produces about three
+        stream-json lines, so it would have cleared the bar by a margin of zero
+        -- this gate's own comment estimates "a turn that merely answers takes a
+        step or two", i.e. BELOW it. Any change to the stream shape would then
+        have killed outreach silently, reported as `empty_generation`, which is
+        indistinguishable from a real generation failure. A review finding."""
         if self._bus is None:
             return "", {"error": "no_bus"}
         from orion.cognition.cortex_payload_extract import looks_like_error_text
@@ -879,7 +925,7 @@ class CuriosityInvestigation:
             step_count = int(steps) if steps is not None else 0
         except (TypeError, ValueError):
             step_count = 0
-        if step_count < MIN_HARNESS_STEPS:
+        if require_lookup and step_count < MIN_HARNESS_STEPS:
             logger.warning(
                 "curiosity_no_lookup corr=%s steps=%s grounding=%s chars=%s -- "
                 "refusing to journal a turn that did not look anything up",
@@ -947,7 +993,9 @@ class CuriosityInvestigation:
         prompt = build_outreach_composition_prompt(
             finding_text=finding_text, reach_out_why=outcome.reach_out_why
         )
-        text, debug = await self._generate(prompt, correlation_id, source=OUTREACH_TAG)
+        text, debug = await self._generate(
+            prompt, correlation_id, source=OUTREACH_TAG, require_lookup=False
+        )
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)
             return "empty_generation"

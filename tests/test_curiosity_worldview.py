@@ -338,3 +338,72 @@ def test_a_view_with_only_stale_priors_does_not_print_an_empty_heading() -> None
     assert "WHAT YOU ARE STILL UNSURE OF" not in text
     assert "a stuck claim" in text
     assert "retired_unresolvable" in text
+
+
+# --- review findings: the prompt must not name what this run cannot reach ---
+
+
+def _prompt(**over):
+    from orion.curiosity.kickoff_prompt import build_kickoff_prompt
+    from orion.curiosity.study_material import assemble_study_material
+    from datetime import datetime, timezone
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    material = assemble_study_material(
+        now=datetime(2026, 8, 26, tzinfo=timezone.utc),
+        approved_counts=[{"kind": "semantic", "n": 5}],
+        approved_rows=[{
+            "crystallization_id": "c1", "kind": "semantic", "subject": "a thought",
+            "summary": "", "salience": 0.5, "created_at": None,
+        }],
+        relation_counts=[], relation_rows=[], relation_resolvable=0,
+    )
+    kwargs = dict(view=WorldviewSnapshot(), run_id="a1b2c3d4e5f6")
+    kwargs.update(over)
+    return build_kickoff_prompt(material, **kwargs)
+
+
+def test_with_no_graph_the_prompt_offers_no_redis_cli_and_no_graph_env_vars() -> None:
+    """Handing Orion commands whose env vars are unset is how a turn ends up
+    reporting a tooling failure as a finding."""
+    text = _prompt(graph_enabled=False)
+    assert "redis-cli" not in text
+    assert "ORION_CURIOSITY_GRAPH" not in text
+    assert "GRAPH.QUERY" not in text
+    # The credential-free HTTP door to the Atlas still works, so it stays.
+    assert "/api/substrate/concepts/summary" in text
+
+
+def test_an_unreadable_graph_is_never_invited_to_be_written_to() -> None:
+    """The write sections are dropped in this state, so an invitation to
+    GRAPH.QUERY would produce nodes with no run_id that nothing can see."""
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    text = _prompt(view=WorldviewSnapshot(unavailable_reason="ConnectionError"))
+    assert "GRAPH.QUERY" not in text
+    assert "COULD NOT BE READ" in text
+    # Reading the Atlas is a different credential path and still works.
+    assert "GRAPH.RO_QUERY" in text
+
+
+def test_a_readable_graph_offers_both_halves() -> None:
+    text = _prompt()
+    assert "GRAPH.RO_QUERY" in text and "GRAPH.QUERY" in text
+    assert "WRITING TO YOUR OWN GRAPH" in text
+
+
+def test_unreadable_priors_are_never_reported_as_none_outstanding() -> None:
+    """The counts query saw rows that `build_prior` could not read. Saying
+    "none outstanding" would tell Orion the opposite of the truth."""
+    from orion.curiosity.kickoff_prompt import _priors_section
+    from orion.curiosity.worldview import WorldviewSnapshot
+
+    text = "\n".join(
+        _priors_section(
+            WorldviewSnapshot(open_priors=[], stale_priors=[], open_total=4),
+            stale_after=3,
+        )
+    )
+    assert "NO OPEN PRIORS" not in text
+    assert "COULD NOT BE READ BACK" in text
+    assert "4 OPEN PRIORS" in text

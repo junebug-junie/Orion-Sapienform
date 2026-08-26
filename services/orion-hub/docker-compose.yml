@@ -70,6 +70,8 @@ services:
       # Host cabinet sensor snapshot (systemd reader -> /run/orion-sensors/latest.json).
       # Same :ro mount as orion-biometrics; create via scripts/setup_athena_cabinet_sensors.sh.
       - /run/orion-sensors:/run/orion-sensors:ro
+      # Host ambient-audio snapshot (systemd reader -> /run/orion-audio/latest.json).
+      - /run/orion-audio:/run/orion-audio:ro
     environment:
       # Core service identity
       - PROJECT=${PROJECT}
@@ -98,6 +100,10 @@ services:
       - CABINET_SENSORS_PATH=${CABINET_SENSORS_PATH:-/run/orion-sensors/latest.json}
       - CABINET_BOOT_PATH=${CABINET_BOOT_PATH:-/run/orion-sensors/boot.json}
       - CABINET_SENSORS_STALE_AFTER_SEC=${CABINET_SENSORS_STALE_AFTER_SEC:-10.0}
+      - AMBIENT_AUDIO_PATH=${AMBIENT_AUDIO_PATH:-/run/orion-audio/latest.json}
+      - AMBIENT_AUDIO_STALE_AFTER_SEC=${AMBIENT_AUDIO_STALE_AFTER_SEC:-5}
+      - CABINET_AMBIENT_HISTORY_NODE=${CABINET_AMBIENT_HISTORY_NODE:-athena}
+      - CABINET_AMBIENT_HISTORY_MAX_POINTS=${CABINET_AMBIENT_HISTORY_MAX_POINTS:-800}
       - NOTIFY_IN_APP_ENABLED=${NOTIFY_IN_APP_ENABLED}
       - NOTIFY_IN_APP_CHANNEL=${NOTIFY_IN_APP_CHANNEL}
       - NOTIFY_IN_APP_MAX=${NOTIFY_IN_APP_MAX}

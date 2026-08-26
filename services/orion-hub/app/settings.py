@@ -406,6 +406,24 @@ class Settings(BaseSettings):
         default=10.0,
         alias="CABINET_SENSORS_STALE_AFTER_SEC",
     )
+    # Host ambient-audio snapshot plus biometrics-summary history for Cabinet.
+    AMBIENT_AUDIO_PATH: str = Field(
+        default="/run/orion-audio/latest.json",
+        alias="AMBIENT_AUDIO_PATH",
+    )
+    AMBIENT_AUDIO_STALE_AFTER_SEC: float = Field(
+        default=5.0,
+        alias="AMBIENT_AUDIO_STALE_AFTER_SEC",
+    )
+    CABINET_AMBIENT_HISTORY_NODE: str = Field(
+        default="athena",
+        alias="CABINET_AMBIENT_HISTORY_NODE",
+    )
+    CABINET_AMBIENT_HISTORY_MAX_POINTS: int = Field(
+        default=800,
+        ge=1,
+        alias="CABINET_AMBIENT_HISTORY_MAX_POINTS",
+    )
 
     # --- Organ signal gateway inspect (Phase 2b Hub) ---
     SIGNALS_INSPECT_ENABLED: bool = Field(default=True, alias="SIGNALS_INSPECT_ENABLED")

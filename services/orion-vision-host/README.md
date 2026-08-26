@@ -54,11 +54,35 @@ NFS-exported) — this lane never reads a frame by path. The caller
 `orion-percept-store` first and hands this lane a `percept_sha256`; this
 service's own `runner.py::_load_image_from_percept_store` is what fetches
 those bytes back, server-side, to run inference on. That means
-`VISION_PERCEPT_STORE_URL` **must be the real tailscale IP**
+`VISION_PERCEPT_STORE_URL` (set via `CIRCE_QWEN_VISION_PERCEPT_STORE_URL`
+— see below) **must be the real tailscale IP**
 (`http://100.92.216.81:8021/percepts`), never the docker-internal service
 name (`orion-athena-percept-store`) the shared athena instance uses — that
 hostname only resolves on athena's own docker network. Live-caught
 deploying this lane the first time: `Temporary failure in name resolution`.
+
+**Every lane-specific override reads a `CIRCE_QWEN_`-prefixed key, never
+the bare shared name — this is load-bearing, not a style choice, no
+exceptions.** Real regression, 2026-08-26, caught in two rounds. Round 1
+(live-caught): this file read `VISION_PERCEPT_STORE_URL`, the three
+`VISION_VRAM_*` floors, `VISION_TIMEOUT_S`, and `ORION_BUS_ENFORCE_CATALOG`
+as bare `${VAR:-<circe-correct-default>}` hooks. The shared athena
+instance's own `.env_example` sets every one of those same bare names to a
+*different* value for athena's own purposes. The moment
+`services/orion-vision-host/.env` exists at all — which this file's own
+bring-up instructions below require passing as a second `--env-file` —
+the athena-only values silently won over this lane's real defaults, no
+error. Percept-store broke functionally (re-observation tick came back
+`image_not_found`, "Temporary failure in name resolution" on the
+athena-only hostname, live-caught in `orion-thought`'s own tick log); the
+VRAM floors and catalog-enforcement flag collided the same way but stayed
+silently harmless (the P100 has headroom to spare; no catalog rejections
+observed). Round 2 (code-review finding on the round-1 fix itself, same
+session): `LOG_LEVEL`, `ORION_BUS_ENABLED`, `HEARTBEAT_INTERVAL_SEC`, and
+`TORCH_CUDA_ALLOC_CONF` were still bare, same collision mechanism, silently
+harmless only because the values happened to coincide — fixed for the same
+reason as round 1, not left as a known-benign exception now that the
+principle above is stated as a blanket "no exceptions."
 
 **Bring up (from a worktree ON CIRCE, never the shared checkout):**
 

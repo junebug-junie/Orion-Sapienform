@@ -46,6 +46,18 @@ services:
       - WHISPER_TTS_SYNTH_TIMEOUT_SEC=${WHISPER_TTS_SYNTH_TIMEOUT_SEC:-120}
       - STT_NEAR_SILENT_PEAK_INT16=${STT_NEAR_SILENT_PEAK_INT16:-50}
 
+      # CUDA_WATCHDOG_* (app/cuda_watchdog.py) intentionally NOT listed here.
+      # `env_file: .env` above already delivers every .env_example key
+      # regardless of this allowlist -- adding an explicit
+      # `${VAR:-default}` entry here would interpolate its default from
+      # THIS COMPOSE INVOCATION's env-file context (typically the repo-root
+      # .env), not from this service's own .env, so an operator override in
+      # the service .env could be silently reverted to the default the
+      # moment compose is invoked with a narrower --env-file set. Confirmed
+      # this exact failure mode on a different service's kill switch during
+      # review of PR #1881 (2026-08-26) -- same trap, left out here on
+      # purpose rather than repeated.
+
       # GPU visibility
       #- CUDA_VISIBLE_DEVICES=${GPU_INDEX}
       #- NVIDIA_VISIBLE_DEVICES=${GPU_INDEX}

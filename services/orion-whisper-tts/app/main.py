@@ -18,6 +18,7 @@ from orion.schemas.telemetry.system_health import SystemHealthV1
 from .settings import settings
 from .tts_worker import listener_worker
 from .stt_worker import stt_listener_worker
+from .cuda_watchdog import cuda_watchdog_loop, restart_process
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +33,7 @@ bus: Optional[OrionBusAsync] = None
 listener_task: Optional[asyncio.Task] = None
 stt_task: Optional[asyncio.Task] = None
 heartbeat_task: Optional[asyncio.Task] = None
+cuda_watchdog_task: Optional[asyncio.Task] = None
 
 # Generate a unique Boot ID for this process instance
 BOOT_ID = str(uuid.uuid4())
@@ -86,7 +88,7 @@ async def heartbeat_loop(bus_instance: OrionBusAsync):
 
 @app.on_event("startup")
 async def startup() -> None:
-    global bus, listener_task, stt_task, heartbeat_task
+    global bus, listener_task, stt_task, heartbeat_task, cuda_watchdog_task
     logger.info(
         "Starting Whisper/TTS service %s v%s",
         settings.service_name,
@@ -102,6 +104,15 @@ async def startup() -> None:
         settings.tts_default_speaker_wav or "(none)",
     )
 
+    # Fail loud at boot if GPU mode is configured but genuinely unavailable
+    # -- was dead code (defined, never called) until this patch. Gated on
+    # tts_use_gpu: a deliberate CPU-mode deployment must not be forced to
+    # have a GPU. This is the boot-time half of GPU liveness; the
+    # cuda_watchdog below is the complementary mid-uptime half -- neither
+    # can see the other's failure window.
+    if settings.tts_use_gpu:
+        _require_cuda_or_die()
+
     bus = OrionBusAsync(
         url=settings.orion_bus_url,
         enabled=settings.orion_bus_enabled,
@@ -112,11 +123,20 @@ async def startup() -> None:
     listener_task = asyncio.create_task(listener_worker(bus))
     stt_task = asyncio.create_task(stt_listener_worker(bus))
     heartbeat_task = asyncio.create_task(heartbeat_loop(bus))
+    if settings.tts_use_gpu and settings.cuda_watchdog_enabled:
+        cuda_watchdog_task = asyncio.create_task(
+            cuda_watchdog_loop(
+                poll_sec=settings.cuda_watchdog_poll_sec,
+                failure_threshold=settings.cuda_watchdog_failure_threshold,
+                is_cuda_available=torch.cuda.is_available,
+                on_trigger=restart_process,
+            )
+        )
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global bus, listener_task, stt_task, heartbeat_task
+    global bus, listener_task, stt_task, heartbeat_task, cuda_watchdog_task
     logger.info("Shutting down Whisper/TTS service...")
 
     if listener_task:
@@ -130,6 +150,13 @@ async def shutdown() -> None:
         stt_task.cancel()
         try:
             await stt_task
+        except asyncio.CancelledError:
+            pass
+
+    if cuda_watchdog_task:
+        cuda_watchdog_task.cancel()
+        try:
+            await cuda_watchdog_task
         except asyncio.CancelledError:
             pass
 

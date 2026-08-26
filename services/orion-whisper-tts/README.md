@@ -32,6 +32,50 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `TTS_SPLIT_SENTENCES` | `true` | XTTS sentence splitting. |
 | `TTS_VOICE_PROFILE_DIR` | `/models/voices` | Voice profile mount inside container. |
 | `CHANNEL_TTS_INTAKE` | `orion:tts:intake` | Input channel. |
+| `CUDA_WATCHDOG_ENABLED` | `true` | Self-restart on detected CUDA staleness. See "GPU liveness" below. |
+| `CUDA_WATCHDOG_POLL_SEC` | `30` | Watchdog check cadence. |
+| `CUDA_WATCHDOG_FAILURE_THRESHOLD` | `2` | Consecutive failed checks required before restarting. |
+
+## GPU liveness
+
+Real incident, 2026-08-26: this container's Coqui TTS backend crashed on
+its first real request with `CUDA is not available on this machine`, while
+STT (same container, same GPU) kept working. Root cause: a
+docker+nvidia-container-toolkit staleness quirk (`nvidia-smi` inside the
+container returned `Failed to initialize NVML: Unknown Error`), most likely
+triggered by something at the host level (another GPU container being
+rebuilt/restarted, a driver/persistenced reload) -- not anything this
+service's own code does. STT survived it because `openai-whisper` falls
+back to CPU (`stt.py`: `"cuda" if torch.cuda.is_available() else "cpu"`)
+and its already-running model had likely established a CUDA context before
+the staleness set in; Coqui's `TTS` library hard-asserts CUDA with no such
+fallback. A plain container restart fixed it immediately.
+
+Two checks close this, at the two different moments a boot-time-only check
+cannot both cover:
+
+- **`_require_cuda_or_die()`** (`app/main.py`), called once at startup when
+  `TTS_USE_GPU=true`. Existed as dead code for an unknown period -- defined,
+  documented with a comment saying to call it during startup, never actually
+  called -- until this patch wired it in. Catches "boots already broken":
+  fails loud immediately instead of serving requests that will crash on
+  first real TTS use.
+- **The CUDA watchdog** (`app/cuda_watchdog.py`), a background task started
+  alongside the existing heartbeat loop. Catches the case the boot-time
+  check cannot see by definition: staleness developing mid-uptime, which is
+  what actually happened in the 2026-08-26 incident. Polls
+  `torch.cuda.is_available()` every `CUDA_WATCHDOG_POLL_SEC`; on
+  `CUDA_WATCHDOG_FAILURE_THRESHOLD` consecutive failures (debounced against
+  a single transient NVML hiccup), it sends itself `SIGTERM` -- not
+  `os._exit()`, so the app's own `shutdown()` handler still runs cleanly
+  first -- and `restart: unless-stopped` (docker-compose.yml) brings the
+  container back with a fresh device mapping.
+
+Neither check can fix the underlying host/driver quirk; that is outside
+this service's code entirely. What they do is turn a silent, multi-hour
+"TTS is just broken and nobody noticed" outage into a self-healing,
+few-second one. Both are gated on `TTS_USE_GPU` -- a deliberate CPU-mode
+deployment is not forced to have a GPU by either check.
 
 ## Running
 

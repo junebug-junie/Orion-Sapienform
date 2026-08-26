@@ -16,8 +16,39 @@ numpy==1.26.4
 pillow==10.2.0
 opencv-python-headless==4.10.0.84
 
-transformers==4.44.2
-accelerate==0.34.2
+# 4.44.2 predates Qwen2-VL support (landed in transformers 4.45.0) --
+# bumped to 4.49.0 to add a real VLM captioner alongside the existing
+# BLIP/BLIP2 path (model_manager.py's load_vlm_captioner). Not a fresh
+# guess: 4.49.0 + accelerate 1.0.0 is the exact pin already proven live on
+# this same fleet's GPU hardware by services/orion-affectgpt-worker
+# (circe GPU1, PR #1857) -- reused rather than picking a new version blind.
+#
+# GroundingDINO (retina_detect_open_vocab) and SigLIP2 (embed_image) share
+# this same requirements.txt/transformers install -- review finding,
+# 2026-08-25: neither test_detections.py nor test_detector_vocabulary.py
+# actually imports transformers or loads a model (the former tests pure
+# post-processing helpers on fixture dicts, the latter only reads
+# vision_profiles.yaml), so citing them as coverage here was wrong. Actually
+# verified instead (not test-suite-covered, done directly against 4.49.0 in
+# a scratch venv, real weight downloads, no mocks):
+#   - GroundingDinoProcessor/GroundingDinoForConditionalGeneration.from_pretrained
+#     ("IDEA-Research/grounding-dino-base") load cleanly under 4.49.0.
+#   - google/siglip2-so400m-patch14-384 (load_siglip_image_embedder's
+#     primary model_id) does NOT load under 4.49.0 -- AutoProcessor resolves
+#     the wrong tokenizer class (SiglipTokenizer instead of the checkpoint's
+#     real GemmaTokenizer), raising inside get_spm_processor(). This is NOT
+#     a regression from this bump: the exact same error string already
+#     fires today in athena's live production container under the
+#     CURRENT 4.44.2 pin (confirmed from its own real logs, 2026-08-25) --
+#     SigLIP2 has never actually loaded here. load_siglip_image_embedder's
+#     existing try/except already exists for exactly this failure mode and
+#     falls back to google/siglip-so400m-patch14-384, confirmed to still
+#     load cleanly under 4.49.0 too -- so embed_image's real runtime
+#     behavior (silently serving the SigLIP1 fallback, not SigLIP2) is
+#     unchanged by this bump. Root-causing/fixing SigLIP2 itself is a
+#     separate, pre-existing, unrelated gap -- out of scope here.
+transformers==4.49.0
+accelerate==1.0.0
 safetensors==0.4.5
 sentencepiece==0.2.0
 protobuf==5.28.2

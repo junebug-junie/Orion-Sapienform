@@ -109,6 +109,22 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
             )
+            # 2026-08-26: JuniperMultimodalAffectSQL gained chat_correlation_id
+            # (Hub's per-chat-turn affect bracket). Same hazard the ROADMAP B1
+            # comment at the top of this block spells out: the moment the model
+            # declares the column, _write_row's column-filter lets the key into
+            # the INSERT, and against a database lacking it that is an
+            # UndefinedColumn ProgrammingError -- which the handlers here do not
+            # catch, so ALL juniper_multimodal_affect_log persistence would stop
+            # while the bus publish and the Hub panel kept looking healthy.
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS juniper_multimodal_affect_log "
+                "ADD COLUMN IF NOT EXISTS chat_correlation_id TEXT;"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_juniper_multimodal_affect_chat_corr "
+                "ON juniper_multimodal_affect_log (chat_correlation_id);"
+            )
             conn.exec_driver_sql(
                 """
                 CREATE TABLE IF NOT EXISTS orion_metacognitive_trace (

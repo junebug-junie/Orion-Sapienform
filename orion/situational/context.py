@@ -297,7 +297,22 @@ def _presence_cache_fingerprint(ctx: dict[str, Any], cfg: SituationSettings) -> 
 
 def _situation_cache_key(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     session_key = str(ctx.get("session_id") or "global")
-    return f"{session_key}:{_presence_cache_fingerprint(ctx, cfg)}"
+    # input_modality is part of the key, not just part of the brief.
+    #
+    # The brief is cached per session for ttl_seconds (300 default), so
+    # without this a spoken turn's cached brief is replayed for the next
+    # turn even if that one was TYPED -- and the prompt would tell Orion
+    # "Juniper SPOKE this turn aloud ... read through the transcription
+    # artifacts" about a sentence she typed. The reverse order suppresses
+    # the line on a genuinely spoken turn.
+    #
+    # This was invisible before 2026-08-26 because the value was a
+    # constant "typed" on every unified turn (nothing ever supplied
+    # surface_context), so the key never needed to distinguish it. Making
+    # the field observable is what made the key wrong -- a real review
+    # finding, not a hypothetical.
+    modality = _build_surface_context(ctx).input_modality
+    return f"{session_key}:{modality}:{_presence_cache_fingerprint(ctx, cfg)}"
 
 
 async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -968,6 +983,27 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         f"Conversation phase: {brief.conversation_phase.phase_change}; continuity={brief.conversation_phase.continuity_mode}.",
         f"Presence: requestor={brief.requestor.display_name}, audience_mode={brief.presence.audience_mode}.",
     ]
+    # Only rendered for a non-typed modality. SurfaceContextV1.input_modality
+    # has existed since this brief was first built, but nothing ever put it
+    # in the prompt -- a schema field with no consumer. It earns a line here
+    # because the answer changes behaviour: a spoken turn was dictated, so
+    # homophones and run-on phrasing are transcription artifacts rather than
+    # things Juniper wrote, and Orion should not read into them. "typed"
+    # stays silent rather than emitting a line on every single turn to say
+    # nothing happened -- same only-when-it-means-something discipline the
+    # relevance/affordance lines below already follow.
+    if brief.surface.input_modality == "spoken":
+        # Kept deliberately short. An earlier 246-char version of this line
+        # pushed the fragment into the cap and cost a caution line; the
+        # budget here is shared, so verbosity in one line is silence in
+        # another.
+        lines.append(
+            "Input modality: Juniper SPOKE this turn aloud (Whisper "
+            "transcript) -- odd wording and missing punctuation are "
+            "transcription artifacts, not word choice."
+        )
+    elif brief.surface.input_modality not in ("typed", "unknown"):
+        lines.append(f"Input modality: {brief.surface.input_modality}.")
     if brief.environment.available:
         rain = brief.environment.forecast_next_6h.precipitation_probability_pct
         lines.append(f"Weather next 6h: precip_prob={rain}%, summary={brief.environment.forecast_next_6h.summary}.")
@@ -1001,14 +1037,62 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     else:
         lines.append("Current model: unavailable; do not infer or guess a name.")
     relevance = [f"{a.kind}: {a.suggestion}" for a in brief.affordances if a.trigger_relevance == "active"]
+    # Ordered most-important-first: whatever the budget cannot fit is
+    # dropped from the END (see the append loop below). The affect guard
+    # leads because it is the only one of the three whose absence changes
+    # how Orion may talk about a real reading of Juniper's face and voice;
+    # the other two are style guidance.
     cautions = [
+        "Juniper's affect read is a model's inference, not a diagnosis or a fixed label -- treat it as one signal, not a certainty, and don't announce it unprompted.",
         "Situation context is grounding, not a requirement to mention.",
         "Use only when relevant; avoid contrived time/weather/location commentary.",
-        "Juniper's affect read is a model's inference, not a diagnosis or a fixed label -- treat it as one signal, not a certainty, and don't announce it unprompted.",
     ]
-    compact = "Situation:\n- " + "\n- ".join(lines + relevance + cautions)
-    if len(compact) > max_chars:
-        compact = compact[: max_chars - 1] + "…"
+    # The cautions are appended AFTER truncation, never inside it.
+    #
+    # This used to be one flat join sliced from the tail, which meant the
+    # cautions -- last in the list -- were the first thing the cap ate.
+    # Confirmed live 2026-08-26: with a 300-char affect summary (the real
+    # _AFFECT_SUMMARY_MAX_CHARS ceiling) plus the spoken-modality line, the
+    # fragment hit exactly 1200 and cut
+    # "...treat it as one signal, not a certainty, and don't announce it
+    # unprompted." off mid-sentence -- i.e. the privacy guard was dropped
+    # from precisely the turn on which a webcam capture had just been fired
+    # at Juniper. Losing grounding detail to a cap is acceptable; losing the
+    # instruction about how to handle that detail is not.
+    #
+    # So: body (facts, which are safe to shorten) is truncated to whatever
+    # room is left once the cautions are reserved; cautions are then always
+    # appended in full.
+    body = "Situation:\n- " + "\n- ".join(lines + relevance)
+    if len(body) > max_chars:
+        body = body[: max_chars - 1] + "…"
+    # Cautions are appended WHOLE or not at all -- never sliced.
+    #
+    # This used to be one flat join sliced from the tail, so the cautions
+    # (last in the list) were the first thing the cap ate, mid-sentence.
+    # Confirmed live 2026-08-26 at the production 1200 cap: a 300-char
+    # affect summary plus the spoken-modality line cut
+    # "...treat it as one signal, not a certainty, and don't announce it
+    # unprompted." in half -- dropping the guard on how to handle Juniper's
+    # affect read from exactly the turn on which a capture had been fired at
+    # her. Losing grounding facts to a cap is acceptable; emitting a
+    # half-sentence instruction is not, and silently losing the privacy
+    # guard is worse.
+    #
+    # Priority order matters: cautions are emitted most-important-first, so
+    # if the budget only fits some, the ones that survive are the ones whose
+    # absence would actually change behaviour. Body keeps first claim on the
+    # budget, which is why an artificially small cap (the 400 used in
+    # test_situation_provider's fixture, vs 1200 in production) still
+    # produces a usable brief rather than nothing but boilerplate.
+    remaining = max_chars - len(body)
+    kept: list[str] = []
+    for caution in cautions:
+        cost = len(caution) + len("\n- ")
+        if cost <= remaining:
+            kept.append(caution)
+            remaining -= cost
+    compact = body + ("".join("\n- " + c for c in kept) if kept else "")
     return SituationPromptFragmentV1(
         generated_at=brief.generated_at,
         summary_lines=lines,

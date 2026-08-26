@@ -199,7 +199,14 @@ def build_substrate_attention_frame(
         # build_open_loops() caller (attention_frame.py): that path is
         # per-turn and ephemeral, and this fix is scoped to the workspace
         # competition that actually dominated indefinitely.
-        verdict_lookup=load_terminal_verdict_loop_ids,
+        #
+        # `now=resolved_now` threads this tick's own timestamp into the TTL
+        # check (verdicts.py's VERDICT_EXCLUSION_TTL_HOURS) instead of letting
+        # it read the wall clock separately -- keeps "now" internally
+        # consistent with this frame's own generated_at, and this was the
+        # exact seam a resolved-forever exclusion was found live still
+        # blocking a loop 2026-08-19 with no way to lapse.
+        verdict_lookup=lambda ids: load_terminal_verdict_loop_ids(ids, now=resolved_now),
     )
     actions, selected, suppressions, deferred = select_actions(
         open_loops=open_loops,

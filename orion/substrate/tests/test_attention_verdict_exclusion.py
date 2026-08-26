@@ -12,7 +12,7 @@ end-to-end through `build_substrate_attention_frame`.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -177,13 +177,7 @@ def test_load_terminal_verdict_loop_ids_empty_input_short_circuits():
     assert verdicts_mod.load_terminal_verdict_loop_ids(None) == set()  # type: ignore[arg-type]
 
 
-def test_load_terminal_verdict_loop_ids_filters_to_terminal_verdicts(monkeypatch):
-    rows = [
-        {"loop_id": "open-loop-a", "verdict": "resolved"},
-        {"loop_id": "open-loop-b", "verdict": "dismissed"},
-        {"loop_id": "open-loop-c", "verdict": "decayed_unattended"},
-    ]
-
+def _fake_engine(rows, monkeypatch):
     class _FakeResult:
         def mappings(self):
             return self
@@ -207,8 +201,17 @@ def test_load_terminal_verdict_loop_ids_filters_to_terminal_verdicts(monkeypatch
 
     monkeypatch.setattr(verdicts_mod, "_engine", lambda: _FakeEngine())
 
+
+def test_load_terminal_verdict_loop_ids_filters_to_terminal_verdicts(monkeypatch):
+    rows = [
+        {"loop_id": "open-loop-a", "verdict": "resolved", "created_at": _NOW},
+        {"loop_id": "open-loop-b", "verdict": "dismissed", "created_at": _NOW},
+        {"loop_id": "open-loop-c", "verdict": "decayed_unattended", "created_at": _NOW},
+    ]
+    _fake_engine(rows, monkeypatch)
+
     result = verdicts_mod.load_terminal_verdict_loop_ids(
-        ["open-loop-a", "open-loop-b", "open-loop-c"]
+        ["open-loop-a", "open-loop-b", "open-loop-c"], now=_NOW
     )
 
     assert result == {"open-loop-a", "open-loop-b"}
@@ -220,9 +223,102 @@ def test_load_terminal_verdict_loop_ids_fails_open_on_db_error(monkeypatch):
 
     monkeypatch.setattr(verdicts_mod, "_engine", _boom)
 
-    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-9d84d08cddf5"])
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-9d84d08cddf5"], now=_NOW)
 
     assert result == set()
+
+
+@pytest.mark.parametrize(
+    "case_name, created_at_factory, expect_excluded",
+    [
+        ("47h_ago_within_ttl", lambda: _NOW - timedelta(hours=47), True),
+        # The exact regression this patch fixes: a resolved/dismissed loop
+        # must become eligible again once VERDICT_EXCLUSION_TTL_HOURS has
+        # passed -- the 2026-08-19 incident was this exclusion never
+        # lapsing at all.
+        ("49h_ago_past_ttl", lambda: _NOW - timedelta(hours=49), False),
+        # Exactly at the boundary: `<=` in load_terminal_verdict_loop_ids
+        # makes this inclusive -- still excluded, not yet lapsed.
+        ("exactly_48h_ago_boundary", lambda: _NOW - timedelta(hours=48), True),
+        # A DB driver returning a naive datetime must not crash the TTL
+        # comparison -- treat it as UTC, same convention AttentionFrameV1
+        # uses.
+        ("naive_created_at_treated_as_utc", lambda: (_NOW - timedelta(hours=1)).replace(tzinfo=None), True),
+    ],
+)
+def test_load_terminal_verdict_loop_ids_ttl_cases(
+    monkeypatch, case_name, created_at_factory, expect_excluded
+):
+    rows = [{"loop_id": "open-loop-a", "verdict": "resolved", "created_at": created_at_factory()}]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+
+    assert result == ({"open-loop-a"} if expect_excluded else set())
+
+
+def test_load_terminal_verdict_loop_ids_missing_created_at_fails_closed(monkeypatch):
+    """A row with no created_at (malformed data) keeps the pre-TTL behavior --
+    still excluded -- rather than silently re-arming on bad data. Gated out
+    in practice by attention_loop_outcome.created_at's NOT NULL constraint
+    (services/orion-sql-db/manual_migration_attention_loop_outcome.sql) --
+    covered defensively in case that constraint is ever relaxed."""
+    rows = [{"loop_id": "open-loop-a", "verdict": "resolved", "created_at": None}]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+
+    assert result == {"open-loop-a"}
+
+
+def test_load_terminal_verdict_loop_ids_naive_now_does_not_poison_whole_batch(monkeypatch):
+    """A naive `now` must be coerced to UTC up front, not left to raise
+    inside the try/except -- otherwise it would be swallowed by the same
+    blanket handler that guards real DB failures and silently re-arm every
+    loop_id in the batch, not just fail one comparison."""
+    rows = [
+        {"loop_id": "open-loop-a", "verdict": "resolved", "created_at": _NOW - timedelta(hours=1)},
+        {"loop_id": "open-loop-b", "verdict": "dismissed", "created_at": _NOW - timedelta(hours=100)},
+    ]
+    _fake_engine(rows, monkeypatch)
+    naive_now = _NOW.replace(tzinfo=None)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a", "open-loop-b"], now=naive_now)
+
+    assert result == {"open-loop-a"}
+
+
+def test_load_terminal_verdict_loop_ids_mixed_batch_bad_row_does_not_poison_others(monkeypatch):
+    """A malformed row (no created_at) alongside otherwise-valid rows must
+    only affect its own loop_id, not the whole batch's result."""
+    rows = [
+        {"loop_id": "open-loop-bad", "verdict": "resolved", "created_at": None},
+        {"loop_id": "open-loop-recent", "verdict": "resolved", "created_at": _NOW - timedelta(hours=1)},
+        {"loop_id": "open-loop-lapsed", "verdict": "dismissed", "created_at": _NOW - timedelta(hours=100)},
+    ]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(
+        ["open-loop-bad", "open-loop-recent", "open-loop-lapsed"], now=_NOW
+    )
+
+    assert result == {"open-loop-bad", "open-loop-recent"}
+
+
+def test_ttl_hours_env_override(monkeypatch):
+    monkeypatch.setenv(verdicts_mod.TTL_ENV_KEY, "1")
+    rows = [{"loop_id": "open-loop-a", "verdict": "resolved", "created_at": _NOW - timedelta(hours=2)}]
+    _fake_engine(rows, monkeypatch)
+
+    result = verdicts_mod.load_terminal_verdict_loop_ids(["open-loop-a"], now=_NOW)
+
+    assert result == set()  # lapsed under the 1h override, would still be excluded at the 48h default
+
+
+def test_ttl_hours_invalid_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv(verdicts_mod.TTL_ENV_KEY, "not-a-number")
+
+    assert verdicts_mod._ttl_hours() == verdicts_mod.VERDICT_EXCLUSION_TTL_HOURS
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +342,9 @@ def test_build_substrate_attention_frame_excludes_verdicted_loop(monkeypatch):
     excluded_id = _loop_id("substrate:node:substrate.transport")
 
     monkeypatch.setattr(
-        attention_broadcast, "load_terminal_verdict_loop_ids", lambda ids: {excluded_id}
+        attention_broadcast,
+        "load_terminal_verdict_loop_ids",
+        lambda ids, now=None: {excluded_id},
     )
 
     frame = attention_broadcast.build_substrate_attention_frame(nodes=[node], now=_NOW)
@@ -266,7 +364,7 @@ def test_build_substrate_attention_frame_survives_verdict_lookup_db_failure(monk
 
     node = _node("node:transport", "substrate:node:substrate.transport", pressure=1.0)
 
-    def _boom(ids):
+    def _boom(ids, now=None):
         raise RuntimeError("simulated DB failure")
 
     monkeypatch.setattr(attention_broadcast, "load_terminal_verdict_loop_ids", _boom)

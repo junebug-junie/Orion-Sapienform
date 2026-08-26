@@ -44,6 +44,18 @@ class ModelManager:
 
     @staticmethod
     def _torch_dtype(dtype: str, device: str) -> torch.dtype:
+        # "auto" -> fp16 on CUDA, including for Qwen2-VL/Qwen2.5-VL -- review
+        # finding, 2026-08-25: Qwen's own docs recommend bf16. Not applied
+        # here: this fleet's GPUs (P100/V100, Pascal/Volta) predate Ampere,
+        # the first generation with real bf16 tensor-core support -- fp16 is
+        # the correct choice for this hardware, not an oversight. Live-
+        # verified, not assumed: Qwen2-VL-2B-Instruct in fp16 on circe's
+        # P100 (`auto` -> this branch) produced detailed, accurate, non-
+        # degenerate captions/VQA answers the same day this was written
+        # (see services/orion-vision-council/README.md's Foveal probe
+        # section). Revisit only if this profile ever targets an Ampere+
+        # card (VISION_DTYPE=bf16 already available as an explicit override
+        # for that case -- no code change needed).
         dtype = (dtype or "auto").lower()
         if device.startswith("cuda"):
             if dtype in ("fp16", "float16"):
@@ -193,12 +205,27 @@ class ModelManager:
         device: str,
         dtype: str,
         model_id: str,
+        qwen_min_pixels: Optional[int] = None,
+        qwen_max_pixels: Optional[int] = None,
     ):
         """
-        Loads a VLM for captioning (e.g. IDEFICS, BLIP-2, Git, etc).
-        Assumes standard transformers AutoProcessor/AutoModelForVision2Seq usage.
+        Loads a VLM for captioning (BLIP/BLIP2, Qwen2-VL/Qwen2.5-VL, or a
+        generic AutoModelForVision2Seq fallback for anything else). Family
+        is selected from ``model_id`` via ``vlm_family.py`` -- runner.py's
+        prompt-building/decode path reads the same module so the two never
+        drift on which model_ids count as which family.
+
+        ``qwen_min_pixels``/``qwen_max_pixels`` only apply to the Qwen2-VL/
+        Qwen2.5-VL branches (BLIP/BLIP2's processors don't accept them) --
+        bounds the resolution-scaled visual-token count/VRAM those families'
+        "naive dynamic resolution" processor would otherwise apply to
+        whatever size image this service was handed, uncapped. Caller
+        (runner.py) is expected to pass real values from settings; None
+        falls back to the processor's own checkpoint-shipped default.
         """
         from transformers import AutoProcessor, AutoModelForVision2Seq
+
+        from .vlm_family import is_qwen2_5_vl_model, is_qwen2_vl_model
 
         key = ModelKey(profile=profile_name, device=device)
         lock = self._key_lock(key)
@@ -222,6 +249,31 @@ class ModelManager:
 
                 processor = BlipProcessor.from_pretrained(model_id)
                 model = BlipForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
+            elif is_qwen2_5_vl_model(model_id) or is_qwen2_vl_model(model_id):
+                if is_qwen2_5_vl_model(model_id):
+                    from transformers import Qwen2_5_VLForConditionalGeneration as _QwenModelClass
+                else:
+                    from transformers import Qwen2VLForConditionalGeneration as _QwenModelClass
+
+                # Review finding: Qwen2VLImageProcessor.__init__ takes plain
+                # `int` params, not Optional -- passing min_pixels=None/
+                # max_pixels=None explicitly OVERRIDES the checkpoint's own
+                # default with a literal None, which later blows up as
+                # `TypeError: '>' not supported between 'int' and 'NoneType'`
+                # inside transformers' smart_resize() the first time this
+                # profile actually runs inference. Only pass the kwarg when
+                # the caller gave a real value, so an explicit None caller
+                # (this function's own documented contract) genuinely falls
+                # through to the processor's checkpoint default instead of a
+                # bound this loader silently poisoned to None.
+                pixel_kwargs: dict[str, int] = {}
+                if qwen_min_pixels is not None:
+                    pixel_kwargs["min_pixels"] = qwen_min_pixels
+                if qwen_max_pixels is not None:
+                    pixel_kwargs["max_pixels"] = qwen_max_pixels
+
+                processor = AutoProcessor.from_pretrained(model_id, **pixel_kwargs)
+                model = _QwenModelClass.from_pretrained(model_id, torch_dtype=torch_dtype)
             else:
                 processor = AutoProcessor.from_pretrained(model_id)
                 model = AutoModelForVision2Seq.from_pretrained(model_id, torch_dtype=torch_dtype)

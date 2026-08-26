@@ -21,7 +21,7 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 4. **VRAM floors:** Tune `VISION_VRAM_RESERVE_MB`, `VISION_VRAM_SOFT_FLOOR_MB`, `VISION_VRAM_HARD_FLOOR_MB` to match co-hosted workloads.
 5. **Concurrency:** `VISION_MAX_INFLIGHT`, `VISION_MAX_INFLIGHT_PER_GPU`, `VISION_QUEUE_WHEN_BUSY`, `VISION_MAX_QUEUE` — queue full returns `error_code=queue_full` on the bus reply and in structured logs.
 6. **Timeouts:** `VISION_TIMEOUT_S` wraps the threaded `VisionRunner.execute` path (wall-clock); logs include `scheduler_total_s`, estimated `queue_wait_est_s`, and `inference_s` when available.
-7. **Models:** Override `VISION_VLM_MODEL_ID` for your VRAM budget (default is BLIP2 per grounded pipeline plan; use `Salesforce/blip-image-captioning-base` on P100 cohabitation — see `.env_example` comment). Enable only profiles you need via `VISION_ENABLED_PROFILES`.
+7. **Models:** Override `VISION_VLM_MODEL_ID` per node for your VRAM budget — default (`Salesforce/blip-image-captioning-base`) is sized for a shared/small card (e.g. athena's P4). `model_manager.py`'s `load_vlm_captioner` also supports BLIP2, Qwen2-VL, and Qwen2.5-VL model_ids (selected by substring match — see `.env_example` comment); Qwen2-VL-class models need real headroom (~4-5GB fp16) and route through a chat-template prompt, unlike BLIP's plain image+text call. Enable only profiles you need via `VISION_ENABLED_PROFILES`.
 8. **Caption quality:** VLM captions use a factual prompt and `caption_sanitize` rejects prompt-echo and stoplist garbage before artifacts are stored. Rejected captions append `caption_rejected:{reason}` to task meta warnings.
 
 ## Caption sanitizer
@@ -100,6 +100,28 @@ enrollment. Also not built: `vision_events` retention policy (design doc
 section 6.5: "identity-bearing rows are the most sensitive this system
 will hold. Ships WITH section 4, not after") -- a real, separate gap this
 patch did not close; flagged, not silently skipped.
+
+### VLM model families
+
+`app/vlm_family.py` is the single source of truth both `model_manager.py`
+(which transformers class to instantiate) and `runner.py` (how to build the
+prompt / decode the reply) read for "which family does this model_id
+belong to":
+
+| Family | `model_id` match | Prompt / decode |
+|--------|------------------|------------------|
+| BLIP2 | contains `blip2` | `processor(images=, text=)`, full-sequence decode |
+| BLIP | contains `blip` (not `blip2`) | same as above |
+| Qwen2-VL | contains `qwen2-vl`/`qwen2_vl` | `apply_chat_template` + image, decode sliced by input token length |
+| Qwen2.5-VL | contains `qwen2.5-vl`/`qwen2_5_vl` | same chat-template path as Qwen2-VL |
+| anything else | — | generic `AutoModelForVision2Seq`, BLIP-style call shape |
+
+The chat-template path exists because a chat-tuned VLM echoes its whole
+templated prompt back through `generate()` — decoding the full sequence (as
+BLIP correctly can) would hand the caller the prompt glued onto the real
+answer. `_generate_vlm_text` slices by real input token length instead of
+string-matching a prefix off the decoded text, which cannot reliably strip
+chat special tokens.
 
 ## Observability (logs-first)
 

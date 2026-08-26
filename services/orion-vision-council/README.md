@@ -104,6 +104,25 @@ metacog calls.
 No quality eval exists for this endpoint yet (unit tests cover the plumbing
 — upload/RPC/error-path correctness — not caption/answer quality).
 
+**Resolved, 2026-08-25:** the two live calls made while building this
+endpoint returned real inference but an empty caption/answer, rejected by
+`sanitize_caption`/`sanitize_answer` as too-short — BLIP-base's documented
+quality ceiling (see the design doc's P1 rationale). circe's foveal host
+now runs `Qwen/Qwen2-VL-2B-Instruct` instead (`services/orion-vision-host`'s
+`app/vlm_family.py`/`app/model_manager.py`) — live-verified same day with
+real, detailed, non-rejected output on both modes:
+
+```
+POST /debug/foveal-probe
+"The image shows a room with a desk, chairs, a computer monitor, and a
+door leading to another room. There is a blue towel hanging on the door..."
+
+POST /debug/foveal-probe?question=What+is+in+this+image%3F
+"This image appears to be a surveillance camera view of a room. The room
+contains a desk with a laptop, a monitor, and some other office
+equipment..."
+```
+
 ## Tests
 
 From repo root:

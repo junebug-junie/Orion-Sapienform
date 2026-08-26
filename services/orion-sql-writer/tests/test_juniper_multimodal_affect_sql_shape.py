@@ -247,6 +247,50 @@ def test_ok_is_not_nullable() -> None:
     assert JuniperMultimodalAffectSQL.__table__.columns["ok"].nullable is False
 
 
+# ------------------------------- chat-turn bracket (2026-08-26) -----------
+
+def test_chat_correlation_id_has_a_column_and_is_indexed() -> None:
+    """Without a declared column, _write_row's column-filter would silently
+    drop this key -- the same mechanism test_transcript_has_no_column relies
+    on to enforce privacy works against us here. The join would then exist
+    on the bus and in the 1h Redis mirror but never durably, defeating the
+    point of capturing a pre/post pair at all.
+
+    Indexed because the only query it exists to serve is "both legs for
+    turn X"."""
+    col = JuniperMultimodalAffectSQL.__table__.columns["chat_correlation_id"]
+    assert col.index is True
+    assert col.nullable is True  # NULL for manual/ambient captures
+
+
+def test_write_row_keeps_chat_correlation_id_from_a_real_event() -> None:
+    """Exercise the actual generic filter with a real chat_turn_pre event,
+    not just the column list -- the filter is what decides."""
+    from orion.schemas.affectgpt import JuniperMultimodalAffectV1
+
+    event = _event()
+    data = event.model_dump()
+    data["trigger"] = "chat_turn_pre"
+    data["chat_correlation_id"] = "turn-abc"
+
+    mapper = inspect(JuniperMultimodalAffectSQL)
+    valid_keys = {attr.key for attr in mapper.attrs}
+    filtered = {k: v for k, v in data.items() if k in valid_keys}
+
+    assert filtered["chat_correlation_id"] == "turn-abc"
+    assert filtered["trigger"] == "chat_turn_pre"
+    # And the privacy boundary still holds on this path.
+    assert "transcript" not in filtered
+
+
+def test_correlation_id_and_chat_correlation_id_are_separate_columns() -> None:
+    """Two different join axes. Collapsing them into one column would make
+    'which capture attempt' and 'which conversation turn' unanswerable
+    independently."""
+    columns = set(JuniperMultimodalAffectSQL.__table__.columns.keys())
+    assert {"correlation_id", "chat_correlation_id"} <= columns
+
+
 # --------------------------------------------------------------------------
 # Idempotency (SQLite merge, mirrors DevEconomicsLedgerSQL's own test)
 # --------------------------------------------------------------------------

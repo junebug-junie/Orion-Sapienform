@@ -446,8 +446,11 @@ Orion puts there needs approval.
   continuation and no message. Nothing is inferred from the prose.
 
 **Gates, in order.** `disabled` → `daily_cap` → `cooldown` → `pg_role_missing`
-→ `graph_unavailable` → `stores_unavailable` / `no_approved_material` →
-`empty_generation` / `no_lookup`. The last one is load-bearing: a turn with
+→ `graph_unavailable` → `stores_not_ready` / `stores_unavailable` /
+`no_approved_material` → `empty_generation` / `no_lookup`. `stores_not_ready`
+(the pool has not finished starting) is deliberately separate from
+`stores_unavailable` (it could not be read): the first is a sub-second race at
+Hub startup and logs at INFO, escalating to WARNING if it outlives one tick. The last one is load-bearing: a turn with
 fewer than `MIN_HARNESS_STEPS` harness steps did not look anything up, and its
 fluent prose is refused rather than journalled.
 

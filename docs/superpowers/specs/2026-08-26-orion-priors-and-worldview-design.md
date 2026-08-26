@@ -418,30 +418,103 @@ Real ones. I cannot answer these from the code.
 3. **What is the honest ceiling on `confidence`?** Orion is grading its own homework. Without an outside check, confidence drifts up. Options: cap self-assigned confidence at ~0.8, or require an explicit disconfirmation attempt before any raise.
 4. **Retire-unresolvable after how many inconclusives?** I propose 3; that number is a guess and should be revisited against real data.
 
+## ALREADY DONE — the production writes exist and are verified
+
+Juniper ran these by explicit instruction ("you do the prod writes"). A builder
+picking this up does **not** need to create them, only to use them.
+
+### Postgres role `orion_readonly` — LIVE
+
+```sql
+CREATE ROLE orion_readonly LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE conjourney TO orion_readonly;
+GRANT USAGE  ON SCHEMA public        TO orion_readonly;
+GRANT SELECT ON memory_crystallizations, memory_concept_relation_decisions,
+                chat_history_log, journal_entries TO orion_readonly;
+```
+
+Verified 2026-08-26, every case actually executed:
+
+```
+reads   memory_crystallizations             1282   OK
+        memory_concept_relation_decisions    547   OK
+        chat_history_log                     232   OK
+        journal_entries                    36549   OK
+writes  INSERT INTO journal_entries      ERROR: permission denied for table
+        UPDATE memory_crystallizations   ERROR: permission denied for table
+        DELETE FROM chat_history_log     ERROR: permission denied for table
+        CREATE TABLE orion_probe         ERROR: permission denied for schema public
+scope   SELECT substrate_dispatch_results ERROR: permission denied  (not granted)
+```
+
+### FalkorDB ACL user `orion_curiosity` — LIVE
+
+```
+ACL SETUSER orion_curiosity on '>...' resetkeys nocommands \
+    ~orion_substrate  '+graph.ro_query' \
+    '(~orion_worldview +graph.query +graph.ro_query)'
+```
+
+Verified 2026-08-26, as that user:
+
+```
+READ  Atlas     GRAPH.RO_QUERY orion_substrate  -> 18 concepts        OK
+WRITE Atlas     GRAPH.QUERY    orion_substrate  -> NOPERM (key denied)
+WRITE Atlas     GRAPH.RO_QUERY + a CREATE       -> refused, read-only command
+OWN   graph     GRAPH.QUERY    orion_worldview  -> write OK, read OK
+OTHER graphs    GRAPH.RO_QUERY orion_bus_synapse-> NOPERM
+        GRAPH.LIST / KEYS                       -> NOPERM (command denied)
+```
+
+Two independent refusals on the Atlas write path (key ACL *and* the read-only
+command), which is the defence-in-depth worth having on the one graph Orion must
+not corrupt.
+
+`orion_worldview` exists with a single `:Bootstrap` node.
+
+### Credentials, already placed
+
+| where | keys | for |
+|---|---|---|
+| `~/.fcc/.env` (mounted to `/root/.fcc/.env`, chmod 600) | `ORION_CURIOSITY_PG_DSN`, `ORION_CURIOSITY_GRAPH_*` (7 keys) | Orion's own sandbox |
+| `services/orion-hub/.env` | `HUB_CURIOSITY_GRAPH_*` (6 keys) | Hub: ACL re-assert + reading `:TurnOutcome` |
+
+### KNOWN GAP: the ACL does not survive a FalkorDB restart
+
+`aclfile` is unset and **immutable at runtime** (`CONFIG SET aclfile` ->
+*"can't set immutable config"*); `ACL SAVE` refuses without one. Persisting it
+properly means restarting FalkorDB, which holds every graph in the system.
+
+**Required in the build, not optional:** Hub re-asserts the ACL with an
+idempotent `ACL SETUSER` when the curiosity loop starts. Self-healing after any
+FalkorDB restart, no config change, no downtime. Without it, a FalkorDB restart
+silently removes Orion's access and the loop degrades to `stores_unavailable`
+forever — the exact silent-failure shape this arc has hit three times.
+
+### KNOWN GAP: the sandbox has no Postgres client
+
+Checked in `orion-athena-harness-governor` (where the FCC motor runs):
+
+```
+python3      OK          redis-py     OK   <- FalkorDB works TODAY, no change
+psql         MISSING     psycopg2     MISSING     asyncpg  MISSING
+```
+
+So graph access needs nothing. **Postgres access needs one package** added to
+that image (`psycopg2-binary` via pip, or `postgresql-client` via apt). That is
+a Dockerfile change in slice 1, not a production write.
+
 ## Proposed schema / API changes
 
-- **New table `orion_priors`** — `prior_id`, `claim`, `confidence`, `status`, `formed_from`, `times_tested`, `last_tested_at`, `created_at`, `updated_at`, `governance` (mirroring the crystallization approval shape). Postgres, because the loop needs cheap `WHERE status='open' ORDER BY confidence`.
-- **New schemas** `PriorV1`, `PriorFindingV1`, `PriorVerdictV1` in `orion/schemas/`, registered.
-- **New FalkorDB graph** `orion_worldview` — Orion's own, read-write by Orion,
-  no approval gate. The Atlas (`orion_substrate`) stays read-only to Orion.
-  **Open access question:** FalkorDB has no per-graph auth, so handing the
-  sandbox raw FalkorDB credentials would let Orion write to `orion_substrate`
-  and the bus-synapse graphs too. Scoping the write to its own graph therefore
-  needs a narrow Hub endpoint rather than a raw client — that is scoping WHICH
-  graph, not limiting what Orion may do inside its own.
-- **New bus channel** `orion:worldview:finding` carrying `PriorFindingV1`, so the graph write and the journal write are separate consumers of one event rather than two inline writes. (Contract patch: `orion/bus/channels.yaml` + `orion/schemas/registry.py`.)
-- **No change** to `journal.entry.write.v1` — the prose entry keeps its current shape.
-
-## Files likely to touch
-
-- `orion/curiosity/priors.py` — pure selection + verdict-application logic (new)
-- `orion/curiosity/kickoff_prompt.py` — present priors alongside material
-- `orion/curiosity/verdict.py` — parse and validate the JSON block (new)
-- `orion/schemas/priors.py` + `orion/schemas/registry.py`
-- `services/orion-hub/scripts/curiosity_investigation.py` — read priors, publish findings
-- `services/orion-sql-writer/` — persist `PriorFindingV1`
-- `services/orion-sql-db/manual_migration_orion_priors.sql`
-- `orion/bus/channels.yaml`
+- **New FalkorDB graph `orion_worldview`** — created, Orion's own, no approval
+  gate. Holds concepts, edges (including cross-references to Atlas concept ids),
+  priors (a node with `confidence < 1` and an open question), and one
+  `:TurnOutcome` node per run.
+- **No new Postgres tables.** Priors live in Orion's graph, not a table — they
+  are concepts it is unsure of, not a separate primitive.
+- **No new bus channel.** The journal keeps `journal.entry.write.v1` unchanged.
+- **No new capability surface.** Same read-only unified turn; the new access is
+  a credential and a client, not a tool.
 
 ## Non-goals
 
@@ -465,7 +538,25 @@ Falsifiable, in order of what would actually convince me:
 
 Check 6 is the one I would watch first, and check 7 is the one that decides whether any of this mattered.
 
-## Recommended next patch
+## Build order
+
+Priors and the graph come LAST on purpose. Slice 3 before slice 2 would give
+Orion a graph to fill before it has anything to say, which is how the previous
+three attempts failed.
+
+| # | slice | proves |
+|---|---|---|
+| 1 | access + one hop + journal. Add the pg client to the harness image; Hub asserts the ACL at startup; prompt offers psql + both graphs read; one pass; prose -> journal. | Orion can reach its own material and say something true about it |
+| 2 | five hops with recorded reflections | the analysis layer produces visible reasoning, not a verdict with the working thrown away |
+| 3 | Orion writes its own graph + the overlay against the Atlas | there is now something worth writing down, and priors emerge from the gap |
+| 4 | `:TurnOutcome` -> continuation notes | there is now something worth returning to |
+| 5 | `:TurnOutcome.reach_out` -> a second turn, with its own stance gate | Orion decides whether a finding is worth interrupting Juniper for |
+
+Slice 1 is independently useful and independently falsifiable: if Orion cannot
+produce one grounded, non-obvious observation from its own crystallizations and
+Atlas, nothing later in the list will save it.
+
+## Old recommended next patch (superseded, kept for the reasoning)
 
 Thin, and deliberately not the whole design:
 

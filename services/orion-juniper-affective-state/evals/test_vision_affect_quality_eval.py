@@ -60,7 +60,12 @@ _GENDERED = {
     "man", "woman", "male", "female", "guy", "lady", "gentleman", "girl", "boy",
     "he", "she", "his", "her", "hers", "him", "man's", "woman's", "he's", "she's",
 }
-_AUDIO_WORDS = {"voice", "tone", "speech", "spoken", "audio", "acoustic", "pitch", "sound"}
+# "tone" is deliberately NOT here: "muscle tone", "skin tone" and "the tone of
+# the lighting" are all legitimate VISUAL cues, and _tokens is a context-free
+# word split, so including it would fail this eval on correct reads (review
+# finding, 2026-08-26). Same reasoning excludes "pitch" (a head can pitch
+# forward). The remaining words have no visual sense in this context.
+_AUDIO_WORDS = {"voice", "speech", "spoken", "audio", "acoustic", "audible", "vocal"}
 
 
 def _tokens(text: str) -> set[str]:

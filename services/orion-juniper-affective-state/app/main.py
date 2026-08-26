@@ -127,7 +127,18 @@ def _mirror_decision(event: JuniperMultimodalAffectV1) -> tuple[bool, str]:
         return False, f"low_confidence:{affect.confidence:.2f}<{min_conf:.2f}"
     min_rate = float(getattr(settings, "AFFECT_MIRROR_MIN_DETECTION_RATE", 0.15))
     rate = (event.face_detection or {}).get("detection_rate")
-    if isinstance(rate, (int, float)) and float(rate) < min_rate:
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool):
+        # Absent/non-numeric telemetry means different things per backend, so
+        # resolve it per backend rather than uniformly failing open (review
+        # finding, 2026-08-26 -- a gate that silently passes whenever its own
+        # input is missing is the inert-gate shape this repo warns about).
+        # vision ALWAYS supplies a float from sample_frames().as_meta(), so its
+        # absence means something upstream broke: fail closed. affectgpt rows
+        # legitimately predate the field: fail open, as before.
+        if event.backend == "vision":
+            return False, f"missing_detection_rate:{rate!r}"
+        return True, "ok"
+    if float(rate) < min_rate:
         return False, f"low_detection_rate:{float(rate):.3f}<{min_rate:.3f}"
     return True, "ok"
 
@@ -334,6 +345,15 @@ class JuniperAffectiveStateService:
         and raise a pydantic ValidationError with no handler around it.
         """
         trigger = _normalize_trigger(trigger)
+        # Read ONCE for the whole capture. Evaluating it separately for the
+        # fetch and for the dispatch let the two disagree (only reachable via a
+        # mid-call setattr today), which would hand the affectgpt worker an
+        # audio_path that was never fetched -- review finding, 2026-08-26.
+        # Also threaded into every failure branch below, so a capture/fetch
+        # failure is attributed to the backend actually selected rather than to
+        # _wrap_event's "affectgpt" default.
+        use_vision = _vision_backend_selected()
+        backend_name = "vision" if use_vision else "affectgpt"
         # ONE id for this whole attempt -- threaded through the retina RPC
         # below, the worker RPC inside trigger_assessment(), and the
         # published event, so all three legs of one tick are joinable via a
@@ -352,6 +372,7 @@ class JuniperAffectiveStateService:
                 AffectGptAssessRequestPayload(video_path="", audio_path=""),
                 trigger=trigger,
                 corr_id=corr_id,
+                backend=backend_name,
                             chat_correlation_id=chat_correlation_id,
             )
             await self._publish_event(event)
@@ -390,7 +411,7 @@ class JuniperAffectiveStateService:
             fetch_targets = [
                 asyncio.to_thread(self._fetch_percept, capture.video_sha256, video_path)
             ]
-            if not _vision_backend_selected():
+            if not use_vision:
                 fetch_targets.append(
                     asyncio.to_thread(self._fetch_percept, capture.audio_sha256, audio_path)
                 )
@@ -406,6 +427,7 @@ class JuniperAffectiveStateService:
                     AffectGptAssessRequestPayload(video_path="", audio_path=""),
                     trigger=trigger,
                     corr_id=corr_id,
+                    backend=backend_name,
                                     chat_correlation_id=chat_correlation_id,
                 )
                 await self._publish_event(event)
@@ -417,7 +439,7 @@ class JuniperAffectiveStateService:
                 subtitle=subtitle,
                 user_message=user_message,
             )
-            if _vision_backend_selected():
+            if use_vision:
                 result, event = await self._assess_via_vision_backend(
                     req,
                     trigger=trigger,
@@ -640,7 +662,16 @@ class JuniperAffectiveStateService:
             timings=result.timings,
             subtitle_source=result.subtitle_source,
             transcript=result.transcript,
-            input_ref={"video_path": req.video_path, "audio_path": req.audio_path},
+            # audio_path is omitted on the vision backend, which never fetches
+            # the blob. Recording a path for a file that was never downloaded,
+            # written, or read would put a claim in the durable record that
+            # directly contradicts this path's privacy property (review
+            # finding, 2026-08-26).
+            input_ref=(
+                {"video_path": req.video_path}
+                if backend == "vision"
+                else {"video_path": req.video_path, "audio_path": req.audio_path}
+            ),
             trigger=_normalize_trigger(trigger),
             correlation_id=str(corr_id) if corr_id else None,
             chat_correlation_id=chat_correlation_id,
@@ -767,7 +798,16 @@ async def trigger(payload: dict):
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"invalid request: {e}"}, status_code=422)
 
-    result, event = await service.trigger_assessment(req)
+    # Honours AFFECT_BACKEND, same as /capture_and_assess. Before this
+    # (review finding, 2026-08-26) the route called trigger_assessment()
+    # unconditionally, so with AFFECT_BACKEND=vision set it STILL ran the
+    # retired AffectGPT worker -- making the documented kill switch partially
+    # inert on a real, reachable route. req.audio_path is accepted and ignored
+    # on the vision branch, exactly as it is for a live capture.
+    if _vision_backend_selected():
+        result, event = await service._assess_via_vision_backend(req)
+    else:
+        result, event = await service.trigger_assessment(req)
     return {"result": result.model_dump(), "event": event.model_dump(mode="json")}
 
 

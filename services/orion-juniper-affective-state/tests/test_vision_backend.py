@@ -211,12 +211,60 @@ def test_legacy_row_with_empty_response_is_not_mirrored():
     assert allowed is False
 
 
-def test_missing_detection_rate_does_not_block_a_confident_read(monkeypatch):
-    # Absent telemetry is not evidence of a bad capture. Blocking here would
-    # make any future producer that omits the field silently mute the feature.
+def test_missing_detection_rate_fails_closed_on_the_vision_backend(monkeypatch):
+    """Review finding 2.5. The vision path ALWAYS supplies a float
+    (sample_frames().as_meta()), so its absence means something upstream broke
+    -- and a gate that silently passes whenever its own input goes missing is
+    an inert gate, which is the shape this repo warns about."""
     monkeypatch.setattr(settings, "AFFECT_MIRROR_MIN_DETECTION_RATE", 0.15, raising=False)
     monkeypatch.setattr(settings, "AFFECT_MIRROR_MIN_CONFIDENCE", 0.35, raising=False)
-    assert _mirror_decision(_event(affect=_affect(confidence=0.7), face_detection=None))[0] is True
+    allowed, reason = _mirror_decision(
+        _event(affect=_affect(confidence=0.7), face_detection=None)
+    )
+    assert allowed is False
+    assert reason.startswith("missing_detection_rate")
+
+
+def test_non_numeric_detection_rate_fails_closed_on_the_vision_backend(monkeypatch):
+    monkeypatch.setattr(settings, "AFFECT_MIRROR_MIN_DETECTION_RATE", 0.15, raising=False)
+    monkeypatch.setattr(settings, "AFFECT_MIRROR_MIN_CONFIDENCE", 0.35, raising=False)
+    for bad in ("0.052", True, None):
+        allowed, _ = _mirror_decision(
+            _event(
+                affect=_affect(confidence=0.7),
+                face_detection={"detection_rate": bad},
+            )
+        )
+        assert allowed is False, f"non-numeric detection_rate {bad!r} slipped the gate"
+
+
+def test_missing_detection_rate_still_fails_open_for_legacy_affectgpt_rows(monkeypatch):
+    """affectgpt rows legitimately predate the field -- blocking them would
+    retroactively mute the rollback path."""
+    monkeypatch.setattr(settings, "AFFECT_MIRROR_MIN_DETECTION_RATE", 0.15, raising=False)
+    monkeypatch.setattr(settings, "AFFECT_MIRROR_MIN_CONFIDENCE", 0.35, raising=False)
+    allowed, _ = _mirror_decision(
+        _event(
+            backend="affectgpt",
+            source="affectgpt",
+            affect=_affect(confidence=0.7),
+            face_detection=None,
+        )
+    )
+    assert allowed is True
+
+
+def test_blank_primary_affect_cannot_reach_the_prompt():
+    """Review finding 2.6: an empty label validated, cleared both gates, and
+    rendered as a confident, exactly-neutral, cue-less read indistinguishable
+    from a genuine calm one. Rejected at the schema now."""
+    import pydantic
+
+    for blank in ("", "   "):
+        with pytest.raises(pydantic.ValidationError):
+            AffectReadV1(
+                valence=0.0, arousal=0.0, primary_affect=blank, confidence=0.9
+            )
 
 
 # ── The rendered prompt line ─────────────────────────────────────────────

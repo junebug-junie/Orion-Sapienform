@@ -1026,11 +1026,17 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     if brief.affect.available and brief.affect.summary:
         age_min = round((brief.affect.observation_age_seconds or 0) / 60)
         seen = "just now" if age_min < 1 else f"{age_min} min ago"
-        if brief.affect.backend == "vision":
+        if brief.affect.backend == "vision" and brief.affect.subtitle_source != "caller":
             # The vision backend is handed NO audio at all. Saying "no speech
             # detected" here would claim we listened and heard silence, which
             # is a different and false claim -- exactly the not-seeing vs
             # seeing-nothing distinction the Room line above is careful about.
+            #
+            # subtitle_source == "caller" is excluded because a caller-supplied
+            # transcript IS handed to the vision model as context, so "visual
+            # only" would be inaccurate there too, in the other direction
+            # (review finding, 2026-08-26). Hub's chat_turn_* callers always
+            # pass "", so the common path is unaffected.
             modality = ", visual only"
         elif brief.affect.subtitle_source == "none":
             modality = ", no speech detected"

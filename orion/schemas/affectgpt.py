@@ -28,7 +28,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AffectGptAssessRequestPayload(BaseModel):
@@ -149,13 +149,33 @@ class AffectReadV1(BaseModel):
     arousal: float = Field(..., ge=0.0, le=1.0)
     primary_affect: str = Field(
         ...,
+        min_length=1,
         max_length=64,
         description=(
             "The model's own short label. Deliberately NOT an enum -- see "
             "class docstring. Capped only so a runaway generation cannot "
-            "smuggle an essay through this field the way raw_response did."
+            "smuggle an essay through this field the way raw_response did. "
+            "min_length=1 plus the strip-validator below because an EMPTY "
+            "label used to validate, clear both mirror gates, and render as "
+            "\"Juniper's affect (read just now, visual only): valence +0.0, "
+            "arousal 0.0 | confidence 0.90\" -- a label-less, cue-less, "
+            "exactly-neutral read presented with high confidence and "
+            "indistinguishable from a genuine calm one (review finding, "
+            "2026-08-26)."
         ),
     )
+
+    @field_validator("primary_affect")
+    @classmethod
+    def _reject_blank_label(cls, value: str) -> str:
+        """min_length=1 alone accepts "   ". A whitespace-only label renders
+        identically to an empty one, so it has to be rejected here rather than
+        filtered out downstream -- the same whitespace hole that was found and
+        fixed in the retired backend's own subtitle resolution."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("primary_affect must not be blank")
+        return stripped
     cues: list[str] = Field(
         default_factory=list,
         description="Specific observations the read rests on, model's own words.",

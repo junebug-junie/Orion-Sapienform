@@ -105,32 +105,18 @@ def _evenly_spaced(candidates: list[int], want: int) -> list[int]:
     return picked
 
 
-def sample_frames(
-    video_path: str,
-    *,
-    max_frames: int,
-    jpeg_quality: int = 85,
-) -> FrameSampleResult:
-    """Decode the clip once, Haar-scan every frame, return `max_frames` stills.
+def _scan(video_path: str, cascade) -> tuple[int, list[int]]:
+    """Pass 1: Haar-scan every frame, retaining NONE of them.
 
-    Raises FrameSampleError on an unreadable/empty clip -- a caller must treat
-    that as a real failure (`ok=False`), never as an empty-but-fine read. The
-    replaced pipeline's habit of reporting `ok=True` over meaningless input is
-    the specific thing this module exists to stop.
+    Returns (frames_total, indices_with_a_detection). Deliberately does not
+    keep the decoded frames -- see sample_frames' docstring for the memory
+    arithmetic that makes that the whole point of splitting the passes.
     """
-    if max_frames <= 0:
-        raise FrameSampleError(f"max_frames must be >= 1, got {max_frames}")
-
-    cascade = cv2.CascadeClassifier(_CASCADE_PATH)
-    if cascade.empty():
-        raise FrameSampleError(f"failed to load Haar cascade from {_CASCADE_PATH!r}")
-
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FrameSampleError(f"could not open video: {video_path!r}")
-
-    frames: list[np.ndarray] = []
-    detected_idx: list[int] = []
+    total = 0
+    detected: list[int] = []
     try:
         while True:
             ret, frame = cap.read()
@@ -144,12 +130,74 @@ def sample_frames(
                 minSize=(_MIN_FACE_PX, _MIN_FACE_PX),
             )
             if len(faces) > 0:
-                detected_idx.append(len(frames))
-            frames.append(frame)
+                detected.append(total)
+            total += 1
     finally:
         cap.release()
+    return total, detected
 
-    if not frames:
+
+def _collect(video_path: str, wanted: list[int]) -> dict[int, "np.ndarray"]:
+    """Pass 2: re-decode, keeping ONLY the frames at `wanted` indices.
+
+    Sequential re-read rather than `cap.set(CAP_PROP_POS_FRAMES, ...)`: seeking
+    a compressed mp4 by frame index lands on the nearest keyframe with several
+    backends, which would silently return a frame OTHER than the one Haar
+    judged. A second decode pass is cheap next to the Haar scan and is exact.
+    """
+    remaining = set(wanted)
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise FrameSampleError(f"could not re-open video: {video_path!r}")
+    out: dict[int, "np.ndarray"] = {}
+    idx = 0
+    try:
+        while remaining:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if idx in remaining:
+                out[idx] = frame
+                remaining.discard(idx)
+            idx += 1
+    finally:
+        cap.release()
+    return out
+
+
+def sample_frames(
+    video_path: str,
+    *,
+    max_frames: int,
+    jpeg_quality: int = 85,
+) -> FrameSampleResult:
+    """Decode the clip twice, Haar-scan every frame, return `max_frames` stills.
+
+    Raises FrameSampleError on an unreadable/empty clip -- a caller must treat
+    that as a real failure (`ok=False`), never as an empty-but-fine read. The
+    replaced pipeline's habit of reporting `ok=True` over meaningless input is
+    the specific thing this module exists to stop.
+
+    **Two passes, not one, because one pass is an unbounded memory hazard**
+    (review finding, 2026-08-26). Retaining every decoded frame so the chosen
+    indices can be picked at the end costs `frames_total x frame_bytes`, and
+    nothing here bounds either term: `RETINA_CLIP_WIDTH`/`HEIGHT` default to
+    None (the device's own default), so a 1080p webcam is ~6.2MB/frame, and the
+    live capture this module was written against had 231 frames -- ~1.4GB of
+    peak RSS, on a path that fires on every spoken chat turn. Only `max_frames`
+    frames are ever encoded, so pass 1 keeps indices and pass 2 keeps pixels;
+    peak retention is `max_frames` frames regardless of clip length or
+    resolution.
+    """
+    if max_frames <= 0:
+        raise FrameSampleError(f"max_frames must be >= 1, got {max_frames}")
+
+    cascade = cv2.CascadeClassifier(_CASCADE_PATH)
+    if cascade.empty():
+        raise FrameSampleError(f"failed to load Haar cascade from {_CASCADE_PATH!r}")
+
+    frames_total, detected_idx = _scan(video_path, cascade)
+    if frames_total == 0:
         raise FrameSampleError(f"video had zero readable frames: {video_path!r}")
 
     # Prefer frames with a real detection; fall back to the whole clip when
@@ -159,13 +207,20 @@ def sample_frames(
     # cascade misses profile/tilted faces a VL model reads without trouble
     # (observed live: 100% detection and 5.2% detection on two captures of
     # the same person two minutes apart).
-    pool = detected_idx if detected_idx else list(range(len(frames)))
+    pool = detected_idx if detected_idx else list(range(frames_total))
     chosen = _evenly_spaced(pool, max_frames)
 
-    sampled: list[SampledFrame] = []
+    collected = _collect(video_path, chosen)
     detected_set = set(detected_idx)
+    sampled: list[SampledFrame] = []
     for idx in chosen:
-        frame = frames[idx]
+        frame = collected.get(idx)
+        if frame is None:
+            # Pass 2 read fewer frames than pass 1 -- a truncated/racing file.
+            # A real failure, not something to quietly sample around.
+            raise FrameSampleError(
+                f"frame {idx} was readable during the scan but not on re-read: {video_path!r}"
+            )
         ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)])
         if not ok:
             raise FrameSampleError(f"cv2.imencode failed for frame {idx}")
@@ -182,6 +237,6 @@ def sample_frames(
 
     return FrameSampleResult(
         frames=sampled,
-        frames_total=len(frames),
+        frames_total=frames_total,
         frames_detected=len(detected_idx),
     )

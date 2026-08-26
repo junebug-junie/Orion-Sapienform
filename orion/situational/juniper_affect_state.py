@@ -167,8 +167,13 @@ async def read_latest_juniper_affect() -> JuniperAffectState:
         subtitle_source=parsed.get("subtitle_source")
         if isinstance(parsed.get("subtitle_source"), str)
         else None,
+        # `not isinstance(..., bool)`: bool is a subclass of int, so a payload
+        # carrying `"confidence": true` would otherwise read back as 1.0 --
+        # maximum confidence from a value that expressed none (review finding,
+        # 2026-08-26).
         confidence=float(parsed["confidence"])
         if isinstance(parsed.get("confidence"), (int, float))
+        and not isinstance(parsed.get("confidence"), bool)
         else None,
         backend=parsed.get("backend") if isinstance(parsed.get("backend"), str) else None,
         ok=True,

@@ -273,6 +273,17 @@ async def assess_via_vision(
         for sha, frame in zip(upload_results, sampled.frames)
     ]
 
+    if not attachments:
+        # Unreachable today (sample_frames raises on an empty clip), asserted
+        # anyway: a chat request with ZERO images and a prompt reading
+        # "0 webcam stills... read their affect" would invite the model to
+        # invent one, and any confident JSON it returned would be published
+        # ok=True and mirrored. Making the empty-shell rule structural here
+        # rather than a consequence of a guard in a different module.
+        raise VisionAffectError(
+            "no frames survived sampling", error_code="no_frames"
+        )
+
     route = str(settings.AFFECT_VISION_LLM_ROUTE or "chat")
     rpc_corr = str(uuid4())
     reply_channel = f"{_REPLY_PREFIX}:{rpc_corr}"
@@ -325,8 +336,18 @@ async def assess_via_vision(
     timings["generate_s"] = round(loop.time() - t2, 3)
     timings["total_s"] = round(loop.time() - t0, 3)
 
+    if not isinstance(msg, dict):
+        raise VisionAffectError(
+            f"gateway reply was not a message dict: {type(msg).__name__}",
+            error_code="invalid_reply",
+        )
     decoded = bus.codec.decode(msg.get("data"))
-    if not decoded.ok:
+    # `decoded.envelope` is checked as well as `decoded.ok`, matching the
+    # sibling RPC path in this service (main.py's _call_worker). Without it an
+    # ok-but-envelope-less decode raises AttributeError, which the caller's
+    # generic handler reports as error_code="vision_unexpected" -- destroying
+    # the stable error code exactly on the failure an operator would triage.
+    if not decoded.ok or not decoded.envelope:
         raise VisionAffectError(
             f"undecodable gateway reply: {decoded.error}", error_code="invalid_reply"
         )

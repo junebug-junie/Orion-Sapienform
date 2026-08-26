@@ -52,6 +52,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, Sequence, Tuple
+from uuid import NAMESPACE_URL, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.curiosity.investigation_prompt import build_investigation_prompt
@@ -330,13 +331,22 @@ class CuriosityInvestigation:
         self._done_today += 1
         await self._mark_term(target.term, now=now)
 
-        correlation_id = f"{INVESTIGATION_TAG}:{target.term}:{int(now.timestamp())}"
+        # UUID-shaped, because `BaseEnvelope.correlation_id` validates as one --
+        # and `execute_unified_turn` builds envelopes internally, so a readable
+        # `tag:term:ts` string fails the whole turn before it starts. Confirmed
+        # live 2026-08-26 on the first deploy: the loop detected `foveal`
+        # correctly and then died on `uuid_parsing`. uuid5 rather than uuid4 so
+        # the id is still deterministic from the same (term, tick) and can be
+        # traced back to a readable seed.
+        seed = f"{INVESTIGATION_TAG}:{target.term}:{int(now.timestamp())}"
+        correlation_id = str(uuid5(NAMESPACE_URL, seed))
         logger.info(
-            "curiosity_investigation_starting term=%s recent=%s msgs=%s corr=%s",
+            "curiosity_investigation_starting term=%s recent=%s msgs=%s corr=%s seed=%s",
             target.term,
             target.recent_count,
             target.recent_messages,
             correlation_id,
+            seed,
         )
         text, debug = await self._generate(
             build_investigation_prompt(report, target), correlation_id

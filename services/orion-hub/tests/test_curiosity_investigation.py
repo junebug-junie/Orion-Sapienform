@@ -210,6 +210,30 @@ def _live_messages():
     return _corpus(datetime.now(timezone.utc))
 
 
+def test_the_correlation_id_is_uuid_shaped() -> None:
+    """REGRESSION, first live deploy 2026-08-26. `BaseEnvelope.correlation_id`
+    validates as a UUID, and `execute_unified_turn` builds envelopes
+    internally -- so a readable `tag:term:ts` correlation id killed the whole
+    turn on `uuid_parsing` before it started. The other tick tests stub
+    `_generate` wholesale, so none of them touch envelope construction; this
+    one pins the shape directly."""
+    from uuid import UUID
+
+    bus = _FakeBus()
+    seen = {}
+
+    loop = _loop(bus, text="found", messages=_live_messages())
+
+    async def _capture(prompt, correlation_id):
+        seen["corr"] = correlation_id
+        return "found", {}
+
+    loop._generate = _capture  # type: ignore[assignment]
+    assert asyncio.run(loop.tick()) is None
+    UUID(seen["corr"])  # raises if not a UUID
+    assert UUID(bus.published[0][1].payload["correlation_id"])
+
+
 def test_a_successful_tick_journals_exactly_one_entry() -> None:
     bus = _FakeBus()
     loop = _loop(bus, text="Here is what I found when I looked.", messages=_live_messages())

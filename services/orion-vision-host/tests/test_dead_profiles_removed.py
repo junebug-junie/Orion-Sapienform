@@ -63,11 +63,13 @@ def test_dead_task_types_no_longer_route_anywhere(vision_profiles):
 
 def test_identity_face_deliberately_survives(vision_profiles):
     """The one profile from the same original batch that is NOT dead weight
-    -- proposal-mode future work (design doc section 4), not implemented,
-    still disabled, but the config stub stays."""
+    -- design doc section 4. Implemented and enabled 2026-08-26 (Juniper's
+    direct go-ahead); see test_run_identity_face.py/test_identity_gallery.py
+    for the real behavior this now pins."""
     assert "identity_face" in vision_profiles.profiles
     identity = vision_profiles.get_profile("identity_face")
-    assert identity.enabled is False
+    assert identity.kind == "identity"
+    assert identity.enabled is True
     assert vision_profiles.resolve_target("identity_face") == "identity_face"
 
 

@@ -131,6 +131,61 @@ class ModelManager:
             self.set(key, model, processor)
             return model, processor
 
+    def load_face_identity_models(
+        self,
+        *,
+        profile_name: str,
+        device: str,
+        torch_home: Optional[str] = None,
+    ):
+        """
+        Loads the face-detection + embedding pair for identity_face
+        (docs/superpowers/specs/2026-08-21-seeing-juniper-identity-and-
+        situated-observation-design.md section 4): MTCNN (detect + align,
+        facenet-pytorch) and InceptionResnetV1 pretrained on VGGFace2
+        (512-dim embeddings). Small models, no language -- matches the
+        design doc's "runs on the P4, small, no language" framing.
+
+        Returns (resnet, mtcnn) -- reuses this manager's existing
+        (model, processor) cache slot rather than adding a third dict for
+        this one two-model case; MTCNN plays the "processor" role here
+        (detect + align feeding the embedder), same shape every other
+        loader in this file already uses.
+
+        ``torch_home``, when given, is set as the ``TORCH_HOME`` env var
+        before import -- facenet-pytorch's weights download via
+        ``torch.hub``, which defaults to ``~/.cache/torch/hub`` and does
+        NOT respect this service's own ``MODEL_CACHE_DIR``/``HF_HOME``
+        conventions. Without this, the container would silently re-download
+        ~107MB on every restart instead of using the persistent volume
+        mount every other model loader in this file already gets for free.
+        """
+        import os
+
+        if torch_home:
+            os.environ.setdefault("TORCH_HOME", torch_home)
+
+        from facenet_pytorch import MTCNN, InceptionResnetV1
+
+        key = ModelKey(profile=profile_name, device=device)
+        lock = self._key_lock(key)
+
+        with lock:
+            m, p = self.get(key)
+            if m is not None and p is not None:
+                return m, p
+
+            logger.info(f"[MODEL] loading face-identity profile={profile_name} device={device}")
+
+            mtcnn_device = device if device.startswith("cuda") else "cpu"
+            mtcnn = MTCNN(keep_all=True, device=mtcnn_device)
+            resnet = InceptionResnetV1(pretrained="vggface2").eval()
+            if device.startswith("cuda"):
+                resnet.to(device)
+
+            self.set(key, resnet, mtcnn)
+            return resnet, mtcnn
+
     def load_vlm_captioner(
         self,
         *,

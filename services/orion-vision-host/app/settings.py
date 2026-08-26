@@ -114,6 +114,16 @@ class Settings(BaseSettings):
     # NODE_NAME is already declared above -- a second declaration silently
     # shadows the first (review finding).
 
+    # identity_face (2026-08-25, docs/superpowers/specs/2026-08-21-seeing-
+    # juniper-identity-and-situated-observation-design.md section 4).
+    # ONE enrolled subject, gallery does not grow at runtime -- app/
+    # identity_gallery.py's save path is only ever called from
+    # scripts/enroll_identity_face.py, never from the request-handling path.
+    # Reuses the existing /mnt/telemetry/orion-vision-host mount (see
+    # docker-compose.yml) rather than adding a new volume.
+    IDENTITY_GALLERY_DIR: str = "/mnt/telemetry/orion-vision-host/identity_gallery"
+    IDENTITY_ENROLLED_SUBJECT: str = "juniper"
+
     @property
     def enabled_profiles(self) -> List[str]:
         return _split_csv(self.VISION_ENABLED_PROFILES)

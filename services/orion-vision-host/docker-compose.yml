@@ -76,6 +76,9 @@ services:
       - NOTIFY_BASE_URL=${NOTIFY_BASE_URL}
       - NOTIFY_API_TOKEN=${NOTIFY_API_TOKEN}
 
+      - IDENTITY_GALLERY_DIR=${IDENTITY_GALLERY_DIR:-/mnt/telemetry/orion-vision-host/identity_gallery}
+      - IDENTITY_ENROLLED_SUBJECT=${IDENTITY_ENROLLED_SUBJECT:-juniper}
+
     volumes:
       - /mnt/telemetry/orion-vision-host:/mnt/telemetry/orion-vision-host
       - /mnt/telemetry/models/vision:/mnt/telemetry/models/vision

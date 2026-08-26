@@ -34,6 +34,73 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 
 Env: `VISION_VLM_MODEL_ID`, `VISION_VLM_TEMPERATURE` (default `0.2`).
 
+## Identity hypothesis (`identity_face`)
+
+`docs/superpowers/specs/2026-08-21-seeing-juniper-identity-and-situated-observation-design.md`
+section 4. Real face detection + embedding (MTCNN + InceptionResnetV1,
+VGGFace2-pretrained, `facenet-pytorch`) matched against **one enrolled
+subject** -- not a growing gallery, not a stranger tracker.
+
+**Non-negotiables, enforced in code, not just here:**
+
+- **One enrolled subject. Gallery does not grow at runtime.**
+  `app/identity_gallery.py::save_gallery_embedding` is only ever called
+  from `scripts/enroll_identity_face.py` (a human-run CLI) --
+  `tests/test_identity_gallery_never_grows_at_runtime.py` structurally
+  pins that no file under `app/` references it.
+- **Non-matches are never stored.** A query embedding is compared in
+  memory and discarded; it is never written to disk or returned to the
+  caller, matched or not.
+- **`unsure` is a real, reachable third state.** `match_embedding` returns
+  `{"subject", "similarity", "state"}` with `state` one of
+  `probable` / `possible` / `unsure` -- never a binary match/no-match. A
+  `subject` other than `"unknown"` is returned only for `probable`/`possible`.
+
+**Enrollment** (must be run by hand, with real photos -- ships with zero
+enrolled by default):
+
+```bash
+cd services/orion-vision-host
+python3 scripts/enroll_identity_face.py --subject juniper photo1.jpg photo2.jpg photo3.jpg
+```
+
+Writes one JSON file (mean embedding across all usable photos) to
+`IDENTITY_GALLERY_DIR` (default `/mnt/telemetry/orion-vision-host/identity_gallery`,
+the existing bind mount -- no new volume). Re-running with the same
+`--subject` overwrites the entry (re-enrollment, not accumulation).
+
+**Unenrolled behavior:** `task_type=identity_face` still runs face
+detection; every candidate comes back `{"subject": "unknown", "similarity":
+null, "state": "unsure", "reason": "not_enrolled"}` and the artifact's
+`gallery_enrolled` flag is `false` -- not an error.
+
+**Thresholds** (`config/vision_profiles.yaml`'s `identity_face.params`):
+`match_threshold` (below = `unsure`) and `probable_threshold` (at/above =
+`probable`; between the two = `possible`). Both are a reasoned starting
+point, **not yet live-validated against real enrolled photos** -- AGENTS.md's
+metric-quality-gate item 4 (live-data sanity check) genuinely cannot run
+until someone enrolls. Revisit once real camera data exists.
+
+**Deviation from the design doc's literal prose, noted honestly:** the doc
+describes running face detection on the person crop GroundingDINO already
+produces. `_run_identity_face` runs MTCNN directly on the full frame
+instead -- `runner.py`'s pipeline steps do not currently pass one step's
+artifacts into the next step's request (`_run_pipeline` hands every step
+the same original request dict), and building that plumbing is separate,
+larger, riskier work than this patch's scope. MTCNN already does its own
+face localization on a full image without needing a person crop first, so
+this is a real simplification, not a silently dropped requirement.
+
+**Not built here:** wiring the resulting hypothesis into
+`orion-vision-council`'s evidence-grounding context as the design doc's
+section 4 describes ("passed to the gateway call as grounding context,
+exactly like hard labels") -- that is the next integration step, in a
+different service, once this capability is live-validated with a real
+enrollment. Also not built: `vision_events` retention policy (design doc
+section 6.5: "identity-bearing rows are the most sensitive this system
+will hold. Ships WITH section 4, not after") -- a real, separate gap this
+patch did not close; flagged, not silently skipped.
+
 ## Observability (logs-first)
 
 Each finished task emits one structured line prefix `[VISION_TASK]` with JSON containing at least: `correlation_id`, `task_type`, `ok`, `device`, `error`, `error_code`, `queue_depth_at_submit`, `scheduler_total_s`, `inference_s`, `queue_wait_est_s`.

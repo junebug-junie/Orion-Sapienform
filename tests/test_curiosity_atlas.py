@@ -307,3 +307,60 @@ def test_the_payload_is_json_safe() -> None:
     blob = json.dumps(to_payload(view))
     assert '"reach_out": true' in blob
     assert '"history_recorded": true' in blob
+
+
+# --- the surface itself -----------------------------------------------------
+
+
+def test_the_operator_surface_exposes_no_write_route() -> None:
+    """Read-only is a design constraint, not a phase-one scope cut: Hub never
+    writes to Orion's graph, and a route that could edit a belief Orion formed
+    needs an auth story, an audit trail, and an argument this does not have.
+    Asserted on the router rather than trusted to review."""
+    import sys
+    from pathlib import Path
+
+    hub = Path(__file__).resolve().parents[1] / "services" / "orion-hub"
+    if str(hub) not in sys.path:
+        sys.path.insert(0, str(hub))
+    from scripts.curiosity_routes import router
+
+    assert router.routes, "the router registered nothing"
+    for route in router.routes:
+        assert route.methods <= {"GET", "HEAD"}, (route.path, route.methods)
+
+
+def test_the_schedule_keys_are_imported_from_the_loop_that_writes_them() -> None:
+    """A dashboard with its own copy of `orion:curiosity:count:` would render a
+    confident 0 forever the day that prefix changes."""
+    import sys
+    from pathlib import Path
+
+    hub = Path(__file__).resolve().parents[1] / "services" / "orion-hub"
+    if str(hub) not in sys.path:
+        sys.path.insert(0, str(hub))
+    import ast
+
+    source = (hub / "scripts" / "curiosity_routes.py").read_text()
+    assert "_COOLDOWN_KEY" in source and "_DAILY_COUNT_KEY_PREFIX" in source
+
+    # AST rather than a substring scan: the docstring above explains this very
+    # rule and names the prefix, and a check that cannot tell an explanation
+    # from an implementation fails on its own documentation.
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    literals = [
+        n.value for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        and id(n) not in docstrings
+    ]
+    offenders = [x for x in literals if "orion:curiosity:" in x]
+    assert not offenders, f"a key name was retyped in code: {offenders}"

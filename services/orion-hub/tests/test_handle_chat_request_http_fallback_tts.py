@@ -34,12 +34,14 @@ os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
 os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 
 
-def _wire_common(monkeypatch, api_routes, hub_main, *, tts_client, final_text="a real answer"):
+def _wire_common(
+    monkeypatch, api_routes, hub_main, *, tts_client, final_text="a real answer", tts_timeout_sec=5.0
+):
     from orion.hub import turn_orchestrator
 
     monkeypatch.setattr(api_routes.settings, "ORION_UNIFIED_TURN_ENABLED", True, raising=False)
     monkeypatch.setattr(api_routes.settings, "ORION_HARNESS_GOVERNOR_ENABLED", True, raising=False)
-    monkeypatch.setattr(api_routes.settings, "HUB_TTS_TIMEOUT_SEC", 5.0, raising=False)
+    monkeypatch.setattr(api_routes.settings, "HUB_TTS_TIMEOUT_SEC", tts_timeout_sec, raising=False)
 
     class _Bus:
         enabled = True
@@ -149,9 +151,7 @@ def test_http_fallback_surfaces_a_tts_timeout_without_losing_the_text_reply(monk
     import scripts.main as hub_main
 
     client = _FakeTTSClient(result=_FakeTTSResult(), delay=999)
-    monkeypatch.setattr(api_routes.settings, "HUB_TTS_TIMEOUT_SEC", 0.05, raising=False)
-    _wire_common(monkeypatch, api_routes, hub_main, tts_client=client)
-    monkeypatch.setattr(api_routes.settings, "HUB_TTS_TIMEOUT_SEC", 0.05, raising=False)
+    _wire_common(monkeypatch, api_routes, hub_main, tts_client=client, tts_timeout_sec=0.05)
 
     payload = {"mode": "orion", "messages": [{"role": "user", "content": "hello"}]}
     out = asyncio.run(api_routes.handle_chat_request(object(), payload, "sid-http-tts", no_write=True))
@@ -174,6 +174,80 @@ def test_http_fallback_surfaces_a_tts_exception_without_losing_the_text_reply(mo
     assert out["llm_response"] == "a real answer"
     assert "audio_response" not in out
     assert out["tts_error"] == "synthesis backend unreachable"
+
+
+def test_http_fallback_skips_synthesis_when_client_already_disconnected(monkeypatch) -> None:
+    """Review finding, 2026-08-27: this fallback exists precisely for
+    Hub-wide WS outages, when many clients can hit this route at once. A
+    client that reloads/navigates away mid-wait must not hold a request
+    slot + TTS-backend RPC slot for the full HUB_TTS_TIMEOUT_SEC for
+    nobody -- checked via the real FastAPI Request.is_disconnected(), not
+    just accepted as an unavoidable cost."""
+    import scripts.api_routes as api_routes
+    import scripts.main as hub_main
+
+    client = _FakeTTSClient(result=_FakeTTSResult())
+    _wire_common(monkeypatch, api_routes, hub_main, tts_client=client)
+
+    class _DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    payload = {"mode": "orion", "messages": [{"role": "user", "content": "hello"}]}
+    out = asyncio.run(
+        api_routes.handle_chat_request(
+            object(), payload, "sid-http-tts", http_request=_DisconnectedRequest(), no_write=True
+        )
+    )
+
+    assert out["llm_response"] == "a real answer"
+    assert "audio_response" not in out
+    assert client.calls == [], "synthesis must not run once the client is confirmed gone"
+
+
+def test_http_fallback_still_synthesizes_when_request_object_is_unavailable(monkeypatch) -> None:
+    """The disconnect check is best-effort, gated on http_request actually
+    being supplied -- existing/non-HTTP callers of handle_chat_request
+    (direct test invocation, or a future non-FastAPI caller) must not lose
+    TTS just because they have no Request object to check."""
+    import scripts.api_routes as api_routes
+    import scripts.main as hub_main
+
+    client = _FakeTTSClient(result=_FakeTTSResult())
+    _wire_common(monkeypatch, api_routes, hub_main, tts_client=client)
+
+    payload = {"mode": "orion", "messages": [{"role": "user", "content": "hello"}]}
+    out = asyncio.run(
+        api_routes.handle_chat_request(object(), payload, "sid-http-tts", no_write=True)
+    )
+
+    assert out["audio_response"] == "ZmFrZWF1ZGlv"
+    assert len(client.calls) == 1
+
+
+def test_http_fallback_a_broken_disconnect_check_does_not_block_synthesis(monkeypatch) -> None:
+    """The disconnect check itself failing must not be treated as proof
+    the client is gone -- a client that is very likely still there must
+    not lose its voice reply to a broken probe."""
+    import scripts.api_routes as api_routes
+    import scripts.main as hub_main
+
+    client = _FakeTTSClient(result=_FakeTTSResult())
+    _wire_common(monkeypatch, api_routes, hub_main, tts_client=client)
+
+    class _BrokenRequest:
+        async def is_disconnected(self):
+            raise RuntimeError("connection state unavailable")
+
+    payload = {"mode": "orion", "messages": [{"role": "user", "content": "hello"}]}
+    out = asyncio.run(
+        api_routes.handle_chat_request(
+            object(), payload, "sid-http-tts", http_request=_BrokenRequest(), no_write=True
+        )
+    )
+
+    assert out["audio_response"] == "ZmFrZWF1ZGlv"
+    assert len(client.calls) == 1
 
 
 def test_http_fallback_omits_audio_when_final_text_is_empty(monkeypatch) -> None:

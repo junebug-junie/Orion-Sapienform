@@ -10674,7 +10674,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function shouldAppendOrionWsPayload(d) {
     if (!d || typeof d !== 'object') return false;
-    if (d.tts_error) return false;
+    // Review finding, 2026-08-27: `d.tts_error` alone (no `d.llm_response`)
+    // is the WS lane's own "synthesis failed" follow-up frame -- it also
+    // carries the ORIGINAL text under `d.text` for logging only, and must
+    // not spawn a duplicate bubble for text a real "final" frame already
+    // showed moments earlier. But the HTTP-fallback path (same date) can
+    // merge a REAL llm_response with a tts_error (text succeeded, TTS
+    // didn't) into ONE object -- that case must still render the text.
+    // The two are told apart by `d.llm_response` specifically, not the
+    // broader resolveAssistantDisplayText() below (which also reads
+    // `d.text`, exactly the field the WS-only case uses for logging, and
+    // would have wrongly treated case 1 as real text too).
+    if (d.tts_error && !d.llm_response) return false;
     // TTS playback follow-up may carry assistant text for logging; never spawn a second bubble.
     if (d.audio_response && !d.llm_response) return Boolean(d.workflow);
     if (d.workflow) return true;

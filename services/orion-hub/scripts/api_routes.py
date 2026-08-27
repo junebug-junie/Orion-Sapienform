@@ -58,7 +58,6 @@ from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_us
 from .agent_claude_input import prepare_agent_claude_input
 from .fcc_claude_bridge import build_harness_reasoning_trace, run_turn_from_settings
 from .fcc_env_catalog import catalog_from_settings
-from orion.schemas.tts import TTSRequestPayload
 from .fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
 from .repair_pressure_wiring import attach_repair_pressure_contract
@@ -3071,6 +3070,8 @@ async def handle_chat_request(
     cortex_client,
     payload: dict,
     session_id: str,
+    *,
+    http_request: Optional[Request] = None,
     no_write: bool,
 ) -> Dict[str, Any]:
     """
@@ -3130,7 +3131,7 @@ async def handle_chat_request(
             }
         from .main import bus, harness_step_relay, rpc_bus, tts_client
         from orion.hub.turn_orchestrator import execute_unified_turn
-        from .websocket_handler import extract_unified_turn_final_text
+        from .websocket_handler import extract_unified_turn_final_text, synthesize_tts_reply
 
         # Parity fix: the sibling (non-orion) branch below builds
         # continuity_messages from the client-supplied history before
@@ -3197,42 +3198,58 @@ async def handle_chat_request(
         # returned, and the audio rides in the SAME JSON body the text does.
         # This does mean an HTTP-fallback turn's total latency now includes
         # TTS synthesis time; accepted, since the alternative is silence.
-        disable_tts = bool(payload.get("disable_tts", False))
+        #
+        # Review finding, 2026-08-27: an earlier version of this hand-rolled
+        # its own gate + synthesis + timeout/exception handling -- a THIRD
+        # independent copy of exactly what `dispatch_tts_reply`/
+        # `run_tts_remote` (websocket_handler.py) already unified earlier
+        # the same day for the WS lane. Now calls the same
+        # `synthesize_tts_reply` core those use, so a future change to
+        # synthesis/logging/error-shaping lands in one place for both
+        # transports; only the gate (which differs enough in shape --
+        # fire-and-forget task vs synchronous await -- to not share a
+        # single function) stays lane-specific.
+        disable_tts = _normalize_bool(payload.get("disable_tts"), default=False)
         final_text = extract_unified_turn_final_text(frames)
-        if final_text and not disable_tts and tts_client:
+        http_will_tts = bool(final_text and not disable_tts and tts_client)
+        logger.info(
+            "voice.tts.decision corr=%s sid=%s response_len=%d disable_tts=%s "
+            "has_tts_client=%s will_tts=%s lane=http_fallback",
+            corr_id,
+            session_id,
+            len(final_text or ""),
+            disable_tts,
+            bool(tts_client),
+            http_will_tts,
+        )
+        if http_will_tts and http_request is not None:
             try:
-                tts_result = await asyncio.wait_for(
-                    tts_client.speak(TTSRequestPayload(text=final_text)),
-                    timeout=float(settings.HUB_TTS_TIMEOUT_SEC),
+                already_gone = await http_request.is_disconnected()
+            except Exception:
+                # Review finding, 2026-08-27: this fallback exists precisely
+                # for Hub-wide WS outages, when many clients can hit this
+                # route at once. A client that reloads/navigates away
+                # mid-wait would otherwise hold a request slot + TTS-backend
+                # RPC slot for the full HUB_TTS_TIMEOUT_SEC for nobody. The
+                # check itself failing must not block synthesis for a
+                # client that is very likely still there.
+                already_gone = False
+            if already_gone:
+                logger.info(
+                    "voice.tts.skipped_client_disconnected corr=%s sid=%s", corr_id, session_id
                 )
-                final_frame = {
-                    **final_frame,
-                    "audio_response": tts_result.audio_b64,
-                    "tts_source_text": final_text,
-                    "tts_meta": {
-                        "content_type": tts_result.content_type,
-                        "duration_sec": tts_result.duration_sec,
-                        "metadata": tts_result.metadata,
-                    },
-                }
-            except asyncio.TimeoutError:
-                logger.error(
-                    "voice.tts.error corr=%s HTTP-fallback TTS timed out after %ss",
-                    corr_id,
-                    settings.HUB_TTS_TIMEOUT_SEC,
-                )
-                final_frame = {
-                    **final_frame,
-                    "tts_error": f"TTS timed out after {settings.HUB_TTS_TIMEOUT_SEC}s",
-                }
-            except Exception as exc:
-                logger.error(
-                    "voice.tts.error corr=%s HTTP-fallback TTS failed: %s",
-                    corr_id,
-                    exc,
-                    exc_info=True,
-                )
-                final_frame = {**final_frame, "tts_error": str(exc) or "TTS synthesis failed"}
+                http_will_tts = False
+        if http_will_tts:
+            tts_fields = await synthesize_tts_reply(
+                final_text,
+                tts_client,
+                timeout_sec=float(settings.HUB_TTS_TIMEOUT_SEC),
+                lane="http_fallback",
+                correlation_id=corr_id,
+                session_id=session_id,
+            )
+            if tts_fields:
+                final_frame = {**final_frame, **tts_fields}
 
         return {**final_frame, "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS}
 
@@ -3604,6 +3621,7 @@ async def handle_chat_request(
 # ======================================================================
 @router.post("/api/chat")
 async def api_chat(
+    request: Request,
     payload: dict,
     x_orion_session_id: Optional[str] = Header(None),
     x_orion_no_write: Optional[str] = Header(None),
@@ -3623,7 +3641,9 @@ async def api_chat(
     )
 
     # Core chat handling
-    result = await handle_chat_request(cortex_client, payload, session_id, no_write)
+    result = await handle_chat_request(
+        cortex_client, payload, session_id, http_request=request, no_write=no_write
+    )
 
     # ─────────────────────────────────────────────
     # 📡 Publish HTTP chat → chat history log

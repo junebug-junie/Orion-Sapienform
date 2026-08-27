@@ -640,15 +640,18 @@ def test_load_latest_reverie_interpretation_never_raises_on_db_failure() -> None
 # --- load_latest_self_study_reflection: Patch 5 richer context-seed --------
 #
 # Real incident this reader exists because of, not a hypothetical (see the
-# function's own docstring and _SAFE_SELF_STUDY_SOURCE_PREFIXES's docstring):
-# live-checking the candidate `memory_crystallizations` table for an "actual
-# memory" context-seed found its summary/subject columns hold verbatim
-# personal chat content. self_study_analysis.py's four deterministic
-# window-contrast producers were the one candidate that live-verified safe
-# (pure numeric prose, no chat quotes) -- confirmed by reading real bodies
-# before writing this reader. The allowlist is a real privacy boundary, not
-# a style choice, so it gets direct SQL-shape assertions below, not just
-# "does it return the row."
+# function's own docstring): live-checking the candidate `memory_
+# crystallizations` table for an "actual memory" context-seed found its
+# summary/subject columns hold verbatim personal chat content.
+# self_study_analysis.py's four deterministic window-contrast producers were
+# the one candidate that live-verified safe (pure numeric prose, no chat
+# quotes) -- confirmed by reading real bodies before writing this reader.
+# The allowlist is a real privacy boundary, not a style choice, so it gets
+# direct SQL-shape assertions below, not just "does it return the row" --
+# asserted against `orion.schemas.self_study_analysis.ANALYSIS_SOURCES`
+# itself (review finding: an earlier version of this test compared against
+# a second hardcoded literal set, which couldn't catch the allowlist and the
+# real producer list drifting apart).
 
 
 def _body_row_result(row: dict | None):
@@ -721,7 +724,12 @@ def test_load_latest_self_study_reflection_query_only_allowlists_the_four_safe_p
     """The actual privacy boundary: assert the SQL only ever admits the four
     known-safe source_ref prefixes, by name -- not "some WHERE clause exists".
     A future edit widening this without updating the allowlist should fail
-    this test, not slip through as "query still returns rows"."""
+    this test, not slip through as "query still returns rows". Asserted
+    against `ANALYSIS_SOURCES` itself, not a second hardcoded literal set
+    (review finding: a hardcoded expectation here couldn't catch the
+    allowlist and the real producer list drifting apart)."""
+    from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
+
     store = _fresh_store()
     captured: dict = {}
     monkeypatch = pytest.MonkeyPatch()
@@ -735,17 +743,17 @@ def test_load_latest_self_study_reflection_query_only_allowlists_the_four_safe_p
 
     stmt = captured["stmt"]
     assert "source_kind = 'self_study'" in stmt
+    # starts_with(), not LIKE (review finding): every real prefix contains an
+    # underscore, which LIKE treats as a single-character wildcard rather
+    # than a literal -- starts_with() is exact literal prefix matching.
+    assert "starts_with(source_ref" in stmt
+    assert "LIKE" not in stmt
     params = captured["params"]
-    bound_prefixes = {v for v in params.values() if isinstance(v, str) and v.endswith("%")}
-    assert bound_prefixes == {
-        "concept_induction:%",
-        "vision_events:%",
-        "affective_state:%",
-        "cocreation_signals:%",
-    }
+    bound_prefixes = {v for k, v in params.items() if k.startswith("prefix")}
+    assert bound_prefixes == {f"{source}:" for source in ANALYSIS_SOURCES}
     # The real incident this allowlist closes: the free-form "Curiosity"
     # reflection's own prefix must never be one of the admitted ones.
-    assert "curiosity:%" not in bound_prefixes
+    assert "curiosity:" not in bound_prefixes
 
 
 def test_load_latest_self_study_reflection_char_limit_override() -> None:

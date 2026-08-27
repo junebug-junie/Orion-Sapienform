@@ -37,6 +37,15 @@ async def _run_until_calls(loop_coro_factory, stop: asyncio.Event, target_calls:
     await asyncio.wait_for(asyncio.gather(loop_coro_factory(), _watcher()), timeout=5.0)
 
 
+def _totals(*records: SessionUsageRecord) -> dict[Path, SessionUsageRecord]:
+    """Key fakes the way the real ``_scan_totals`` keys: by the record's own
+    resolved ``transcript_path``. Deliberately not a hand-written
+    session-id-keyed dict literal -- a fake keyed by ``session_id`` cannot
+    represent the real return contract, and that mismatch is precisely what
+    let the session_id collision survive every test in this file."""
+    return {r.transcript_path.resolve(): r for r in records}
+
+
 def _record(session_id: str, input_tokens: int) -> SessionUsageRecord:
     return SessionUsageRecord(
         session_id=session_id,
@@ -63,7 +72,7 @@ async def test_cold_start_seeds_baseline_without_publishing(fake_bus, source, st
 
     def _fake_scan(path):
         calls.append(1)
-        return {"s1": _record("s1", 1000)}
+        return _totals(_record("s1", 1000))
 
     monkeypatch.setattr(dev_economics_module, "_scan_totals", _fake_scan)
 
@@ -87,8 +96,8 @@ async def test_real_growth_publishes_the_delta_not_the_cumulative_total(
     not its full running total (which would double-count) and not nothing
     (which would silently drop it)."""
     totals_by_tick = [
-        {"s1": _record("s1", 1000)},  # cold start
-        {"s1": _record("s1", 2500)},  # real growth: +1500
+        _totals(_record("s1", 1000)),  # cold start
+        _totals(_record("s1", 2500)),  # real growth: +1500
     ]
     calls: list[int] = []
 
@@ -119,7 +128,7 @@ async def test_no_growth_still_publishes_a_real_zero_delta_tick(fake_bus, source
     every tick, even all-zero' convention as affective_state_loop), not a
     no-op to suppress. The published event's own totals correctly read
     zero, since no session actually grew between rescans."""
-    same_totals = {"s1": _record("s1", 1000)}
+    same_totals = _totals(_record("s1", 1000))
     calls: list[int] = []
 
     def _fake_scan(path):
@@ -151,9 +160,9 @@ async def test_failed_publish_does_not_advance_baseline(fake_bus, source, stop_e
     fake_bus.publish = _raising_publish
 
     totals_by_tick = [
-        {"s1": _record("s1", 1000)},  # cold start
-        {"s1": _record("s1", 2500)},  # real growth, but publish will fail
-        {"s1": _record("s1", 2500)},  # unchanged from tick 2 -- but baseline never advanced
+        _totals(_record("s1", 1000)),  # cold start
+        _totals(_record("s1", 2500)),  # real growth, but publish will fail
+        _totals(_record("s1", 2500)),  # unchanged from tick 2 -- but baseline never advanced
     ]
     calls: list[int] = []
 
@@ -329,3 +338,88 @@ def test_scan_totals_keeps_every_transcript_when_subagents_share_a_session_id(
     # the 14 days before this fix -- that field was the visible symptom.
     assert event.session_count == 1
     assert event.subagent_transcript_count == 2
+
+
+def test_rediscovered_transcript_is_seeded_not_republished_as_growth(tmp_path) -> None:
+    """Regression: diff_session_record(previous=None, ...) returns a file's
+    ENTIRE cumulative history as one tick's growth. That is right for a new
+    transcript and catastrophic for a re-discovered one -- os.walk swallows a
+    whole subtree on a transient scandir error, and unresolvable symlinks are
+    skipped per-file until an operator fixes the mount, either of which hands
+    a long-lived file back as 'first seen'. The largest single session subtree
+    on the real tree is 1.28B tokens against an int4 column ceiling of 2.15B,
+    so republishing it is a fabricated spend spike or an outright overflow."""
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(hours=2)
+    sess = tmp_path / "proj" / "sess"
+    sess.mkdir(parents=True)
+    transcript = sess / "session.jsonl"
+    transcript.write_text(
+        _usage_line("s1", inp=900_000_000, out=100_000_000, now=old, text="old history"),
+        encoding="utf-8",
+    )
+
+    # Baseline was taken an hour ago; this transcript started two hours ago,
+    # so seeing it for the first time now means re-discovery, not new work.
+    event, current = dev_economics_module._score_tick(
+        str(tmp_path), {}, now, now - timedelta(hours=1)
+    )
+
+    assert event.total_tokens == 0
+    assert event.session_count == 0
+    assert event.total_estimated_cost_usd is None
+    # ...but it IS carried into the baseline, so real future growth is caught.
+    assert transcript.resolve() in current
+
+
+def test_genuinely_new_transcript_is_still_published_in_full(tmp_path) -> None:
+    """The mirror of the guard above: a transcript that started AFTER the
+    previous scan is real new work, and the previous=None branch exists
+    precisely to publish it. The guard must not swallow this case."""
+    now = datetime.now(timezone.utc)
+    sess = tmp_path / "proj" / "sess"
+    sess.mkdir(parents=True)
+    transcript = sess / "session.jsonl"
+    transcript.write_text(
+        _usage_line("s1", inp=1_000, out=500, now=now, text="brand new work"),
+        encoding="utf-8",
+    )
+
+    # Baseline an hour old; this transcript started just now.
+    event, current = dev_economics_module._score_tick(
+        str(tmp_path), {}, now, now - timedelta(hours=1)
+    )
+
+    assert event.total_input_tokens == 1_000
+    assert event.total_output_tokens == 500
+    assert event.session_count == 1
+    assert transcript.resolve() in current
+
+
+def test_scan_totals_does_not_double_count_a_symlinked_transcript(tmp_path) -> None:
+    """Claude Code writes some cross-project subagent transcripts as
+    absolute-path symlinks back into the same projects root, and os.walk
+    yields a symlink-to-file in filenames -- so one underlying file is walked
+    twice under two spellings. session_id keying happened to collapse those;
+    raw transcript_path keying would count the same tokens twice. The key is
+    resolved for exactly this reason."""
+    now = datetime.now(timezone.utc)
+    real_dir = tmp_path / "proj-a" / "sess"
+    link_dir = tmp_path / "proj-b" / "sess"
+    real_dir.mkdir(parents=True)
+    link_dir.mkdir(parents=True)
+
+    real = real_dir / "session.jsonl"
+    real.write_text(
+        _usage_line("s1", inp=400_000, out=100_000, now=now, text="counted once"),
+        encoding="utf-8",
+    )
+    (link_dir / "session.jsonl").symlink_to(real)
+
+    totals = dev_economics_module._scan_totals(str(tmp_path))
+    assert len(totals) == 1
+    assert set(totals) == {real.resolve()}
+
+    event, _current = dev_economics_module._score_tick(str(tmp_path), {}, now)
+    assert event.total_input_tokens == 400_000
+    assert event.total_output_tokens == 100_000

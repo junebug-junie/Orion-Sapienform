@@ -40,6 +40,88 @@ def _peak_threshold() -> int:
         return _DEFAULT_NEAR_SILENT_PEAK_INT16
 
 
+
+_DEFAULT_MAX_NO_SPEECH_PROB = 0.6
+
+
+def _max_no_speech_prob() -> float:
+    """Same three-step resolution as _peak_threshold above: env var, then a
+    guarded lazy settings import, then a module default.
+
+    Deliberately not a module-level `settings` reference -- this module is
+    loaded by file path in tests (importlib spec_from_file_location), where a
+    relative `from .settings import` raises. Following the existing shape
+    instead of inventing a second one (caught by the test suite, 2026-08-26).
+    """
+    raw = os.environ.get("STT_MAX_NO_SPEECH_PROB")
+    if raw is not None:
+        try:
+            return max(0.0, min(1.0, float(raw)))
+        except ValueError:
+            logger.warning(
+                "[STT] invalid STT_MAX_NO_SPEECH_PROB=%r; using default %s",
+                raw,
+                _DEFAULT_MAX_NO_SPEECH_PROB,
+            )
+    try:
+        from .settings import settings
+
+        return max(0.0, min(1.0, float(settings.stt_max_no_speech_prob)))
+    except Exception:
+        return _DEFAULT_MAX_NO_SPEECH_PROB
+
+
+def _keep_only_speech_segments(
+    result: dict, max_no_speech_prob: float
+) -> tuple[str, dict]:
+    """Drop Whisper segments the model itself judged to be silence.
+
+    Whisper returns a per-segment ``no_speech_prob``. Reading it is the only
+    reliable guard against fabricated text, because a hallucination is
+    perfectly well-formed output -- there is nothing about the STRING to
+    detect, and pattern-matching known phrases would be a keyword cathedral
+    that catches exactly the sentences already seen and nothing else.
+
+    The concrete failure this prevents (2026-08-26): the identically-configured
+    gate in orion-affectgpt-worker passed a clip at peak=114 / rms=8.68 and
+    Whisper returned a fully-formed sentence about Egyptians on a recording
+    where Juniper had said something entirely different. An amplitude gate
+    cannot catch that; the model's own confidence can.
+
+    Returns ("", meta) when every segment is rejected -- an empty transcript
+    is the honest answer for a clip with no speech in it, and callers already
+    treat "" as "nothing was said". Falls back to the raw text when the model
+    returns no segment structure at all, since absent evidence is not evidence
+    of silence.
+    """
+    segments = result.get("segments")
+    raw_text = (result.get("text") or "").strip()
+    if not isinstance(segments, list) or not segments:
+        return raw_text, {"no_speech_filter": "unavailable"}
+
+    probs = []
+    kept: list[str] = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            prob = float(seg.get("no_speech_prob") or 0.0)
+        except (TypeError, ValueError):
+            prob = 0.0
+        probs.append(prob)
+        if prob <= max_no_speech_prob:
+            kept.append(str(seg.get("text") or ""))
+
+    meta = {
+        "no_speech_filter": "applied",
+        "segments_total": len(probs),
+        "segments_kept": len(kept),
+        "max_no_speech_prob_seen": round(max(probs), 4) if probs else None,
+        "no_speech_prob_threshold": max_no_speech_prob,
+    }
+    return "".join(kept).strip(), meta
+
+
 class STTEngine:
     def __init__(self) -> None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -220,7 +302,21 @@ class STTEngine:
                 condition_on_previous_text=False,
                 no_speech_threshold=0.35,
             )
-            text = (result.get("text") or "").strip()
+            text, speech_meta = _keep_only_speech_segments(
+                result, _max_no_speech_prob()
+            )
+            meta.update(speech_meta)
+            if not text:
+                logger.warning(
+                    "[STT] all segments rejected as non-speech peak=%d rms=%.1f "
+                    "segments=%s max_no_speech_prob=%s -- returning empty rather "
+                    "than fabricated text",
+                    peak,
+                    rms,
+                    speech_meta.get("segments_total"),
+                    _max_no_speech_prob(),
+                )
+                return "", meta
             logger.info("[STT] transcribed len=%d format=%s", len(text), fmt)
             return text, meta
         finally:

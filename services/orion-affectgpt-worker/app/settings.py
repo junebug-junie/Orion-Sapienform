@@ -104,6 +104,17 @@ class Settings(BaseSettings):
     # that service found in production that Whisper hallucinates text from
     # near-silent audio without this gate.
     AFFECTGPT_TRANSCRIBE_NEAR_SILENT_PEAK_INT16: int = 50
+    # Reject segments Whisper itself judged to be silence. The peak gate
+    # above is a cheap amplitude pre-filter; this is the model's own
+    # judgement, and it is what actually stops fabricated text.
+    #
+    # This gate, at peak=50, PASSED a clip measured at peak=114 / rms=8.68
+    # (-49 dBFS) on 2026-08-26 and Whisper returned a fully-formed sentence
+    # about Egyptians, plus a repetition-looped "Tired, tired, tired", on a
+    # turn where Juniper had said "I'm feeling really tired." AffectGPT then
+    # anchored its affect read on the invented sentence. 0.15% of full scale
+    # is still "loud enough" numerically -- amplitude alone cannot catch it.
+    AFFECTGPT_TRANSCRIBE_MAX_NO_SPEECH_PROB: float = 0.6
     # Review finding, 2026-08-22: this was hardcoded to "en" with no config
     # knob at all, unlike orion-whisper-tts's own STTRequestPayload.language
     # (config/request-driven there). Juniper's own captures are expected to

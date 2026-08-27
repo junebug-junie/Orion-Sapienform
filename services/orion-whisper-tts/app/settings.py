@@ -50,6 +50,30 @@ class Settings(BaseSettings):
         50,
         env="STT_NEAR_SILENT_PEAK_INT16",
     )
+    # Reject a transcription when Whisper's OWN per-segment no_speech_prob
+    # says there was no speech there. The peak gate above is a cheap
+    # pre-filter on amplitude; this is the model's own judgement, and it is
+    # what actually stops fabricated text.
+    #
+    # Why this exists (2026-08-26): the sibling gate in
+    # orion-affectgpt-worker, set to the identical peak=50, PASSED a clip
+    # measured at peak=114 / rms=8.68 (-49 dBFS), and Whisper returned
+    # "Thanks for the light, Egyptians. Thanks for the eyesight, thanks for
+    # the thanks, this was a long time ago." on a turn where Juniper had
+    # actually said "I'm feeling really tired." A downstream model then read
+    # her affect off that invented sentence. An amplitude gate alone cannot
+    # catch this -- 0.15% of full scale is still "loud enough" numerically.
+    #
+    # 0.6 rather than Whisper's own internal 0.35 default: this is a
+    # post-hoc reject on returned segments, not the decoder's suppression
+    # threshold, so it should only discard segments the model is fairly
+    # confident are silence. Tune via env if real speech ever gets dropped.
+    stt_max_no_speech_prob: float = Field(
+        0.6,
+        ge=0.0,
+        le=1.0,
+        env="STT_MAX_NO_SPEECH_PROB",
+    )
 
     # CUDA liveness watchdog (app/cuda_watchdog.py). Real incident,
     # 2026-08-26: a docker+nvidia-container-toolkit staleness quirk

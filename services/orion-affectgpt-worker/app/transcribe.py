@@ -109,12 +109,59 @@ def load_whisper_model(model_name: str, device: str):
     return model
 
 
+def keep_only_speech_segments(
+    result: dict, max_no_speech_prob: float
+) -> tuple[str, dict[str, Any]]:
+    """Drop Whisper segments the model itself judged to be silence.
+
+    Deliberately duplicated from orion-whisper-tts's stt.py rather than
+    imported -- that is a different service's internals (CLAUDE.md section 5),
+    and the silence-gate technique above was already copied the same way for
+    the same reason.
+
+    Reading ``no_speech_prob`` is the only reliable guard against fabricated
+    text: a hallucination is perfectly well-formed output, so there is nothing
+    about the STRING to detect, and matching known phrases would be a keyword
+    cathedral that catches exactly the sentences already seen and nothing else.
+
+    Falls back to the raw text when the model returns no segment structure --
+    absent evidence is not evidence of silence.
+    """
+    segments = result.get("segments")
+    raw_text = (result.get("text") or "").strip()
+    if not isinstance(segments, list) or not segments:
+        return raw_text, {"no_speech_filter": "unavailable"}
+
+    probs: list[float] = []
+    kept: list[str] = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        try:
+            prob = float(seg.get("no_speech_prob") or 0.0)
+        except (TypeError, ValueError):
+            prob = 0.0
+        probs.append(prob)
+        if prob <= max_no_speech_prob:
+            kept.append(str(seg.get("text") or ""))
+
+    meta: dict[str, Any] = {
+        "no_speech_filter": "applied",
+        "segments_total": len(probs),
+        "segments_kept": len(kept),
+        "max_no_speech_prob_seen": round(max(probs), 4) if probs else None,
+        "no_speech_prob_threshold": max_no_speech_prob,
+    }
+    return "".join(kept).strip(), meta
+
+
 def transcribe_audio(
     model,
     audio_path: str,
     *,
     peak_threshold: int,
     language: str = "en",
+    max_no_speech_prob: float = 0.6,
 ) -> TranscribeResult:
     """Never raises -- any failure (missing file, corrupt wav, Whisper
     internal error) returns empty text with the error recorded in meta,
@@ -154,8 +201,18 @@ def transcribe_audio(
             condition_on_previous_text=False,
             no_speech_threshold=0.35,
         )
-        text = (result.get("text") or "").strip()
+        text, speech_meta = keep_only_speech_segments(result, max_no_speech_prob)
+        meta.update(speech_meta)
         meta["text_len"] = len(text)
+        if not text:
+            logger.warning(
+                f"[TRANSCRIBE] all_segments_non_speech "
+                f"segments={speech_meta.get('segments_total')} "
+                f"max_prob_seen={speech_meta.get('max_no_speech_prob_seen')} "
+                f"threshold={max_no_speech_prob} -- returning empty rather than "
+                f"fabricated text"
+            )
+            return TranscribeResult(text="", meta=meta)
         logger.info(f"[TRANSCRIBE] transcribed len={len(text)}")
         return TranscribeResult(text=text, meta=meta)
     except Exception as exc:  # noqa: BLE001 -- transcription is advisory; never break the assessment
@@ -170,6 +227,7 @@ def resolve_subtitle(
     audio_path: str,
     peak_threshold: int,
     language: str = "en",
+    max_no_speech_prob: float = 0.6,
 ) -> tuple[str, str, Optional[str], Optional[dict[str, Any]]]:
     """The full "what subtitle does the model actually see" decision,
     pulled out of model_runtime.assess() into a pure function that needs
@@ -193,7 +251,11 @@ def resolve_subtitle(
     if whisper_model is None:
         return "", "none", None, None
     stt_result = transcribe_audio(
-        whisper_model, audio_path, peak_threshold=peak_threshold, language=language
+        whisper_model,
+        audio_path,
+        peak_threshold=peak_threshold,
+        language=language,
+        max_no_speech_prob=max_no_speech_prob,
     )
     if stt_result.text:
         return stt_result.text, "transcribed", stt_result.text, stt_result.meta

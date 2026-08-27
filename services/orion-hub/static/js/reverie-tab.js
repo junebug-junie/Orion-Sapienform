@@ -85,21 +85,37 @@
       id: "input",
       title: "1 · Continuity + context inputs",
       desc:
-        "The previous run's own caption (reverie_visual_chain.prior_description), plus " +
-        "Orion's own most recent real reverie-thought interpretation (context_text).",
+        "The previous run's own caption (reverie_visual_chain.prior_description), Orion's own " +
+        "most recent real reverie-thought interpretation (context_text), and how many " +
+        "consecutive runs have used continuity so far (continuity_streak).",
       detail:
-        'Fixed seed only when BOTH are empty (fresh install, no reverie history yet): ' +
-        '"a calm orion, soft abstract light, dreaming". Every later run reads prior_description ' +
-        "from Postgres and context_text from the text chain's own substrate_reverie_thought rows.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_prior_description, load_latest_reverie_interpretation",
+        'Fixed seed only when neither prior_description nor context_text exists (fresh install, ' +
+        'no reverie history yet): "a calm orion, soft abstract light, dreaming". Every later run ' +
+        "reads all three from Postgres.",
+      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_prior_description, load_latest_reverie_interpretation, load_latest_visual_chain_continuity_streak",
+    },
+    {
+      id: "continuity-cap",
+      title: "2 · Continuity cap check",
+      desc:
+        "After ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS (default 3) consecutive runs carrying " +
+        "continuity forward, THIS run forces continuity to drop from its own prompt.",
+      detail:
+        "Patch 4 (shipped 2026-08-27): live-caught the same day Juniper reported identical " +
+        "\"Roman aqueduct\" imagery unbroken for 10+ runs -- a short context_text clause has " +
+        "nowhere near the prompt weight of a long, concrete continuity description, so context-" +
+        "seeding alone never actually redirected the diffusion model. This is a mechanical " +
+        "guarantee instead of a prompt-reweighting guess: no off switch by design (0 resets " +
+        "every run). A reset run still seeds from context_text when real narration exists.",
+      file: "services/orion-thought/app/visual_chain.py :: resolve_visual_chain_continuity",
     },
     {
       id: "prompt",
-      title: "2 · Prompt construction",
+      title: "3 · Prompt construction",
       desc:
-        "Both inputs above are blended into one prompt text -- continuity keeps the image " +
-        "chain visually coherent frame-to-frame, the context-seed keeps it grounded in what " +
-        "Orion is actually narrating.",
+        "The (possibly reset) continuity input and the context-seed are blended into one prompt " +
+        "text -- continuity keeps the image chain visually coherent frame-to-frame when allowed " +
+        "to run, the context-seed keeps it grounded in what Orion is actually narrating.",
       detail:
         "Patch 3 (shipped): a deliberately narrow first context-seed slice -- Orion's own " +
         "reverie-thought interpretation, already surfaced by this tab's Text sub-view (no new " +
@@ -109,7 +125,7 @@
     },
     {
       id: "generate",
-      title: "3 · Generate",
+      title: "4 · Generate",
       desc: "POST {prompt} to orion-diffusion-host's /generate -- returns raw PNG bytes.",
       detail:
         "A non-2xx response (including diffusion-host's documented 429 busy-reject) or a network " +
@@ -118,7 +134,7 @@
     },
     {
       id: "store",
-      title: "4 · Store + upload (parallel)",
+      title: "5 · Store + upload (parallel)",
       desc:
         "The same PNG bytes are content-addressed to local disk AND uploaded to " +
         "orion-percept-store (hash-verified both ways) at the same time.",
@@ -129,7 +145,7 @@
     },
     {
       id: "observe",
-      title: "5 · Observe (caption)",
+      title: "6 · Observe (caption)",
       desc:
         "RPC to orion-vision-host's existing caption_frame task, over the shared bus request/reply " +
         "channel -- the same captioner used elsewhere in the system, not a dedicated model.",
@@ -140,11 +156,14 @@
     },
     {
       id: "persist",
-      title: "6 · Persist",
+      title: "7 · Persist",
       desc: "reverie_visual_chain (this run) and reverie_visual_artifact (the image) rows are written.",
       detail:
         "Only a real, non-empty caption advances continuity -- a failed observation carries the " +
-        "*previous* run's prior_description forward unchanged instead of losing the thread.",
+        "*previous* run's prior_description forward unchanged instead of losing the thread. " +
+        "continuity_streak/continuity_reset are recorded here too, on both this path and " +
+        "generation_failed, so a failed run still records the correct streak for whichever run " +
+        "next picks continuity back up.",
       file: "services/orion-thought/app/store.py :: persist_reverie_visual_chain / persist_reverie_visual_artifact",
     },
     {
@@ -242,9 +261,16 @@
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.context_text)}</div>
          </div>`
       : "";
+    const continuityLabel = chain.continuity_reset
+      ? "Prompt used (continuity RESET this run -- seeded fresh from the context-seed above)"
+      : `Prompt used (blends the prior caption with the context-seed above` +
+        (typeof chain.continuity_streak === "number"
+          ? `; continuity streak ${chain.continuity_streak}`
+          : "") +
+        `)`;
     const promptBlock = chain.prompt
-      ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
-           <div class="text-[10px] uppercase tracking-wide text-gray-600">Prompt used (blends the prior caption with the context-seed above)</div>
+      ? `<div class="mt-2 rounded border ${chain.continuity_reset ? "border-amber-800/60" : "border-gray-800"} bg-gray-950/40 px-2 py-1.5">
+           <div class="text-[10px] uppercase tracking-wide ${chain.continuity_reset ? "text-amber-600" : "text-gray-600"}">${escapeHtml(continuityLabel)}</div>
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.prompt)}</div>
          </div>`
       : "";

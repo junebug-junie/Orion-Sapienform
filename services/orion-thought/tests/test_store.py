@@ -235,6 +235,97 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
     assert "chain_json" not in written
 
 
+# --- load_latest_visual_chain_continuity_streak: Patch 4 reset counter -----
+
+
+def _connect_result_engine(row: dict | None):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_load_latest_visual_chain_continuity_streak_reads_recorded_value() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _connect_result_engine({"chain_json": {"continuity_streak": 2}})
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_streak() == 2
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_streak_zero_on_missing_key() -> None:
+    """A pre-Patch-4 row has no continuity_streak key at all -- degrades to
+    0 (the honest 'no streak recorded yet' answer), never raises."""
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _connect_result_engine({"chain_json": {"prompt": "p"}})
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_streak() == 0
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_streak_zero_on_non_dict_chain_json() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _connect_result_engine({"chain_json": "not a dict"})
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_streak() == 0
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_streak_zero_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _connect_result_engine(None))
+    try:
+        assert store.load_latest_visual_chain_continuity_streak() == 0
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_streak_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_visual_chain_continuity_streak() == 0
+    finally:
+        monkeypatch.undo()
+
+
 # --- load_latest_reverie_interpretation: Patch 3 context-seed ---------------
 #
 # The SQL WHERE/EXISTS clause (interpretation<>'' and chain-linkage) needs a

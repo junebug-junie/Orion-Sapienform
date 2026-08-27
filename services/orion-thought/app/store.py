@@ -461,6 +461,55 @@ def load_latest_visual_chain_prior_description() -> str | None:
         return None
 
 
+def load_latest_visual_chain_continuity_streak() -> int:
+    """How many CONSECUTIVE recent runs used real `prior_description`
+    continuity in their diffusion prompt -- the counter
+    `visual_chain.py::run_visual_chain_once` uses to force a periodic
+    continuity reset (design doc §15).
+
+    Reads `chain_json.continuity_streak`, a small int this service itself
+    writes on every run (0 right after a forced reset, incrementing each
+    run continuity is used) -- NOT derived from `prior_description`'s own
+    nullness, which reflects "did this run get a real caption" and would
+    keep climbing even through a run whose PROMPT was forcibly reset (the
+    reset image still gets captioned normally, still advances
+    prior_description for the row after it). Missing/unparsable on an
+    older pre-Patch-4 row degrades to 0 -- the honest "no streak recorded
+    yet" answer, same direction a missing counter should fail in (under-
+    count, never over-count, so a bad read causes an extra continuity run
+    at worst, never gets stuck skipping resets forever).
+
+    Read-only, best-effort: 0 on any error or empty table.
+    """
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT chain_json FROM reverie_visual_chain "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return 0
+        cj = row.get("chain_json")
+        if not isinstance(cj, dict):
+            return 0
+        try:
+            return max(0, int(cj.get("continuity_streak") or 0))
+        except (TypeError, ValueError):
+            return 0
+    except Exception as exc:
+        logger.debug("visual chain continuity streak load failed: %s", exc)
+        return 0
+
+
 # Cap on the interpretation text handed into a diffusion prompt (§ cap-all-
 # collections) -- SpontaneousThoughtV1.interpretation has no length bound of
 # its own (it's free LLM narration), but the diffusion model only needs a

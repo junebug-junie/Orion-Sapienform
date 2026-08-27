@@ -528,7 +528,9 @@ class CuriosityInvestigation:
             )
         return self._acl_error
 
-    async def _read_worldview(self, run_id_of_last: Optional[str]) -> WorldviewSnapshot:
+    async def _read_worldview(
+        self, run_id_of_last: Optional[str], *, rotate_seed: str = ""
+    ) -> WorldviewSnapshot:
         """Orion's own graph, plus the note the previous run left itself."""
         if self._reader is None:
             return WorldviewSnapshot(unavailable_reason="no_graph_configured")
@@ -539,6 +541,7 @@ class CuriosityInvestigation:
                 reader,
                 sample=self.prior_sample,
                 stale_after=self.stale_prior_tests,
+                rotate_seed=rotate_seed,
             )
             if view.is_unavailable or not run_id_of_last:
                 return view
@@ -816,7 +819,9 @@ class CuriosityInvestigation:
         correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
 
         last_run_id = await self._read_last_run_id()
-        view = await self._read_worldview(last_run_id)
+        # Seeded with THIS run's id so ties in the prior ordering rotate
+        # between runs instead of pinning the same `sample` priors forever.
+        view = await self._read_worldview(last_run_id, rotate_seed=run_id)
         if view.is_unavailable and self.graph_enabled:
             # The ACL assert above succeeded, so this is a query-level failure
             # rather than a missing grant. Reported and NOT fatal: Orion can
@@ -841,7 +846,7 @@ class CuriosityInvestigation:
             material.approved_total,
             len(material.relations),
             material.relation_total,
-            len(view.live_priors),
+            len(view.live_priors) + len(view.stale_priors),
             view.live_total,
             bool(view.continuation and view.continuation.continue_line),
             correlation_id,

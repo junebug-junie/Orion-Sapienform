@@ -132,8 +132,11 @@ row out — so the null arm is load-bearing, not defensive noise.
 $ .venv/bin/python -m pytest services/orion-hub/tests/test_curiosity_investigation.py \
     tests/test_curiosity_worldview.py tests/test_curiosity_acl_and_credentials.py \
     tests/test_curiosity_study_material.py -q
-186 passed, 18 warnings in 3.40s
+192 passed, 18 warnings in 3.39s
 ```
+
+Note: running `tests/` before `services/orion-hub/tests/` gives a collection
+error. Reproduced on unmodified `origin/main`; pre-existing, not this patch.
 
 Mutation test — the fix reverted to `WHERE p.status = '{STATUS_OPEN}'`:
 
@@ -196,6 +199,72 @@ scripts/safe_docker_build.sh orion-hub build
 scripts/safe_docker_build.sh orion-hub up -d
 ```
 
+## Review findings fixed
+
+Ran at `high`. Six findings, all real; a seventh ("no PR report committed") was
+against `HEAD~1` and the report landed in the following commit.
+
+Two of them are defects this patch *introduced* by making the pool accumulate,
+which is worth saying plainly — the fix removed the mechanism that had been
+hiding them.
+
+- Finding: `LIVE_PRIORS_CYPHER` kept `LIMIT 200` with no ordering, but the live
+  set no longer drains, so rows past the limit would never be shown, never
+  accumulate `times_tested`, and never become retirable.
+  - Fix: `LIVE_PRIORS_LIMIT = 2000` plus `curiosity_worldview_priors_truncated`
+    when a read reaches it. **Not** the reviewer's suggested server-side
+    `ORDER BY abs(p.confidence - 0.5)`: FalkorDB rejects the whole query on the
+    first string-typed confidence, which costs Orion its entire world view
+    rather than mis-ordering it, and Orion writes this Cypher by hand.
+  - Evidence: reproduced live — `UNWIND [0.72, '0.72', null] AS c RETURN
+    abs(coalesce(c, 0.5) - 0.5)` → `Type mismatch: expected Datetime, Date,
+    Time, Duration, Integer, Float, or Null but was String`. `_as_float`
+    tolerates the same value in Python, which is where the sort belongs.
+    Pinned by `test_the_live_read_never_orders_on_a_value_orion_might_quote`.
+
+- Finding: the sort key `(uncertainty, times_tested, prior_id)` is fixed across
+  runs. Every prior formed at the prompt's template `confidence: 0.55` ties on
+  the first two terms, so the same 8 lexicographically-lowest ids would be shown
+  every run forever once the pool exceeds `sample`, and the rest never tested or
+  retired.
+  - Fix: the last term is now `_rotation_key(prior_id, run_id)` — a per-run
+    hash. One run is reproducible; the window moves between runs. Rotation is
+    strictly the last term, so it never reorders real signal.
+  - Evidence: `test_least_tested_still_wins_over_the_rotation` and
+    `test_the_most_uncertain_prior_leads_whatever_the_seed_is` sweep five seeds;
+    `test_one_run_is_reproducible_but_the_window_moves_between_runs` asserts all
+    three properties over a 40-prior pool.
+
+- Finding: the `_FakeReader` needle `"p.status IN ['refuted'"` is a substring of
+  `LIVE_PRIORS_CYPHER`'s own `NOT p.status IN [...]` and of `COUNTS_CYPHER`, so
+  the settled rows were answering all three queries and `build_prior` was
+  dropping them — the same fake-collision class `_StatusAwareReader` was written
+  to eliminate, reintroduced two tests later.
+  - Fix: anchored on `"ORDER BY p.last_tested_at"`, unique to that query.
+  - Evidence: `test_the_settled_read_does_not_also_answer_the_live_read` now
+    asserts `curiosity_worldview_unreadable_priors` does **not** appear in the
+    log, which is the symptom that had been firing silently.
+
+- Finding: the hub loop test's needle `"NOT p.status IN"` also matched
+  `COUNTS_CYPHER`, so `live_total` fell back to `len(offered)` and the counts
+  path was never exercised.
+  - Fix: anchored on `"RETURN p.prior_id AS prior_id"`.
+  - Evidence: 192 tests pass; the loop test now answers only the priors read.
+
+- Finding: `RESOLVED_STATUSES` was dead repo-wide and asserted that `supported`
+  and `revised` are resolved — the exact belief that caused the outage, sitting
+  twenty lines above the comment warning against it.
+  - Fix: deleted.
+  - Evidence: `grep -rn RESOLVED_STATUSES` returns nothing.
+
+- Finding: the `priors=%s/%s` log counted only `live_priors`, omitting
+  `stale_priors`, which the prompt does show. A healthy run whose whole pool is
+  stale would log `priors=0/3` — the outage signature this PR exists to
+  prevent — while `curiosity_worldview_pool_dead` stayed quiet.
+  - Fix: the log now counts live + stale, since this line is the operator-facing
+    recurrence signal.
+  - Evidence: `services/orion-hub/scripts/curiosity_investigation.py:844`.
+
 ## Risks / concerns
 
 - Severity: low. Concern: the offered list now includes `supported` priors, so
@@ -212,4 +281,4 @@ scripts/safe_docker_build.sh orion-hub up -d
 
 ## PR link
 
-<pending>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1915

@@ -200,14 +200,51 @@ def test_a_prior_with_no_confidence_sorts_as_maximally_uncertain() -> None:
     assert Prior("p", "c", None, "open", 0).uncertainty == 0.0
 
 
-def test_ties_break_on_least_tested_then_stably_on_id() -> None:
+def test_least_tested_still_wins_over_the_rotation() -> None:
+    """Rotation is the LAST term, never a reordering of the real signal."""
     rows = [
         _prior_row("b", confidence="0.5", tested=2),
         _prior_row("a", confidence="0.5", tested=2),
         _prior_row("c", confidence="0.5", tested=0),
     ]
-    offered, _, _ = select_priors(rows, sample=8, stale_after=9)
-    assert [p.prior_id for p in offered] == ["c", "a", "b"]
+    for seed in ("", "run1", "run2", "aaaa", "zzzz"):
+        offered, _, _ = select_priors(
+            rows, sample=8, stale_after=9, rotate_seed=seed
+        )
+        assert offered[0].prior_id == "c", seed
+        assert {p.prior_id for p in offered[1:]} == {"a", "b"}
+
+
+def test_the_most_uncertain_prior_leads_whatever_the_seed_is() -> None:
+    rows = [
+        _prior_row("confident", confidence="0.95"),
+        _prior_row("unsure", confidence="0.5"),
+    ]
+    for seed in ("", "run1", "run2", "aaaa", "zzzz"):
+        offered, _, _ = select_priors(
+            rows, sample=8, stale_after=9, rotate_seed=seed
+        )
+        assert [p.prior_id for p in offered] == ["unsure", "confident"], seed
+
+
+def test_one_run_is_reproducible_but_the_window_moves_between_runs() -> None:
+    """The whole point: with the pool no longer draining, a fixed tiebreak
+    shows the same lexicographically-lowest `sample` priors every run and the
+    rest are never presented, never tested, and so never retirable."""
+    rows = [_prior_row(f"p{i:02d}", confidence="0.55") for i in range(40)]
+
+    first = [p.prior_id for p in select_priors(
+        rows, sample=8, stale_after=9, rotate_seed="run_aaa")[0]]
+    again = [p.prior_id for p in select_priors(
+        rows, sample=8, stale_after=9, rotate_seed="run_aaa")[0]]
+    other = [p.prior_id for p in select_priors(
+        rows, sample=8, stale_after=9, rotate_seed="run_bbb")[0]]
+
+    assert first == again, "one run must build the same prompt twice"
+    assert first != other, "a later run must be able to see different priors"
+    assert first != sorted(rows[i]["prior_id"] for i in range(8)), (
+        "a stable id tiebreak would pin exactly the 8 lowest ids forever"
+    )
 
 
 def test_a_re_litigated_prior_leaves_the_main_list_but_is_still_offered() -> None:
@@ -334,7 +371,10 @@ def test_hop_notes_come_back_in_order_and_blank_ones_are_dropped() -> None:
 
 
 def test_recently_settled_reads_closed_priors_from_orions_own_graph() -> None:
-    reader = _FakeReader(answers={"p.status IN ['refuted'": [
+    # Anchored on the settled query's ORDER BY, which no other query has:
+    # "p.status IN ['refuted'" is a substring of LIVE_PRIORS_CYPHER's own
+    # `NOT p.status IN [...]` and of COUNTS_CYPHER, so it answered all three.
+    reader = _FakeReader(answers={"ORDER BY p.last_tested_at": [
         {"claim": "the vision tier is on demand", "status": "refuted"},
         {"claim": "", "status": "supported"},
     ]})
@@ -712,3 +752,50 @@ def test_an_empty_graph_is_not_reported_as_a_dead_pool(caplog) -> None:
     with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
         read_snapshot(_StatusAwareReader([]), sample=8, stale_after=3)
     assert "curiosity_worldview_pool_dead" not in caplog.text
+
+
+def test_the_settled_read_does_not_also_answer_the_live_read(caplog) -> None:
+    """A fake-reader needle that is a substring of another query silently
+    answers both. Found in review: `"p.status IN ['refuted'"` is inside
+    LIVE_PRIORS_CYPHER's own `NOT p.status IN [...]`, so the settled rows came
+    back as priors too and `build_prior` dropped them -- a green test that had
+    stopped isolating the thing it named."""
+    reader = _FakeReader(answers={"ORDER BY p.last_tested_at": [
+        {"claim": "a closed claim", "status": "refuted"},
+    ]})
+    with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
+        view = read_snapshot(reader, sample=8, stale_after=3)
+    assert view.recently_settled == [("a closed claim", "refuted")]
+    assert view.live_priors == []
+    assert "curiosity_worldview_unreadable_priors" not in caplog.text
+
+
+def test_a_pool_too_big_for_one_read_is_not_truncated_silently(caplog) -> None:
+    """The live set no longer drains on first test, so rows past the limit
+    would never be shown, never accumulate times_tested, and never become
+    retirable -- an invisible ceiling rather than an error."""
+    from orion.curiosity.worldview import LIVE_PRIORS_LIMIT
+
+    rows = [_prior_row(pid=f"p{i:05d}") for i in range(LIVE_PRIORS_LIMIT)]
+    with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
+        read_snapshot(_StatusAwareReader(rows), sample=8, stale_after=3)
+    assert "curiosity_worldview_priors_truncated" in caplog.text
+
+
+def test_an_ordinary_pool_does_not_warn_about_truncation(caplog) -> None:
+    with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
+        read_snapshot(
+            _StatusAwareReader([_prior_row(pid="p1")]), sample=8, stale_after=3
+        )
+    assert "curiosity_worldview_priors_truncated" not in caplog.text
+
+
+def test_the_live_read_never_orders_on_a_value_orion_might_quote() -> None:
+    """The obvious repair for the limit is a server-side
+    `ORDER BY abs(p.confidence - 0.5)`. FalkorDB rejects the WHOLE query on the
+    first string-typed confidence ("Type mismatch: expected ... but was
+    String", reproduced live 2026-08-27), which costs Orion its entire world
+    view rather than mis-ordering it. `_as_float` tolerates the same value in
+    Python, which is where the sort belongs."""
+    assert "ORDER BY" not in LIVE_PRIORS_CYPHER
+    assert "abs(" not in LIVE_PRIORS_CYPHER

@@ -711,7 +711,7 @@ def test_live_priors_are_shown_with_the_ordering_disclosed() -> None:
     that is the status that went missing on 2026-08-27 and left a run with
     `priors=0/0` and nothing of its own to continue."""
     bus = _FakeBus()
-    reader = _FakeReader(answers={"NOT p.status IN": [
+    reader = _FakeReader(answers={"RETURN p.prior_id AS prior_id": [
         {"prior_id": "p1", "claim": "the foveal tier never runs on a schedule",
          "confidence": "0.55", "status": "revised", "times_tested": 1,
          "formed_from": "crystallization:abc", "last_tested_at": ""},

@@ -49,6 +49,7 @@ is why a prior whose confidence Orion wrote as a string still reads correctly.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -74,8 +75,6 @@ STATUS_SUPPORTED = "supported"
 STATUS_REVISED = "revised"
 STATUS_REFUTED = "refuted"
 STATUS_RETIRED = "retired_unresolvable"
-
-RESOLVED_STATUSES = (STATUS_SUPPORTED, STATUS_REVISED, STATUS_REFUTED, STATUS_RETIRED)
 
 # A PRIOR IS LIVE UNTIL ORION EXPLICITLY CLOSES IT.
 #
@@ -318,9 +317,23 @@ _LIVE_WHERE = (
 )
 _CLOSED_WHERE = f"(p.status IN [{', '.join(repr(s) for s in CLOSED_STATUSES)}])"
 
+# The live set does NOT drain the way the old `open`-only set did -- a prior
+# now leaves it only when Orion refutes or retires it -- so a silent truncation
+# here is a new failure mode: rows past the limit would never be shown, never
+# accumulate `times_tested`, and so never reach `stale_after` to be retired.
+#
+# NOT fixed with a server-side `ORDER BY abs(p.confidence - 0.5)`, which is the
+# obvious repair and is WORSE. Orion writes this graph by hand and sometimes
+# quotes a number; FalkorDB rejects the whole query on the first one
+# ("Type mismatch: expected ... but was String", reproduced live 2026-08-27),
+# which costs Orion its entire world view rather than merely mis-ordering it.
+# `_as_float` in Python tolerates the same value. So: a bound high enough not
+# to bite, and loud when it is reached.
+LIVE_PRIORS_LIMIT = 2000
+
 LIVE_PRIORS_CYPHER = (
     f"MATCH (p:{LABEL_PRIOR}) WHERE {_LIVE_WHERE} "
-    f"RETURN {_PRIOR_FIELDS} LIMIT 200"
+    f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
 )
 
 COUNTS_CYPHER = (
@@ -429,11 +442,29 @@ def build_turn_outcome(row: dict[str, Any]) -> Optional[TurnOutcome]:
     )
 
 
+def _rotation_key(prior_id: str, seed: str) -> str:
+    """A per-run ordering for priors that are otherwise exactly tied.
+
+    Every prior Orion forms from the prompt's template starts at confidence
+    0.55 with `times_tested: 0`, so `(uncertainty, times_tested)` ties across
+    the whole fresh pool and the last term decides everything. A plain
+    `prior_id` tiebreak is stable across runs, which means the same
+    lexicographically-lowest `sample` priors are shown every run and the rest
+    are never presented, never tested, and never retirable. That did not matter
+    while a prior left the pool on its first test; it does now.
+
+    Seeded by run so a single run is reproducible -- the same run always builds
+    the same prompt -- while the window moves between runs.
+    """
+    return hashlib.sha256(f"{seed}:{prior_id}".encode()).hexdigest()
+
+
 def select_priors(
     rows: Sequence[dict[str, Any]],
     *,
     sample: int,
     stale_after: int,
+    rotate_seed: str = "",
 ) -> tuple[list[Prior], list[Prior], int]:
     """Split LIVE priors into (offered, stale, dropped_count).
 
@@ -462,8 +493,16 @@ def select_priors(
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}
     fresh = [p for p in priors if p.prior_id not in stale_ids]
-    fresh.sort(key=lambda p: (p.uncertainty, p.times_tested, p.prior_id))
-    stale.sort(key=lambda p: (-p.times_tested, p.prior_id))
+    fresh.sort(
+        key=lambda p: (
+            p.uncertainty,
+            p.times_tested,
+            _rotation_key(p.prior_id, rotate_seed),
+        )
+    )
+    stale.sort(
+        key=lambda p: (-p.times_tested, _rotation_key(p.prior_id, rotate_seed))
+    )
     return fresh[: max(0, sample)], stale[: max(0, sample)], dropped
 
 
@@ -472,6 +511,7 @@ def read_snapshot(
     *,
     sample: int,
     stale_after: int,
+    rotate_seed: str = "",
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -488,8 +528,18 @@ def read_snapshot(
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
     except WorldviewUnavailable as exc:
         return WorldviewSnapshot(unavailable_reason=str(exc)[:200])
+    if len(prior_rows) >= LIVE_PRIORS_LIMIT:
+        logger.warning(
+            "curiosity_worldview_priors_truncated limit=%s -- the live pool has "
+            "outgrown one read, so priors past the limit are never shown and "
+            "cannot accumulate times_tested or be retired",
+            LIVE_PRIORS_LIMIT,
+        )
     offered, stale, dropped = select_priors(
-        prior_rows, sample=sample, stale_after=stale_after
+        prior_rows,
+        sample=sample,
+        stale_after=stale_after,
+        rotate_seed=rotate_seed,
     )
     if dropped:
         logger.warning(

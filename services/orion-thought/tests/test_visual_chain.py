@@ -1,12 +1,14 @@
-"""Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding) --
-fully testable with injected fakes at each hop: diffusion generation, percept
-upload, vision-host RPC, reverie-interpretation context-seed, and
-persistence. No GPU, no torch, no live Redis/Postgres.
+"""Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding +
+Patch 4 continuity reset) -- fully testable with injected fakes at each hop:
+diffusion generation, percept upload, vision-host RPC, reverie-interpretation
+context-seed, continuity-streak read, and persistence. No GPU, no torch, no
+live Redis/Postgres.
 """
 from __future__ import annotations
 
 import struct
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -96,6 +98,55 @@ def test_build_visual_prompt_blends_prior_and_context():
     assert "curiosity about the mesh" in prompt
 
 
+# --- resolve_visual_chain_continuity (pure) --------------------------------
+
+
+def test_resolve_continuity_no_prior_starts_streak_fresh():
+    from app import visual_chain
+
+    # Nothing to cap yet -- cold start, or continuity already broken.
+    assert visual_chain.resolve_visual_chain_continuity(None, 5, 3) == (None, 0, False)
+    assert visual_chain.resolve_visual_chain_continuity("   ", 5, 3) == ("   ", 0, False)
+
+
+def test_resolve_continuity_increments_streak_under_cap():
+    from app import visual_chain
+
+    effective, streak, reset = visual_chain.resolve_visual_chain_continuity(
+        "an aqueduct", 1, 3
+    )
+    assert effective == "an aqueduct"  # continuity preserved
+    assert streak == 2
+    assert reset is False
+
+
+def test_resolve_continuity_forces_reset_at_cap():
+    """Real regression this exists for -- Juniper reported the same aqueduct
+    imagery unbroken for 10+ runs (2026-08-27). Once the streak reaches
+    max_runs, THIS run must drop continuity."""
+    from app import visual_chain
+
+    effective, streak, reset = visual_chain.resolve_visual_chain_continuity(
+        "an aqueduct", 3, 3
+    )
+    assert effective is None  # continuity dropped for this run's prompt
+    assert streak == 0  # streak restarts from the reset
+    assert reset is True
+
+
+def test_resolve_continuity_max_runs_zero_always_resets():
+    """No off switch by design (settings.py's own comment) -- 0 means every
+    run with real continuity available forces a reset."""
+    from app import visual_chain
+
+    effective, streak, reset = visual_chain.resolve_visual_chain_continuity(
+        "an aqueduct", 0, 0
+    )
+    assert effective is None
+    assert streak == 0
+    assert reset is True
+
+
 # --- _extract_caption -----------------------------------------------------
 
 
@@ -121,7 +172,9 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+    )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
     generate_calls: list[str] = []
@@ -182,7 +235,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
@@ -223,7 +276,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(
@@ -267,7 +320,9 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+    )
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
     )
@@ -297,7 +352,9 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+    )
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
     )
@@ -338,13 +395,16 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
     # A tiny fake "DB": load reads back whatever the last persisted chain wrote.
-    db: dict[str, str | None] = {"prior_description": None}
+    db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0}
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_prior_description", lambda: db["prior_description"]
+        visual_chain,
+        "load_latest_visual_chain_continuity_state",
+        lambda: (db["prior_description"], db["continuity_streak"]),
     )
 
     def fake_persist_chain(chain):
         db["prior_description"] = chain.prior_description
+        db["continuity_streak"] = chain.chain_json.get("continuity_streak", 0)
         return True
 
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
@@ -371,3 +431,150 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     # persisted description, read back through the same store the worker uses.
     assert "a fox curled by the fire" in generate_prompts[1]
     assert generate_prompts[0] == visual_chain.DEFAULT_SEED_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch):
+    """The real regression, end to end: continuity must not run unbounded.
+    Drive run_visual_chain_once() through a full cap+1 cycle against the
+    same fake-DB harness test_continuity_flows_into_the_next_run uses, and
+    assert the run AT the cap drops prior_description from its own prompt
+    (not just that resolve_visual_chain_continuity says it would in
+    isolation) -- same-run evidence for the actual regression Juniper hit
+    (2026-08-27: identical imagery unbroken for 10+ real runs)."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_continuity_max_runs", 2)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: "context")
+
+    db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0}
+    monkeypatch.setattr(
+        visual_chain,
+        "load_latest_visual_chain_continuity_state",
+        lambda: (db["prior_description"], db["continuity_streak"]),
+    )
+
+    def fake_persist_chain(chain):
+        db["prior_description"] = chain.prior_description
+        db["continuity_streak"] = chain.chain_json.get("continuity_streak", 0)
+        return True
+
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    generate_prompts: list[str] = []
+
+    def fake_generate(prompt, *, base_url, timeout_sec):
+        generate_prompts.append(prompt)
+        return _fake_png()
+
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "e" * 64)
+
+    # Run 1: no prior yet -- seeds from context, streak stays 0 (nothing to cap).
+    r1 = await visual_chain.run_visual_chain_once(_fake_bus(_vision_result_payload("an aqueduct")))
+    assert r1.chain_json["continuity_streak"] == 0
+    assert r1.chain_json["continuity_reset"] is False
+
+    # Run 2: real continuity available, streak 0 < cap(2) -- continuity used, streak -> 1.
+    r2 = await visual_chain.run_visual_chain_once(
+        _fake_bus(_vision_result_payload("an aqueduct at dusk"))
+    )
+    assert "an aqueduct" in generate_prompts[1]
+    assert r2.chain_json["continuity_streak"] == 1
+    assert r2.chain_json["continuity_reset"] is False
+
+    # Run 3: streak 1 < cap(2) -- still allowed, streak -> 2.
+    r3 = await visual_chain.run_visual_chain_once(
+        _fake_bus(_vision_result_payload("the same aqueduct again"))
+    )
+    assert "an aqueduct at dusk" in generate_prompts[2]
+    assert r3.chain_json["continuity_streak"] == 2
+    assert r3.chain_json["continuity_reset"] is False
+
+    # Run 4: streak 2 >= cap(2) -- THIS run must force a reset. Its own
+    # prompt must NOT contain the prior continuity text, proving the cap
+    # actually changed what got generated, not just what got recorded.
+    r4 = await visual_chain.run_visual_chain_once(
+        _fake_bus(_vision_result_payload("something completely different"))
+    )
+    assert "the same aqueduct again" not in generate_prompts[3]
+    assert r4.chain_json["continuity_streak"] == 0
+    assert r4.chain_json["continuity_reset"] is True
+    # The reset run still seeds from real context, not the bland fixed
+    # string -- Patch 3 and Patch 4 compose, they don't undercut each other.
+    assert "context" in generate_prompts[3]
+
+
+@pytest.mark.asyncio
+async def test_continuity_reset_survives_a_failed_generation(tmp_path, monkeypatch):
+    """Review finding: a reset run whose OWN generation fails must not
+    resurrect the stale pre-reset prior_description -- the persisted row
+    must carry None forward (or a real context-seeded value on the NEXT
+    successful run), never the exact text the reset was meant to break out
+    of. Without the fix, the next tick would read streak=0 against the
+    SAME stale text and grind through another full max_runs cycle before
+    resetting again -- a silent defeat of this entire PR."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    # streak already AT the cap -- this run must reset.
+    monkeypatch.setattr(
+        visual_chain,
+        "load_latest_visual_chain_continuity_state",
+        lambda: ("the same stale aqueduct", visual_chain.settings.visual_chain_continuity_max_runs),
+    )
+
+    def fake_generate(prompt, *, base_url, timeout_sec):
+        raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
+
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+
+    chain = await visual_chain.run_visual_chain_once(AsyncMock())
+
+    assert chain.terminal_reason == "generation_failed"
+    assert chain.chain_json["continuity_reset"] is True
+    # The real assertion: NOT the stale text this reset was supposed to break.
+    assert chain.prior_description is None
+
+
+@pytest.mark.asyncio
+async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkeypatch):
+    """Same regression, the re-observation-fails path: the image itself IS
+    real (generation succeeded), but captioning fails -- the reset must
+    still stick rather than falling back to the stale prior_description."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain,
+        "load_latest_visual_chain_continuity_state",
+        lambda: ("the same stale aqueduct", visual_chain.settings.visual_chain_continuity_max_runs),
+    )
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "f" * 64)
+
+    persisted_artifacts = []
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+    monkeypatch.setattr(
+        visual_chain,
+        "persist_reverie_visual_artifact",
+        lambda a: persisted_artifacts.append(a) or True,
+    )
+
+    # Vision-host RPC itself raises -- request_caption swallows it, returns None.
+    bus = AsyncMock()
+    bus.rpc_request = AsyncMock(side_effect=TimeoutError("RPC timeout"))
+
+    chain = await visual_chain.run_visual_chain_once(bus)
+
+    assert chain is not None
+    assert chain.terminal_reason == "max_steps"  # the image itself was real
+    assert chain.chain_json["continuity_reset"] is True
+    # The real assertion: NOT the stale text this reset was supposed to break.
+    assert chain.prior_description is None
+    assert persisted_artifacts[0].description is None  # honest, not fabricated

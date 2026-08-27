@@ -190,7 +190,7 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
     `model_dump()` IS the right thing to store), `ReverieVisualChainV1` has
     its own small `chain_json: dict` field. Writing the full model dump here
     self-nests the real prompt/description data one level deeper than every
-    reader (including `load_latest_visual_chain_prior_description`'s sibling
+    reader (including `load_latest_visual_chain_continuity_state`'s sibling
     reads and any future consumer) expects."""
     import json as _json
 
@@ -233,6 +233,127 @@ def test_persist_reverie_visual_chain_writes_only_its_own_chain_json_field() -> 
     # The bug this guards against: writing model_dump() instead would nest
     # the whole chain (including this same chain_json) one level deeper.
     assert "chain_json" not in written
+
+
+# --- load_latest_visual_chain_continuity_state: Patch 4 reset counter ------
+#
+# Review finding: this used to be two separate functions/round trips
+# (load_latest_visual_chain_prior_description, a Patch 2 original, plus a
+# Patch 4 load_latest_visual_chain_continuity_streak) reading two columns of
+# the SAME latest row. Consolidated into one query -- both are retired,
+# nothing else in the repo called either.
+
+
+def _connect_result_engine(row: dict | None):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_load_latest_visual_chain_continuity_state_reads_both_fields() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine(
+            {"prior_description": "an aqueduct", "chain_json": {"continuity_streak": 2}}
+        ),
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 2)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_prior_description_empty_or_whitespace_is_none() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"prior_description": "   ", "chain_json": {}}),
+    )
+    try:
+        prior, streak = store.load_latest_visual_chain_continuity_state()
+    finally:
+        monkeypatch.undo()
+    assert prior is None
+    assert streak == 0
+
+
+def test_load_latest_visual_chain_continuity_state_streak_zero_on_missing_key() -> None:
+    """A pre-Patch-4 row has no continuity_streak key at all -- degrades to
+    0 (the honest 'no streak recorded yet' answer), never raises."""
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"prior_description": "an aqueduct", "chain_json": {"prompt": "p"}}),
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 0)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_streak_zero_on_non_dict_chain_json() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store,
+        "_get_engine",
+        lambda: _connect_result_engine({"prior_description": None, "chain_json": "not a dict"}),
+    )
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_defaults_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _connect_result_engine(None))
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0)
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_visual_chain_continuity_state_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0)
+    finally:
+        monkeypatch.undo()
 
 
 # --- load_latest_reverie_interpretation: Patch 3 context-seed ---------------

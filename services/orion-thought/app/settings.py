@@ -294,6 +294,22 @@ class ThoughtSettings(BaseSettings):
     reverie_context_max_age_sec: float = Field(
         900.0, alias="ORION_REVERIE_CONTEXT_MAX_AGE_SEC", gt=0
     )
+    # Patch 4 (design doc §15): live 2026-08-27, `prior_description`
+    # continuity can lock onto one visual attractor indefinitely (confirmed
+    # live -- "ancient Roman aqueduct" imagery, unbroken across 10+ runs /
+    # 100+ minutes, predating Patch 3's context-seeding and un-moved by it:
+    # a short abstract context clause has nowhere near the prompt weight of
+    # a long, concrete continuity description). After this many CONSECUTIVE
+    # runs carrying continuity forward, the next run forces one reset --
+    # drops prior_description from that run's prompt only (re-seeding from
+    # context_text, or the fixed seed if neither exists) -- then continuity
+    # resumes normally. Not disabled by setting this high without limit:
+    # 0 would mean "reset every single run", never let continuity build
+    # at all; there is no off switch by design, since an unbounded
+    # continuity streak is exactly the failure mode this exists to bound.
+    visual_chain_continuity_max_runs: int = Field(
+        3, alias="ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS"
+    )
 
     # --- Attention salience trace publish gate ---
     # 2026-07-31: `orion.substrate.attention.salience`'s hand-picked

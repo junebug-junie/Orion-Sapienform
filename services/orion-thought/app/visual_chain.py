@@ -15,8 +15,8 @@ was deliberately the thinnest honest placeholder (prior_description, or a
 fixed seed prompt for the very first run), not a fabricated stand-in for the
 context-seeding that patch did not own.
 
-Patch 3 (this changeset): real context-seeding. `build_visual_prompt` now also
-takes `context_text` -- the text reverie chain's own most recent, real
+Patch 3 (shipped 2026-08-26): real context-seeding. `build_visual_prompt` now
+also takes `context_text` -- the text reverie chain's own most recent, real
 (non-hollow) narration (`store.load_latest_reverie_interpretation`), a
 deliberately narrow first slice of the design doc's full "recent activity /
 chat / dream" list (§1): already-summarized content that already reaches the
@@ -24,6 +24,23 @@ same Hub Reverie tab this feeds, so no new privacy surface (see that store
 function's own docstring and reverie_routes.py's privacy note). Widening to
 raw chat/dream sources is a separate, later change that must redo that
 privacy check.
+
+Patch 4 (this changeset, design doc §15): live-caught 2026-08-27 --
+Juniper reported "still doing the same images of Roman aqueducts, no
+change" a few hours after Patch 3 shipped. Real: `prior_description`
+continuity had locked onto one visual attractor across 10+ runs / 100+
+minutes, predating Patch 3 and unmoved by it -- `context_text` is real,
+correctly varying content (confirmed live in Postgres), but a short
+abstract clause ("Orion is currently thinking: the coalition is fixated on
+...") has nowhere near the prompt weight of a long, concrete continuity
+description, and abstract cognitive-state narration isn't strongly
+visualizable content regardless of prompt order. `resolve_visual_chain_continuity`
+below is the actual fix: a deterministic, testable reset -- after
+`settings.visual_chain_continuity_max_runs` CONSECUTIVE runs carrying
+`prior_description` forward, the next run forces continuity to drop for
+that one prompt (re-seeding from `context_text`, or the fixed seed if
+neither exists), then continuity resumes normally. Not a prompt-reweighting
+guess; a mechanical guarantee the loop cannot run unbounded.
 
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
@@ -81,7 +98,7 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 from .settings import settings
 from .store import (
     load_latest_reverie_interpretation,
-    load_latest_visual_chain_prior_description,
+    load_latest_visual_chain_continuity_state,
     persist_reverie_visual_artifact,
     persist_reverie_visual_chain,
 )
@@ -137,6 +154,37 @@ def build_visual_prompt(prior_description: str | None, context_text: str | None 
     if context:
         return f"Orion is currently thinking: {context}. Soft abstract dreamlike style."
     return DEFAULT_SEED_PROMPT
+
+
+def resolve_visual_chain_continuity(
+    prior_description: str | None, streak: int, max_runs: int
+) -> tuple[str | None, int, bool]:
+    """Patch 4 (module docstring): decide whether THIS run may use
+    `prior_description` continuity in its prompt, or must force a reset.
+
+    Pure function -- `streak` is `store.load_latest_visual_chain_continuity_
+    streak()`'s return (how many consecutive prior runs used continuity),
+    `max_runs` is `settings.visual_chain_continuity_max_runs`.
+
+    Returns `(effective_prior_description, next_streak, was_reset)`:
+      - `effective_prior_description`: what to actually pass to
+        `build_visual_prompt` for this run's prompt -- `prior_description`
+        unchanged, or `None` on a forced reset.
+      - `next_streak`: the value to record in this run's `chain_json.
+        continuity_streak`, for the *next* run's decision.
+      - `was_reset`: whether this run forced a reset (for logging/
+        `chain_json.continuity_reset` -- inspectable evidence, not just an
+        inferred side effect).
+
+    No prior_description at all (cold start, or continuity already broken
+    by a prior reset/failed re-observation) needs no reset and starts the
+    streak fresh at 0 -- there is nothing to cap yet.
+    """
+    if not (prior_description or "").strip():
+        return prior_description, 0, False
+    if streak >= max_runs:
+        return None, 0, True
+    return prior_description, streak + 1, False
 
 
 class DiffusionGenerationError(RuntimeError):
@@ -276,15 +324,22 @@ async def run_visual_chain_once(
         return None
 
     async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
-                                  prior_description: str | None,
-                                  context_text: str | None) -> ReverieVisualChainV1:
+                                  prior_description: str | None, context_text: str | None,
+                                  continuity_streak: int, continuity_reset: bool
+                                  ) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
             created_at=now_fn(),
             terminal_reason="generation_failed",
             prior_description=prior_description,
-            chain_json={"prompt": prompt, "context_text": context_text, "error": str(error)},
+            chain_json={
+                "prompt": prompt,
+                "context_text": context_text,
+                "continuity_streak": continuity_streak,
+                "continuity_reset": continuity_reset,
+                "error": str(error),
+            },
         )
         with suppress(Exception):
             await asyncio.to_thread(persist_reverie_visual_chain, chain)
@@ -293,19 +348,46 @@ async def run_visual_chain_once(
     async with _visual_chain_lock:
         chain_id = str(uuid4())
         # Two independent reads (different tables, no data dependency) --
-        # concurrent so the cost is max() of the two round trips, not sum()
+        # concurrent so the cost is max() of the round trips, not sum()
         # (review finding: this function already makes exactly this
         # argument a few lines below for store_visual_artifact/
         # upload_to_percept_store; the same reasoning applies here).
-        prior_description, context_text = await asyncio.gather(
-            asyncio.to_thread(load_latest_visual_chain_prior_description),
+        # prior_description and continuity_streak come from the SAME row of
+        # the SAME table, so they're one combined read (review finding: two
+        # separate round trips to the same row wasted a query and left a
+        # theoretical read-your-own-write race), not two gathered reads.
+        (prior_description, continuity_streak), context_text = await asyncio.gather(
+            asyncio.to_thread(load_latest_visual_chain_continuity_state),
             asyncio.to_thread(
                 load_latest_reverie_interpretation,
                 char_limit=settings.reverie_context_char_limit,
                 max_age_sec=settings.reverie_context_max_age_sec,
             ),
         )
-        prompt = build_visual_prompt(prior_description, context_text)
+        # Patch 4 (module docstring): cap how many consecutive runs may
+        # carry prior_description continuity before forcing one reset --
+        # computed here (before generation) so a failed run still records
+        # the correct streak for whichever run picks continuity back up.
+        effective_prior, continuity_streak, continuity_reset = resolve_visual_chain_continuity(
+            prior_description, continuity_streak, settings.visual_chain_continuity_max_runs
+        )
+        if continuity_reset:
+            logger.info(
+                "visual chain continuity reset chain=%s -- forcing a fresh seed after %s runs",
+                chain_id,
+                settings.visual_chain_continuity_max_runs,
+            )
+        # Review finding: on a reset run, the ORIGINAL (stale, pre-reset)
+        # prior_description must never come back as this row's own
+        # prior_description -- that would silently resurrect the exact
+        # attractor the reset just broke out of the moment generation,
+        # storage, or captioning fails on this run (a real, previously-
+        # untested failure mode: the next tick would read streak=0 against
+        # the SAME stale text and grind through another full max_runs cycle
+        # before resetting again). A non-reset run keeps the pre-Patch-4
+        # behavior unchanged: carry the old value forward on any failure.
+        continuity_fallback = None if continuity_reset else prior_description
+        prompt = build_visual_prompt(effective_prior, context_text)
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -315,7 +397,10 @@ async def run_visual_chain_once(
                 timeout_sec=settings.visual_chain_diffusion_timeout_sec,
             )
         except Exception as exc:
-            return await _generation_failed(chain_id, exc, prompt, prior_description, context_text)
+            return await _generation_failed(
+                chain_id, exc, prompt, continuity_fallback, context_text,
+                continuity_streak, continuity_reset,
+            )
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
         # network round trip) both operate on the same immutable png_bytes
@@ -340,7 +425,8 @@ async def run_visual_chain_once(
 
         if isinstance(store_result, BaseException):
             return await _generation_failed(
-                chain_id, store_result, prompt, prior_description, context_text
+                chain_id, store_result, prompt, continuity_fallback, context_text,
+                continuity_streak, continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
 
@@ -359,9 +445,12 @@ async def run_visual_chain_once(
             )
 
         # Only advance continuity on a real, non-empty description -- a failed
-        # re-observation forwards the *previous* prior_description unchanged
-        # rather than propagating None and losing continuity for one step.
-        next_prior_description = description or prior_description
+        # re-observation forwards `continuity_fallback` (the previous
+        # prior_description unchanged on a normal run, or None on a reset run
+        # -- see continuity_fallback's own comment above) rather than
+        # propagating a stale value on a reset run or losing continuity
+        # entirely on a normal one.
+        next_prior_description = description or continuity_fallback
 
         chain = ReverieVisualChainV1(
             chain_id=chain_id,
@@ -371,6 +460,8 @@ async def run_visual_chain_once(
             chain_json={
                 "prompt": prompt,
                 "context_text": context_text,
+                "continuity_streak": continuity_streak,
+                "continuity_reset": continuity_reset,
                 "artifact_sha256": stored.sha256,
                 "description": description,
             },

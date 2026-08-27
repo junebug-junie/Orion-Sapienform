@@ -18,8 +18,10 @@ docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
    since 2026-08-25): generate -> store -> caption. One `reverie_visual_chain`
    row per run, `reverie_visual_artifact` rows via a REAL FK on `chain_id`.
    `prior_description` is the continuity thread; `chain_json.context_text`
-   (Patch 3) is the context-seed -- nothing else downstream of either exists
-   yet.
+   (Patch 3) is the context-seed; `chain_json.continuity_streak`/
+   `continuity_reset` (Patch 4) record whether THIS run's own prompt was
+   forced to drop continuity -- nothing else downstream of any of these
+   exists yet.
 
 Everything here is a read. No writes, no bus publishes. Blocking SQLAlchemy
 calls are offloaded via `asyncio.to_thread` -- this is a UI-facing endpoint
@@ -246,6 +248,13 @@ async def visual_recent(
                 # of a full sentence (CLAUDE.md §0A: inspectable evidence, not
                 # schema presence).
                 "context_text": cj.get("context_text"),
+                # Patch 4: whether THIS run's own prompt was forced to drop
+                # prior_description continuity (visual_chain.py::
+                # resolve_visual_chain_continuity) -- surfaced so the tab can
+                # show "this is a fresh seed point", not just a normal
+                # continuity step.
+                "continuity_streak": cj.get("continuity_streak"),
+                "continuity_reset": cj.get("continuity_reset"),
                 # A failed generation's chain_json carries "error" instead of
                 # "artifact_sha256"/"description" (visual_chain.py's
                 # _generation_failed) -- surfaced so the cockpit can show

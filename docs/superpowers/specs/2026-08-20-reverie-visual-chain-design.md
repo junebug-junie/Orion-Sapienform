@@ -305,3 +305,85 @@ Closes §8/§12's non-goal: `build_visual_prompt` now takes a second input,
   weighting/salience-based selection among multiple candidate context
   sources, and any downstream consumer of the visual chain's output beyond
   this Hub tab and the chain's own next-run continuity — all still open.
+
+## 15. Patch 4 scope (this changeset, continuity reset)
+
+Real regression, caught live within hours of Patch 3 shipping: Juniper
+reported "still doing the same images of Roman aqueducts, no change."
+
+**Diagnosis, confirmed live against `conjourney`:**
+
+- `prior_description` had been "ancient Roman aqueduct" continuously since
+  well before Patch 3 deployed — a pure continuity attractor (image →
+  caption → "continue this train of imagination" → next image), already
+  locked in.
+- `context_text` was genuinely working and genuinely varying — verified by
+  pulling several consecutive `reverie_visual_chain` rows' `chain_json.
+  context_text` directly — but its content was always a paraphrase of "the
+  coalition is fixated on the vision node," because the attention coalition
+  itself had settled on the same open loop (`theme_key=open-loop-
+  5038aeb46982`, recurring intermittently since 2026-08-13 per
+  `substrate_reverie_chain`) for the relevant window.
+- Root cause of the *visible* symptom: a short, abstract, non-visualizable
+  clause ("Orion is currently thinking: the coalition is fixated on the
+  vision node...") appended after a long, concrete continuity description
+  has nowhere near enough weight in a diffusion prompt to redirect the
+  model. Patch 3 was functioning exactly as designed and specified — the
+  design itself just under-estimated how strong an entrenched continuity
+  attractor is relative to abstract context prose.
+
+**Fix**: not a prompt-reweighting guess (reordering/rewording clauses has no
+guaranteed effect on a diffusion model's attention). A deterministic,
+testable reset instead: `resolve_visual_chain_continuity()` in
+`visual_chain.py` tracks how many CONSECUTIVE runs have carried
+`prior_description` forward (`chain_json.continuity_streak`, read via
+`store.load_latest_visual_chain_continuity_state` in the same round trip as
+`prior_description` itself — a review finding, see below). Once that streak
+reaches `settings.visual_chain_continuity_max_runs` (default 3), the next
+run forces continuity to drop from its own prompt — re-seeding from
+`context_text` (or the fixed seed if neither exists) — then continuity
+resumes normally from that fresh point. Computed before generation, so a
+`generation_failed` run still records the correct streak for whichever run
+next picks continuity back up.
+
+- **New env key**: `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` (default 3). No
+  off switch by design — 0 means reset every run; there is no way to
+  disable the cap entirely, since an unbounded streak is exactly the
+  failure mode this exists to bound.
+- **Traceability**: `chain_json.continuity_streak` (int) and
+  `chain_json.continuity_reset` (bool) recorded on every run, both success
+  and `generation_failed` paths — same "same-run evidence, not schema
+  presence" discipline (§9) Patch 3 already applied to `context_text`.
+  Surfaced on `/api/reverie/visual/recent` and in the Hub Reverie tab.
+- **Tests**: `resolve_visual_chain_continuity` is a pure function with
+  direct unit coverage (no-prior/under-cap/at-cap/max-runs=0 cases), plus
+  an end-to-end orchestration test driving `run_visual_chain_once` through
+  a full cap+1 cycle and asserting the run AT the cap's own generated
+  prompt excludes the prior continuity text — not just that the resolver
+  says it would in isolation.
+- **Interaction with Patch 3**: composes, doesn't undercut. A reset run
+  still seeds from `context_text` when real narration exists — the bland
+  fixed string is a true last resort, not what a reset falls back to by
+  default.
+- **Review findings, fixed before merge**:
+  1. A reset run's own failure path (generation, storage, or captioning
+     failing) fell back to the ORIGINAL stale `prior_description` instead
+     of staying reset — silently resurrecting the exact attractor the
+     reset just broke out of, and letting the next tick grind through
+     another full `max_runs` cycle against the identical stuck text before
+     resetting again. Fixed: `continuity_fallback` is computed once
+     (`None` on a reset run, the unchanged old value on a normal one) and
+     used everywhere a failure path previously fell back to raw
+     `prior_description`. Covered by two new tests: a reset run whose
+     generation fails, and one whose re-observation fails — both assert
+     the persisted `prior_description` is `None`, not the stale text.
+  2. `prior_description` and `continuity_streak` were two separate SELECTs
+     against the same latest `reverie_visual_chain` row every tick —
+     wasted round trip, and a theoretical race if a write ever landed
+     between them (prevented today only by the single-flight/sequential-
+     worker guarantee, not something this query should have to rely on).
+     Fixed: `load_latest_visual_chain_continuity_state` reads both columns
+     in one query; Patch 2's `load_latest_visual_chain_prior_description`
+     and this same changeset's own standalone
+     `load_latest_visual_chain_continuity_streak` are retired (kill means
+     kill, §0A) — nothing else in the repo called either.

@@ -249,7 +249,7 @@ with a turn-level budget/circuit-breaker on the caller.
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
 
-## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding)
+## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
@@ -309,6 +309,29 @@ surfaced as its own field in the Hub Reverie tab. Live-verified against the
 real `conjourney` database 2026-08-26 (design doc §14). Raw chat/dream
 sourcing remains a separate, later change.
 
+**Patch 4 continuity reset (design doc §15):** live-caught 2026-08-27, hours
+after Patch 3 shipped -- `prior_description` continuity had locked onto one
+visual attractor ("ancient Roman aqueduct") across 10+ runs / 100+ minutes,
+unmoved by context-seeding: a short abstract clause has nowhere near the
+prompt weight of a long, concrete continuity description, and abstract
+cognitive-state narration isn't strongly visualizable content regardless of
+prompt order. Fix is a deterministic reset, not a reweighting guess:
+`resolve_visual_chain_continuity` tracks how many CONSECUTIVE runs used real
+continuity (`chain_json.continuity_streak`, read alongside
+`prior_description` in one round trip by `store.
+load_latest_visual_chain_continuity_state` -- review finding: two separate
+reads of the same latest row wasted a query and left a theoretical race);
+once that streak reaches `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` (default
+3), the next run forces continuity to drop from its own prompt -- re-seeding
+from `context_text`, or the fixed seed if neither exists -- then continuity
+resumes normally. On a reset run, a failed generation/caption never
+resurrects the stale pre-reset `prior_description` (a second review
+finding, fixed the same way: `continuity_fallback` is `None` on a reset
+run, the old value only on a normal one). No off switch by design (0 means
+reset every run). `continuity_streak`/`continuity_reset` recorded in
+`chain_json` on both the success and `generation_failed` paths, surfaced in
+the Hub Reverie tab alongside `context_text`.
+
 **Single-flight, no backlog** (design doc §4 acceptance check): the worker
 loop's own sequential shape (run, then sleep, then run again — same as
 `chain.py`/`reverie.py`) makes overlap structurally impossible; there is no
@@ -367,6 +390,7 @@ Flags:
 | `ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC` | `60` | Vision-host RPC timeout |
 | `ORION_REVERIE_CONTEXT_CHAR_LIMIT` | `240` | Max chars of the text-reverie chain's context-seed woven into the prompt |
 | `ORION_REVERIE_CONTEXT_MAX_AGE_SEC` | `900` | How stale that context-seed thought can be before it's treated as absent rather than "current" |
+| `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` | `3` | Consecutive continuity-carrying runs before a forced reset (Patch 4, design doc §15); no off switch, 0 resets every run |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, reverie context-seed, persistence); one test
@@ -383,3 +407,10 @@ itself needs a real Postgres to exercise (same limitation as this file's
 other read-filter functions, e.g. `load_recent_chain_theme_events`'s
 `theme_key` filter) -- live-verified instead against the real `conjourney`
 database (design doc §14).
+
+Patch 4's `resolve_visual_chain_continuity` is a pure function with direct
+unit coverage (no-prior/under-cap/at-cap/max-runs=0), plus an end-to-end
+orchestration test driving `run_visual_chain_once` through a full cap+1
+cycle and asserting the run AT the cap's own generated prompt excludes the
+prior continuity text -- not just that the resolver says it would in
+isolation (design doc §15).

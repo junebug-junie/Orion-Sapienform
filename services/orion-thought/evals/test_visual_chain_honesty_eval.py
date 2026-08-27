@@ -80,7 +80,12 @@ async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: "old")
+    # Streak 0 < default cap -- continuity behaves exactly as before Patch 4
+    # for every scenario in this matrix; the reset path has its own
+    # dedicated coverage in test_visual_chain.py.
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old", 0)
+    )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
     def fake_generate(prompt, **kw):

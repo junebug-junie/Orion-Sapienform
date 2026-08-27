@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
+# One source of truth for the context-seed char cap (review finding: was
+# independently hardcoded here AND in store.py, two 240s to keep in sync by
+# hand). store.py's top-level imports are stdlib-only -- importing it here
+# costs nothing and creates no cycle (store.py never imports this module).
+from .store import MAX_REVERIE_CONTEXT_CHARS as _MAX_REVERIE_CONTEXT_CHARS
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 logger = logging.getLogger("orion-thought.settings")
@@ -241,6 +247,52 @@ class ThoughtSettings(BaseSettings):
     )
     visual_chain_caption_timeout_sec: float = Field(
         60.0, alias="ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC"
+    )
+    # Patch 3 context-seed tunables (store.py::load_latest_reverie_
+    # interpretation) -- were bare module constants/unbounded until now,
+    # unlike every other tunable in this block. reverie_context_char_limit's
+    # default is store.py's own MAX_REVERIE_CONTEXT_CHARS (imported below,
+    # not a second hardcoded 240) -- one source of truth, one-directional
+    # import (settings -> store). Safe: store.py never imports this settings
+    # module (its own module docstring: "never the heavy orion.substrate
+    # package this thin service does not ship"), and its own top-level
+    # imports are stdlib-only -- nothing heavy runs just by importing it here.
+    #
+    # reverie_context_max_age_sec closes a real staleness gap: without it, a
+    # stalled/disabled text-reverie worker (chain.py) leaves the same old
+    # thought answering forever, woven into the diffusion prompt and shown
+    # in the visual cockpit's own context_text field as "Orion is currently
+    # thinking" long after it stopped being current. This does NOT bound the
+    # Hub Reverie tab's separate Text sub-view (reverie_routes.py::
+    # text_recent), which has no staleness filter of its own and is not
+    # touched by this change -- an operator can still see an old thought
+    # presented as the latest one there.
+    #
+    # 900s (not the felt_state_reader.py convention of 2x the text-reverie
+    # chain's own ~90s tick = 180s, and not proposal-runtime's
+    # load_recent_reverie_thought's 300s default -- both real, checked, not
+    # reused here on purpose): those two consumers read on their OWN fast
+    # cadence, so a tight window matched to the *producer's* tick makes
+    # sense for them. This context-seed is read once per VISUAL chain run
+    # (ORION_VISUAL_CHAIN_INTERVAL_SEC, default 600s) -- a 180s window would
+    # reject a perfectly fresh thought on almost every single visual-chain
+    # tick, since 600s > 180s. 900s = 1.5x this consumer's own poll interval,
+    # the same "multiple of the consumer's cadence" convention felt_state_
+    # reader.py already uses, just computed against the right cadence.
+    #
+    # gt=0 on both (review finding): without it, a 0 or negative
+    # ORION_REVERIE_CONTEXT_MAX_AGE_SEC makes the SQL freshness clause
+    # permanently unsatisfiable (silently degrading to "no context-seed,
+    # ever" -- indistinguishable from the genuine no-data case), and a
+    # negative ORION_REVERIE_CONTEXT_CHAR_LIMIT turns Python's negative-index
+    # slicing into "keep everything except the last N chars" -- the exact
+    # opposite of a cap. Both fail loud at settings load instead of silently
+    # doing the wrong thing at read time.
+    reverie_context_char_limit: int = Field(
+        _MAX_REVERIE_CONTEXT_CHARS, alias="ORION_REVERIE_CONTEXT_CHAR_LIMIT", gt=0
+    )
+    reverie_context_max_age_sec: float = Field(
+        900.0, alias="ORION_REVERIE_CONTEXT_MAX_AGE_SEC", gt=0
     )
     # Patch 4 (design doc §15): live 2026-08-27, `prior_description`
     # continuity can lock onto one visual attractor indefinitely (confirmed

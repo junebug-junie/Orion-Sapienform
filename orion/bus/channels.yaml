@@ -240,6 +240,11 @@ channels:
       - "orion-hub"
       - "orion-mind"
       - "orion-memory-consolidation"
+      # Added 2026-08-26: the vision affect backend sends the clip's frames
+      # here as AttachmentRefV1(kind="percept") rather than to the retired
+      # orion-affectgpt-worker. See services/orion-juniper-affective-state/
+      # app/vision_backend.py.
+      - "orion-juniper-affective-state"
     consumer_services: ["orion-llm-gateway"]
     single_consumer: true
     stability: "experimental"
@@ -563,8 +568,20 @@ channels:
     since: "2026-05-03"
 
   # orion-affectgpt-worker / orion-juniper-affective-state (2026-08-22).
-  # Real, webcam+mic-derived multimodal affect via AffectGPT (Qwen2.5-7B +
-  # CLIP + HuBERT), running on circe GPU1 (moved off GPU2 2026-08-25).
+  #
+  # SUPERSEDED 2026-08-26 for the default path: the AffectGPT backend was
+  # replaced by a VL read of the clip's own frames through
+  # orion-llm-gateway's "chat" route (circe:8011). AffectGPT answered from
+  # its text branch and refused whenever the subtitle was empty -- which is
+  # every chat_turn_* capture, since the clip is recorded after Juniper
+  # stops speaking -- and every read it produced that committed to anything
+  # misgendered the subject. The channels below are UNCHANGED and still
+  # carry the same schemas; only which backend fills them moved, selected by
+  # AFFECT_BACKEND. The exec/reply pair is live only under the
+  # AFFECT_BACKEND=affectgpt rollback.
+  #
+  # Original AffectGPT provenance (Qwen2.5-7B + CLIP + HuBERT), circe GPU1
+  # (moved off GPU2 2026-08-25).
   # DELIBERATELY a different domain
   # namespace (orion:affectgpt:*) and schema_id family from the existing,
   # narrower orion:substrate:juniper_affective_state (text-only swear-word

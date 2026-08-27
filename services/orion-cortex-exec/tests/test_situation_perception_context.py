@@ -21,7 +21,45 @@ from orion.situational.context import (
     _build_prompt_fragment,
     settings_from_runtime,
 )
+from orion.situational.identity_ask_cooldown import (
+    bind_identity_ask_cooldown_bus,
+    reset_identity_ask_cooldown_bus_for_tests,
+)
 from orion.schemas.situation import PerceptionContextV1, SituationBriefV1
+
+
+class _FakeCooldownRedis:
+    """Matches real redis-py `SET ... NX` semantics: True the first time a
+    key is set, None (falsy) while it already exists -- see
+    identity_ask_cooldown.py's own atomic-claim contract."""
+
+    def __init__(self, store: dict | None = None) -> None:
+        self.store: dict = store if store is not None else {}
+        self.set_calls: list = []
+
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        self.set_calls.append((key, value, nx, ex))
+        if nx and key in self.store:
+            return None
+        self.store[key] = value.encode("utf-8")
+        return True
+
+
+class _FakeCooldownBus:
+    def __init__(self, redis: _FakeCooldownRedis) -> None:
+        self.redis = redis
+
+
+class _RaisingCooldownRedis:
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        raise ConnectionError("redis unreachable")
+
+
+@pytest.fixture(autouse=True)
+def _reset_cooldown_bus():
+    reset_identity_ask_cooldown_bus_for_tests()
+    yield
+    reset_identity_ask_cooldown_bus_for_tests()
 
 NOW = datetime.now(timezone.utc)
 
@@ -59,7 +97,7 @@ def test_disabled_by_default() -> None:
 
 def test_disabled_yields_unavailable_not_an_error() -> None:
     diag = _diag()
-    ctx = _build_perception_context(_cfg(perception_enabled=False), diag)
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=False), diag))
     assert ctx.available is False
     assert ctx.source == "disabled"
     assert diag.provider_status["perception"] == "disabled"
@@ -67,7 +105,7 @@ def test_disabled_yields_unavailable_not_an_error() -> None:
 
 def test_no_percept_is_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is False
     assert ctx.source == "unavailable"
     assert ctx.scene_summary is None
@@ -79,7 +117,7 @@ def test_fresh_percept_is_available(monkeypatch) -> None:
         "fetch_latest_percept",
         lambda: {"scene_summary": "Three chairs and a door are visible.", "observed_at": NOW},
     )
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is True
     assert ctx.source == "live"
     assert ctx.scene_summary == "Three chairs and a door are visible."
@@ -98,7 +136,7 @@ def test_stale_percept_is_withheld_entirely(monkeypatch) -> None:
         "fetch_latest_percept",
         lambda: {"scene_summary": "A person is at the desk.", "observed_at": old},
     )
-    ctx = _build_perception_context(_cfg(perception_enabled=True, perception_max_age_seconds=900), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True, perception_max_age_seconds=900), _diag()))
     assert ctx.available is False
     assert ctx.source == "stale"
     assert ctx.scene_summary is None, "a stale summary must not ride along in the payload"
@@ -112,7 +150,7 @@ def test_age_boundary_is_inclusive_of_the_threshold(monkeypatch) -> None:
         "fetch_latest_percept",
         lambda: {"scene_summary": "A door.", "observed_at": at_limit},
     )
-    ctx = _build_perception_context(_cfg(perception_enabled=True, perception_max_age_seconds=900), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True, perception_max_age_seconds=900), _diag()))
     assert ctx.available is True, "exactly at the threshold is still fresh"
 
 
@@ -122,7 +160,7 @@ def test_reader_exception_fails_open(monkeypatch) -> None:
 
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", _boom)
     diag = _diag()
-    ctx = _build_perception_context(_cfg(perception_enabled=True), diag)
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), diag))
     assert ctx.available is False
     assert ctx.source == "error"
     assert "db gone" in diag.provider_errors["perception"]
@@ -132,7 +170,7 @@ def test_empty_narrative_is_not_a_percept(monkeypatch) -> None:
     monkeypatch.setattr(
         situation_mod, "fetch_latest_percept", lambda: {"scene_summary": "", "observed_at": NOW}
     )
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is False
 
 
@@ -245,7 +283,7 @@ def test_present_prefixes_a_duration_fragment(monkeypatch) -> None:
         situation_mod, "fetch_presence",
         lambda stream_id: {"state": "present", "since_sec": 10800.0, "subject": "unknown"},
     )
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.scene_summary.startswith("Someone has been in view for about 3 hours.")
     assert ctx.scene_summary.endswith("Three chairs and a door are visible.")
     assert ctx.presence_state == "present"
@@ -258,7 +296,7 @@ def test_recent_uses_stepped_out_phrasing(monkeypatch) -> None:
         situation_mod, "fetch_presence",
         lambda stream_id: {"state": "recent", "since_sec": 45.0, "subject": "unknown"},
     )
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert "stepped out of view" in ctx.scene_summary
     assert ctx.presence_state == "recent"
 
@@ -270,7 +308,7 @@ def test_absent_adds_no_fragment_and_no_noise(monkeypatch) -> None:
         situation_mod, "fetch_presence",
         lambda stream_id: {"state": "absent", "since_sec": 3000.0, "subject": "none"},
     )
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.scene_summary == "Two chairs and a table are visible."
     assert ctx.presence_state == "absent"
 
@@ -279,7 +317,7 @@ def test_no_presence_row_is_a_normal_no_op(monkeypatch) -> None:
     """A stream with no presence row yet (e.g. brand new) must not error."""
     _with_percept(monkeypatch)
     monkeypatch.setattr(situation_mod, "fetch_presence", lambda stream_id: None)
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.scene_summary == "Three chairs and a door are visible."
     assert ctx.presence_state is None
 
@@ -293,7 +331,7 @@ def test_presence_read_failure_fails_open(monkeypatch) -> None:
 
     monkeypatch.setattr(situation_mod, "fetch_presence", _boom)
     with pytest.raises(RuntimeError):
-        _build_perception_context(_cfg(perception_enabled=True), _diag())
+        asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
 
 
 def test_presence_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> None:
@@ -308,9 +346,124 @@ def test_presence_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> 
 
     monkeypatch.setattr(situation_mod, "fetch_presence", _spy)
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)  # unavailable
-    ctx = _build_perception_context(_cfg(perception_enabled=True), _diag())
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is False
     assert called["n"] == 0, "fetch_presence must not be called for an unavailable percept"
+
+
+# --- presence_identity_uncertain, 2026-08-26 --------------------------------
+# Juniper's direct ask: confirmed -> silence (already true above, nothing new
+# needed); genuinely uncertain -> surface it, but at most once per sit-down
+# (identity_ask_cooldown.py); broken/not-running -> silence. These tests
+# cover the cooldown wiring itself -- unit coverage for the cooldown module's
+# own logic lives in test_identity_ask_cooldown.py.
+
+
+def test_identity_uncertain_row_sets_the_context_field_and_marks_cooldown(monkeypatch) -> None:
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
+    )
+    redis = _FakeCooldownRedis()
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_uncertain is True
+    assert len(redis.set_calls) == 1, "must mark the cooldown the first time this surfaces"
+
+
+def test_identity_uncertain_suppressed_when_already_in_cooldown(monkeypatch) -> None:
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
+    )
+    redis = _FakeCooldownRedis()
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
+    first = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert first.presence_identity_uncertain is True
+
+    second = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert second.presence_identity_uncertain is False, "already asked -- next turn must stay quiet"
+    # The atomic claim is attempted again (SET ... NX is the check, not a
+    # separate read first) but does not win -- see _FakeCooldownRedis's own
+    # NX semantics. Two attempts, one actual claim; the *result* (asserted
+    # above) is what must not repeat, not the attempt count.
+    assert len(redis.set_calls) == 2
+
+
+def test_identity_uncertain_false_when_presence_row_lacks_the_field(monkeypatch) -> None:
+    """Backward compatible with a presence row written before this field
+    existed -- no cooldown bus needed at all since the field is absent."""
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown"},
+    )
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_uncertain is False
+
+
+def test_identity_uncertain_false_when_the_field_is_explicitly_false(monkeypatch) -> None:
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "juniper", "identity_uncertain": False},
+    )
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_uncertain is False
+
+
+def test_identity_uncertain_cooldown_read_failure_fails_open_to_asking(monkeypatch) -> None:
+    """Fail-open points TOWARD asking, not toward silence (see
+    identity_ask_cooldown.py's module docstring): a Redis hiccup on the
+    cooldown claim must not silently suppress a genuine identity mismatch --
+    worst case is one redundant ask, not a feature that goes mute.
+    try_claim_identity_ask itself is documented "never raises" (fail-open
+    internally), so this also proves _build_perception_context does not
+    need -- and per this file's own established convention (see
+    fetch_presence above), should not add -- a redundant try/except of its
+    own; turn assembly must not blow up either way."""
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod, "fetch_presence",
+        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
+    )
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_RaisingCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_uncertain is True
+
+
+# --- presence_identity_uncertain: prompt rendering ---------------------------
+
+
+def test_identity_uncertain_caution_appears_in_prompt() -> None:
+    brief = _brief(
+        PerceptionContextV1(
+            available=True,
+            source="live",
+            scene_summary="A person is visible.",
+            observation_age_seconds=5,
+            presence_identity_uncertain=True,
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "is that you" in text.lower()
+    assert "Juniper" in text
+
+
+def test_identity_uncertain_caution_absent_when_false() -> None:
+    brief = _brief(
+        PerceptionContextV1(
+            available=True,
+            source="live",
+            scene_summary="A person is visible.",
+            observation_age_seconds=5,
+            presence_identity_uncertain=False,
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "is that you" not in text.lower()
 
 
 # --- duration formatting, hand-computed -------------------------------------

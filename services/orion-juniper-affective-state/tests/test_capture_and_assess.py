@@ -6,6 +6,19 @@ builds on; that file's FakeBus supports only one configured RPC reply,
 insufficient here since capture_and_assess makes two DIFFERENT RPC calls
 (retina, then the worker) -- this file's FakeBus keys replies by the
 request channel instead.
+
+**Every test in this file pins AFFECT_BACKEND="affectgpt"** (see the autouse
+fixture below). These tests describe the AffectGPT round trip specifically --
+two RPC legs, a worker reply, an audio blob fetched alongside the video -- and
+none of that is what a capture does by default since the 2026-08-26 vision
+cutover. Pinning is deliberate rather than rewriting them to the new path:
+the affectgpt path still exists as a rollback and still needs coverage, and
+the vision path gets its own file (test_vision_backend.py) instead of these
+being contorted to cover both.
+
+The pin is explicit and per-file, NOT a conftest default, so it can never
+silently mask the default flipping back. test_vision_backend.py asserts the
+unpinned default independently.
 """
 from __future__ import annotations
 
@@ -25,6 +38,12 @@ from app.main import (
 from orion.schemas.affectgpt import AffectGptAssessResultPayload
 from orion.schemas.vision import RetinaClipCaptureResultPayload
 from pydantic import ValidationError
+
+
+@pytest.fixture(autouse=True)
+def _pin_affectgpt_backend(monkeypatch):
+    """See module docstring -- this file covers the affectgpt rollback path."""
+    monkeypatch.setattr(settings, "AFFECT_BACKEND", "affectgpt", raising=False)
 
 
 class FakeEnvelope:
@@ -543,3 +562,196 @@ async def test_capture_clip_via_retina_respects_a_reconfigured_target_stream_id(
     await svc.capture_and_assess()
 
     assert bus.request_payloads[0]["target_stream_id"] == "some-other-camera"
+
+
+# ==========================================================================
+# The VISION backend through capture_and_assess (2026-08-26).
+#
+# The autouse fixture above pins affectgpt for every test in this file; these
+# override it explicitly. Review finding 7.1: nothing covered capture_and_assess
+# on the vision path at all -- most importantly, deleting the conditional that
+# skips the audio fetch broke no test, even though "Juniper's voice never
+# crosses a host boundary" is the headline privacy claim of the whole change.
+# ==========================================================================
+
+
+class _StubVisionResult:
+    def __init__(self):
+        from orion.schemas.affectgpt import AffectReadV1
+
+        self.affect = AffectReadV1(
+            valence=-0.1,
+            arousal=0.2,
+            primary_affect="neutral and contemplative",
+            cues=["gaze directed downwards in all frames"],
+            confidence=0.85,
+            cannot_tell=[],
+        )
+        self.raw_response = '{"primary_affect": "neutral and contemplative"}'
+        self.face_detection = {
+            "frames_total": 231,
+            "frames_detected": 231,
+            "detection_rate": 1.0,
+            "frames_sampled": 5,
+        }
+        self.frames_used = 5
+        self.timings = {"total_s": 7.1}
+        self.model = "/models/gguf/Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"
+
+
+@pytest.fixture
+def vision_backend(monkeypatch):
+    monkeypatch.setattr(settings, "AFFECT_BACKEND", "vision", raising=False)
+
+
+@pytest.mark.asyncio
+async def test_vision_backend_never_fetches_the_audio_blob(
+    monkeypatch, scratch_dir, vision_backend
+):
+    """THE privacy regression test. The vision path must fetch video only --
+    the audio blob stays in percept-store and ages out on its own retention."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+    fetched: list[str] = []
+
+    def _fake_fetch(self, sha256, dest_path):
+        fetched.append(sha256)
+        with open(dest_path, "wb") as f:
+            f.write(b"clip")
+        return dest_path
+
+    monkeypatch.setattr(JuniperAffectiveStateService, "_fetch_percept", _fake_fetch)
+
+    async def _fake_assess(bus_, *, video_path, transcript, settings):
+        return _StubVisionResult()
+
+    monkeypatch.setattr("app.main.assess_via_vision", _fake_assess)
+
+    capture, result, event = await svc.capture_and_assess()
+
+    assert result.ok is True
+    assert fetched == ["a" * 64], f"audio blob was fetched: {fetched}"
+
+
+@pytest.mark.asyncio
+async def test_vision_backend_records_no_audio_path_in_the_event(
+    monkeypatch, scratch_dir, vision_backend
+):
+    """A path for a file that was never downloaded would put a claim in the
+    durable record contradicting the property above."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+    monkeypatch.setattr(
+        JuniperAffectiveStateService,
+        "_fetch_percept",
+        lambda self, sha, dest: (open(dest, "wb").write(b"clip"), dest)[1],
+    )
+
+    async def _fake_assess(bus_, *, video_path, transcript, settings):
+        return _StubVisionResult()
+
+    monkeypatch.setattr("app.main.assess_via_vision", _fake_assess)
+
+    _capture, _result, event = await svc.capture_and_assess()
+
+    assert "audio_path" not in (event.input_ref or {})
+    assert (event.input_ref or {}).get("video_path")
+
+
+@pytest.mark.asyncio
+async def test_vision_backend_sets_backend_and_structured_affect(
+    monkeypatch, scratch_dir, vision_backend
+):
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+    monkeypatch.setattr(
+        JuniperAffectiveStateService,
+        "_fetch_percept",
+        lambda self, sha, dest: (open(dest, "wb").write(b"clip"), dest)[1],
+    )
+
+    async def _fake_assess(bus_, *, video_path, transcript, settings):
+        return _StubVisionResult()
+
+    monkeypatch.setattr("app.main.assess_via_vision", _fake_assess)
+
+    _capture, _result, event = await svc.capture_and_assess()
+
+    assert event.backend == "vision"
+    assert event.source == "vision"
+    assert event.affect is not None
+    assert event.affect.primary_affect == "neutral and contemplative"
+    assert event.frames_used == 5
+    # No Whisper on this path, so this can never be "transcribed".
+    assert event.subtitle_source == "none"
+
+
+@pytest.mark.asyncio
+async def test_vision_read_failure_is_ok_false_not_a_calm_read(
+    monkeypatch, scratch_dir, vision_backend
+):
+    """A failed read must never be indistinguishable from a genuine calm one."""
+    from app.vision_backend import VisionAffectError
+
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+    monkeypatch.setattr(
+        JuniperAffectiveStateService,
+        "_fetch_percept",
+        lambda self, sha, dest: (open(dest, "wb").write(b"clip"), dest)[1],
+    )
+
+    async def _boom(bus_, *, video_path, transcript, settings):
+        raise VisionAffectError("gateway said no", error_code="empty_completion")
+
+    monkeypatch.setattr("app.main.assess_via_vision", _boom)
+
+    _capture, result, event = await svc.capture_and_assess()
+
+    assert result.ok is False
+    assert result.error_code == "empty_completion"
+    assert event.affect is None
+    assert event.backend == "vision"
+
+
+@pytest.mark.asyncio
+async def test_capture_failure_is_attributed_to_the_selected_backend(
+    monkeypatch, scratch_dir, vision_backend
+):
+    """Review finding 2.1: both early-return failure branches used to fall
+    through to _wrap_event's backend="affectgpt" default, so a retina outage
+    under AFFECT_BACKEND=vision persisted a row blaming a backend that was
+    never invoked -- defeating the reason the column exists."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=False, error="camera busy", error_code="busy"
+        ).model_dump(),
+    )
+
+    _capture, result, event = await svc.capture_and_assess()
+
+    assert result.ok is False
+    assert event.backend == "vision"
+    assert event.source == "vision"

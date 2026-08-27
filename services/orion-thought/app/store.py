@@ -494,7 +494,11 @@ def load_latest_visual_chain_continuity_state() -> tuple[str | None, int]:
 # Cap on the interpretation text handed into a diffusion prompt (§ cap-all-
 # collections) -- SpontaneousThoughtV1.interpretation has no length bound of
 # its own (it's free LLM narration), but the diffusion model only needs a
-# short scene description, not the full text.
+# short scene description, not the full text. THIS is the one source of
+# truth -- settings.py's reverie_context_char_limit Field imports this
+# constant as its default (one-directional import, settings -> store; this
+# module still never imports settings, per its own header docstring) rather
+# than hardcoding a second, driftable 240.
 MAX_REVERIE_CONTEXT_CHARS = 240
 
 # How many recent chain-linked candidates to pull before Python-side
@@ -505,11 +509,43 @@ MAX_REVERIE_CONTEXT_CHARS = 240
 _REVERIE_CONTEXT_CANDIDATE_LIMIT = 10
 
 
-def load_latest_reverie_interpretation() -> str | None:
+def load_latest_reverie_interpretation(
+    *, char_limit: int | None = None, max_age_sec: float | None = None
+) -> str | None:
     """Most recent real (non-hollow, non-empty) text-chain thought's
     interpretation, already linked into a SETTLED chain -- the visual
     chain's context-seed (design doc §8: "which specific recent-activity/
     chat/dream sources feed a step", Patch 3).
+
+    `char_limit`: overrides MAX_REVERIE_CONTEXT_CHARS when given (visual_chain
+    passes settings.reverie_context_char_limit, env-configurable like every
+    other tunable in that file -- this was a bare module constant until now).
+
+    `max_age_sec`: if given, only candidates within this age are considered
+    (added review finding, post-Patch-3): without it, a stalled or disabled
+    text-reverie worker (chain.py) leaves the same old thought answering
+    every future call, and it keeps being woven into the visual prompt and
+    shown in the cockpit as "Orion is currently thinking" long after it
+    stopped being current -- the fetch LIMIT above bounds candidate COUNT,
+    not age, so this is a real gap the count bound alone doesn't close. This
+    only bounds THIS function's callers (currently just visual_chain.py) --
+    it does NOT bound the Hub's separate Text sub-view (`reverie_routes.py`
+    ::`text_recent`), which has no staleness filter of its own; nor does it
+    give any consumer a way to tell "producer genuinely quiet" from
+    "producer stalled/dead" -- both look identical here as "no fresh row",
+    since there is no liveness/heartbeat signal from chain.py itself to
+    check instead (a real gap, not fixed by this patch).
+
+    Both `char_limit`/`max_age_sec` default to None, preserving the exact
+    prior unbounded/uncapped behavior for any OTHER caller of this function
+    that doesn't pass them (review finding, deliberate choice not an
+    oversight: this docstring already names `_project_reverie_glimpse` as
+    a consumer of this same underlying table via a different code path
+    (`felt_state_reader.py`'s own reader, not this function) -- changing
+    this function's own default behavior for hypothetical future callers
+    of THIS specific function, rather than leaving it opt-in, is a bigger
+    change than this patch's scope; every current, real caller (just
+    visual_chain.py) does pass both).
 
     Deliberately the text chain's own narration, not raw chat: it is already
     the summary layer the coalition-grounding + hollow guard
@@ -554,20 +590,39 @@ def load_latest_reverie_interpretation() -> str | None:
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
         from orion.schemas.reverie import SpontaneousThoughtV1
 
+        where_sql = (
+            "t.interpretation <> '' "
+            "AND EXISTS ("
+            "  SELECT 1 FROM substrate_reverie_chain c "
+            "  WHERE c.chain_json -> 'thought_ids' ? t.thought_id"
+            ")"
+        )
+        params: dict[str, Any] = {"limit": _REVERIE_CONTEXT_CANDIDATE_LIMIT}
+        if max_age_sec is not None:
+            # `now() - make_interval(secs => :x)` freshness idiom (review
+            # finding: at least 6 other repo call sites already hand-roll
+            # this same shape -- vision_reader.py, orion-hub's
+            # curiosity_hint.py/chat_history_rehydrate.py/
+            # tension_outreach_trigger.py, orion-sql-writer's
+            # vision_object_permanence.py, orion-field-digester's store.py).
+            # Not extracted into a shared helper here: doing that well means
+            # touching multiple services' modules, a bigger change than this
+            # small additive patch's scope -- a real repo-wide cleanup
+            # candidate, not something to half-do as a side effect of one
+            # new call site.
+            where_sql += " AND t.created_at > now() - make_interval(secs => :max_age_sec)"
+            params["max_age_sec"] = float(max_age_sec)
+
         engine = _get_engine()
         with engine.connect() as conn:
             rows = (
                 conn.execute(
                     text(
                         "SELECT thought_json FROM substrate_reverie_thought t "
-                        "WHERE t.interpretation <> '' "
-                        "AND EXISTS ( "
-                        "  SELECT 1 FROM substrate_reverie_chain c "
-                        "  WHERE c.chain_json -> 'thought_ids' ? t.thought_id "
-                        ") "
+                        f"WHERE {where_sql} "
                         "ORDER BY t.created_at DESC LIMIT :limit"
                     ),
-                    {"limit": _REVERIE_CONTEXT_CANDIDATE_LIMIT},
+                    params,
                 )
                 .mappings()
                 .all()
@@ -591,7 +646,8 @@ def load_latest_reverie_interpretation() -> str | None:
                 # a coherent prefix instead of a mid-word fragment baked
                 # into the diffusion prompt and rendered verbatim in the Hub
                 # Reverie tab.
-                trimmed, _truncated = truncate_at_word_boundary(value, MAX_REVERIE_CONTEXT_CHARS)
+                limit_chars = MAX_REVERIE_CONTEXT_CHARS if char_limit is None else char_limit
+                trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
                 return trimmed
         return None
     except Exception as exc:

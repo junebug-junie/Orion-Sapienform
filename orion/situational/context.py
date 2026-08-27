@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
+from .identity_ask_cooldown import try_claim_identity_ask
 from .juniper_affect_state import read_latest_juniper_affect
 from .perception_reader import (
     coarse_duration,
@@ -82,6 +83,7 @@ class SituationSettings:
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
+    identity_ask_cooldown_seconds: int
     affect_enabled: bool
     affect_max_age_seconds: int
     runtime_enabled: bool
@@ -128,6 +130,13 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         ),
         perception_stream_id=str(
             getattr(settings, "orion_situation_perception_stream_id", "cam0")
+        ),
+        # 1200s (20min): see identity_ask_cooldown.py's module docstring for
+        # the reasoning -- long enough that "ask once per sit-down" is the
+        # felt experience, short enough that a fixed lighting/angle issue
+        # doesn't leave someone silently mis-recognized all day.
+        identity_ask_cooldown_seconds=int(
+            getattr(settings, "orion_situation_identity_ask_cooldown_seconds", 1200)
         ),
         # Default ON, unlike perception: the capture that produces this is
         # already an explicit Juniper action (Hub's "Check now"/ambient
@@ -226,6 +235,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_perception_enabled=False,
         orion_situation_perception_max_age_seconds=900,
         orion_situation_perception_stream_id="cam0",
+        orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
         orion_situation_affect_max_age_seconds=int(
             getattr(cfg, "ORION_SITUATION_AFFECT_MAX_AGE_SECONDS", 300)
@@ -334,7 +344,7 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
     lab_ctx = _build_lab_context(cfg)
-    perception_ctx = _build_perception_context(cfg, diagnostics)
+    perception_ctx = await _build_perception_context(cfg, diagnostics)
     affect_ctx = await _build_affect_context(cfg, diagnostics)
     runtime_ctx = await _build_runtime_context(cfg, diagnostics)
     surface_ctx = _build_surface_context(ctx)
@@ -762,7 +772,7 @@ async def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationD
         return RuntimeContextV1(available=False, route=cfg.runtime_route, source="error")
 
 
-def _build_perception_context(
+async def _build_perception_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> PerceptionContextV1:
     """Most recent camera percept, gated hard on age.
@@ -775,6 +785,11 @@ def _build_perception_context(
 
     Fail-open like every other provider here -- a database problem yields no
     percept, never an exception into turn assembly.
+
+    `async` since 2026-08-26: the identity-uncertain cooldown check below is
+    a Redis round-trip (`identity_ask_cooldown.py`), the one await in this
+    function -- everything else here stays the same synchronous SQLAlchemy
+    reads it always was.
     """
     if not cfg.perception_enabled:
         diagnostics.provider_status["perception"] = "disabled"
@@ -807,6 +822,7 @@ def _build_perception_context(
     diagnostics.provider_status["perception"] = "ok"
     scene_summary = percept["scene_summary"]
     presence_state = presence_since_sec = presence_subject = None
+    presence_identity_uncertain = False
 
     # Presence is an ENRICHMENT of an already-valid percept, not an
     # independent availability path -- it only folds in when the narrative
@@ -823,6 +839,28 @@ def _build_perception_context(
             scene_summary = f"{fragment} {scene_summary}"
             diagnostics.provider_status["perception_presence"] = presence_state or "unknown"
 
+        # identity_uncertain reaching True here means: a real person is
+        # believed present right now AND identity_face genuinely did not
+        # match (see presence.py's own staleness/stickiness rules -- this is
+        # already the freshest, sticky-against-flicker read). The cooldown
+        # claim is the only thing standing between that and asking every
+        # single turn for as long as the mismatch persists -- see
+        # identity_ask_cooldown.py's module docstring for why an in-process
+        # flag would repeat a bug this codebase already fixed once, and why
+        # the claim is a SINGLE atomic call (review finding, 2026-08-26: a
+        # separate check-then-set let two concurrent cortex-exec replicas
+        # both read "not in cooldown" and both ask).
+        #
+        # No try/except here, matching this function's own established
+        # convention for fetch_presence above: try_claim_identity_ask is
+        # itself documented "never raises" (fail-open internally, logging a
+        # warning instead) -- double-wrapping an already-fail-open callee is
+        # ceremony this file doesn't otherwise carry, not extra safety.
+        if presence.get("identity_uncertain") and await try_claim_identity_ask(
+            cfg.perception_stream_id, ttl_seconds=cfg.identity_ask_cooldown_seconds
+        ):
+            presence_identity_uncertain = True
+
     return PerceptionContextV1(
         available=True,
         source="live",
@@ -833,6 +871,7 @@ def _build_perception_context(
         presence_state=presence_state,
         presence_since_sec=presence_since_sec,
         presence_subject=presence_subject,
+        presence_identity_uncertain=presence_identity_uncertain,
     )
 
 
@@ -973,6 +1012,8 @@ async def _build_affect_context(
         observation_age_seconds=age,
         trigger=state.trigger,
         subtitle_source=state.subtitle_source,
+        confidence=state.confidence,
+        backend=state.backend,
         source="live",
     )
 
@@ -1024,9 +1065,30 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     if brief.affect.available and brief.affect.summary:
         age_min = round((brief.affect.observation_age_seconds or 0) / 60)
         seen = "just now" if age_min < 1 else f"{age_min} min ago"
-        no_voice = " (no speech detected)" if brief.affect.subtitle_source == "none" else ""
+        if brief.affect.backend == "vision" and brief.affect.subtitle_source != "caller":
+            # The vision backend is handed NO audio at all. Saying "no speech
+            # detected" here would claim we listened and heard silence, which
+            # is a different and false claim -- exactly the not-seeing vs
+            # seeing-nothing distinction the Room line above is careful about.
+            #
+            # subtitle_source == "caller" is excluded because a caller-supplied
+            # transcript IS handed to the vision model as context, so "visual
+            # only" would be inaccurate there too, in the other direction
+            # (review finding, 2026-08-26). Hub's chat_turn_* callers always
+            # pass "", so the common path is unaffected.
+            modality = ", visual only"
+        elif brief.affect.subtitle_source == "none":
+            modality = ", no speech detected"
+        else:
+            modality = ""
+        # Proportional hedging. Everything reaching here already cleared the
+        # producer's confidence gate, so this is not a second gate -- it is the
+        # difference between a read Orion may lean on and one it should hold
+        # loosely, which a single boolean "available" cannot express.
+        low = brief.affect.confidence is not None and brief.affect.confidence < 0.6
+        hedge = ", low confidence -- hold loosely" if low else ""
         lines.append(
-            f"Juniper's affect (captured {seen}{no_voice}): {brief.affect.summary}"
+            f"Juniper's affect (read {seen}{modality}{hedge}): {brief.affect.summary}"
         )
     else:
         # Same honesty rule as Room above -- no recent capture and a
@@ -1047,6 +1109,22 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         "Situation context is grounding, not a requirement to mention.",
         "Use only when relevant; avoid contrived time/weather/location commentary.",
     ]
+    if brief.perception.presence_identity_uncertain:
+        # Inserted first: this is the one caution that's actionable THIS
+        # turn and time-limited (a fresh identity_face mismatch, already
+        # cooldown-gated server-side so this only ever appears once per
+        # sit-down -- see identity_ask_cooldown.py). Losing it to truncation
+        # would silently drop the one thing Juniper explicitly asked Orion
+        # to do here.
+        cautions.insert(
+            0,
+            "You don't recognize the person currently in view with confidence "
+            "(a camera identity check came back unsure, not a name match). If it "
+            "feels natural in this turn, ask ONE brief, warm clarifying question -- "
+            "e.g. \"Hi, I'm having a little trouble recognizing you -- is that you, "
+            "Juniper?\" This has not been asked recently for this camera, so it is "
+            "safe to ask now; do not repeat it again this conversation once asked.",
+        )
     # The cautions are appended AFTER truncation, never inside it.
     #
     # This used to be one flat join sliced from the tail, which meant the

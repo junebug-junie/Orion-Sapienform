@@ -25,6 +25,7 @@ from orion.schemas.vision import (
 from .projection import (
     build_window_payload,
     envelope_to_http_dict,
+    identity_confidence_from_artifact,
     identity_hint_from_artifact,
     stream_key_from_artifact,
 )
@@ -46,6 +47,35 @@ def _corr_uuid(value: Optional[Union[str, UUID]]) -> UUID:
     if isinstance(value, UUID):
         return value
     return UUID(str(value))
+
+
+def _should_ignore_uncertain_reading(
+    existing: Optional[Dict[str, Any]],
+    new_confidence: Optional[str],
+    *,
+    now: float,
+    max_age_sec: float,
+) -> bool:
+    """True when a new "uncertain" identity reading should be dropped rather
+    than overwrite `_identity_by_stream`'s existing entry for this stream.
+
+    Pure decision logic, split out of `_consume_identity`'s loop (2026-08-26
+    review) so this can be tested directly rather than only through the bus
+    subscription. A still-fresh CONFIRMED reading wins over a single
+    flickery "unsure" frame (a bad angle, a turned head) -- one unsure frame
+    moments after Orion has already settled on "this is Juniper" must not
+    flip presence's `identity_uncertain` back on and trigger an awkward
+    "is that you?" a beat later. Only "uncertain" readings are ever
+    subject to this hold-off; a new "confirmed" reading always overwrites
+    (see `_consume_identity` -- this function is only consulted for
+    `new_confidence == "uncertain"`).
+    """
+    if new_confidence != "uncertain" or existing is None:
+        return False
+    if existing.get("confidence") != "confirmed":
+        return False
+    age = now - existing.get("ts", 0.0)
+    return age <= max_age_sec
 
 
 class WindowService:
@@ -234,10 +264,18 @@ class WindowService:
         identity_face artifacts arrive on their own dedicated,
         single-consumer lane (CHANNEL_WINDOW_IDENTITY_INTAKE, see
         settings.py's docstring for why it is not the general
-        CHANNEL_WINDOW_INTAKE broadcast). Stores only the latest usable hint
-        per stream, overwriting the previous one -- this is presence-shaped
-        state (what does the LATEST evidence say), not a window buffer, so
-        it never accumulates and never needs a size cap.
+        CHANNEL_WINDOW_INTAKE broadcast). Stores the latest usable reading
+        per stream -- this is presence-shaped state (what does the LATEST
+        evidence say), not a window buffer, so it never accumulates and
+        never needs a size cap.
+
+        NOT an unconditional overwrite as of 2026-08-26 (doc fixed per
+        review finding -- this used to claim it was): a fresh "uncertain"
+        reading is dropped instead of overwriting when a still-fresh
+        "confirmed" entry already holds the slot -- see
+        `_should_ignore_uncertain_reading`'s own docstring for the full
+        sticky-confirmed-vs-flicker reasoning. A fresh "confirmed" reading
+        is never subject to that hold-off and always overwrites.
         """
         async with self.bus.subscribe(settings.CHANNEL_WINDOW_IDENTITY_INTAKE) as pubsub:
             async for msg in self.bus.iter_messages(pubsub):
@@ -257,17 +295,30 @@ class WindowService:
                     logger.warning(f"[WINDOW] Invalid identity artifact payload: {e}")
                     continue
                 hint = identity_hint_from_artifact(payload)
-                if hint is None:
-                    # unsure/no-match/no-face -- nothing to store. Does NOT
-                    # clear a still-fresh prior hint; the freshness gate in
-                    # _flush_and_publish is what decides whether an older
-                    # hint is still usable, not this arrival.
+                confidence = identity_confidence_from_artifact(payload)
+                if hint is None and confidence is None:
+                    # No usable signal at all (no face detected, or a
+                    # gallery-misconfig candidate) -- nothing to store.
+                    # Never clears a still-fresh prior reading either way;
+                    # the freshness gate in _flush_and_publish is what
+                    # decides whether an older reading is still usable, not
+                    # this arrival.
                     continue
                 sk = stream_key_from_artifact(payload)
                 async with self._identity_lock:
-                    self._identity_by_stream[sk] = {"hint": hint, "ts": time.time()}
+                    existing = self._identity_by_stream.get(sk)
+                    if _should_ignore_uncertain_reading(
+                        existing, confidence, now=time.time(), max_age_sec=settings.WINDOW_IDENTITY_MAX_AGE_SEC
+                    ):
+                        logger.debug(
+                            f"[WINDOW] identity_hint stream={sk} unsure_reading_ignored "
+                            f"still_fresh_confirmed=true"
+                        )
+                        continue
+                    self._identity_by_stream[sk] = {"hint": hint, "confidence": confidence, "ts": time.time()}
                 logger.debug(
-                    f"[WINDOW] identity_hint stream={sk} subject={hint['subject']} state={hint['state']}"
+                    f"[WINDOW] identity_hint stream={sk} "
+                    f"subject={hint['subject'] if hint else None} confidence={confidence}"
                 )
 
     async def _consume_rpc(self) -> None:
@@ -372,6 +423,7 @@ class WindowService:
             stale_after_ms=settings.STALE_AFTER_MS,
         )
         identity_hint: Optional[Dict[str, Any]] = None
+        identity_confidence: Optional[str] = None
         if settings.WINDOW_BELIEF_ENABLED and settings.WINDOW_IDENTITY_ENABLED:
             # Fetched HERE, before the belief block below, not inside it
             # (review finding, 2026-08-26): this is the one await in this
@@ -384,8 +436,17 @@ class WindowService:
             # flushes could interleave exactly at that await point and apply
             # belief/presence updates out of order. Fetching first keeps the
             # belief block itself await-free, exactly as it was before this
-            # field existed.
-            identity_hint = await self._get_fresh_identity_hint(stream_id, now=window_end)
+            # field existed. hint and confidence are fetched TOGETHER via one
+            # locked read (review finding, 2026-08-26): two separate
+            # lock-acquiring calls left a window where the concurrently
+            # running _consume_identity() task could overwrite
+            # _identity_by_stream[sk] between them, pairing an OLDER hint
+            # with a NEWER confidence (or vice versa) for the same flush --
+            # e.g. a confirmed name from one artifact alongside
+            # identity_uncertain=True from a later, different artifact.
+            identity_hint, identity_confidence = await self._get_fresh_identity_reading(
+                stream_id, now=window_end
+            )
 
         if settings.WINDOW_BELIEF_ENABLED:
             summary = dict(payload.summary or {})
@@ -413,7 +474,12 @@ class WindowService:
 
             payload = payload.model_copy(update={"summary": summary})
             if settings.WINDOW_PRESENCE_ENABLED:
-                self._note_presence(stream_id, result.believed_labels, identity_hint=identity_hint)
+                self._note_presence(
+                    stream_id,
+                    result.believed_labels,
+                    identity_hint=identity_hint,
+                    identity_confidence=identity_confidence,
+                )
             if result.added or result.removed:
                 added = ",".join(sorted(result.added)) or "-"
                 removed = ",".join(sorted(result.removed)) or "-"
@@ -506,22 +572,35 @@ class WindowService:
             self._m_inventory_failed += 1
             logger.warning(f"[WINDOW] scene inventory publish failed: {exc}")
 
-    async def _get_fresh_identity_hint(self, stream_id: str, *, now: float) -> Optional[Dict[str, Any]]:
-        """The latest identity_face hint for this stream, or None if there
-        isn't one or it is too old to speak to "now" -- same staleness
-        discipline as orion/situational/context.py's percept gate. Age is
-        measured against ``now`` (the window's own end_ts), not wall-clock
-        time.time(), so a slow flush cannot make an otherwise-fresh hint
-        read as stale relative to the window it is being folded into.
+    async def _get_fresh_identity_reading(
+        self, stream_id: str, *, now: float
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """The latest identity_face (hint, confidence) pair for this stream,
+        or (None, None) if there isn't one or it is too old to speak to
+        "now" -- same staleness discipline as orion/situational/context.py's
+        percept gate. Age is measured against ``now`` (the window's own
+        end_ts), not wall-clock time.time(), so a slow flush cannot make an
+        otherwise-fresh reading read as stale relative to the window it is
+        being folded into.
+
+        Returns BOTH fields from ONE lock acquisition (review finding,
+        2026-08-26: two separate getters, each with its own lock
+        acquisition, left a window where the concurrently-running
+        _consume_identity() task could overwrite the entry between them --
+        pairing an older hint with a newer confidence, or vice versa, for
+        the same flush). `hint` and `confidence` are independently either
+        present or None per their own producing functions' own contracts
+        (identity_hint_from_artifact / identity_confidence_from_artifact in
+        projection.py) -- this method does not otherwise couple them.
         """
         async with self._identity_lock:
             entry = self._identity_by_stream.get(stream_id)
         if entry is None:
-            return None
+            return None, None
         age = now - entry["ts"]
         if age > settings.WINDOW_IDENTITY_MAX_AGE_SEC:
-            return None
-        return entry["hint"]
+            return None, None
+        return entry.get("hint"), entry.get("confidence")
 
     def _note_presence(
         self,
@@ -529,6 +608,7 @@ class WindowService:
         believed_labels: frozenset[str],
         *,
         identity_hint: Optional[Dict[str, Any]] = None,
+        identity_confidence: Optional[str] = None,
     ) -> None:
         """Update presence and, if due, fire a best-effort Postgres write.
 
@@ -536,7 +616,9 @@ class WindowService:
         failed or slow write cannot delay this window's flush -- the same
         contract as the scene-belief transition it rides alongside.
         """
-        snapshot = self._presence_registry.record(stream_id, believed_labels, identity_hint=identity_hint)
+        snapshot = self._presence_registry.record(
+            stream_id, believed_labels, identity_hint=identity_hint, identity_confidence=identity_confidence
+        )
         if snapshot is None:
             return
         if not settings.POSTGRES_URI:

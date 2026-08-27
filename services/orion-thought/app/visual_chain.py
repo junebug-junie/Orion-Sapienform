@@ -358,7 +358,11 @@ async def run_visual_chain_once(
         # theoretical read-your-own-write race), not two gathered reads.
         (prior_description, continuity_streak), context_text = await asyncio.gather(
             asyncio.to_thread(load_latest_visual_chain_continuity_state),
-            asyncio.to_thread(load_latest_reverie_interpretation),
+            asyncio.to_thread(
+                load_latest_reverie_interpretation,
+                char_limit=settings.reverie_context_char_limit,
+                max_age_sec=settings.reverie_context_max_age_sec,
+            ),
         )
         # Patch 4 (module docstring): cap how many consecutive runs may
         # carry prior_description continuity before forcing one reset --

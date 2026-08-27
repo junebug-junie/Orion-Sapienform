@@ -1,7 +1,14 @@
-from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.db import Base
+
+# Repo convention (causal_geometry_snapshot.py, harness_turn_trace.py, and
+# four others): real JSONB on Postgres, plain JSON everywhere else, so the
+# SQLite-backed shape tests can still create this table. A bare JSONB()
+# raises UnsupportedCompilationError under SQLite.
+_JSONB = JSON().with_variant(JSONB(), "postgresql")
 
 
 class JuniperMultimodalAffectSQL(Base):
@@ -80,9 +87,11 @@ class JuniperMultimodalAffectSQL(Base):
     observed_at = Column(DateTime(timezone=True), nullable=False, index=True)
 
     # No SQLAlchemy-side default: JuniperMultimodalAffectV1.source is a
-    # Literal["affectgpt"]="affectgpt", so the wire payload always
-    # already carries this key -- a column default here could never
+    # Literal["affectgpt", "vision"] with a default, so the wire payload
+    # always already carries this key -- a column default here could never
     # actually fire and would misleadingly imply the value is optional.
+    # (Widened from Literal["affectgpt"] on 2026-08-26; no DDL change needed
+    # because this was always a plain String.)
     source = Column(String, nullable=False)
     # "manual" (POST /trigger or /capture_and_assess), "ambient" (Hub's
     # recurring toggle loop), or "chat_turn_pre"/"chat_turn_post" (Hub's
@@ -124,5 +133,41 @@ class JuniperMultimodalAffectSQL(Base):
     # Indexed because the only query this column exists to serve is
     # "give me both legs for turn X".
     chat_correlation_id = Column(String, nullable=True, index=True)
+
+    # ── Added 2026-08-26 with the vision backend ────────────────────────
+    #
+    # These four exist because diagnosing the failure that motivated the
+    # cutover required pointing Juniper's own webcam at her twice. The
+    # producer had ALWAYS put face_detection and timings on the bus; this
+    # table simply never declared columns for them, so _write_row's
+    # column-filter dropped both on every insert and the durable record
+    # could not answer "was there even a face in frame when the model said
+    # that?". Six stored rows, and not one of them could be diagnosed.
+
+    # "vision" | "affectgpt". Not just derivable from observed_at vs the
+    # cutover date: the affectgpt path survives as a rollback, so the two
+    # backends can interleave in time. An analysis excluding the three
+    # known-bad reads needs provenance, not date arithmetic.
+    backend = Column(String, nullable=True)
+
+    # The structured AffectReadV1 (valence/arousal/primary_affect/cues/
+    # confidence/cannot_tell). NULL for every affectgpt row -- that backend
+    # only ever produced prose. A consumer must read NULL as "no structured
+    # read", never as "affect was neutral".
+    affect = Column(_JSONB, nullable=True)
+
+    # frames_total / frames_detected / detection_rate / frames_sampled. The
+    # quality gate's own input, so a stored read can be re-judged later
+    # against a threshold different from the one live at write time --
+    # query with (face_detection->>'detection_rate')::float.
+    face_detection = Column(_JSONB, nullable=True)
+
+    # Per-stage seconds (sample/upload/generate/total). Kept because the
+    # whole point of the swap was that the replaced path cost ~28s of
+    # camera-plus-inference to return a refusal; the claim that this one is
+    # faster should be checkable from the record rather than from memory.
+    timings = Column(_JSONB, nullable=True)
+
+    frames_used = Column(Integer, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

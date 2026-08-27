@@ -86,7 +86,7 @@ async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old", 0)
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
     def fake_generate(prompt, **kw):
         if not scenario.generate_ok:

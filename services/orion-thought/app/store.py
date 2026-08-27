@@ -678,12 +678,23 @@ MAX_SELF_STUDY_CONTEXT_CHARS = 400
 # crystallizations get kept vs rejected) -- confirmed live before this list
 # was written, not a hypothetical. The four prefixes below are the deliberate
 # subset of source_kind='self_study' this reader will EVER touch.
-_SAFE_SELF_STUDY_SOURCE_PREFIXES = (
-    "concept_induction:",
-    "vision_events:",
-    "affective_state:",
-    "cocreation_signals:",
-)
+#
+# Derived from orion.schemas.self_study_analysis.ANALYSIS_SOURCES at call
+# time (review finding: an earlier version hardcoded a private duplicate of
+# that shared schema tuple with no import tying them together -- if the real
+# producer's source list ever changed, this privacy-critical allowlist would
+# silently go stale instead of failing loud). Computed inside the function
+# below, not at module import time -- this module's own docstring: "never
+# the heavy orion.substrate package", and its top-level imports are
+# stdlib-only by convention (see `SpontaneousThoughtV1`'s own TYPE_CHECKING-
+# only import above) even though `self_study_analysis` itself is confirmed
+# pydantic/stdlib-only and safe to import.
+#
+# NOT wired to grow automatically if ANALYSIS_SOURCES gains a fifth source:
+# a new analysis producer must be independently reviewed for real content
+# (the same live-data check that qualified these four) before this allowlist
+# admits it -- see this comment's own reasoning for why an allowlist that
+# silently grows with new producers would defeat the point.
 
 
 def load_latest_self_study_reflection(
@@ -697,12 +708,17 @@ def load_latest_self_study_reflection(
     deterministic window-contrast analyses write (concept induction, vision
     events, affective state, co-creation signals) -- real quantified
     self-observation ("vision events dropped 0.36x vs baseline, a status
-    category disappeared"), not a bare narration sentence. Restricted via
-    `_SAFE_SELF_STUDY_SOURCE_PREFIXES` to ONLY those four producers, by
-    `source_ref` prefix -- see that constant's own docstring for the real
-    live incident (a sibling `source_kind='self_study'` producer, the
-    free-form "Curiosity" reflection, was confirmed live to quote sensitive
-    personal content) that makes this an allowlist, not "any self_study row".
+    category disappeared"), not a bare narration sentence. Restricted to
+    ONLY those four producers, by `source_ref` prefix -- see the module-level
+    comment above this function for the real live incident (a sibling
+    `source_kind='self_study'` producer, the free-form "Curiosity"
+    reflection, was confirmed live to quote sensitive personal content) that
+    makes this an allowlist, not "any self_study row". Matched via SQL
+    `starts_with()`, not `LIKE ... %` (review finding: every one of the four
+    prefixes contains an underscore, which `LIKE` treats as a single-
+    character wildcard, not a literal -- `starts_with()` does exact literal
+    prefix matching, closing a real gap in the allowlist's own "fails
+    closed" guarantee).
 
     `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s
     own contract exactly (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded).
@@ -714,18 +730,32 @@ def load_latest_self_study_reflection(
     Read-only, best-effort: None on any error, empty table, or nothing
     matching the four safe prefixes -- degrades exactly like an absent
     `context_text` does (visual_chain.build_visual_prompt).
+
+    Performance note (review finding, not fixed): with `max_age_sec=None`,
+    the `source_ref` prefix filter cannot use an index and Postgres runs a
+    full `journal_entries` scan (live `EXPLAIN ANALYZE`, 2026-08-27: ~23ms /
+    4,747 buffers against 38,886 rows, vs ~0.2ms / 85 buffers when
+    `max_age_sec` is bound). `visual_chain.py`, this function's only real
+    caller, always passes `settings.self_study_context_max_age_sec`, so this
+    is not reachable in production today -- but any future caller that
+    omits `max_age_sec` reproduces the full scan. A sibling function in this
+    codebase, `services/orion-cortex-exec/app/self_study_analysis.py::
+    recently_journaled`, deliberately moved away from this exact `source_ref`
+    pattern-match shape for this exact reason -- worth revisiting the same
+    way if a second unbounded caller ever appears.
     """
     try:
         from sqlalchemy import text
 
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
+        from orion.schemas.self_study_analysis import ANALYSIS_SOURCES
 
+        safe_prefixes = tuple(f"{source}:" for source in ANALYSIS_SOURCES)
         prefix_clauses = " OR ".join(
-            f"source_ref LIKE :prefix{i}" for i in range(len(_SAFE_SELF_STUDY_SOURCE_PREFIXES))
+            f"starts_with(source_ref, :prefix{i})" for i in range(len(safe_prefixes))
         )
         params: dict[str, Any] = {
-            f"prefix{i}": f"{prefix}%"
-            for i, prefix in enumerate(_SAFE_SELF_STUDY_SOURCE_PREFIXES)
+            f"prefix{i}": prefix for i, prefix in enumerate(safe_prefixes)
         }
         where_sql = f"source_kind = 'self_study' AND body <> '' AND ({prefix_clauses})"
         if max_age_sec is not None:

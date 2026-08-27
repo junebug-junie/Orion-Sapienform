@@ -523,6 +523,83 @@ def extract_unified_turn_final_text(frames: list[dict]) -> Optional[str]:
     return None
 
 
+# Strong references to fire-and-forget TTS synthesis tasks. Review finding,
+# 2026-08-27: asyncio holds only a WEAK reference to a running task -- both
+# TTS dispatch call sites below discard create_task's return value, which is
+# exactly the shape that lets a task be garbage-collected mid-synthesis with
+# nothing surfaced (documented asyncio behavior; same class of bug already
+# fixed the same way in services/orion-whisper-tts/app/cuda_watchdog.py's
+# own _INFLIGHT set, PR #1901, same day). Self-trimming via the done
+# callback, so this never grows unbounded.
+_TTS_DISPATCH_INFLIGHT: set[asyncio.Task] = set()
+
+
+def dispatch_tts_reply(
+    *,
+    text: Optional[str],
+    disable_tts: bool,
+    tts_client,
+    tts_q: asyncio.Queue,
+    correlation_id: str,
+    session_id: Optional[str],
+    lane: str,
+    extra_gate: bool = True,
+    log_extra: Optional[dict] = None,
+) -> bool:
+    """Shared TTS gate + fire-and-forget dispatch, used by BOTH the classic
+    lane and the orion (unified-turn) lane.
+
+    Review finding, 2026-08-27: before this, each lane hand-rolled its own
+    copy of this ~15-line gate. That duplication is exactly the shape that
+    produced the bug this whole file's orion-lane TTS wiring fixes in the
+    first place -- one lane had the logic, the other didn't, and nothing
+    enforced they stay in sync. One shared function means a future change
+    to the gate (a rate limit, a content filter, a new condition) cannot be
+    applied to one lane and silently forgotten in the other.
+
+    `extra_gate` folds in a lane-specific condition (the classic lane's own
+    `not workflow_metadata_only`) without this function needing to know
+    what that concept is. `log_extra` lets a caller add lane-specific
+    fields to the decision log line (again: classic lane's
+    `workflow_metadata_only` value) without hardcoding classic-lane
+    vocabulary here.
+
+    Returns whether a synthesis task was actually dispatched -- the classic
+    lane's own tts_debug payload branch needs this to decide whether to
+    tell the browser "no voice reply is coming."
+    """
+    # .strip() truthiness, not bare truthiness: a whitespace-only string is
+    # non-empty (Python truthy) but is not real text to speak. Caught by
+    # this module's own tests while unifying the two lanes' gates -- the
+    # classic lane's ORIGINAL, pre-existing gate had this same gap (`bool
+    # (orion_response_text and ...)` with no strip), just never exercised
+    # by a whitespace-only real response. Fixed for both lanes at once here
+    # since they now share this one gate.
+    has_real_text = bool(text and text.strip())
+    will_tts = bool(has_real_text and extra_gate and not disable_tts and tts_client)
+    log_fields = {
+        "corr": correlation_id,
+        "sid": session_id,
+        "response_len": len(text or ""),
+        "disable_tts": disable_tts,
+        "has_tts_client": bool(tts_client),
+        "will_tts": will_tts,
+        "lane": lane,
+    }
+    if log_extra:
+        log_fields.update(log_extra)
+    logger.info(
+        "voice.tts.decision " + " ".join(f"{k}=%s" for k in log_fields),
+        *log_fields.values(),
+    )
+    if not will_tts:
+        return False
+    task = asyncio.create_task(run_tts_remote(text, tts_client, tts_q))
+    _TTS_DISPATCH_INFLIGHT.add(task)
+    task.add_done_callback(_TTS_DISPATCH_INFLIGHT.discard)
+    return True
+
+
 async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
     if not text.strip() or not tts_client:
         return
@@ -1279,23 +1356,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 # right here.
                 if websocket.client_state == WebSocketState.CONNECTED:
                     orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
-                    orion_will_tts = bool(
-                        orion_final_text and not disable_tts and tts_client
+                    dispatch_tts_reply(
+                        text=orion_final_text,
+                        disable_tts=disable_tts,
+                        tts_client=tts_client,
+                        tts_q=tts_q,
+                        correlation_id=trace_id,
+                        session_id=session_id,
+                        lane="orion",
                     )
-                    logger.info(
-                        "voice.tts.decision corr=%s sid=%s response_len=%d "
-                        "disable_tts=%s has_tts_client=%s will_tts=%s mode=orion",
-                        trace_id,
-                        session_id,
-                        len(orion_final_text or ""),
-                        disable_tts,
-                        bool(tts_client),
-                        orion_will_tts,
-                    )
-                    if orion_will_tts:
-                        asyncio.create_task(
-                            run_tts_remote(orion_final_text, tts_client, tts_q)
-                        )
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical
@@ -2186,22 +2255,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.warning("Failed to publish assistant chat history: %s", e, exc_info=True)
 
             # 4. TTS
-            will_tts = bool(
-                orion_response_text
-                and not workflow_metadata_only
-                and not disable_tts
-                and tts_client
-            )
-            logger.info(
-                "voice.tts.decision corr=%s sid=%s response_len=%d workflow_metadata_only=%s "
-                "disable_tts=%s has_tts_client=%s will_tts=%s",
-                trace_id,
-                session_id,
-                len(orion_response_text or ""),
-                workflow_metadata_only,
-                disable_tts,
-                bool(tts_client),
-                will_tts,
+            will_tts = dispatch_tts_reply(
+                text=orion_response_text,
+                disable_tts=disable_tts,
+                tts_client=tts_client,
+                tts_q=tts_q,
+                correlation_id=trace_id,
+                session_id=session_id,
+                lane="classic",
+                extra_gate=not workflow_metadata_only,
+                log_extra={"workflow_metadata_only": workflow_metadata_only},
             )
             if not will_tts and not disable_tts and orion_response_text:
                 tts_debug_payload = await _with_biometrics(
@@ -2219,10 +2282,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 if not await _safe_ws_send_json(websocket, tts_debug_payload):
                     continue
-            if will_tts:
-                asyncio.create_task(
-                    run_tts_remote(orion_response_text, tts_client, tts_q)
-                )
 
             if orion_response_text and not workflow_metadata_only:
                 history.append({"role": "assistant", "content": orion_response_text})

@@ -56,18 +56,24 @@ limited from not-limited.
 
 ## Why the sweep looked so good, and why that was misleading
 
-Replaying 826 decision points across 9 days at a $2.50 hypothetical ask:
+Replaying 863 decision points across 9 days at a $2.50 hypothetical ask, on a
+fixed 15-minute clock grid with the warm-up window excluded:
 
-| allowance / 5h | would-refuse rate | verdict |
-|---:|---:|---|
-| $150 | 19.4% | binds hard |
-| $200 | 9.2% | binds |
-| $300 | 1.7% | binds marginally |
-| $450 | 0.0% | dead |
-| $600 | 0.0% | dead |
-| $800 | 0.0% | dead |
+| allowance / 5h | refused (total) | **on observed spend** | on unknown spend |
+|---:|---:|---:|---:|
+| $150 | 23.9% | **170** | 36 |
+| $200 | 12.9% | **75** | 36 |
+| $300 | 5.6% | **12** | 36 |
+| $450 | 4.2% | **0** | 36 |
+| $600 | 4.2% | **0** | 36 |
 
-Read alone, "$150 refuses 19.4% of asks" looks like a working budget. It is
+The constant 36 is the fail-closed floor: decision points landing in a real
+producer gap, where spend is unknown and refusing is the safe direction. It is
+not the budget binding, and separating the two columns is the only reason that
+is visible. Live tick counts run 45-95 against a theoretical 96/day, so those
+gaps are routine.
+
+Read alone, "$150 refuses 170 asks on observed spend" looks like a working budget. It is
 not — it is a number chosen low enough to bite, and the table above shows the
 real constraint does not live at any particular point on this axis. Picking
 $150 and shipping it would have been **inventing scarcity**, which is the

@@ -39,27 +39,40 @@ enforceable wherever the logic lives (resolved direction, Juniper 2026-08-14:
 "advisory cap + reconciliation. Detect, do not pretend to prevent"). There is
 no `enforcing` flag to flip here because there is nothing honest to flip it to.
 
-THE DENOMINATOR IS CALIBRATED, NOT READ
----------------------------------------
-Remaining quota is not readable anywhere. There is no `claude usage`
-subcommand, and `~/.claude/policy-limits.json` is enterprise policy config
-(`enforce_web_search_mcp_isolation`, `remote_control_at_startup`), not rate
-limits. So `allowance_usd` is an operator constant discovered by hitting the
-limit once and recording cumulative spend at that moment.
+THE DOLLAR DENOMINATOR HAS BEEN MEASURED AND REFUTED
+----------------------------------------------------
+Read this before configuring an allowance.
 
-Nothing here may render a percentage as though it were read from an authority.
-`fraction_remaining` is a fraction of a *calibrated* allowance and is only
-defined when one is configured -- which is why `quota_state` returns None
-rather than defaulting.
+The design spec proposed discovering `allowance_usd` by "hitting the limit once
+and recording cumulative spend at that moment". That procedure was run against
+15 real rate-limit events inside the ledger's coverage. It does not converge:
+the limit fired anywhere between **$85.39 and $289.76** of trailing 5h spend, a
+3.4x spread, and the highest 5h window ever observed (**$420.07**) did not trip
+it at all -- higher than 14 of the 15 events that did. No threshold separates
+limited from not-limited on this axis. Full result:
+`docs/superpowers/specs/2026-08-27-quota-window-calibration-finding.md`.
 
-AND IT IS DENOMINATED IN DOLLARS, NOT IN QUOTA
-----------------------------------------------
-On a subscription token `total_estimated_cost_usd` is notional: API-rate
-pricing applied to a model-weighted token count. That is *probably* monotonic
-with the unit the subscription actually meters, which would make it a good
-proxy -- but "probably" is a metric-gate claim and it is UNVERIFIED. Until it
-is measured, this module is honestly a dollars-at-API-rates budget, and no
-caller should relabel it "quota remaining".
+Likely cause: the subscription meters **per-session** windows, while
+`dev_economics_ledger_log` is **machine-wide** across every concurrent session.
+That is the right denominator for the contested-resource argument -- Orion and
+Juniper really do draw from one pool -- and the wrong one for predicting a
+per-session ceiling.
+
+So `allowance_usd` is **not calibratable**, which is a stronger statement than
+"not yet calibrated". Nothing here may render a fraction of it as though it
+were read from, or fitted to, an authority. **Do not wire this into the
+allocator on the dollar axis.**
+
+WHAT SURVIVES, AND WHY THIS MODULE STILL EXISTS
+-----------------------------------------------
+Everything below is denominator-agnostic: summing deltas rather than ranges,
+unknown-versus-zero, failing closed on unknown, disclosing undercounts, and
+keeping "unconfigured" distinct from "exhausted". Only the units were wrong.
+
+It is kept as (a) an honest spend *report*, and (b) the harness a better
+denominator can be dropped into -- the leading candidate being to observe
+rate-limit events directly rather than predict them, which needs no calibrated
+denominator and cannot be tuned into non-binding.
 """
 
 from __future__ import annotations
@@ -151,12 +164,29 @@ def sum_window(ticks: Iterable[LedgerTick]) -> WindowSpend:
         tick_count += 1
         tokens += tick.total_tokens
         unpriced_sessions += tick.unpriced_session_count
+
+        cost = tick.cost_usd
+        if cost is not None and not math.isfinite(cost):
+            # A NaN cost is "we do not know what this cost", which is exactly
+            # what None already means -- so it is folded into unpriced rather
+            # than summed. Reachable from real data: `total_estimated_cost_usd`
+            # is `double precision` and Postgres accepts 'NaN'/'Infinity'.
+            #
+            # Summing it silently is not a cosmetic bug. NaN propagates through
+            # spend_usd, and because `nan > 0.0` is False, `max(0.0, nan)`
+            # returns 0.0 -- so the display reads "0.0% remaining" while
+            # would_refuse() approves a billion-dollar ask. That is the exact
+            # inversion this module exists to prevent, arriving silently.
+            cost = None
+        if cost is not None and cost < 0:
+            raise ValueError(f"tick cost_usd must be >= 0, got {tick.cost_usd!r}")
+
         if tick.total_tokens > 0:
             active += 1
-            if tick.cost_usd is None:
+            if cost is None:
                 unpriced_active += 1
-        if tick.cost_usd is not None:
-            spend += tick.cost_usd
+        if cost is not None:
+            spend += cost
 
     return WindowSpend(
         tick_count=tick_count,
@@ -180,6 +210,19 @@ class QuotaState:
     @property
     def spend_known(self) -> bool:
         return self.spend.observed
+
+    @property
+    def spend_is_floor(self) -> bool:
+        """True when every derived number here is a bound, not a value.
+
+        Re-exposed from `WindowSpend` because a caller holding a `QuotaState`
+        would otherwise get a clean `remaining_usd` / `would_refuse` answer
+        derived from a known-incomplete total with nothing marking it. When
+        this is True, `remaining_usd` is a CEILING on what remains and
+        `would_refuse` is permissive -- both err toward letting spending
+        through, which is the direction that needs disclosing.
+        """
+        return self.spend.is_floor
 
     @property
     def remaining_usd(self) -> float:
@@ -259,6 +302,11 @@ def quota_state(
     """
     if not math.isfinite(allowance_usd) or allowance_usd < MIN_MEANINGFUL_ALLOWANCE_USD:
         return None
+    # `sum_window` cannot produce either of these, but `WindowSpend` is public
+    # and a hand-built one must not inherit that invariant silently. Same
+    # contract as `budget.budget_state`'s check on `spent_sec`.
+    if not math.isfinite(spend.spend_usd) or spend.spend_usd < 0:
+        raise ValueError(f"spend_usd must be finite and >= 0, got {spend.spend_usd!r}")
     return QuotaState(
         allowance_usd=float(allowance_usd),
         spend=spend,

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.autonomy.quota_budget import (
+    WindowSpend,
     MIN_MEANINGFUL_ALLOWANCE_USD,
     LedgerTick,
     quota_state,
@@ -281,3 +282,75 @@ def test_window_elapsed_fraction_clamps_both_ends():
     assert window_elapsed_fraction(T0 + timedelta(hours=9), T0, 5.0) == 1.0
     assert window_elapsed_fraction(T0 - timedelta(hours=1), T0, 5.0) == 0.0
     assert window_elapsed_fraction(T0, T0, 0.0) == 0.0
+
+
+# --------------------------------------------------------------------------
+# Non-finite and negative costs must not defeat the fail-closed guarantee.
+# Found by code review 2026-08-27; reachable from real data because
+# `total_estimated_cost_usd` is `double precision` and Postgres accepts
+# 'NaN'/'Infinity'.
+# --------------------------------------------------------------------------
+
+
+def test_nan_cost_is_unknown_not_a_summed_number():
+    """Before the fix: NaN propagated into spend_usd, `max(0.0, nan)` returned
+    0.0 so the display read "0.0% remaining", and would_refuse approved a
+    billion-dollar ask. Silent inversion of the module's whole purpose.
+    """
+    spend = sum_window([tick(0, 100, float("nan")), tick(15, 100, 5.00)])
+
+    assert spend.spend_usd == pytest.approx(5.00)
+    assert math.isfinite(spend.spend_usd)
+    assert spend.unpriced_active_tick_count == 1
+    assert spend.is_floor is True
+
+    state = quota_state(allowance_usd=100.0, spend=spend, window_elapsed_fraction=1.0)
+    assert state is not None
+    assert state.fraction_remaining == pytest.approx(0.95)
+    assert state.would_refuse(1_000_000_000.0) is True
+
+
+def test_infinite_cost_is_also_treated_as_unknown():
+    spend = sum_window([tick(0, 100, float("inf"))])
+    assert spend.spend_usd == 0.0
+    assert spend.unpriced_active_tick_count == 1
+    assert spend.is_floor is True
+
+
+def test_negative_cost_is_rejected_not_netted_out():
+    """A negative is corruption, not unknown. Netting it against real spend
+    would let a bad row buy back budget.
+    """
+    with pytest.raises(ValueError, match="cost_usd"):
+        sum_window([tick(0, 100, 500.00), tick(15, 100, -500.00)])
+
+
+def test_quota_state_rejects_a_hand_built_nonfinite_window():
+    """`sum_window` can no longer produce this, but `WindowSpend` is public."""
+    bad = WindowSpend(
+        tick_count=1,
+        active_tick_count=1,
+        spend_usd=float("nan"),
+        tokens=100,
+        unpriced_session_count=0,
+        unpriced_active_tick_count=0,
+    )
+    with pytest.raises(ValueError, match="spend_usd"):
+        quota_state(allowance_usd=100.0, spend=bad, window_elapsed_fraction=1.0)
+
+    worse = WindowSpend(1, 1, -5.0, 100, 0, 0)
+    with pytest.raises(ValueError, match="spend_usd"):
+        quota_state(allowance_usd=100.0, spend=worse, window_elapsed_fraction=1.0)
+
+
+def test_quota_state_re_exposes_is_floor():
+    """A caller holding only a QuotaState would otherwise get a clean
+    remaining_usd derived from a known-incomplete total, unmarked.
+    """
+    spend = sum_window([tick(0, 500, 80.00, unpriced=3)])
+    state = quota_state(allowance_usd=150.0, spend=spend, window_elapsed_fraction=1.0)
+    assert state is not None
+
+    assert state.spend_is_floor is True
+    assert state.remaining_usd == pytest.approx(70.00)  # a CEILING on remaining
+    assert state.would_refuse(2.50) is False  # permissive, and now disclosed

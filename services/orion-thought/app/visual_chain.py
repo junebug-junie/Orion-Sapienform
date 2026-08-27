@@ -299,7 +299,11 @@ async def run_visual_chain_once(
         # upload_to_percept_store; the same reasoning applies here).
         prior_description, context_text = await asyncio.gather(
             asyncio.to_thread(load_latest_visual_chain_prior_description),
-            asyncio.to_thread(load_latest_reverie_interpretation),
+            asyncio.to_thread(
+                load_latest_reverie_interpretation,
+                char_limit=settings.reverie_context_char_limit,
+                max_age_sec=settings.reverie_context_max_age_sec,
+            ),
         )
         prompt = build_visual_prompt(prior_description, context_text)
 

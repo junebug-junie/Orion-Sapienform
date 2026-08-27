@@ -10674,7 +10674,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function shouldAppendOrionWsPayload(d) {
     if (!d || typeof d !== 'object') return false;
-    if (d.tts_error) return false;
+    // Review finding, 2026-08-27: `d.tts_error` alone (no `d.llm_response`)
+    // is the WS lane's own "synthesis failed" follow-up frame -- it also
+    // carries the ORIGINAL text under `d.text` for logging only, and must
+    // not spawn a duplicate bubble for text a real "final" frame already
+    // showed moments earlier. But the HTTP-fallback path (same date) can
+    // merge a REAL llm_response with a tts_error (text succeeded, TTS
+    // didn't) into ONE object -- that case must still render the text.
+    // The two are told apart by `d.llm_response` specifically, not the
+    // broader resolveAssistantDisplayText() below (which also reads
+    // `d.text`, exactly the field the WS-only case uses for logging, and
+    // would have wrongly treated case 1 as real text too).
+    if (d.tts_error && !d.llm_response) return false;
     // TTS playback follow-up may carry assistant text for logging; never spawn a second bubble.
     if (d.audio_response && !d.llm_response) return Boolean(d.workflow);
     if (d.workflow) return true;
@@ -10896,18 +10907,7 @@ document.addEventListener("DOMContentLoaded", () => {
             syncSocialInspectionFromRouteDebug(d.routing_debug);
           }
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
-          if (d.tts_debug) {
-            console.info('[tts] debug', d.tts_debug);
-          }
-          if (d.audio_response) {
-            console.info('[tts] audio_response received', {
-              audio_b64_len: d.audio_response.length,
-              tts_meta: d.tts_meta || null,
-            });
-            audioQueue.push({ audio_b64: d.audio_response, meta: d.tts_meta || null });
-            processAudioQueue();
-          }
-          if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
+          handleTtsFields(d);
           if (d.error) {
             appendMessage('System', `Error: ${d.error}`, 'text-red-400');
             if (d.audio_debug) {
@@ -11337,6 +11337,7 @@ document.addEventListener("DOMContentLoaded", () => {
               );
             }
             updateMemoryPanelFromResponse(d);
+            handleTtsFields(d);
             updateStatusBasedOnState();
         })
         .catch(e => {
@@ -11715,6 +11716,28 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     _finishVoiceStop();
+  }
+
+  // Shared by both delivery paths: the live WebSocket's onmessage handler
+  // AND the HTTP fallback's fetch().then() handler (app.js's own
+  // WS-down-so-fall-back-to-HTTP path, services/orion-hub/scripts/api_routes.py's
+  // /api/chat). Real incident, 2026-08-27 (corr=11215a1b-...): a turn that
+  // went through the HTTP fallback had no voice at all -- the backend now
+  // sends the SAME audio_response/tts_meta/tts_error fields either way, so
+  // this is the one place that reacts to them regardless of transport.
+  function handleTtsFields(d) {
+    if (d.tts_debug) {
+      console.info('[tts] debug', d.tts_debug);
+    }
+    if (d.audio_response) {
+      console.info('[tts] audio_response received', {
+        audio_b64_len: d.audio_response.length,
+        tts_meta: d.tts_meta || null,
+      });
+      audioQueue.push({ audio_b64: d.audio_response, meta: d.tts_meta || null });
+      processAudioQueue();
+    }
+    if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
   }
 
   function processAudioQueue() {

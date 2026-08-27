@@ -594,32 +594,90 @@ def dispatch_tts_reply(
     )
     if not will_tts:
         return False
-    task = asyncio.create_task(run_tts_remote(text, tts_client, tts_q))
+    task = asyncio.create_task(
+        run_tts_remote(
+            text, tts_client, tts_q,
+            correlation_id=correlation_id, session_id=session_id,
+        )
+    )
     _TTS_DISPATCH_INFLIGHT.add(task)
     task.add_done_callback(_TTS_DISPATCH_INFLIGHT.discard)
     return True
 
 
-async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
-    if not text.strip() or not tts_client:
-        return
-    logger.info("voice.tts.start text_len=%d", len(text))
+async def synthesize_tts_reply(
+    text: str,
+    tts_client,
+    *,
+    timeout_sec: float,
+    lane: str,
+    correlation_id: str = "-",
+    session_id: str = "-",
+) -> dict:
+    """The shared TTS synthesis core: build the request, await `speak()`
+    under a timeout, and return a plain dict shaped for merging into
+    EITHER a queue message (the WS lane, via `run_tts_remote` below) or an
+    HTTP JSON response body (`api_routes.py`'s HTTP-fallback chat route) --
+    `{"audio_response":..., "tts_source_text":..., "tts_meta":...}` on
+    success, `{"tts_error": "..."}` on failure, `{}` when there is nothing
+    to synthesize (no text, or no configured client).
+
+    Review finding, 2026-08-27: the HTTP-fallback fix originally hand-rolled
+    a THIRD independent copy of this exact logic -- the same "one lane
+    wired, one lane not, nothing keeping them in sync" shape that
+    `dispatch_tts_reply` (same file) was built earlier the same day to stop
+    happening for the will_tts *gate*. This is that same convergence
+    applied to the *synthesis* itself: one place emits
+    `voice.tts.start`/`voice.tts.done`/`voice.tts.error`, in one format,
+    regardless of which lane calls it.
+
+    Deliberately does NOT own the will_tts gate (disable_tts, tts_client
+    truthiness, any lane-specific extra condition) -- that decision differs
+    enough in shape between a fire-and-forget WS dispatch and a synchronous
+    HTTP await that forcing it into one function added more indirection
+    than it removed. Callers gate; this only synthesizes.
+    """
+    if not text or not text.strip() or not tts_client:
+        return {}
+    logger.info(
+        "voice.tts.start lane=%s corr=%s sid=%s text_len=%d",
+        lane,
+        correlation_id,
+        session_id,
+        len(text),
+    )
     try:
         req = TTSRequestPayload(text=text)
         result: TTSResultPayload = await asyncio.wait_for(
             tts_client.speak(req),
-            timeout=float(settings.HUB_TTS_TIMEOUT_SEC),
+            timeout=timeout_sec,
         )
-        audio_b64_len = len(result.audio_b64 or "")
+        if not result.audio_b64:
+            # Review finding, 2026-08-27: a "successful" call with an empty
+            # clip is a silent voice-drop with zero trace otherwise --
+            # nothing raised, nothing queued/returned, the UI does nothing.
+            # Treated as a real failure, not a quiet no-op.
+            logger.warning(
+                "voice.tts.empty_result lane=%s corr=%s sid=%s text_len=%d",
+                lane,
+                correlation_id,
+                session_id,
+                len(text),
+            )
+            return {"tts_error": "TTS returned no audio"}
         logger.info(
-            "voice.tts.done text_len=%d audio_b64_len=%d content_type=%s duration_sec=%s metadata=%s",
+            "voice.tts.done lane=%s corr=%s sid=%s text_len=%d audio_b64_len=%d "
+            "content_type=%s duration_sec=%s metadata=%s",
+            lane,
+            correlation_id,
+            session_id,
             len(text),
-            audio_b64_len,
+            len(result.audio_b64),
             result.content_type,
             result.duration_sec,
             result.metadata,
         )
-        msg = {
+        return {
             "audio_response": result.audio_b64,
             # Not `text` — the UI treats d.text like llm_response and would duplicate the bubble.
             "tts_source_text": text,
@@ -628,17 +686,41 @@ async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
                 "duration_sec": result.duration_sec,
                 "metadata": result.metadata,
             },
-            "state": "speaking",
         }
-        await queue.put(msg)
     except asyncio.TimeoutError:
-        err = f"TTS timed out after {settings.HUB_TTS_TIMEOUT_SEC}s"
-        logger.error("voice.tts.error %s", err)
-        await queue.put({"tts_error": err, "text": text, "state": "idle"})
+        err = f"TTS timed out after {timeout_sec}s"
+        logger.error("voice.tts.error lane=%s corr=%s sid=%s %s", lane, correlation_id, session_id, err)
+        return {"tts_error": err}
     except Exception as e:
         err = str(e) or "TTS synthesis failed"
-        logger.error("voice.tts.error %s", err, exc_info=True)
-        await queue.put({"tts_error": err, "text": text, "state": "idle"})
+        logger.error(
+            "voice.tts.error lane=%s corr=%s sid=%s %s", lane, correlation_id, session_id, err, exc_info=True
+        )
+        return {"tts_error": err}
+
+
+async def run_tts_remote(
+    text: str,
+    tts_client,
+    queue: asyncio.Queue,
+    *,
+    correlation_id: str = "-",
+    session_id: str = "-",
+):
+    result = await synthesize_tts_reply(
+        text,
+        tts_client,
+        timeout_sec=float(settings.HUB_TTS_TIMEOUT_SEC),
+        lane="ws",
+        correlation_id=correlation_id,
+        session_id=session_id,
+    )
+    if not result:
+        return
+    msg = {**result, "state": "speaking" if "audio_response" in result else "idle"}
+    if "tts_error" in result:
+        msg["text"] = text
+    await queue.put(msg)
 
 
 async def biometrics_heartbeat(

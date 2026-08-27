@@ -499,6 +499,19 @@ def read_snapshot(
             dropped,
         )
     counts = count_rows[0] if count_rows else {}
+    live_total = _as_int(counts.get("live_total"), len(offered))
+    closed_total = _as_int(counts.get("closed_total"), 0)
+    if live_total == 0 and closed_total > 0:
+        # Orion has formed priors and closed every one of them. Legitimate in
+        # principle; in practice this is what the 2026-08-27 status-filter bug
+        # looked like from the outside, and the only symptom was a run quietly
+        # starting from nothing. Loud here so a recurrence is not invisible.
+        logger.warning(
+            "curiosity_worldview_pool_dead closed=%s -- no live priors left, so "
+            "the next run inherits nothing to test; expected only if Orion has "
+            "genuinely refuted or retired all of them",
+            closed_total,
+        )
     return WorldviewSnapshot(
         live_priors=offered,
         stale_priors=stale,
@@ -507,8 +520,8 @@ def read_snapshot(
             for r in settled_rows
             if str(r.get("claim") or "").strip()
         ],
-        live_total=_as_int(counts.get("live_total"), len(offered)),
-        closed_total=_as_int(counts.get("closed_total"), 0),
+        live_total=live_total,
+        closed_total=closed_total,
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
     )
 

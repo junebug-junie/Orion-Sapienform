@@ -694,3 +694,21 @@ def test_a_closed_prior_does_not_come_back_through_the_live_read() -> None:
     assert [p.prior_id for p in view.live_priors] == ["live_one"]
     assert view.live_total == 1
     assert view.closed_total == 2
+
+
+def test_a_dead_prior_pool_is_logged_not_silently_started_from(caplog) -> None:
+    """Every prior closed is legal but is also what the 2026-08-27 filter bug
+    looked like from outside: a run quietly beginning with nothing."""
+    rows = [_prior_row(pid="d1", status="refuted")]
+    with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
+        view = read_snapshot(_StatusAwareReader(rows), sample=8, stale_after=3)
+    assert view.live_total == 0 and view.closed_total == 1
+    assert "curiosity_worldview_pool_dead" in caplog.text
+
+
+def test_an_empty_graph_is_not_reported_as_a_dead_pool(caplog) -> None:
+    """Never written a prior and closed every prior are different states, and
+    only one of them is a fault."""
+    with caplog.at_level("WARNING", logger="orion.curiosity.worldview"):
+        read_snapshot(_StatusAwareReader([]), sample=8, stale_after=3)
+    assert "curiosity_worldview_pool_dead" not in caplog.text

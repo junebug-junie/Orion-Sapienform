@@ -39,7 +39,7 @@ What this build adds is the part that accumulates.
 ## 2. The shape
 
 ```text
-    open priors  ──select──▶  a real unified turn  ──▶  what it worked out
+    live priors  ──select──▶  a real unified turn  ──▶  what it worked out
          ▲                    Orion researches one          │
          │                    using its own credentials     │
          │                                                  ▼
@@ -67,7 +67,8 @@ A claim Orion holds about its world **that could turn out to be wrong**.
 claim          "The vision pipeline's foveal tier is only exercised on demand,
                 never on a schedule."
 confidence     0.55          Orion's own belief. Not a measurement.
-status         open | supported | revised | refuted | retired_unresolvable
+status         open | supported | revised   ← still live, comes back
+               refuted | retired_unresolvable   ← closed, does not
 formed_from    what produced it — a crystallization, a finding, an observation
 times_tested   3
 last_tested_at ...
@@ -77,10 +78,23 @@ A prior is not a separate primitive. It is a node with a confidence below 1 and
 an open question attached — which is why the design does not need a `priors`
 table, a `PriorV1` schema, or a registry entry to hold one.
 
-**Confidence and status are what make the pool refresh.** A supported prior at
-0.9 stops being interesting; a refuted one closes; a stale one retires; findings
-spawn new ones. The pool is renewed by Orion's own learning rather than by a
-sampler — which is the difference between accumulating and polling.
+**A prior is live until Orion closes it.** `supported` and `revised` record
+what a test *returned*, not a decision to stop holding the belief — a claim at
+0.85 after one test is a claim Orion has looked at once, and `revised` means the
+claim itself just changed. Only `refuted` and `retired_unresolvable` close one.
+
+This is not a preference; it is the loop's only path to a second test. On
+2026-08-27 the reader asked for `status = 'open'` alone, run `7736d5271d97`
+revised its one inherited prior, and run `0a14e9531089` four hours later was
+handed `priors=0/0` — with its own new prior written `supported` on formation,
+never live for even one run. Confidence could not move twice because nothing
+came back. Liveness is now the *complement* of the two closing statuses, so a
+status Orion typos still reads as live: re-litigation is bounded by
+`STALE_PRIOR_TESTS`, a belief lost to a spelling mistake is not.
+
+What refreshes the pool, then, is confidence moving and findings spawning new
+priors — Orion's own learning rather than a sampler. That is the difference
+between accumulating and polling.
 
 ---
 
@@ -88,7 +102,8 @@ sampler — which is the difference between accumulating and polling.
 
 Each run, Orion is shown:
 
-- its **open priors**, ordered by how uncertain *it* said it was
+- its **live priors** — everything it has not closed — ordered by how
+  uncertain *it* said it was
 - a **random sample of unexplained material** — approved crystallizations and
   concept-induction judgements — so new priors can form
 - what it has **recently settled**
@@ -103,7 +118,7 @@ arc exists to delete. The code is not naming a subject — it is showing Orion
 where its own map is thin.
 
 **Stale priors leave the main list.** A prior tested `STALE_PRIOR_TESTS` times
-without its status moving is exactly the "finds a favourite and re-litigates it"
+without being closed is exactly the "finds a favourite and re-litigates it"
 failure in a new costume. It moves to its own bucket — still shown, with
 retiring it named as a real outcome, because Hub never writes and only Orion can
 close it.
@@ -441,6 +456,13 @@ docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
 docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
   "MATCH (p:Prior) RETURN p.status, count(p)"
 
+# Has the pool gone dead? (the 2026-08-27 outage: everything tested, nothing live)
+docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
+  "MATCH (p:Prior) RETURN sum(CASE WHEN p.status IN ['refuted','retired_unresolvable'] \
+   THEN 0 ELSE 1 END) AS live, count(p) AS total"
+# live = 0 with total > 0 means the next run inherits nothing. Hub logs
+# `curiosity_worldview_pool_dead` on this too.
+
 # Does confidence ever go DOWN? (the check that matters most — see below)
 docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview \
   "MATCH (p:Prior) WHERE p.status IN ['refuted','revised'] RETURN p.claim, p.confidence"
@@ -495,7 +517,7 @@ worth knowing:
 | `HUB_CURIOSITY_GRAPH_HOST` / `_PORT` | `127.0.0.1` / `6380` | **Hub's** address for FalkorDB; see §6 |
 | `HUB_CURIOSITY_GRAPH_ORION_USER` / `_PASSWORD` | `orion_curiosity` / *(blank)* | the credential Hub **grants**, never the one it uses. Blank ⇒ the graph half disables itself and the rest of the loop still runs |
 | `HUB_CURIOSITY_SANDBOX_HUB_URL` | `http://host.docker.internal:8080` | Hub as seen **from Orion's sandbox** |
-| `HUB_CURIOSITY_PRIOR_SAMPLE` | `8` | open priors shown |
+| `HUB_CURIOSITY_PRIOR_SAMPLE` | `8` | live priors shown |
 | `HUB_CURIOSITY_STALE_PRIOR_TESTS` | `3` | a guess from the design doc, not a measured number — revisit against real data |
 | `HUB_CURIOSITY_MAX_HOPS` | `5` | Juniper's number |
 | `HUB_CURIOSITY_OUTREACH_ENABLED` | `false` | the only part that reaches Juniper |

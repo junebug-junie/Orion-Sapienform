@@ -500,6 +500,29 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optiona
     except Exception as e:
         logger.error(f"drain_queue error: {e}", exc_info=True)
 
+def extract_unified_turn_final_text(frames: list[dict]) -> Optional[str]:
+    """Pulls the real assistant reply text out of a run_unified_turn()
+    frame list, for the orion-lane TTS trigger below.
+
+    Deliberately the "final" frame's `llm_response` ONLY -- not a
+    turn_error frame's `partial_draft`. A partial draft is real
+    assistant-authored text (the browser does render it as an Orion
+    bubble), but speaking an error-path partial aloud is a different,
+    untested product decision, not folded in here.
+
+    Frame order is not assumed: `_success_frames` in turn_orchestrator.py
+    can prepend substrate_appraisal/reflection frames before the final one,
+    so this scans for `type == "final"` rather than trusting frames[-1].
+    A frame list with no "final" frame (turn_deferred/turn_error/
+    turn_degraded-only, or empty) yields None, same as "nothing to speak".
+    """
+    for frame in frames:
+        if frame.get("type") == "final":
+            text = frame.get("llm_response")
+            return text if isinstance(text, str) and text.strip() else None
+    return None
+
+
 async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
     if not text.strip() or not tts_client:
         return
@@ -1168,8 +1191,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     correlation_id=trace_id,
                     is_voice_turn=not is_text_input,
                 )
+                orion_turn_frames: list[dict] = []
                 try:
-                    await run_awaitable_cancel_on_ws_disconnect(
+                    orion_turn_frames = await run_awaitable_cancel_on_ws_disconnect(
                         websocket,
                         run_unified_turn(
                             websocket,
@@ -1224,6 +1248,53 @@ async def websocket_endpoint(websocket: WebSocket):
                         logger.info(
                             "chat_turn_affect_post_skipped corr=%s reason=client_disconnected",
                             trace_id,
+                        )
+
+                # Voice reply, orion lane. Confirmed live 2026-08-26 (real
+                # incident, corr=7dc1bab2-97a4-4390-89a2-cdd1fa4f0092): this
+                # lane's own `continue` above exits before EVER reaching the
+                # classic lane's own "4. TTS" block further down in this
+                # function -- so an Orion-mode turn had no path to speech at
+                # all, structurally, regardless of disable_tts. Voice INPUT
+                # (STT, above) always worked; voice OUTPUT never did for
+                # this lane specifically. Mirrors the classic lane's own
+                # will_tts gate (disable_tts, tts_client) so the two lanes
+                # behave identically from the browser's point of view --
+                # same `tts_q` the classic lane's own drain_task (defined
+                # once per connection, above the while loop) already relays
+                # audio through, so no new plumbing is needed on the
+                # playback side, only the trigger.
+                #
+                # Deliberately scoped to the "final" frame's real
+                # llm_response only -- NOT a turn_error frame's
+                # partial_draft. A partial draft is real assistant-authored
+                # text and the browser does render it as an Orion bubble,
+                # but speaking it aloud on an error path is a materially
+                # different, untested product decision left for a
+                # deliberate follow-up rather than folded in silently here.
+                #
+                # Skipped on disconnect for the same reason the post-affect
+                # leg is: synthesizing speech for a socket that is already
+                # gone is pure waste, and the client_state check is already
+                # right here.
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    orion_final_text = extract_unified_turn_final_text(orion_turn_frames)
+                    orion_will_tts = bool(
+                        orion_final_text and not disable_tts and tts_client
+                    )
+                    logger.info(
+                        "voice.tts.decision corr=%s sid=%s response_len=%d "
+                        "disable_tts=%s has_tts_client=%s will_tts=%s mode=orion",
+                        trace_id,
+                        session_id,
+                        len(orion_final_text or ""),
+                        disable_tts,
+                        bool(tts_client),
+                        orion_will_tts,
+                    )
+                    if orion_will_tts:
+                        asyncio.create_task(
+                            run_tts_remote(orion_final_text, tts_client, tts_q)
                         )
                 continue
 

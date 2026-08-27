@@ -471,8 +471,10 @@ def select_priors(
     UNCERTAINTY ORDERS THE PRESENTATION; ORION STILL CHOOSES. That distinction
     is the whole difference from the keyword detector this arc deleted: the
     code is not naming a subject, it is showing Orion where its own map is
-    thin. Most-uncertain first, then least-tested, then a stable id tiebreak so
-    the order does not shuffle between runs for no reason.
+    thin. Most-uncertain first, then least-tested, then a PER-RUN rotation among
+    exact ties -- see `_rotation_key`. It was a stable id tiebreak until the
+    pool stopped draining on first test, at which point stable meant the same
+    `sample` priors every run forever and the rest never presented at all.
 
     STALE PRIORS ARE SEPARATED, NOT HIDDEN. A prior tested `stale_after` times
     without being closed is exactly the "finds a favourite and

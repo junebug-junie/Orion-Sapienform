@@ -22,6 +22,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -77,9 +78,14 @@ async def _read_schedule() -> dict[str, Any]:
     A dashboard reading `orion:curiosity:count:...` from its own string literal
     would keep rendering a confident 0 forever the day that prefix changes.
 
-    The daily counter is keyed on the OPERATOR'S LOCAL date, which is the same
-    convention the loop counts against -- reading it as UTC here would show the
-    wrong bucket for most of Juniper's evening.
+    The daily counter is keyed on the OPERATOR'S LOCAL date, and the zone comes
+    from the same setting the loop uses (`HUB_ENDOGENOUS_OUTREACH_TZ`), NOT from
+    this process's own locale. The container sets no `TZ`, so `datetime.now()
+    .astimezone()` here is UTC: between 18:00 and 23:59 in Juniper's zone that
+    reads tomorrow's key, finds nothing, and reports `runs_today: 0` while the
+    loop is at cap -- the "Runs today" tile would sit at 0 of 3 every evening
+    and the at-cap highlight would never fire. Caught in review; the earlier
+    version of this docstring claimed to avoid the exact bug it had.
     """
     out: dict[str, Any] = {
         "available": False,
@@ -111,7 +117,11 @@ async def _read_schedule() -> dict[str, Any]:
         if redis is None:
             return out
 
-        local_date = datetime.now().astimezone().date().isoformat()
+        try:
+            tz = ZoneInfo(getattr(cfg, "HUB_ENDOGENOUS_OUTREACH_TZ", "UTC") or "UTC")
+        except Exception:  # noqa: BLE001 -- same fallback the loop takes
+            tz = timezone.utc
+        local_date = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
         last = await redis.get(_COOLDOWN_KEY)
         count = await redis.get(f"{_DAILY_COUNT_KEY_PREFIX}{local_date}")
         if isinstance(last, (bytes, bytearray)):
@@ -155,8 +165,12 @@ async def curiosity_atlas_api() -> JSONResponse:
             "reason": "graph_not_configured",
         }
     else:
-        view = await asyncio.to_thread(read_atlas, reader)
-        payload = to_payload(view)
+        # `to_payload` and not just `read_atlas`: building the payload walks
+        # every prior's trajectory and deep-copies every dataclass, and Hub runs
+        # one uvicorn worker -- doing that on the event loop stalls every
+        # connected websocket, which is the rule `WorldviewReader` already
+        # states for its own blocking call.
+        payload = await asyncio.to_thread(lambda: to_payload(read_atlas(reader)))
     payload["schedule"] = await _read_schedule()
     return JSONResponse(content=payload, headers=_NO_CACHE)
 

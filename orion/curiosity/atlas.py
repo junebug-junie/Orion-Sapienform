@@ -53,12 +53,15 @@ LABEL_PRIOR_REVISION = "PriorRevision"
 
 # --- Cypher. Fully static: this module takes no caller input into a query. ---
 
+ATLAS_PRIORS_LIMIT = 2000
+
 ATLAS_PRIORS_CYPHER = (
     f"MATCH (p:{LABEL_PRIOR}) RETURN p.prior_id AS prior_id, p.claim AS claim, "
     "p.confidence AS confidence, p.status AS status, "
     "p.times_tested AS times_tested, p.formed_from AS formed_from, "
     "p.last_tested_at AS last_tested_at, p.run_id AS run_id, "
-    "p.last_run_id AS last_run_id, p.why AS why LIMIT 2000"
+    "p.last_run_id AS last_run_id, p.why AS why "
+    f"LIMIT {ATLAS_PRIORS_LIMIT}"
 )
 
 ATLAS_REVISIONS_CYPHER = (
@@ -167,6 +170,9 @@ class AtlasView:
     revisions: list[AtlasRevision] = field(default_factory=list)
     runs: list[AtlasRun] = field(default_factory=list)
     unavailable_reason: Optional[str] = None
+    _by_prior: Optional[dict[str, list["AtlasRevision"]]] = field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def is_unavailable(self) -> bool:
@@ -179,6 +185,21 @@ class AtlasView:
     @property
     def closed_total(self) -> int:
         return sum(1 for p in self.priors if p.is_closed)
+
+    @property
+    def revisions_by_prior(self) -> dict[str, list["AtlasRevision"]]:
+        """Built once per view rather than rescanned per prior.
+
+        `to_payload` calls `trajectory_for` for every prior, and a linear scan
+        each time is O(priors x revisions) -- 10M iterations at this module's
+        own query limits, on Hub's single uvicorn worker.
+        """
+        if self._by_prior is None:
+            index: dict[str, list[AtlasRevision]] = {}
+            for rev in self.revisions:
+                index.setdefault(rev.prior_id, []).append(rev)
+            object.__setattr__(self, "_by_prior", index)
+        return self._by_prior  # type: ignore[return-value]
 
     @property
     def pool_is_dead(self) -> bool:
@@ -338,9 +359,22 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
     except WorldviewUnavailable as exc:
         return AtlasView(unavailable_reason=str(exc)[:200])
 
+    if len(prior_rows) >= ATLAS_PRIORS_LIMIT:
+        logger.warning(
+            "curiosity_atlas_priors_truncated limit=%s -- the page's pool counts "
+            "are computed from the rows it read, so a truncated read makes them "
+            "disagree with the loop's own server-side COUNTS_CYPHER",
+            ATLAS_PRIORS_LIMIT,
+        )
     priors = [p for p in (_build_prior(r) for r in prior_rows) if p is not None]
     revisions = [r for r in (_build_revision(x) for x in revision_rows) if r is not None]
-    revisions.sort(key=lambda r: (r.written_at or 0, r.prior_id))
+    # A missing `written_at` is UNKNOWN, not oldest -- same rule as
+    # `assemble_runs`. Orion writes these by hand; omit `timestamp()` once
+    # and sorting it first would seed the trajectory's origin from its
+    # `from_confidence` and draw that prior's whole chart backwards.
+    revisions.sort(
+        key=lambda r: (r.written_at is not None, r.written_at or 0, r.prior_id)
+    )
 
     return AtlasView(
         priors=sorted(priors, key=lambda p: (p.is_closed, -p.times_tested, p.prior_id)),
@@ -365,9 +399,7 @@ def trajectory_for(view: AtlasView, prior_id: str) -> list[dict[str, Any]]:
     that confidence never moved -- the caller must say which.
     """
     points: list[dict[str, Any]] = []
-    for rev in view.revisions:
-        if rev.prior_id != prior_id:
-            continue
+    for rev in view.revisions_by_prior.get(prior_id, ()):
         if not points and rev.from_confidence is not None:
             points.append(
                 {
@@ -394,7 +426,10 @@ def trajectory_for(view: AtlasView, prior_id: str) -> list[dict[str, Any]]:
                 "run_id": current.last_run_id or current.created_by_run,
                 "confidence": current.confidence,
                 "status": current.status,
-                "recorded": bool(points),
+                # ALWAYS False: this point is the prior's current state, never a
+                # `:PriorRevision`. Tagging it True whenever some other revision
+                # exists would invert the one distinction this flag carries.
+                "recorded": False,
             }
         )
     return points

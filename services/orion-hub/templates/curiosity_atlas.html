@@ -25,6 +25,8 @@
   --series-2:       #eb6834;
   --series-3:       #1baf7a;
   --series-4:       #eda100;
+  --series-5:       #e87ba4;
+  --series-6:       #008300;
   --good:           #0ca30c;
   --warning:        #fab219;
   --critical:       #d03b3b;
@@ -52,6 +54,8 @@
     --series-2:     #d95926;
     --series-3:     #199e70;
     --series-4:     #c98500;
+    --series-5:     #d55181;
+    --series-6:     #008300;
     --good-text:    #0ca30c;
     --shadow:       0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
   }
@@ -70,6 +74,8 @@
   --series-2:     #d95926;
   --series-3:     #199e70;
   --series-4:     #c98500;
+  --series-5:     #d55181;
+  --series-6:     #008300;
   --good-text:    #0ca30c;
   --shadow:       0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
 }
@@ -259,10 +265,40 @@ tr:last-child td { border-bottom: none; }
 <script>
 "use strict";
 
-const SERIES = ["--series-1", "--series-2", "--series-3", "--series-4"];
-// Fixed order, never cycled. A fifth kind folds into "Other" rather than
-// inventing a hue -- see the palette note in the stylesheet.
-const KIND_ORDER = ["Prior", "Finding", "Hop", "TurnOutcome"];
+const SERIES = ["--series-1", "--series-2", "--series-3",
+                "--series-4", "--series-5", "--series-6"];
+// Fixed order, never cycled. KNOWN kinds lead in this order; anything Orion
+// starts writing that is not listed still gets a segment, because the growth
+// query counts every labelled node and `total_added` sums all of them --
+// filtering the segments to a hardcoded list made the bar disagree with its
+// own total (a run writing 1 Prior + 5 PriorRevision rendered a full-width
+// bar labelled "1" beside a total of "6"). Review finding. Past six the tail
+// folds into one "Other" segment rather than inventing a seventh hue.
+const KIND_ORDER = ["Prior", "Finding", "Hop", "TurnOutcome",
+                    "PriorRevision", "Concept"];
+const OTHER = "Other";
+
+function kindsPresent(runs) {
+  const seen = new Set();
+  runs.forEach((r) => Object.keys(r.added || {}).forEach((k) => seen.add(k)));
+  const known = KIND_ORDER.filter((k) => seen.has(k));
+  const extra = [...seen].filter((k) => !KIND_ORDER.includes(k)).sort();
+  const kinds = known.concat(extra);
+  return kinds.length <= SERIES.length
+    ? { kinds, folded: [] }
+    : { kinds: kinds.slice(0, SERIES.length - 1).concat(OTHER),
+        folded: kinds.slice(SERIES.length - 1) };
+}
+
+function bucketed(added, kinds, folded) {
+  const out = {};
+  kinds.forEach((k) => {
+    out[k] = k === OTHER
+      ? folded.reduce((n, f) => n + (added[f] || 0), 0)
+      : (added[k] || 0);
+  });
+  return out;
+}
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -334,13 +370,22 @@ function renderBanners(d) {
   // whole slot was spent on nothing.
   const s = d.schedule || {};
   if (s.available && typeof s.runs_today === "number" && d.available !== false) {
-    const seenToday = (d.runs || []).filter((r) => isToday(r.written_at)).length;
-    const missing = s.runs_today - seenToday;
+    // A run's only timestamp comes from its `:TurnOutcome`, so a turn killed
+    // MID-write has nodes but no date. Counting those as "left no trace" was
+    // wrong in both directions: it contradicted this banner's own body, and it
+    // double-reported a run the ledger already flags with its own pill.
+    // Undated-but-wrote counts as accounted for; only a run that wrote NOTHING
+    // AT ALL is invisible here, and the counter gap is its sole evidence.
+    const wroteToday = (d.runs || []).filter((r) => isToday(r.written_at)).length;
+    const wroteUndated = (d.runs || []).filter(
+      (r) => !r.written_at && r.total_added > 0).length;
+    const missing = s.runs_today - wroteToday - wroteUndated;
     if (missing > 0) {
       out.push(banner("warning", "△",
-        `${missing} run${missing === 1 ? "" : "s"} today left no trace in the graph`,
-        `The cooldown counter says ${s.runs_today} ran; ${seenToday} wrote a node. ` +
-        `A turn killed before it writes still spends its daily slot — check Hub logs for that run.`));
+        `${missing} run${missing === 1 ? "" : "s"} today wrote nothing at all`,
+        `The daily counter says ${s.runs_today} ran and ${wroteToday + wroteUndated} left ` +
+        `a node behind. A turn killed before it writes still spends its slot, and carries ` +
+        `no run id on anything — so it appears in no panel below. Check Hub logs for it.`));
     }
   }
   $("banners").innerHTML = out.join("");
@@ -436,7 +481,7 @@ function renderGrowth(d) {
     $("growth-table").innerHTML = "";
     return;
   }
-  const kinds = KIND_ORDER.filter((k) => runs.some((r) => (r.added || {})[k]));
+  const { kinds, folded } = kindsPresent(runs);
   const max = Math.max(...runs.map((r) => r.total_added));
 
   $("growth").innerHTML = `
@@ -447,24 +492,29 @@ function renderGrowth(d) {
       const width = (r.total_added / max) * 100;
       return `<div class="barrow">
         <span class="name" title="${esc(r.run_id)}">${esc(r.run_id.slice(0, 12))}</span>
-        <div class="track" style="width:${width.toFixed(1)}%">${kinds.map((k) => {
-          const n = (r.added || {})[k] || 0;
+        <div class="track" style="width:${width.toFixed(1)}%">${(() => {
+          const b = bucketed(r.added || {}, kinds, folded);
+          return kinds.map((k) => {
+          const n = b[k] || 0;
           if (!n) return "";
           // Direct label inside every segment: light-mode aqua and yellow are
           // sub-3:1 on the surface, so the relief rule requires visible labels.
           return `<div class="seg" style="background:${kindColor(k)};flex:${n}"
-                       title="${esc(k)}: ${n}">${n >= 1 ? n : ""}</div>`;
-        }).join("")}</div>
+                       title="${esc(k === OTHER ? folded.join(", ") : k)}: ${n}">${n >= 1 ? n : ""}</div>`;
+        }).join(""); })()}</div>
         <span class="total">${r.total_added}</span>
       </div>`;
     }).join("")}</div>`;
 
   $("growth-table").innerHTML = `<table>
     <thead><tr><th>Run</th>${kinds.map((k) => `<th class="num">${esc(k)}</th>`).join("")}<th class="num">Total</th></tr></thead>
-    <tbody>${runs.map((r) => `<tr>
+    <tbody>${runs.map((r) => {
+      const b = bucketed(r.added || {}, kinds, folded);
+      return `<tr>
       <td class="mono">${esc(r.run_id)}</td>
-      ${kinds.map((k) => `<td class="num">${(r.added || {})[k] || 0}</td>`).join("")}
-      <td class="num">${r.total_added}</td></tr>`).join("")}</tbody></table>`;
+      ${kinds.map((k) => `<td class="num">${b[k] || 0}</td>`).join("")}
+      <td class="num">${r.total_added}</td></tr>`;
+    }).join("")}</tbody></table>`;
 }
 
 /* --- run ledger --------------------------------------------------------- */

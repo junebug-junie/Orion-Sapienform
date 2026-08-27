@@ -380,7 +380,9 @@ interruption. The gates protect the human, not the module — see
 Orion may also decline at this point: the composition prompt asks for the exact
 token `PASS`, which `is_pass_response` checks, and nothing is sent.
 
-Off by default (`HUB_CURIOSITY_OUTREACH_ENABLED=false`).
+ON since 2026-08-27, by Juniper (`HUB_CURIOSITY_OUTREACH_ENABLED=true`),
+after run `0a14e9531089` set `reach_out=true` for the first time and the
+message was logged as `curiosity_outreach_disabled` and dropped.
 
 ---
 
@@ -520,7 +522,7 @@ worth knowing:
 | `HUB_CURIOSITY_PRIOR_SAMPLE` | `8` | live priors shown |
 | `HUB_CURIOSITY_STALE_PRIOR_TESTS` | `3` | a guess from the design doc, not a measured number — revisit against real data |
 | `HUB_CURIOSITY_MAX_HOPS` | `5` | Juniper's number |
-| `HUB_CURIOSITY_OUTREACH_ENABLED` | `false` | the only part that reaches Juniper |
+| `HUB_CURIOSITY_OUTREACH_ENABLED` | `true` | the only part that reaches Juniper; on since 2026-08-27 |
 
 Orion's own credentials live in `~/.fcc/.env` as `ORION_CURIOSITY_*` (seven
 keys) — never in this repo.

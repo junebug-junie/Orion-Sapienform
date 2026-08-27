@@ -317,13 +317,19 @@ def test_the_operator_surface_exposes_no_write_route() -> None:
     writes to Orion's graph, and a route that could edit a belief Orion formed
     needs an auth story, an audit trail, and an argument this does not have.
     Asserted on the router rather than trusted to review."""
-    import sys
+    # Loaded BY PATH, not by import name. The repo root has its own `scripts`
+    # package, so `from scripts.curiosity_routes import ...` resolves against
+    # whichever one reached sys.path first -- green alone, ModuleNotFoundError
+    # once the orion-hub suite runs in the same session.
+    import importlib.util
     from pathlib import Path
 
-    hub = Path(__file__).resolve().parents[1] / "services" / "orion-hub"
-    if str(hub) not in sys.path:
-        sys.path.insert(0, str(hub))
-    from scripts.curiosity_routes import router
+    path = (Path(__file__).resolve().parents[1] / "services" / "orion-hub"
+            / "scripts" / "curiosity_routes.py")
+    spec = importlib.util.spec_from_file_location("_curiosity_routes_probe", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    router = module.router
 
     assert router.routes, "the router registered nothing"
     for route in router.routes:
@@ -333,15 +339,12 @@ def test_the_operator_surface_exposes_no_write_route() -> None:
 def test_the_schedule_keys_are_imported_from_the_loop_that_writes_them() -> None:
     """A dashboard with its own copy of `orion:curiosity:count:` would render a
     confident 0 forever the day that prefix changes."""
-    import sys
     from pathlib import Path
 
-    hub = Path(__file__).resolve().parents[1] / "services" / "orion-hub"
-    if str(hub) not in sys.path:
-        sys.path.insert(0, str(hub))
     import ast
 
-    source = (hub / "scripts" / "curiosity_routes.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "services" / "orion-hub"
+              / "scripts" / "curiosity_routes.py").read_text()
     assert "_COOLDOWN_KEY" in source and "_DAILY_COUNT_KEY_PREFIX" in source
 
     # AST rather than a substring scan: the docstring above explains this very

@@ -96,21 +96,21 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "is not in front of you. Say so if it matters to what you conclude.",
             "",
         ]
-    if not view.open_priors and not view.stale_priors:
-        if view.open_total > 0:
+    if not view.live_priors and not view.stale_priors:
+        if view.live_total > 0:
             # The counts query SAW open priors that `build_prior` could not
             # read (no `prior_id`, or no `claim`). Saying "none outstanding"
             # here would tell Orion the opposite of the truth on the exact
             # schema-drift case `read_snapshot` already logs. A review finding.
             return [
-                f"YOUR GRAPH HOLDS {view.open_total} OPEN "
-                f"{'PRIOR' if view.open_total == 1 else 'PRIORS'} THAT COULD "
+                f"YOUR GRAPH HOLDS {view.live_total} LIVE "
+                f"{'PRIOR' if view.live_total == 1 else 'PRIORS'} THAT COULD "
                 "NOT BE READ BACK -- they are missing a prior_id or a claim, so "
                 "there is nothing to show you. Worth a look at what is actually "
                 "in there if you want one.",
                 "",
             ]
-        if view.open_total == 0 and view.resolved_total == 0:
+        if view.live_total == 0 and view.closed_total == 0:
             return [
                 "YOUR OWN GRAPH IS EMPTY. You have not written down a prior yet "
                 "-- nothing you hold about your world is recorded as something "
@@ -119,29 +119,33 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
                 "",
             ]
         return [
-            f"NO OPEN PRIORS. You have settled {view.resolved_total} of them and "
-            "have none outstanding.",
+            f"NO PRIORS STILL IN PLAY. You closed {view.closed_total} of them -- "
+            "refuted or retired -- and are holding nothing open.",
             "",
         ]
 
     lines: list[str] = []
-    if view.open_priors:
+    if view.live_priors:
         lines += [
-            f"WHAT YOU ARE STILL UNSURE OF -- {view.open_total} open "
-            f"{'prior' if view.open_total == 1 else 'priors'}, "
-            f"{view.resolved_total} already settled.",
+            f"WHAT YOU ARE STILL UNSURE OF -- {view.live_total} live "
+            f"{'prior' if view.live_total == 1 else 'priors'}, "
+            f"{view.closed_total} closed.",
+            "Live means you have not closed it. A prior you already supported "
+            "or revised is still here on purpose: one test is not a settled "
+            "question, and confidence is allowed to move DOWN on the second "
+            "look.",
             "These are ORDERED, and the order is not neutral: the ones you were "
             "least sure about come first. That is a presentation choice, not a "
             "recommendation -- nothing here says which one is worth your time.",
             "",
         ]
-        lines += [f"  - {p.preview()}" for p in view.open_priors]
+        lines += [f"  - {p.preview()}" for p in view.live_priors]
         lines.append("")
 
     if view.stale_priors:
         lines += [
-            f"TESTED AND STILL OPEN. You have looked at {'this one' if len(view.stale_priors) == 1 else 'these'} "
-            f"{stale_after} or more times without the status moving:",
+            f"TESTED REPEATEDLY. You have looked at {'this one' if len(view.stale_priors) == 1 else 'these'} "
+            f"{stale_after} or more times and it is still not closed:",
             "",
         ]
         lines += [f"  - {p.preview()}" for p in view.stale_priors]
@@ -493,7 +497,8 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "    CREATE (:Prior {",
         '      prior_id: "<something unique>", claim: "<the claim, in one sentence>",',
         "      confidence: 0.55,            // your own belief, not a measurement",
-        '      status: "open",              // open | supported | revised | refuted | retired_unresolvable',
+        '      status: "open",              // open|supported|revised stay live; '
+        "refuted|retired_unresolvable close it",
         "      times_tested: 0,",
         '      formed_from: "<what produced it: a crystallization id, a finding, an observation>",',
         '      last_tested_at: "<iso timestamp>", run_id: "<RUN_ID>", why: "<one sentence>"',
@@ -509,6 +514,14 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "  Inconclusive is a real answer: bump times_tested, leave confidence "
         "where it was, and say why in a :Finding. Three of those and the claim "
         "is probably not answerable with what you can reach.",
+        "",
+        "  ONLY TWO STATUSES CLOSE A PRIOR: 'refuted' and "
+        "'retired_unresolvable'. 'supported' and 'revised' record what a test "
+        "returned; they leave the claim in play and it comes back to you next "
+        "run. So do not reach for them to mean 'done with this' -- a claim you "
+        "confirmed once at 0.85 is a claim you have looked at once. Confidence "
+        "going DOWN on a second look is a real result and the whole reason the "
+        "claim comes back.",
         "",
         "  A CONCEPT you have worked out, and a FINDING that supports or "
         "contradicts something:",

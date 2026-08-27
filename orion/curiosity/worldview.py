@@ -77,6 +77,29 @@ STATUS_RETIRED = "retired_unresolvable"
 
 RESOLVED_STATUSES = (STATUS_SUPPORTED, STATUS_REVISED, STATUS_REFUTED, STATUS_RETIRED)
 
+# A PRIOR IS LIVE UNTIL ORION EXPLICITLY CLOSES IT.
+#
+# `supported` and `revised` are what a TEST returned, not a decision to stop
+# holding the belief -- a claim at confidence 0.85 after one test is not
+# settled, and `revised` means the claim itself just changed, which is the most
+# live a prior can be. Only `refuted` ("this is wrong") and
+# `retired_unresolvable` ("I cannot answer this with what I can reach") are
+# Orion saying it is done.
+#
+# This was a real outage of the accumulation loop, not a hypothetical: on
+# 2026-08-27 run `7736d5271d97` tested its one inherited prior and revised it,
+# and run `0a14e9531089` four hours later was offered `priors=0/0` because the
+# reader asked for `status = 'open'` only. Every prior Orion had ever formed
+# was invisible to it, and its own new prior was written `supported` on
+# formation -- born already deleted from its future. Confidence could not move
+# a second time because nothing came back to be tested twice.
+#
+# Defined as the COMPLEMENT of closed, not as a list of live statuses, so a
+# status Orion typos reads as live. Losing a belief to a spelling mistake is
+# the worse failure: re-litigation is already bounded by `stale_after`, and a
+# stale prior is still shown with an explicit retire option.
+CLOSED_STATUSES = (STATUS_REFUTED, STATUS_RETIRED)
+
 
 class WorldviewUnavailable(RuntimeError):
     """The graph could not be reached or answered. Distinct from empty."""
@@ -178,11 +201,15 @@ class TurnOutcome:
 class WorldviewSnapshot:
     """Everything Hub read from Orion's graph for one run's presentation."""
 
-    open_priors: list[Prior] = field(default_factory=list)
+    # `live_*`, not `open_*`: these hold every prior Orion has not explicitly
+    # closed, which includes `supported` and `revised` ones. A field named for
+    # one status while holding several is how the next reader reintroduces the
+    # bug CLOSED_STATUSES documents.
+    live_priors: list[Prior] = field(default_factory=list)
     stale_priors: list[Prior] = field(default_factory=list)
     recently_settled: list[tuple[str, str]] = field(default_factory=list)
-    open_total: int = 0
-    resolved_total: int = 0
+    live_total: int = 0
+    closed_total: int = 0
     concept_total: int = 0
     continuation: Optional[TurnOutcome] = None
     unavailable_reason: Optional[str] = None
@@ -281,15 +308,25 @@ _PRIOR_FIELDS = (
     "p.formed_from AS formed_from, p.last_tested_at AS last_tested_at"
 )
 
-OPEN_PRIORS_CYPHER = (
-    f"MATCH (p:{LABEL_PRIOR}) WHERE p.status = '{STATUS_OPEN}' "
+# `p.status IS NULL OR NOT ... IN` rather than a positive `IN [live]` list:
+# in Cypher `NOT null IN [...]` evaluates to null, which filters the row OUT,
+# so a prior written with no status at all would vanish without the explicit
+# null arm. See CLOSED_STATUSES for why unknown must read as live.
+_LIVE_WHERE = (
+    "(p.status IS NULL OR NOT p.status IN "
+    f"[{', '.join(repr(s) for s in CLOSED_STATUSES)}])"
+)
+_CLOSED_WHERE = f"(p.status IN [{', '.join(repr(s) for s in CLOSED_STATUSES)}])"
+
+LIVE_PRIORS_CYPHER = (
+    f"MATCH (p:{LABEL_PRIOR}) WHERE {_LIVE_WHERE} "
     f"RETURN {_PRIOR_FIELDS} LIMIT 200"
 )
 
 COUNTS_CYPHER = (
     f"MATCH (p:{LABEL_PRIOR}) "
-    f"RETURN sum(CASE WHEN p.status = '{STATUS_OPEN}' THEN 1 ELSE 0 END) AS open_total, "
-    f"sum(CASE WHEN p.status <> '{STATUS_OPEN}' THEN 1 ELSE 0 END) AS resolved_total"
+    f"RETURN sum(CASE WHEN {_LIVE_WHERE} THEN 1 ELSE 0 END) AS live_total, "
+    f"sum(CASE WHEN {_CLOSED_WHERE} THEN 1 ELSE 0 END) AS closed_total"
 )
 
 CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
@@ -297,8 +334,12 @@ CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 # Priors Orion has closed, newest first. `last_tested_at` is a string Orion
 # writes by hand, so this ordering is only as good as what it wrote -- which is
 # exactly why it is a HINT in the prompt and never a gate on anything.
+#
+# CLOSED, not merely "not open": a `supported` prior is still offered for
+# testing above, and listing it here as well would show Orion the same claim
+# twice in one prompt under two contradictory headings.
 RECENT_SETTLED_CYPHER = (
-    f"MATCH (p:{LABEL_PRIOR}) WHERE p.status <> '{STATUS_OPEN}' "
+    f"MATCH (p:{LABEL_PRIOR}) WHERE {_CLOSED_WHERE} "
     "RETURN p.claim AS claim, p.status AS status, "
     "p.last_tested_at AS last_tested_at "
     "ORDER BY p.last_tested_at DESC LIMIT 8"
@@ -394,7 +435,7 @@ def select_priors(
     sample: int,
     stale_after: int,
 ) -> tuple[list[Prior], list[Prior], int]:
-    """Split open priors into (offered, stale, dropped_count).
+    """Split LIVE priors into (offered, stale, dropped_count).
 
     UNCERTAINTY ORDERS THE PRESENTATION; ORION STILL CHOOSES. That distinction
     is the whole difference from the keyword detector this arc deleted: the
@@ -403,10 +444,10 @@ def select_priors(
     the order does not shuffle between runs for no reason.
 
     STALE PRIORS ARE SEPARATED, NOT HIDDEN. A prior tested `stale_after` times
-    without its status moving is exactly the "finds a favourite and
+    without being closed is exactly the "finds a favourite and
     re-litigates it" failure in a new costume, so it leaves the uncertainty
     list -- but it is still shown, in its own bucket, with the explicit option
-    to retire it. Dropping it silently would leave it open in the graph
+    to retire it. Dropping it silently would leave it live in the graph
     forever with nothing able to close it, since Hub never writes.
     """
     priors: list[Prior] = []
@@ -441,7 +482,7 @@ def read_snapshot(
     reason: the only symptom of the former would otherwise be an absence.
     """
     try:
-        prior_rows = reader.query(OPEN_PRIORS_CYPHER)
+        prior_rows = reader.query(LIVE_PRIORS_CYPHER)
         count_rows = reader.query(COUNTS_CYPHER)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
@@ -459,15 +500,15 @@ def read_snapshot(
         )
     counts = count_rows[0] if count_rows else {}
     return WorldviewSnapshot(
-        open_priors=offered,
+        live_priors=offered,
         stale_priors=stale,
         recently_settled=[
             (str(r.get("claim") or "").strip(), str(r.get("status") or "").strip())
             for r in settled_rows
             if str(r.get("claim") or "").strip()
         ],
-        open_total=_as_int(counts.get("open_total"), len(offered)),
-        resolved_total=_as_int(counts.get("resolved_total"), 0),
+        live_total=_as_int(counts.get("live_total"), len(offered)),
+        closed_total=_as_int(counts.get("closed_total"), 0),
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
     )
 

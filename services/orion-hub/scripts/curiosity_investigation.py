@@ -841,8 +841,8 @@ class CuriosityInvestigation:
             material.approved_total,
             len(material.relations),
             material.relation_total,
-            len(view.open_priors),
-            view.open_total,
+            len(view.live_priors),
+            view.live_total,
             bool(view.continuation and view.continuation.continue_line),
             correlation_id,
         )

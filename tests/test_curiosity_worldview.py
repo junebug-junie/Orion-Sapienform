@@ -12,7 +12,9 @@ from __future__ import annotations
 import pytest
 
 from orion.curiosity.worldview import (
-    OPEN_PRIORS_CYPHER,
+    CLOSED_STATUSES,
+    COUNTS_CYPHER,
+    LIVE_PRIORS_CYPHER,
     RECENT_SETTLED_CYPHER,
     Prior,
     WorldviewReader,
@@ -47,6 +49,61 @@ class _FakeReader(WorldviewReader):
         for needle, rows in self.answers.items():
             if needle in cypher:
                 return rows
+        return []
+
+
+
+def _cypher_admits_status(cypher: str, status) -> bool:
+    """Apply a prior-status WHERE clause the way FalkorDB would.
+
+    `_FakeReader` matches on query SHAPE and returns canned rows, which means a
+    test using it passes whether or not the WHERE clause is right -- and the
+    WHERE clause is exactly where the 2026-08-27 bug lived. Caught by mutating
+    the cypher back to its pre-fix form and watching the incident replay stay
+    green. This reads the predicate off the real query text instead.
+    """
+    import re
+
+    where = cypher.split("WHERE", 1)[1] if "WHERE" in cypher else ""
+    if not where:
+        return True
+    listed = re.search(r"p\.status IN \[([^\]]*)\]", where)
+    if listed:
+        names = {v.strip().strip("'\"") for v in listed.group(1).split(",")}
+        if "NOT p.status IN" in where:
+            if status in (None, "") and "p.status IS NULL" in where:
+                return True
+            return status not in names
+        return status in names
+    equals = re.search(r"p\.status = '([^']*)'", where)
+    if equals:
+        return status == equals.group(1)
+    return True
+
+
+class _StatusAwareReader(_FakeReader):
+    """A reader that actually filters, so the WHERE clause is under test."""
+
+    def __init__(self, prior_rows) -> None:
+        super().__init__()
+        self._prior_rows = list(prior_rows)
+
+    def query(self, cypher: str):
+        self.queries.append(cypher)
+        if "RETURN p.prior_id AS prior_id" in cypher:
+            return [
+                r for r in self._prior_rows
+                if _cypher_admits_status(cypher, r.get("status"))
+            ]
+        if "AS live_total" in cypher:
+            live = [
+                r for r in self._prior_rows
+                if r.get("status") not in CLOSED_STATUSES
+            ]
+            return [{
+                "live_total": len(live),
+                "closed_total": len(self._prior_rows) - len(live),
+            }]
         return []
 
 
@@ -102,14 +159,14 @@ def test_a_float_written_as_a_string_still_reads_as_a_number() -> None:
 def test_an_unreachable_graph_is_not_reported_as_an_empty_world_view() -> None:
     view = read_snapshot(_FakeReader(raises=True), sample=8, stale_after=3)
     assert view.is_unavailable
-    assert view.open_priors == []
+    assert view.live_priors == []
     assert "ConnectionError" in (view.unavailable_reason or "")
 
 
 def test_a_genuinely_empty_graph_is_available_and_empty() -> None:
     view = read_snapshot(_FakeReader(), sample=8, stale_after=3)
     assert not view.is_unavailable
-    assert view.open_total == 0
+    assert view.live_total == 0
 
 
 def test_a_row_with_no_claim_is_dropped_rather_than_invented() -> None:
@@ -277,7 +334,7 @@ def test_hop_notes_come_back_in_order_and_blank_ones_are_dropped() -> None:
 
 
 def test_recently_settled_reads_closed_priors_from_orions_own_graph() -> None:
-    reader = _FakeReader(answers={"p.status <> 'open'": [
+    reader = _FakeReader(answers={"p.status IN ['refuted'": [
         {"claim": "the vision tier is on demand", "status": "refuted"},
         {"claim": "", "status": "supported"},
     ]})
@@ -285,9 +342,10 @@ def test_recently_settled_reads_closed_priors_from_orions_own_graph() -> None:
     assert view.recently_settled == [("the vision tier is on demand", "refuted")]
 
 
-def test_open_and_settled_reads_are_actually_different_queries() -> None:
-    assert "p.status = 'open'" in OPEN_PRIORS_CYPHER
-    assert "p.status <> 'open'" in RECENT_SETTLED_CYPHER
+def test_live_and_settled_reads_are_actually_different_queries() -> None:
+    assert "NOT p.status IN" in LIVE_PRIORS_CYPHER
+    assert "NOT p.status IN" not in RECENT_SETTLED_CYPHER
+    assert "p.status IN ['refuted', 'retired_unresolvable']" in RECENT_SETTLED_CYPHER
 
 
 # --- hub never writes -------------------------------------------------------
@@ -330,9 +388,9 @@ def test_a_view_with_only_stale_priors_does_not_print_an_empty_heading() -> None
     from orion.curiosity.worldview import WorldviewSnapshot
 
     view = WorldviewSnapshot(
-        open_priors=[],
+        live_priors=[],
         stale_priors=[Prior("p", "a stuck claim", 0.5, "open", 5)],
-        open_total=1,
+        live_total=1,
     )
     text = "\n".join(_priors_section(view, stale_after=3))
     assert "WHAT YOU ARE STILL UNSURE OF" not in text
@@ -400,13 +458,13 @@ def test_unreadable_priors_are_never_reported_as_none_outstanding() -> None:
 
     text = "\n".join(
         _priors_section(
-            WorldviewSnapshot(open_priors=[], stale_priors=[], open_total=4),
+            WorldviewSnapshot(live_priors=[], stale_priors=[], live_total=4),
             stale_after=3,
         )
     )
-    assert "NO OPEN PRIORS" not in text
+    assert "NO PRIORS STILL IN PLAY" not in text
     assert "COULD NOT BE READ BACK" in text
-    assert "4 OPEN PRIORS" in text
+    assert "4 LIVE PRIORS" in text
 
 
 # ---------------------------------------------------------------- the clock
@@ -520,3 +578,119 @@ def test_the_number_checking_habit_is_stated_because_it_is_what_went_wrong() -> 
     text = _prompt()
     assert "comparing like with like" in text
     assert "which population each number is over" in text
+
+
+# --- a prior is live until Orion closes it ---------------------------------
+#
+# The accumulation loop went down on 2026-08-27 because the reader asked for
+# `status = 'open'` only. These pin the status set from both directions: what
+# must still come back, and what must not.
+
+
+@pytest.mark.parametrize("status", ["open", "supported", "revised", "", "typo_status"])
+def test_a_prior_orion_has_not_closed_is_still_offered(status: str) -> None:
+    """`supported` and `revised` are test OUTCOMES, not closures.
+
+    The unknown/empty cases are deliberate: an unrecognised status must read
+    as live, because losing a belief to a spelling mistake in hand-written
+    Cypher is worse than showing one claim too many. Re-litigation already has
+    a bound (`stale_after`); a silently vanished prior has none.
+    """
+    offered, stale, dropped = select_priors(
+        [_prior_row(status=status)], sample=8, stale_after=3
+    )
+    assert dropped == 0
+    assert [p.prior_id for p in offered] == ["p1"]
+    assert stale == []
+
+
+@pytest.mark.parametrize("status", CLOSED_STATUSES)
+def test_the_two_closing_statuses_are_the_only_ones_the_query_excludes(
+    status: str,
+) -> None:
+    """Excluded in the CYPHER, not in Python -- so this asserts on the text
+    that FalkorDB will actually run, which is where the bug lived."""
+    assert f"'{status}'" in LIVE_PRIORS_CYPHER
+    assert "NOT p.status IN" in LIVE_PRIORS_CYPHER
+    assert "p.status IS NULL OR" in LIVE_PRIORS_CYPHER
+
+
+def test_a_prior_with_no_status_survives_the_cypher_null_trap() -> None:
+    """`NOT null IN [...]` is null in Cypher, and a null WHERE filters the row
+    OUT. Without the explicit `IS NULL` arm a prior written with no status at
+    all would vanish -- a silent loss, not an error."""
+    where = LIVE_PRIORS_CYPHER.split("WHERE", 1)[1]
+    assert where.strip().startswith("(p.status IS NULL OR")
+
+
+def test_the_counts_split_live_from_closed_not_open_from_everything() -> None:
+    assert "AS live_total" in COUNTS_CYPHER
+    assert "AS closed_total" in COUNTS_CYPHER
+    assert "'open'" not in COUNTS_CYPHER
+
+
+def test_a_supported_prior_is_offered_and_not_also_listed_as_settled() -> None:
+    """It must appear in exactly one place. Offering a claim for testing while
+    also printing it under RECENTLY SETTLED shows Orion the same prior twice
+    under two contradictory headings."""
+    assert "supported" not in RECENT_SETTLED_CYPHER
+    assert "revised" not in RECENT_SETTLED_CYPHER
+
+
+def test_the_2026_08_27_graph_state_is_not_read_back_as_an_empty_worldview() -> None:
+    """REPLAY OF THE REAL INCIDENT, not a mutation invented to go red.
+
+    These are the three priors that were actually in `orion_worldview` when run
+    `0a14e9531089` was handed `priors=0/0` and had nothing to continue: run 3's
+    prior revised by run 5, run 5's own, and run 6's -- written `supported` on
+    formation, so it was never `open` for even one run.
+    """
+    live = [
+        _prior_row(pid="editorial_bias_concrete_over_atmospheric_32b42392f495",
+                   claim="the gate prefers concrete over atmospheric",
+                   confidence="0.85", status="revised", tested=1),
+        _prior_row(pid="gate_bias_manual_review_7736d5271d97",
+                   claim="the stance gate is manual review",
+                   confidence="0.85", status="supported", tested=1),
+        _prior_row(pid="automated_intake_gate",
+                   claim="an automated formation policy gate runs before review",
+                   confidence="0.85", status="supported", tested=1),
+    ]
+    reader = _StatusAwareReader(live)
+    view = read_snapshot(reader, sample=8, stale_after=3)
+
+    assert view.live_total == 3
+    assert view.closed_total == 0
+    assert len(view.live_priors) == 3, "the whole loop stops if this is empty"
+
+    from orion.curiosity.kickoff_prompt import _priors_section
+
+    text = "\n".join(_priors_section(view, stale_after=3))
+    assert "NO PRIORS STILL IN PLAY" not in text
+    assert "YOUR OWN GRAPH IS EMPTY" not in text
+    assert "manual review" in text
+
+
+def test_the_prompt_tells_orion_which_statuses_actually_close_a_prior() -> None:
+    """The reader's rule is only half the fix. Run `0a14e9531089` wrote its new
+    prior as `supported` in the same breath it formed it, because nothing said
+    that meant anything other than 'confirmed'."""
+    text = _prompt()
+    assert "ONLY TWO STATUSES CLOSE A PRIOR" in text
+    for status in CLOSED_STATUSES:
+        assert status in text
+    assert "confidence" in text.lower()
+
+
+def test_a_closed_prior_does_not_come_back_through_the_live_read() -> None:
+    """The other direction of the same predicate: widening liveness must not
+    have widened it to everything."""
+    rows = [
+        _prior_row(pid="live_one", status="revised"),
+        _prior_row(pid="dead_one", status="refuted"),
+        _prior_row(pid="gone_one", status="retired_unresolvable"),
+    ]
+    view = read_snapshot(_StatusAwareReader(rows), sample=8, stale_after=3)
+    assert [p.prior_id for p in view.live_priors] == ["live_one"]
+    assert view.live_total == 1
+    assert view.closed_total == 2

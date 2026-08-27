@@ -706,11 +706,14 @@ def test_this_runs_id_is_persisted_so_the_next_run_can_find_its_note() -> None:
 # --- priors order the presentation, and Orion still chooses ----------------
 
 
-def test_open_priors_are_shown_with_the_ordering_disclosed() -> None:
+def test_live_priors_are_shown_with_the_ordering_disclosed() -> None:
+    """The prior here is `revised`, not `open`, on purpose: at the loop level
+    that is the status that went missing on 2026-08-27 and left a run with
+    `priors=0/0` and nothing of its own to continue."""
     bus = _FakeBus()
-    reader = _FakeReader(answers={"p.status = 'open'": [
+    reader = _FakeReader(answers={"NOT p.status IN": [
         {"prior_id": "p1", "claim": "the foveal tier never runs on a schedule",
-         "confidence": "0.55", "status": "open", "times_tested": 1,
+         "confidence": "0.55", "status": "revised", "times_tested": 1,
          "formed_from": "crystallization:abc", "last_tested_at": ""},
     ]})
     loop = _graph_loop(bus, reader=reader)

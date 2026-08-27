@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings
 # hand). store.py's top-level imports are stdlib-only -- importing it here
 # costs nothing and creates no cycle (store.py never imports this module).
 from .store import MAX_REVERIE_CONTEXT_CHARS as _MAX_REVERIE_CONTEXT_CHARS
+from .store import MAX_SELF_STUDY_CONTEXT_CHARS as _MAX_SELF_STUDY_CONTEXT_CHARS
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
@@ -309,6 +310,37 @@ class ThoughtSettings(BaseSettings):
     # continuity streak is exactly the failure mode this exists to bound.
     visual_chain_continuity_max_runs: int = Field(
         3, alias="ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS"
+    )
+
+    # Patch 5 (design doc §16): a second, richer context-seed alongside
+    # reverie_context_* above -- self_study_analysis.py's four deterministic
+    # window-contrast analyses (concept induction, vision events, affective
+    # state, co-creation signals), real quantified self-observation rather
+    # than a bare narration sentence. store.py's
+    # `_SAFE_SELF_STUDY_SOURCE_PREFIXES` is the actual privacy boundary (an
+    # allowlist of the four safe producers, not "any source_kind='self_study'
+    # row") -- these two settings only tune length/freshness of content
+    # already gated safe by that allowlist, same division of concerns
+    # reverie_context_char_limit/max_age_sec has with load_latest_reverie_
+    # interpretation's own EXISTS/hollow gate.
+    #
+    # 21600s (6h), not reverie_context_max_age_sec's 900s: these analyses
+    # fire on their OWN 6-72h window-contrast cadence (real values seen in
+    # bodies: "the last 6h against the 6h before it", "last 12h", "last
+    # 72h") -- a 900s window would read as permanently absent almost every
+    # tick. 6h is this producer's own shortest real window, the same
+    # "match the producer's cadence, not the consumer's" reasoning
+    # reverie_context_max_age_sec's own comment already applies elsewhere.
+    #
+    # gt=0 on both, same reasoning as reverie_context_char_limit/
+    # max_age_sec's own comment: a non-positive value silently produces the
+    # wrong behavior (permanently-unsatisfiable freshness clause / negative-
+    # index slicing) instead of failing loud at settings load.
+    self_study_context_char_limit: int = Field(
+        _MAX_SELF_STUDY_CONTEXT_CHARS, alias="ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT", gt=0
+    )
+    self_study_context_max_age_sec: float = Field(
+        21600.0, alias="ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC", gt=0
     )
 
     # --- Attention salience trace publish gate ---

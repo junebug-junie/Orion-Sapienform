@@ -635,3 +635,195 @@ def test_load_latest_reverie_interpretation_never_raises_on_db_failure() -> None
         assert store.load_latest_reverie_interpretation() is None
     finally:
         monkeypatch.undo()
+
+
+# --- load_latest_self_study_reflection: Patch 5 richer context-seed --------
+#
+# Real incident this reader exists because of, not a hypothetical (see the
+# function's own docstring and _SAFE_SELF_STUDY_SOURCE_PREFIXES's docstring):
+# live-checking the candidate `memory_crystallizations` table for an "actual
+# memory" context-seed found its summary/subject columns hold verbatim
+# personal chat content. self_study_analysis.py's four deterministic
+# window-contrast producers were the one candidate that live-verified safe
+# (pure numeric prose, no chat quotes) -- confirmed by reading real bodies
+# before writing this reader. The allowlist is a real privacy boundary, not
+# a style choice, so it gets direct SQL-shape assertions below, not just
+# "does it return the row."
+
+
+def _body_row_result(row: dict | None):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, _stmt, _params=None):
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def _body_capturing_engine(row: dict | None, captured: dict):
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt, params=None):
+            captured["stmt"] = str(stmt)
+            captured["params"] = params
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_load_latest_self_study_reflection_returns_real_body() -> None:
+    store = _fresh_store()
+    body = (
+        "Self-study analysis of affective state: the last 6h against the 6h "
+        "before it. mean_shift: mean word_count moved 2073 vs 3.625."
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"body": body}))
+    try:
+        assert store.load_latest_self_study_reflection() == body
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_self_study_reflection_query_only_allowlists_the_four_safe_prefixes() -> None:
+    """The actual privacy boundary: assert the SQL only ever admits the four
+    known-safe source_ref prefixes, by name -- not "some WHERE clause exists".
+    A future edit widening this without updating the allowlist should fail
+    this test, not slip through as "query still returns rows"."""
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"body": "x"}, captured)
+    )
+    try:
+        store.load_latest_self_study_reflection()
+    finally:
+        monkeypatch.undo()
+
+    stmt = captured["stmt"]
+    assert "source_kind = 'self_study'" in stmt
+    params = captured["params"]
+    bound_prefixes = {v for v in params.values() if isinstance(v, str) and v.endswith("%")}
+    assert bound_prefixes == {
+        "concept_induction:%",
+        "vision_events:%",
+        "affective_state:%",
+        "cocreation_signals:%",
+    }
+    # The real incident this allowlist closes: the free-form "Curiosity"
+    # reflection's own prefix must never be one of the admitted ones.
+    assert "curiosity:%" not in bound_prefixes
+
+
+def test_load_latest_self_study_reflection_char_limit_override() -> None:
+    store = _fresh_store()
+    long_body = ("finding " * 80).strip()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"body": long_body}))
+    try:
+        value = store.load_latest_self_study_reflection(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21  # +1 for the ellipsis char, not the 400 default
+
+
+def test_load_latest_self_study_reflection_max_age_sec_adds_and_binds_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"body": "a real finding"}, captured)
+    )
+    try:
+        value = store.load_latest_self_study_reflection(max_age_sec=21600.0)
+    finally:
+        monkeypatch.undo()
+
+    assert value == "a real finding"
+    assert "make_interval" in captured["stmt"]
+    assert captured["params"]["max_age_sec"] == 21600.0
+
+
+def test_load_latest_self_study_reflection_no_max_age_sec_omits_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"body": "a real finding"}, captured)
+    )
+    try:
+        store.load_latest_self_study_reflection()  # max_age_sec=None, default
+    finally:
+        monkeypatch.undo()
+
+    assert "make_interval" not in captured["stmt"]
+
+
+def test_load_latest_self_study_reflection_none_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result(None))
+    try:
+        assert store.load_latest_self_study_reflection() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_self_study_reflection_none_on_empty_body() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"body": "   "}))
+    try:
+        assert store.load_latest_self_study_reflection() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_self_study_reflection_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_self_study_reflection() is None
+    finally:
+        monkeypatch.undo()

@@ -249,7 +249,7 @@ with a turn-level budget/circuit-breaker on the caller.
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
 
-## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset)
+## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
@@ -332,6 +332,32 @@ reset every run). `continuity_streak`/`continuity_reset` recorded in
 `chain_json` on both the success and `generation_failed` paths, surfaced in
 the Hub Reverie tab alongside `context_text`.
 
+**Patch 5 self-study context-seed (design doc §16):** same session as Patch
+4 -- Juniper directly asked for the visual chain to draw on "actual memory
+or a recent chat or something from Orion's self study analysis." All three
+candidates were live-checked before any code was written: `memory_
+crystallizations` ("actual memory") was DECLINED -- its `summary`/`subject`
+columns hold verbatim personal chat content with no safe filter, including
+a real sample naming a family member's medical history. The
+`chat_history_compactor` digest ("recent chat") was DECLINED on cadence
+grounds -- it's a daily-schedule producer with no evidence it has ever
+fired in production, not a fit for a ~600s-cadence consumer. Self-study
+analysis was BUILT: `build_visual_prompt` gains a third optional input,
+`self_study_text` (`store.load_latest_self_study_reflection`), real
+quantified self-observation from `self_study_analysis.py`'s four
+deterministic window-contrast analyses (concept induction, vision events,
+affective state, co-creation signals) -- confirmed safe by reading real
+bodies before writing any code. The actual privacy boundary is
+`store._SAFE_SELF_STUDY_SOURCE_PREFIXES`, an ALLOWLIST of only those four
+producers' `source_ref` prefixes -- `source_kind='self_study'` also covers
+a sibling free-form "Curiosity" reflection confirmed live to quote
+sensitive personal content, which the allowlist deliberately excludes.
+`self_study_text` recorded in `chain_json` on both paths, surfaced in the
+Hub tab alongside `context_text`. `build_visual_prompt`'s old if/elif
+branches were refactored into a list-join composition (a third optional
+input would have meant 8 branches) -- verified byte-identical output for
+every pre-Patch-5 combination via exact-string test assertions.
+
 **Single-flight, no backlog** (design doc §4 acceptance check): the worker
 loop's own sequential shape (run, then sleep, then run again — same as
 `chain.py`/`reverie.py`) makes overlap structurally impossible; there is no
@@ -391,6 +417,8 @@ Flags:
 | `ORION_REVERIE_CONTEXT_CHAR_LIMIT` | `240` | Max chars of the text-reverie chain's context-seed woven into the prompt |
 | `ORION_REVERIE_CONTEXT_MAX_AGE_SEC` | `900` | How stale that context-seed thought can be before it's treated as absent rather than "current" |
 | `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` | `3` | Consecutive continuity-carrying runs before a forced reset (Patch 4, design doc §15); no off switch, 0 resets every run |
+| `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the self-study analysis context-seed woven into the prompt (Patch 5, design doc §16) |
+| `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` | `21600` | How stale that self-study analysis can be before it's treated as absent (6h -- these analyses fire on their own 6-72h cadence) |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, reverie context-seed, persistence); one test
@@ -414,3 +442,13 @@ orchestration test driving `run_visual_chain_once` through a full cap+1
 cycle and asserting the run AT the cap's own generated prompt excludes the
 prior continuity text -- not just that the resolver says it would in
 isolation (design doc §15).
+
+Patch 5's `load_latest_self_study_reflection` has direct coverage in
+`tests/test_store.py`: real-body return, char-limit override, max-age-sec
+clause presence/absence, empty-row/empty-body, never-raises -- and, the
+actual privacy boundary, a dedicated test asserting the SQL only ever binds
+the four known-safe `source_ref` prefixes by name (not "some WHERE clause
+exists"), with an explicit assertion that `curiosity:` is never among them.
+`build_visual_prompt`'s list-join refactor has an exact-string regression
+test proving every pre-Patch-5 prompt combination is byte-identical to the
+old branches (design doc §16).

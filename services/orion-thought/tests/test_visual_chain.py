@@ -98,6 +98,56 @@ def test_build_visual_prompt_blends_prior_and_context():
     assert "curiosity about the mesh" in prompt
 
 
+def test_build_visual_prompt_uses_self_study_when_nothing_else():
+    """Patch 5: self_study_text alone (no prior, no context) still seeds a
+    real prompt, not the generic fixed string."""
+    from app import visual_chain
+
+    prompt = visual_chain.build_visual_prompt(
+        None, None, "vision events dropped 0.36x vs baseline"
+    )
+    assert "vision events dropped 0.36x vs baseline" in prompt
+    assert prompt != visual_chain.DEFAULT_SEED_PROMPT
+
+
+def test_build_visual_prompt_blends_all_three_inputs():
+    """All three present -- none silently drops another."""
+    from app import visual_chain
+
+    prompt = visual_chain.build_visual_prompt(
+        "a quiet room, warm light",
+        "curiosity about the mesh",
+        "vision events dropped 0.36x vs baseline",
+    )
+    assert "a quiet room, warm light" in prompt
+    assert "curiosity about the mesh" in prompt
+    assert "vision events dropped 0.36x vs baseline" in prompt
+
+
+def test_build_visual_prompt_exact_wording_unchanged_for_pre_patch_5_combinations():
+    """Review-motivated refactor guard (module docstring): the list-join
+    composition must produce BYTE-IDENTICAL output to Patch 3/4's old
+    explicit if/elif branches for every combination that existed before
+    Patch 5 -- this only adds a third clause, never changes the other two's
+    wording. Exact-string assertions, not just substring checks."""
+    from app import visual_chain
+
+    assert visual_chain.build_visual_prompt(None, None) == visual_chain.DEFAULT_SEED_PROMPT
+    assert (
+        visual_chain.build_visual_prompt("a quiet room, warm light")
+        == "a quiet room, warm light. Continue this train of imagination, soft dreamlike style."
+    )
+    assert (
+        visual_chain.build_visual_prompt(None, "curiosity about the mesh")
+        == "Orion is currently thinking: curiosity about the mesh. Soft abstract dreamlike style."
+    )
+    assert (
+        visual_chain.build_visual_prompt("a quiet room, warm light", "curiosity about the mesh")
+        == "a quiet room, warm light. Orion is currently thinking: curiosity about the mesh. "
+        "Continue this train of imagination, soft dreamlike style."
+    )
+
+
 # --- resolve_visual_chain_continuity (pure) --------------------------------
 
 
@@ -176,6 +226,7 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
         visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
 
     generate_calls: list[str] = []
 
@@ -238,6 +289,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
         visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
 
     def fake_generate(prompt, *, base_url, timeout_sec):
         raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
@@ -279,6 +331,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
         visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png()
     )
@@ -326,6 +379,7 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
     )
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "d" * 64)
 
@@ -358,6 +412,7 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
     )
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
 
     def fake_generate(prompt, *, base_url, timeout_sec):
         raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
@@ -393,6 +448,7 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
 
     # A tiny fake "DB": load reads back whatever the last persisted chain wrote.
     db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0}
@@ -447,6 +503,7 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain.settings, "visual_chain_continuity_max_runs", 2)
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: "context")
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
 
     db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0}
     monkeypatch.setattr(
@@ -520,6 +577,7 @@ async def test_continuity_reset_survives_a_failed_generation(tmp_path, monkeypat
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     # streak already AT the cap -- this run must reset.
     monkeypatch.setattr(
         visual_chain,
@@ -550,6 +608,7 @@ async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkey
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
@@ -578,3 +637,69 @@ async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkey
     # The real assertion: NOT the stale text this reset was supposed to break.
     assert chain.prior_description is None
     assert persisted_artifacts[0].description is None  # honest, not fabricated
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_json(
+    tmp_path, monkeypatch
+):
+    """Patch 5 acceptance check: the self-study context-seed actually reaches
+    the diffusion prompt AND is recorded in chain_json as its own field --
+    same-run evidence, matching the discipline test_run_visual_chain_once_
+    uses_context_text_in_prompt_and_chain_json already established for
+    Patch 3's context_text."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+    )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain,
+        "load_latest_self_study_reflection",
+        lambda **kw: "vision events dropped 0.36x vs baseline",
+    )
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "g" * 64)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    bus = _fake_bus(_vision_result_payload("a rendering of that observation"))
+    chain = await visual_chain.run_visual_chain_once(bus)
+
+    assert chain is not None
+    assert "vision events dropped 0.36x vs baseline" in chain.chain_json["prompt"]
+    assert chain.chain_json["self_study_text"] == "vision events dropped 0.36x vs baseline"
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_generation_failure_records_self_study_text(
+    tmp_path, monkeypatch
+):
+    """The same self_study_text traceability holds on the generation_failed
+    path -- a failed run's chain_json must still show what would have
+    seeded it."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+    )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
+    monkeypatch.setattr(
+        visual_chain,
+        "load_latest_self_study_reflection",
+        lambda **kw: "vision events dropped 0.36x vs baseline",
+    )
+
+    def fake_generate(prompt, *, base_url, timeout_sec):
+        raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
+
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+
+    chain = await visual_chain.run_visual_chain_once(AsyncMock())
+
+    assert chain.terminal_reason == "generation_failed"
+    assert chain.chain_json["self_study_text"] == "vision events dropped 0.36x vs baseline"

@@ -25,22 +25,42 @@ function's own docstring and reverie_routes.py's privacy note). Widening to
 raw chat/dream sources is a separate, later change that must redo that
 privacy check.
 
-Patch 4 (this changeset, design doc §15): live-caught 2026-08-27 --
-Juniper reported "still doing the same images of Roman aqueducts, no
-change" a few hours after Patch 3 shipped. Real: `prior_description`
-continuity had locked onto one visual attractor across 10+ runs / 100+
-minutes, predating Patch 3 and unmoved by it -- `context_text` is real,
-correctly varying content (confirmed live in Postgres), but a short
-abstract clause ("Orion is currently thinking: the coalition is fixated on
-...") has nowhere near the prompt weight of a long, concrete continuity
-description, and abstract cognitive-state narration isn't strongly
-visualizable content regardless of prompt order. `resolve_visual_chain_continuity`
-below is the actual fix: a deterministic, testable reset -- after
-`settings.visual_chain_continuity_max_runs` CONSECUTIVE runs carrying
-`prior_description` forward, the next run forces continuity to drop for
-that one prompt (re-seeding from `context_text`, or the fixed seed if
-neither exists), then continuity resumes normally. Not a prompt-reweighting
-guess; a mechanical guarantee the loop cannot run unbounded.
+Patch 4 (shipped 2026-08-27): live-caught -- Juniper reported "still doing
+the same images of Roman aqueducts, no change" a few hours after Patch 3
+shipped. Real: `prior_description` continuity had locked onto one visual
+attractor across 10+ runs / 100+ minutes, predating Patch 3 and unmoved by
+it -- `context_text` is real, correctly varying content (confirmed live in
+Postgres), but a short abstract clause ("Orion is currently thinking: the
+coalition is fixated on ...") has nowhere near the prompt weight of a long,
+concrete continuity description, and abstract cognitive-state narration
+isn't strongly visualizable content regardless of prompt order.
+`resolve_visual_chain_continuity` below is the actual fix: a deterministic,
+testable reset -- after `settings.visual_chain_continuity_max_runs`
+CONSECUTIVE runs carrying `prior_description` forward, the next run forces
+continuity to drop for that one prompt, then continuity resumes normally.
+Not a prompt-reweighting guess; a mechanical guarantee the loop cannot run
+unbounded.
+
+Patch 5 (this changeset, design doc §16): a second, richer context-seed --
+`build_visual_prompt` now also takes `self_study_text`
+(`store.load_latest_self_study_reflection`), the self-study analysis
+system's real quantified self-observation (window-contrast prose:
+"vision events dropped 0.36x vs baseline, a status category disappeared"),
+not a bare narration sentence. Live-caught 2026-08-27, same session as
+Patch 4: Juniper directly asked for "actual memory or a recent chat" as a
+context-seed; live-checking `memory_crystallizations` (the actual-memory
+candidate) found its `summary`/`subject` columns hold VERBATIM personal
+chat content -- including a real, sensitive example naming a family
+member's medical history -- with no safe column or `kind` filter available
+on that table as it stands. Declined outright, not wired in. Self-study
+analysis was the one candidate that live-verified safe: its four
+deterministic producers (concept induction, vision events, affective
+state, co-creation signals) render pure numeric window-contrasts, no chat
+quotes, confirmed by reading real bodies before writing any code.
+`store._SAFE_SELF_STUDY_SOURCE_PREFIXES` is an explicit allowlist of only
+those four producers -- `source_kind='self_study'` also covers a sibling
+free-form "Curiosity" reflection confirmed live to quote sensitive personal
+content, which this allowlist deliberately excludes.
 
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
@@ -98,6 +118,7 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 from .settings import settings
 from .store import (
     load_latest_reverie_interpretation,
+    load_latest_self_study_reflection,
     load_latest_visual_chain_continuity_state,
     persist_reverie_visual_artifact,
     persist_reverie_visual_chain,
@@ -130,30 +151,49 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_visual_prompt(prior_description: str | None, context_text: str | None = None) -> str:
+def build_visual_prompt(
+    prior_description: str | None,
+    context_text: str | None = None,
+    self_study_text: str | None = None,
+) -> str:
     """The diffusion prompt for one run. See module docstring for scope.
 
-    `prior_description` (visual continuity -- the previous run's own
-    re-observed caption) and `context_text` (Patch 3's context-seed --
-    Orion's own most recent real reverie-thought interpretation) are
-    independent inputs: continuity keeps the image chain visually coherent
-    frame-to-frame; context-seeding keeps it grounded in what Orion is
-    actually narrating instead of drifting into purely self-referential
-    imagery with nothing anchoring it to a real cognitive state. Falls back
-    to DEFAULT_SEED_PROMPT only when both are empty.
+    Three independent inputs, each optional: `prior_description` (visual
+    continuity -- the previous run's own re-observed caption), `context_text`
+    (Patch 3 -- Orion's own most recent real reverie-thought interpretation),
+    and `self_study_text` (Patch 5 -- a real quantified self-study
+    observation). Continuity keeps the image chain visually coherent
+    frame-to-frame; the two context-seeds keep it grounded in what Orion is
+    actually narrating/observing instead of drifting into purely
+    self-referential imagery with nothing anchoring it to a real cognitive
+    state. Falls back to DEFAULT_SEED_PROMPT only when all three are empty.
+
+    Composed by joining whichever clauses are non-empty (review-motivated
+    refactor from Patch 3/4's explicit if/elif branches -- a third optional
+    input would have meant 8 branches by that pattern). Output is
+    byte-identical to the old branches for every combination that existed
+    before this patch (verified by test_visual_chain.py's exact-string
+    assertions) -- this only adds a third clause, never changes the other
+    two's wording.
     """
     prior = (prior_description or "").strip()
     context = (context_text or "").strip()
-    if prior and context:
-        return (
-            f"{prior}. Orion is currently thinking: {context}. "
-            "Continue this train of imagination, soft dreamlike style."
-        )
+    self_study = (self_study_text or "").strip()
+    clauses = []
     if prior:
-        return f"{prior}. Continue this train of imagination, soft dreamlike style."
+        clauses.append(prior)
     if context:
-        return f"Orion is currently thinking: {context}. Soft abstract dreamlike style."
-    return DEFAULT_SEED_PROMPT
+        clauses.append(f"Orion is currently thinking: {context}")
+    if self_study:
+        clauses.append(f"Orion recently noticed: {self_study}")
+    if not clauses:
+        return DEFAULT_SEED_PROMPT
+    style = (
+        "Continue this train of imagination, soft dreamlike style."
+        if prior
+        else "Soft abstract dreamlike style."
+    )
+    return ". ".join(clauses) + ". " + style
 
 
 def resolve_visual_chain_continuity(
@@ -325,6 +365,7 @@ async def run_visual_chain_once(
 
     async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
                                   prior_description: str | None, context_text: str | None,
+                                  self_study_text: str | None,
                                   continuity_streak: int, continuity_reset: bool
                                   ) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
@@ -336,6 +377,7 @@ async def run_visual_chain_once(
             chain_json={
                 "prompt": prompt,
                 "context_text": context_text,
+                "self_study_text": self_study_text,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "error": str(error),
@@ -347,7 +389,7 @@ async def run_visual_chain_once(
 
     async with _visual_chain_lock:
         chain_id = str(uuid4())
-        # Two independent reads (different tables, no data dependency) --
+        # Three independent reads (different tables, no data dependency) --
         # concurrent so the cost is max() of the round trips, not sum()
         # (review finding: this function already makes exactly this
         # argument a few lines below for store_visual_artifact/
@@ -356,12 +398,21 @@ async def run_visual_chain_once(
         # the SAME table, so they're one combined read (review finding: two
         # separate round trips to the same row wasted a query and left a
         # theoretical read-your-own-write race), not two gathered reads.
-        (prior_description, continuity_streak), context_text = await asyncio.gather(
+        (
+            (prior_description, continuity_streak),
+            context_text,
+            self_study_text,
+        ) = await asyncio.gather(
             asyncio.to_thread(load_latest_visual_chain_continuity_state),
             asyncio.to_thread(
                 load_latest_reverie_interpretation,
                 char_limit=settings.reverie_context_char_limit,
                 max_age_sec=settings.reverie_context_max_age_sec,
+            ),
+            asyncio.to_thread(
+                load_latest_self_study_reflection,
+                char_limit=settings.self_study_context_char_limit,
+                max_age_sec=settings.self_study_context_max_age_sec,
             ),
         )
         # Patch 4 (module docstring): cap how many consecutive runs may
@@ -387,7 +438,7 @@ async def run_visual_chain_once(
         # before resetting again). A non-reset run keeps the pre-Patch-4
         # behavior unchanged: carry the old value forward on any failure.
         continuity_fallback = None if continuity_reset else prior_description
-        prompt = build_visual_prompt(effective_prior, context_text)
+        prompt = build_visual_prompt(effective_prior, context_text, self_study_text)
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -398,7 +449,7 @@ async def run_visual_chain_once(
             )
         except Exception as exc:
             return await _generation_failed(
-                chain_id, exc, prompt, continuity_fallback, context_text,
+                chain_id, exc, prompt, continuity_fallback, context_text, self_study_text,
                 continuity_streak, continuity_reset,
             )
 
@@ -425,7 +476,7 @@ async def run_visual_chain_once(
 
         if isinstance(store_result, BaseException):
             return await _generation_failed(
-                chain_id, store_result, prompt, continuity_fallback, context_text,
+                chain_id, store_result, prompt, continuity_fallback, context_text, self_study_text,
                 continuity_streak, continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
@@ -460,6 +511,7 @@ async def run_visual_chain_once(
             chain_json={
                 "prompt": prompt,
                 "context_text": context_text,
+                "self_study_text": self_study_text,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "artifact_sha256": stored.sha256,

@@ -68,7 +68,7 @@ unpriced_session_count:    0 on every day -- the pricing table covers the live m
 Two properties this spec depends on, both already implemented:
 
 - **A silent tick writes `total_estimated_cost_usd = NULL`, not `0.0`.** Absence already reads as unknown rather than zero — the property acceptance check 6 asks for exists at the producer.
-- **The zeros are real.** 2026-08-26 shows 18 consecutive all-zero ticks from 18:14 to 22:31 UTC, then 4 sessions at 22:47. Cross-checked against transcript mtimes: **zero `~/.claude/projects/*.jsonl` files were modified in that window.** The instrument was reading correctly, not blind.
+- ~~**The zeros are real.**~~ **RETRACTED 2026-08-27 — see below.** The mtime cross-check that claimed this was structurally incapable of returning anything else.
 
 - `orion/dev_economics/claude_code_ingest.py` reads `~/.claude/projects/*.jsonl` — every Claude Code session on the host, subagents included and deliberately so.
 - `orion/dev_economics/pricing.py` — real versioned rate table with effective-date windows; returns `None` rather than a fabricated `$0.00` for an unpriced model.
@@ -148,6 +148,23 @@ Run for `quota_fraction_remaining`, the one genuinely new signal.
 1. **Provenance.** Numerator: `dev_economics_ledger_log.total_estimated_cost_usd`, produced by `claude_code_ingest.py` parsing real transcript token counts through `pricing.py`'s dated table. Denominator: an operator constant, calibrated. Traced to producing code, not schema comment.
 2. **Independence.** Not a transform of anything in the model today. The allocator's existing inputs are `posterior_variance` (from outcome resolution) and `cost_sec` (from `substrate_dispatch_results.latency_ms`). Dollar spend on Claude sessions shares no sensor and no upstream computation with either. **Independent.**
 3. **Theory anchor.** Opportunity cost requires a rival claimant on a finite pool. This is the only resource in the system that has one. Not "seems related."
+> ### CORRECTION (2026-08-27): gate item 4 does NOT pass as written
+>
+> The "genuine silence" verification below is retracted. It checked that zero
+> transcript files were **modified** during 2026-08-26 18:14-22:31 UTC. Those
+> messages live in long-lived session files **still being appended today**, so
+> their mtime is *now* and can never fall inside a past window — the check could
+> not have returned anything else.
+>
+> Reading message timestamps instead finds **192 messages carrying 5.3M tokens**
+> in the window called silent. Whether the ledger was honest-about-disk
+> (transcripts flushed late) or genuinely blind is **not determined**;
+> distinguishing them needs write-time observation unavailable retroactively.
+>
+> **Treat every ledger spend figure in this document as a floor of unknown
+> tightness, not a total.** Full detail:
+> `2026-08-27-rate-limit-observation-finding.md` (PR #1912).
+
 4. **Live-data sanity.** 1,254 ticks over 15 days; $51-583/day, real variance, no saturation. The rest-state check was done the hard way rather than by eyeballing variance: 2026-08-24 reads 0 across all 95 ticks, and that was confirmed as **genuine silence** by cross-checking host transcript mtimes (zero files modified), not inferred from the metric's own zero. A silent tick nulls rather than zeroes the cost, so a decayed-to-zero or blind-instrument artifact would be distinguishable from calm. **Passes** — this is the check the `bus_synaptic_prediction_error` and `node:substrate.route` incidents exist to force, run in both directions.
 5. **Existing mechanism.** `orion/dev_economics/` already does the measurement; this consumes it rather than rebuilding. `orion/autonomy/budget.py` already establishes the exogenous-allowance pattern to copy.
 6. **Reversibility.** One flag restores today's behavior. No schema default, no manifest, no training input. Cheap to unwind.

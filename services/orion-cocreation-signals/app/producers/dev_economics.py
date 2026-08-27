@@ -15,7 +15,7 @@ every later tick forever -- its real ongoing growth never gets attributed to
 any window at all.
 
 Instead this producer tracks each transcript file's last-observed cumulative
-totals in-process (keyed by ``session_id``) and publishes the real
+totals in-process (keyed by ``transcript_path``) and publishes the real
 **delta** since the last tick -- same "diff since last known state" shape as
 ``git_delta_loop``, just per-session instead of per-repo-HEAD. The very
 first tick is a true cold start (seeds the baseline, publishes nothing) --
@@ -57,28 +57,45 @@ from orion.schemas.dev_economics import DevEconomicsLedgerV1
 logger = logging.getLogger("orion.cocreation_signals.dev_economics")
 
 
-def _scan_totals(claude_projects_path: str) -> dict[str, SessionUsageRecord]:
+def _scan_totals(claude_projects_path: str) -> dict[Path, SessionUsageRecord]:
     """Real, synchronous full-tree scan -- caller runs this via
     asyncio.to_thread, same reasoning as every other producer's own I/O
-    boundary. Keyed by ``session_id`` (one entry per real transcript file,
-    since ``SessionUsageRecord`` is already one-record-per-file -- see its
-    own docstring on why a subagent transcript gets its own record rather
-    than folding into its parent's)."""
-    return {r.session_id: r for r in iter_all_session_usage_records(claude_projects_path)}
+    boundary.
+
+    Keyed by ``transcript_path``, which is the only key that is actually
+    one-per-record. ``session_id`` is NOT unique: a session and every
+    subagent it dispatches share the parent's ``session_id`` while each
+    getting its own transcript file and its own ``SessionUsageRecord``
+    (deliberately -- see that class's docstring on why subagent usage must
+    not fold into its parent's). Keying this dict by ``session_id`` therefore
+    silently kept only the last record per session and dropped the rest,
+    which is exactly the systematic undercount ``SessionUsageRecord``'s
+    docstring warns about. Measured live 2026-08-27 against the real
+    transcript tree: 1282 records collapsed to 98 keys -- 1184 records
+    (92%) discarded, 3.59B of 20.49B cumulative tokens (17.5%) invisible,
+    with one ``session_id`` owning 117 files. Downstream never saw it,
+    because ``diff_session_record``'s ``max(0, ...)`` truncation guard
+    launders the resulting negative into a clean zero, and because
+    ``aggregate_session_deltas`` splits on ``is_subagent`` -- so the
+    dropped records showed up only as ``subagent_transcript_count``
+    sitting at exactly 0 for all 1197 ticks over the preceding 14 days."""
+    return {
+        r.transcript_path: r for r in iter_all_session_usage_records(claude_projects_path)
+    }
 
 
 def _score_tick(
     claude_projects_path: str,
-    last_totals: dict[str, SessionUsageRecord],
+    last_totals: dict[Path, SessionUsageRecord],
     observed_at: datetime,
-) -> tuple[DevEconomicsLedgerV1, dict[str, SessionUsageRecord]]:
+) -> tuple[DevEconomicsLedgerV1, dict[Path, SessionUsageRecord]]:
     """One tick's real delta against ``last_totals`` -- returns the event to
     publish and the new totals snapshot to carry into the next tick.
     Synchronous; run via asyncio.to_thread by the caller."""
     current_totals = _scan_totals(claude_projects_path)
     deltas = [
-        diff_session_record(last_totals.get(session_id), record)
-        for session_id, record in current_totals.items()
+        diff_session_record(last_totals.get(transcript_path), record)
+        for transcript_path, record in current_totals.items()
     ]
     real_deltas = [d for d in deltas if has_real_delta(d)]
     agg = aggregate_session_deltas(real_deltas, observed_at=observed_at)
@@ -149,14 +166,14 @@ async def dev_economics_loop(
         )
         return
 
-    last_totals: dict[str, SessionUsageRecord] | None = None
+    last_totals: dict[Path, SessionUsageRecord] | None = None
     while not stop.is_set():
         try:
             observed_at = datetime.now(timezone.utc)
             if last_totals is None:
                 last_totals = await asyncio.to_thread(_scan_totals, claude_projects_path)
                 logger.info(
-                    "cocreation_dev_economics_cold_start session_count=%d", len(last_totals)
+                    "cocreation_dev_economics_cold_start transcript_count=%d", len(last_totals)
                 )
             else:
                 event, current_totals = await asyncio.to_thread(

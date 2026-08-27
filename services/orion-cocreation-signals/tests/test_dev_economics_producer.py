@@ -244,4 +244,88 @@ def test_score_tick_real_end_to_end_against_real_transcript_files(tmp_path) -> N
     event, current_totals = dev_economics_module._score_tick(str(tmp_path), baseline, now)
     assert event.total_input_tokens == 1_000_000
     assert event.total_output_tokens == 1_000_000
-    assert "s1" in current_totals
+    assert transcript in current_totals
+
+
+def _usage_line(session_id: str, *, inp: int, out: int, now, text: str) -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": f"msg_{session_id}_{inp}",
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": text}],
+                "usage": {
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
+            },
+            "timestamp": now.isoformat().replace("+00:00", "Z"),
+            "sessionId": session_id,
+        }
+    )
+
+
+def test_scan_totals_keeps_every_transcript_when_subagents_share_a_session_id(
+    tmp_path,
+) -> None:
+    """Regression: _scan_totals was keyed by ``session_id``, but a session and
+    every subagent it dispatches share the parent's ``session_id`` while each
+    owning its own transcript file and its own SessionUsageRecord. The dict
+    comprehension therefore kept only the last record per session and silently
+    dropped the rest -- measured live 2026-08-27 as 1282 records collapsing to
+    98 keys (92% discarded, 17.5% of cumulative tokens invisible).
+
+    This test builds the exact shape that triggers it: one top-level
+    transcript and two subagent transcripts, all carrying sessionId "s1".
+    Under the old keying _scan_totals returns 1 entry and both subagents'
+    tokens vanish; note that no existing test caught this because every other
+    test in this file monkeypatches _scan_totals away, and the one real
+    end-to-end test uses a single transcript file with no sibling to collide
+    with."""
+    now = datetime.now(timezone.utc)
+    sess_dir = tmp_path / "proj" / "sess"
+    subagent_dir = sess_dir / "subagents"
+    subagent_dir.mkdir(parents=True)
+
+    # All three deliberately carry the SAME sessionId.
+    parent = sess_dir / "session.jsonl"
+    parent.write_text(
+        _usage_line("s1", inp=1_000_000, out=1_000_000, now=now, text="parent work"),
+        encoding="utf-8",
+    )
+    agent_a = subagent_dir / "agent-a.jsonl"
+    agent_a.write_text(
+        _usage_line("s1", inp=300_000, out=200_000, now=now, text="subagent a work"),
+        encoding="utf-8",
+    )
+    agent_b = subagent_dir / "agent-b.jsonl"
+    agent_b.write_text(
+        _usage_line("s1", inp=100_000, out=50_000, now=now, text="subagent b work"),
+        encoding="utf-8",
+    )
+
+    totals = dev_economics_module._scan_totals(str(tmp_path))
+
+    # One entry per FILE, not per session_id. Old code returned 1.
+    assert len(totals) == 3
+    assert set(totals) == {parent, agent_a, agent_b}
+    assert {r.session_id for r in totals.values()} == {"s1"}
+    assert sum(1 for r in totals.values() if r.is_subagent) == 2
+
+    event, _current = dev_economics_module._score_tick(str(tmp_path), {}, now)
+
+    # Hand-computed: 1_000_000 + 300_000 + 100_000 in, 1_000_000 + 200_000
+    # + 50_000 out, no cache tokens. Old code reported whichever single
+    # record won the dict race.
+    assert event.total_input_tokens == 1_400_000
+    assert event.total_output_tokens == 1_250_000
+    assert event.total_tokens == 2_650_000
+
+    # subagent_transcript_count sat at exactly 0 across all 1197 live ticks in
+    # the 14 days before this fix -- that field was the visible symptom.
+    assert event.session_count == 1
+    assert event.subagent_transcript_count == 2

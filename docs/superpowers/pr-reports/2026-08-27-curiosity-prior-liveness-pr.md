@@ -1,4 +1,4 @@
-# A prior is live until Orion closes it, not until it is tested
+# A prior is live until Orion closes it — plus the surface that would have caught it
 
 ## Summary
 
@@ -18,6 +18,32 @@
   a run quietly starting from nothing.
 - Live-verified against `orion_worldview`: the new query returns all 3 priors
   where the old one returned 0.
+
+## The operator surface
+
+The outage was visible in one log line for four hours because nothing put the
+loop on one screen. `/curiosity` is that screen: pool tiles, confidence small
+multiples, per-run graph growth, a run ledger, and every prior. Read-only by
+design and asserted so — Hub never writes to `orion_worldview`, and a route that
+could edit a belief Orion formed needs an auth story this does not have.
+
+**"Before and after" turned out to be two questions, and only one was
+answerable from what exists.** Which run created or last touched each node is
+real history: every node carries `run_id`, a tested prior carries `last_run_id`.
+The projection reproduces exactly what the loop logged at the time
+(`7736d5271d97` → 8 nodes / 5 hops, `0a14e9531089` → 3 nodes / 1 hop).
+
+The confidence a prior held *before* a test was not recoverable — `SET
+p.confidence` overwrites it. So Orion now writes a `:PriorRevision` in the same
+statement, **Orion and not Hub**, because Hub never writes to this graph and
+that invariant is worth more than a backfilled chart. The cost is stated on the
+page rather than hidden: an empty trajectory reads "not recorded yet", never
+"confidence never moved".
+
+The page also surfaces the run it cannot see. A turn killed before writing
+carries no `run_id` on anything, so it appears in no panel — but Redis counted
+it, and the gap between the counter and the graph is its only evidence. That is
+a banner, not a silence, and it fires on today's real data: 3 counted, 2 wrote.
 
 ## Outcome moved
 
@@ -265,6 +291,75 @@ hiding them.
     recurrence signal.
   - Evidence: `services/orion-hub/scripts/curiosity_investigation.py:844`.
 
+## Review findings fixed — round two (the operator surface)
+
+Eight findings, all valid. The first is the one worth reading:
+
+- Finding: the schedule read built the daily-counter key from
+  `datetime.now().astimezone()` — the *process's* local date. orion-hub sets no
+  `TZ`, so that is UTC, while the loop keys on `HUB_ENDOGENOUS_OUTREACH_TZ`
+  (`America/Denver`). Between 18:00 and 23:59 MDT the page would read tomorrow's
+  key, find nothing, and show "Runs today 0 of 3" while the loop was at cap.
+  - Fix: derive the zone from the same setting the loop uses.
+  - Evidence: `docker exec orion-athena-hub` reports UTC. At 20:00 MDT the old
+    expression gives `2026-08-28`, the new one `2026-08-27`. **The docstring
+    directly above the bug claimed to avoid it** — same shape as
+    `feedback_a_gate_can_be_green_through_the_incident_it_cites`, and it passed
+    my live check only because today UTC and MDT share a date.
+
+- Finding: the growth panel filtered segments to four hardcoded kinds while
+  `total_added` summed every kind, so a run writing `:PriorRevision` (added by
+  this very branch) rendered a full-width bar labelled "1" beside a total of
+  "6", and the table's Total did not equal its own row.
+  - Fix: kinds come from the data; slots 5–6 validated on the adjacent pairlist
+    in both modes; a seventh folds into one "Other" segment.
+  - Evidence: `test_every_node_kind_gets_a_segment_even_one_nobody_hardcoded`,
+    `test_the_segments_always_sum_to_the_total_column`.
+
+- Finding: the "left no trace" banner counted a run killed *mid*-write as having
+  written nothing, contradicting its own body text and the ledger pill that
+  already reported it correctly.
+  - Fix: a run that wrote nodes but has no timestamp is accounted for; only a
+    run that wrote nothing at all is reported missing.
+  - Evidence: `test_a_run_killed_mid_write_is_not_reported_as_having_written_nothing`.
+
+- Finding: `to_payload` ran on the event loop — only the query was threaded. It
+  walks every prior's trajectory and deep-copies every dataclass, on Hub's
+  single uvicorn worker, every 60s.
+  - Fix: the whole projection moved into the thread, and revisions indexed by
+    `prior_id` once instead of rescanned per prior (was O(priors × revisions),
+    10M iterations at the query limits).
+
+- Finding: an untimestamped `:PriorRevision` sorted *first* and drew that
+  prior's chart backwards — Orion writes these by hand and can omit
+  `timestamp()`.
+  - Fix: unknown is not oldest, the same rule `assemble_runs` already applied.
+
+- Finding: the appended trajectory endpoint is never a revision, yet was tagged
+  `recorded: True` whenever any other revision existed — inverting the one
+  distinction the flag carries.
+  - Fix: always `False`, with the reason in the code.
+
+- Finding: the page's pool counts come from rows that survived the read limit,
+  while the loop counts server-side, so `pool_is_dead` and
+  `curiosity_worldview_pool_dead` could disagree with no warning.
+  - Fix: added the same truncation warning the loop's read has.
+
+- Finding: `README.md` still said outreach was off by default after this branch
+  flipped it, and `worldview.py` still described the tiebreak as stable across
+  runs after `_rotation_key` made it deliberately not.
+  - Fix: both corrected.
+
+**Two of these were template-logic bugs with zero test coverage**, so the render
+functions now execute under node against fixture payloads
+(`tests/test_curiosity_atlas_template.py`, 11 tests). Both mutation-tested:
+reverting either fix turns them red.
+
+The new tests also exposed a collision worth recording — the repo root has its
+own `scripts` package, so `from scripts.curiosity_routes import ...` was green
+alone and `ModuleNotFoundError` once the orion-hub suite ran first. Loaded by
+file path now.
+
 ## Risks / concerns
 
 - Severity: low. Concern: the offered list now includes `supported` priors, so
@@ -275,9 +370,22 @@ hiding them.
   hand-rolled reader of the `WHERE` clause and could drift from FalkorDB's real
   semantics. Mitigation: it covers only the two predicate forms this module
   emits, and the live check above is the ground truth.
-- Severity: informational. `HUB_CURIOSITY_OUTREACH_ENABLED=false` meant run 6's
-  `reach_out=true` — Orion's first-ever decision to interrupt Juniper — was
-  logged and dropped. Out of scope here; it is a Juniper decision, not a bug.
+- Severity: informational. `HUB_CURIOSITY_OUTREACH_ENABLED` is now `true`, by
+  Juniper's decision on 2026-08-27, after run `0a14e9531089` set
+  `reach_out=true` for the first time and the message was logged as
+  `curiosity_outreach_disabled` and dropped. No code changed; delivery already
+  inherits every endogenous-outreach gate and still spends a second unified turn
+  with its own stance gate.
+- Severity: MEDIUM, and the reason this is `DONE_WITH_CONCERNS`. **The route's
+  happy path through real Hub settings is UNVERIFIED.** Hub's `Settings`
+  requires channel keys that only exist inside the container, so
+  `_build_reader()` and `_read_schedule()` could not be exercised outside it.
+  What *is* verified: `read_atlas` against the live FalkorDB with real data, the
+  router importing and exposing nothing but GET, the render functions against a
+  real payload, and graceful degradation when settings are absent. One
+  `curl http://localhost:<hub-port>/curiosity/api/atlas` after deploy closes it.
+- Severity: LOW. The page has not been seen in a browser — no browser on this
+  host. Layout, wrapping and paint are unverified by anything but reading.
 
 ## PR link
 

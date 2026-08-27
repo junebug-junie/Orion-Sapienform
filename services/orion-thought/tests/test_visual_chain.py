@@ -121,8 +121,8 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
     generate_calls: list[str] = []
 
@@ -184,7 +184,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
     def fake_generate(prompt, *, base_url, timeout_sec):
         raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
@@ -225,7 +225,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
     )
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(
         visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png()
     )
@@ -267,9 +267,9 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda **kw: None)
     monkeypatch.setattr(
-        visual_chain, "load_latest_reverie_interpretation", lambda: "a real reverie thought"
+        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
     )
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "d" * 64)
@@ -297,9 +297,9 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda **kw: None)
     monkeypatch.setattr(
-        visual_chain, "load_latest_reverie_interpretation", lambda: "a real reverie thought"
+        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
     )
 
     def fake_generate(prompt, *, base_url, timeout_sec):
@@ -335,7 +335,7 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
-    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
 
     # A tiny fake "DB": load reads back whatever the last persisted chain wrote.
     db: dict[str, str | None] = {"prior_description": None}

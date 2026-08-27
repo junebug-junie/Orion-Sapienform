@@ -285,8 +285,14 @@ takes `context_text` — the text reverie chain's own most recent, real
 (non-hollow) `substrate_reverie_thought.interpretation`, ONLY once it is
 already linked into a *settled* `substrate_reverie_chain` row
 (`store.load_latest_reverie_interpretation`, capped at
-`MAX_REVERIE_CONTEXT_CHARS`=240 chars, word-boundary truncation via
-`orion.cognition.compactor.truncate`). A deliberately narrow first slice of
+`ORION_REVERIE_CONTEXT_CHAR_LIMIT`=240 chars by default, word-boundary
+truncation via `orion.cognition.compactor.truncate`, and only considered
+fresh within `ORION_REVERIE_CONTEXT_MAX_AGE_SEC`=900s — without a staleness
+bound, a stalled/disabled text-reverie worker would leave the same old
+thought answering forever, presented as "Orion is currently thinking"
+long after it stopped being current; see `settings.py`'s field comment for
+why 900s specifically, not the felt_state_reader.py/proposal-runtime
+thresholds already elsewhere in this repo). A deliberately narrow first slice of
 the design doc §1's full "recent activity / chat / dream" list: already-
 summarized content that already reaches the Hub Reverie tab's Text sub-view
 — but only true once chain-linked (review finding: a thought row is written
@@ -359,6 +365,8 @@ Flags:
 | `CHANNEL_VISION_HOST_REQUEST` | `orion:exec:request:VisionHostService:circe-vl` | circe's dedicated Qwen2-VL vision-host lane |
 | `CHANNEL_VISION_REPLY_PREFIX` | `orion:vision:reply` | Per-call reply channel prefix |
 | `ORION_VISUAL_CHAIN_CAPTION_TIMEOUT_SEC` | `60` | Vision-host RPC timeout |
+| `ORION_REVERIE_CONTEXT_CHAR_LIMIT` | `240` | Max chars of the text-reverie chain's context-seed woven into the prompt |
+| `ORION_REVERIE_CONTEXT_MAX_AGE_SEC` | `900` | How stale that context-seed thought can be before it's treated as absent rather than "current" |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, reverie context-seed, persistence); one test

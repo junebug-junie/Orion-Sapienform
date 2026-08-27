@@ -402,6 +402,93 @@ def test_load_latest_reverie_interpretation_truncates_at_word_boundary() -> None
     assert value[:-1].endswith("wondering")
 
 
+def test_load_latest_reverie_interpretation_char_limit_override() -> None:
+    """char_limit=None preserves the old default (MAX_REVERIE_CONTEXT_CHARS,
+    still 240); a caller-supplied value (visual_chain.py passes
+    settings.reverie_context_char_limit) must actually be used, not ignored."""
+    store = _fresh_store()
+    long_text = ("wondering " * 30).strip()
+    payload = _grounded_thought_json("t-1", long_text)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _rows_result([payload]))
+    try:
+        value = store.load_latest_reverie_interpretation(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21  # +1 for the ellipsis char, not the 240 default
+
+
+def _capturing_engine(payload: dict, captured: dict):
+    """Same shape as `_rows_result`, but also records the executed statement
+    text and bound params -- shared by the two max_age_sec tests below
+    (review finding: they previously each redefined this trio verbatim)."""
+
+    class _FakeResult:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"thought_json": payload}]
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt, params=None):
+            captured["stmt"] = str(stmt)
+            captured["params"] = params
+            return _FakeResult()
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    return _FakeEngine()
+
+
+def test_load_latest_reverie_interpretation_max_age_sec_adds_and_binds_the_clause() -> None:
+    """Staleness bound (post-Patch-3 review finding): without an age filter,
+    a stalled text-reverie worker leaves the same old thought answering
+    every call forever, presented as current. Confirm the SQL actually
+    carries the bound and the parameter is really passed through."""
+    store = _fresh_store()
+    payload = _grounded_thought_json("t-1", "a real, grounded reverie thought still fresh enough")
+    captured: dict = {}
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _capturing_engine(payload, captured))
+    try:
+        value = store.load_latest_reverie_interpretation(max_age_sec=900.0)
+    finally:
+        monkeypatch.undo()
+
+    assert value == "a real, grounded reverie thought still fresh enough"
+    assert "make_interval" in captured["stmt"]
+    assert captured["params"]["max_age_sec"] == 900.0
+    assert captured["params"]["limit"] == store._REVERIE_CONTEXT_CANDIDATE_LIMIT
+
+
+def test_load_latest_reverie_interpretation_no_max_age_sec_omits_the_clause() -> None:
+    store = _fresh_store()
+    payload = _grounded_thought_json("t-1", "a real, grounded reverie thought about whatever is there")
+    captured: dict = {}
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _capturing_engine(payload, captured))
+    try:
+        store.load_latest_reverie_interpretation()  # max_age_sec=None, default
+    finally:
+        monkeypatch.undo()
+
+    assert "make_interval" not in captured["stmt"]
+
+
 def test_load_latest_reverie_interpretation_none_on_empty_table() -> None:
     store = _fresh_store()
     monkeypatch = pytest.MonkeyPatch()

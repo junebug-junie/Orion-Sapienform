@@ -451,3 +451,69 @@ narration sentence.
 - **Traceability**: `self_study_text` recorded as its own `chain_json` key
   on both the success and `generation_failed` paths, same "same-run
   evidence" discipline as `context_text`.
+
+## 17. Patch 6 scope (this changeset, memory-crystallization context-seed)
+
+Same day as Patch 5. Juniper's response to the declined `memory_
+crystallizations` candidate: the concern assumed a second audience for that
+content that does not exist. Orion is already privy to everything that
+table holds -- it was Juniper's own disclosure, in the chat, that produced
+each crystallization in the first place. The privacy question was never
+"should Orion know this", it was "who else could see it if it reaches this
+route" -- and the answer, checked live, is nobody.
+
+**Blast-radius check, live 2026-08-27** (§0A metric-quality-gate
+discipline, applied to the CONSUMER, not the content, since Patch 5 already
+checked the content):
+
+- `reverie_visual_chain` has exactly one consumer in the whole repo:
+  `services/orion-hub/scripts/reverie_routes.py`'s `/api/reverie/visual/
+  recent`. No other service, bus channel, or downstream table reads it.
+- `services/orion-hub/docker-compose.yml` has no `ports:` mapping for this
+  service -- confirmed live, the line is commented out. The route is not
+  reachable from outside this host.
+- No auth/multi-user surface exists on this route or elsewhere in
+  orion-hub's own code (`user_id` fields found in the repo belong to
+  chat-history bookkeeping, not a login/session system).
+
+Conclusion: there is one possible viewer of this content, and she is also
+its original source. Patch 5's declined-candidate reasoning ("an
+unconsenting third party's health information... in the Hub UI") assumed
+an audience beyond that one viewer that does not exist. This is a
+correction on new evidence about WHO can see the output, not a reversal of
+the underlying privacy discipline -- the same "check who can actually see
+it" question Patch 5 already asked of the CONTENT is now asked of the
+ROUTE, and the answer changes the conclusion.
+
+**What shipped**: `build_visual_prompt` takes a fourth optional input,
+`memory_text` (`store.load_latest_memory_crystallization`) -- the most
+recent `status='active'` row's `summary`, verbatim.
+
+- **Filter**: `status = 'active'` only. This is a lifecycle filter, not a
+  content filter -- `status='rejected'` rows (637 of 1290 live,
+  2026-08-27) are stances the crystallization pipeline's own governor
+  already disavowed; surfacing one would misrepresent current
+  self-knowledge, independent of any privacy question.
+- **Deliberately NOT content-filtered**, unlike `self_study_text`'s
+  four-producer allowlist -- there is no allowlist here because the
+  content itself was never the problem; the audience was. `summary` is
+  read and used exactly as stored.
+- **Tunables**: `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` (400,
+  same cap-all-collections default as self-study) and `ORION_MEMORY_
+  CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` (21600s / 6h, same reasoning as
+  self-study's own 6h default). Same `gt=0` fail-loud discipline.
+- **Live cadence check**: real `memory_crystallizations` activity is
+  bursty, not steady -- median gap between consecutive `active` rows is
+  ~31s (tight clusters during active conversation), but the max observed
+  gap is over 10 days (quiet stretches between sessions). At the time this
+  was checked, the most recent `active` row was ~17.6h old -- older than
+  the 6h window, so the reader correctly returned `None` rather than a
+  stale row. This is the intended degrade-to-absent behavior, not a bug;
+  a 6h window will often read empty during quiet periods, matching
+  reality rather than manufacturing a false "always present" signal.
+- **Composition**: `build_visual_prompt`'s Patch 3/4/5 list-join
+  composition already generalizes to a fourth clause with no branch-count
+  growth -- no further refactor needed.
+- **Traceability**: `memory_text` recorded as its own `chain_json` key on
+  both the success and `generation_failed` paths, same discipline as the
+  other two context-seeds.

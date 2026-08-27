@@ -145,6 +145,7 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
                     "prompt": "a quiet room. Orion is currently thinking: curiosity about the mesh.",
                     "context_text": "curiosity about the mesh",
                     "self_study_text": "vision events dropped 0.36x vs baseline",
+                    "memory_text": "Orion and Juniper talked through the mesh work",
                     "continuity_streak": 1,
                     "continuity_reset": False,
                     "description": "a quiet room",
@@ -177,6 +178,8 @@ def test_visual_recent_merges_chain_and_artifact(client, monkeypatch):
     assert chain["context_text"] == "curiosity about the mesh"
     # Patch 5: same treatment for the self-study context-seed.
     assert chain["self_study_text"] == "vision events dropped 0.36x vs baseline"
+    # Patch 6: same treatment for the memory-crystallization context-seed.
+    assert chain["memory_text"] == "Orion and Juniper talked through the mesh work"
     # Patch 4: same treatment for the continuity-reset bookkeeping.
     assert chain["continuity_streak"] == 1
     assert chain["continuity_reset"] is False
@@ -209,6 +212,8 @@ def test_visual_recent_context_text_absent_is_none_not_a_keyerror(client, monkey
     assert chain["context_text"] is None
     # Patch 5: same discipline for the self-study context-seed key.
     assert chain["self_study_text"] is None
+    # Patch 6: same discipline for the memory-crystallization context-seed key.
+    assert chain["memory_text"] is None
     # Patch 4: a chain_json written before Patch 4 has neither key either --
     # same .get() degrade-to-None discipline, never KeyError.
     assert chain["continuity_streak"] is None

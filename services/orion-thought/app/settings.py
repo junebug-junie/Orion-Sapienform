@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings
 # independently hardcoded here AND in store.py, two 240s to keep in sync by
 # hand). store.py's top-level imports are stdlib-only -- importing it here
 # costs nothing and creates no cycle (store.py never imports this module).
+from .store import MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS as _MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS
 from .store import MAX_REVERIE_CONTEXT_CHARS as _MAX_REVERIE_CONTEXT_CHARS
 from .store import MAX_SELF_STUDY_CONTEXT_CHARS as _MAX_SELF_STUDY_CONTEXT_CHARS
 
@@ -341,6 +342,14 @@ class ThoughtSettings(BaseSettings):
     )
     self_study_context_max_age_sec: float = Field(
         21600.0, alias="ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC", gt=0
+    )
+    memory_crystallization_context_char_limit: int = Field(
+        _MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS,
+        alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT",
+        gt=0,
+    )
+    memory_crystallization_context_max_age_sec: float = Field(
+        21600.0, alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC", gt=0
     )
 
     # --- Attention salience trace publish gate ---

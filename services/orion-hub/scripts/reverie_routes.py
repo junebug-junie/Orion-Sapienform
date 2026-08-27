@@ -21,8 +21,10 @@ docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
    (Patch 3) is the reverie context-seed; `chain_json.continuity_streak`/
    `continuity_reset` (Patch 4) record whether THIS run's own prompt was
    forced to drop continuity; `chain_json.self_study_text` (Patch 5) is a
-   second, richer context-seed from the self-study analysis system --
-   nothing else downstream of any of these exists yet.
+   second, richer context-seed from the self-study analysis system;
+   `chain_json.memory_text` (Patch 6) is a third, from the Recall system's
+   `memory_crystallizations` table -- nothing else downstream of any of
+   these exists yet.
 
 Everything here is a read. No writes, no bus publishes. Blocking SQLAlchemy
 calls are offloaded via `asyncio.to_thread` -- this is a UI-facing endpoint
@@ -66,12 +68,24 @@ deterministic window-contrast producers (concept induction, vision events,
 affective state, co-creation signals) -- pure numeric prose, no chat quotes,
 confirmed by reading real bodies before writing the reader
 (`orion-thought`'s `store.load_latest_self_study_reflection`,
-`store._SAFE_SELF_STUDY_SOURCE_PREFIXES`). Explicitly NOT wired: `memory_
-crystallizations` ("actual memory") -- live-checked and found to hold
-verbatim personal chat content with no safe filter, including a real sample
-naming a family member's medical history; and the `chat_history_compactor`
-digest ("recent chat") -- a daily-schedule producer with no evidence it has
-ever fired in production. Neither reaches this tab.
+`store._SAFE_SELF_STUDY_SOURCE_PREFIXES`). `memory_crystallizations`
+("actual memory") was declined at the time -- see Patch 6 note below, which
+reverses that call. The `chat_history_compactor` digest ("recent chat")
+remains declined: a daily-schedule producer with no evidence it has ever
+fired in production.
+
+**Privacy note, Patch 6** (design doc §17): a third context-seed,
+`memory_text`, from `memory_crystallizations` (`orion-thought`'s
+`store.load_latest_memory_crystallization`) -- reverses Patch 5's declined
+call on the same table, on new evidence about audience rather than a
+change in content filtering. This route (and the whole Reverie tab it
+backs) is not published outside this host -- no `ports:` mapping in this
+service's `docker-compose.yml` -- and has no per-user auth; there is one
+possible viewer, and that viewer is also the original source of everything
+`memory_crystallizations` holds. `memory_text` is verbatim `summary` text
+from that table, filtered only to `status='active'` (a pipeline-lifecycle
+filter, not a content one) -- unlike `self_study_text`, this is NOT
+restricted to a safe-content allowlist, by design.
 """
 
 from __future__ import annotations
@@ -267,6 +281,10 @@ async def visual_recent(
                 # "own field, not just prose" reasoning as context_text
                 # above.
                 "self_study_text": cj.get("self_study_text"),
+                # Patch 6: a third context-seed -- real shared-life memory
+                # crystallization content. Same "own field" reasoning as
+                # context_text/self_study_text above.
+                "memory_text": cj.get("memory_text"),
                 # Patch 4: whether THIS run's own prompt was forced to drop
                 # prior_description continuity (visual_chain.py::
                 # resolve_visual_chain_continuity) -- surfaced so the tab can

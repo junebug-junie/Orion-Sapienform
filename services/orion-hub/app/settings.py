@@ -529,12 +529,14 @@ class Settings(BaseSettings):
     # was still working at harness step 29 (Read, ToolSearch) when 300s cut it
     # off -- so Orion did the whole investigation and the answer was discarded.
     # A too-short ceiling here does not fail safe, it burns real compute and
-    # throws the result away. The governor's own budgets are
-    # HARNESS_FCC_TIMEOUT_SEC=900 + VOICE_FINALIZE_TIMEOUT_SEC=300 +
-    # FINALIZE_REFLECT_TIMEOUT_SEC=180, so this has to sit above their sum plus
-    # the stance leg. Nobody is waiting on this turn; the loop's cooldown is 4h.
+    # throws the result away. This has to sit above the sum of the governor's
+    # own budgets (HARNESS_FCC_TIMEOUT_SEC + VOICE_FINALIZE_TIMEOUT_SEC +
+    # FINALIZE_REFLECT_TIMEOUT_SEC) plus the stance leg -- read them from
+    # services/orion-harness-governor/.env_example rather than trusting a copy
+    # here; the first of those has already drifted once from copies like this
+    # one. Nobody is waiting on this turn; the loop's cooldown is 4h.
     HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC: float = Field(
-        default=1500.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
+        default=2700.0, alias="HUB_CURIOSITY_INVESTIGATION_TIMEOUT_SEC"
     )
     HUB_CURIOSITY_INVESTIGATION_SESSION_ID: str = Field(
         default="orion_curiosity", alias="HUB_CURIOSITY_INVESTIGATION_SESSION_ID"
@@ -611,7 +613,9 @@ class Settings(BaseSettings):
     # Stopping points inside one turn: places Orion states what it just learned
     # and decides whether to keep pulling. Juniper's number. A cap exists so
     # the reasoning is inspectable rather than one long ramble; the real
-    # ceiling is time (HARNESS_FCC_TIMEOUT_SEC=900), not steps.
+    # ceiling is time (HARNESS_FCC_TIMEOUT_SEC), not steps. No literal here
+    # on purpose -- that key is owned by the harness-governor's env and has
+    # already drifted once from copies like this one.
     HUB_CURIOSITY_MAX_HOPS: int = Field(default=5, alias="HUB_CURIOSITY_MAX_HOPS")
     # The Postgres role the FCC sandbox's DSN authenticates as. Hub checks it
     # still EXISTS (through its own privileged pool) before spending a turn --
@@ -1020,8 +1024,16 @@ class Settings(BaseSettings):
     # --- Unified Orion turn (orion-thought + harness governor) ---
     ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
     ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
+    # 2160, not 960 (2026-08-26). The old default was derived as "900 + 60" --
+    # the FCC motor plus slack, as if the finalize chain running AFTER the motor
+    # were free. It is not: substrate 5 + reflect 180 + voice 300 = 485s more.
+    # With the motor at 1600 the worst case is 2085. Sized to cover that WITHOUT
+    # leaning on the liveness extension below, because the finalize chain emits
+    # no harness steps -- liveness reads False for exactly the stretch this most
+    # needs to cover. Measured: a turn published a real verdict five seconds
+    # after Hub abandoned the RPC at 960s.
     HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC: float = Field(
-        default=960.0,
+        default=2160.0,
         alias="HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC",
         description="Hub bus RPC wait for unified-turn harness governor (FCC motor + finalize chain).",
     )

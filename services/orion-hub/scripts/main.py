@@ -556,6 +556,10 @@ async def startup_event():
                 # `endogenous_outreach` is a module global reassigned above.
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
                 outreach_provider=lambda: endogenous_outreach,
+                # Liveness only. Without this the loop cannot reach Hub's own
+                # soft-ceiling extension and a long turn is killed mid-run --
+                # see curiosity_investigation._generate.
+                step_relay_provider=lambda: harness_step_relay,
             )
             await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
 

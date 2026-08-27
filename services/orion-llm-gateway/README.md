@@ -258,7 +258,8 @@ FCC/Claude Code CLI harness resolves `MODEL=llamacpp/harness` (`~/.fcc/.env`,
 split off `chat` on 2026-08-14: `chat` carries live Hub chat traffic, has zero
 admission/concurrency throttling (`priority_admission.py` only gates routes
 tagged `"background"`), and its worker is `n_parallel: 1` -- a single FCC
-harness turn (up to `HARNESS_FCC_TIMEOUT_SEC=900s`) can occupy the only slot
+harness turn (up to `HARNESS_FCC_TIMEOUT_SEC`, whose value lives in the
+harness-governor's env) can occupy the only slot
 for the whole turn, and `37f4fab9c` (2026-08-16) already fixed this exact
 class of problem for one lighter call (the "5b reflection" background LLM
 call) by moving it off `chat`.

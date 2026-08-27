@@ -751,3 +751,57 @@ def test_should_skip_claude_permissions_env_false_overrides_non_root(
     monkeypatch.setenv("HARNESS_FCC_SKIP_PERMISSIONS", "false")
     assert motor._should_skip_claude_permissions() is False
 
+
+
+def test_build_subprocess_env_stamps_the_turn_deadline() -> None:
+    """The sandbox has no other way to learn its own budget: the value lives in
+    the harness-governor's `HARNESS_FCC_TIMEOUT_SEC` and the prompt is built by
+    a different service. Stamping it here makes the only number Orion can read
+    the same one the timeout loop enforces."""
+    from orion.harness import fcc_motor as motor
+
+    env = motor._build_subprocess_env(
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        turn_budget_sec=1600.0,
+        turn_deadline_epoch=1_800_000_123.7,
+        turn_step_stall_sec=180.0,
+    )
+    assert env["ORION_TURN_BUDGET_SEC"] == "1600"
+    # Integer seconds, because the consumer is `date +%s` in a shell.
+    assert env["ORION_TURN_DEADLINE_EPOCH"] == "1800000123"
+    assert env["ORION_TURN_STEP_STALL_SEC"] == "180"
+
+
+def test_build_subprocess_env_omits_the_deadline_when_it_is_not_known() -> None:
+    """A stale value inherited from the parent env would be worse than absence:
+    the prompt tells Orion to subtract it from `date +%s`, so a wrong epoch
+    reads as a confident, specific, wrong amount of time remaining."""
+    from orion.harness import fcc_motor as motor
+
+    env = motor._build_subprocess_env(
+        fcc_server_url="http://127.0.0.1:8082", auth_token="tok"
+    )
+    assert "ORION_TURN_BUDGET_SEC" not in env
+    assert "ORION_TURN_DEADLINE_EPOCH" not in env
+    assert "ORION_TURN_STEP_STALL_SEC" not in env
+
+
+def test_build_subprocess_env_clears_a_deadline_inherited_from_the_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`os.environ.copy()` would carry an enclosing turn's deadline into a turn
+    that has none of its own. That does not read as unknown -- the prompt
+    subtracts it from `date +%s`, so it reads as a specific (probably negative)
+    amount of time remaining."""
+    from orion.harness import fcc_motor as motor
+
+    monkeypatch.setenv("ORION_TURN_BUDGET_SEC", "900")
+    monkeypatch.setenv("ORION_TURN_DEADLINE_EPOCH", "1")
+    monkeypatch.setenv("ORION_TURN_STEP_STALL_SEC", "60")
+    env = motor._build_subprocess_env(
+        fcc_server_url="http://127.0.0.1:8082", auth_token="tok"
+    )
+    assert "ORION_TURN_BUDGET_SEC" not in env
+    assert "ORION_TURN_DEADLINE_EPOCH" not in env
+    assert "ORION_TURN_STEP_STALL_SEC" not in env

@@ -1,6 +1,7 @@
-"""Reverie VISUAL chain (Patch 2) -- orchestration is fully testable with
-injected fakes at each hop: diffusion generation, percept upload, vision-host
-RPC, and persistence. No GPU, no torch, no live Redis/Postgres.
+"""Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding) --
+fully testable with injected fakes at each hop: diffusion generation, percept
+upload, vision-host RPC, reverie-interpretation context-seed, and
+persistence. No GPU, no torch, no live Redis/Postgres.
 """
 from __future__ import annotations
 
@@ -58,11 +59,12 @@ def _fake_bus(reply_payload: dict):
 # --- build_visual_prompt (pure) ------------------------------------------------
 
 
-def test_build_visual_prompt_uses_seed_when_no_prior():
+def test_build_visual_prompt_uses_seed_when_neither_prior_nor_context():
     from app import visual_chain
 
     assert visual_chain.build_visual_prompt(None) == visual_chain.DEFAULT_SEED_PROMPT
     assert visual_chain.build_visual_prompt("   ") == visual_chain.DEFAULT_SEED_PROMPT
+    assert visual_chain.build_visual_prompt(None, "   ") == visual_chain.DEFAULT_SEED_PROMPT
 
 
 def test_build_visual_prompt_continues_prior():
@@ -71,6 +73,27 @@ def test_build_visual_prompt_continues_prior():
     prompt = visual_chain.build_visual_prompt("a quiet room, warm light")
     assert "a quiet room, warm light" in prompt
     assert prompt != visual_chain.DEFAULT_SEED_PROMPT
+
+
+def test_build_visual_prompt_uses_context_when_no_prior():
+    """Patch 3: a cold-start run (no prior_description yet) with a real
+    reverie thought on record must seed from that thought, not the generic
+    fixed string -- the whole point of context-seeding."""
+    from app import visual_chain
+
+    prompt = visual_chain.build_visual_prompt(None, "the mesh keeps humming with new nodes")
+    assert "the mesh keeps humming with new nodes" in prompt
+    assert prompt != visual_chain.DEFAULT_SEED_PROMPT
+
+
+def test_build_visual_prompt_blends_prior_and_context():
+    """Both continuity and context-seed present -- neither silently drops
+    the other; a reader of the stored prompt can see both inputs."""
+    from app import visual_chain
+
+    prompt = visual_chain.build_visual_prompt("a quiet room, warm light", "curiosity about the mesh")
+    assert "a quiet room, warm light" in prompt
+    assert "curiosity about the mesh" in prompt
 
 
 # --- _extract_caption -----------------------------------------------------
@@ -99,6 +122,7 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
 
     generate_calls: list[str] = []
 
@@ -128,7 +152,7 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     assert chain is not None
     assert chain.terminal_reason == "max_steps"
     assert chain.prior_description == "a calm room with soft light"
-    assert generate_calls == [visual_chain.DEFAULT_SEED_PROMPT]  # no prior -> seed prompt
+    assert generate_calls == [visual_chain.DEFAULT_SEED_PROMPT]  # no prior/context -> seed prompt
 
     assert len(persisted_chains) == 1
     assert persisted_chains[0].chain_id == chain.chain_id
@@ -160,6 +184,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
     )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
 
     def fake_generate(prompt, *, base_url, timeout_sec):
         raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
@@ -200,6 +225,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
     monkeypatch.setattr(
         visual_chain, "load_latest_visual_chain_prior_description", lambda: "old description"
     )
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
     monkeypatch.setattr(
         visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png()
     )
@@ -230,6 +256,65 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
+    tmp_path, monkeypatch
+):
+    """Patch 3 acceptance check: the context-seed actually reaches the
+    diffusion prompt AND is recorded in chain_json as its own field -- same-
+    run evidence a reader (or this repo's own Hub Reverie tab) can inspect,
+    not just embedded prose inside the prompt string (module docstring's
+    "same-run evidence, not schema presence" discipline, design doc §9)."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_reverie_interpretation", lambda: "a real reverie thought"
+    )
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "d" * 64)
+
+    persisted_chains = []
+    monkeypatch.setattr(
+        visual_chain, "persist_reverie_visual_chain", lambda c: persisted_chains.append(c) or True
+    )
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    bus = _fake_bus(_vision_result_payload("a rendering of that thought"))
+    chain = await visual_chain.run_visual_chain_once(bus)
+
+    assert chain is not None
+    assert "a real reverie thought" in chain.chain_json["prompt"]
+    assert chain.chain_json["context_text"] == "a real reverie thought"
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_generation_failure_records_context_text(
+    tmp_path, monkeypatch
+):
+    """The same context_text traceability holds on the generation_failed path
+    -- a failed run's chain_json must still show what would have seeded it."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain, "load_latest_visual_chain_prior_description", lambda: None)
+    monkeypatch.setattr(
+        visual_chain, "load_latest_reverie_interpretation", lambda: "a real reverie thought"
+    )
+
+    def fake_generate(prompt, *, base_url, timeout_sec):
+        raise visual_chain.DiffusionGenerationError("diffusion-host /generate returned HTTP 503")
+
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", fake_generate)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+
+    chain = await visual_chain.run_visual_chain_once(AsyncMock())
+
+    assert chain.terminal_reason == "generation_failed"
+    assert chain.chain_json["context_text"] == "a real reverie thought"
+
+
+@pytest.mark.asyncio
 async def test_run_visual_chain_once_noop_when_locked(monkeypatch):
     from app import visual_chain
 
@@ -250,6 +335,7 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda: None)
 
     # A tiny fake "DB": load reads back whatever the last persisted chain wrote.
     db: dict[str, str | None] = {"prior_description": None}

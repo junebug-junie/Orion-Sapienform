@@ -88,7 +88,7 @@ def test_there_is_no_already_studied_gate() -> None:
     the turn -- so a "don't repeat" lock would be code guessing at Orion's own
     choice. It is shown what it recently studied and may repeat if it wants."""
     assert set(SignalGateInputs.__dataclass_fields__) == {
-        "has_material", "stores_unavailable"
+        "has_material", "stores_unavailable", "stores_not_ready"
     }
 
 
@@ -271,9 +271,12 @@ def test_an_unreadable_store_writes_nothing() -> None:
 
 
 def test_a_missing_pool_writes_nothing() -> None:
+    """`stores_not_ready` rather than `stores_unavailable` since 2026-08-26 --
+    the pool being absent at startup is a 139ms race, not a fault. It still
+    writes nothing, which is what this test is actually pinning."""
     bus = _FakeBus()
     loop = _loop(bus, pool_provider=lambda: None)
-    assert asyncio.run(loop.tick()) == "stores_unavailable"
+    assert asyncio.run(loop.tick()) == "stores_not_ready"
     assert bus.published == []
 
 
@@ -963,3 +966,100 @@ def test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks() -> No
     assert not is_pass_response(
         "Having written this out, it is more interesting to have found than to hear."
     )
+
+
+# --- the startup race, found on the first real deploy -----------------------
+
+
+def test_a_pool_that_is_not_up_yet_is_not_reported_as_an_unreadable_store() -> None:
+    """Measured live on the first real deploy 2026-08-26: the loop's first tick
+    blocked at 06:28:12,044 and `memory_pg_pool_ready` logged at 06:28:12,183 --
+    a 139ms race, self-healing on the next tick. It logged the SAME warning an
+    actually-broken store logs, which meant that warning fired on every Hub
+    restart. A line that always fires on restart is a line everyone learns to
+    scroll past."""
+    assert signal_block_reason(_signal(stores_not_ready=True)) == "stores_not_ready"
+    assert signal_block_reason(_signal(stores_unavailable=True)) == "stores_unavailable"
+
+
+def test_no_pool_blocks_as_not_ready_and_a_broken_query_still_blocks_as_unavailable() -> None:
+    bus = _FakeBus()
+    loop = _loop(bus, pool_provider=lambda: None)
+    assert asyncio.run(loop.tick()) == "stores_not_ready"
+    assert bus.published == []
+
+    bus2 = _FakeBus()
+    broken = _loop(bus2, conn=_FakeConn(raises=True))
+    assert asyncio.run(broken.tick()) == "stores_unavailable"
+    assert bus2.published == []
+
+
+def test_a_pool_absent_for_more_than_one_tick_escalates_to_warning(caplog) -> None:
+    """A pool that never arrives must not sit at INFO forever -- that is the
+    silent-failure shape this whole loop is built to avoid."""
+    import logging
+
+    bus = _FakeBus()
+    loop = _loop(bus, pool_provider=lambda: None, min_cooldown_sec=0.0)
+    with caplog.at_level(logging.INFO, logger="orion-hub.curiosity_investigation"):
+        assert asyncio.run(loop.tick()) == "stores_not_ready"
+        first = [r for r in caplog.records if "stores_not_ready" in r.getMessage()]
+        assert first and first[-1].levelno == logging.INFO
+        caplog.clear()
+        assert asyncio.run(loop.tick()) == "stores_not_ready"
+        second = [r for r in caplog.records if "stores_not_ready" in r.getMessage()]
+        assert second and second[-1].levelno == logging.WARNING
+
+
+def test_the_counter_resets_once_the_pool_answers() -> None:
+    """Otherwise a single slow start would leave every later blip pre-escalated."""
+    bus = _FakeBus()
+    loop = _loop(bus, pool_provider=lambda: None, min_cooldown_sec=0.0)
+    asyncio.run(loop.tick())
+    assert loop._consecutive_not_ready == 1
+    loop._pool_provider = lambda: _FakePool(_FakeConn())
+    asyncio.run(loop.tick())
+    assert loop._consecutive_not_ready == 0
+
+
+# --- liveness: the soft ceiling was hard for this loop ---------------------
+
+
+def test_the_step_relay_is_passed_so_hubs_soft_ceiling_can_extend() -> None:
+    """`turn_orchestrator` builds its `liveness_check` from the RELAY, and
+    `_liveness_alive` returns False when that is None. Passing None therefore
+    made Hub's deliberately-soft governor RPC ceiling HARD for every curiosity
+    run -- the one mechanism built to stop a long, genuinely-working turn being
+    killed was unreachable by construction. Measured 2026-08-26:
+    `harness governor RPC timeout elapsed_sec=960.0 alive=False`."""
+    bus = _FakeBus()
+    relay = object()
+    loop = _loop(bus, step_relay_provider=lambda: relay)
+    seen = {}
+
+    async def fake_turn(**kwargs):
+        seen.update(kwargs)
+        return [{"type": "final", "llm_response": "found it", "harness_step_count": 9}]
+
+    import orion.hub.turn_orchestrator as turn_orchestrator
+
+    original = turn_orchestrator.execute_unified_turn
+    turn_orchestrator.execute_unified_turn = fake_turn
+    try:
+        del loop._generate
+        asyncio.run(loop.tick())
+    finally:
+        turn_orchestrator.execute_unified_turn = original
+    assert seen["harness_step_relay"] is relay
+    # The QUEUE stays None on purpose: it only fans steps out to a watching
+    # browser, which an unattended loop does not have. Liveness needs the relay.
+    assert seen["harness_step_queue"] is None
+
+
+def test_no_relay_configured_still_runs() -> None:
+    """The loop must not require a relay to function -- it degrades to the old
+    behaviour (no liveness extension), it does not break."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    assert asyncio.run(loop.tick()) is None
+    assert len(bus.published) == 1

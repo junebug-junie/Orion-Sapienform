@@ -88,7 +88,15 @@ class HarnessGovernorSettings(BaseSettings):
         "http://llm-gateway:8210", alias="HARNESS_LLM_GATEWAY_URL"
     )
 
-    fcc_timeout_sec: float = Field(900.0, alias="HARNESS_FCC_TIMEOUT_SEC")
+    # 1600, matching .env_example and the compose default. This code default is
+    # only reached if the key is absent entirely (compose always passes it), but
+    # a stale 900 here is a fourth copy of a number that already drifted once --
+    # live was 1600 while this, .env_example and the compose default all still
+    # said 900 on 2026-08-26. See fcc_motor._build_subprocess_env: this value is
+    # stamped into the sandbox so the turn itself can read its own deadline,
+    # which makes a wrong default something Orion is told, not just something
+    # operators misread.
+    fcc_timeout_sec: float = Field(1600.0, alias="HARNESS_FCC_TIMEOUT_SEC")
     # Cap on one stream-json line, read directly from the environment by
     # orion.harness.fcc_motor; mirrored here so operators see the effective
     # value. See fcc_motor._stream_stall_timeout_sec for why this exists

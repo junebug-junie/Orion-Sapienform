@@ -182,6 +182,14 @@ class SignalGateInputs:
     # Could not read the stores at all. Distinct from "nothing there" on
     # purpose -- see `signal_block_reason`.
     stores_unavailable: bool = False
+    # The asyncpg pool does not exist YET. Distinct from `stores_unavailable`
+    # for the same reason that one is distinct from "nothing there": Hub builds
+    # `app.state.memory_pg_pool` during startup, and this loop's first tick
+    # fires immediately when it starts. Measured live on the first real deploy
+    # 2026-08-26: the tick blocked at 06:28:12,044 and `memory_pg_pool_ready`
+    # logged at 06:28:12,183 -- a 139 MILLISECOND race, self-healing on the
+    # next tick 300s later.
+    stores_not_ready: bool = False
 
 
 def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
@@ -204,6 +212,16 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
 
 def signal_block_reason(inp: SignalGateInputs) -> Optional[str]:
     """First corpus-derived reason this tick must not investigate, or None."""
+    if inp.stores_not_ready:
+        # NOT `stores_unavailable`, and the difference is the whole point of
+        # this branch. An unreadable store is a fault; a store that has not
+        # finished starting is a 139ms race the next tick fixes by itself. Both
+        # used to log the same WARNING, which meant that warning fired on EVERY
+        # Hub restart -- and a line that always fires on restart is a line
+        # everyone learns to scroll past. That is precisely how the 21h vision
+        # blackout stayed invisible. The caller escalates this to WARNING if it
+        # persists past one tick, so a pool that never arrives is still loud.
+        return "stores_not_ready"
     if inp.stores_unavailable:
         # A BROKEN QUERY OR AN ABSENT POOL, not an empty mind. These must never
         # be the same state: an unreadable store and a mind with nothing in it
@@ -334,6 +352,9 @@ class CuriosityInvestigation:
         # --- second turn --------------------------------------------------
         outreach_enabled: bool = False,
         outreach_provider: Optional[Callable[[], Any]] = None,
+        # Read through a callable because the relay is a module global in
+        # main.py assigned during startup, after this object is constructed.
+        step_relay_provider: Optional[Callable[[], Any]] = None,
         reader: Optional[WorldviewReader] = None,
     ) -> None:
         self.enabled = enabled
@@ -366,6 +387,7 @@ class CuriosityInvestigation:
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
         self._outreach_provider = outreach_provider
+        self._step_relay_provider = step_relay_provider
 
         # Injectable so the whole loop is testable without a FalkorDB. When it
         # is None AND no host is configured, the graph half is off and the
@@ -407,6 +429,7 @@ class CuriosityInvestigation:
         self._done_today = 0
         self._done_today_date: Optional[str] = None
         self._acl_error: Optional[str] = "not_asserted_yet"
+        self._consecutive_not_ready = 0
 
     @property
     def graph_enabled(self) -> bool:
@@ -733,13 +756,40 @@ class CuriosityInvestigation:
                 return "graph_unavailable"
 
         material = await self._read_study_material(now)
+        not_ready = material.unavailable_reason == "no_pool"
+        if not not_ready:
+            self._consecutive_not_ready = 0
         reason = signal_block_reason(
             SignalGateInputs(
                 has_material=material.has_material,
-                stores_unavailable=material.is_unavailable,
+                stores_unavailable=material.is_unavailable and not not_ready,
+                stores_not_ready=not_ready,
             )
         )
         if reason is not None:
+            if reason == "stores_not_ready":
+                # First one after a start is expected. A second means the pool
+                # has been absent for a whole tick interval, which is no longer
+                # a startup race -- escalate so a genuinely broken pool can
+                # never sit at INFO forever.
+                self._consecutive_not_ready += 1
+                if self._consecutive_not_ready <= 1:
+                    logger.info(
+                        "curiosity_investigation_blocked reason=stores_not_ready "
+                        "-- app.state.memory_pg_pool is not up yet; normal for "
+                        "the first tick after a Hub start, retrying in %ss",
+                        self.tick_interval_sec,
+                    )
+                else:
+                    logger.warning(
+                        "curiosity_investigation_blocked reason=stores_not_ready "
+                        "consecutive=%s -- the memory pool has now been absent "
+                        "for %.0fs, which is no longer a startup race; check "
+                        "app.state.memory_pg_pool",
+                        self._consecutive_not_ready,
+                        self._consecutive_not_ready * self.tick_interval_sec,
+                    )
+                return reason
             if reason == "stores_unavailable":
                 logger.warning(
                     "curiosity_investigation_blocked reason=stores_unavailable detail=%s "
@@ -887,7 +937,26 @@ class CuriosityInvestigation:
                     payload={"no_write": True, "source": source},
                     continuity_messages=None,
                     harness_rpc_bus=self._harness_rpc_bus or self._bus,
-                    harness_step_relay=None,
+                    # THE RELAY IS PASSED, THE QUEUE IS NOT, and that pairing is
+                    # the whole point. `turn_orchestrator` builds its
+                    # `liveness_check` from the RELAY alone; the queue is only
+                    # for fanning steps out to a watching browser, which an
+                    # unattended loop has none of. `_dispatch_step` records
+                    # `_last_seen[cid]` BEFORE any queue fan-out, so liveness
+                    # works with no queue registered.
+                    #
+                    # Passing None here -- copied from endogenous_outreach, which
+                    # still does -- made `liveness_check` None, and
+                    # `_liveness_alive` returns False for that. So Hub's
+                    # DELIBERATELY SOFT governor RPC ceiling
+                    # (HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC, extendable to a hard
+                    # HUB_HARNESS_GOVERNOR_RPC_MAX_WAIT_SEC=3600 while the turn is
+                    # visibly stepping) was effectively HARD for every curiosity
+                    # run. The one mechanism built to stop a long, genuinely
+                    # working turn being killed was unreachable by construction.
+                    harness_step_relay=(
+                        self._step_relay_provider() if self._step_relay_provider else None
+                    ),
                     harness_step_queue=None,
                 ),
                 timeout=self.timeout_sec,

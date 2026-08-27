@@ -446,8 +446,11 @@ Orion puts there needs approval.
   continuation and no message. Nothing is inferred from the prose.
 
 **Gates, in order.** `disabled` → `daily_cap` → `cooldown` → `pg_role_missing`
-→ `graph_unavailable` → `stores_unavailable` / `no_approved_material` →
-`empty_generation` / `no_lookup`. The last one is load-bearing: a turn with
+→ `graph_unavailable` → `stores_not_ready` / `stores_unavailable` /
+`no_approved_material` → `empty_generation` / `no_lookup`. `stores_not_ready`
+(the pool has not finished starting) is deliberately separate from
+`stores_unavailable` (it could not be read): the first is a sub-second race at
+Hub startup and logs at INFO, escalating to WARNING if it outlives one tick. The last one is load-bearing: a turn with
 fewer than `MIN_HARNESS_STEPS` harness steps did not look anything up, and its
 fluent prose is refused rather than journalled.
 
@@ -1756,8 +1759,9 @@ live telemetry; one fetch on activate, plus a manual Refresh. Backed by
   per `reverie_visual_chain` row: the real generated image (served content-addressed from disk,
   same sniff-and-verify-on-read discipline as `chat_attachments.py`), its caption
   (`reverie_visual_artifact.description`, honestly `null` when re-observation failed or was
-  rejected -- never fabricated), the prompt, and whether it advanced `prior_description` for the
-  next run.
+  rejected -- never fabricated), the context-seed (Patch 3 -- Orion's own most recent real
+  reverie-thought interpretation, `context_text`), the blended prompt, and whether it advanced
+  `prior_description` for the next run.
 - **Text** -- `orion-thought`'s `app/chain.py` (attention-coalition narration). One card per
   `substrate_reverie_chain` row: its `substrate_reverie_thought` interpretations (joined via
   `chain_json.thought_ids`, a plain JSON list -- no FK), and real downstream badges computed from

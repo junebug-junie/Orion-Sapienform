@@ -58,6 +58,7 @@ from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_us
 from .agent_claude_input import prepare_agent_claude_input
 from .fcc_claude_bridge import build_harness_reasoning_trace, run_turn_from_settings
 from .fcc_env_catalog import catalog_from_settings
+from orion.schemas.tts import TTSRequestPayload
 from .fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
 from .repair_pressure_wiring import attach_repair_pressure_contract
@@ -3127,8 +3128,9 @@ async def handle_chat_request(
                 "error": "harness_governor_disabled",
                 "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS,
             }
-        from .main import bus, harness_step_relay, rpc_bus
+        from .main import bus, harness_step_relay, rpc_bus, tts_client
         from orion.hub.turn_orchestrator import execute_unified_turn
+        from .websocket_handler import extract_unified_turn_final_text
 
         # Parity fix: the sibling (non-orion) branch below builds
         # continuity_messages from the client-supplied history before
@@ -3174,6 +3176,64 @@ async def handle_chat_request(
             # would silently vanish for this call path even though the response
             # itself is delivered correctly.
             final_frame = {**final_frame, "finalize_degraded_reason": degraded_frame.get("reason")}
+
+        # Voice reply, HTTP fallback path. Real incident, 2026-08-27
+        # (corr=11215a1b-d3c8-438b-901b-0d6cadf3d637): a live chat turn came
+        # through this endpoint -- not websocket_handler.py's WS loop -- and
+        # got neither text nor voice back. Root cause of the missing voice
+        # half specifically: this HTTP route has NEVER had any TTS wiring at
+        # all, in any mode, since it existed. It reaches here because
+        # app.js's own fallback (built 2026-08-22, for a WS connection dying
+        # while a tab was open -- e.g. a Hub redeploy) sends the turn via
+        # this endpoint whenever the WebSocket is down; that fallback is
+        # correct and intentional, but the resulting turn had no path to
+        # speech regardless of `disable_tts`, unlike the live WS lane fixed
+        # in PR #1905.
+        #
+        # SYNCHRONOUS, not fire-and-forget: this is a single request/response
+        # HTTP cycle with no persistent connection afterward for an async
+        # task to push audio into (the WS lane's tts_q/drain_task has no
+        # equivalent here) -- so synthesis happens before the response is
+        # returned, and the audio rides in the SAME JSON body the text does.
+        # This does mean an HTTP-fallback turn's total latency now includes
+        # TTS synthesis time; accepted, since the alternative is silence.
+        disable_tts = bool(payload.get("disable_tts", False))
+        final_text = extract_unified_turn_final_text(frames)
+        if final_text and not disable_tts and tts_client:
+            try:
+                tts_result = await asyncio.wait_for(
+                    tts_client.speak(TTSRequestPayload(text=final_text)),
+                    timeout=float(settings.HUB_TTS_TIMEOUT_SEC),
+                )
+                final_frame = {
+                    **final_frame,
+                    "audio_response": tts_result.audio_b64,
+                    "tts_source_text": final_text,
+                    "tts_meta": {
+                        "content_type": tts_result.content_type,
+                        "duration_sec": tts_result.duration_sec,
+                        "metadata": tts_result.metadata,
+                    },
+                }
+            except asyncio.TimeoutError:
+                logger.error(
+                    "voice.tts.error corr=%s HTTP-fallback TTS timed out after %ss",
+                    corr_id,
+                    settings.HUB_TTS_TIMEOUT_SEC,
+                )
+                final_frame = {
+                    **final_frame,
+                    "tts_error": f"TTS timed out after {settings.HUB_TTS_TIMEOUT_SEC}s",
+                }
+            except Exception as exc:
+                logger.error(
+                    "voice.tts.error corr=%s HTTP-fallback TTS failed: %s",
+                    corr_id,
+                    exc,
+                    exc_info=True,
+                )
+                final_frame = {**final_frame, "tts_error": str(exc) or "TTS synthesis failed"}
+
         return {**final_frame, "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS}
 
     # ─── Hub presence (best-effort, never blocks chat) ──────────────────

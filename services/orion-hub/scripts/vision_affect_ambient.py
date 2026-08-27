@@ -183,6 +183,7 @@ def call_capture_and_assess(
     trigger: str,
     *,
     chat_correlation_id: Optional[str] = None,
+    subtitle: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Blocking HTTP call to the orchestrator -- callers off the event loop
     (the ambient loop below) run this via asyncio.to_thread. Shared by the
@@ -196,6 +197,11 @@ def call_capture_and_assess(
     as an explicit null, so the manual/ambient request bodies on the wire
     are byte-identical to what they were before this parameter existed.
 
+    ``subtitle`` (2026-08-26) is the transcript Hub ALREADY has from the
+    browser microphone. Passing it is what stops the affect capture needing an
+    audio recording of its own -- see chat_turn_affect.fire()'s own comment for
+    why that reverses an earlier deliberate choice.
+
     Always returns a dict shaped like the orchestrator's real response
     (``{"capture": ..., "result": {"ok": ..., "error": ...}, "event": ...}``)
     even on a malformed/non-dict reply -- review finding, 2026-08-22: this
@@ -207,6 +213,13 @@ def call_capture_and_assess(
     body: Dict[str, Any] = {"trigger": trigger}
     if chat_correlation_id:
         body["chat_correlation_id"] = chat_correlation_id
+    # Sent only when there is real text, and stripped first -- a whitespace-only
+    # value must not count as a transcript (the same hole that was found and
+    # fixed in the retired backend's own subtitle resolution). Omitted entirely
+    # otherwise, so the manual/ambient request bodies stay byte-identical to
+    # what they were before this parameter existed.
+    if subtitle and subtitle.strip():
+        body["subtitle"] = subtitle.strip()
     resp = requests.post(
         f"{base_url.rstrip('/')}/v1/juniper/affect/capture_and_assess",
         json=body,

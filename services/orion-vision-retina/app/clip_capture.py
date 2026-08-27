@@ -54,6 +54,8 @@ class ClipCaptureCooldownError(ClipCaptureError):
 @dataclass
 class ClipCaptureResult:
     video_bytes: bytes
+    # b"" when the caller passed want_audio=False -- the microphone was never
+    # opened, which is a different fact from "it was opened and heard nothing".
     audio_bytes: bytes
     duration_sec: float
 
@@ -68,6 +70,7 @@ async def capture_clip(
     width: int | None,
     height: int | None,
     timeout_sec: float,
+    want_audio: bool = True,
 ) -> ClipCaptureResult:
     """Record `duration_sec` of video (v4l2) and audio (pulse) concurrently,
     read the results into memory, and delete the temp files.
@@ -148,13 +151,19 @@ async def capture_clip(
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
-        audio_proc = await asyncio.create_subprocess_exec(
-            *audio_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
-        procs = {"video": (video_proc, video_cmd), "audio": (audio_proc, audio_cmd)}
+        procs = {"video": (video_proc, video_cmd)}
+        if want_audio:
+            audio_proc = await asyncio.create_subprocess_exec(
+                *audio_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            procs["audio"] = (audio_proc, audio_cmd)
+        # else: the microphone is never opened. Not "opened and discarded" --
+        # no pulse stream is created at all, so the OS-level recording
+        # indicator does not light for this capture. That is the whole point
+        # of the flag (see RetinaClipCaptureRequestPayload.want_audio).
 
         try:
             await asyncio.gather(
@@ -171,9 +180,15 @@ async def capture_clip(
                     await proc.wait()
             raise
 
-        video_bytes, audio_bytes = await asyncio.to_thread(
-            _read_clip_files, video_path, audio_path, video_device, audio_input
-        )
+        if want_audio:
+            video_bytes, audio_bytes = await asyncio.to_thread(
+                _read_clip_files, video_path, audio_path, video_device, audio_input
+            )
+        else:
+            video_bytes = await asyncio.to_thread(
+                _read_video_file, video_path, video_device
+            )
+            audio_bytes = b""
 
     return ClipCaptureResult(
         video_bytes=video_bytes, audio_bytes=audio_bytes, duration_sec=duration_sec
@@ -188,15 +203,27 @@ def _read_clip_files(
     runs the continuous webcam capture_loop and health_loop, and every other
     blocking call in this module (including this file's own upload_bytes
     calls one function away) already goes through to_thread."""
-    if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
-        raise ClipCaptureError(f"ffmpeg produced no video output (device={video_device!r})")
+    video_bytes = _read_video_file(video_path, video_device)
     if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
         raise ClipCaptureError(f"ffmpeg produced no audio output (input={audio_input!r})")
-    with open(video_path, "rb") as f:
-        video_bytes = f.read()
     with open(audio_path, "rb") as f:
         audio_bytes = f.read()
     return video_bytes, audio_bytes
+
+
+def _read_video_file(video_path: str, video_device: str) -> bytes:
+    """The video half of _read_clip_files, split out for want_audio=False.
+
+    Deliberately a split rather than an `if audio_path is None` branch inside
+    the original: the empty-output check is the only thing standing between a
+    silently-failed ffmpeg and a zero-byte "successful" capture, and it must
+    stay unconditional on BOTH paths. Sharing one function makes that
+    impossible to get wrong in only one of them.
+    """
+    if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+        raise ClipCaptureError(f"ffmpeg produced no video output (device={video_device!r})")
+    with open(video_path, "rb") as f:
+        return f.read()
 
 
 async def _wait_ffmpeg(

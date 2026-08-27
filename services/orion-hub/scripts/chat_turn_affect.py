@@ -151,7 +151,12 @@ def should_fire(settings: Any, *, is_voice_turn: bool) -> bool:
 
 
 def _capture_blocking(
-    *, base_url: str, timeout_sec: float, trigger: str, correlation_id: str
+    *,
+    base_url: str,
+    timeout_sec: float,
+    trigger: str,
+    correlation_id: str,
+    subtitle: Optional[str] = None,
 ) -> None:
     """Runs in a worker thread (asyncio.to_thread). Claims the shared slot,
     calls the ONE shared HTTP call site, and always releases via end_capture
@@ -175,6 +180,7 @@ def _capture_blocking(
             timeout_sec,
             trigger,
             chat_correlation_id=correlation_id,
+            subtitle=subtitle,
         )
         ok, error = vision_affect_ambient.result_ok_and_error(body)
         raw_response, video_sha256 = vision_affect_ambient.result_content(body)
@@ -216,6 +222,7 @@ def fire(
     trigger: str,
     correlation_id: str,
     is_voice_turn: bool,
+    subtitle: Optional[str] = None,
 ) -> Optional[asyncio.Task]:
     """Fire-and-forget one capture. Returns the task (tests await it; the
     turn path ignores it) or None when nothing was fired.
@@ -278,6 +285,7 @@ def fire(
             timeout_sec=timeout_sec,
             trigger=trigger,
             correlation_id=correlation_id,
+            subtitle=subtitle,
         )
 
     try:

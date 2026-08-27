@@ -33,7 +33,9 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import RetinaClipCaptureResultPayload
 
 
-def _make_envelope(target_stream_id: str = "retina-stream-01") -> BaseEnvelope:
+def _make_envelope(
+    target_stream_id: str = "retina-stream-01", want_audio: bool | None = None
+) -> BaseEnvelope:
     """Defaults to "retina-stream-01" -- the Settings() default RETINA_STREAM_ID
     the svc fixture below uses, so every existing call site in this file (all
     of which call this with no args) keeps exercising the SAME instance's own
@@ -45,7 +47,15 @@ def _make_envelope(target_stream_id: str = "retina-stream-01") -> BaseEnvelope:
         source=ServiceRef(name="test-caller", version="0.0.0"),
         correlation_id=corr,
         reply_to=f"orion:retina:clip:reply:{corr}",
-        payload={"target_stream_id": target_stream_id},
+        payload=(
+            {"target_stream_id": target_stream_id}
+            if want_audio is None
+            # Omitted entirely by default, not sent as an explicit True: that
+            # is what makes the backward-compat test below exercise a real
+            # older-producer payload rather than a new one that happens to
+            # agree with the default.
+            else {"target_stream_id": target_stream_id, "want_audio": want_audio}
+        ),
     )
 
 
@@ -59,7 +69,7 @@ def svc():
 
 @pytest.mark.asyncio
 async def test_handle_clip_request_publishes_success_reply(svc, monkeypatch):
-    async def _fake_capture(self):
+    async def _fake_capture(self, *, want_audio: bool = True):
         return RetinaClipCaptureResultPayload(
             ok=True, video_sha256="a" * 64, audio_sha256="b" * 64,
             duration_sec=8.0, video_bytes=100, audio_bytes=200,
@@ -88,7 +98,7 @@ async def test_handle_clip_request_reports_disabled_without_capturing(monkeypatc
 
     called = False
 
-    async def _fake_capture(self):
+    async def _fake_capture(self, *, want_audio: bool = True):
         nonlocal called
         called = True
         raise AssertionError("capture_and_upload_clip must not run when disabled")
@@ -114,7 +124,7 @@ async def test_handle_clip_request_reports_not_configured_without_capturing(monk
     bus.publish = AsyncMock()
     svc = RetinaService(settings=settings, bus=bus)
 
-    async def _must_not_run(self):
+    async def _must_not_run(self, *, want_audio: bool = True):
         raise AssertionError("capture_and_upload_clip must not run when not configured")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
@@ -128,7 +138,7 @@ async def test_handle_clip_request_reports_not_configured_without_capturing(monk
 
 @pytest.mark.asyncio
 async def test_handle_clip_request_reports_busy_without_blocking(svc, monkeypatch):
-    async def _never_should_run(self):
+    async def _never_should_run(self, *, want_audio: bool = True):
         raise AssertionError("capture_and_upload_clip must not run while busy")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _never_should_run)
@@ -143,7 +153,7 @@ async def test_handle_clip_request_reports_busy_without_blocking(svc, monkeypatc
 
 @pytest.mark.asyncio
 async def test_handle_clip_request_maps_clip_capture_error(svc, monkeypatch):
-    async def _fake_capture(self):
+    async def _fake_capture(self, *, want_audio: bool = True):
         raise ClipCaptureError("ffmpeg exited 240")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
@@ -163,7 +173,7 @@ async def test_handle_clip_request_still_replies_on_an_unexpected_exception(svc,
     swallowed by asyncio, and the RPC caller would just time out,
     indistinguishable from a genuinely hung device."""
 
-    async def _fake_capture(self):
+    async def _fake_capture(self, *, want_audio: bool = True):
         raise RuntimeError("something nobody anticipated")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
@@ -177,7 +187,7 @@ async def test_handle_clip_request_still_replies_on_an_unexpected_exception(svc,
 
 @pytest.mark.asyncio
 async def test_handle_clip_request_maps_percept_upload_error(svc, monkeypatch):
-    async def _fake_capture(self):
+    async def _fake_capture(self, *, want_audio: bool = True):
         raise PerceptUploadError("percept-store unreachable")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
@@ -205,7 +215,7 @@ async def test_a_capture_in_flight_makes_a_second_bus_request_report_busy(svc, m
     # capture_and_upload_clip already acquires _clip_capture_lock internally
     # in the real implementation; here we simulate that by holding it
     # ourselves for the duration of the "slow" fake capture.
-    async def _slow_capture_holding_lock(self):
+    async def _slow_capture_holding_lock(self, *, want_audio: bool = True):
         async with self._clip_capture_lock:
             started.set()
             await release.wait()
@@ -239,7 +249,7 @@ async def test_a_capture_in_flight_makes_a_second_bus_request_report_busy(svc, m
 
 @pytest.mark.asyncio
 async def test_mismatched_target_stream_id_refuses_without_capturing(svc, monkeypatch):
-    async def _must_not_run(self):
+    async def _must_not_run(self, *, want_audio: bool = True):
         raise AssertionError("capture_and_upload_clip must not run for the wrong camera")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
@@ -278,7 +288,7 @@ async def test_matching_target_stream_id_proceeds_normally(monkeypatch):
     bus.publish = AsyncMock()
     svc = RetinaService(settings=settings, bus=bus)
 
-    async def _fake_capture(self):
+    async def _fake_capture(self, *, want_audio: bool = True):
         return RetinaClipCaptureResultPayload(ok=True, video_sha256="a" * 64, audio_sha256="b" * 64)
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
@@ -343,7 +353,7 @@ async def test_http_route_rejects_mismatched_target_stream_id(monkeypatch):
     test_svc = RetinaService(settings=settings, bus=bus)
     monkeypatch.setattr(main_module, "service", test_svc)
 
-    async def _must_not_run(self):
+    async def _must_not_run(self, *, want_audio: bool = True):
         raise AssertionError("capture_and_upload_clip must not run for the wrong camera")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
@@ -375,7 +385,7 @@ async def test_http_route_rejects_a_missing_target_stream_id(monkeypatch):
     test_svc = RetinaService(settings=settings, bus=bus)
     monkeypatch.setattr(main_module, "service", test_svc)
 
-    async def _must_not_run(self):
+    async def _must_not_run(self, *, want_audio: bool = True):
         raise AssertionError("capture_and_upload_clip must not run without target_stream_id")
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _must_not_run)
@@ -398,7 +408,7 @@ async def test_http_route_proceeds_when_target_stream_id_matches(monkeypatch):
     test_svc = RetinaService(settings=settings, bus=bus)
     monkeypatch.setattr(main_module, "service", test_svc)
 
-    async def _fake_capture(self):
+    async def _fake_capture(self, *, want_audio: bool = True):
         return RetinaClipCaptureResultPayload(ok=True, video_sha256="a" * 64, audio_sha256="b" * 64)
 
     monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
@@ -411,3 +421,48 @@ async def test_http_route_proceeds_when_target_stream_id_matches(monkeypatch):
     # the success path at the end of the route rather than one of the
     # early-return error branches.
     assert response.get("ok") is True
+
+
+# ==========================================================================
+# want_audio (2026-08-26): the microphone must not arm for an affect capture.
+#
+# Juniper's report: pressing the mic button produced two divorced audio
+# recordings, and grounding the affect read in real speech would have meant
+# repeating herself into carbon's much quieter built-in DMIC.
+# ==========================================================================
+
+
+@pytest.mark.asyncio
+async def test_want_audio_false_is_threaded_from_the_bus_request_to_the_capture(
+    svc, monkeypatch
+):
+    seen = {}
+
+    async def _fake_capture(self, *, want_audio: bool = True):
+        seen["want_audio"] = want_audio
+        return RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256=None,
+            duration_sec=8.0, video_bytes=100, audio_bytes=None,
+        )
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
+    await svc._handle_clip_request(_make_envelope(want_audio=False))
+    assert seen["want_audio"] is False
+
+
+@pytest.mark.asyncio
+async def test_want_audio_defaults_to_true_for_a_request_that_omits_it(svc, monkeypatch):
+    """Backward compatibility: the affectgpt rollback path still needs a wav,
+    and an older producer's payload carries no such field at all."""
+    seen = {}
+
+    async def _fake_capture(self, *, want_audio: bool = True):
+        seen["want_audio"] = want_audio
+        return RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64,
+            duration_sec=8.0, video_bytes=100, audio_bytes=200,
+        )
+
+    monkeypatch.setattr(RetinaService, "capture_and_upload_clip", _fake_capture)
+    await svc._handle_clip_request(_make_envelope())
+    assert seen["want_audio"] is True

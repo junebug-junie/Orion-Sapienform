@@ -312,3 +312,36 @@ def test_call_capture_and_assess_returns_error_shape_on_non_dict_response():
     ok, error = ambient.result_ok_and_error(body)
     assert ok is False
     assert error == "invalid_response"
+
+
+def test_subtitle_is_omitted_from_the_body_when_absent_or_blank(monkeypatch):
+    """Manual/ambient request bodies must stay byte-identical to what they
+    were before `subtitle` existed, and a whitespace-only value must not
+    count as a transcript."""
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"result": {"ok": True}}
+
+    def _fake_post(url, json=None, timeout=None):
+        sent["body"] = json
+        return _Resp()
+
+    monkeypatch.setattr(ambient.requests, "post", _fake_post)
+
+    ambient.call_capture_and_assess("http://x", 5.0, "ambient")
+    assert sent["body"] == {"trigger": "ambient"}
+
+    ambient.call_capture_and_assess("http://x", 5.0, "manual", subtitle="   ")
+    assert sent["body"] == {"trigger": "manual"}
+
+    ambient.call_capture_and_assess(
+        "http://x", 5.0, "chat_turn_pre", subtitle="  real words  "
+    )
+    assert sent["body"]["subtitle"] == "real words"

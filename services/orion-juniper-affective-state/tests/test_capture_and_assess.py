@@ -79,6 +79,15 @@ class FakeBus:
     def set_reply(self, channel: str, payload: dict) -> None:
         self._replies[channel] = payload
 
+    def request_payload_for(self, channel: str) -> dict | None:
+        """The payload actually sent on `channel`. Reads the existing parallel
+        calls/request_payloads lists rather than adding a second recording
+        mechanism that could disagree with them."""
+        for sent_channel, payload in zip(self.calls, self.request_payloads):
+            if sent_channel == channel:
+                return payload
+        return None
+
     def set_raises(self, channel: str, exc: Exception) -> None:
         self._raises[channel] = exc
 
@@ -755,3 +764,97 @@ async def test_capture_failure_is_attributed_to_the_selected_backend(
     assert result.ok is False
     assert event.backend == "vision"
     assert event.source == "vision"
+
+
+@pytest.mark.asyncio
+async def test_vision_backend_asks_retina_not_to_arm_the_microphone(
+    monkeypatch, scratch_dir, vision_backend
+):
+    """Juniper's report, 2026-08-26: the mic button produced two divorced audio
+    recordings, and feeding the second one anything real would have meant
+    repeating herself into a much quieter mic. The vision path must therefore
+    not arm the mic at all -- not "arm it and discard the result"."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256=None, duration_sec=8.0
+        ).model_dump(),
+    )
+    monkeypatch.setattr(
+        JuniperAffectiveStateService,
+        "_fetch_percept",
+        lambda self, sha, dest: (open(dest, "wb").write(b"clip"), dest)[1],
+    )
+
+    async def _fake_assess(bus_, *, video_path, transcript, settings):
+        return _StubVisionResult()
+
+    monkeypatch.setattr("app.main.assess_via_vision", _fake_assess)
+
+    await svc.capture_and_assess()
+
+    sent = bus.request_payload_for(settings.CHANNEL_RETINA_CLIP_INTAKE)
+    assert sent is not None, "no retina clip request was published"
+    assert sent.get("want_audio") is False
+
+
+@pytest.mark.asyncio
+async def test_affectgpt_backend_still_asks_for_audio(monkeypatch, scratch_dir):
+    """The rollback path Whispers the clip's own wav, so it genuinely needs
+    one. Asserted explicitly so the flag can never be flipped globally by
+    accident."""
+    monkeypatch.setattr(settings, "AFFECT_BACKEND", "affectgpt", raising=False)
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256="b" * 64, duration_sec=8.0
+        ).model_dump(),
+    )
+    bus.set_reply(
+        settings.CHANNEL_AFFECTGPT_INTAKE,
+        AffectGptAssessResultPayload(ok=True, raw_response="calm").model_dump(),
+    )
+    monkeypatch.setattr(
+        JuniperAffectiveStateService,
+        "_fetch_percept",
+        lambda self, sha, dest: (open(dest, "wb").write(b"clip"), dest)[1],
+    )
+
+    await svc.capture_and_assess()
+
+    sent = bus.request_payload_for(settings.CHANNEL_RETINA_CLIP_INTAKE)
+    assert sent.get("want_audio") is True
+
+
+@pytest.mark.asyncio
+async def test_real_transcript_reaches_the_vision_read(
+    monkeypatch, scratch_dir, vision_backend
+):
+    """The other half of the merge: the affect read is grounded in the words
+    Juniper ALREADY said into the browser mic, so no second recording of her
+    voice needs to exist for the read to have any speech context at all."""
+    svc, bus = _svc_with_fake_bus()
+    bus.set_reply(
+        settings.CHANNEL_RETINA_CLIP_INTAKE,
+        RetinaClipCaptureResultPayload(
+            ok=True, video_sha256="a" * 64, audio_sha256=None, duration_sec=8.0
+        ).model_dump(),
+    )
+    monkeypatch.setattr(
+        JuniperAffectiveStateService,
+        "_fetch_percept",
+        lambda self, sha, dest: (open(dest, "wb").write(b"clip"), dest)[1],
+    )
+    seen = {}
+
+    async def _capture_transcript(bus_, *, video_path, transcript, settings):
+        seen["transcript"] = transcript
+        return _StubVisionResult()
+
+    monkeypatch.setattr("app.main.assess_via_vision", _capture_transcript)
+
+    await svc.capture_and_assess(subtitle="I'm feeling really tired.")
+
+    assert seen["transcript"] == "I'm feeling really tired."

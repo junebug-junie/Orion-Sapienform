@@ -84,22 +84,23 @@ None.
 ## Tests run
 
 ```text
-services/orion-hub/tests/test_handle_chat_request_http_fallback_tts.py   6 passed
+services/orion-hub/tests/test_handle_chat_request_http_fallback_tts.py  16 passed
+services/orion-hub/tests/test_handle_tts_fields_frontend.py              4 passed
 services/orion-hub/tests/test_handle_chat_request_orion_mode_degraded.py
 services/orion-hub/tests/test_handle_chat_request_orion_mode_continuity.py
 services/orion-hub/tests/test_chat_route_tagging.py
-services/orion-hub/tests/test_orion_unified_turn_tts.py                38 passed (all pre-existing, unaffected)
+services/orion-hub/tests/test_orion_unified_turn_tts.py
+services/orion-hub/tests/test_handle_chat_request_turn_effect.py       (all pre-existing, unaffected
+                                                                         except 1 confirmed pre-existing
+                                                                         failure on origin/main too)
 
-# whole hub suite, branch vs fresh origin/main
-branch:        64 failed, 1643 passed, 4 skipped
+# whole hub suite, branch (post-review-fix) vs fresh origin/main
+branch:        63 failed, 1651 passed, 4 skipped
 origin/main:   63 failed, 1638 passed, 4 skipped
 
-Diffed the two FAILED sets: zero failures unique to origin/main; one
-failure unique to the branch
-(test_substrate_mutation_manual_route_routing.py::test_routing_dry_run_produces_trial_and_decision_without_side_effects),
-the same file already confirmed order-dependent-flaky multiple times
-earlier this session on unrelated PRs. Ran it alone: 1 passed. Not a
-regression.
+FAILED set is byte-identical between the two (comm in both directions:
+empty). Zero regressions; the +13 passed are this pass's new/updated
+tests.
 ```
 
 ## Evals run
@@ -135,8 +136,101 @@ live WS connection) that caused the original incident.
 
 ## Review findings fixed
 
-Pending -- `/code-review high` launched, findings will be applied and this
-section updated before merge is requested.
+High-effort `/code-review` run. 9 findings, all real, all fixed.
+
+- **Most severe -- Finding**: `shouldAppendOrionWsPayload(d)` checked
+  `if (d.tts_error) return false` as its FIRST condition. Correct for the
+  WS lane (a tts_error frame there never carries real text), but the new
+  HTTP fallback can merge a real `llm_response` WITH a `tts_error` (text
+  succeeded, TTS didn't) into the SAME object -- that merged shape got
+  misclassified as "no text", replacing a real, successful reply with
+  *"HTTP completed but no assistant text was returned"* -- exactly the
+  failure mode this whole PR exists to fix, reintroduced by the fix
+  itself.
+  - Fix: check specifically for the absence of `llm_response`, not
+    `tts_error` alone. Every existing WS-lane case (bare tts_error,
+    audio-only follow-up frames) verified unchanged.
+  - Evidence: `test_should_append_orion_ws_payload_checks_llm_response_before_tts_error`.
+
+- **Finding**: hand-rolled a THIRD independent implementation of the TTS
+  gate + synthesis + timeout/exception handling -- the exact "one lane
+  wired, one lane not, nothing keeping them in sync" shape PR #1905's
+  `dispatch_tts_reply`/`run_tts_remote` were unified to stop, the same
+  day.
+  - Fix: extracted `synthesize_tts_reply()` (`websocket_handler.py`) as
+    the shared synthesis core; both `run_tts_remote` (WS, queue-based)
+    and this HTTP route (synchronous) now call it, emitting the same
+    `voice.tts.start`/`done`/`error` log format regardless of transport.
+    Only the *gate* stays lane-specific (fire-and-forget task vs
+    synchronous await differ enough in shape that forcing them into one
+    function added more indirection than it removed).
+
+- **Finding**: a "successful" synthesis with `audio_b64=""` would silently
+  drop voice output with zero trace -- no exception, no log, no UI signal.
+  - Fix: treated as a real failure inside the shared core, so both lanes
+    get it from one place.
+
+- **Finding**: `disable_tts = bool(payload.get("disable_tts", False))` --
+  a non-browser caller sending the JSON string `"false"` gets Python
+  `True` from a bare `bool()` cast, silently suppressing TTS against their
+  actual intent.
+  - Fix: uses the file's own established `_normalize_bool()` helper
+    (already used for `use_recall` two lines earlier).
+
+- **Finding**: TTS synthesis is awaited synchronously (up to
+  `HUB_TTS_TIMEOUT_SEC`) with no check for a client that already gave up
+  -- and this fallback exists precisely for Hub-wide WS outages, when many
+  clients can hit this route at once.
+  - Fix: `request.is_disconnected()` checked before synthesizing.
+    Best-effort: a caller with no `Request` object (e.g. direct test
+    invocation), or the check itself raising, still gets TTS rather than
+    losing it to an unrelated failure.
+  - Evidence: `test_http_fallback_skips_synthesis_when_client_already_disconnected`,
+    `test_http_fallback_still_synthesizes_when_request_object_is_unavailable`,
+    `test_http_fallback_a_broken_disconnect_check_does_not_block_synthesis`.
+
+- **Finding**: no JS test/smoke was added for the `app.js` refactor --
+  only a Python backend test -- and as a direct consequence, the severe
+  `shouldAppendOrionWsPayload` regression above shipped undetected.
+  - Fix: `app.js` has no `module.exports` (a browser IIFE, not
+    Node-requireable, unlike this repo's small pure-logic `*.test.js`
+    modules) -- added `test_handle_tts_fields_frontend.py` instead,
+    following the SAME established convention
+    `test_websocket_agent_claude_routing.py` already uses for this exact
+    file: assert on the real source's control-flow shape. This test would
+    have caught the regression; it did not exist until now.
+
+- **Finding**: a dead/redundant monkeypatch in my own new test file (a
+  timeout override set twice, only the second call had any effect).
+  - Fix: extended the shared `_wire_common` fixture to accept the
+    parameter directly.
+
+- **Finding** (raw exception text surfaced to the user): noted as an
+  existing pattern already present in the WS lane's own `run_tts_remote`
+  (not a new exposure, just replicated into a second call site). Not
+  changed in this pass -- the shared-core refactor above converges it to
+  ONE origin instead of two independent copies, which is itself the
+  improvement; sanitizing the actual message content is a separate,
+  deliberate product decision for both lanes together, not something to
+  change unilaterally while fixing this bug.
+
+- **Finding** (`tts_client` global not reset on Hub shutdown): confirmed
+  pre-existing and already reachable via the WS lane (which holds
+  `tts_client` for a connection's whole lifetime, a wider window than this
+  HTTP route's single request). This patch adds a second consumer of an
+  existing, unguarded pattern rather than introducing a new one. Noted as
+  a known, deferred risk rather than fixed here -- properly reset-guarding
+  a module global touched by two independent lanes is a separate change.
+
+Live re-verified post-refactor against the real production Hub: a second
+real `POST /api/chat` call succeeded end to end (200, 224.2s, real
+`llm_response`, real 781KB `audio_response`, `tts_error: None`) -- confirms
+the shared-core refactor didn't change observable behavior.
+
+37 tests total for this seam (13 new/updated in this review-fix pass).
+Whole hub suite: 63 failed/1651 passed -- FAILED set is byte-identical to
+fresh `origin/main`'s 63 failed/1638 passed (`comm` in both directions:
+empty). Zero regressions.
 
 ## Restart required
 
@@ -163,4 +257,4 @@ docker compose --env-file <repo-root>/.env \
 
 ## PR link
 
-<filled in after push>
+https://github.com/junebug-junie/Orion-Sapienform/pull/1911

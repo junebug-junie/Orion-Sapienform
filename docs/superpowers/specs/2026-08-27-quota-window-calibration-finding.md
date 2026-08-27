@@ -16,6 +16,28 @@ open item verbatim:
 
 It is now measured. **It does not hold.**
 
+> ### CORRECTION (2026-08-27, PR #1912)
+>
+> **The conclusion below survives. Three things about the evidence were wrong.**
+>
+> 1. **Ground truth was substring-matched and contaminated.** The detector matched
+>    `rate_limit_error` anywhere in the corpus, which matched *this investigation's
+>    own tool output*. It also missed the real phrasing entirely — it searched for
+>    `"usage limit reached"` while the actual text is `"You've hit your session
+>    limit"`. Structural detection (`isApiErrorMessage` **and** a limit phrasing)
+>    finds **132 real events**, not 66: 122 session, 10 weekly.
+> 2. **Recomputed spread is wider, not narrower: $56.40 – $289.76 (5.1x)**, with the
+>    largest observed window ($419.05) still not tripping it. The refutation is
+>    stronger on correct data.
+> 3. **A reason it could never have worked**, visible only once kinds were separated:
+>    the two **weekly** limits sit at $254 and $56 of trailing 5h spend. A weekly
+>    limit is not about the last five hours. The axis was conflating two constraints
+>    with different periods and was unfittable by construction.
+>
+> Also retracted: the "genuine silence" cross-check cited below. It tested file
+> mtimes, which for long-lived append-only session files can never fall inside a past
+> window. **Ledger spend figures here are floors of unknown tightness.**
+
 ## Method
 
 Ground truth for "the limit was actually reached" comes from the transcripts

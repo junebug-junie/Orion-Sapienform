@@ -381,7 +381,16 @@ scripts/safe_docker_build.sh orion-juniper-affective-state up -d
 curl -fsS http://100.112.254.99:32799/health
 ```
 
-**3.** `orion-cortex-exec` and `orion-hub` also carry the changed
+**3. carbon — retina**, for `want_audio` (without this the mic still arms for
+every affect capture, and the vision read simply gets no transcript):
+
+```bash
+cd /mnt/scripts/Orion-Sapienform
+git pull --ff-only
+scripts/safe_docker_build.sh orion-vision-retina up -d --build
+```
+
+**4.** `orion-cortex-exec` and `orion-hub` also carry the changed
 `orion/situational/context.py` and must be rebuilt for the new prompt line:
 
 ```bash
@@ -418,6 +427,92 @@ scripts/safe_docker_build.sh orion-hub up -d --build
   referencing `orion/situational/identity_ask_cooldown.py`, which does not
   exist on main. Not mine and not in this branch — looks like a concurrent
   session's in-flight work. Left untouched.
+
+## Follow-up: one recording, not two (2026-08-26, same branch)
+
+Juniper, after watching a live turn: *"the mic record button should be merged
+with the affect recording so you don't get two divorced audio recordings where
+I have to repeat myself."*
+
+She was right, and turn `7dc1bab2` proved how bad the second recording is. She
+said, through the browser mic:
+
+> **"I'm feeling really tired."**
+
+The affect clip's own Whisper pass, on carbon's DMIC, produced:
+
+| leg | transcript |
+| --- | --- |
+| pre | `"Tired, tired, tired"` |
+| post | `"Thanks for the light, Egyptians. Thanks for the eyesight, thanks for the thanks, this was a long time ago."` |
+
+The post-leg text is fabricated outright — Whisper's notorious "thanks for
+watching" family, emitted from a noise floor. The pre-leg text is one real word
+degraded into a repetition loop. **AffectGPT then anchored on the fabrication**
+("the subtitle content 'Tired, tired, tired' is likely the man expressing his
+emotional state"), so the deployed system has been producing affect reads
+grounded in sentences she never said — a worse failure than the refusal that
+started this investigation.
+
+This also refines the earlier "dead channel" call in this report: carbon's DMIC
+is **not** electrically dead — it does pick up faint speech. It is ~21 dB too
+quiet at `vol: 0.50` for Whisper to decode reliably. A gain/device problem, and
+more fixable than "-49.2 dB is a dead channel" implied.
+
+**The fix: the microphone is never armed for an affect capture, and the
+transcript Hub already holds is threaded in instead.**
+
+- `RetinaClipCaptureRequestPayload.want_audio` (default `True`, for the
+  affectgpt rollback which still Whispers its own wav). `False` opens no pulse
+  stream at all — "never armed", not "armed and discarded", so the OS recording
+  indicator does not light.
+- retina skips the audio percept upload rather than POSTing `b""`
+  (percept-store returns 400 on an empty body, which would turn a correct
+  video-only capture into a hard failure). `audio_sha256` comes back `None`, so
+  a caller can distinguish "no mic opened" from "mic opened, got something".
+- Hub passes the real transcript on the **PRE leg only**. POST gets none
+  deliberately: she is not speaking then, and reusing the pre leg's text would
+  present her opening words as her reaction to Orion's reply.
+
+Net effect: exactly one recording of her voice exists in the system, it is the
+good one, and she never repeats herself.
+
+### Two real bugs found while building it
+
+- `websocket_handler`'s call site read `subtitle=user_text`, but that name is
+  **not bound** in `websocket_endpoint` — a `NameError` in the live turn path.
+  The variable is `transcript`. Caught by walking the function's AST for actual
+  bindings rather than trusting a grep that matched a different function's
+  parameter.
+- Six monkeypatched test fakes did not match the widened signatures. One of
+  them **hung the entire hub suite instead of failing**: the fake raised
+  `TypeError` before appending to `order`, so the test's
+  `while "start:chat_turn_pre" not in order` spun forever. Worth naming because
+  a hang reads as infrastructure flakiness, not as a broken contract.
+
+### Verification
+
+```text
+services/orion-juniper-affective-state/tests                  92 passed
+tests/test_vision_retina_clip_{rpc,capture,cooldown}.py       27 passed
+services/orion-cortex-exec/.../test_situation_affect_context.py
+  + orion/situational/tests                                   39 passed
+services/orion-hub/tests/test_{chat_turn_affect,
+  vision_affect_ambient,vision_affect_capture_api}.py         67 passed
+                                                             ---
+                                                             225 passed
+
+all 8 static gates: PASS
+```
+
+Mutation-checked, per this branch's own earlier lesson: forcing
+`want_audio=True` on the vision path turns
+`test_vision_backend_asks_retina_not_to_arm_the_microphone` red.
+
+**Not live-verified.** `want_audio` runs on carbon's retina, which serves the
+currently-deployed image. Unlike circe, carbon IS reachable over SSH this
+session, but deploying an unmerged branch to Juniper's laptop is her call, not
+mine. The restart section below covers it.
 
 ## PR link
 

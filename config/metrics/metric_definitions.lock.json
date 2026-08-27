@@ -3,10 +3,10 @@
   "metric_count": 617,
   "_last_change": {
     "base": "merge base 6b9b0f04e (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService (all_producers: \u2026ub', 'orion-memory-conso\u2026 -> \u2026ub', 'orion-juniper-affective-state', 'orion-memory-conso\u2026)"
     ]
   },
   "definitions": {
@@ -348,6 +348,7 @@
         "orion-agent-council",
         "orion-cortex-exec",
         "orion-hub",
+        "orion-juniper-affective-state",
         "orion-memory-consolidation",
         "orion-mind",
         "orion-vision-council"

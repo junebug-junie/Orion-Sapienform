@@ -47,12 +47,14 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.affectgpt import (
     AffectGptAssessRequestPayload,
     AffectGptAssessResultPayload,
+    AffectReadV1,
     JuniperMultimodalAffectV1,
 )
 from orion.schemas.vision import RetinaClipCaptureRequestPayload, RetinaClipCaptureResultPayload
 from orion.situational.juniper_affect_state import write_latest_juniper_affect
 
 from .settings import Settings
+from .vision_backend import VisionAffectError, assess_via_vision
 
 settings = Settings()
 
@@ -61,6 +63,84 @@ settings = Settings()
 # AffectContextV1 (orion/schemas/situation.py) for the privacy contract
 # this feeds into a chat prompt.
 _AFFECT_SUMMARY_MAX_CHARS = 300
+
+
+def _vision_backend_selected() -> bool:
+    """True when captures should read frames through the VL lane.
+
+    Fails CLOSED to the vision backend: anything that is not exactly
+    "affectgpt" selects vision. Deliberately the opposite polarity from
+    chat_turn_affect.py's scope resolver (which fails closed to `off` so a typo
+    cannot start a camera) -- here the dangerous outcome is not "a capture
+    happens", it is "a capture is read by the backend that misgendered Juniper
+    three times out of three and narrated a voice from a silent track". A typo
+    must not select that.
+    """
+    return str(getattr(settings, "AFFECT_BACKEND", "vision") or "vision").strip().lower() != "affectgpt"
+
+
+def _render_affect_summary(affect: AffectReadV1) -> str:
+    """One short line for the chat prompt, built from the structured read.
+
+    NOT the model's raw text. The raw text is what broke this: Orion's prompt
+    for turn ddddfe40 received a 400-character essay beginning "In the text,
+    based on the provided information, it is not possible to infer...". A
+    prompt line has to be short enough to read as grounding rather than as a
+    quotation, and has to carry the model's own uncertainty with it.
+    """
+    parts = [affect.primary_affect.strip()]
+    parts.append(f"valence {affect.valence:+.1f}, arousal {affect.arousal:.1f}")
+    if affect.cues:
+        # Two cues, not all of them -- enough to make the read inspectable in
+        # the prompt without turning the line back into an essay.
+        parts.append("cues: " + "; ".join(c.strip() for c in affect.cues[:2] if c.strip()))
+    if affect.cannot_tell:
+        parts.append("can't tell: " + "; ".join(c.strip() for c in affect.cannot_tell[:2] if c.strip()))
+    parts.append(f"confidence {affect.confidence:.2f}")
+    return " | ".join(p for p in parts if p)
+
+
+def _mirror_decision(event: JuniperMultimodalAffectV1) -> tuple[bool, str]:
+    """Should this read be allowed to colour a chat turn? (allowed, reason).
+
+    Publishing and mirroring are deliberately different bars. EVERY assessment
+    is published -- failures and low-confidence reads are part of the record
+    and a consumer auditing the pipeline needs them. Only reads that clear both
+    trust gates reach the Redis key orion/situational/context.py polls, because
+    that key is the one that ends up in front of Orion.
+
+    The gates are structural, not a keyword sniff for hedging phrases. A regex
+    hunting for "cannot infer" would have caught exactly the one sentence
+    AffectGPT happened to emit on 2026-08-26 and nothing else.
+    """
+    if not event.ok:
+        return False, "not_ok"
+    affect = event.affect
+    if affect is None:
+        # affectgpt rollback path: no structured read exists, so neither gate
+        # can be evaluated. Fall back to the pre-2026-08-26 behaviour
+        # (mirror any non-empty response) rather than silently blocking the
+        # rollback path this key exists to preserve.
+        return bool(event.raw_response), "legacy_no_structured_read"
+    min_conf = float(getattr(settings, "AFFECT_MIRROR_MIN_CONFIDENCE", 0.35))
+    if affect.confidence < min_conf:
+        return False, f"low_confidence:{affect.confidence:.2f}<{min_conf:.2f}"
+    min_rate = float(getattr(settings, "AFFECT_MIRROR_MIN_DETECTION_RATE", 0.15))
+    rate = (event.face_detection or {}).get("detection_rate")
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool):
+        # Absent/non-numeric telemetry means different things per backend, so
+        # resolve it per backend rather than uniformly failing open (review
+        # finding, 2026-08-26 -- a gate that silently passes whenever its own
+        # input is missing is the inert-gate shape this repo warns about).
+        # vision ALWAYS supplies a float from sample_frames().as_meta(), so its
+        # absence means something upstream broke: fail closed. affectgpt rows
+        # legitimately predate the field: fail open, as before.
+        if event.backend == "vision":
+            return False, f"missing_detection_rate:{rate!r}"
+        return True, "ok"
+    if float(rate) < min_rate:
+        return False, f"low_detection_rate:{float(rate):.3f}<{min_rate:.3f}"
+    return True, "ok"
 
 
 class PerceptFetchError(Exception):
@@ -265,6 +345,15 @@ class JuniperAffectiveStateService:
         and raise a pydantic ValidationError with no handler around it.
         """
         trigger = _normalize_trigger(trigger)
+        # Read ONCE for the whole capture. Evaluating it separately for the
+        # fetch and for the dispatch let the two disagree (only reachable via a
+        # mid-call setattr today), which would hand the affectgpt worker an
+        # audio_path that was never fetched -- review finding, 2026-08-26.
+        # Also threaded into every failure branch below, so a capture/fetch
+        # failure is attributed to the backend actually selected rather than to
+        # _wrap_event's "affectgpt" default.
+        use_vision = _vision_backend_selected()
+        backend_name = "vision" if use_vision else "affectgpt"
         # ONE id for this whole attempt -- threaded through the retina RPC
         # below, the worker RPC inside trigger_assessment(), and the
         # published event, so all three legs of one tick are joinable via a
@@ -283,6 +372,7 @@ class JuniperAffectiveStateService:
                 AffectGptAssessRequestPayload(video_path="", audio_path=""),
                 trigger=trigger,
                 corr_id=corr_id,
+                backend=backend_name,
                             chat_correlation_id=chat_correlation_id,
             )
             await self._publish_event(event)
@@ -310,11 +400,22 @@ class JuniperAffectiveStateService:
             # threads to actually finish before this line returns, so by the
             # time any error handling or cleanup runs, nothing is still
             # writing.
-            fetch_results = await asyncio.gather(
-                asyncio.to_thread(self._fetch_percept, capture.video_sha256, video_path),
-                asyncio.to_thread(self._fetch_percept, capture.audio_sha256, audio_path),
-                return_exceptions=True,
-            )
+            # The audio blob is fetched ONLY for the affectgpt backend, which
+            # needs a local wav path to Whisper. The vision backend never
+            # touches audio, so on that path Juniper's recorded voice is left
+            # in percept-store to age out on its own retention and never
+            # crosses a host boundary at all. That is a real narrowing of this
+            # capability's privacy surface, not just an optimisation -- worth
+            # keeping conditional even though fetching unconditionally would
+            # be two fewer lines.
+            fetch_targets = [
+                asyncio.to_thread(self._fetch_percept, capture.video_sha256, video_path)
+            ]
+            if not use_vision:
+                fetch_targets.append(
+                    asyncio.to_thread(self._fetch_percept, capture.audio_sha256, audio_path)
+                )
+            fetch_results = await asyncio.gather(*fetch_targets, return_exceptions=True)
             fetch_errors = [r for r in fetch_results if isinstance(r, BaseException)]
             if fetch_errors:
                 detail = "; ".join(str(e) for e in fetch_errors)
@@ -326,6 +427,7 @@ class JuniperAffectiveStateService:
                     AffectGptAssessRequestPayload(video_path="", audio_path=""),
                     trigger=trigger,
                     corr_id=corr_id,
+                    backend=backend_name,
                                     chat_correlation_id=chat_correlation_id,
                 )
                 await self._publish_event(event)
@@ -337,12 +439,20 @@ class JuniperAffectiveStateService:
                 subtitle=subtitle,
                 user_message=user_message,
             )
-            result, event = await self.trigger_assessment(
-                req,
-                trigger=trigger,
-                corr_id=corr_id,
-                chat_correlation_id=chat_correlation_id,
-            )
+            if use_vision:
+                result, event = await self._assess_via_vision_backend(
+                    req,
+                    trigger=trigger,
+                    corr_id=corr_id,
+                    chat_correlation_id=chat_correlation_id,
+                )
+            else:
+                result, event = await self.trigger_assessment(
+                    req,
+                    trigger=trigger,
+                    corr_id=corr_id,
+                    chat_correlation_id=chat_correlation_id,
+                )
             # tmpdir (and the fetched clip bytes) is removed here on context
             # exit, always -- same "nothing survives past a temp dir"
             # discipline as retina's own clip_capture.py. The assess call
@@ -437,6 +547,94 @@ class JuniperAffectiveStateService:
             f.write(data)
         return dest_path
 
+    async def _assess_via_vision_backend(
+        self,
+        req: AffectGptAssessRequestPayload,
+        *,
+        trigger: str = "manual",
+        corr_id: "uuid.UUID | None" = None,
+        chat_correlation_id: str | None = None,
+    ) -> tuple[AffectGptAssessResultPayload, JuniperMultimodalAffectV1]:
+        """Vision-backend twin of trigger_assessment().
+
+        Same contract in every respect a caller can observe: returns the same
+        (result, event) pair, publishes exactly once on every path including
+        failure, and threads the same corr_id through. Only the inference hop
+        differs -- frames to the VL lane instead of an RPC to the AffectGPT
+        worker.
+
+        ``req.audio_path`` is accepted and ignored. That is the point: with
+        this backend the audio blob is never fetched, never leaves
+        percept-store, and never reaches a model. Whisper's transcript is gone
+        from this path with it -- ``subtitle_source`` can therefore only ever
+        be "caller" or "none" here, never "transcribed".
+        """
+        corr_id = corr_id or uuid.uuid4()
+        subtitle = (req.subtitle or "").strip()
+        subtitle_source = "caller" if subtitle else "none"
+        affect = None
+        frames_used = None
+
+        if not self.bus or not self.bus.enabled:
+            result = AffectGptAssessResultPayload(
+                ok=False,
+                error="bus not connected",
+                error_code="bus_unavailable",
+                subtitle_source=subtitle_source,
+            )
+        else:
+            try:
+                vision = await assess_via_vision(
+                    self.bus,
+                    video_path=req.video_path,
+                    transcript=subtitle or None,
+                    settings=settings,
+                )
+            except VisionAffectError as exc:
+                logger.warning(
+                    f"[AFFECT] vision_read_failed code={exc.error_code} corr={corr_id} error={exc}"
+                )
+                result = AffectGptAssessResultPayload(
+                    ok=False,
+                    error=str(exc),
+                    error_code=exc.error_code,
+                    subtitle_source=subtitle_source,
+                )
+            except Exception as exc:  # noqa: BLE001 -- boundary: never crash the service
+                logger.warning(f"[AFFECT] vision_read_unexpected corr={corr_id} error={exc}")
+                result = AffectGptAssessResultPayload(
+                    ok=False,
+                    error=str(exc),
+                    error_code="vision_unexpected",
+                    subtitle_source=subtitle_source,
+                )
+            else:
+                affect = vision.affect
+                frames_used = vision.frames_used
+                result = AffectGptAssessResultPayload(
+                    ok=True,
+                    raw_response=vision.raw_response,
+                    model_ckpt=vision.model,
+                    face_or_frame_mode="vision_frames",
+                    face_detection=vision.face_detection,
+                    timings=vision.timings,
+                    subtitle_source=subtitle_source,
+                    transcript=subtitle or None,
+                )
+
+        event = self._wrap_event(
+            result,
+            req,
+            trigger=trigger,
+            corr_id=corr_id,
+            chat_correlation_id=chat_correlation_id,
+            backend="vision",
+            affect=affect,
+            frames_used=frames_used,
+        )
+        await self._publish_event(event)
+        return result, event
+
     def _wrap_event(
         self,
         result: AffectGptAssessResultPayload,
@@ -445,8 +643,15 @@ class JuniperAffectiveStateService:
         trigger: str = "manual",
         corr_id: "uuid.UUID | None" = None,
         chat_correlation_id: str | None = None,
+        backend: str = "affectgpt",
+        affect: AffectReadV1 | None = None,
+        frames_used: int | None = None,
     ) -> JuniperMultimodalAffectV1:
         return JuniperMultimodalAffectV1(
+            backend=backend,  # type: ignore[arg-type]
+            source=backend,  # type: ignore[arg-type]
+            affect=affect,
+            frames_used=frames_used,
             observed_at=datetime.now(timezone.utc),
             ok=result.ok,
             raw_response=result.raw_response,
@@ -457,7 +662,16 @@ class JuniperAffectiveStateService:
             timings=result.timings,
             subtitle_source=result.subtitle_source,
             transcript=result.transcript,
-            input_ref={"video_path": req.video_path, "audio_path": req.audio_path},
+            # audio_path is omitted on the vision backend, which never fetches
+            # the blob. Recording a path for a file that was never downloaded,
+            # written, or read would put a claim in the durable record that
+            # directly contradicts this path's privacy property (review
+            # finding, 2026-08-26).
+            input_ref=(
+                {"video_path": req.video_path}
+                if backend == "vision"
+                else {"video_path": req.video_path, "audio_path": req.audio_path}
+            ),
             trigger=_normalize_trigger(trigger),
             correlation_id=str(corr_id) if corr_id else None,
             chat_correlation_id=chat_correlation_id,
@@ -497,17 +711,32 @@ class JuniperAffectiveStateService:
         # Skipped on a failed/empty capture: a failure should not overwrite
         # a real prior read, and the reader's own TTL/max-age gate already
         # ages that prior read out on its own schedule.
-        if event.ok and event.raw_response:
-            summary = event.raw_response.strip()
-            if len(summary) > _AFFECT_SUMMARY_MAX_CHARS:
-                summary = summary[: _AFFECT_SUMMARY_MAX_CHARS - 1] + "…"
-            await write_latest_juniper_affect(
-                self.bus,
-                summary=summary,
-                observed_at=event.observed_at,
-                trigger=event.trigger,
-                subtitle_source=event.subtitle_source,
+        allowed, reason = _mirror_decision(event)
+        if not allowed:
+            # Logged, never silent: a read that was taken but deliberately
+            # withheld from the prompt is a different fact from no read at
+            # all, and the gap in the Redis key cannot say which happened.
+            logger.info(
+                f"[AFFECT] mirror_skipped reason={reason} trigger={event.trigger} "
+                f"corr={event.correlation_id} backend={event.backend}"
             )
+            return
+
+        if event.affect is not None:
+            summary = _render_affect_summary(event.affect)
+        else:
+            summary = (event.raw_response or "").strip()
+        if len(summary) > _AFFECT_SUMMARY_MAX_CHARS:
+            summary = summary[: _AFFECT_SUMMARY_MAX_CHARS - 1] + "…"
+        await write_latest_juniper_affect(
+            self.bus,
+            summary=summary,
+            observed_at=event.observed_at,
+            trigger=event.trigger,
+            subtitle_source=event.subtitle_source,
+            confidence=event.affect.confidence if event.affect else None,
+            backend=event.backend,
+        )
 
 
 service = JuniperAffectiveStateService()
@@ -569,7 +798,16 @@ async def trigger(payload: dict):
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"invalid request: {e}"}, status_code=422)
 
-    result, event = await service.trigger_assessment(req)
+    # Honours AFFECT_BACKEND, same as /capture_and_assess. Before this
+    # (review finding, 2026-08-26) the route called trigger_assessment()
+    # unconditionally, so with AFFECT_BACKEND=vision set it STILL ran the
+    # retired AffectGPT worker -- making the documented kill switch partially
+    # inert on a real, reachable route. req.audio_path is accepted and ignored
+    # on the vision branch, exactly as it is for a live capture.
+    if _vision_backend_selected():
+        result, event = await service._assess_via_vision_backend(req)
+    else:
+        result, event = await service.trigger_assessment(req)
     return {"result": result.model_dump(), "event": event.model_dump(mode="json")}
 
 

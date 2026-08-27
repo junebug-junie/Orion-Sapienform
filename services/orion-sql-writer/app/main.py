@@ -129,6 +129,22 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS idx_juniper_multimodal_affect_chat_corr "
                 "ON juniper_multimodal_affect_log (chat_correlation_id);"
             )
+            # 2026-08-26: vision backend. Same UndefinedColumn hazard as the
+            # block immediately above -- the model declaring these is what
+            # lets _write_row put them in the INSERT, so the DDL has to land
+            # first or ALL persistence for this table stops silently while the
+            # bus publish keeps looking healthy.
+            for _affect_col, _affect_type in (
+                ("backend", "TEXT"),
+                ("affect", "JSONB"),
+                ("face_detection", "JSONB"),
+                ("timings", "JSONB"),
+                ("frames_used", "INTEGER"),
+            ):
+                conn.exec_driver_sql(
+                    "ALTER TABLE IF EXISTS juniper_multimodal_affect_log "
+                    f"ADD COLUMN IF NOT EXISTS {_affect_col} {_affect_type};"
+                )
             conn.exec_driver_sql(
                 """
                 CREATE TABLE IF NOT EXISTS orion_metacognitive_trace (

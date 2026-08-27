@@ -4,3 +4,7 @@ redis[hiredis]==5.0.7
 pydantic==2.9.2
 pydantic-settings==2.5.2
 loguru
+# Frame decode + the Haar cascade that produces detection_rate. One
+# dependency covering both jobs; same library the retired affectgpt
+# worker used, so detection_rate stays comparable across the cutover.
+opencv-python-headless==4.10.0.84

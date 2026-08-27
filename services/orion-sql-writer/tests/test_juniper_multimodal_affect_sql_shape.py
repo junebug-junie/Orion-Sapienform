@@ -328,3 +328,42 @@ def test_redelivery_of_the_same_correlation_id_upserts_one_row() -> None:
         assert rows[0].raw_response == "redelivered read"
     finally:
         sess.close()
+
+
+# --------------------------------------------------------------------------
+# 2026-08-26: the columns whose absence made the vision cutover undiagnosable
+# --------------------------------------------------------------------------
+
+
+def test_quality_telemetry_columns_exist() -> None:
+    """The producer had ALWAYS put face_detection and timings on the bus. This
+    table never declared columns for them, so _write_row's generic
+    column-filter silently dropped both on every insert -- and when the
+    2026-08-26 investigation asked "was there even a face in frame when the
+    model said that?", six stored rows could not answer, so the only way to
+    find out was to point Juniper's own webcam at her again."""
+    columns = set(JuniperMultimodalAffectSQL.__table__.columns.keys())
+    for column in ("backend", "affect", "face_detection", "timings", "frames_used"):
+        assert column in columns, f"{column} would be silently dropped on insert"
+
+
+def test_write_row_keeps_the_quality_telemetry_it_used_to_drop() -> None:
+    """The column-filter is what actually decides, so exercise it directly --
+    the same way test_write_row_drops_transcript... does for the privacy side.
+    This is the exact filter that ate face_detection before this patch."""
+    event = _event()
+    mapper = inspect(JuniperMultimodalAffectSQL)
+    valid_keys = {attr.key for attr in mapper.attrs}
+    data = event.model_dump()
+    filtered = {k: v for k, v in data.items() if k in valid_keys}
+    for column in ("backend", "affect", "face_detection", "timings", "frames_used"):
+        assert column in filtered, f"{column} is on the wire but still filtered out"
+
+
+def test_transcript_is_still_dropped_now_that_more_columns_exist() -> None:
+    """Widening the column set must not have widened the privacy surface --
+    re-asserted here rather than relying on the older test alone, because the
+    failure mode is exactly 'someone added columns and one of them was
+    transcript'."""
+    columns = set(JuniperMultimodalAffectSQL.__table__.columns.keys())
+    assert "transcript" not in columns

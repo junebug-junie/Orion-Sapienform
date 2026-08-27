@@ -387,3 +387,67 @@ next picks continuity back up.
      and this same changeset's own standalone
      `load_latest_visual_chain_continuity_streak` are retired (kill means
      kill, §0A) — nothing else in the repo called either.
+
+## 16. Patch 5 scope (this changeset, self-study context-seed)
+
+Same session as Patch 4, still 2026-08-27: Juniper directly asked for the
+visual chain to draw on "some actual memory or a recent chat or something
+from Orion's self study analysis of concept induction."
+
+**All three candidates were live-checked before any code was written** (§0A
+metric-quality-gate discipline — real data, not a schema read):
+
+- **"Actual memory"** (`memory_crystallizations`, the Recall system's
+  canonical store) — DECLINED. Live rows show `summary` and `subject`
+  holding VERBATIM personal chat content, not an abstraction the schema
+  name implies. One real sample named a family member's medical history
+  (DVT, hospitalization) by name. No safe column or `kind` filter exists on
+  this table as it stands — `kind='semantic'` rows are equally raw. Wiring
+  this in would put a real, unconsenting third party's health information
+  into a diffusion prompt and the Hub UI. Not built.
+- **"Recent chat"** (`chat_history_compactor`'s privacy-reviewed digest) —
+  DECLINED, on cadence grounds: it fires on a DAILY schedule (06:00
+  America/Denver) plus optional on-demand runs, not a fast per-tick
+  producer, and there is no evidence in the repo it has ever actually fired
+  in production. A ~600s-cadence consumer would see the same digest for up
+  to 24h, or find the table empty. Not built.
+- **"Self-study analysis of concept induction"** — BUILT. Live-verified
+  safe: `self_study_analysis.py`'s four deterministic window-contrast
+  analyses (concept induction, vision events, affective state, co-creation
+  signals) render pure numeric prose — real bodies read before writing any
+  code contained zero chat quotes, zero personal references, across all
+  four producers and 14 real rows.
+
+**What shipped**: `build_visual_prompt` takes a third optional input,
+`self_study_text` (`store.load_latest_self_study_reflection`). Real
+quantified self-observation ("vision events dropped 0.36x vs baseline, a
+status category disappeared"), a genuine upgrade over `context_text`'s bare
+narration sentence.
+
+- **The actual privacy boundary**: `store._SAFE_SELF_STUDY_SOURCE_PREFIXES`,
+  an ALLOWLIST of the four safe producers' `source_ref` prefixes
+  (`concept_induction:`, `vision_events:`, `affective_state:`,
+  `cocreation_signals:`), not a blacklist. `source_kind='self_study'` also
+  covers a sibling, free-form LLM-narrated "Curiosity" reflection
+  (`source_ref` prefix `curiosity:`) — live-checked and confirmed to quote
+  sensitive personal content when reflecting on memory-gating patterns (a
+  real sample referenced "wife Amanda, hospital" while discussing which
+  crystallizations get kept vs. rejected). The allowlist deliberately
+  excludes it; a blacklist keyed on `curiosity:` would have been one
+  future-producer away from silently admitting the next unreviewed
+  free-form source.
+- **Tunables**: `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` (400 — real bodies
+  average ~1080 chars, mostly a fixed disclaimer footer; 400 covers the
+  substance) and `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` (21600s / 6h — these
+  analyses fire on their own 6-72h window-contrast cadence, real values
+  seen in bodies: "last 6h", "last 12h", "last 72h"; a tight window like
+  `reverie_context_max_age_sec`'s 900s would read as permanently absent).
+  Same `gt=0` fail-loud discipline as the Patch 3 equivalents.
+- **Composition**: `build_visual_prompt`'s Patch 3/4 explicit if/elif
+  branches were refactored into a list-join composition (a third optional
+  input would have meant 8 branches by the old pattern) — verified
+  byte-identical output for every pre-Patch-5 combination via exact-string
+  test assertions, not just substring checks.
+- **Traceability**: `self_study_text` recorded as its own `chain_json` key
+  on both the success and `generation_failed` paths, same "same-run
+  evidence" discipline as `context_text`.

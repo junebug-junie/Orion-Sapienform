@@ -18,10 +18,11 @@ docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
    since 2026-08-25): generate -> store -> caption. One `reverie_visual_chain`
    row per run, `reverie_visual_artifact` rows via a REAL FK on `chain_id`.
    `prior_description` is the continuity thread; `chain_json.context_text`
-   (Patch 3) is the context-seed; `chain_json.continuity_streak`/
+   (Patch 3) is the reverie context-seed; `chain_json.continuity_streak`/
    `continuity_reset` (Patch 4) record whether THIS run's own prompt was
-   forced to drop continuity -- nothing else downstream of any of these
-   exists yet.
+   forced to drop continuity; `chain_json.self_study_text` (Patch 5) is a
+   second, richer context-seed from the self-study analysis system --
+   nothing else downstream of any of these exists yet.
 
 Everything here is a read. No writes, no bus publishes. Blocking SQLAlchemy
 calls are offloaded via `asyncio.to_thread` -- this is a UI-facing endpoint
@@ -58,6 +59,19 @@ No raw chat/dream content reaches the prompt (still a deliberately narrow
 first slice of design doc §1's full "recent activity, chats, dreams" list) --
 widening the source set further is a separate, later change that must redo
 this same check.
+
+**Privacy note, Patch 5** (design doc §16): a second context-seed,
+`self_study_text`, was added from the self-study analysis system's four
+deterministic window-contrast producers (concept induction, vision events,
+affective state, co-creation signals) -- pure numeric prose, no chat quotes,
+confirmed by reading real bodies before writing the reader
+(`orion-thought`'s `store.load_latest_self_study_reflection`,
+`store._SAFE_SELF_STUDY_SOURCE_PREFIXES`). Explicitly NOT wired: `memory_
+crystallizations` ("actual memory") -- live-checked and found to hold
+verbatim personal chat content with no safe filter, including a real sample
+naming a family member's medical history; and the `chat_history_compactor`
+digest ("recent chat") -- a daily-schedule producer with no evidence it has
+ever fired in production. Neither reaches this tab.
 """
 
 from __future__ import annotations
@@ -248,6 +262,11 @@ async def visual_recent(
                 # of a full sentence (CLAUDE.md §0A: inspectable evidence, not
                 # schema presence).
                 "context_text": cj.get("context_text"),
+                # Patch 5: a second, richer context-seed -- real quantified
+                # self-observation, not a bare narration sentence. Same
+                # "own field, not just prose" reasoning as context_text
+                # above.
+                "self_study_text": cj.get("self_study_text"),
                 # Patch 4: whether THIS run's own prompt was forced to drop
                 # prior_description continuity (visual_chain.py::
                 # resolve_visual_chain_continuity) -- surfaced so the tab can

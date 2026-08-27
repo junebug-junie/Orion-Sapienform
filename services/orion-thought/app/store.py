@@ -655,6 +655,112 @@ def load_latest_reverie_interpretation(
         return None
 
 
+# Cap on the self-study body handed into a diffusion prompt (§ cap-all-
+# collections) -- real bodies average ~1080 chars (measured live 2026-08-27),
+# most of it a fixed disclaimer footer; 400 chars covers the "what fired /
+# measured" substance without the boilerplate.
+MAX_SELF_STUDY_CONTEXT_CHARS = 400
+
+# The ONLY four source_ref prefixes self_study_analysis.py's SOURCE_SPECS
+# actually writes (services/orion-cortex-exec/app/self_study_analysis.py,
+# `source_ref=f"{result.source}:{result.finding_digest}"`) -- deterministic,
+# templated, numeric window-contrast prose, never free-form LLM narration.
+# A whitelist, not a "source_ref NOT LIKE 'curiosity:%'" blacklist: safer
+# against a future new producer writing source_kind='self_study' under some
+# other prefix this list doesn't yet know about (fails closed -- an unknown
+# prefix is excluded, not admitted by default).
+#
+# Real incident this list exists because of (2026-08-27): the SAME
+# source_kind='self_study' also covers a separate, free-form LLM-narrated
+# "Curiosity" reflection (source_ref prefix "curiosity:") that turned out to
+# quote real, sensitive personal content when reflecting on memory patterns
+# (a live sample referenced "wife Amanda, hospital" while discussing which
+# crystallizations get kept vs rejected) -- confirmed live before this list
+# was written, not a hypothetical. The four prefixes below are the deliberate
+# subset of source_kind='self_study' this reader will EVER touch.
+_SAFE_SELF_STUDY_SOURCE_PREFIXES = (
+    "concept_induction:",
+    "vision_events:",
+    "affective_state:",
+    "cocreation_signals:",
+)
+
+
+def load_latest_self_study_reflection(
+    *, char_limit: int | None = None, max_age_sec: float | None = None
+) -> str | None:
+    """Most recent real self-study analysis body -- a second, richer
+    context-seed for the visual chain alongside `load_latest_reverie_
+    interpretation` (design doc §16).
+
+    Source: `journal_entries` rows self_study_analysis.py's four
+    deterministic window-contrast analyses write (concept induction, vision
+    events, affective state, co-creation signals) -- real quantified
+    self-observation ("vision events dropped 0.36x vs baseline, a status
+    category disappeared"), not a bare narration sentence. Restricted via
+    `_SAFE_SELF_STUDY_SOURCE_PREFIXES` to ONLY those four producers, by
+    `source_ref` prefix -- see that constant's own docstring for the real
+    live incident (a sibling `source_kind='self_study'` producer, the
+    free-form "Curiosity" reflection, was confirmed live to quote sensitive
+    personal content) that makes this an allowlist, not "any self_study row".
+
+    `char_limit`/`max_age_sec` follow `load_latest_reverie_interpretation`'s
+    own contract exactly (None = MAX_SELF_STUDY_CONTEXT_CHARS / unbounded).
+    `max_age_sec` should be looser than the reverie context's 900s default --
+    these analyses fire on their own 6-72h window-contrast cadence (real
+    values seen in bodies: "last 6h", "last 12h", "last 72h"), not a fast
+    per-tick producer, so a tight window would read as permanently absent.
+
+    Read-only, best-effort: None on any error, empty table, or nothing
+    matching the four safe prefixes -- degrades exactly like an absent
+    `context_text` does (visual_chain.build_visual_prompt).
+    """
+    try:
+        from sqlalchemy import text
+
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+
+        prefix_clauses = " OR ".join(
+            f"source_ref LIKE :prefix{i}" for i in range(len(_SAFE_SELF_STUDY_SOURCE_PREFIXES))
+        )
+        params: dict[str, Any] = {
+            f"prefix{i}": f"{prefix}%"
+            for i, prefix in enumerate(_SAFE_SELF_STUDY_SOURCE_PREFIXES)
+        }
+        where_sql = f"source_kind = 'self_study' AND body <> '' AND ({prefix_clauses})"
+        if max_age_sec is not None:
+            # Same now() - make_interval() freshness idiom load_latest_
+            # reverie_interpretation already uses -- see that function's own
+            # comment on the repo-wide precedent for this shape.
+            where_sql += " AND created_at > now() - make_interval(secs => :max_age_sec)"
+            params["max_age_sec"] = float(max_age_sec)
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        f"SELECT body FROM journal_entries WHERE {where_sql} "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    params,
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = str(row.get("body") or "").strip()
+        if not value:
+            return None
+        limit_chars = MAX_SELF_STUDY_CONTEXT_CHARS if char_limit is None else char_limit
+        trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        return trimmed
+    except Exception as exc:
+        logger.debug("self-study context-seed load failed: %s", exc)
+        return None
+
+
 def persist_compaction_request(request) -> bool:
     """Enqueue one compaction request (Phase E). Never raises; idempotent."""
     try:

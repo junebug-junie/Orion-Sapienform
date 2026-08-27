@@ -25,6 +25,7 @@ from scripts.memory_graph_routes import router as memory_graph_router
 from scripts.memory_consolidation_draft_routes import router as memory_consolidation_draft_router
 from scripts.proposal_review_routes import router as proposal_review_router
 from scripts.concept_atlas_routes import router as concept_atlas_router
+from scripts.curiosity_routes import router as curiosity_atlas_router
 from scripts.self_brain_routes import router as self_brain_router
 from scripts.chat_attachments import router as chat_attachments_router
 import scripts.api_routes as api_routes_runtime
@@ -1096,6 +1097,7 @@ app.include_router(memory_graph_router)
 app.include_router(memory_consolidation_draft_router)
 app.include_router(proposal_review_router)
 app.include_router(concept_atlas_router)
+app.include_router(curiosity_atlas_router)
 app.include_router(self_brain_router)
 app.include_router(chat_attachments_router)
 

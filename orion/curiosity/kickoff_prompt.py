@@ -511,6 +511,17 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "      p.times_tested = p.times_tested + 1, p.last_tested_at = "
         '"<iso>", p.last_run_id = "<RUN_ID>"',
         "",
+        "  AND RECORD WHAT IT WAS, in the same breath -- the SET above "
+        "overwrites the old confidence and nothing else remembers it:",
+        '    CREATE (:PriorRevision {prior_id: "...", run_id: "<RUN_ID>",',
+        "      from_confidence: 0.85, to_confidence: 0.72,",
+        '      from_status: "open", to_status: "revised", '
+        "written_at: timestamp()})",
+        "",
+        "  This is the only record of a claim MOVING rather than of where it "
+        "landed. Without it your own history reads as though every belief you "
+        "hold arrived at its current confidence and stayed there.",
+        "",
         "  Inconclusive is a real answer: bump times_tested, leave confidence "
         "where it was, and say why in a :Finding. Three of those and the claim "
         "is probably not answerable with what you can reach.",

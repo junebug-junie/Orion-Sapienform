@@ -430,12 +430,34 @@ def persist_reverie_visual_artifact(artifact) -> bool:
         return False
 
 
-def load_latest_visual_chain_prior_description() -> str | None:
-    """Most recent visual-chain row's prior_description -- the continuity input
-    the next run's prompt is built from (design doc §2/§5). Read-only,
-    best-effort: None on any error or empty table, so a lookup failure
-    degrades to "no continuity yet" (the same prompt a first-ever run uses)
-    rather than breaking the tick.
+def load_latest_visual_chain_continuity_state() -> tuple[str | None, int]:
+    """Most recent visual-chain row's `prior_description` AND
+    `continuity_streak`, in ONE round trip (review finding: two separate
+    single-column SELECTs against the same latest row wasted a full
+    connect+query cycle every tick, and left a theoretical window where the
+    two reads could observe different rows if a write ever raced between
+    them -- currently prevented only by the single-flight/sequential-worker
+    guarantee documented in visual_chain.py's module docstring, not
+    something this query should have to rely on to be correct).
+
+    Returns `(prior_description, continuity_streak)`:
+      - `prior_description`: the continuity input the next run's prompt is
+        built from (design doc §2/§5).
+      - `continuity_streak`: how many CONSECUTIVE recent runs used real
+        continuity in their prompt -- reads `chain_json.continuity_streak`,
+        a small int this service itself writes on every run (design doc
+        §15, `visual_chain.py::resolve_visual_chain_continuity`). NOT
+        derived from `prior_description`'s own nullness, which reflects
+        "did this run get a real caption" and would keep climbing even
+        through a run whose PROMPT was forcibly reset. Missing/unparsable
+        on an older pre-Patch-4 row degrades to 0 -- the honest "no streak
+        recorded yet" answer, same direction a missing counter should fail
+        in (under-count, never over-count, so a bad read causes an extra
+        continuity run at worst, never gets stuck skipping resets forever).
+
+    Read-only, best-effort: `(None, 0)` on any error or empty table, so a
+    lookup failure degrades to "no continuity yet, nothing to cap" (the
+    same prompt a first-ever run uses) rather than breaking the tick.
     """
     try:
         from sqlalchemy import text
@@ -445,7 +467,7 @@ def load_latest_visual_chain_prior_description() -> str | None:
             row = (
                 conn.execute(
                     text(
-                        "SELECT prior_description FROM reverie_visual_chain "
+                        "SELECT prior_description, chain_json FROM reverie_visual_chain "
                         "ORDER BY created_at DESC LIMIT 1"
                     )
                 )
@@ -453,61 +475,20 @@ def load_latest_visual_chain_prior_description() -> str | None:
                 .first()
             )
         if not row:
-            return None
+            return None, 0
         value = row.get("prior_description")
-        return str(value).strip() or None if value else None
-    except Exception as exc:
-        logger.debug("visual chain prior_description load failed: %s", exc)
-        return None
-
-
-def load_latest_visual_chain_continuity_streak() -> int:
-    """How many CONSECUTIVE recent runs used real `prior_description`
-    continuity in their diffusion prompt -- the counter
-    `visual_chain.py::run_visual_chain_once` uses to force a periodic
-    continuity reset (design doc §15).
-
-    Reads `chain_json.continuity_streak`, a small int this service itself
-    writes on every run (0 right after a forced reset, incrementing each
-    run continuity is used) -- NOT derived from `prior_description`'s own
-    nullness, which reflects "did this run get a real caption" and would
-    keep climbing even through a run whose PROMPT was forcibly reset (the
-    reset image still gets captioned normally, still advances
-    prior_description for the row after it). Missing/unparsable on an
-    older pre-Patch-4 row degrades to 0 -- the honest "no streak recorded
-    yet" answer, same direction a missing counter should fail in (under-
-    count, never over-count, so a bad read causes an extra continuity run
-    at worst, never gets stuck skipping resets forever).
-
-    Read-only, best-effort: 0 on any error or empty table.
-    """
-    try:
-        from sqlalchemy import text
-
-        engine = _get_engine()
-        with engine.connect() as conn:
-            row = (
-                conn.execute(
-                    text(
-                        "SELECT chain_json FROM reverie_visual_chain "
-                        "ORDER BY created_at DESC LIMIT 1"
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        if not row:
-            return 0
+        prior = str(value).strip() or None if value else None
         cj = row.get("chain_json")
-        if not isinstance(cj, dict):
-            return 0
-        try:
-            return max(0, int(cj.get("continuity_streak") or 0))
-        except (TypeError, ValueError):
-            return 0
+        streak = 0
+        if isinstance(cj, dict):
+            try:
+                streak = max(0, int(cj.get("continuity_streak") or 0))
+            except (TypeError, ValueError):
+                streak = 0
+        return prior, streak
     except Exception as exc:
-        logger.debug("visual chain continuity streak load failed: %s", exc)
-        return 0
+        logger.debug("visual chain continuity state load failed: %s", exc)
+        return None, 0
 
 
 # Cap on the interpretation text handed into a diffusion prompt (§ cap-all-

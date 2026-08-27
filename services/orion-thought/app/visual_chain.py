@@ -98,8 +98,7 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 from .settings import settings
 from .store import (
     load_latest_reverie_interpretation,
-    load_latest_visual_chain_continuity_streak,
-    load_latest_visual_chain_prior_description,
+    load_latest_visual_chain_continuity_state,
     persist_reverie_visual_artifact,
     persist_reverie_visual_chain,
 )
@@ -348,15 +347,18 @@ async def run_visual_chain_once(
 
     async with _visual_chain_lock:
         chain_id = str(uuid4())
-        # Three independent reads (different tables/columns, no data
-        # dependency) -- concurrent so the cost is max() of the round trips,
-        # not sum() (review finding: this function already makes exactly
-        # this argument a few lines below for store_visual_artifact/
+        # Two independent reads (different tables, no data dependency) --
+        # concurrent so the cost is max() of the round trips, not sum()
+        # (review finding: this function already makes exactly this
+        # argument a few lines below for store_visual_artifact/
         # upload_to_percept_store; the same reasoning applies here).
-        prior_description, context_text, continuity_streak = await asyncio.gather(
-            asyncio.to_thread(load_latest_visual_chain_prior_description),
+        # prior_description and continuity_streak come from the SAME row of
+        # the SAME table, so they're one combined read (review finding: two
+        # separate round trips to the same row wasted a query and left a
+        # theoretical read-your-own-write race), not two gathered reads.
+        (prior_description, continuity_streak), context_text = await asyncio.gather(
+            asyncio.to_thread(load_latest_visual_chain_continuity_state),
             asyncio.to_thread(load_latest_reverie_interpretation),
-            asyncio.to_thread(load_latest_visual_chain_continuity_streak),
         )
         # Patch 4 (module docstring): cap how many consecutive runs may
         # carry prior_description continuity before forcing one reset --
@@ -371,6 +373,16 @@ async def run_visual_chain_once(
                 chain_id,
                 settings.visual_chain_continuity_max_runs,
             )
+        # Review finding: on a reset run, the ORIGINAL (stale, pre-reset)
+        # prior_description must never come back as this row's own
+        # prior_description -- that would silently resurrect the exact
+        # attractor the reset just broke out of the moment generation,
+        # storage, or captioning fails on this run (a real, previously-
+        # untested failure mode: the next tick would read streak=0 against
+        # the SAME stale text and grind through another full max_runs cycle
+        # before resetting again). A non-reset run keeps the pre-Patch-4
+        # behavior unchanged: carry the old value forward on any failure.
+        continuity_fallback = None if continuity_reset else prior_description
         prompt = build_visual_prompt(effective_prior, context_text)
 
         try:
@@ -382,7 +394,7 @@ async def run_visual_chain_once(
             )
         except Exception as exc:
             return await _generation_failed(
-                chain_id, exc, prompt, prior_description, context_text,
+                chain_id, exc, prompt, continuity_fallback, context_text,
                 continuity_streak, continuity_reset,
             )
 
@@ -409,7 +421,7 @@ async def run_visual_chain_once(
 
         if isinstance(store_result, BaseException):
             return await _generation_failed(
-                chain_id, store_result, prompt, prior_description, context_text,
+                chain_id, store_result, prompt, continuity_fallback, context_text,
                 continuity_streak, continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
@@ -429,9 +441,12 @@ async def run_visual_chain_once(
             )
 
         # Only advance continuity on a real, non-empty description -- a failed
-        # re-observation forwards the *previous* prior_description unchanged
-        # rather than propagating None and losing continuity for one step.
-        next_prior_description = description or prior_description
+        # re-observation forwards `continuity_fallback` (the previous
+        # prior_description unchanged on a normal run, or None on a reset run
+        # -- see continuity_fallback's own comment above) rather than
+        # propagating a stale value on a reset run or losing continuity
+        # entirely on a normal one.
+        next_prior_description = description or continuity_fallback
 
         chain = ReverieVisualChainV1(
             chain_id=chain_id,

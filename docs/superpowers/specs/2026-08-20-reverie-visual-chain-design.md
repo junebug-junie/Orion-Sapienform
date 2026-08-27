@@ -336,8 +336,9 @@ reported "still doing the same images of Roman aqueducts, no change."
 guaranteed effect on a diffusion model's attention). A deterministic,
 testable reset instead: `resolve_visual_chain_continuity()` in
 `visual_chain.py` tracks how many CONSECUTIVE runs have carried
-`prior_description` forward (`chain_json.continuity_streak`, read via new
-`store.load_latest_visual_chain_continuity_streak`). Once that streak
+`prior_description` forward (`chain_json.continuity_streak`, read via
+`store.load_latest_visual_chain_continuity_state` in the same round trip as
+`prior_description` itself — a review finding, see below). Once that streak
 reaches `settings.visual_chain_continuity_max_runs` (default 3), the next
 run forces continuity to drop from its own prompt — re-seeding from
 `context_text` (or the fixed seed if neither exists) — then continuity
@@ -364,3 +365,25 @@ next picks continuity back up.
   still seeds from `context_text` when real narration exists — the bland
   fixed string is a true last resort, not what a reset falls back to by
   default.
+- **Review findings, fixed before merge**:
+  1. A reset run's own failure path (generation, storage, or captioning
+     failing) fell back to the ORIGINAL stale `prior_description` instead
+     of staying reset — silently resurrecting the exact attractor the
+     reset just broke out of, and letting the next tick grind through
+     another full `max_runs` cycle against the identical stuck text before
+     resetting again. Fixed: `continuity_fallback` is computed once
+     (`None` on a reset run, the unchanged old value on a normal one) and
+     used everywhere a failure path previously fell back to raw
+     `prior_description`. Covered by two new tests: a reset run whose
+     generation fails, and one whose re-observation fails — both assert
+     the persisted `prior_description` is `None`, not the stale text.
+  2. `prior_description` and `continuity_streak` were two separate SELECTs
+     against the same latest `reverie_visual_chain` row every tick —
+     wasted round trip, and a theoretical race if a write ever landed
+     between them (prevented today only by the single-flight/sequential-
+     worker guarantee, not something this query should have to rely on).
+     Fixed: `load_latest_visual_chain_continuity_state` reads both columns
+     in one query; Patch 2's `load_latest_visual_chain_prior_description`
+     and this same changeset's own standalone
+     `load_latest_visual_chain_continuity_streak` are retired (kill means
+     kill, §0A) — nothing else in the repo called either.

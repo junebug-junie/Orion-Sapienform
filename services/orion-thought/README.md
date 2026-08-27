@@ -311,15 +311,20 @@ prompt weight of a long, concrete continuity description, and abstract
 cognitive-state narration isn't strongly visualizable content regardless of
 prompt order. Fix is a deterministic reset, not a reweighting guess:
 `resolve_visual_chain_continuity` tracks how many CONSECUTIVE runs used real
-continuity (`chain_json.continuity_streak`,
-`store.load_latest_visual_chain_continuity_streak`); once that streak
-reaches `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` (default 3), the next run
-forces continuity to drop from its own prompt -- re-seeding from
-`context_text`, or the fixed seed if neither exists -- then continuity
-resumes normally. No off switch by design (0 means reset every run).
-`continuity_streak`/`continuity_reset` recorded in `chain_json` on both the
-success and `generation_failed` paths, surfaced in the Hub Reverie tab
-alongside `context_text`.
+continuity (`chain_json.continuity_streak`, read alongside
+`prior_description` in one round trip by `store.
+load_latest_visual_chain_continuity_state` -- review finding: two separate
+reads of the same latest row wasted a query and left a theoretical race);
+once that streak reaches `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` (default
+3), the next run forces continuity to drop from its own prompt -- re-seeding
+from `context_text`, or the fixed seed if neither exists -- then continuity
+resumes normally. On a reset run, a failed generation/caption never
+resurrects the stale pre-reset `prior_description` (a second review
+finding, fixed the same way: `continuity_fallback` is `None` on a reset
+run, the old value only on a normal one). No off switch by design (0 means
+reset every run). `continuity_streak`/`continuity_reset` recorded in
+`chain_json` on both the success and `generation_failed` paths, surfaced in
+the Hub Reverie tab alongside `context_text`.
 
 **Single-flight, no backlog** (design doc §4 acceptance check): the worker
 loop's own sequential shape (run, then sleep, then run again — same as

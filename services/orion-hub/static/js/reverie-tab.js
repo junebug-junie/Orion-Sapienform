@@ -92,7 +92,7 @@
         'Fixed seed only when neither prior_description nor context_text exists (fresh install, ' +
         'no reverie history yet): "a calm orion, soft abstract light, dreaming". Every later run ' +
         "reads all three from Postgres.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_prior_description, load_latest_reverie_interpretation, load_latest_visual_chain_continuity_streak",
+      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation",
     },
     {
       id: "continuity-cap",

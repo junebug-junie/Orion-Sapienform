@@ -258,3 +258,143 @@ async def test_identity_hint_for_a_different_stream_does_not_bleed_over() -> Non
     assert "identity_hypothesis" not in evidence
     snapshot = svc._presence_registry.current_snapshot("cam0")
     assert snapshot["subject"] == "unknown"
+
+
+# -- identity_uncertain: the "is that you?" signal, 2026-08-26 ---------------
+# Juniper's direct ask: confirmed -> carry on and never mention it; genuinely
+# uncertain -> a real, but at-most-once, clarifying signal; broken/not
+# running -> silence. presence.subject/identity_hypothesis above are the
+# "confirmed" half; these are the "uncertain" half.
+
+
+@pytest.mark.asyncio
+async def test_fresh_uncertain_confidence_sets_presence_identity_uncertain() -> None:
+    svc = WindowService()
+    now = time.time()
+    svc._identity_by_stream["cam0"] = {"hint": None, "confidence": "uncertain", "ts": now}
+
+    with patch.object(svc.bus, "publish", new_callable=AsyncMock):
+        for _ in range(3):  # clear WINDOW_BELIEF_ENTER_VOTES, same as the presence tests above
+            await svc._flush_and_publish(
+                stream_id="cam0",
+                buffered=[{"artifact": _person_artifact(), "ts": now, "env": None}],
+                correlation_id=None,
+                causality_chain=[],
+            )
+
+    snapshot = svc._presence_registry.current_snapshot("cam0")
+    assert snapshot["identity_uncertain"] is True
+
+
+@pytest.mark.asyncio
+async def test_confirmed_confidence_never_sets_presence_identity_uncertain() -> None:
+    svc = WindowService()
+    now = time.time()
+    svc._identity_by_stream["cam0"] = {
+        "hint": {"subject": "juniper", "state": "probable", "similarity": 0.61},
+        "confidence": "confirmed",
+        "ts": now,
+    }
+
+    with patch.object(svc.bus, "publish", new_callable=AsyncMock):
+        for _ in range(3):
+            await svc._flush_and_publish(
+                stream_id="cam0",
+                buffered=[{"artifact": _person_artifact(), "ts": now, "env": None}],
+                correlation_id=None,
+                causality_chain=[],
+            )
+
+    snapshot = svc._presence_registry.current_snapshot("cam0")
+    assert snapshot["subject"] == "juniper"
+    assert snapshot["identity_uncertain"] is False
+
+
+@pytest.mark.asyncio
+async def test_no_identity_signal_at_all_never_sets_presence_identity_uncertain() -> None:
+    """The subsystem simply not running/no fresh read -- must stay silent,
+    not manufacture a false "I don't recognize you"."""
+    svc = WindowService()
+    now = time.time()
+    # _identity_by_stream deliberately left empty for cam0.
+
+    with patch.object(svc.bus, "publish", new_callable=AsyncMock):
+        await svc._flush_and_publish(
+            stream_id="cam0",
+            buffered=[{"artifact": _person_artifact(), "ts": now, "env": None}],
+            correlation_id=None,
+            causality_chain=[],
+        )
+
+    snapshot = svc._presence_registry.current_snapshot("cam0")
+    assert snapshot["identity_uncertain"] is False
+
+
+@pytest.mark.asyncio
+async def test_stale_uncertain_confidence_does_not_set_presence_identity_uncertain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = WindowService()
+    now = time.time()
+    svc._identity_by_stream["cam0"] = {
+        "hint": None,
+        "confidence": "uncertain",
+        "ts": now - app_main.settings.WINDOW_IDENTITY_MAX_AGE_SEC - 1.0,
+    }
+
+    with patch.object(svc.bus, "publish", new_callable=AsyncMock):
+        await svc._flush_and_publish(
+            stream_id="cam0",
+            buffered=[{"artifact": _person_artifact(), "ts": now, "env": None}],
+            correlation_id=None,
+            causality_chain=[],
+        )
+
+    snapshot = svc._presence_registry.current_snapshot("cam0")
+    assert snapshot["identity_uncertain"] is False
+
+
+# -- _should_ignore_uncertain_reading: pure decision logic --------------------
+# Extracted from _consume_identity's loop for direct testability (2026-08-26
+# review). "Sticky confirmed" is the behavior under test: a single flickery
+# unsure frame must not undo an already-settled, still-fresh confirmed read.
+
+
+def test_ignores_uncertain_reading_when_a_fresh_confirmed_entry_exists() -> None:
+    existing = {"confidence": "confirmed", "ts": 100.0}
+    assert app_main._should_ignore_uncertain_reading(
+        existing, "uncertain", now=105.0, max_age_sec=90.0
+    ) is True
+
+
+def test_does_not_ignore_uncertain_reading_once_the_confirmed_entry_goes_stale() -> None:
+    existing = {"confidence": "confirmed", "ts": 100.0}
+    assert app_main._should_ignore_uncertain_reading(
+        existing, "uncertain", now=100.0 + 90.1, max_age_sec=90.0
+    ) is False
+
+
+def test_does_not_ignore_uncertain_reading_when_no_existing_entry() -> None:
+    assert app_main._should_ignore_uncertain_reading(
+        None, "uncertain", now=105.0, max_age_sec=90.0
+    ) is False
+
+
+def test_does_not_ignore_uncertain_reading_when_existing_entry_is_also_uncertain() -> None:
+    """Only a CONFIRMED existing entry gets the hold-off -- successive
+    unsure readings should keep refreshing the uncertain signal's own
+    freshness, not get stuck on the first one."""
+    existing = {"confidence": "uncertain", "ts": 100.0}
+    assert app_main._should_ignore_uncertain_reading(
+        existing, "uncertain", now=105.0, max_age_sec=90.0
+    ) is False
+
+
+def test_a_new_confirmed_reading_is_never_subject_to_the_hold_off() -> None:
+    """The hold-off only ever applies when new_confidence == 'uncertain' --
+    a new confirmed reading always overwrites immediately, regardless of
+    what the existing entry says."""
+    existing = {"confidence": "confirmed", "ts": 100.0}
+    assert app_main._should_ignore_uncertain_reading(
+        existing, "confirmed", now=105.0, max_age_sec=90.0
+    ) is False

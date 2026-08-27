@@ -18,6 +18,7 @@ if str(CORTEX_EXEC_ROOT) not in sys.path:
 from datetime import datetime, timedelta, timezone
 
 from orion.situational.session_turn_phase import bind_session_turn_phase_bus, write_session_turn_state
+from orion.situational.identity_ask_cooldown import bind_identity_ask_cooldown_bus
 from orion.situational.context import build_situation_for_ctx
 
 
@@ -26,7 +27,14 @@ class _InMemoryRedis:
     no live Redis/bus of its own (it only ever exercised in-process dict
     state before conversation-phase turn timestamps moved to Redis, see
     app/session_turn_phase.py), so it gets its own tiny in-memory store
-    rather than requiring real infra just to render sample prompt text."""
+    rather than requiring real infra just to render sample prompt text.
+
+    `set(..., nx=True, ex=...)` added 2026-08-26 (review finding: this
+    smoke bound session_turn_phase's bus but never identity_ask_cooldown's,
+    so it never actually exercised the new Redis round-trip that feature
+    adds to turn assembly) -- matches real redis-py SET-NX semantics: True
+    the first call for a key, None while it still holds a value.
+    """
 
     def __init__(self) -> None:
         self.store: dict[str, bytes] = {}
@@ -37,6 +45,12 @@ class _InMemoryRedis:
     async def setex(self, key: str, ttl_seconds: int, payload: str):
         self.store[key] = payload.encode("utf-8")
 
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        if nx and key in self.store:
+            return None
+        self.store[key] = value.encode("utf-8")
+        return True
+
 
 class _InMemoryBus:
     def __init__(self) -> None:
@@ -44,6 +58,7 @@ class _InMemoryBus:
 
 
 bind_session_turn_phase_bus(_InMemoryBus())
+bind_identity_ask_cooldown_bus(_InMemoryBus())
 
 
 def _settings():

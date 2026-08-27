@@ -73,6 +73,48 @@ def identity_hint_from_artifact(art: VisionArtifactPayload) -> Optional[Dict[str
     }
 
 
+def identity_confidence_from_artifact(art: VisionArtifactPayload) -> Optional[str]:
+    """Coarse identity-match confidence for this artifact's best detected
+    face: ``"confirmed"`` | ``"uncertain"`` | ``None`` (no usable signal).
+
+    Deliberately does NOT collapse ``"unsure"`` into ``None`` the way
+    ``identity_hint_from_artifact`` does above -- that function's silence
+    protects presence/council from asserting a shaky guess as a name. This
+    one exists for a different consumer (the unified-turn clarifying-
+    question feature, `docs/superpowers/specs/2026-08-21-seeing-juniper-
+    identity-and-situated-observation-design.md` §4.1, added 2026-08-26)
+    that needs exactly the distinction the other function throws away: "a
+    face was detected and did not match" vs. "identity never ran at all."
+
+    **"confirmed" is checked by calling `identity_hint_from_artifact`
+    directly, not by re-deriving the same selection independently** (review
+    finding, 2026-08-26): an earlier version picked "best" by raw similarity
+    across every non-not_enrolled candidate INCLUDING unsure ones, which was
+    not provably consistent with `identity_hint_from_artifact`'s own
+    probable/possible-only selection -- a hand-built fixture (or a future
+    threshold change) could make the two functions disagree about the same
+    artifact. Delegating removes the possibility: if a hint exists, this is
+    always "confirmed", full stop, regardless of any lower-similarity
+    "unsure" candidate for a different face in the same frame.
+
+    A candidate whose ``reason`` is ``"not_enrolled"`` (empty gallery -- a
+    config problem, not a stranger) never counts as "uncertain" -- it must
+    read as no-signal, or an operator error would masquerade as Orion not
+    recognizing a real person.
+    """
+    if identity_hint_from_artifact(art) is not None:
+        return "confirmed"
+    identities = getattr(art.outputs, "identities", None)
+    if not isinstance(identities, dict):
+        return None
+    candidates = identities.get("candidates") or []
+    has_real_unsure_face = any(
+        isinstance(c, dict) and c.get("state") == "unsure" and c.get("reason") != "not_enrolled"
+        for c in candidates
+    )
+    return "uncertain" if has_real_unsure_face else None
+
+
 def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:
     """Lightweight URI/path pointers only; no frame bytes (spec §3, §9)."""
     out: List[str] = []

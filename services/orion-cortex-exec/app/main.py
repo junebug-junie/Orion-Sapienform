@@ -908,6 +908,7 @@ svc = Rabbit(
 )
 from .current_turn_llm_signals import bind_current_turn_llm_signals_bus
 from .pre_turn_appraisal import bind_pre_turn_appraisal_bus, handle_pre_turn_appraisal_request
+from orion.situational.identity_ask_cooldown import bind_identity_ask_cooldown_bus
 from orion.situational.juniper_affect_state import bind_juniper_affect_state_bus
 from orion.situational.session_turn_phase import bind_session_turn_phase_bus
 
@@ -1024,6 +1025,9 @@ async def main() -> None:
     # 2026-08-25: mirrors bind_session_turn_phase_bus above -- see
     # orion/situational/juniper_affect_state.py's docstring.
     bind_juniper_affect_state_bus(_rpc_bus or svc.bus)
+    # 2026-08-26: same precedent again -- see
+    # orion/situational/identity_ask_cooldown.py's docstring.
+    bind_identity_ask_cooldown_bus(_rpc_bus or svc.bus)
     logger.info("exec_rpc_bus_fork_ready")
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"

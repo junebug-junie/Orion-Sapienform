@@ -104,6 +104,21 @@ class Settings(BaseSettings):
     # 256, `black-forest-labs`'s own reference code allows up to 512).
     DIFFUSION_MODEL_ID: str = "YuCollection/FLUX.1-schnell-Diffusers"
     DIFFUSION_DEVICE: str = "cuda:0"
+
+    # --- Power intent (stage 2) ---
+    DIFFUSION_POWER_INTENT_ENABLED: bool = True
+    # PHYSICAL nvidia-smi index, NOT the container's CUDA index. These are different
+    # numbers and conflating them has already cost this repo once (a `device=cuda:2` log
+    # naming the wrong physical card). CUDA_VISIBLE_DEVICES=2 scopes this container to
+    # physical GPU 2, which it then addresses as cuda:0 -- so DIFFUSION_DEVICE is
+    # exactly the wrong thing to derive this from. The settler runs on the host and
+    # queries nvidia-smi, which only knows physical indices.
+    DIFFUSION_POWER_INTENT_GPU_INDEX: int = 2
+    # A first guess at how long to hold the sample window open. Deliberately NOT an
+    # expected_watts -- that stays None until real settlements produce a distribution.
+    DIFFUSION_POWER_INTENT_DURATION_SEC: float = 20.0
+    # Hard stop under which the settler closes the window regardless.
+    DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC: float = 40.0
     DIFFUSION_DTYPE: str = "fp16"
     DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD: bool = True
     DIFFUSION_NUM_INFERENCE_STEPS: int = 4

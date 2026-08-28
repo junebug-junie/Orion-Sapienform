@@ -39,6 +39,9 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
         "orion_biometrics_cluster": int(
             getattr(settings, "orion_biometrics_cluster_retention_days", 0) or 0
         ),
+        "power_intent_settled": int(
+            getattr(settings, "power_intent_settled_retention_days", 0) or 0
+        ),
     }
 
 

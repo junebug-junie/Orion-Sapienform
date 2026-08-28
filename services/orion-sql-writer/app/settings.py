@@ -31,6 +31,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "biometrics.telemetry": "BiometricsTelemetry",
     "biometrics.summary.v1": "BiometricsSummarySQL",
     "biometrics.cluster.v1": "BiometricsClusterSQL",
+    "power.intent.settled.v1": "PowerIntentSettledSQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
@@ -139,6 +140,7 @@ class Settings(BaseSettings):
             "orion:telemetry:biometrics",
             "orion:biometrics:summary",
             "orion:biometrics:cluster",
+            "orion:power:intent:settled",
             "orion:biometrics:induction",
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -355,6 +357,11 @@ class Settings(BaseSettings):
         30, alias="ORION_BIOMETRICS_CLUSTER_RETENTION_DAYS"
     )
 
+    # Name matches the table exactly, same reason as above.
+    power_intent_settled_retention_days: int = Field(
+        90, alias="POWER_INTENT_SETTLED_RETENTION_DAYS"
+    )
+
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
     # The window was never the reason these tables were 36 GB -- retention could not run
@@ -495,6 +502,11 @@ class Settings(BaseSettings):
         # is not sufficient on its own for this field.
         if "orion:biometrics:cluster" not in channels:
             channels.append("orion:biometrics:cluster")
+        # Same guarantee again. SQL_WRITER_SUBSCRIBE_CHANNELS replaces rather than
+        # merges, so a code-default route with no env entry is a route to nowhere --
+        # which is exactly how orion:biometrics:cluster shipped inert the first time.
+        if "orion:power:intent:settled" not in channels:
+            channels.append("orion:power:intent:settled")
         return channels
 
     @property

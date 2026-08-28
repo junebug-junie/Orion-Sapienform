@@ -23,6 +23,7 @@ from app.db import get_session, remove_session, session_factory
 from app.models import (
     BiometricsTelemetry,
     BiometricsClusterSQL,
+    PowerIntentSettledSQL,
     BiometricsSummarySQL,
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
@@ -119,6 +120,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntry, CollapseMirrorSto
 from orion.schemas.metacog_entry import MetacogEntryV1
 from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
+from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.biometrics import (
     BiometricsPayload,
     BiometricsSummaryV1,
@@ -424,6 +426,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "BiometricsTelemetry": (BiometricsTelemetry, BiometricsPayload),
     "BiometricsSummarySQL": (BiometricsSummarySQL, BiometricsSummaryV1),
     "BiometricsClusterSQL": (BiometricsClusterSQL, BiometricsClusterV1),
+    "PowerIntentSettledSQL": (PowerIntentSettledSQL, PowerIntentSettledV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),

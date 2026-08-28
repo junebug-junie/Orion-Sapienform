@@ -359,6 +359,41 @@ exactly `0.000`, and `terminal_reason` is always `'max_steps'`. They carry no in
 daydream is enrichment only and is **not** part of `is_empty()`: having been
 daydreaming is never on its own a reason to interrupt Juniper.
 
+**Which lanes actually reached the prompt (2026-08-28).** Every decision row in
+`endogenous_outreach_decisions.result_json` now carries a `grounding` object:
+
+```json
+"grounding": {"daydream": true, "daydream_age_sec": 317.3, "curiosity_summaries": 1,
+              "recent_turns": 2, "tension": true, "chat_presence": false,
+              "embodied_presence": false}
+```
+
+This exists because the prompt itself is **not** observable anywhere. It is built
+in memory, handed to generation, and dropped — not in the decision log, not in the
+container logs, and not in Postgres (`emit_observation` puts it on the substrate as
+a molecule, which has no queryable Postgres sink). Found immediately after the
+daydream lane shipped, when the obvious question — *"did that outreach actually see
+a daydream?"* — turned out to have no answer. Every lane added to this prompt was
+unfalsifiable in production: an outreach that silently lost a lane and one that
+never had it looked identical.
+
+Booleans and counts only, never the caption or summary text — logging the text
+would copy real content into a second store with its own retention and quietly
+widen the privacy boundary stated above.
+
+The trace is written only for cycles that actually built a context. A decision
+gated earlier (`quiet_hours`, `cooldown`, `daily_cap`, `turn_in_flight`) has **no**
+`grounding` key rather than a stale one inherited from the previous cycle — stale
+lanes would be worse than none, because they read as evidence.
+
+```sql
+-- did the last few real outreaches see a daydream?
+SELECT decided_at, reason, result_json->'grounding' AS grounding
+FROM endogenous_outreach_decisions
+WHERE result_json ? 'grounding'
+ORDER BY decided_at DESC LIMIT 10;
+```
+
 #### Evals
 
 `services/orion-hub/evals/` is this service's first eval directory. It exists

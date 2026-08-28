@@ -27,6 +27,7 @@ from scripts.endogenous_outreach import (
     _strip_appended_list,
     _looks_like_daydream_prose,
     build_outreach_prompt,
+    grounding_summary,
     in_quiet_hours,
     is_pass_response,
     looks_like_error_text,
@@ -2228,3 +2229,92 @@ def test_prose_guard_reruns_after_truncation(monkeypatch) -> None:
     tail = " A quiet stone courtyard at dusk with one lit window above the arch."
     assert len(head) > _MAX_DAYDREAM_CHARS
     assert _clean_daydream(head + tail) == ""
+
+
+# --------------------------------------------------------------------------
+# Grounding trace (which lanes reached the prompt)
+# --------------------------------------------------------------------------
+
+
+def test_grounding_summary_reports_each_lane() -> None:
+    """Hand-computed against a context with every lane populated."""
+    ctx = OutreachContext(
+        curiosity_summaries=["a", "b"],
+        recent_turns=[("Juniper", "hi"), ("Orion", "hello")],
+        presence={"health": "idle"},
+        daydream=(1234.56, "a celestial map of the solar system on concentric rings."),
+        embodied_presence={"state": "present"},
+    )
+    assert grounding_summary(ctx) == {
+        "daydream": True,
+        "daydream_age_sec": 1234.6,
+        "curiosity_summaries": 2,
+        "recent_turns": 2,
+        "tension": False,
+        "chat_presence": True,
+        "embodied_presence": True,
+    }
+
+
+def test_grounding_summary_on_an_empty_context() -> None:
+    summary = grounding_summary(OutreachContext(curiosity_summaries=[], recent_turns=[], presence=None))
+    assert summary["daydream"] is False
+    assert summary["daydream_age_sec"] is None
+    assert summary["curiosity_summaries"] == 0
+    assert summary["embodied_presence"] is False
+
+
+def test_grounding_summary_records_no_caption_text() -> None:
+    """Booleans and counts only. The caption must not be copied into a second
+    store with its own retention -- the lane's stated privacy boundary is that
+    it reads exactly one `chain_json` key and no seed material."""
+    caption = "a wholly distinctive celestial map of the solar system on rings."
+    ctx = OutreachContext(
+        curiosity_summaries=["a uniquely worded curiosity evidence summary"],
+        recent_turns=[("Juniper", "a uniquely worded chat turn")],
+        presence=None,
+        daydream=(60.0, caption),
+    )
+    serialized = repr(grounding_summary(ctx))
+    assert caption not in serialized
+    assert "celestial" not in serialized
+    assert "curiosity evidence" not in serialized
+    assert "chat turn" not in serialized
+
+
+def test_a_gate_that_fires_before_context_records_no_grounding(monkeypatch) -> None:
+    """The trap this guards: `_last_grounding` lives on the instance, so a
+    cycle blocked by quiet_hours/cooldown -- which returns BEFORE context is
+    gathered -- would otherwise inherit the PREVIOUS cycle's lanes and record
+    them as its own. Stale lanes are worse than none: they read as evidence."""
+    outreach = _outreach(quiet_start_hour=0, quiet_end_hour=24)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "hello")
+    outreach._last_grounding = {"daydream": True, "curiosity_summaries": 3}
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["reason"] == "quiet_hours"
+    assert "grounding" not in result, (
+        "a quiet_hours decision inherited a previous cycle's grounding trace"
+    )
+
+
+def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:
+    """The whole point: after the fact, "did that outreach actually see a
+    daydream?" must be answerable from the decision log alone."""
+    outreach = _outreach()
+    _stub_context(monkeypatch, summaries=("one", "two"), turns=(("Juniper", "hi"),))
+    _stub_generation(monkeypatch, "PASS")
+
+    result = asyncio.run(outreach.maybe_outreach())
+
+    assert result["grounding"] == {
+        "daydream": False,
+        "daydream_age_sec": None,
+        "curiosity_summaries": 2,
+        "recent_turns": 1,
+        "tension": False,
+        "chat_presence": False,
+        "embodied_presence": False,
+    }

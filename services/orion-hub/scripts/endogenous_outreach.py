@@ -183,7 +183,8 @@ _CURIOSITY_MAX_AGE_SEC = 3600.0
 # mechanical cap, not a signal that the imagery changed.
 #
 # Deliberately NOT read from that table (confirmed degenerate live over all
-# 328 rows since the chain went live on 2026-08-25):
+# rows since the chain went live on 2026-08-25 -- re-measure with the eval
+# rather than trusting a count written here; the table grows ~6 rows/hour):
 #   * `theme_key`       -- NULL on every row (`count(theme_key) = 0`); the
 #                          producer never sets it.
 #   * `ema_salience`    -- exactly 0.000 on every row
@@ -213,16 +214,31 @@ _DAYDREAM_PREFIX_RE = re.compile(
 # description -- `objects(103,419),(554,604), people(234,492),(274,554)`,
 # `bridge(269,261),(879,661)`, and in one live row the prompt's own
 # instruction text echoed back with coordinates attached. A coordinate pair
-# is that mode's unambiguous signature; real prose never contains one.
+# is that mode's signature. It would also reject a caption legitimately
+# containing a parenthesised number pair -- a thousands separator, a date
+# range -- which has never occurred in 300 live rows; the fail-closed
+# direction costs one skipped caption, so the regex stays blunt.
 _DAYDREAM_DETECTOR_OUTPUT_RE = re.compile(r"\(\s*\d+\s*,\s*\d+\s*\)")
+# Start of a structured list the captioner appended to its own prose. Live
+# 2026-08-28, 12 of 290 rendered captions (4.1%) carried the vision prompt's
+# own instruction text echoed back with an enumerated breakdown attached:
+#   "a spiral galaxy. Directly visible objects and people include:
+#    1. **Galaxy**: The central circular structure..."
+# The prose BEFORE that boundary is genuinely good, so the tail is cut rather
+# than the whole caption dropped -- and when nothing usable precedes the list,
+# the length/prose checks reject what is left. Matching the markers (literal
+# `**`, or a colon followed by an enumerator) rather than the instruction
+# wording, which is the captioner's to change.
+_DAYDREAM_LIST_START_RE = re.compile(r"\*\*|:\s*\d+[.)]\s")
 # Four consecutive alphabetic words -- the cheapest test for "this is a
 # sentence, not a tag dump". Rejects bare enumerations the coordinate test
 # misses (`1. Sun 2. Mercury 3. Venus ...`, `two trees, lake, reflection,
-# purple sky`). Measured over all 328 live rows: 9 rejected, every one
-# genuinely unusable, no false positives.
+# purple sky`). Measured over the whole live corpus on 2026-08-28: every
+# rejection was genuinely unusable, no false positives. Re-measure with
+# `pytest services/orion-hub/evals` rather than trusting a count written here.
 _DAYDREAM_PROSE_RE = re.compile(r"(?:[A-Za-z][A-Za-z'\-]*\s+){3}[A-Za-z]")
 # A caption that addresses a reader is not a description of Orion's own
-# image. Live 2026-08-28, exactly one row of 296: "The graph you provided is
+# image. Live 2026-08-28, exactly one row: "The graph you provided is
 # a phase diagram..." -- the captioner was addressed conversationally and
 # answered in kind. Rendering that verbatim under "That is yours, not
 # something Juniper showed you" produces the precise failure the ownership
@@ -232,7 +248,7 @@ _DAYDREAM_PROSE_RE = re.compile(r"(?:[A-Za-z][A-Za-z'\-]*\s+){3}[A-Za-z]")
 # The asymmetry justifies a blunt pronoun test: a false positive costs one
 # skipped caption out of `_DAYDREAM_SCAN_LIMIT` scanned rows, while a false
 # negative has Orion thank Juniper for a picture she never sent. Measured
-# over all 296 live captions: 1 match, no false positives.
+# over the whole live corpus on 2026-08-28: 1 match, no false positives.
 _DAYDREAM_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours|you're)\b", re.IGNORECASE)
 
 
@@ -409,6 +425,27 @@ def _looks_like_daydream_prose(text: str) -> bool:
     )
 
 
+def _strip_appended_list(text: str) -> str:
+    """Drop a structured list the captioner appended after its own prose.
+
+    Returns the prose up to the last sentence boundary before the list
+    starts, or "" when the caption is a list with no prose in front of it
+    (the caller's length/prose checks would reject that anyway; returning ""
+    here just makes the reason explicit).
+
+    Live effect, 2026-08-28: 14 of 300 captions changed, the usable rate
+    moved 96.7% -> 94.7%, and every instruction echo, literal `**`, and
+    dangling enumerator left the rendered output.
+    """
+    match = _DAYDREAM_LIST_START_RE.search(text)
+    if not match:
+        return text
+    cut = -1
+    for boundary in _DAYDREAM_SENTENCE_END_RE.finditer(text[: match.start()]):
+        cut = boundary.start()
+    return text[: cut + 1] if cut >= 0 else ""
+
+
 def _clean_daydream(raw: Any) -> str:
     """Collapse a caption to one prompt-sized line, or "" if unusable.
 
@@ -426,10 +463,15 @@ def _clean_daydream(raw: Any) -> str:
     """
     text = re.sub(r"\s+", " ", str(raw or "")).strip()
     text = _DAYDREAM_PREFIX_RE.sub("", text).strip()
+    text = _strip_appended_list(text)
     if len(text) < _MIN_DAYDREAM_CHARS or not _looks_like_daydream_prose(text):
         return ""
     if len(text) > _MAX_DAYDREAM_CHARS:
-        head = text[:_MAX_DAYDREAM_CHARS]
+        # Scan one char past the budget: `_DAYDREAM_SENTENCE_END_RE` needs the
+        # period AND the following space, so a `head` of exactly the budget can
+        # never match a sentence ending at its last index -- that caption would
+        # fall to the ellipsis branch instead of cutting cleanly.
+        head = text[: _MAX_DAYDREAM_CHARS + 1]
         # Latest sentence boundary that still leaves a real line behind. An
         # early first period would otherwise truncate far harder than the
         # char budget asks for, so fall back to an ellipsis instead.
@@ -450,6 +492,13 @@ def _clean_daydream(raw: Any) -> str:
             text = head[: cut + 1]
         else:
             text = text[: _MAX_DAYDREAM_CHARS - 1].rstrip() + "\u2026"
+        # Re-check what actually SHIPS, not only what was validated above
+        # (review finding, 2026-08-28): the guard ran on the full caption, so
+        # a long row that is a tag dump for its first 200 chars and prose at
+        # char 350 passed validation and then rendered the tag dump. No live
+        # row does this today; it is one comparison to close permanently.
+        if not _looks_like_daydream_prose(text):
+            return ""
     return text
 
 
@@ -478,7 +527,8 @@ def _fetch_current_daydream() -> Optional[Tuple[float, str]]:
     would silently re-surface a stale daydream as if it were current.
     `chain_json->>'description'` correctly yields NULL there.
 
-    Only these two keys of `chain_json` are read. Its siblings
+    Only ONE key of `chain_json` is read (`description`; `created_at` is a
+    real table column, not part of the blob). Its siblings
     (`context_text`, `self_study_text`, `memory_text`, `prompt`) carry
     Recall-crystallization and self-study seed material and are deliberately
     left alone -- that is a privacy boundary, not an oversight.
@@ -538,7 +588,11 @@ def _daydream_age_phrase(age_sec: float) -> str:
     # worth not shipping into Orion's own voice.
     if minutes < 90:
         return f"about {int(minutes / 10.0 + 0.5) * 10} minutes ago"
-    return f"about {int(minutes / 60.0 + 0.5)} hours ago"
+    # Pluralised rather than assuming the >=90min gate makes "1 hours"
+    # unreachable -- it does today, and that is exactly the kind of coupling
+    # that breaks silently when someone lowers the gate.
+    hours = int(minutes / 60.0 + 0.5)
+    return f"about {hours} hour{'' if hours == 1 else 's'} ago"
 
 
 def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:

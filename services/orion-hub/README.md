@@ -313,16 +313,32 @@ need a real theme detector — embeddings, not bag-of-words — and is left as
 follow-up rather than faked.
 
 **Caption validity is load-bearing, because only one caption ships.**
-`_looks_like_daydream_prose` rejects two live failure modes of the vision
-model: raw grounding output (`objects(103,419),(554,604)`,
-`bridge(269,261),(879,661)`, and one row that echoed the prompt's own
-instruction text back with coordinates attached) and bare tag dumps
-(`1. Sun 2. Mercury 3. Venus …`, `two trees, lake, reflection, purple sky`).
-Over all 328 rows it rejects 9, every one genuinely unusable, with no false
-positives — including a short 18-word real caption that a naive
-alphabetic-character-ratio test wrongly drops. Both shapes are **producer
-bugs worth fixing in orion-thought**; this is the consumer-side guard, not
-the fix. `_DAYDREAM_SCAN_LIMIT` is 12 rather than 1 for the same reason: ~3%
+`_looks_like_daydream_prose` rejects three live failure modes of the vision
+model, and `_strip_appended_list` repairs a fourth. All four are **producer
+bugs worth fixing in orion-thought**; these are consumer-side guards, not the
+fix. To re-measure any count below, run the eval — do not trust a number
+written here, the table grows ~6 rows/hour:
+
+| shape | example | handling |
+|---|---|---|
+| raw grounding output | `objects(103,419),(554,604)`, `bridge(269,261),(879,661)` | reject |
+| bare tag dump | `1. Sun 2. Mercury 3. Venus …`, `two trees, lake, reflection, purple sky` | reject |
+| second-person address | `The graph you provided is a phase diagram…` | reject |
+| appended instruction echo | `a spiral galaxy. Directly visible objects and people include: 1. **Galaxy**: …` | **truncate** |
+
+The last one was 12 of 290 rendered captions (4.1%) — the vision prompt's own
+instruction text echoed back with literal markdown and a dangling enumerator.
+The prose *before* it is genuinely good, so the tail is cut rather than the
+caption dropped; when nothing usable precedes the list, the length and prose
+checks reject what remains. `_DAYDREAM_LIST_START_RE` matches the structural
+markers (a literal `**`, or a colon followed by an enumerator) rather than the
+instruction wording, which is the captioner's to change.
+
+The rejects have no false positives on the live corpus, including a short
+18-word real caption that a naive alphabetic-character-ratio test wrongly
+drops, and a real caption ending *"…are directly visible."* that a naive
+instruction-echo test wrongly drops — the latter caught by the eval on its
+first run. `_DAYDREAM_SCAN_LIMIT` is 12 rather than 1 for the same reason: ~3%
 of rows are debris and ~10% have a NULL caption, so "newest row" is often not
 "newest usable row".
 
@@ -336,13 +352,45 @@ that looks like the obvious simplification: `visual_chain.py:527` sets
 caption-failure row it carries the *previous* run's caption forward and would
 silently re-surface a stale daydream as current.
 
-Three columns on that table were checked and **deliberately not used** — over
-all 328 rows since the chain went live on 2026-08-25, `theme_key` is NULL on
-every row (`count(theme_key) = 0`; the producer never sets it),
-`ema_salience` is exactly `0.000`, and `terminal_reason` is always
-`'max_steps'`. They carry no information today. Like `embodied_presence`, the
+Three columns on that table were checked and **deliberately not used** —
+since the chain went live on 2026-08-25, `theme_key` is NULL on every row
+(`count(theme_key) = 0`; the producer never sets it), `ema_salience` is
+exactly `0.000`, and `terminal_reason` is always `'max_steps'`. They carry no information today. Like `embodied_presence`, the
 daydream is enrichment only and is **not** part of `is_empty()`: having been
 daydreaming is never on its own a reason to interrupt Juniper.
+
+#### Evals
+
+`services/orion-hub/evals/` is this service's first eval directory. It exists
+because of a specific mistake: the daydream lane's original de-duplication
+shipped a calibration claim that live data falsified the same day. A unit test
+could not have caught it — unit tests run on fixtures the same reasoning
+invented. This runs the real caption pipeline over the real rows.
+
+```bash
+scripts/test_service.sh orion-hub --with-evals
+# or directly:
+pytest services/orion-hub/evals -q
+DAYDREAM_EVAL_DATABASE_URL=postgresql+psycopg2://... pytest services/orion-hub/evals -q
+```
+
+Read-only, and it **skips** cleanly with no reachable database — but a missing
+or renamed `reverie_visual_chain` **fails** rather than skipping, since that is
+the loudest thing that can go wrong with this lane.
+
+It measures the caption usability rate over a **24h window** (not the lifetime
+of the table: a lifetime rate cannot detect a later failure — at ~6 rows/hour a
+0.85 floor trips after ~7h of total collapse on today's corpus but would need
+~10 days once the table reaches 10k rows), asserts that real debris present in
+the raw captions does not survive cleaning, asserts no rendered caption echoes
+the captioner's instructions, checks the window is not empty (liveness), and
+pins its own two thresholds so they cannot be quietly set to values that make
+everything pass.
+
+**Repo-wide gap this exposed:** 11 services carry an `evals/` directory and
+none were reachable through `scripts/test_service.sh` or any Makefile target.
+The `--with-evals` flag above is new and opt-in; wiring the other ten is
+follow-up, not this change.
 
 **Through the real unified turn, not a lookalike (2026-08-19).** Generation
 used to call `CortexGatewayClient.chat()` directly — a bare bus RPC to

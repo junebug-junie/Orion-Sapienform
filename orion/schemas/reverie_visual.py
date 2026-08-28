@@ -71,7 +71,9 @@ class ReverieVisualChainV1(BaseModel):
     # py::_fetch_current_daydream` reads it straight out of Postgres to ground
     # Orion's unprompted outreach. It is an untyped key with no schema field
     # and no cross-service contract test, so renaming or dropping it makes
-    # that lane go permanently silent with no error and no failing test.
+    # that lane go permanently silent with no error. The only thing that would
+    # notice is `services/orion-hub/evals/test_daydream_caption_quality_eval.
+    # py`'s liveness check, and only when run against the live host.
     # It reads this key rather than `prior_description` above on purpose:
     # `visual_chain.py` sets `prior_description = description or
     # continuity_fallback`, which carries the PREVIOUS run's caption forward

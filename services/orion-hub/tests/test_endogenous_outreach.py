@@ -14,7 +14,9 @@ import pytest
 from scripts.endogenous_outreach import (
     _DAYDREAM_MAX_AGE_SEC,
     _DAYDREAM_SCAN_LIMIT,
+    _DAYDREAM_DETECTOR_OUTPUT_RE,
     _MAX_DAYDREAM_CHARS,
+    _MIN_DAYDREAM_CHARS,
     EndogenousOutreach,
     OutreachContext,
     OutreachGateInputs,
@@ -22,6 +24,7 @@ from scripts.endogenous_outreach import (
     _daydream_age_phrase,
     _fetch_current_daydream,
     _fetch_embodied_presence,
+    _strip_appended_list,
     _looks_like_daydream_prose,
     build_outreach_prompt,
     in_quiet_hours,
@@ -247,7 +250,7 @@ def test_fetch_embodied_presence_uses_configured_stream_id_and_shared_engine(mon
 def test_gather_context_runs_its_four_fetches_concurrently(monkeypatch) -> None:
     """Review finding, 2026-08-25: `_gather_context` used to await
     `_fetch_curiosity_summaries`/`_fetch_recent_turns`/`_fetch_embodied_
-    presence`/`_fetch_recent_daydreams` one after another even though each is independent and
+    presence`/`_fetch_current_daydream` one after another even though each is independent and
     already dispatched via asyncio.to_thread -- wall time was their SUM,
     not the slowest one. Four fakes that each sleep 60ms: sequential would
     take ~240ms+, concurrent (asyncio.gather) should land close to 60ms.
@@ -1812,11 +1815,15 @@ def test_daydream_renders_with_ownership_framing_and_age() -> None:
         (0.0, "just now"),
         (899.0, "just now"),  # 14.98 min, just under the 15-min boundary
         (900.0, "about 20 minutes ago"),  # 15.0 min, half-UP at 10-min granularity
+        (1260.0, "about 20 minutes ago"),  # 21.0 min: pins the rounding CONSTANT,
+        # not just its direction -- +0.9 instead of +0.5 would say 30 here and
+        # every other case in this list would still pass.
         (1500.0, "about 30 minutes ago"),  # 25.0 min: half-EVEN would say 20 here
         (2100.0, "about 40 minutes ago"),  # 35.0 min: half-EVEN would say 40 too
         (5399.0, "about 90 minutes ago"),  # 89.98 min, still under the 90-min boundary
         (5400.0, "about 2 hours ago"),  # 90.0 min -> 1.5h -> half-UP to 2
         (43200.0, "about 12 hours ago"),  # the window edge
+        (3600.0, "about 60 minutes ago"),  # 60 min still uses the minutes branch
     ],
 )
 def test_daydream_age_phrase_boundaries(age_sec, expected) -> None:
@@ -1867,10 +1874,14 @@ def test_clean_daydream_collapses_newlines_and_strips_caption_boilerplate() -> N
     hygiene: a caption must not be able to forge a new prompt line or a fake
     section header. Live captions genuinely arrive multi-line (the captioner
     emits markdown lists), so this is exercised on real shapes."""
-    raw = "The image depicts a celestial map.\n\n1. **Sun**: the center.\n2. **Mars**: to the left of it."
+    raw = (
+        "The image depicts a celestial map.\n\n"
+        "A bright star sits at the very centre of it.\n"
+        "Faint concentric rings extend outward from there."
+    )
     cleaned = _clean_daydream(raw)
     assert "\n" not in cleaned
-    assert cleaned.startswith("a celestial map.")
+    assert cleaned.startswith("a celestial map. A bright star")
 
 
 def test_clean_daydream_cannot_forge_a_prompt_line() -> None:
@@ -2106,7 +2117,7 @@ def test_second_person_caption_is_dropped_not_merely_framed(monkeypatch) -> None
 
 def test_second_person_guard_does_not_reject_ordinary_captions() -> None:
     """The pronoun test is blunt on purpose, but it must not eat descriptions
-    that merely contain the letters. Measured over all 296 live captions on
+    that merely contain the letters. Measured over the whole live corpus on
     2026-08-28 it matched exactly one row, with no false positives."""
     for caption in _LIVE_USABLE_CAPTIONS:
         assert _looks_like_daydream_prose(caption) is True
@@ -2114,3 +2125,106 @@ def test_second_person_guard_does_not_reject_ordinary_captions() -> None:
     assert _looks_like_daydream_prose(
         "a young woman standing beneath a vaulted stone ceiling, lit from one side."
     ) is True
+
+
+def test_appended_list_is_stripped_not_rendered() -> None:
+    """Live-verified, 2026-08-28: 12 of 290 rendered captions (4.1%) carried
+    the vision prompt's own instruction text back into Orion's prompt, with
+    literal markdown and a dangling enumerator. The prose before the list is
+    good, so the tail is cut rather than the caption dropped."""
+    raw = (
+        "The image depicts the solar system, showing the planets and their orbits. "
+        "Directly visible objects include: 1. **Sun** - The central yellow object. "
+        "2. **Mercury** - The small grey object nearest it."
+    )
+    cleaned = _clean_daydream(raw)
+    assert cleaned == "the solar system, showing the planets and their orbits."
+    assert "**" not in cleaned
+    assert "include:" not in cleaned
+
+
+def test_a_caption_that_is_only_an_appended_list_is_rejected() -> None:
+    """Nothing usable precedes the list, so there is no prose to keep. Live
+    example: "a spiral galaxy." is real but 16 chars, under the floor."""
+    raw = "The image depicts a spiral galaxy. Directly visible objects include: 1. **Galaxy**: The centre."
+    assert _clean_daydream(raw) == ""
+
+
+def test_strip_appended_list_leaves_ordinary_prose_untouched() -> None:
+    """The strip must not fire on a caption that merely contains a period and
+    a number, or on prose that legitimately ends with 'directly visible'."""
+    plain = "a celestial map of the solar system, showing the planets and their positions."
+    assert _strip_appended_list(plain) == plain
+    real = (
+        "a spiral galaxy with a central bright spot, likely a supermassive black hole. "
+        "The spiral structure and the central black hole are directly visible."
+    )
+    assert _strip_appended_list(real) == real
+
+
+def test_prose_guard_requires_four_words_not_three() -> None:
+    """Pins `{3}` in _DAYDREAM_PROSE_RE. Relaxing it to `{2}` (three
+    consecutive words) passes every other test in this file while silently
+    weakening the guard."""
+    assert _looks_like_daydream_prose("red blue green") is False
+    assert _looks_like_daydream_prose("red blue green gold") is True
+
+
+@pytest.mark.parametrize(
+    "debris",
+    [
+        "objects(103,419),(554,604)",  # no spaces, the shape seen live
+        "objects(103, 419), (554, 604)",  # spaces after the comma
+        "objects( 103 , 419 )",  # spaces throughout
+        "bridge(1,2)",  # single digits
+    ],
+)
+def test_detector_output_regex_tolerates_spacing_and_short_numbers(debris) -> None:
+    """Pins the `\\s*` and `\\d+` in _DAYDREAM_DETECTOR_OUTPUT_RE. Dropping
+    either (to `\\(\\d+,\\d+\\)` or `\\d{2,}`) still passes the live-corpus
+    fixtures, because the exact live rows happen to have no spaces and no
+    single-digit pairs -- a captioner formatting change would walk straight
+    through the weakened guard."""
+    assert _DAYDREAM_DETECTOR_OUTPUT_RE.search(debris)
+    assert _looks_like_daydream_prose(f"a wide view of the valley {debris}") is False
+
+
+def test_ellipsis_fallback_hard_cap_is_pinned_at_a_non_space_boundary() -> None:
+    """The previous fixture for this could not discriminate: its character at
+    index 199 was a SPACE, so `.rstrip()` absorbed the off-by-one and a
+    `[:_MAX]` variant produced byte-identical output. This fixture puts a
+    letter there, so the `- 1` is load-bearing."""
+    raw = "A ring. " + ("dust and light swirling outward from a dim centre " * 6)
+    # The character at the cap boundary is a letter, not whitespace, so a
+    # `[:_MAX]` variant would produce a 201-char line instead of rstrip()ing
+    # back to the same output.
+    assert raw[_MAX_DAYDREAM_CHARS - 1] == "m"
+    cleaned = _clean_daydream(raw)
+    assert len(cleaned) == _MAX_DAYDREAM_CHARS
+    assert cleaned.endswith("…")
+    # The ellipsis replaces a character rather than being appended past the cap.
+    assert cleaned[: _MAX_DAYDREAM_CHARS - 1] == raw[: _MAX_DAYDREAM_CHARS - 1]
+
+
+def test_sentence_ending_exactly_at_the_budget_still_cuts_cleanly() -> None:
+    """The boundary scan reads one char past _MAX_DAYDREAM_CHARS because the
+    regex needs the period AND the following space. Without that, a caption
+    whose sentence ends exactly at the budget falls to the ellipsis branch."""
+    words = "a wide dim ring of pale light hangs in a dark still field "
+    first = (words * 5)[: _MAX_DAYDREAM_CHARS - 1].rstrip()
+    first = first + "." * (_MAX_DAYDREAM_CHARS - len(first))
+    assert len(first) == _MAX_DAYDREAM_CHARS and first.endswith(".")
+    cleaned = _clean_daydream(first + " And then a second sentence follows it here.")
+    assert cleaned == first
+    assert "…" not in cleaned
+
+
+def test_prose_guard_reruns_after_truncation(monkeypatch) -> None:
+    """The guard used to validate the full caption and then truncate, so a row
+    that is prose only past the budget would pass validation and render its
+    unusable head (review finding, 2026-08-28). No live row does this; the
+    check is one comparison and closes it permanently."""
+    head = "objects" + "(1,2)" * 50  # debris, longer than the budget
+    tail = " A quiet stone courtyard at dusk with one lit window above the arch."
+    assert len(head) > _MAX_DAYDREAM_CHARS
+    assert _clean_daydream(head + tail) == ""

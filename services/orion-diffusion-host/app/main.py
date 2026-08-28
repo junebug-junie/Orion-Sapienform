@@ -62,6 +62,7 @@ from fastapi.responses import JSONResponse, Response
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from orion.schemas.power import PowerIntentV1
@@ -450,7 +451,23 @@ async def _publish_power_intent() -> None:
             deadline=now
             + timedelta(seconds=settings.DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC),
         )
-        await bus.publish("orion:power:intent", "power.intent.v1", intent)
+        # OrionBusAsync.publish() takes (channel, envelope) -- the schema/kind
+        # rides INSIDE the envelope, it is not a third positional argument. The
+        # previous 3-positional-arg call raised TypeError on every generation and
+        # was swallowed by the except below, so the loop looked wired while no
+        # intent was ever published: power_intent_settled sat at 0 rows from the
+        # day the table was created. Same BaseEnvelope(kind=, source=, payload=)
+        # shape orion-biometrics' own _publish() uses on the settled channel.
+        env = BaseEnvelope(
+            kind="power.intent.v1",
+            source=ServiceRef(
+                name=settings.SERVICE_NAME,
+                version=settings.SERVICE_VERSION,
+                node=settings.NODE_NAME,
+            ),
+            payload=intent.model_dump(mode="json"),
+        )
+        await bus.publish("orion:power:intent", env)
         logger.info("power_intent_declared intent={} gpu={}", intent.intent_id, intent.gpu_index)
     except Exception as exc:  # noqa: BLE001
         logger.warning("power_intent_declare_failed (generation continues): {}", exc)

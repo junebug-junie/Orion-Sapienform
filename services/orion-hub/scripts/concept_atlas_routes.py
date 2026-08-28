@@ -318,7 +318,7 @@ def _ensure_topic_foundry_dataset_and_model(
     model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
     source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
     where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
-    windowing_spec: Optional[dict[str, Any]] = None,
+    windowing_spec: dict[str, Any],
 ) -> Optional[tuple[str, str]]:
     """Idempotent get-or-create for a scheduler dataset+model, by name.
 
@@ -400,7 +400,15 @@ def _ensure_topic_foundry_dataset_and_model(
                         "metric": settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC,
                         "params": {},
                     },
-                    "windowing_spec": windowing_spec or _TOPIC_FOUNDRY_WINDOWING_SPEC,
+                    # Required, never defaulted here. A model's name encodes a
+                    # fingerprint OF THIS SPEC, and the row freezes it at
+                    # creation -- so a default would let a caller passing the AI
+                    # Town model_name mint a model whose name says AI Town
+                    # windowing while its frozen row says Orion's. Model rows are
+                    # create-only and GET /models omits both specs, so that
+                    # mismatch would be permanent and undetectable (review
+                    # finding, 2026-08-28).
+                    "windowing_spec": windowing_spec,
                     "metadata": {},
                 },
             )
@@ -428,7 +436,7 @@ def trigger_topic_foundry_training_run(
     model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
     source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
     where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
-    windowing_spec: Optional[dict[str, Any]] = None,
+    windowing_spec: dict[str, Any] = _TOPIC_FOUNDRY_WINDOWING_SPEC,
     log_prefix: str = "topic_foundry",
 ) -> dict[str, Any]:
     """Scheduler entry point (Gap 5): ensure the scheduler's dataset/model

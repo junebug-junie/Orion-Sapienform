@@ -10,6 +10,7 @@ from uuid import uuid4
 import numpy as np
 
 from app.services.types import RowBlock
+from app.services.windowing_provenance import dedup_extend, dedup_row_provenance
 
 
 logger = logging.getLogger("topic-foundry.semantic")
@@ -104,7 +105,8 @@ def _merge_blocks(blocks: List[RowBlock], max_chars: int) -> RowBlock:
         row_ids.extend(block.row_ids)
         timestamps.extend(block.timestamps)
         text_parts.append(block.text)
-        speakers.extend(s for s in block.speakers if s not in speakers)
+        dedup_extend(speakers, block.speakers)
+    row_ids, timestamps = dedup_row_provenance(row_ids, timestamps)
     text = "\n".join(text_parts).strip()
     if len(text) > max_chars:
         text = text[:max_chars].rstrip()

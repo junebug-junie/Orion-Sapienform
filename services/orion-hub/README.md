@@ -928,6 +928,7 @@ TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
 ### Manual UI checklist
 - Navigate between **Hub** and **Topic Studio** tabs; ensure no overlays block pointer events on Hub.
 - In Topic Studio, run **Preview** with `turn_pairs`, then switch to `conversation_bound` after setting a `boundary_column`.
+  - Topic Studio pins `split_text_columns: false` (it has no control for it yet), so its previews keep the historical fused-column shape. The Hub's own scheduler sends `split_text_columns: true` with `column_speakers`, so scheduler-driven runs produce one document per utterance -- expect Topic Studio's document counts to differ from the scheduler's for the same window. See `docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md`.
 - Train a run, poll for completion, then load segments and click a segment to confirm full text renders in the detail pane.
 
 Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.

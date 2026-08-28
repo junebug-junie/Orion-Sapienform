@@ -13,6 +13,7 @@ from app.services.boundary_judge import judge_boundaries
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.services.semantic_segmentation import SemanticConfig, split_blocks
 from app.services.types import BoundaryContext, RowBlock
+from app.services.windowing_provenance import dedup_extend, dedup_row_provenance
 
 if TYPE_CHECKING:
     from app.services.conversation_overrides import Conversation
@@ -57,17 +58,19 @@ def _expand_units(
         else:
             text = _row_text(row, text_columns)
             if text:
-                units.append(_Unit(row=row, text=text, speaker=None))
+                # Fused: the columns of one row become one unit. A source that
+                # genuinely carries a per-row role/speaker column still gets a
+                # real speaker here -- without this, _role_of had no caller at
+                # all and include_roles filtering that used to work for such a
+                # source would have gone permanently inert (review finding,
+                # 2026-08-28).
+                units.append(_Unit(row=row, text=text, speaker=_role_of(row)))
     return units
 
 
 def _unit_speakers(units: Sequence[_Unit]) -> List[str]:
     """Ordered, de-duplicated speakers across ``units`` (unknowns dropped)."""
-    seen: List[str] = []
-    for unit in units:
-        if unit.speaker and unit.speaker not in seen:
-            seen.append(unit.speaker)
-    return seen
+    return dedup_extend([], (unit.speaker for unit in units if unit.speaker))
 
 
 def _block_from_units(
@@ -131,6 +134,15 @@ def build_blocks_for_conversation(
         while idx < len(units) - 1:
             first = units[idx]
             second = units[idx + 1]
+            # When split, a "turn pair" is one row's own prompt+response. Pair
+            # only within a row: a row with a NULL column contributes a single
+            # unit, and a flat idx += 2 walk would silently start pairing one
+            # row's prompt with the NEXT row's prompt and stay misaligned for
+            # the rest of the conversation (review finding, 2026-08-28). The
+            # fused path keeps pairing consecutive rows, which is its point.
+            if spec.split_text_columns and first.row is not second.row:
+                idx += 1
+                continue
             # With split_text_columns on, a unit's speaker is real and this
             # filter finally does something. With it off both speakers are
             # None, the guard short-circuits, and include_roles is inert --
@@ -179,16 +191,25 @@ def _role_of(row: Dict[str, Any]) -> Optional[str]:
 
 
 def _make_block_text(units: Sequence[_Unit], spec: WindowingSpec) -> str:
-    """Join units into one document, prefixing only speakers we actually know.
+    """Join units into one document. The speaker is deliberately NOT in here.
 
     Before 2026-08-28 the turn_pairs branch hardcoded "User:"/"Assistant:"
     prefixes onto two arbitrary consecutive rows. On a source whose every row
-    holds a full exchange, both labels were false, and both went into the text
-    that gets embedded. Now a prefix appears only when column_speakers named a
-    real author for that unit; otherwise the text stands on its own.
+    holds a full exchange both labels were false -- but the deeper problem was
+    never their truthfulness, it was that a *role label was inside the text
+    that gets vectorized*. Code review 2026-08-28 caught the first fix
+    reintroducing exactly that, just with true names: under the new default
+    `rows` mode every document would have begun "juniper: " or "orion: ",
+    which on a ~508-document corpus split roughly in half is a near-perfect
+    high-IDF discriminator -- HDBSCAN could cluster on speaker instead of
+    topic, and TfidfVectorizer could hand "juniper"/"orion" a top-keyword slot
+    and label topics after the speakers.
+
+    The speaker is carried structurally instead, on RowBlock.speakers ->
+    segment provenance, where every consumer that needs it can read it and no
+    embedding ever sees it.
     """
-    parts = [f"{unit.speaker}: {unit.text}" if unit.speaker else unit.text for unit in units]
-    return _truncate("\n".join(parts).strip(), spec.max_chars)
+    return _truncate("\n".join(unit.text for unit in units).strip(), spec.max_chars)
 
 
 def _chunk_blocks(blocks: List[RowBlock], spec: WindowingSpec) -> List[RowBlock]:
@@ -207,7 +228,8 @@ def _chunk_blocks(blocks: List[RowBlock], spec: WindowingSpec) -> List[RowBlock]
             row_ids.extend(block.row_ids)
             timestamps.extend(block.timestamps)
             text_parts.append(block.text)
-            speakers.extend(s for s in block.speakers if s not in speakers)
+            dedup_extend(speakers, block.speakers)
+        row_ids, timestamps = dedup_row_provenance(row_ids, timestamps)
         segments.append(
             RowBlock(
                 row_ids=row_ids,
@@ -363,7 +385,8 @@ def _merge_blocks(blocks: List[RowBlock], max_chars: int) -> RowBlock:
         row_ids.extend(block.row_ids)
         timestamps.extend(block.timestamps)
         text_parts.append(block.text)
-        speakers.extend(s for s in block.speakers if s not in speakers)
+        dedup_extend(speakers, block.speakers)
+    row_ids, timestamps = dedup_row_provenance(row_ids, timestamps)
     text = "\n".join(text_parts).strip()
     if len(text) > max_chars:
         text = text[:max_chars].rstrip()

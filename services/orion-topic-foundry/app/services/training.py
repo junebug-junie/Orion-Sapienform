@@ -699,6 +699,10 @@ def _write_artifacts(
                 "text": seg.text,
                 "row_ids": seg.row_ids,
                 "timestamps": seg.timestamps,
+                # Mirrors SegmentRecord.provenance["speakers"] -- documents.jsonl
+                # is the offline inspection surface, so the two provenance views
+                # must not disagree about who spoke.
+                "speakers": seg.speakers,
                 "segment_id": seg.doc_id,
                 "cluster_id": int(label),
                 "cluster_prob": prob,

@@ -271,7 +271,9 @@ def test_ensure_dataset_and_model_finds_existing_by_name(monkeypatch: pytest.Mon
     monkeypatch.setattr(tfc.requests, "get", fake_get)
     monkeypatch.setattr(tfc.requests, "post", fake_post)
 
-    result = car._ensure_topic_foundry_dataset_and_model(FAKE_BASE_URL)
+    result = car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL, windowing_spec=car._TOPIC_FOUNDRY_WINDOWING_SPEC
+    )
     assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
     assert create_calls == []
 
@@ -312,7 +314,9 @@ def test_ensure_dataset_and_model_warns_on_where_sql_drift(
     monkeypatch.setattr(tfc.requests, "get", fake_get)
     caplog.set_level("WARNING")
 
-    result = car._ensure_topic_foundry_dataset_and_model(FAKE_BASE_URL)
+    result = car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL, windowing_spec=car._TOPIC_FOUNDRY_WINDOWING_SPEC
+    )
 
     assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
     assert "topic_foundry_dataset_where_sql_drift" in caplog.text
@@ -360,6 +364,7 @@ def test_ensure_dataset_and_model_warns_on_source_table_drift(
         model_name=car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
         source_table=car._TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE,
         where_sql=None,
+        windowing_spec=car._TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC,
     )
 
     assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
@@ -416,7 +421,9 @@ def test_ensure_dataset_and_model_creates_when_missing(monkeypatch: pytest.Monke
     monkeypatch.setattr(tfc.requests, "get", fake_get)
     monkeypatch.setattr(tfc.requests, "post", fake_post)
 
-    result = car._ensure_topic_foundry_dataset_and_model(FAKE_BASE_URL)
+    result = car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL, windowing_spec=car._TOPIC_FOUNDRY_WINDOWING_SPEC
+    )
     assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
     assert set(create_calls) == {f"{FAKE_BASE_URL}/datasets", f"{FAKE_BASE_URL}/models"}
 
@@ -429,7 +436,9 @@ def test_ensure_dataset_and_model_degrades_to_none_on_failure(monkeypatch: pytes
         raise requests.exceptions.ConnectionError("refused")
 
     monkeypatch.setattr(tfc.requests, "get", fake_get)
-    assert car._ensure_topic_foundry_dataset_and_model(FAKE_BASE_URL) is None
+    assert car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL, windowing_spec=car._TOPIC_FOUNDRY_WINDOWING_SPEC
+    ) is None
 
 
 def test_trigger_topic_foundry_training_run_no_base_url_configured(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -787,6 +796,7 @@ def test_ensure_dataset_and_model_creates_aitown_dataset_with_no_where_sql(
         model_name=car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
         source_table=car._TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE,
         where_sql=None,
+        windowing_spec=car._TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC,
     )
 
     assert result == (FAKE_DATASET_ID, FAKE_MODEL_ID)
@@ -922,7 +932,9 @@ def test_created_model_carries_split_windowing_and_real_speakers(
     monkeypatch.setattr(tfc.requests, "get", fake_get)
     monkeypatch.setattr(tfc.requests, "post", fake_post)
 
-    assert car._ensure_topic_foundry_dataset_and_model(FAKE_BASE_URL) == (
+    assert car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL, windowing_spec=car._TOPIC_FOUNDRY_WINDOWING_SPEC
+    ) == (
         FAKE_DATASET_ID,
         FAKE_MODEL_ID,
     )
@@ -1016,3 +1028,13 @@ def test_orion_and_aitown_models_have_distinct_names() -> None:
 
     assert car._TOPIC_FOUNDRY_MODEL_NAME != car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME
     assert car._TOPIC_FOUNDRY_WINDOWING_SPEC != car._TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC
+    # The names also differ by their base constant, so comparing full names
+    # would pass even if the fingerprint ignored windowing entirely (review
+    # finding, 2026-08-28: the original assertion was vacuous w.r.t. its own
+    # docstring). Compare the fingerprint SUFFIXES.
+    orion_suffix = car._TOPIC_FOUNDRY_MODEL_NAME.rsplit("-", 1)[-1]
+    aitown_suffix = car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME.rsplit("-", 1)[-1]
+    assert orion_suffix != aitown_suffix
+    assert orion_suffix == car._topic_foundry_model_spec_fingerprint(
+        car._TOPIC_FOUNDRY_WINDOWING_SPEC
+    )

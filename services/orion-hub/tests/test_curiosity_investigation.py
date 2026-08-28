@@ -173,7 +173,13 @@ class _FakeConn:
             return [{"kind": "semantic", "n": 268, "manual_n": 12}]
         if "FROM memory_crystallizations" in sql and "random()" in sql:
             return self.rows
-        if "GROUP BY relation" in sql:
+        # Matched on the alias too. This fake dispatches by SQL SUBSTRING, and
+        # that has now silently mis-routed three times in this branch's history
+        # -- each time a query gained a table alias, the needle stopped matching
+        # and the fake answered from the NEXT branch down, which returns rows
+        # where counts were expected. The symptom is never "no match": it is a
+        # KeyError two functions away, or a journal line reporting "4 of 0".
+        if "GROUP BY d.relation" in sql or "GROUP BY relation" in sql:
             return [{"relation": "same", "n": 316}]
         if "memory_concept_relation_decisions" in sql:
             return self.relations

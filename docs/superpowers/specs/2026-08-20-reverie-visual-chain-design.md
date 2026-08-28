@@ -500,17 +500,46 @@ recent `status='active'` row's `summary`, verbatim.
   read and used exactly as stored.
 - **Tunables**: `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` (400,
   same cap-all-collections default as self-study) and `ORION_MEMORY_
-  CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` (21600s / 6h, same reasoning as
-  self-study's own 6h default). Same `gt=0` fail-loud discipline.
-- **Live cadence check**: real `memory_crystallizations` activity is
-  bursty, not steady -- median gap between consecutive `active` rows is
-  ~31s (tight clusters during active conversation), but the max observed
-  gap is over 10 days (quiet stretches between sessions). At the time this
-  was checked, the most recent `active` row was ~17.6h old -- older than
-  the 6h window, so the reader correctly returned `None` rather than a
-  stale row. This is the intended degrade-to-absent behavior, not a bug;
-  a 6h window will often read empty during quiet periods, matching
-  reality rather than manufacturing a false "always present" signal.
+  CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC`. Same `gt=0` fail-loud discipline.
+- **Real bug, caught live 2026-08-28, corrected same day**: this section
+  originally shipped with a 21600s (6h) default for `max_age_sec`, copied
+  from `self_study_context_max_age_sec` without checking whether it fits
+  `memory_crystallizations`'s actual production cadence. It does not: the
+  6h figure comes from self-study's own window-contrast framing ("the last
+  6h against the 6h before it") -- content that genuinely IS about a
+  specific recent window and should read as stale outside it. A
+  crystallized memory carries no such framing; a real memory from
+  yesterday is still a real memory. The result: with visual-chain ticks
+  firing every ~600s and real crystallization activity bursty (median gap
+  ~15min in active use, but real observed gaps up to ~46h between
+  sessions), the 6h window meant `memory_text` read `None` on effectively
+  every tick outside an active conversation -- confirmed live: Juniper
+  redeployed, checked the actual generated prompt, and it never carried
+  memory content. The original version of this doc called that "intended
+  degrade-to-absent behavior, not a bug" -- that was a misdiagnosis, not a
+  correct call; a context-seed that is silently absent nearly all the time
+  is not delivering what it was built for, regardless of whether each
+  individual empty read is technically honest.
+  **Fix, first draft**: `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC`
+  raised to 259200s (3 days), based on a "last 14 days" query showing
+  median gap ~15min and max gap ~46h.
+  **Fix, corrected after review**: that first draft silently narrowed the
+  query to 14 days without saying so, and without reconciling it against
+  this same section's OWN earlier live-data claim above ("max observed gap
+  is over 10 days") -- a code-review pass on this exact patch caught the
+  unreconciled contradiction. Re-querying the FULL history (2026-08-28)
+  confirms both numbers were real, not in conflict: the two largest gaps
+  ever observed are 10d5h (2026-07-31 -> 08-11) and 3d10h (2026-07-25 ->
+  07-29), both from more than two weeks before this fix. Every gap since
+  2026-08-11 (17+ days of real recent activity) has stayed under 2 days.
+  Final default: **604800s (7 days)** -- covers the recent pattern with
+  real margin and covers the second-largest historical gap (3d10h), but
+  does NOT cover the single 10-day outlier from early August. That is an
+  explicit, accepted tradeoff: a dry spell that long would read as absent
+  again, which is the same honest degrade-to-absent behavior every
+  context-seed reader in this file has by design -- unlike the 6h bug this
+  patch fixes, a real 7+ day gap is a genuinely rare quiet period, not the
+  every-tick norm the 6h default was silently producing.
 - **Composition**: `build_visual_prompt`'s Patch 3/4/5 list-join
   composition already generalizes to a fourth clause with no branch-count
   growth -- no further refactor needed.

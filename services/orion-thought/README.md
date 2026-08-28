@@ -431,7 +431,7 @@ Flags:
 | `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the self-study analysis context-seed woven into the prompt (Patch 5, design doc §16) |
 | `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` | `21600` | How stale that self-study analysis can be before it's treated as absent (6h -- these analyses fire on their own 6-72h cadence) |
 | `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the memory-crystallization context-seed woven into the prompt (Patch 6, design doc §17) |
-| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` | `21600` | How stale the latest active crystallization can be before it's treated as absent |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` | `604800` | How stale the latest active crystallization can be before it's treated as absent (7 days -- NOT self-study's 6h; a crystallized memory doesn't go stale on that clock. Covers all but one 10-day historical outlier; see settings.py's own comment for the reconciled live-data numbers) |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, reverie context-seed, persistence); one test

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Index, String, func
+from sqlalchemy import Column, DateTime, Float, Index, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from app.db import Base
 from uuid import uuid4
@@ -46,6 +46,9 @@ class BiometricsClusterSQL(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
 
+    # Envelope provenance, so a row can be traced back to the message that produced it.
+    correlation_id = Column(String, nullable=True)
+
     # Occurrence time (payload). Settlement ranges over THIS.
     observed_at = Column(DateTime(timezone=True), nullable=False)
     # Write time. Retention ages rows by THIS.
@@ -57,6 +60,11 @@ class BiometricsClusterSQL(Base):
     pdu_watts = Column(Float, nullable=True)
     chassis_watts = Column(Float, nullable=True)
     gpu_watts_total = Column(Float, nullable=True)
+    # Also a FLEET_SUM_KEYS power quantity (biometrics_pipeline.py). Hoisted for the same
+    # reason as the others: excluding CPU watts from a table indexed on "watts over a
+    # window" while including GPU watts would need a justification, and there isn't one.
+    cpu_watts_total = Column(Float, nullable=True)
+    # Float rather than Integer to match the payload's own Dict[str, float] typing.
     gpu_count = Column(Float, nullable=True)
 
     # Named to mirror the payload and BiometricsSummarySQL's own column.
@@ -89,4 +97,20 @@ class BiometricsClusterSQL(Base):
         Index("idx_orion_biometrics_cluster_observed_at", observed_at.desc()),
         # Retention's access pattern: rows older than a cutoff.
         Index("idx_orion_biometrics_cluster_created_at", created_at.desc()),
+        # IDEMPOTENCY, and a deliberate choice rather than an omission.
+        #
+        # The PK is a fresh uuid4 per insert and this model takes sess.merge(), so
+        # without this a redelivered envelope -- bus retry, consumer-group re-read,
+        # backlog replay after a restart -- writes a SECOND row with the same
+        # observed_at. For a table whose entire purpose is summing watts over a window,
+        # that is a correctness bug, not wasted disk. The two-clock design above exists
+        # precisely because backlog replay is a real scenario here.
+        #
+        # observed_at alone is the right key: one producer (orion-biometrics-hub)
+        # publishes this aggregate on a timer, so two rows sharing a microsecond
+        # timestamp are a replay, never two distinct observations. The constraint also
+        # activates _write_row's existing IntegrityError/23505 duplicate handling, which
+        # is otherwise dead code for this model -- a replay becomes a logged no-op
+        # instead of a silent double count.
+        UniqueConstraint("observed_at", name="uq_orion_biometrics_cluster_observed_at"),
     )

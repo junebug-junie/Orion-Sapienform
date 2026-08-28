@@ -1528,7 +1528,7 @@ def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
 
     measurements = out.get("measurements")
     if isinstance(measurements, dict):
-        for key in ("pdu_watts", "chassis_watts", "gpu_watts_total", "gpu_count"):
+        for key in ("pdu_watts", "chassis_watts", "gpu_watts_total", "cpu_watts_total", "gpu_count"):
             value = measurements.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[key] = float(value)

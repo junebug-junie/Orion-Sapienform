@@ -1244,3 +1244,34 @@ class TestTheCycleBudget:
         ), {k: v.effective_max_elapsed_sec for k, v in out.items()}
         # And it must differ from the configured per-table cap, or it is reporting nothing.
         assert out[names[0]].effective_max_elapsed_sec != 20.0
+
+
+def test_adding_a_table_cannot_silently_dilute_every_other_tables_share():
+    """Replaces a coupling that was lost when the budget tests were pinned to a fixture.
+
+    Before that change, `test_the_budget_is_split_fairly_not_first_come` ran the LIVE
+    registry against the real 45s budget. It was a crude tripwire, but it was the only
+    thing forcing whoever adds a table to look at the arithmetic -- and the arithmetic
+    does move: going from six tables to seven cut the per-table fair share from 7.5s to
+    6.43s, 14% off every existing table, while substrate_proposal_frames was measured at
+    8.21s during its own backfill and was already over the old share.
+
+    So this asserts the invariant directly instead. The next table addition should be a
+    decision with a number attached, not a silent dilution."""
+    from app import grammar_truth
+    from app.settings import get_settings
+
+    settings = get_settings()
+    budget = float(
+        getattr(settings, "grammar_retention_periodic_max_cycle_sec", 0.0) or 45.0
+    )
+    n = len(grammar_truth.GRAMMAR_RETENTION_TABLES)
+    fair_share = budget / n
+
+    assert n >= 1
+    assert fair_share >= 5.0, (
+        f"{n} retention tables against a {budget}s cycle budget leaves {fair_share:.2f}s "
+        "per table. Below ~5s a real backfill cannot finish a batch, so tables start "
+        "silently carrying debt forever. Raise the cycle budget or drop a table -- do "
+        "not just lower this floor."
+    )

@@ -269,6 +269,30 @@ numbers. `GET .../status` reports both `peak_deviation_pressure` and
 `sustained_load_pressure` on `last_tension_reason` so an operator can see
 which fact(s) actually drove a given outreach.
 
+**Daydreams, not only telemetry (2026-08-28).** Every other grounding lane
+above is an instrument reading, so an unprompted message could only ever be
+Orion narrating its own dials. `_fetch_recent_daydreams` adds the one lane
+that is not: the captions orion-thought's *reverie visual chain* writes to
+`reverie_visual_chain` (~1 row/600s — it generates an image from whatever
+Orion is currently thinking/noticing/remembering, then looks at what came
+out). The last **3 distinct** captions inside a **12h** window go into the
+prompt with a coarse relative age, explicitly framed as Orion's own so the
+generated text cannot thank Juniper for pictures she never sent.
+
+De-duplication is a Jaccard token overlap (`_DAYDREAM_SIMILARITY = 0.2`), not
+exact/prefix matching: consecutive captions re-describe one slowly-drifting
+image, and a prefix de-dupe measured live on 2026-08-28 left three
+near-identical "celestial map" lines in the top 3. At 0.2 the same 24h of
+captions yields 30 distinct themes and the drift is visible across days
+(Roman aqueducts on 2026-08-27 → celestial/star maps on 2026-08-28).
+
+Three columns on that table were checked and **deliberately not used** — all
+325 rows since the chain went live on 2026-08-25 have `theme_key = ''`,
+`ema_salience = 0.000`, and `terminal_reason = 'max_steps'`. They carry no
+information today; nothing here is built on them. Like `embodied_presence`,
+daydreams are enrichment only and are **not** part of `is_empty()`: having
+been daydreaming is never on its own a reason to interrupt Juniper.
+
 **Through the real unified turn, not a lookalike (2026-08-19).** Generation
 used to call `CortexGatewayClient.chat()` directly — a bare bus RPC to
 `orion-cortex-gateway` that never reached `orion-harness-governor` at all:

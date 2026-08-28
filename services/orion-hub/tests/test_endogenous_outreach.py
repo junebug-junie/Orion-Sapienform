@@ -12,10 +12,17 @@ import asyncio
 import pytest
 
 from scripts.endogenous_outreach import (
+    _DAYDREAM_SIMILARITY,
+    _MAX_DAYDREAM_CHARS,
     EndogenousOutreach,
     OutreachContext,
     OutreachGateInputs,
+    _clean_daydream,
+    _daydream_age_phrase,
+    _daydream_similarity,
+    _daydream_tokens,
     _fetch_embodied_presence,
+    _fetch_recent_daydreams,
     build_outreach_prompt,
     in_quiet_hours,
     is_pass_response,
@@ -162,6 +169,39 @@ def _install_fake_scripts_pg_engine(monkeypatch, engine=None):
     monkeypatch.setitem(sys.modules, "scripts.pg_engine", fake_module)
 
 
+def _install_fake_engine(monkeypatch, rows):
+    """Install a `scripts.pg_engine` whose engine returns `rows` from any
+    query, so the SQL-shaped fetches can be exercised without Postgres.
+
+    Mirrors the sqlalchemy surface those fetches actually touch:
+    `engine.connect()` as a context manager -> `.execute(...).mappings()
+    .all()`. `rows` are plain dicts, which is what `.mappings()` yields.
+    """
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return list(rows)
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *args, **kwargs):
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    _install_fake_scripts_pg_engine(monkeypatch, engine=_Engine())
+
+
 def test_fetch_embodied_presence_uses_configured_stream_id_and_shared_engine(monkeypatch) -> None:
     # Patches the exact global namespace `_fetch_embodied_presence` itself
     # closes over (via `__globals__`), not a fresh `import
@@ -195,13 +235,13 @@ def test_fetch_embodied_presence_uses_configured_stream_id_and_shared_engine(mon
     assert result == {"state": "present", "since_sec": 42.0, "subject": "juniper"}
 
 
-def test_gather_context_runs_its_three_fetches_concurrently(monkeypatch) -> None:
+def test_gather_context_runs_its_four_fetches_concurrently(monkeypatch) -> None:
     """Review finding, 2026-08-25: `_gather_context` used to await
     `_fetch_curiosity_summaries`/`_fetch_recent_turns`/`_fetch_embodied_
-    presence` one after another even though each is independent and
+    presence`/`_fetch_recent_daydreams` one after another even though each is independent and
     already dispatched via asyncio.to_thread -- wall time was their SUM,
-    not the slowest one. Three fakes that each sleep 60ms: sequential would
-    take ~180ms+, concurrent (asyncio.gather) should land close to 60ms.
+    not the slowest one. Four fakes that each sleep 60ms: sequential would
+    take ~240ms+, concurrent (asyncio.gather) should land close to 60ms.
     Generous 150ms ceiling to stay non-flaky under CI scheduling jitter
     while still being well under the sequential floor."""
     import time
@@ -230,6 +270,9 @@ def test_gather_context_runs_its_three_fetches_concurrently(monkeypatch) -> None
     monkeypatch.setitem(
         module_globals, "_fetch_embodied_presence", _sleepy("_fetch_embodied_presence", {"state": "present"})
     )
+    monkeypatch.setitem(
+        module_globals, "_fetch_recent_daydreams", _sleepy("_fetch_recent_daydreams", [(60.0, "a ring of light")])
+    )
     # ctx.presence (chat liveness, distinct from embodied_presence) is read
     # synchronously and not part of this timing assertion -- its own
     # `scripts.hub_presence.presence_snapshot()` call is unmocked here and
@@ -246,6 +289,7 @@ def test_gather_context_runs_its_three_fetches_concurrently(monkeypatch) -> None
     assert ctx.curiosity_summaries == ["c"]
     assert ctx.recent_turns == [("Juniper", "hi")]
     assert ctx.embodied_presence == {"state": "present"}
+    assert ctx.daydreams == [(60.0, "a ring of light")]
 
 
 def test_presence_alone_is_not_grounding() -> None:
@@ -1714,3 +1758,224 @@ def test_blocked_reason_lets_a_caller_skip_composing_a_whole_turn() -> None:
         _outreach(quiet_start_hour=0, quiet_end_hour=24).blocked_reason()
         == "quiet_hours"
     )
+
+
+# --------------------------------------------------------------------------
+# Reverie daydreams (visual-chain captions)
+# --------------------------------------------------------------------------
+
+
+def test_daydreams_alone_do_not_make_context_non_empty() -> None:
+    """Same rule embodied_presence already has: having been daydreaming is
+    never on its own a reason to interrupt Juniper. Asserted on is_empty()
+    directly, not only through build_outreach_prompt()'s empty string."""
+    ctx = OutreachContext(
+        curiosity_summaries=[],
+        recent_turns=[],
+        presence=None,
+        daydreams=[(120.0, "an ancient Roman aqueduct, its arches marching across a dry valley.")],
+    )
+    assert ctx.is_empty() is True
+    assert build_outreach_prompt(ctx) == ""
+
+
+def test_daydreams_render_with_ownership_framing_and_age() -> None:
+    """The ownership sentence is load-bearing, not decoration: without it a
+    bare list of image descriptions reads as something Juniper sent, and the
+    generated outreach thanks her for pictures she never shared."""
+    ctx = OutreachContext(
+        curiosity_summaries=["substrate.execution deviated for 6 straight reads"],
+        recent_turns=[],
+        presence=None,
+        daydreams=[
+            (1800.0, "a celestial map of the solar system, planets on concentric rings."),
+            (7200.0, "an ancient Roman aqueduct crossing a dry valley in low sun."),
+        ],
+    )
+    prompt = build_outreach_prompt(ctx)
+
+    assert "a celestial map of the solar system" in prompt
+    assert "an ancient Roman aqueduct" in prompt
+    assert "These are yours, not something Juniper showed you." in prompt
+    # Hand-computed ages: 1800s -> 30.0 min -> "about 30 minutes ago";
+    # 7200s -> 120.0 min -> 2.0h -> "about 2 hours ago".
+    assert "- about 30 minutes ago: a celestial map" in prompt
+    assert "- about 2 hours ago: an ancient Roman aqueduct" in prompt
+
+
+@pytest.mark.parametrize(
+    "age_sec, expected",
+    [
+        (0.0, "just now"),
+        (899.0, "just now"),  # 14.98 min, just under the 15-min boundary
+        (900.0, "about 20 minutes ago"),  # 15.0 min, half-UP at 10-min granularity
+        (1500.0, "about 30 minutes ago"),  # 25.0 min: half-EVEN would say 20 here
+        (2100.0, "about 40 minutes ago"),  # 35.0 min: half-EVEN would say 40 too
+        (5399.0, "about 90 minutes ago"),  # 89.98 min, still under the 90-min boundary
+        (5400.0, "about 2 hours ago"),  # 90.0 min -> 1.5h -> rounds to 2
+        (43200.0, "about 12 hours ago"),  # the window edge
+    ],
+)
+def test_daydream_age_phrase_boundaries(age_sec, expected) -> None:
+    assert _daydream_age_phrase(age_sec) == expected
+
+
+def test_clean_daydream_collapses_newlines_and_strips_caption_boilerplate() -> None:
+    """Live captions arrive multi-line (the captioner emits markdown lists),
+    which would blow the prompt's line-per-item shape apart."""
+    raw = "The image depicts a celestial map.\n\n1. **Sun**: the center.\n2. **Mars**: to the left of it."
+    cleaned = _clean_daydream(raw)
+    assert "\n" not in cleaned
+    assert cleaned.startswith("a celestial map.")
+    assert "**Sun**" in cleaned
+
+
+def test_clean_daydream_rejects_thin_captions() -> None:
+    """AGENTS.md §0A: a two-word caption is not a daydream worth speaking
+    from. 39 chars is one under _MIN_DAYDREAM_CHARS."""
+    assert _clean_daydream("a ring.") == ""
+    assert _clean_daydream(None) == ""
+    assert _clean_daydream("x" * 39) == ""
+    assert _clean_daydream("x" * 40) == "x" * 40
+
+
+def test_clean_daydream_truncates_at_a_sentence_boundary() -> None:
+    first = "a bright ring of light hanging in a dark, swirling field of dust."
+    rest = " " + ("The rings expand outward from the centre. " * 10)
+    cleaned = _clean_daydream(first + rest)
+    assert len(cleaned) <= _MAX_DAYDREAM_CHARS
+    assert cleaned.endswith(".")
+    assert "…" not in cleaned
+
+
+def test_clean_daydream_falls_back_to_ellipsis_when_no_usable_boundary() -> None:
+    """A caption whose only period lands before _MIN_DAYDREAM_CHARS must not
+    be truncated harder than the char budget asks for."""
+    raw = "A ring. " + ("dust and light swirling outward " * 20)
+    cleaned = _clean_daydream(raw)
+    assert len(cleaned) <= _MAX_DAYDREAM_CHARS + 1
+    assert cleaned.endswith("…")
+
+
+def test_daydream_similarity_collapses_a_slowly_drifting_image() -> None:
+    """The real de-dupe requirement, measured live 2026-08-28: consecutive
+    captions re-describe ONE drifting image, so exact/prefix matching keeps
+    three near-identical 'celestial map' lines. These two share enough
+    content words to exceed _DAYDREAM_SIMILARITY; the aqueduct does not."""
+    a = _daydream_tokens(
+        "a celestial map, likely from the 17th century, showing the positions of stars "
+        "and constellations. The map is divided into concentric circles."
+    )
+    b = _daydream_tokens(
+        "a celestial map, likely a star map, showing constellations with a bright star "
+        "surrounded by concentric circles."
+    )
+    c = _daydream_tokens(
+        "an ancient Roman aqueduct, characterized by its large arched stone structures "
+        "crossing a dry valley."
+    )
+    assert _daydream_similarity(a, b) > _DAYDREAM_SIMILARITY
+    assert _daydream_similarity(a, c) <= _DAYDREAM_SIMILARITY
+    # Symmetric, and a token set is never "different from" itself.
+    assert _daydream_similarity(a, b) == _daydream_similarity(b, a)
+    assert _daydream_similarity(a, a) == 1.0
+    assert _daydream_similarity(set(), set()) == 0.0
+
+
+def test_fetch_recent_daydreams_dedupes_and_caps(monkeypatch) -> None:
+    """Feeds the fetch a real-shaped result set (five rows, the first three
+    of which are one drifting image) and asserts it returns the distinct
+    ones, newest first, capped at _MAX_DAYDREAMS."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        {
+            "created_at": now - timedelta(seconds=60),
+            "description": "The image depicts a celestial map of the solar system, showing the "
+            "planets on concentric rings around the sun.",
+        },
+        {
+            "created_at": now - timedelta(seconds=660),
+            "description": "The image depicts a celestial map, showing the planets and the sun "
+            "on concentric rings around a bright centre.",
+        },
+        {
+            "created_at": now - timedelta(seconds=1260),
+            "description": "The image shows a celestial map of planets on rings around the sun, "
+            "with the solar system laid out in concentric circles.",
+        },
+        {
+            "created_at": now - timedelta(seconds=3600),
+            "description": "The image depicts an ancient Roman aqueduct, its large arched stone "
+            "spans crossing a dry valley under low sun.",
+        },
+        {
+            "created_at": now - timedelta(seconds=7200),
+            "description": "The image depicts a dense cluster of galaxies scattered through deep "
+            "black space, faint and unevenly spread.",
+        },
+    ]
+    _install_fake_engine(monkeypatch, rows)
+
+    result = _fetch_recent_daydreams()
+
+    assert len(result) == 3
+    ages = [age for age, _ in result]
+    assert ages == sorted(ages), "daydreams must come back newest first"
+    assert result[0][1].startswith("a celestial map of the solar system")
+    assert "Roman aqueduct" in result[1][1]
+    assert "cluster of galaxies" in result[2][1]
+
+
+def test_fetch_recent_daydreams_returns_empty_without_an_engine(monkeypatch) -> None:
+    _install_fake_scripts_pg_engine(monkeypatch, engine=None)
+    assert _fetch_recent_daydreams() == []
+
+
+def test_fetch_recent_daydreams_clamps_a_future_timestamp(monkeypatch) -> None:
+    """A row stamped slightly ahead of this container's clock must not render
+    as a negative age ("-2 minutes ago")."""
+    from datetime import datetime, timedelta, timezone
+
+    rows = [
+        {
+            "created_at": datetime.now(timezone.utc) + timedelta(seconds=120),
+            "description": "The image depicts a bright ring of light suspended in a dark, "
+            "slowly swirling field of dust.",
+        }
+    ]
+    _install_fake_engine(monkeypatch, rows)
+
+    result = _fetch_recent_daydreams()
+
+    assert len(result) == 1
+    assert result[0][0] == 0.0
+    assert _daydream_age_phrase(result[0][0]) == "just now"
+
+
+def test_fetch_recent_daydreams_skips_rows_with_no_usable_timestamp(monkeypatch) -> None:
+    rows = [
+        {"created_at": None, "description": "a bright ring of light in a dark swirling field of dust."},
+    ]
+    _install_fake_engine(monkeypatch, rows)
+    assert _fetch_recent_daydreams() == []
+
+
+def test_clean_daydream_does_not_truncate_at_a_markdown_enumerator() -> None:
+    """Live-verified regression, 2026-08-28: the captioner continues into a
+    markdown list, and a naive `rfind(". ")` cut at the list enumerator,
+    rendering the dangling tail "...The visible objects include: 1." into
+    Orion's prompt. The cut must land on the previous real sentence."""
+    raw = (
+        "The image depicts a celestial map of the solar system, showing the planets and "
+        "their positions relative to the sun. The map is circular and divided into "
+        "concentric rings, with the sun at the center. The visible objects include: "
+        "1. **Sun**: The largest and brightest object in the center. 2. **Planets**: "
+        "Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune."
+    )
+    cleaned = _clean_daydream(raw)
+
+    assert len(cleaned) <= _MAX_DAYDREAM_CHARS
+    assert cleaned.endswith("with the sun at the center.")
+    assert "include: 1." not in cleaned

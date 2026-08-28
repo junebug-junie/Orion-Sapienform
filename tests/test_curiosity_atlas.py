@@ -367,3 +367,84 @@ def test_the_schedule_keys_are_imported_from_the_loop_that_writes_them() -> None
     ]
     offenders = [x for x in literals if "orion:curiosity:" in x]
     assert not offenders, f"a key name was retyped in code: {offenders}"
+
+
+# --- the day boundary -------------------------------------------------------
+
+
+def _routes():
+    import importlib.util
+    from pathlib import Path
+
+    path = (Path(__file__).resolve().parents[1] / "services" / "orion-hub"
+            / "scripts" / "curiosity_routes.py")
+    spec = importlib.util.spec_from_file_location("_curiosity_routes_tz", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _ms(iso: str) -> int:
+    from datetime import datetime, timezone
+
+    d = datetime.fromisoformat(iso)
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return int(d.timestamp() * 1000)
+
+
+def test_a_run_is_counted_against_the_zone_the_counter_keys_on() -> None:
+    """The live case, 2026-08-27 20:33 MDT: the host clock already said the
+    28th while Juniper's date was still the 27th and the counter key was
+    `orion:curiosity:count:2026-08-27`. Counting in UTC puts this run on the
+    wrong day and the page reports a run that vanished."""
+    runs = [{"run_id": "r", "written_at": _ms("2026-08-28T02:22:00+00:00"),
+             "total_added": 3}]
+    assert _routes()._wrote_on(runs, "2026-08-27", "America/Denver") == 1
+    assert _routes()._wrote_on(runs, "2026-08-28", "UTC") == 1
+    assert _routes()._wrote_on(runs, "2026-08-27", "UTC") == 0
+
+
+def test_an_undated_run_that_wrote_still_counts_as_having_written() -> None:
+    """Its only timestamp comes from a `:TurnOutcome`, so a turn killed
+    mid-write has none. Calling that "not today" reported it as traceless when
+    it plainly left a trace."""
+    runs = [{"run_id": "killed", "written_at": None, "total_added": 3}]
+    assert _routes()._wrote_on(runs, "2026-08-27", "America/Denver") == 1
+
+
+def test_a_run_that_wrote_nothing_is_never_counted() -> None:
+    runs = [{"run_id": "empty", "written_at": None, "total_added": 0}]
+    assert _routes()._wrote_on(runs, "2026-08-27", "America/Denver") == 0
+
+
+def test_no_local_date_reads_as_unknown_not_zero() -> None:
+    """None must reach the page as None. Zero would fire the "wrote nothing"
+    alarm on every load during a Redis outage that has nothing to do with
+    Orion."""
+    runs = [{"run_id": "r", "written_at": _ms("2026-08-27T10:00:00+00:00"),
+             "total_added": 1}]
+    assert _routes()._wrote_on(runs, None, "America/Denver") is None
+
+
+def test_an_unknown_zone_falls_back_rather_than_raising() -> None:
+    runs = [{"run_id": "r", "written_at": _ms("2026-08-27T10:00:00+00:00"),
+             "total_added": 1}]
+    assert _routes()._wrote_on(runs, "2026-08-27", "Not/AZone") == 1
+
+
+def test_an_iso_written_at_is_parsed_rather_than_read_as_missing() -> None:
+    """Run `32b42392f495` wrote an ISO string where the prompt asks for
+    `timestamp()`. Reading that as missing labelled a run that HAD written a
+    :TurnOutcome as "died before writing an outcome" — Juniper caught it in the
+    rendered page — and then let the undated run mask a genuinely traceless
+    one."""
+    from orion.curiosity.atlas import _stamp_ms
+
+    assert _stamp_ms("2026-08-26T07:47:40.432241+00:00") == _ms(
+        "2026-08-26T07:47:40.432241+00:00")
+    assert _stamp_ms(1787840568235) == 1787840568235
+    assert _stamp_ms("1787840568235") == 1787840568235
+    assert _stamp_ms(None) is None
+    assert _stamp_ms("") is None
+    assert _stamp_ms("not a date") is None

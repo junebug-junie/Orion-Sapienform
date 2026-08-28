@@ -1187,6 +1187,48 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
 # gone. That is inert -- reducers key on grammar_events and never join grammar_traces, and
 # the Atlas keys on grammar_traces -- but it is the real shape of the window, not the
 # microsecond one this ordering controls.
+def apply_biometrics_cluster_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for orion_biometrics_cluster.
+
+    Bounded from the first commit that creates the table, deliberately. Every unbounded
+    table in this service became a problem later rather than never -- see
+    apply_substrate_proposal_frames_retention's own note about reaching 474,230 rows and
+    1,758 MB with nothing to stop it. This one publishes roughly every 30s (~2,880
+    rows/day), so 30 days is on the order of 86k small rows.
+
+    Ages rows by `created_at` (write time), NOT `observed_at` (occurrence time). Those
+    are two different clocks on this table and the distinction is real: a bus backlog
+    replay writes old observations at a new wall time. Retention is a storage bound, so
+    it belongs on when the row landed. Settlement queries range over `observed_at`.
+
+    No cursor floor. Unlike the substrate tables, nothing reaches back into this table by
+    id from a later pipeline stage -- it is a terminal aggregate, read by time range.
+    """
+    settings = get_settings()
+    return _apply_bounded_table_retention(
+        engine=default_engine,
+        table="orion_biometrics_cluster",
+        id_column="id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+
+
 GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     ("grammar_events", apply_grammar_events_retention),
     ("grammar_edges", apply_grammar_edges_retention),
@@ -1196,6 +1238,9 @@ GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     # Independent of the grammar tables above -- different engine, different floor, no
     # ordering relationship with them. Placed last only because it is newest.
     ("substrate_proposal_frames", apply_substrate_proposal_frames_retention),
+    # Fleet power history. Not a grammar lane either -- kept here because this is now the
+    # only retention path in the service (see run_one_retention_cycle's docstring).
+    ("orion_biometrics_cluster", apply_biometrics_cluster_retention),
 )
 
 

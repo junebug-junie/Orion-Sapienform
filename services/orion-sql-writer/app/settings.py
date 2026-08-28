@@ -30,6 +30,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "dream.result.v1": "Dream",
     "biometrics.telemetry": "BiometricsTelemetry",
     "biometrics.summary.v1": "BiometricsSummarySQL",
+    "biometrics.cluster.v1": "BiometricsClusterSQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
@@ -137,6 +138,7 @@ class Settings(BaseSettings):
             "orion:dream:log",
             "orion:telemetry:biometrics",
             "orion:biometrics:summary",
+            "orion:biometrics:cluster",
             "orion:biometrics:induction",
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -340,6 +342,13 @@ class Settings(BaseSettings):
     # are TOAST (1,471 MB of 1,760 MB), so pruning frees TOAST chunks, not heap pages.
     substrate_proposal_frames_retention_days: int = Field(
         10, alias="SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS"
+    )
+
+    # Fleet power history for orion_biometrics_cluster. ~2,880 rows/day at the ~30s
+    # publish cadence, so 30 days is ~86k small rows. Bounded from the table's first
+    # commit rather than after it becomes a problem.
+    biometrics_cluster_retention_days: int = Field(
+        30, alias="BIOMETRICS_CLUSTER_RETENTION_DAYS"
     )
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).

@@ -972,6 +972,20 @@ def test_the_grammar_cursor_floor_also_normalises_a_naive_timestamp():
     assert floor < datetime.now(timezone.utc)  # the comparison the caller makes
 
 
+# Six named tables, fixed. The budget tests assert exact fair-share arithmetic
+# (45.0 / 6, and the [3.0, 3.75, 5.0, 7.5, 15.0] cascade after a first-table overrun),
+# so they need a stable divisor. The first entry keeps its real name because those tests
+# drive an overrun through `costs={"grammar_events": 30.0}`.
+BUDGET_FIXTURE_TABLES = (
+    "grammar_events",
+    "fixture_table_2",
+    "fixture_table_3",
+    "fixture_table_4",
+    "fixture_table_5",
+    "fixture_table_6",
+)
+
+
 class TestTheCycleBudget:
     """`max_elapsed_sec` bounds one table. Nothing bounded the whole cycle.
 
@@ -982,10 +996,17 @@ class TestTheCycleBudget:
     """
 
     @staticmethod
-    def _cycle(monkeypatch, *, costs, **kwargs):
+    def _cycle(monkeypatch, *, costs, tables=None, **kwargs):
         """Run a real cycle with fake per-table work of known duration.
 
         Returns [(table, elapsed_cap_it_was_given), ...] in call order.
+
+        `tables` defaults to the live GRAMMAR_RETENTION_TABLES. The budget-arithmetic
+        tests below pass BUDGET_FIXTURE_TABLES instead, because what they assert is how
+        the splitter divides a cycle -- not how many tables the service happens to
+        manage today. Reading the live registry there made every one of them a tripwire
+        that fired when orion_biometrics_cluster was added, which is a false failure:
+        the algorithm was unchanged and correct.
         """
         calls = []
         clock = {"t": 0.0}
@@ -1004,7 +1025,9 @@ class TestTheCycleBudget:
                 return GrammarRetentionState()
             return fn
 
-        tables = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        tables = list(tables) if tables is not None else [
+            t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES
+        ]
         monkeypatch.setattr(
             grammar_truth, "GRAMMAR_RETENTION_TABLES",
             tuple((t, make(t)) for t in tables),
@@ -1032,7 +1055,7 @@ class TestTheCycleBudget:
         reads as healthy in the logs, because grammar_events' own numbers look fine.
         """
         calls = self._cycle(monkeypatch, costs={}, max_elapsed_sec=20.0,
-                            max_cycle_elapsed_sec=45.0)
+                            max_cycle_elapsed_sec=45.0, tables=BUDGET_FIXTURE_TABLES)
         n = len(calls)
         assert n == 6, [t for t, _ in calls]
         # First table may claim at most its fair share, never the whole budget.
@@ -1057,6 +1080,7 @@ class TestTheCycleBudget:
             costs={"grammar_events": 30.0},
             max_elapsed_sec=20.0,
             max_cycle_elapsed_sec=45.0,
+            tables=BUDGET_FIXTURE_TABLES,
         )
         assert len(calls) == 6, calls
         assert calls[0][0] == "grammar_events"
@@ -1075,6 +1099,7 @@ class TestTheCycleBudget:
                 costs={"grammar_events": 100.0},
                 max_elapsed_sec=20.0,
                 max_cycle_elapsed_sec=45.0,
+                tables=BUDGET_FIXTURE_TABLES,
             )
         assert len(calls) == 1, calls
         assert caplog.text.count("grammar_retention_cycle_budget_exhausted") == 5
@@ -1154,7 +1179,7 @@ class TestTheCycleBudget:
                 return GrammarRetentionState()
             return fn
 
-        names = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        names = list(BUDGET_FIXTURE_TABLES)
         monkeypatch.setattr(
             grammar_truth, "GRAMMAR_RETENTION_TABLES",
             tuple((t, make(t)) for t in names),
@@ -1178,7 +1203,7 @@ class TestTheCycleBudget:
         """Getting this backwards turns a config typo into silently-disabled retention whose
         only symptom is a WARNING per table per minute that reads like a transient squeeze."""
         calls = self._cycle(monkeypatch, costs={}, max_elapsed_sec=20.0,
-                            max_cycle_elapsed_sec=budget)
+                            max_cycle_elapsed_sec=budget, tables=BUDGET_FIXTURE_TABLES)
         assert len(calls) == 6, calls
         assert {cap for _, cap in calls} == {20.0}
 
@@ -1200,7 +1225,7 @@ class TestTheCycleBudget:
                 return GrammarRetentionState()
             return fn
 
-        names = [t for t, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
+        names = list(BUDGET_FIXTURE_TABLES)
         monkeypatch.setattr(
             grammar_truth, "GRAMMAR_RETENTION_TABLES",
             tuple((t, make(t)) for t in names),

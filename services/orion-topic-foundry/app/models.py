@@ -21,8 +21,41 @@ class DatasetSpec(BaseModel):
 
 
 class WindowingSpec(BaseModel):
-    block_mode: Literal["turn_pairs", "triads", "rows"] = "turn_pairs"
-    include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
+    # "rows" (one document per unit) is the default as of 2026-08-28. It used
+    # to be "turn_pairs", which -- on a source table whose every row already
+    # holds a full prompt+response exchange -- paired two *complete exchanges*
+    # and labelled one "User:" and the other "Assistant:", injecting two false
+    # role labels into the text that then got embedded. See
+    # docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
+    block_mode: Literal["turn_pairs", "triads", "rows"] = "rows"
+    # Empty, not ["user", "assistant"]. This filter was inert for years (see
+    # windowing._role_of), so nothing depended on the old literal -- but once
+    # speakers became real it turned into a trap: a spec with real
+    # column_speakers plus block_mode="turn_pairs" would match neither speaker,
+    # drop every block, and fail training with "No documents available".
+    # Failing open is the safe default for a filter that can finally fire.
+    include_roles: List[str] = Field(default_factory=list)
+    # Emit one document per (row, text column) instead of concatenating every
+    # text column of a row into one blob. A prompt and its response are two
+    # different speech acts; fusing them averages both into a single vector
+    # that represents neither whenever they diverge in topic. Splitting also
+    # makes the speaker knowable per document (see column_speakers).
+    #
+    # Defaults FALSE despite being the behavior we want, because a model row
+    # freezes its windowing_spec at creation and runs.py rehydrates it with
+    # WindowingSpec(**model_row["windowing_spec"]) -- rows written before this
+    # field existed have no key for it, so a True default would silently
+    # rewrite how every pre-existing model builds documents, with no name
+    # change, no fingerprint change and no warning. That is the exact drift
+    # this patch adds windowing to the model fingerprint to prevent (review
+    # finding, 2026-08-28). Callers that want the split say so explicitly;
+    # orion-hub does.
+    split_text_columns: bool = False
+    # Maps a dataset text column to the speaker who authored it, e.g.
+    # {"prompt": "juniper", "response": "orion"}. This is recorded metadata,
+    # not inference -- the column IS the speaker. Empty means "unknown", and
+    # unknown speakers are simply omitted rather than guessed.
+    column_speakers: Dict[str, str] = Field(default_factory=dict)
     segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"
     semantic_split_threshold: float = 0.75
     confirm_edges_k: int = 2

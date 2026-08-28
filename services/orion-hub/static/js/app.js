@@ -2206,6 +2206,14 @@ document.addEventListener("DOMContentLoaded", () => {
   function buildWindowingSpec() {
     return {
       block_mode: tsBlockMode?.value || "turn_pairs",
+      // Pinned explicitly rather than inherited from the server default.
+      // Topic Studio has no control for column splitting yet, and leaving
+      // this unset would let a WindowingSpec default change silently alter
+      // what a UI-driven Preview/Train builds (review finding, 2026-08-28).
+      // Splitting is currently driven by the Hub scheduler's own spec; see
+      // docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md
+      // for the follow-up that surfaces it here.
+      split_text_columns: false,
       segmentation_mode: tsSegmentationMode?.value || "time_gap",
       time_gap_seconds: Number(tsTimeGap?.value || 900),
       max_window_seconds: Number(tsMaxWindow?.value || 7200),

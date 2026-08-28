@@ -3,11 +3,48 @@
 ## Windowing v2
 Topic Foundry now exposes explicit windowing modes that are persisted with each run:
 
-- `turn_pairs`: pairs rows into two-turn windows.
+- `rows`: one document per unit. **The default since 2026-08-28.**
+- `turn_pairs`: pairs units into two-turn windows. With `split_text_columns`
+  on, a pair is one row's own prompt+response; with it off, two consecutive
+  rows. Pairs never straddle a row boundary in split mode.
 - `fixed_k_rows`: fixed-size windows (`fixed_k_rows`) with optional `fixed_k_rows_step` stride.
 - `time_gap`: windows split when `time_gap_seconds` is exceeded.
 - `conversation_bound`: never cross a conversation boundary column.
 - `conversation_bound_then_time_gap`: split by boundary, then apply time-gap chunking.
+
+### Column splitting and speakers (2026-08-28)
+
+Two windowing fields control how a row becomes documents, and are part of the
+model's frozen `windowing_spec` (and of the model-name fingerprint, so changing
+them always mints a new model rather than silently retraining an existing one):
+
+- `split_text_columns` (default `false`): emit one document per
+  `(row, text column)` instead of concatenating a row's text columns into one
+  blob. A prompt and its response are two different speech acts; fusing them
+  averages both into a single vector that represents neither whenever they
+  diverge in topic.
+- `column_speakers` (default `{}`): maps a text column to the speaker who
+  authored it, e.g. `{"prompt": "juniper", "response": "orion"}`. This is
+  recorded metadata, not inference -- the column *is* the speaker.
+
+The resolved speakers are carried on each segment's
+`provenance.speakers` (and mirrored into `documents.jsonl`), **never** written
+into the document text. A speaker label inside the text gets embedded and
+tf-idf'd along with the content: on a corpus split roughly in half by speaker
+it is a near-perfect high-IDF discriminator, so the clusterer can end up
+grouping by who was talking rather than what was said. Consumers that need the
+speaker read it from provenance.
+
+`include_roles` filters on these speakers. It defaults to `[]` (no filtering);
+setting it to values that match no speaker drops every block and fails training
+with "No documents available".
+
+Defaults are deliberately the *old* behavior (`split_text_columns=false`,
+`include_roles=[]`) because a model row freezes its `windowing_spec` at
+creation and rows written before these fields existed have no key for them --
+a non-conservative default would silently change how every pre-existing model
+builds documents. Callers that want splitting say so explicitly; `orion-hub`'s
+scheduler does.
 
 ### Boundary configuration (dataset-level)
 Datasets can optionally declare a `boundary_column` (and `boundary_strategy="column"`). These are validated

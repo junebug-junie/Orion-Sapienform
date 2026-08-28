@@ -791,6 +791,86 @@ def load_latest_self_study_reflection(
         return None
 
 
+# Cap on the crystallization summary handed into a diffusion prompt --
+# same 400 self_study uses (§ cap-all-collections).
+MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 400
+
+
+def load_latest_memory_crystallization(
+    *, char_limit: int | None = None, max_age_sec: float | None = None
+) -> str | None:
+    """Most recent active memory crystallization's `summary` -- a third
+    context-seed for the visual chain (design doc §17), sourced from the
+    Recall system's `memory_crystallizations` table.
+
+    Deliberately unfiltered by content (verbatim `summary`, whatever it
+    holds) -- an explicit design decision (Juniper, 2026-08-27), reversing
+    Patch 5's declined-candidate call on this same table. The reversal
+    rests on one fact, not a change of policy: the only consumer of this
+    function's output is this service's own `reverie_visual_chain` row via
+    `reverie_routes.py`'s `/api/reverie/visual/recent`, which has no
+    `ports:` mapping (services/orion-hub/docker-compose.yml, confirmed live
+    2026-08-27) and no auth/multi-user surface -- Juniper is the only
+    possible viewer, and she is also the original source of everything
+    this table holds. There is no second audience this function's own
+    content filtering could ever have been protecting; Patch 5's privacy
+    concern assumed one that does not exist. See design doc §17 for the
+    full writeup.
+
+    Filtered to `status = 'active'` -- a lifecycle filter, not a content
+    one: `status='rejected'` rows are stances the crystallization
+    pipeline's own governor already disavowed, and `status='proposed'`
+    rows aren't accepted yet; surfacing either into a diffusion prompt as
+    if it were live self-knowledge would misrepresent what Orion's own
+    memory system currently holds.
+
+    `char_limit`/`max_age_sec` follow the other two context-seed readers'
+    contract exactly (None = MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS /
+    unbounded).
+
+    Read-only, best-effort: None on any error, empty table, or nothing
+    `status='active'` -- degrades exactly like an absent `context_text`
+    does (visual_chain.build_visual_prompt).
+    """
+    try:
+        from sqlalchemy import text
+
+        from orion.cognition.compactor.truncate import truncate_at_word_boundary
+
+        where_sql = "status = 'active' AND summary <> ''"
+        params: dict[str, Any] = {}
+        if max_age_sec is not None:
+            where_sql += " AND created_at > now() - make_interval(secs => :max_age_sec)"
+            params["max_age_sec"] = float(max_age_sec)
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        f"SELECT summary FROM memory_crystallizations WHERE {where_sql} "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    params,
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        value = str(row.get("summary") or "").strip()
+        if not value:
+            return None
+        limit_chars = (
+            MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS if char_limit is None else char_limit
+        )
+        trimmed, _truncated = truncate_at_word_boundary(value, limit_chars)
+        return trimmed
+    except Exception as exc:
+        logger.debug("memory crystallization context-seed load failed: %s", exc)
+        return None
+
+
 def persist_compaction_request(request) -> bool:
     """Enqueue one compaction request (Phase E). Never raises; idempotent."""
     try:

@@ -88,6 +88,7 @@ async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
+    monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
 
     def fake_generate(prompt, **kw):
         if not scenario.generate_ok:

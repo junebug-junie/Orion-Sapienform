@@ -835,3 +835,125 @@ def test_load_latest_self_study_reflection_never_raises_on_db_failure() -> None:
         assert store.load_latest_self_study_reflection() is None
     finally:
         monkeypatch.undo()
+
+
+# --- load_latest_memory_crystallization: Patch 6 third context-seed --------
+#
+# Reverses Patch 5's declined call on this same table -- see the function's
+# own docstring for why. `status='active'` is the one real filter this
+# reader applies, a pipeline-lifecycle check (has the crystallization
+# governor accepted this stance), not a content filter -- asserted directly
+# below so a future edit that widens the filter or drops it silently fails
+# this test, not just "query still returns a row".
+
+
+def test_load_latest_memory_crystallization_returns_real_summary() -> None:
+    store = _fresh_store()
+    summary = "Orion and Juniper talked through the week's mesh work."
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"summary": summary}))
+    try:
+        assert store.load_latest_memory_crystallization() == summary
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_memory_crystallization_query_filters_to_active_status() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"summary": "x"}, captured)
+    )
+    try:
+        store.load_latest_memory_crystallization()
+    finally:
+        monkeypatch.undo()
+
+    stmt = captured["stmt"]
+    assert "memory_crystallizations" in stmt
+    assert "status = 'active'" in stmt
+    # Deliberately no source_ref/allowlist clause -- unlike self-study, this
+    # reader is not content-filtered (see the function's own docstring).
+    assert "source_ref" not in stmt
+
+
+def test_load_latest_memory_crystallization_char_limit_override() -> None:
+    store = _fresh_store()
+    long_summary = ("shared memory " * 80).strip()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"summary": long_summary}))
+    try:
+        value = store.load_latest_memory_crystallization(char_limit=20)
+    finally:
+        monkeypatch.undo()
+
+    assert value is not None
+    assert len(value) <= 21  # +1 for the ellipsis char, not the 400 default
+
+
+def test_load_latest_memory_crystallization_max_age_sec_adds_and_binds_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"summary": "a real memory"}, captured)
+    )
+    try:
+        value = store.load_latest_memory_crystallization(max_age_sec=21600.0)
+    finally:
+        monkeypatch.undo()
+
+    assert value == "a real memory"
+    assert "make_interval" in captured["stmt"]
+    assert captured["params"]["max_age_sec"] == 21600.0
+
+
+def test_load_latest_memory_crystallization_no_max_age_sec_omits_the_clause() -> None:
+    store = _fresh_store()
+    captured: dict = {}
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        store, "_get_engine", lambda: _body_capturing_engine({"summary": "a real memory"}, captured)
+    )
+    try:
+        store.load_latest_memory_crystallization()  # max_age_sec=None, default
+    finally:
+        monkeypatch.undo()
+
+    assert "make_interval" not in captured["stmt"]
+
+
+def test_load_latest_memory_crystallization_none_on_empty_table() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result(None))
+    try:
+        assert store.load_latest_memory_crystallization() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_memory_crystallization_none_on_empty_summary() -> None:
+    store = _fresh_store()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _body_row_result({"summary": "   "}))
+    try:
+        assert store.load_latest_memory_crystallization() is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_load_latest_memory_crystallization_never_raises_on_db_failure() -> None:
+    store = _fresh_store()
+
+    class _FakeEngine:
+        def connect(self):
+            raise RuntimeError("connection refused")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
+    try:
+        assert store.load_latest_memory_crystallization() is None
+    finally:
+        monkeypatch.undo()

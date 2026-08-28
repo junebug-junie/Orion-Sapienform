@@ -62,6 +62,17 @@ those four producers -- `source_kind='self_study'` also covers a sibling
 free-form "Curiosity" reflection confirmed live to quote sensitive personal
 content, which this allowlist deliberately excludes.
 
+Patch 6 (design doc §17): a third context-seed, `memory_text` --
+`store.load_latest_memory_crystallization`, real shared-life content from
+the Recall system's `memory_crystallizations` table. Reverses Patch 5's
+declined call on this same table, on new evidence rather than a policy
+change: the only consumer of this reader's output is this service's own
+`reverie_visual_chain` row (surfaced via `reverie_routes.py`, which has no
+external port mapping and no auth/multi-user surface), so there is no
+second audience for that content beyond the one person who is also its
+original source. See `store.load_latest_memory_crystallization`'s own
+docstring for the full writeup.
+
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
 `prior_description`), not a multi-step loop within one run like the text
@@ -117,6 +128,7 @@ from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPaylo
 
 from .settings import settings
 from .store import (
+    load_latest_memory_crystallization,
     load_latest_reverie_interpretation,
     load_latest_self_study_reflection,
     load_latest_visual_chain_continuity_state,
@@ -155,30 +167,32 @@ def build_visual_prompt(
     prior_description: str | None,
     context_text: str | None = None,
     self_study_text: str | None = None,
+    memory_text: str | None = None,
 ) -> str:
     """The diffusion prompt for one run. See module docstring for scope.
 
-    Three independent inputs, each optional: `prior_description` (visual
+    Four independent inputs, each optional: `prior_description` (visual
     continuity -- the previous run's own re-observed caption), `context_text`
     (Patch 3 -- Orion's own most recent real reverie-thought interpretation),
-    and `self_study_text` (Patch 5 -- a real quantified self-study
-    observation). Continuity keeps the image chain visually coherent
-    frame-to-frame; the two context-seeds keep it grounded in what Orion is
-    actually narrating/observing instead of drifting into purely
+    `self_study_text` (Patch 5 -- a real quantified self-study observation),
+    and `memory_text` (Patch 6 -- a real shared-life memory crystallization).
+    Continuity keeps the image chain visually coherent frame-to-frame; the
+    three context-seeds keep it grounded in what Orion is actually
+    narrating/observing/remembering instead of drifting into purely
     self-referential imagery with nothing anchoring it to a real cognitive
-    state. Falls back to DEFAULT_SEED_PROMPT only when all three are empty.
+    state. Falls back to DEFAULT_SEED_PROMPT only when all four are empty.
 
-    Composed by joining whichever clauses are non-empty (review-motivated
-    refactor from Patch 3/4's explicit if/elif branches -- a third optional
-    input would have meant 8 branches by that pattern). Output is
-    byte-identical to the old branches for every combination that existed
-    before this patch (verified by test_visual_chain.py's exact-string
-    assertions) -- this only adds a third clause, never changes the other
-    two's wording.
+    Composed by joining whichever clauses are non-empty (list-join
+    composition, not if/elif branches -- a fourth optional input would have
+    meant 16 branches by that pattern). Output is byte-identical to the old
+    branches for every combination that existed before Patch 6 (verified by
+    test_visual_chain.py's exact-string assertions) -- this only adds a
+    fourth clause, never changes the other three's wording.
     """
     prior = (prior_description or "").strip()
     context = (context_text or "").strip()
     self_study = (self_study_text or "").strip()
+    memory = (memory_text or "").strip()
     clauses = []
     if prior:
         clauses.append(prior)
@@ -186,6 +200,8 @@ def build_visual_prompt(
         clauses.append(f"Orion is currently thinking: {context}")
     if self_study:
         clauses.append(f"Orion recently noticed: {self_study}")
+    if memory:
+        clauses.append(f"Orion remembers: {memory}")
     if not clauses:
         return DEFAULT_SEED_PROMPT
     style = (
@@ -365,7 +381,7 @@ async def run_visual_chain_once(
 
     async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
                                   prior_description: str | None, context_text: str | None,
-                                  self_study_text: str | None,
+                                  self_study_text: str | None, memory_text: str | None,
                                   continuity_streak: int, continuity_reset: bool
                                   ) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
@@ -378,6 +394,7 @@ async def run_visual_chain_once(
                 "prompt": prompt,
                 "context_text": context_text,
                 "self_study_text": self_study_text,
+                "memory_text": memory_text,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "error": str(error),
@@ -389,7 +406,7 @@ async def run_visual_chain_once(
 
     async with _visual_chain_lock:
         chain_id = str(uuid4())
-        # Three independent reads (different tables, no data dependency) --
+        # Four independent reads (different tables, no data dependency) --
         # concurrent so the cost is max() of the round trips, not sum()
         # (review finding: this function already makes exactly this
         # argument a few lines below for store_visual_artifact/
@@ -402,6 +419,7 @@ async def run_visual_chain_once(
             (prior_description, continuity_streak),
             context_text,
             self_study_text,
+            memory_text,
         ) = await asyncio.gather(
             asyncio.to_thread(load_latest_visual_chain_continuity_state),
             asyncio.to_thread(
@@ -413,6 +431,11 @@ async def run_visual_chain_once(
                 load_latest_self_study_reflection,
                 char_limit=settings.self_study_context_char_limit,
                 max_age_sec=settings.self_study_context_max_age_sec,
+            ),
+            asyncio.to_thread(
+                load_latest_memory_crystallization,
+                char_limit=settings.memory_crystallization_context_char_limit,
+                max_age_sec=settings.memory_crystallization_context_max_age_sec,
             ),
         )
         # Patch 4 (module docstring): cap how many consecutive runs may
@@ -438,7 +461,7 @@ async def run_visual_chain_once(
         # before resetting again). A non-reset run keeps the pre-Patch-4
         # behavior unchanged: carry the old value forward on any failure.
         continuity_fallback = None if continuity_reset else prior_description
-        prompt = build_visual_prompt(effective_prior, context_text, self_study_text)
+        prompt = build_visual_prompt(effective_prior, context_text, self_study_text, memory_text)
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -450,7 +473,7 @@ async def run_visual_chain_once(
         except Exception as exc:
             return await _generation_failed(
                 chain_id, exc, prompt, continuity_fallback, context_text, self_study_text,
-                continuity_streak, continuity_reset,
+                memory_text, continuity_streak, continuity_reset,
             )
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
@@ -477,7 +500,7 @@ async def run_visual_chain_once(
         if isinstance(store_result, BaseException):
             return await _generation_failed(
                 chain_id, store_result, prompt, continuity_fallback, context_text, self_study_text,
-                continuity_streak, continuity_reset,
+                memory_text, continuity_streak, continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
 
@@ -512,6 +535,7 @@ async def run_visual_chain_once(
                 "prompt": prompt,
                 "context_text": context_text,
                 "self_study_text": self_study_text,
+                "memory_text": memory_text,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "artifact_sha256": stored.sha256,

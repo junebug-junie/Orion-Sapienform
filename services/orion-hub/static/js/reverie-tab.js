@@ -87,13 +87,13 @@
       desc:
         "The previous run's own caption (reverie_visual_chain.prior_description), Orion's own " +
         "most recent real reverie-thought interpretation (context_text), a real quantified " +
-        "self-study observation (self_study_text), and how many consecutive runs have used " +
-        "continuity so far (continuity_streak).",
+        "self-study observation (self_study_text), a real shared-life memory (memory_text), " +
+        "and how many consecutive runs have used continuity so far (continuity_streak).",
       detail:
-        'Fixed seed only when NONE of prior_description/context_text/self_study_text exist ' +
-        '(fresh install, no history yet): "a calm orion, soft abstract light, dreaming". Every ' +
-        "later run reads all four from Postgres, concurrently.",
-      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation, load_latest_self_study_reflection",
+        'Fixed seed only when NONE of prior_description/context_text/self_study_text/memory_text ' +
+        'exist (fresh install, no history yet): "a calm orion, soft abstract light, dreaming". ' +
+        "Every later run reads all five from Postgres, concurrently.",
+      file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation, load_latest_self_study_reflection, load_latest_memory_crystallization",
     },
     {
       id: "continuity-cap",
@@ -114,18 +114,19 @@
       id: "prompt",
       title: "3 · Prompt construction",
       desc:
-        "The (possibly reset) continuity input and BOTH context-seeds are blended into one " +
-        "prompt text -- continuity keeps the image chain visually coherent frame-to-frame when " +
-        "allowed to run, the context-seeds keep it grounded in what Orion is actually " +
-        "narrating and observing.",
+        "The (possibly reset) continuity input and all THREE context-seeds are blended into " +
+        "one prompt text -- continuity keeps the image chain visually coherent frame-to-frame " +
+        "when allowed to run, the context-seeds keep it grounded in what Orion is actually " +
+        "narrating, observing, and remembering.",
       detail:
         "Patch 3 (shipped): a deliberately narrow first context-seed slice -- Orion's own " +
         "reverie-thought interpretation, already surfaced by this tab's Text sub-view (no new " +
         "privacy surface). Patch 5 (shipped): a second, richer context-seed from the self-study " +
-        "analysis system's real quantified self-observation -- live-checked safe before being " +
-        "wired in (see this stage's own detail on the sibling candidates that were declined). " +
-        "Raw chat/dream sources per the design doc's full list are still a separate, later " +
-        "change. Falls back to the fixed seed string only when all three inputs are empty.",
+        "analysis system's real quantified self-observation. Patch 6 (shipped): a third, from " +
+        "the Recall system's memory_crystallizations table -- real shared-life content, " +
+        "unfiltered by content (this route has no external audience beyond its one viewer, " +
+        "who is also that content's original source). Falls back to the fixed seed string only " +
+        "when all four inputs are empty.",
       file: "services/orion-thought/app/visual_chain.py :: build_visual_prompt",
     },
     {
@@ -272,6 +273,12 @@
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.self_study_text)}</div>
          </div>`
       : "";
+    const memoryBlock = chain.memory_text
+      ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">Memory (shared-life crystallization)</div>
+           <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.memory_text)}</div>
+         </div>`
+      : "";
     const continuityLabel = chain.continuity_reset
       ? "Prompt used (continuity RESET this run -- seeded fresh from the context-seed above)"
       : `Prompt used (blends the prior caption with the context-seed above` +
@@ -297,6 +304,7 @@
         ${caption}
         ${contextBlock}
         ${selfStudyBlock}
+        ${memoryBlock}
         ${promptBlock}
         <div class="text-[11px] text-gray-600 mt-1">egress: ${egressLine}</div>
         <div class="flex justify-between items-center mt-2 text-[11px] text-gray-500">

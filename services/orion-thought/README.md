@@ -249,7 +249,7 @@ with a turn-level budget/circuit-breaker on the caller.
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
 
-## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed)
+## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed + Patch 6 memory-crystallization context-seed)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
@@ -358,6 +358,17 @@ branches were refactored into a list-join composition (a third optional
 input would have meant 8 branches) -- verified byte-identical output for
 every pre-Patch-5 combination via exact-string test assertions.
 
+**Patch 6 memory-crystallization context-seed (design doc §17):** same day,
+Juniper corrected Patch 5's `memory_crystallizations` call -- the "no new
+privacy surface" concern assumed a second audience for that content that
+does not exist: this route has no external port mapping and no auth, so
+Juniper is the only possible viewer, and also the original source of
+everything the table holds. `build_visual_prompt` gains a fourth optional
+input, `memory_text` (`store.load_latest_memory_crystallization`),
+verbatim `summary` text from the most recent `status='active'` row --
+deliberately NOT content-filtered, unlike `self_study_text`. `memory_text`
+recorded in `chain_json` on both paths, surfaced in the Hub tab.
+
 **Single-flight, no backlog** (design doc §4 acceptance check): the worker
 loop's own sequential shape (run, then sleep, then run again — same as
 `chain.py`/`reverie.py`) makes overlap structurally impossible; there is no
@@ -419,6 +430,8 @@ Flags:
 | `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` | `3` | Consecutive continuity-carrying runs before a forced reset (Patch 4, design doc §15); no off switch, 0 resets every run |
 | `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the self-study analysis context-seed woven into the prompt (Patch 5, design doc §16) |
 | `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` | `21600` | How stale that self-study analysis can be before it's treated as absent (6h -- these analyses fire on their own 6-72h cadence) |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the memory-crystallization context-seed woven into the prompt (Patch 6, design doc §17) |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` | `21600` | How stale the latest active crystallization can be before it's treated as absent |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
 percept upload, vision-host RPC, reverie context-seed, persistence); one test
@@ -452,3 +465,11 @@ exists"), with an explicit assertion that `curiosity:` is never among them.
 `build_visual_prompt`'s list-join refactor has an exact-string regression
 test proving every pre-Patch-5 prompt combination is byte-identical to the
 old branches (design doc §16).
+
+Patch 6's `load_latest_memory_crystallization` has direct coverage in
+`tests/test_store.py`: real-summary return, char-limit override,
+max-age-sec clause presence/absence, `status='active'` filter (a
+`rejected`/`proposed` row is never returned), empty-row/empty-summary,
+never-raises. `build_visual_prompt`'s fourth clause and `run_visual_chain_
+once`'s wiring have the same exact-string/orchestration coverage pattern
+as Patch 5's `self_study_text` (design doc §17).

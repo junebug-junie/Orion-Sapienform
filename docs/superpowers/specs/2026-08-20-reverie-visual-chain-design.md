@@ -520,9 +520,26 @@ recent `status='active'` row's `summary`, verbatim.
   correct call; a context-seed that is silently absent nearly all the time
   is not delivering what it was built for, regardless of whether each
   individual empty read is technically honest.
-  **Fix**: `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` raised to
-  259200s (3 days) -- comfortable margin over the ~46h real max gap
-  observed in the last 14 days of live data, without being unbounded.
+  **Fix, first draft**: `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC`
+  raised to 259200s (3 days), based on a "last 14 days" query showing
+  median gap ~15min and max gap ~46h.
+  **Fix, corrected after review**: that first draft silently narrowed the
+  query to 14 days without saying so, and without reconciling it against
+  this same section's OWN earlier live-data claim above ("max observed gap
+  is over 10 days") -- a code-review pass on this exact patch caught the
+  unreconciled contradiction. Re-querying the FULL history (2026-08-28)
+  confirms both numbers were real, not in conflict: the two largest gaps
+  ever observed are 10d5h (2026-07-31 -> 08-11) and 3d10h (2026-07-25 ->
+  07-29), both from more than two weeks before this fix. Every gap since
+  2026-08-11 (17+ days of real recent activity) has stayed under 2 days.
+  Final default: **604800s (7 days)** -- covers the recent pattern with
+  real margin and covers the second-largest historical gap (3d10h), but
+  does NOT cover the single 10-day outlier from early August. That is an
+  explicit, accepted tradeoff: a dry spell that long would read as absent
+  again, which is the same honest degrade-to-absent behavior every
+  context-seed reader in this file has by design -- unlike the 6h bug this
+  patch fixes, a real 7+ day gap is a genuinely rare quiet period, not the
+  every-tick norm the 6h default was silently producing.
 - **Composition**: `build_visual_prompt`'s Patch 3/4/5 list-join
   composition already generalizes to a fourth clause with no branch-count
   growth -- no further refactor needed.

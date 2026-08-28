@@ -348,19 +348,34 @@ class ThoughtSettings(BaseSettings):
         alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT",
         gt=0,
     )
-    # 259200s (3 days), NOT self_study_context_max_age_sec's 6h -- that 6h
+    # 604800s (7 days), NOT self_study_context_max_age_sec's 6h -- that 6h
     # value was wrongly copied from self-study without checking whether it
     # fits (real bug, caught live 2026-08-28: the 6h default meant this
     # context-seed read empty on every single tick, because a
     # crystallization is not a time-window-bound comparison the way a
     # self-study body is ("the last 6h against the 6h before it") -- a
     # crystallized memory from yesterday is still a real memory, it doesn't
-    # go stale on that clock. Real cadence (live query, last 14 days,
-    # 2026-08-28): median gap between active crystallizations ~15min, max
-    # gap ~46h. 3 days gives real margin over that observed max without
-    # being unbounded.
+    # go stale on that clock.
+    #
+    # 7 days, not this fix's first draft of 3 days: a code-review pass on
+    # this exact patch caught that the 3-day pick rested on an all-time-max
+    # query silently narrowed to "last 14 days" without saying so or
+    # reconciling it against the earlier (unscoped) PR #1917 write-up,
+    # which had found a >10-day gap. Re-querying the FULL history
+    # (2026-08-28) confirms both numbers were real, not contradictory:
+    # ALL 5 of the largest gaps ever observed are old --the two biggest are
+    # 10d5h (2026-07-31 -> 08-11) and 3d10h (2026-07-25 -> 07-29), both from
+    # more than 2 weeks before this patch. Every gap since 2026-08-11 (17+
+    # days of real recent activity) has stayed under 2 days. 7 days covers
+    # the recent pattern with real margin and covers the second-largest
+    # historical gap too; it does NOT cover the single 10-day outlier from
+    # early August. That is an accepted, explicit tradeoff, not an
+    # oversight: a dry spell that long would read as absent again, which is
+    # the same honest degrade-to-absent behavior every context-seed reader
+    # in this file has -- unlike the 6h bug this patch fixes, a 7-day gap
+    # is a genuinely rare, real quiet period, not the every-tick norm.
     memory_crystallization_context_max_age_sec: float = Field(
-        259200.0, alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC", gt=0
+        604800.0, alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC", gt=0
     )
 
     # --- Attention salience trace publish gate ---

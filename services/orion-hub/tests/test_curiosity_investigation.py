@@ -163,8 +163,13 @@ class _FakeConn:
     async def fetch(self, sql, *args):
         if self.raises:
             raise RuntimeError("relation \"memory_crystallizations\" does not exist")
-        if "GROUP BY kind" in sql:
-            return [{"kind": "semantic", "n": 268}]
+        # Matched on the count query's own alias. The corpus filter added a
+        # `NOT EXISTS` join and aliased the table, so the old "GROUP BY kind"
+        # needle stopped matching and this fake silently returned [] -- the
+        # journal then reported "4 of 0 approved concepts" and the only symptom
+        # was one assertion about a sentence.
+        if "GROUP BY m.kind" in sql or "GROUP BY kind" in sql:
+            return [{"kind": "semantic", "n": 268, "manual_n": 12}]
         if "FROM memory_crystallizations" in sql and "random()" in sql:
             return self.rows
         if "GROUP BY relation" in sql:

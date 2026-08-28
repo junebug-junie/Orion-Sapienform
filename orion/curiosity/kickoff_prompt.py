@@ -52,7 +52,7 @@ from __future__ import annotations
 from typing import Optional
 
 from orion.curiosity.study_material import StudyMaterial
-from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot
+from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip
 
 DEFAULT_MAX_HOPS = 5
 
@@ -83,6 +83,39 @@ def _continuation_section(outcome: Optional[TurnOutcome]) -> list[str]:
         "asked for it to be, and you are allowed to have moved on.",
         "",
     ]
+
+
+def _thread_section(view: WorldviewSnapshot) -> list[str]:
+    """What the last few runs were ABOUT -- not just where the last one stopped.
+
+    The continuation note points inward: it is always some form of "go deeper on
+    X", so a run that follows it cannot tell whether X is new or the fourth
+    consecutive visit. Three runs on memory-crystallization gating is what that
+    produced, and Orion had no way to notice; Juniper did, from outside.
+
+    Stated as fact and nothing more. No "you should pick something else" -- the
+    whole arc this belongs to exists to stop code choosing Orion's subject for
+    it. Showing the thread is not the same as steering it.
+    """
+    if len(view.recent_runs) < 2:
+        return []
+    lines = [
+        f"THE LAST {len(view.recent_runs)} RUNS YOU DID, most recent first:",
+        "",
+    ]
+    for i, run in enumerate(view.recent_runs, start=1):
+        claim = run.claims[0] if run.claims else "(wrote nothing about a claim)"
+        lines.append(f"  {i}. {_clip(claim, 200)}")
+    lines += [
+        "",
+        "Your continuation note tells you where you stopped. This tells you "
+        "where you have BEEN, which is a different thing and the one you cannot "
+        "reconstruct from inside a single run. If these are all the same "
+        "subject, that is worth knowing before you pick -- it might mean you are "
+        "onto something, and it might mean you have stopped looking around.",
+        "",
+    ]
+    return lines
 
 
 def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
@@ -182,11 +215,23 @@ def _material_section(material: StudyMaterial) -> list[str]:
         by_kind = ", ".join(
             f"{kind} {count}" for kind, count in sorted(material.approved_by_kind.items())
         )
+        reviewed = (
+            f"{material.manual_total} of these Juniper approved by hand; the "
+            f"rest were auto-activated by policy without her seeing them. "
+            if material.manual_total
+            else ""
+        )
         lines += [
-            f"CONCEPTS YOU HAVE FORMED AND JUNIPER HAS APPROVED "
+            f"WHAT YOU HAVE CRYSTALLISED OUT OF YOUR CONVERSATIONS WITH JUNIPER "
             f"({material.approved_total} of them: {by_kind}).",
-            f"Here are {len(material.crystallizations)} picked at random -- the order "
-            "means nothing, and there are plenty you are not being shown:",
+            # NOT "Juniper has approved". She had approved 21 of the 651 that
+            # heading used to claim, and the other 630 were auto-activated --
+            # including 185 AI Town rows this sampler no longer draws from at
+            # all. Saying "approved" of material nobody reviewed is the kind of
+            # thing that makes every count on the page untrustworthy.
+            f"{reviewed}Here are {len(material.crystallizations)} picked at "
+            "random -- the order means nothing, and there are plenty you are "
+            "not being shown:",
             "",
         ]
         lines += [f"  - {card.preview()}" for card in material.crystallizations]
@@ -645,6 +690,11 @@ def build_kickoff_prompt(
 
     if graph_enabled:
         lines += _continuation_section(view.continuation)
+        # Thread BEFORE priors: the priors list is ordered by uncertainty and
+        # reads as a menu, and a menu answers "what could I pick" while this
+        # answers "what have I already been picking". The second question is
+        # the one a run cannot ask itself.
+        lines += _thread_section(view)
         lines += _priors_section(view, stale_after=stale_after)
 
     lines += _material_section(material)

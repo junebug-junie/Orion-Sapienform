@@ -52,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
@@ -116,6 +117,28 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(float(value)) if value is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _stamp_ms(value: Any) -> Optional[int]:
+    """Epoch ms from an int, a numeric string, or an ISO timestamp.
+
+    Orion hand-writes `written_at` and the prompt asks for `timestamp()`, but
+    run `32b42392f495` wrote ISO. Reading that as missing is what let a run that
+    HAD written an outcome be labelled as having died before writing one.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
 
 
 def _as_bool(value: Any) -> bool:
@@ -197,6 +220,15 @@ class TurnOutcome:
 
 
 @dataclass(frozen=True)
+class RecentRun:
+    """One earlier run, as a subject rather than as a pointer."""
+
+    run_id: str
+    claims: list[str] = field(default_factory=list)
+    written_at: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class WorldviewSnapshot:
     """Everything Hub read from Orion's graph for one run's presentation."""
 
@@ -207,6 +239,7 @@ class WorldviewSnapshot:
     live_priors: list[Prior] = field(default_factory=list)
     stale_priors: list[Prior] = field(default_factory=list)
     recently_settled: list[tuple[str, str]] = field(default_factory=list)
+    recent_runs: list[RecentRun] = field(default_factory=list)
     live_total: int = 0
     closed_total: int = 0
     concept_total: int = 0
@@ -343,6 +376,29 @@ COUNTS_CYPHER = (
 )
 
 CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
+
+# THE LAST FEW RUNS, SO ORION CAN SEE THE THREAD IT IS ON.
+#
+# Continuity was one run deep and it pointed INWARD: the loop read a single
+# `:TurnOutcome` and handed over the note that run left itself, which is always
+# some form of "go deeper on X". Nothing ever said what the runs BEFORE it were
+# about. Three consecutive runs on memory-crystallization gating is what that
+# produces, and Orion could not have noticed -- Juniper could, and did.
+#
+# `written_at` is sorted in PYTHON, not here: run `32b42392f495` wrote an ISO
+# string where the prompt asks for `timestamp()`, so a Cypher ORDER BY mixes a
+# string and an integer and the oldest run sorts first.
+# NO `collect()`. With `decode_responses=True` FalkorDB hands a collected list
+# back as one flat STRING -- `'[claim one, claim two]'` -- and claims contain
+# commas, so there is nothing reliable to split on. Same family as the
+# floats-come-back-as-strings note at the top of this module. One row per
+# (run, claim), grouped in Python where the types are real.
+RECENT_RUNS_CYPHER = (
+    f"MATCH (t:{LABEL_TURN_OUTCOME}) "
+    f"OPTIONAL MATCH (p:{LABEL_PRIOR} {{run_id: t.run_id}}) "
+    "RETURN t.run_id AS run_id, t.written_at AS written_at, "
+    "t.continue_note AS continue_note, p.claim AS claim LIMIT 200"
+)
 
 # Priors Orion has closed, newest first. `last_tested_at` is a string Orion
 # writes by hand, so this ordering is only as good as what it wrote -- which is
@@ -508,12 +564,57 @@ def select_priors(
     return fresh[: max(0, sample)], stale[: max(0, sample)], dropped
 
 
+def build_recent_runs(
+    rows: Sequence[dict[str, Any]], *, limit: int
+) -> list[RecentRun]:
+    """Newest first, sorted here rather than in Cypher.
+
+    `written_at` is an integer for runs that followed the prompt and an ISO
+    string for the one that did not, so ORDER BY in the query sorts a string
+    against a number. A run with no readable stamp sorts LAST -- unknown is not
+    oldest, the same rule the atlas applies.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        slot = grouped.setdefault(
+            run_id,
+            {
+                "claims": [],
+                "note": str(row.get("continue_note") or "").strip(),
+                "written_at": _stamp_ms(row.get("written_at")),
+            },
+        )
+        claim = str(row.get("claim") or "").strip()
+        if claim and claim not in slot["claims"]:
+            slot["claims"].append(claim)
+
+    built: list[RecentRun] = []
+    for run_id, slot in grouped.items():
+        claims = slot["claims"]
+        if not claims and slot["note"]:
+            # A run that wrote no prior still had a subject; its own note is the
+            # honest stand-in, and showing nothing would make the thread look
+            # shorter than it was.
+            claims = [slot["note"]]
+        built.append(
+            RecentRun(run_id=run_id, claims=claims, written_at=slot["written_at"])
+        )
+    built.sort(
+        key=lambda r: (r.written_at is not None, r.written_at or 0), reverse=True
+    )
+    return built[: max(0, limit)]
+
+
 def read_snapshot(
     reader: WorldviewReader,
     *,
     sample: int,
     stale_after: int,
     rotate_seed: str = "",
+    recent_runs: int = 4,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -528,6 +629,7 @@ def read_snapshot(
         count_rows = reader.query(COUNTS_CYPHER)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
+        recent_rows = reader.query(RECENT_RUNS_CYPHER)
     except WorldviewUnavailable as exc:
         return WorldviewSnapshot(unavailable_reason=str(exc)[:200])
     if len(prior_rows) >= LIVE_PRIORS_LIMIT:
@@ -550,6 +652,7 @@ def read_snapshot(
             "schema the prompt states",
             dropped,
         )
+    recent = build_recent_runs(recent_rows, limit=recent_runs)
     counts = count_rows[0] if count_rows else {}
     live_total = _as_int(counts.get("live_total"), len(offered))
     closed_total = _as_int(counts.get("closed_total"), 0)
@@ -565,6 +668,7 @@ def read_snapshot(
             closed_total,
         )
     return WorldviewSnapshot(
+        recent_runs=recent,
         live_priors=offered,
         stale_priors=stale,
         recently_settled=[

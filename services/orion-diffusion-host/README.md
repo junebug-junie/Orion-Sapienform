@@ -1,12 +1,15 @@
 # Orion Diffusion Host
 
-**Status: real model wired.** Patch 1 of
+**Status: real model wired -- currently `YuCollection/FLUX.1-schnell-Diffusers`
+(swapped from `stabilityai/sdxl-turbo` 2026-08-28, see "## Model" below for
+why).** Patch 1 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` shipped a
-FastAPI process that only answered `/health`. This follow-up patch loads
-`stabilityai/sdxl-turbo` at startup and exposes `POST /generate`, returning
-raw PNG bytes. Still no bus consumer/producer and no chain orchestration —
-those are Patch 2 (`visual_chain.py` in `orion-thought`) and Patch 3
-(context-seeding).
+FastAPI process that only answered `/health`. A follow-up patch first loaded
+a real model at startup and exposed `POST /generate`, returning raw PNG
+bytes; this file's own git history has both the original sdxl-turbo wiring
+and the later FLUX swap. Still no bus consumer/producer and no chain
+orchestration — those are Patch 2 (`visual_chain.py` in `orion-thought`) and
+Patch 3 (context-seeding).
 
 **Node/port/GPU assignment (2026-08-20, per Juniper):** this service is
 assigned to Circe, `HOST_PORT=8014`, `CUDA_VISIBLE_DEVICES=2` — the existing
@@ -80,17 +83,77 @@ GPU-resident model on a raw CUDA base image), since vision-host is the one
 existing non-llama.cpp GPU-resident inference service in this repo
 (design doc §3, existing-mechanism check).
 
-## Model: `stabilityai/sdxl-turbo`
+## Model: `YuCollection/FLUX.1-schnell-Diffusers` (was `stabilityai/sdxl-turbo`)
 
-A distilled, single-step SDXL variant, not full SDXL (25-50 steps). Picked
-because this card serves a slow, capacity-gated cadence (design doc §4) with
-no batching or queueing to absorb a slow generation — a few seconds per
-image is fine, tens of seconds is not. `DIFFUSION_NUM_INFERENCE_STEPS=1` and
-`DIFFUSION_GUIDANCE_SCALE=0.0` are this model's documented operating point,
-not arbitrary tuning — a non-turbo checkpoint dropped in via
-`DIFFUSION_MODEL_ID` without also revisiting those two values will produce
-degraded output, not just slower output. Trained at 512x512
-(`DIFFUSION_DEFAULT_WIDTH`/`HEIGHT`).
+**Swapped 2026-08-28** — real root-cause fix, not a preference change.
+sdxl-turbo's CLIP text encoder truncates at 77 tokens, silently (see
+`app/main.py`'s `_log_prompt_token_budget`) — confirmed live that a real
+reverie-visual-chain prompt hit 191 tokens, and everything past 77 never
+reached the model. FLUX.1-schnell carries a T5-XXL second text encoder
+with a real ~256-token budget (`DIFFUSION_MAX_SEQUENCE_LENGTH`) for actual
+cross-attention content, not CLIP's 77 — CLIP-L is still loaded here but
+only contributes one pooled embedding in this architecture, so its
+77-token limit is far less consequential than it was for SDXL.
+
+`DIFFUSION_MODEL_ID` points at `YuCollection/FLUX.1-schnell-Diffusers`,
+**not** the official `black-forest-labs/FLUX.1-schnell` — the official
+repo is gated (requires accepting a license via the HF web UI before any
+token can download it). Confirmed live: neither `HF_TOKEN` already
+configured elsewhere in this repo (`orion-vllm`, `orion-llama-cola-host`)
+has accepted that gate — both return a real `403` on the actual weight
+files (the model-metadata API endpoint alone returns a misleading `200`
+even when gated access has not been granted; don't trust that endpoint
+alone). The mirror is a verified-ungated (`gated: false`), full
+diffusers-format re-upload of the identical Apache-2.0-licensed weights
+(same `model_index.json`: `FluxPipeline`/`CLIPTextModel`+
+`T5EncoderModel`/`FluxTransformer2DModel`/`AutoencoderKL`) — downloadable
+with no token at all, and Apache 2.0 explicitly permits this kind of
+redistribution.
+
+Picked because this card serves a slow, capacity-gated cadence (design
+doc §4) with no batching or queueing to absorb a slow generation.
+`DIFFUSION_NUM_INFERENCE_STEPS=4` (was `1`) is schnell's documented sweet
+spot, not sdxl-turbo's. `DIFFUSION_GUIDANCE_SCALE=0.0` is unchanged --
+schnell is also guidance-distilled, same operating point.
+`DIFFUSION_DEFAULT_WIDTH`/`HEIGHT=1024` (was `512`) — FLUX was trained
+primarily at 1024x1024; 512 is off-distribution and produces worse output
+for no VRAM saving worth the quality loss.
+
+**`DIFFUSION_DTYPE=fp16`, not bf16 — a real correction, caught before
+deploy.** FLUX's own docs recommend bf16 (avoids a known fp16 overflow
+risk), but that assumes Ampere-or-later hardware. This service's actual
+card, physical GPU 2 ("Tesla PG500-216" per "Node/port/GPU assignment"
+above), is **Volta architecture with first-generation Tensor Cores** —
+bf16 tensor-core acceleration is an Ampere+ (compute capability ≥ 8.0)
+feature this card does not have; other PyTorch-based projects on this
+exact GPU class report hard failures ("Bfloat16 is only supported on
+GPUs with compute capability of at least 8.0"). Volta's tensor cores were
+built for fp16, which is why sdxl-turbo (a different model, same GPU)
+already ran fp16 correctly. `_DTYPE_MAP` in `app/main.py` still supports
+`bf16` as a configurable option (`_load_pipeline` reads whichever dtype
+`DIFFUSION_DTYPE` names) for a future deployment on newer hardware — fp16
+is this specific deployment's correct choice given its actual card, not
+a hardcoded assumption.
+
+**VRAM**: FLUX.1-schnell fully GPU-resident at 2 bytes/param (fp16 or
+bf16, same cost) needs up to ~33GB (12B-param transformer + 4.5B-param
+T5-XXL encoder) — over budget on this card's 32GB regardless of which of
+the two dtypes is used. `DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD=true` (new)
+calls `pipe.enable_model_cpu_offload()`, keeping components on CPU until
+their turn in the forward pass — cuts peak GPU residency to ~24GB, same
+real weights and math, not reduced precision, just staged residency, at
+some generation-latency cost this service's slow cadence already
+tolerates. sdxl-turbo never needed this (comfortably fits fully resident)
+— the flag defaults `True` here because this deployment's default model
+needs it; a future sdxl-turbo-shaped model could set it `False` again.
+
+`_run_generation`/`_pipe_accepts` (`app/main.py`) build the actual
+`/generate` call kwargs by inspecting the loaded pipeline's real `__call__`
+signature rather than hardcoding "if Flux" branches -- `FluxPipeline` has
+neither `negative_prompt` (schnell has no true classifier-free-guidance
+path) nor accepts one silently; the old code passed it unconditionally,
+which would have raised `TypeError` on every single request against this
+model, a full outage caught in review before deploy.
 
 ## Current status
 
@@ -250,3 +313,17 @@ PYTHONPATH=.:../.. python3 -m pytest tests/ -q
 and asserts the response is real, sniffable PNG bytes matching
 `orion.reverie.visual_storage`'s contract — the real diffusion model itself
 is only exercised by the live curl smoke above, not by the test suite.
+
+The FLUX swap added `SdxlLikeFakePipe`/`FluxLikeFakePipe` -- fakes with
+EXPLICIT `__call__` signatures (unlike the plain `FakePipe`'s `**kwargs`
+catch-all, which `inspect.signature` reports as having no named
+parameters at all, so it can't exercise `_pipe_accepts`'s real logic) --
+proving `_run_generation` builds the correct kwargs for each pipeline
+shape: `negative_prompt` reaches an SDXL-shaped pipe but is dropped (with
+a visible warning, not silently) against a Flux-shaped one that doesn't
+accept it, and `max_sequence_length` reaches the Flux-shaped pipe using
+`settings.DIFFUSION_MAX_SEQUENCE_LENGTH`. `_log_prompt_token_budget` has
+a dedicated test proving `tokenizer_2`'s check uses the passed-in
+`max_sequence_length`, not the tokenizer's own raw `model_max_length`
+(a T5-style tokenizer often reports an effectively-unbounded placeholder
+there, not the pipeline's real effective limit).

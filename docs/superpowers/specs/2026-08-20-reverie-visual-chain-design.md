@@ -669,3 +669,113 @@ selected slot visits context -> self_study -> memory -> context in order.
 with a fake tokenizer (warns when over budget, silent when within it,
 checks both encoders, never raises when the pipe has no tokenizer at all
 -- the shape every other test in that file's fake pipe already has).
+
+## 19. Model swap: sdxl-turbo -> FLUX.1-schnell (this changeset, real root-cause removal)
+
+Same day as Patch 7, directly asked for by Juniper: "why can't we find a
+model that runs the full token count." Patch 7 fixed the SYMPTOM (rotate
+one context-seed per run so the 77-token ceiling stops silently discarding
+2 of 3 sources every tick); this changeset removes the actual CEILING by
+replacing the model that has it.
+
+**Live blast-radius/feasibility check before any code was written** (§0A
+metric-quality-gate discipline):
+
+- Real per-GPU VRAM pulled from `orion_biometrics` (Circe's 7 physical
+  GPUs, live 2026-08-28): GPU 2 (this service's own dedicated card, per
+  README's "Node/port/GPU assignment") had 22.5GB free with sdxl-turbo
+  (9.7GB) already resident -- meaning the WHOLE 32GB frees up once
+  sdxl-turbo is replaced, not just the visible headroom.
+- FLUX.1-schnell fully GPU-resident at 2 bytes/param needs up to ~33GB
+  (12B-param transformer + 4.5B-param T5-XXL encoder) -- over a 32GB card
+  even once fully freed. `enable_model_cpu_offload()` cuts peak residency
+  to ~24GB, fitting with real margin -- same real weights/math, staged
+  residency, not reduced precision.
+- **Review-caught correction: bf16 does not run well on this card's real
+  hardware.** FLUX's own docs recommend bf16 over fp16 (avoids a known
+  fp16 overflow risk), but that assumes Ampere-or-later hardware. This
+  service's actual card (physical GPU 2, "Tesla PG500-216") is confirmed
+  live to be Volta architecture with first-generation Tensor Cores -- bf16
+  tensor-core acceleration is an Ampere+ (compute capability >= 8.0)
+  feature this card does not have (other PyTorch-based projects on this
+  exact GPU class report hard failures attempting it). Landed on
+  `DIFFUSION_DTYPE=fp16` instead -- Volta's tensor cores were built for
+  fp16, the same reason sdxl-turbo (a different model, same card) already
+  ran fp16 correctly. `_DTYPE_MAP` still supports `bf16` as a configurable
+  option for a future deployment on newer hardware.
+- **Official repo is gated.** `black-forest-labs/FLUX.1-schnell` requires
+  accepting a license via the HF web UI before any token can download it.
+  Checked BOTH real `HF_TOKEN`s already configured elsewhere in this repo
+  (`orion-vllm`, `orion-llama-cola-host`) against the actual weight file
+  (not just the model-metadata API endpoint, which returns a misleading
+  `200` regardless of gate status) -- both real `403`. Rather than block
+  on a manual click, found `YuCollection/FLUX.1-schnell-Diffusers`: a
+  verified-ungated (`gated: false`) full diffusers-format mirror of the
+  identical Apache-2.0-licensed weights (confirmed matching
+  `model_index.json`: `FluxPipeline`/`CLIPTextModel`+`T5EncoderModel`/
+  `FluxTransformer2DModel`/`AutoencoderKL`), downloadable with no token at
+  all -- Apache 2.0 explicitly permits this redistribution.
+- **A real compatibility break, caught before deploy**: `FluxPipeline.
+  __call__` has neither `negative_prompt` (schnell is guidance-distilled,
+  no true classifier-free-guidance path) nor tolerates one being passed.
+  `_run_generation` previously passed `negative_prompt=req.negative_
+  prompt` unconditionally -- against Flux that raises `TypeError` on
+  EVERY `/generate` call, a full outage. Fixed via `_pipe_accepts`, which
+  builds the actual call kwargs by inspecting the loaded pipeline's real
+  `__call__` signature instead of hardcoding "if Flux" branches, so this
+  stays correct across any future model swap too.
+
+**What shipped:**
+
+- `DIFFUSION_MODEL_ID`: `stabilityai/sdxl-turbo` -> `YuCollection/
+  FLUX.1-schnell-Diffusers`.
+- `DIFFUSION_DTYPE`: stays `fp16` -- FLUX's own docs recommend `bf16`
+  (same 2-bytes/param cost, avoids a known fp16 overflow risk), but that
+  assumes Ampere+ hardware this service's actual card (Volta,
+  first-generation Tensor Cores) does not have. See the review-caught
+  correction above.
+- `DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD` (new): `true` -- see VRAM math
+  above. `_load_pipeline` branches on this flag; `False` preserves
+  sdxl-turbo's exact prior fully-resident behavior for any future model
+  that doesn't need offloading.
+- `DIFFUSION_NUM_INFERENCE_STEPS`: `1` -> `4` -- schnell's own documented
+  operating point, not sdxl-turbo's.
+- `DIFFUSION_MAX_SEQUENCE_LENGTH` (new): `256` -- the real T5-XXL token
+  budget this whole swap exists to gain, passed explicitly to every
+  `_pipe()` call rather than relying on an unstated pipeline default.
+- `DIFFUSION_DEFAULT_WIDTH`/`HEIGHT`: `512` -> `1024` -- FLUX was trained
+  primarily at 1024x1024; 512 is off-distribution for this model and
+  produces worse output for no VRAM saving worth the quality loss.
+  `DIFFUSION_GUIDANCE_SCALE` (`0.0`) is unchanged -- schnell is also
+  guidance-distilled, same operating point sdxl-turbo had.
+- `_log_prompt_token_budget` (Patch 7) extended to accept an explicit
+  `max_sequence_length` override for `tokenizer_2` -- a T5-style
+  tokenizer's own `model_max_length` attribute is often an effectively-
+  unbounded HF placeholder, not the pipeline's real effective limit, so
+  checking against the tokenizer's raw attribute alone would silently
+  under-report truncation risk for exactly the encoder this whole swap
+  was done to un-cap.
+
+**CLIP is still loaded, deliberately not removed**: FLUX's architecture
+uses CLIP-L only for a single pooled embedding (global conditioning), not
+per-token cross-attention the way SDXL used it -- its 77-token truncation
+still applies (`tokenizer`, unchanged check) but is far less consequential
+here than it was for SDXL, where CLIP was the ONLY encoder and every
+truncated token was lost content, not just a coarser global signal.
+
+**Tests**: `SdxlLikeFakePipe`/`FluxLikeFakePipe` (explicit `__call__`
+signatures, not the pre-existing `FakePipe`'s `**kwargs` catch-all, which
+`inspect.signature` reports as having no named parameters at all and so
+cannot exercise `_pipe_accepts`'s real branches) prove `_run_generation`
+builds correct kwargs for both pipeline shapes -- `negative_prompt`
+reaches an SDXL-shaped pipe, is dropped with a visible warning (not
+silently) against a Flux-shaped one, and `max_sequence_length` reaches
+the Flux-shaped pipe from `settings.DIFFUSION_MAX_SEQUENCE_LENGTH`. A
+dedicated test proves `_log_prompt_token_budget`'s `tokenizer_2` check
+uses the passed `max_sequence_length`, not the tokenizer's raw attribute.
+
+**Not done, named as a real follow-up, not silently dropped**: no live
+GPU smoke test against the real downloaded weights was run as part of
+this changeset (would require the actual multi-GB download completing on
+Circe) -- `docker/build/smoke` in the PR report says so plainly rather
+than claiming a check that didn't happen.

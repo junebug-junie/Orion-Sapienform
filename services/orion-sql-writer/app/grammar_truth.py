@@ -1004,6 +1004,7 @@ _EXTRA_RETENTION_TABLES = (
     "grammar_traces",
     "substrate_proposal_frames",
     "orion_biometrics_cluster",
+    "power_intent_settled",
 )
 
 
@@ -1147,6 +1148,43 @@ def build_grammar_truth_snapshot() -> dict[str, Any]:
             "grammar_events_retention_days": settings.grammar_events_retention_days,
         },
     }
+def apply_power_intent_settled_retention(
+    retention_days: int,
+    *,
+    max_batches: int | None = None,
+    max_elapsed_sec: float | None = None,
+) -> GrammarRetentionState:
+    """Bounded retention for power_intent_settled.
+
+    One row per declared workload run, so this grows far more slowly than the telemetry
+    tables -- 90 days rather than 30, because the value of this table is the RESIDUAL
+    DISTRIBUTION over time, and a distribution needs history to be worth reading.
+
+    Ages by `created_at` (write time), not `settled_at` (occurrence time), same split
+    and same reason as orion_biometrics_cluster.
+    """
+    settings = get_settings()
+    state = _apply_bounded_table_retention(
+        engine=default_engine,
+        table="power_intent_settled",
+        id_column="id",
+        retention_days=retention_days,
+        batch_size=settings.grammar_events_retention_batch_size,
+        max_batches=(
+            settings.grammar_events_retention_max_batches_per_startup
+            if max_batches is None
+            else max_batches
+        ),
+        max_elapsed_sec=(
+            settings.grammar_events_retention_max_elapsed_sec
+            if max_elapsed_sec is None
+            else max_elapsed_sec
+        ),
+    )
+    _extra_retention_state["power_intent_settled"] = state
+    return state
+
+
 def apply_biometrics_cluster_retention(
     retention_days: int,
     *,
@@ -1247,6 +1285,7 @@ GRAMMAR_RETENTION_TABLES: tuple[tuple[str, Any], ...] = (
     # Fleet power history. Not a grammar lane either -- kept here because this is now the
     # only retention path in the service (see run_one_retention_cycle's docstring).
     ("orion_biometrics_cluster", apply_biometrics_cluster_retention),
+    ("power_intent_settled", apply_power_intent_settled_retention),
 )
 
 

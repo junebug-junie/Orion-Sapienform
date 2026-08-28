@@ -49,6 +49,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import io
+import uuid
+from datetime import datetime, timedelta, timezone
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -61,6 +63,8 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+
+from orion.schemas.power import PowerIntentV1
 
 from .settings import Settings
 
@@ -421,6 +425,37 @@ def _run_generation(req: GenerateRequest) -> bytes:
     return buf.getvalue()
 
 
+async def _publish_power_intent() -> None:
+    """Best-effort declaration. Never blocks or fails a generation.
+
+    A failed declaration costs a settlement, not an image. Raising here would let a bus
+    hiccup take down the actual workload, which would be a strictly worse trade than
+    losing one row of measurement.
+    """
+    if not settings.DIFFUSION_POWER_INTENT_ENABLED:
+        return
+    chassis = _heartbeat_chassis
+    bus = getattr(chassis, "bus", None) if chassis is not None else None
+    if bus is None:
+        return
+    try:
+        now = datetime.now(timezone.utc)
+        intent = PowerIntentV1(
+            intent_id=str(uuid.uuid4()),
+            workload_kind="reverie_diffusion",
+            node=settings.NODE_NAME,
+            gpu_index=settings.DIFFUSION_POWER_INTENT_GPU_INDEX,
+            expected_duration_sec=settings.DIFFUSION_POWER_INTENT_DURATION_SEC,
+            expected_watts=None,
+            deadline=now
+            + timedelta(seconds=settings.DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC),
+        )
+        await bus.publish("orion:power:intent", "power.intent.v1", intent)
+        logger.info("power_intent_declared intent={} gpu={}", intent.intent_id, intent.gpu_index)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("power_intent_declare_failed (generation continues): {}", exc)
+
+
 @app.post("/generate")
 async def generate(req: GenerateRequest) -> Response:
     if len(req.prompt) > settings.DIFFUSION_MAX_PROMPT_CHARS:
@@ -438,6 +473,18 @@ async def generate(req: GenerateRequest) -> Response:
         raise HTTPException(status_code=429, detail="another generation is already in flight")
 
     async with _generation_lock:
+        # Declare BEFORE drawing. The declaration is what makes an override possible at
+        # all -- you cannot pre-empt a workload you only learn about after it has drawn
+        # -- and it opens the settler's fast sample window, without which this job is
+        # invisible: the standing 31s GPU sampler caught 4 of 332 real generations over
+        # three days (measured 2026-08-28).
+        #
+        # expected_watts is deliberately NOT set. Nobody has measured this workload yet,
+        # and inventing a plausible constant would bake a fabricated number into the
+        # first day of the dataset that is later fitted against. It stays None until
+        # real settlements produce a distribution to derive it from.
+        await _publish_power_intent()
+
         loop = asyncio.get_running_loop()
         start = time.monotonic()
         try:

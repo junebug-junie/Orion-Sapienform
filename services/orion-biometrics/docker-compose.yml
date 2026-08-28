@@ -31,6 +31,13 @@ services:
       - TELEMETRY_PUBLISH_CHANNEL=${TELEMETRY_PUBLISH_CHANNEL}
       - BIOMETRICS_SAMPLE_CHANNEL=${BIOMETRICS_SAMPLE_CHANNEL}
       - BIOMETRICS_SUMMARY_CHANNEL=${BIOMETRICS_SUMMARY_CHANNEL}
+      # Power intent settlement (stage 2). Present in this allowlist deliberately:
+      # an explicit environment: list means a key absent here never reaches the
+      # container, however green every env-parity check is.
+      - POWER_INTENT_CHANNEL=${POWER_INTENT_CHANNEL:-orion:power:intent}
+      - POWER_INTENT_SETTLED_CHANNEL=${POWER_INTENT_SETTLED_CHANNEL:-orion:power:intent:settled}
+      - POWER_INTENT_SETTLE_ENABLED=${POWER_INTENT_SETTLE_ENABLED:-true}
+      - POWER_INTENT_SAMPLE_INTERVAL_SEC=${POWER_INTENT_SAMPLE_INTERVAL_SEC:-1.0}
       - BIOMETRICS_INDUCTION_CHANNEL=${BIOMETRICS_INDUCTION_CHANNEL}
       - BIOMETRICS_CLUSTER_CHANNEL=${BIOMETRICS_CLUSTER_CHANNEL}
       - SPARK_SIGNAL_CHANNEL=${SPARK_SIGNAL_CHANNEL}

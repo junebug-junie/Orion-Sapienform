@@ -166,39 +166,134 @@ circe's Panduit outlets are not mapped through.
 **So stage 1 is not "build a PDU reader."** The reader exists and is proven on
 another node. Stage 1 is: point it at circe's outlets.
 
-### The one number this makes computable, and the one it does not
+### ROOT CAUSE FOUND, and the numbers are no longer estimates
 
-Paired per-minute samples on athena, n=9,061:
-
-| | wall | GPU | **non-GPU remainder** |
-| --- | --- | --- | --- |
-| avg | 350W | 39W | **311W** |
-| range | | | **201W – 493W** |
-
-That is a real measured non-GPU baseline for athena — CPU, drives, fans, PSU
-loss.
-
-For circe it is **unknown**, and borrowing athena's number would be a mistake
-of exactly the kind this repo has been burned by before: a constant calibrated
-on one domain reused in another. Circe is a different chassis with more GPUs,
-more fans, and bigger supplies; its non-GPU draw is plausibly *higher* than
-athena's, not equal.
-
-Still, the arithmetic is worth stating precisely because it is what makes this
-urgent rather than interesting:
+**Why circe reads zero.** `orion-biometrics` logs `pdu_poll_failed error=5
+second timeout exceeded on UDP transport` every cycle, for both nodes. The PDU
+is healthy and pingable. The cause is source-address selection:
 
 ```
-circe GPU peak (measured)      804 W
-circe non-GPU (UNMEASURED)     ~300-500 W   <- the whole question
-athena peak (measured)         580 W
-                             ----------
-estimated total              ~1700-1900 W
-UPS deliverable (~2200VA)      ~1980 W
+$ ip route get 192.168.1.39
+192.168.1.39 dev eno5 src 192.168.1.43
+
+eno1  192.168.1.42/24     <- the address in the PDU's SNMP Manager whitelist
+eno5  192.168.1.43/24     <- the address the route actually uses
 ```
 
-**That is 86-96% of the battery, and it was reached at 13% average GPU
-utilisation.** The estimate rests entirely on a number nobody has measured. If
-circe's non-GPU draw is at the high end, the reserve is already gone.
+Athena has two NICs. The route to the PDU leaves via `eno5` as `.43`, which is
+not whitelisted, so the PDU silently drops the requests. Verified with a
+counterfactual, live:
+
+```
+snmpget ... 192.168.1.39 <outlet-1-oid>
+  -> Timeout: No Response from 192.168.1.39.
+
+snmpget ... --clientaddr=192.168.1.42 192.168.1.39 <outlet-1-oid>
+  -> INTEGER: 265
+```
+
+This is a recurrence in kind of the 2026-08-21 outage recorded in
+`services/orion-biometrics/.env` — that time a stale DHCP lease was whitelisted
+instead of athena's real address. Same failure mode, new cause: a second
+interface now wins the route. The `.env` comment documents the fix but not the
+fragility, which is why it came back.
+
+Note the container is on the `app-net` bridge, so its packets are SNAT'd by the
+host to the route-selected source. **Binding the source inside the container
+cannot fix this** — the fix has to be on the host route or in the PDU
+whitelist.
+
+### Measured fleet power, 2026-08-28
+
+Read directly off the PDU while diagnosing:
+
+| | outlets | wall watts |
+| --- | --- | --- |
+| circe | 1, 7, 13 | 276 + 415 + 296 = **987W** |
+| athena | 34, 35 | 246 + 257 = **503W** |
+| **fleet** | | **1490W** |
+
+At that instant circe's GPUs drew **337W**, so:
+
+| node | non-GPU baseline | source |
+| --- | --- | --- |
+| athena | **311W** (201-493W range) | 9,061 paired minutes |
+| **circe** | **~650W** | 987W wall − 337W GPU, measured |
+
+Circe's non-GPU draw is **more than double athena's**, and materially above the
+300-500W this spec previously guessed by analogy. Borrowing athena's constant
+would have understated the fleet by ~340W — the exact borrowed-constant error
+this repo has been burned by before.
+
+### The headroom is thinner than assumed
+
+```
+circe non-GPU (measured)          ~650 W
+circe GPU peak, 7d (measured)      804 W
+                                 -------
+circe at observed peak            ~1454 W
+athena peak, 7d (measured)          580 W
+                                 -------
+fleet at coincident peaks         ~2034 W
+UPS deliverable (~2200VA)         ~1980 W
+```
+
+**Coincident observed peaks already exceed the battery**, and current draw sits
+at 1490W — roughly **75% of deliverable while the GPUs are near idle** (337W of
+a seven-card box).
+
+Two honest caveats. The two nodes' peaks are not known to have occurred
+simultaneously, so 2034W is a worst-case composition of separately observed
+maxima, not a measured instant. And the ~1980W figure still depends on the APC
+model's VA-to-watt conversion, which has not been read off the unit.
+
+Neither caveat is reassuring, because the GPU peak in that sum was recorded at
+low utilisation. Seven cards under genuine load would add far more than the
+~130W of margin.
+
+### RESOLVED 2026-08-28: fleet wall power is live
+
+Juniper whitelisted `192.168.1.43` in the PDU's SNMP Manager list. The poll
+recovered on its own within two cycles — no restart, no code change. Confirmed
+from the live `orion:biometrics:cluster` payload:
+
+```
+pdu_watts             1526        <- true fleet wall draw
+chassis_watts         1415-1457
+gpu_watts_total        448
+measurements_proxied  {"circe": ["chassis_watts", "pdu_watts"]}
+measurements_missing  {"fan_pct_max": ["circe"]}
+nodes_absent          ["atlas"]
+```
+
+Circe has left `measurements_missing` for power and is correctly labelled as a
+proxied reading rather than a self-report — the provenance guarantee in
+`main.py:431` held.
+
+**The fleet number nobody had:**
+
+| quantity | watts |
+| --- | --- |
+| fleet wall (PDU) | **1526** |
+| fleet GPU | 448 |
+| **fleet non-GPU baseline** | **1078** |
+| UPS deliverable (~2200VA) | ~1980 |
+| **margin** | **~454** |
+
+**The fleet sits at ~77% of the battery with eight GPUs drawing 448W.** The
+non-GPU baseline — 1078W, more than twice the entire GPU draw — is the dominant
+term and is essentially fixed cost. The remaining ~454W is what all GPU
+headroom must fit inside, and eight cards under genuine load would exceed it
+several times over.
+
+This retires the earlier estimate-based section: circe's non-GPU draw was
+guessed at 300-500W by analogy to athena, then measured at ~650W, and the fleet
+baseline is 1078W. Every step of that borrowing was wrong in the same
+direction.
+
+**Stage 1 of this spec is therefore already complete**, achieved by a whitelist
+entry rather than a build. What remains is a bounded retention table for
+history, and then stage 2.
 
 ### The cap is the battery, not the outlet
 
@@ -452,3 +547,48 @@ below a floor.
 To revive this: repair or replace the APC network card, then read
 `upsAdvOutputLoad`, `upsAdvOutputActivePower`, and
 `upsAdvBatteryRunTimeRemaining`. Until then it stays an appendix.
+
+---
+
+## Appendix B — candidates considered and rejected
+
+Seven outcome-measure candidates were worked through with Juniper on
+2026-08-28. Recording the rejections with their reasons, because the failure
+mode here is someone re-proposing one of these in a month and re-deriving the
+same dead end.
+
+**Kept.**
+
+- **Did Juniper write back.** Already in `chat_history_log`; Orion cannot fake
+  it; the only signal fully outside its reach. Folded into `reach_out`'s
+  outcome column in stage 4 rather than standing alone.
+- **Put a real action in the budget.** This became the spec.
+- **A bet log** — anything Orion asserts, logged with a resolution date and
+  scored. Not built, because **it already exists**: that is what priors in
+  `orion_worldview` are. `test_a_prior` is its action form.
+
+**Rejected, with reasons.**
+
+- **Fill `self_state_predictions`.** The table exists and holds **0 rows**. Its
+  only reference in the codebase is
+  `orion/substrate/causal_geometry_engine.py`, and the producer is believed
+  killed. Reviving a dead producer to create a measurement surface is a larger
+  build than it looked, and was not the cheapest path to a falsifiable claim.
+- **Close the loop on outreach decisions.** Misread. The **44,990** rows in
+  `endogenous_outreach_decisions` are decision *evaluations*, nearly all
+  negative — Orion has actually reached out on the order of **20 times ever**.
+  There is no outcome dataset to attach, and n≈20 will not carry a measurement.
+- **Hand-score curiosity findings.** Misread.
+  `substrate_endogenous_curiosity_candidates` (1,440 rows in 2 days) is **not**
+  investigations of Juniper. The rows are `endogenous_seed` /
+  `source:repair_pressure` frontier signals emitted **once per minute** —
+  1,440 rows is 1,440 minutes. It is a tick counter, not a finding stream.
+- **Check what Orion says it sees against stored frames.** No surface exists
+  for the comparison, and one was assumed rather than confirmed.
+- **A pure bet log as new construction.** Subsumed by priors, above. Juniper's
+  objection is also recorded because it is the right test to apply to any
+  successor: if it returns "wrong" every time it is a constant, not a
+  measurement — the same no-variance-no-signal failure as everything else this
+  spec catalogues. Current data runs the other way (2 supported, 1 revised, 0
+  refuted), which raises the mirrored risk that refutation is unreachable. See
+  acceptance check 7.

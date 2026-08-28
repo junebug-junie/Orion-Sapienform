@@ -223,11 +223,64 @@ async def ready():
     return JSONResponse(body, status_code=200 if body["ready"] else 503)
 
 
+def _log_prompt_token_budget(prompt: str) -> None:
+    """Real-tokenizer visibility into whether `prompt` fits the loaded
+    model's actual attention window.
+
+    diffusers' own `encode_prompt()` truncates any prompt exceeding the
+    text encoder's `model_max_length` (77 for every CLIP/OpenCLIP encoder
+    SDXL-family models use) completely silently -- no exception, no
+    response header, nothing in the 200 this endpoint returns. Confirmed
+    live 2026-08-28: a caller (`orion-thought`'s visual chain, three
+    patches deep) had been sending prompts up to 191 real tokens with no
+    visibility that ~60% of the content -- including its most recently
+    added context-seeds -- was silently discarded before the model ever
+    saw it. That incident was only found by forensically re-tokenizing an
+    already-stored prompt after the fact; this makes the same fact visible
+    the moment it happens, in this service's own logs (CLAUDE.md §0A
+    "runtime truth beats config truth": a log line with correlation
+    evidence, not a config value or a clean 200 response).
+
+    Uses the REAL tokenizer(s) already loaded as part of `_pipe` --
+    `transformers` is already a hard dependency of this service
+    (`requirements.txt`), so this is zero new cost, and it is the actual
+    encoder the running model uses, not a same-family approximation.
+    SDXL-family pipelines carry a second encoder (`tokenizer_2`,
+    OpenCLIP-bigG) -- checked too, via the same `getattr` guard, since not
+    every `AutoPipelineForText2Image` target has one.
+
+    Log-only, best-effort: this must never change what gets generated or
+    block a request -- any failure here (missing tokenizer attribute,
+    tokenizer call error) is swallowed at DEBUG, not raised.
+    """
+    for attr in ("tokenizer", "tokenizer_2"):
+        tok = getattr(_pipe, attr, None)
+        if tok is None:
+            continue
+        try:
+            max_len = getattr(tok, "model_max_length", None)
+            n_tokens = len(tok(prompt)["input_ids"])
+            if max_len and n_tokens > max_len:
+                logger.warning(
+                    "prompt exceeds {} budget: {} tokens > model_max_length={} "
+                    "(prompt is {} chars) -- diffusers silently truncates; only the "
+                    "first {} tokens are actually seen by the model",
+                    attr,
+                    n_tokens,
+                    max_len,
+                    len(prompt),
+                    max_len,
+                )
+        except Exception as exc:  # noqa: BLE001 -- visibility only, never block generation
+            logger.debug("prompt token-budget check on {} failed (non-fatal): {}", attr, exc)
+
+
 def _run_generation(req: GenerateRequest) -> bytes:
     """Blocking diffusers call -- runs on `_gpu_executor` (module docstring
     "Concurrency"). torch is imported lazily, only when a seed is given --
     unlike `_load_pipeline`, this function runs on every request, including
     in tests that inject a fake pipe and never install real torch."""
+    _log_prompt_token_budget(req.prompt)
     generator = None
     if req.seed is not None:
         import torch

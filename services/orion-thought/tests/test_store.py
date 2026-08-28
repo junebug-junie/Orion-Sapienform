@@ -269,18 +269,21 @@ def _connect_result_engine(row: dict | None):
     return _FakeEngine()
 
 
-def test_load_latest_visual_chain_continuity_state_reads_both_fields() -> None:
+def test_load_latest_visual_chain_continuity_state_reads_all_three_fields() -> None:
     store = _fresh_store()
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
         store,
         "_get_engine",
         lambda: _connect_result_engine(
-            {"prior_description": "an aqueduct", "chain_json": {"continuity_streak": 2}}
+            {
+                "prior_description": "an aqueduct",
+                "chain_json": {"continuity_streak": 2, "context_slot_rotation": 5},
+            }
         ),
     )
     try:
-        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 2)
+        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 2, 5)
     finally:
         monkeypatch.undo()
 
@@ -294,16 +297,18 @@ def test_load_latest_visual_chain_continuity_state_prior_description_empty_or_wh
         lambda: _connect_result_engine({"prior_description": "   ", "chain_json": {}}),
     )
     try:
-        prior, streak = store.load_latest_visual_chain_continuity_state()
+        prior, streak, rotation = store.load_latest_visual_chain_continuity_state()
     finally:
         monkeypatch.undo()
     assert prior is None
     assert streak == 0
+    assert rotation == 0
 
 
-def test_load_latest_visual_chain_continuity_state_streak_zero_on_missing_key() -> None:
-    """A pre-Patch-4 row has no continuity_streak key at all -- degrades to
-    0 (the honest 'no streak recorded yet' answer), never raises."""
+def test_load_latest_visual_chain_continuity_state_streak_and_rotation_zero_on_missing_key() -> None:
+    """A pre-Patch-4/pre-Patch-7 row has no continuity_streak/
+    context_slot_rotation keys at all -- both degrade to 0 (the honest
+    'nothing recorded yet' answer), never raise."""
     store = _fresh_store()
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
@@ -312,12 +317,12 @@ def test_load_latest_visual_chain_continuity_state_streak_zero_on_missing_key() 
         lambda: _connect_result_engine({"prior_description": "an aqueduct", "chain_json": {"prompt": "p"}}),
     )
     try:
-        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 0)
+        assert store.load_latest_visual_chain_continuity_state() == ("an aqueduct", 0, 0)
     finally:
         monkeypatch.undo()
 
 
-def test_load_latest_visual_chain_continuity_state_streak_zero_on_non_dict_chain_json() -> None:
+def test_load_latest_visual_chain_continuity_state_streak_and_rotation_zero_on_non_dict_chain_json() -> None:
     store = _fresh_store()
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
@@ -326,7 +331,7 @@ def test_load_latest_visual_chain_continuity_state_streak_zero_on_non_dict_chain
         lambda: _connect_result_engine({"prior_description": None, "chain_json": "not a dict"}),
     )
     try:
-        assert store.load_latest_visual_chain_continuity_state() == (None, 0)
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0, 0)
     finally:
         monkeypatch.undo()
 
@@ -336,7 +341,7 @@ def test_load_latest_visual_chain_continuity_state_defaults_on_empty_table() -> 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "_get_engine", lambda: _connect_result_engine(None))
     try:
-        assert store.load_latest_visual_chain_continuity_state() == (None, 0)
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0, 0)
     finally:
         monkeypatch.undo()
 
@@ -351,7 +356,7 @@ def test_load_latest_visual_chain_continuity_state_never_raises_on_db_failure() 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(store, "_get_engine", lambda: _FakeEngine())
     try:
-        assert store.load_latest_visual_chain_continuity_state() == (None, 0)
+        assert store.load_latest_visual_chain_continuity_state() == (None, 0, 0)
     finally:
         monkeypatch.undo()
 
@@ -767,7 +772,7 @@ def test_load_latest_self_study_reflection_char_limit_override() -> None:
         monkeypatch.undo()
 
     assert value is not None
-    assert len(value) <= 21  # +1 for the ellipsis char, not the 400 default
+    assert len(value) <= 21  # +1 for the ellipsis char, not the module default
 
 
 def test_load_latest_self_study_reflection_max_age_sec_adds_and_binds_the_clause() -> None:
@@ -889,7 +894,7 @@ def test_load_latest_memory_crystallization_char_limit_override() -> None:
         monkeypatch.undo()
 
     assert value is not None
-    assert len(value) <= 21  # +1 for the ellipsis char, not the 400 default
+    assert len(value) <= 21  # +1 for the ellipsis char, not the module default
 
 
 def test_load_latest_memory_crystallization_max_age_sec_adds_and_binds_the_clause() -> None:

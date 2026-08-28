@@ -23,8 +23,11 @@ docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md §1-2):
    forced to drop continuity; `chain_json.self_study_text` (Patch 5) is a
    second, richer context-seed from the self-study analysis system;
    `chain_json.memory_text` (Patch 6) is a third, from the Recall system's
-   `memory_crystallizations` table -- nothing else downstream of any of
-   these exists yet.
+   `memory_crystallizations` table; `chain_json.context_slot_used` (Patch
+   7) records WHICH of those three actually entered the prompt this run --
+   see that patch's note below, all three are recorded but only one is
+   ever actually rendered -- nothing else downstream of any of these
+   exists yet.
 
 Everything here is a read. No writes, no bus publishes. Blocking SQLAlchemy
 calls are offloaded via `asyncio.to_thread` -- this is a UI-facing endpoint
@@ -86,6 +89,19 @@ possible viewer, and that viewer is also the original source of everything
 from that table, filtered only to `status='active'` (a pipeline-lifecycle
 filter, not a content one) -- unlike `self_study_text`, this is NOT
 restricted to a safe-content allowlist, by design.
+
+**Patch 7** (design doc §18): not a privacy change -- `context_text`,
+`self_study_text`, and `memory_text` are all still computed and recorded
+on every run exactly as before. What changed is that only ONE of them
+(`chain_json.context_slot_used` names which) actually enters the
+diffusion prompt each run -- the diffusion model's real 77-token text-
+encoder budget meant concatenating all three (Patches 3/5/6's original
+design) silently discarded most of them anyway. This tab now shows the
+honest distinction CLAUDE.md §0A calls for: which context-seeds were
+*available* this run (still all three, still all real) versus which one
+*actually reached the image* (`context_slot_used`) -- a real gap this tab
+previously had no way to show, since `chain_json.prompt` alone doesn't
+reveal that everything past token 77 was invisible to the model.
 """
 
 from __future__ import annotations
@@ -285,6 +301,14 @@ async def visual_recent(
                 # crystallization content. Same "own field" reasoning as
                 # context_text/self_study_text above.
                 "memory_text": cj.get("memory_text"),
+                # Patch 7: which ONE of context_text/self_study_text/
+                # memory_text actually entered THIS run's prompt --
+                # "context", "self_study", "memory", or null (nothing had
+                # content). All three fields above are still recorded
+                # regardless; this is the honest "which one actually
+                # reached the model" signal the diffusion model's 77-token
+                # budget made necessary (see module docstring).
+                "context_slot_used": cj.get("context_slot_used"),
                 # Patch 4: whether THIS run's own prompt was forced to drop
                 # prior_description continuity (visual_chain.py::
                 # resolve_visual_chain_continuity) -- surfaced so the tab can

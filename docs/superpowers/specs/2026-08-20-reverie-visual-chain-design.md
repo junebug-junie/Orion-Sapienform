@@ -546,3 +546,126 @@ recent `status='active'` row's `summary`, verbatim.
 - **Traceability**: `memory_text` recorded as its own `chain_json` key on
   both the success and `generation_failed` paths, same discipline as the
   other two context-seeds.
+
+**Superseded by §18 below, same day**: the "list-join composition already
+generalizes" note above describes `build_visual_prompt` as it stood when
+this section was written -- it no longer concatenates all context-seeds at
+all, for reasons §18 explains.
+
+## 18. Patch 7 scope (this changeset, context-slot rotation -- the real root cause)
+
+Same day as Patch 6. Juniper's live report a few minutes after deploy:
+*"the memory got washed out and Orion just continued generating stars and
+shit"* -- pasting the actual generated image caption (a celestial
+star-map, unrelated to any of the three context-seeds) and the actual
+stored prompt (all three context-seeds present, `memory_text` visibly
+included in the text).
+
+**Root cause, verified live with the real tokenizer** (§0A metric-quality-
+gate discipline -- pull real data and look at it, don't guess): SDXL-
+turbo's CLIP text encoder truncates its input at 77 tokens. `diffusers`
+does this silently -- no exception, no response header, nothing in the
+200 `/generate` returns. The exact prompt from Juniper's report tokenizes
+to **191 tokens** with `openai/clip-vit-large-patch14`'s real tokenizer
+(SDXL-turbo's actual encoder). Decoding the first 77 tokens back to text
+shows precisely where the model's attention stops:
+
+> "orion is currently thinking : the coalition has stabilized ... orion
+> recently noticed : self - study analysis of co - creation signals : the
+> last 6 h against the 6 h before it ."
+
+`memory_text` -- and even the trailing style suffix ("Soft abstract
+dreamlike style.") -- never reached the model at all. This was true for
+every prompt Patches 3/5/6 ever built that concatenated more than roughly
+one substantial clause: self_study_text ALONE, at its old 400-char cap,
+tokenizes to 104 tokens with its framing prefix -- over budget by itself,
+before `prior_description` or a second context-seed are even added.
+Every context-seed added after Patch 3 had, in practice, almost never
+actually shaped a generated image, regardless of how correctly it was
+computed, stored, and displayed in the Hub tab -- a real "no empty-shell
+cognition" (CLAUDE.md §0A) violation once understood: the UI honestly
+showed content the image could not possibly have reflected, because
+nothing in the whole pipeline had ever checked the model's real token
+budget.
+
+**Why not swap to a longer-context model instead** (asked directly by
+Juniper, answered before implementation): models exist without this
+ceiling -- FLUX.1 and Stable Diffusion 3.5 both use a T5-XXL text encoder
+alongside CLIP, handling much longer, more compositional prompts well,
+and FLUX.1-schnell is fast (few-step) like sdxl-turbo. Not done here: a
+real infrastructure decision, not a text edit -- FLUX.1-schnell is ~12B
+params vs sdxl-turbo's ~2.6B, needs meaningfully more VRAM (~24GB+ at
+fp16), and Circe's GPU-2 slot assignment was sized for sdxl-turbo
+specifically. Swapping means checking real VRAM headroom on Circe, a
+fresh multi-GB download, re-tuning generation params (steps/guidance
+conventions differ), and re-verifying output quality -- a legitimate
+follow-up if Juniper wants it evaluated, not something to bolt onto this
+bug fix.
+
+**What shipped, two parts:**
+
+1. **`select_context_slot`** (`services/orion-thought/app/visual_chain.py`):
+   stop concatenating all three context-seeds -- round-robin ONE per run
+   among whichever currently have real content. `build_visual_prompt`'s
+   signature changed from four inputs (`prior_description, context_text,
+   self_study_text, memory_text`) to two (`prior_description,
+   context_slot_name, context_slot_text`) -- a deliberate breaking change
+   within the same file, not a parallel API left dangling (CLAUDE.md "kill
+   means kill"). The persisted rotation counter (`chain_json.
+   context_slot_rotation`) is read from the SAME combined round trip
+   `load_latest_visual_chain_continuity_state` already makes for
+   `prior_description`/`continuity_streak` -- now a 3-tuple, not a fourth
+   gathered call.
+   - Reduces the realistic worst case from 4 competing clauses to 2
+     (continuity + one selected slot).
+   - Each slot's own char cap was independently re-derived against the
+     REAL tokenizer, not guessed: `MAX_SELF_STUDY_CONTEXT_CHARS` cut from
+     400 to 150 (self-study's dense, hyphen/underscore-heavy jargon
+     tokenizes far worse per character, ~3.8 chars/token measured, than
+     natural narration), `MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS` cut
+     from 400 to 180 (crystallization summaries are closer to natural
+     English, ~4 chars/token). `MAX_REVERIE_CONTEXT_CHARS` (240) was
+     already fine, unchanged -- verified at ~51 tokens with its framing
+     prefix, real margin. At these caps, a single selected clause with its
+     framing prefix lands around 44-52 tokens -- real headroom for
+     `prior_description` (typically a short vision-host caption, 8-30
+     tokens) and the style suffix (8-13 tokens) to coexist, instead of the
+     old design's guaranteed-to-overflow 150-300+ tokens.
+2. **`orion-diffusion-host`'s `_log_prompt_token_budget`**
+   (`app/main.py`): before every real generation, tokenize the prompt with
+   the ACTUAL loaded pipeline's own tokenizer(s) (`_pipe.tokenizer`/
+   `_pipe.tokenizer_2` -- SDXL carries two encoders, both checked) and log
+   a WARNING with real numbers whenever either budget is exceeded. Zero
+   new dependency (`transformers` is already a hard requirement of this
+   service). Visibility only -- does not change what gets generated, since
+   part 1 is the actual behavioral fix. This exists so the NEXT time this
+   failure mode recurs (a misconfigured char limit, a new context-seed
+   added without checking token budget), it shows up in this service's own
+   logs immediately, not via another forensic re-tokenization of an
+   already-stored prompt days later.
+
+**Traceability**: `chain_json.context_slot_used` (`"context"`,
+`"self_study"`, `"memory"`, or `null`) names which ONE of the three
+recorded context-seed fields actually entered this run's prompt --
+`context_text`/`self_study_text`/`memory_text` are all still recorded on
+every run regardless (nothing about the honesty of "what was available"
+changed), but the Hub Reverie tab now visually distinguishes "recorded"
+from "actually rendered" (a "used this run" / "not used this run" badge
+per block) -- the exact distinction CLAUDE.md §0A calls inspectable
+evidence, which the tab had no way to show before this patch.
+
+**Tests**: `select_context_slot` has direct unit coverage (nothing
+available, rotates through all three, skips unavailable slots, wraps a
+large index, index unchanged when nothing available).
+`build_visual_prompt`'s new two-input contract has exact-string wording
+coverage per slot label. Two new end-to-end orchestration tests: one
+proves that when all three context-seeds have real content
+SIMULTANEOUSLY, only the rotation-selected one appears in the actual
+generated prompt string (the exact regression, not just the resolver's
+isolated correctness); another drives four successive runs through the
+same fake-DB round-trip harness the continuity tests use and asserts the
+selected slot visits context -> self_study -> memory -> context in order.
+`orion-diffusion-host`'s `_log_prompt_token_budget` has direct coverage
+with a fake tokenizer (warns when over budget, silent when within it,
+checks both encoders, never raises when the pipe has no tokenizer at all
+-- the shape every other test in that file's fake pipe already has).

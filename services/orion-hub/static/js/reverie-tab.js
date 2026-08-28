@@ -88,11 +88,12 @@
         "The previous run's own caption (reverie_visual_chain.prior_description), Orion's own " +
         "most recent real reverie-thought interpretation (context_text), a real quantified " +
         "self-study observation (self_study_text), a real shared-life memory (memory_text), " +
-        "and how many consecutive runs have used continuity so far (continuity_streak).",
+        "how many consecutive runs have used continuity so far (continuity_streak), and which " +
+        "context-seed's turn it is next (context_slot_rotation).",
       detail:
         'Fixed seed only when NONE of prior_description/context_text/self_study_text/memory_text ' +
         'exist (fresh install, no history yet): "a calm orion, soft abstract light, dreaming". ' +
-        "Every later run reads all five from Postgres, concurrently.",
+        "Every later run reads all these from Postgres, concurrently.",
       file: "services/orion-thought/app/store.py :: load_latest_visual_chain_continuity_state, load_latest_reverie_interpretation, load_latest_self_study_reflection, load_latest_memory_crystallization",
     },
     {
@@ -112,12 +113,13 @@
     },
     {
       id: "prompt",
-      title: "3 · Prompt construction",
+      title: "3 · Context-seed rotation + prompt construction",
       desc:
-        "The (possibly reset) continuity input and all THREE context-seeds are blended into " +
-        "one prompt text -- continuity keeps the image chain visually coherent frame-to-frame " +
-        "when allowed to run, the context-seeds keep it grounded in what Orion is actually " +
-        "narrating, observing, and remembering.",
+        "ONE of the three context-seeds is picked (round-robin, whichever have real content), " +
+        "then blended with the (possibly reset) continuity input into one prompt text -- " +
+        "continuity keeps the image chain visually coherent frame-to-frame when allowed to " +
+        "run, the selected context-seed keeps it grounded in what Orion is actually narrating, " +
+        "observing, or remembering.",
       detail:
         "Patch 3 (shipped): a deliberately narrow first context-seed slice -- Orion's own " +
         "reverie-thought interpretation, already surfaced by this tab's Text sub-view (no new " +
@@ -125,9 +127,15 @@
         "analysis system's real quantified self-observation. Patch 6 (shipped): a third, from " +
         "the Recall system's memory_crystallizations table -- real shared-life content, " +
         "unfiltered by content (this route has no external audience beyond its one viewer, " +
-        "who is also that content's original source). Falls back to the fixed seed string only " +
-        "when all four inputs are empty.",
-      file: "services/orion-thought/app/visual_chain.py :: build_visual_prompt",
+        "who is also that content's original source). Patch 7 (shipped 2026-08-28, real bug): " +
+        "concatenating all three into one prompt silently exceeded SDXL-turbo's 77-token text-" +
+        "encoder budget (verified live: a real prompt hit 191 tokens; everything past 77 was " +
+        "invisible to the model, including memory_text and the style suffix, no matter how " +
+        "correct that content was). Now only ONE context-seed enters the prompt per run -- " +
+        "round-robin among whichever currently have content -- so whichever wins actually gets " +
+        "seen. Falls back to the fixed seed string only when both continuity and the selected " +
+        "seed are empty.",
+      file: "services/orion-thought/app/visual_chain.py :: select_context_slot, build_visual_prompt",
     },
     {
       id: "generate",
@@ -261,27 +269,38 @@
     const caption = artifact && artifact.description
       ? `<p class="text-sm text-gray-200 mt-2">“${escapeHtml(artifact.description)}”</p>`
       : `<p class="text-xs text-gray-500 italic mt-2">not captioned (re-observation failed or was rejected -- honest null, not fabricated)</p>`;
+    // Patch 7: only ONE of these three ever actually reached the prompt
+    // this run (chain.context_slot_used names which) -- the other two are
+    // still shown (still real, still computed) but visually marked as
+    // "not used this run" rather than implying all three shaped the image,
+    // which the 77-token text-encoder budget makes impossible.
+    const slotUsedBadge = (slotName) =>
+      chain.context_slot_used === slotName
+        ? `<span class="ml-1 text-[9px] uppercase tracking-wide text-emerald-500">used this run</span>`
+        : chain.context_slot_used
+          ? `<span class="ml-1 text-[9px] uppercase tracking-wide text-gray-600">not used this run</span>`
+          : "";
     const contextBlock = chain.context_text
       ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
-           <div class="text-[10px] uppercase tracking-wide text-gray-600">Context-seed (Orion's own reverie thought)</div>
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">Context-seed (Orion's own reverie thought)${slotUsedBadge("context")}</div>
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.context_text)}</div>
          </div>`
       : "";
     const selfStudyBlock = chain.self_study_text
       ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
-           <div class="text-[10px] uppercase tracking-wide text-gray-600">Self-study observation (real quantified finding)</div>
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">Self-study observation (real quantified finding)${slotUsedBadge("self_study")}</div>
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.self_study_text)}</div>
          </div>`
       : "";
     const memoryBlock = chain.memory_text
       ? `<div class="mt-2 rounded border border-gray-800 bg-gray-950/40 px-2 py-1.5">
-           <div class="text-[10px] uppercase tracking-wide text-gray-600">Memory (shared-life crystallization)</div>
+           <div class="text-[10px] uppercase tracking-wide text-gray-600">Memory (shared-life crystallization)${slotUsedBadge("memory")}</div>
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.memory_text)}</div>
          </div>`
       : "";
     const continuityLabel = chain.continuity_reset
-      ? "Prompt used (continuity RESET this run -- seeded fresh from the context-seed above)"
-      : `Prompt used (blends the prior caption with the context-seed above` +
+      ? "Prompt used (continuity RESET this run -- seeded fresh from the selected context-seed above)"
+      : `Prompt used (blends the prior caption with the selected context-seed above` +
         (typeof chain.continuity_streak === "number"
           ? `; continuity streak ${chain.continuity_streak}`
           : "") +

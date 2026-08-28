@@ -845,11 +845,13 @@ def test_load_latest_self_study_reflection_never_raises_on_db_failure() -> None:
 # --- load_latest_memory_crystallization: Patch 6 third context-seed --------
 #
 # Reverses Patch 5's declined call on this same table -- see the function's
-# own docstring for why. `status='active'` is the one real filter this
-# reader applies, a pipeline-lifecycle check (has the crystallization
-# governor accepted this stance), not a content filter -- asserted directly
-# below so a future edit that widens the filter or drops it silently fails
-# this test, not just "query still returns a row".
+# own docstring for why. Real correction (design doc §20): `status='active'`
+# alone is NOT a governor-review signal for most of this table -- verified
+# live that `formation_policy.py`'s AUTO_ACTIVE_KINDS sets it on creation
+# with zero review. The actual filter requires a real `memory_
+# crystallization_history` row with `op='approve'` -- asserted directly
+# below so a future edit that drops that requirement silently fails this
+# test, not just "query still returns a row".
 
 
 def test_load_latest_memory_crystallization_returns_real_summary() -> None:
@@ -863,7 +865,12 @@ def test_load_latest_memory_crystallization_returns_real_summary() -> None:
         monkeypatch.undo()
 
 
-def test_load_latest_memory_crystallization_query_filters_to_active_status() -> None:
+def test_load_latest_memory_crystallization_query_requires_active_status_and_real_approval() -> None:
+    """The actual privacy/governance boundary: `status='active'` alone
+    proved (live, design doc §20) to be a near-universal default most rows
+    get with zero review -- the query must also require a real
+    `memory_crystallization_history` row with `op='approve'`, not just
+    `status='active'`."""
     store = _fresh_store()
     captured: dict = {}
     monkeypatch = pytest.MonkeyPatch()
@@ -878,6 +885,15 @@ def test_load_latest_memory_crystallization_query_filters_to_active_status() -> 
     stmt = captured["stmt"]
     assert "memory_crystallizations" in stmt
     assert "status = 'active'" in stmt
+    # Review finding: substring-checking "memory_crystallization_history" and
+    # "op = 'approve'" separately would still pass if a future edit
+    # decorrelated the EXISTS subquery (e.g. dropped the crystallization_id
+    # join predicate, leaving "is there ANY approved row anywhere in the
+    # whole table" -- true almost always, since real approved rows already
+    # exist -- instead of "is THIS row approved"). Assert the actual join
+    # predicate is present, not just that both fragments appear somewhere.
+    assert "h.crystallization_id = mc.crystallization_id" in stmt
+    assert "h.op = 'approve'" in stmt
     # Deliberately no source_ref/allowlist clause -- unlike self-study, this
     # reader is not content-filtered (see the function's own docstring).
     assert "source_ref" not in stmt

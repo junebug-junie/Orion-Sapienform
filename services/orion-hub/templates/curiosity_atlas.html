@@ -588,8 +588,36 @@ $("toggle-tables").addEventListener("click", (e) => {
   $("growth-table").hidden = !on;
   $("growth").hidden = on;
 });
-load();
-setInterval(load, 60000);
+
+/* The Hub embeds this page in an iframe on the Curiosity tab, and an iframe
+   keeps running when its panel is hidden. A bare setInterval would be a
+   FalkorDB read every 60s for a panel nobody is looking at, so the timer is
+   owned by an activate/deactivate contract -- the same one Concept Atlas
+   established, rather than a second convention. Standalone at /curiosity there
+   is no host to call these, so the page starts its own timer immediately. */
+const POLL_MS = 60000;
+let timer = null;
+
+function activate() {
+  load();
+  if (timer === null) timer = setInterval(load, POLL_MS);
+}
+
+function deactivate() {
+  if (timer !== null) { clearInterval(timer); timer = null; }
+}
+
+window.OrionCuriosityAtlas = { refresh: load, activate, deactivate };
+
+// Also stop while the whole tab is backgrounded, not only while the Hub panel
+// is hidden -- the two are independent and either one alone leaves the poll
+// running in a window nobody is looking at.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) deactivate();
+  else if (timer === null) activate();
+});
+
+activate();
 </script>
 </body>
 </html>

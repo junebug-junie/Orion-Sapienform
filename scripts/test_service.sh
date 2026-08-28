@@ -19,10 +19,30 @@ if [[ ! -d "${SERVICE_DIR}" ]]; then
   exit 1
 fi
 
+# Opt-in eval lane. 11 services carry an `evals/` directory (AGENTS.md §11's
+# second lane) and NONE of them were reachable through this runner or the
+# Makefile -- an eval no tooling invokes is inert. Opt-in rather than default
+# so this does not silently start running ten services' evals, some of which
+# expect live infrastructure.
+#   scripts/test_service.sh orion-hub --with-evals
+WITH_EVALS=0
+if [[ "${1:-}" == "--with-evals" ]]; then
+  WITH_EVALS=1
+  shift
+fi
+
 if [[ "$#" -gt 0 ]]; then
   PYTEST_ARGS=("$@")
 else
-  PYTEST_ARGS=("services/${SERVICE_NAME}/tests" "-q" "--tb=short")
+  PYTEST_ARGS=("services/${SERVICE_NAME}/tests")
+  if [[ "${WITH_EVALS}" -eq 1 ]]; then
+    if [[ -d "${SERVICE_DIR}/evals" ]]; then
+      PYTEST_ARGS+=("services/${SERVICE_NAME}/evals")
+    else
+      echo "--with-evals: no evals/ directory for ${SERVICE_NAME}, running tests only" >&2
+    fi
+  fi
+  PYTEST_ARGS+=("-q" "--tb=short")
 fi
 
 "${SCRIPT_DIR}/bootstrap_test_envs.sh" --service "${SERVICE_NAME}"

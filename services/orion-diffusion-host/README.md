@@ -176,6 +176,20 @@ the mime from magic bytes and does not trust a declared content type, so
 this endpoint's job is just to return real image bytes, not to assert what
 they are.
 
+**Real token-budget visibility (2026-08-27, live incident):** `DIFFUSION_
+MAX_PROMPT_CHARS` (default 2000) only bounds total character count -- it
+says nothing about SDXL-turbo's actual CLIP text encoders, which truncate
+at 77 tokens each, completely silently (no exception, no response header).
+Confirmed live: a caller's real prompt hit 191 tokens; the model only ever
+saw the first 77. `_log_prompt_token_budget` (called from `_run_generation`
+before every real generation) tokenizes the prompt with the ACTUAL loaded
+pipeline's own tokenizer(s) (`tokenizer`/`tokenizer_2` -- SDXL carries two
+encoders, both checked) and logs a WARNING with real numbers whenever
+either budget is exceeded. Visibility only -- never changes what gets
+generated, and never raises (a tokenizer-check failure degrades to a DEBUG
+log, not a blocked request). Zero new dependency: `transformers` is
+already a hard requirement of this service.
+
 ## Model cache dir convention: `/mnt/storage-warm/models/diffusion`
 
 `orion-vision-host` caches its (much smaller, ~2.7B-class caption) models

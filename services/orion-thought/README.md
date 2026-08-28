@@ -249,7 +249,7 @@ with a turn-level budget/circuit-breaker on the caller.
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.
 
-## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed + Patch 6 memory-crystallization context-seed)
+## Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding + Patch 4 continuity reset + Patch 5 self-study context-seed + Patch 6 memory-crystallization context-seed + Patch 7 context-slot rotation)
 
 `app/visual_chain.py`, alongside `chain.py`. Patch 2 of
 `docs/superpowers/specs/2026-08-20-reverie-visual-chain-design.md` — the
@@ -369,6 +369,31 @@ verbatim `summary` text from the most recent `status='active'` row --
 deliberately NOT content-filtered, unlike `self_study_text`. `memory_text`
 recorded in `chain_json` on both paths, surfaced in the Hub tab.
 
+**Patch 7 context-slot rotation (design doc §18) -- the real root cause:**
+same day, live report: "the memory got washed out and Orion just continued
+generating stars." Root cause verified with the REAL tokenizer: SDXL-turbo's
+CLIP text encoder truncates at 77 tokens, silently -- the actual reported
+prompt tokenized to 191 tokens; the model never saw `memory_text` or even
+the style suffix. Every context-seed added after Patch 3 had, in practice,
+almost never reached the model regardless of how correctly it was computed.
+Fix: `build_visual_prompt` now takes a SELECTED slot
+(`context_slot_name`/`context_slot_text`, breaking change from the old
+4-input signature) instead of concatenating all three -- `select_context_
+slot` round-robins among whichever of {context, self_study, memory}
+currently have content, persisting the rotation counter in `chain_json.
+context_slot_rotation` (read in the same combined round trip as
+`prior_description`/`continuity_streak`). Each slot's char cap was
+independently re-derived against the real tokenizer:
+`MAX_SELF_STUDY_CONTEXT_CHARS` 400→150, `MAX_MEMORY_CRYSTALLIZATION_
+CONTEXT_CHARS` 400→180 (`MAX_REVERIE_CONTEXT_CHARS` was already fine
+unchanged). `chain_json.context_slot_used` names which one actually
+entered the prompt; the other two are still recorded, just visually marked
+"not used this run" in the Hub tab. `orion-diffusion-host`'s
+`_run_generation` also gained `_log_prompt_token_budget`, logging a
+WARNING with real token counts whenever a prompt exceeds either of SDXL's
+two text-encoder budgets -- visibility only, using the pipeline's own
+already-loaded tokenizer(s), zero new dependency.
+
 **Single-flight, no backlog** (design doc §4 acceptance check): the worker
 loop's own sequential shape (run, then sleep, then run again — same as
 `chain.py`/`reverie.py`) makes overlap structurally impossible; there is no
@@ -428,9 +453,9 @@ Flags:
 | `ORION_REVERIE_CONTEXT_CHAR_LIMIT` | `240` | Max chars of the text-reverie chain's context-seed woven into the prompt |
 | `ORION_REVERIE_CONTEXT_MAX_AGE_SEC` | `900` | How stale that context-seed thought can be before it's treated as absent rather than "current" |
 | `ORION_VISUAL_CHAIN_CONTINUITY_MAX_RUNS` | `3` | Consecutive continuity-carrying runs before a forced reset (Patch 4, design doc §15); no off switch, 0 resets every run |
-| `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the self-study analysis context-seed woven into the prompt (Patch 5, design doc §16) |
+| `ORION_SELF_STUDY_CONTEXT_CHAR_LIMIT` | `150` | Max chars of the self-study analysis context-seed woven into the prompt (Patch 5, design doc §16; cut from 400 by Patch 7, design doc §18 -- 400 chars of self-study's dense jargon alone tokenizes to 104 tokens with framing, already over SDXL's 77-token budget by itself) |
 | `ORION_SELF_STUDY_CONTEXT_MAX_AGE_SEC` | `21600` | How stale that self-study analysis can be before it's treated as absent (6h -- these analyses fire on their own 6-72h cadence) |
-| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` | `400` | Max chars of the memory-crystallization context-seed woven into the prompt (Patch 6, design doc §17) |
+| `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT` | `180` | Max chars of the memory-crystallization context-seed woven into the prompt (Patch 6, design doc §17; cut from 400 by Patch 7, design doc §18, same real-token-budget reasoning) |
 | `ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` | `604800` | How stale the latest active crystallization can be before it's treated as absent (7 days -- NOT self-study's 6h; a crystallized memory doesn't go stale on that clock. Covers all but one 10-day historical outlier; see settings.py's own comment for the reconciled live-data numbers) |
 
 Tests: `tests/test_visual_chain.py` — every hop faked (diffusion HTTP call,
@@ -473,3 +498,19 @@ max-age-sec clause presence/absence, `status='active'` filter (a
 never-raises. `build_visual_prompt`'s fourth clause and `run_visual_chain_
 once`'s wiring have the same exact-string/orchestration coverage pattern
 as Patch 5's `self_study_text` (design doc §17).
+
+Patch 7's `select_context_slot` has direct unit coverage in
+`tests/test_visual_chain.py`: nothing available, rotates through all
+three, skips unavailable slots, wraps a large rotation index, index
+unchanged when nothing available. `build_visual_prompt`'s new two-input
+contract (breaking change from four) has exact-string wording coverage
+per slot label. Two end-to-end orchestration tests are the actual
+regression guard: one proves that with all three context-seeds present
+simultaneously, only the rotation-selected one appears in the real
+generated prompt string; another drives four successive runs through the
+same fake-DB round-trip harness the continuity tests use and asserts the
+selected slot visits context → self_study → memory → context in order
+(design doc §18). `orion-diffusion-host`'s `tests/test_generate.py` has
+direct coverage of `_log_prompt_token_budget` with a fake tokenizer: warns
+when over budget, silent when within it, checks both SDXL encoders, never
+raises when the pipe has no tokenizer at all.

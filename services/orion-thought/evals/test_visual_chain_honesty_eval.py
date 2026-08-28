@@ -84,7 +84,7 @@ async def _run_scenario(monkeypatch, scenario: Scenario, tmp_path):
     # for every scenario in this matrix; the reset path has its own
     # dedicated coverage in test_visual_chain.py.
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old", 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old", 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)

@@ -102,6 +102,80 @@ def test_generate_request_overrides_settings_defaults(monkeypatch):
     assert call["guidance_scale"] == 1.5
 
 
+class FakeTokenizer:
+    """Minimal stand-in for a HF tokenizer -- `model_max_length` +
+    `__call__(text) -> {"input_ids": [...]}`, the only two surfaces
+    `_log_prompt_token_budget` touches."""
+
+    def __init__(self, model_max_length: int, tokens_per_char: float = 1.0):
+        self.model_max_length = model_max_length
+        self._tokens_per_char = tokens_per_char
+
+    def __call__(self, text: str):
+        return {"input_ids": [0] * max(1, int(len(text) * self._tokens_per_char))}
+
+
+def _capture_warnings(monkeypatch):
+    """loguru does not propagate to stdlib logging (so pytest's `caplog`
+    fixture cannot see it) without a bridge handler this repo's test suite
+    does not set up elsewhere -- monkeypatching `logger.warning` directly is
+    the simpler, dependency-free way to assert on a loguru call."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main_mod.logger, "warning", lambda fmt, *args, **kw: calls.append(fmt.format(*args))
+    )
+    return calls
+
+
+def test_log_prompt_token_budget_warns_when_over_real_model_max(monkeypatch):
+    """The actual regression this exists for (2026-08-28): a prompt over the
+    tokenizer's real model_max_length must produce a visible warning --
+    diffusers itself never surfaces this, silently truncating instead."""
+    fake = FakePipe()
+    fake.tokenizer = FakeTokenizer(model_max_length=77, tokens_per_char=1.0)
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    calls = _capture_warnings(monkeypatch)
+
+    main_mod._log_prompt_token_budget("x" * 200)
+
+    assert any("exceeds" in c and "budget" in c for c in calls)
+
+
+def test_log_prompt_token_budget_silent_when_within_budget(monkeypatch):
+    fake = FakePipe()
+    fake.tokenizer = FakeTokenizer(model_max_length=77, tokens_per_char=1.0)
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    calls = _capture_warnings(monkeypatch)
+
+    main_mod._log_prompt_token_budget("x" * 10)
+
+    assert calls == []
+
+
+def test_log_prompt_token_budget_checks_both_encoders(monkeypatch):
+    """SDXL-family pipelines carry a second encoder (tokenizer_2,
+    OpenCLIP-bigG) -- must be checked too, not just the first."""
+    fake = FakePipe()
+    fake.tokenizer = FakeTokenizer(model_max_length=77, tokens_per_char=0.1)  # never trips
+    fake.tokenizer_2 = FakeTokenizer(model_max_length=77, tokens_per_char=1.0)  # trips
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    calls = _capture_warnings(monkeypatch)
+
+    main_mod._log_prompt_token_budget("x" * 200)
+
+    assert any("tokenizer_2" in c for c in calls)
+
+
+def test_log_prompt_token_budget_never_raises_when_pipe_has_no_tokenizer(monkeypatch):
+    """FakePipe (this file's default) has no .tokenizer at all -- the
+    real-world case for every OTHER test in this file, and the case a
+    not-yet-loaded/differently-shaped pipe hits too. Must no-op, not raise."""
+    fake = FakePipe()
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+
+    main_mod._log_prompt_token_budget("anything")  # must not raise
+
+
 def test_generate_prompt_too_long_rejected(monkeypatch):
     fake = FakePipe()
     monkeypatch.setattr(main_mod, "_pipe", fake)

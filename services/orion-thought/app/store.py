@@ -430,17 +430,20 @@ def persist_reverie_visual_artifact(artifact) -> bool:
         return False
 
 
-def load_latest_visual_chain_continuity_state() -> tuple[str | None, int]:
-    """Most recent visual-chain row's `prior_description` AND
-    `continuity_streak`, in ONE round trip (review finding: two separate
-    single-column SELECTs against the same latest row wasted a full
-    connect+query cycle every tick, and left a theoretical window where the
-    two reads could observe different rows if a write ever raced between
-    them -- currently prevented only by the single-flight/sequential-worker
-    guarantee documented in visual_chain.py's module docstring, not
-    something this query should have to rely on to be correct).
+def load_latest_visual_chain_continuity_state() -> tuple[str | None, int, int]:
+    """Most recent visual-chain row's `prior_description`, `continuity_
+    streak`, AND `context_slot_rotation`, in ONE round trip (review finding
+    on the original 2-value version: two separate single-column SELECTs
+    against the same latest row wasted a full connect+query cycle every
+    tick, and left a theoretical window where the two reads could observe
+    different rows if a write ever raced between them -- currently
+    prevented only by the single-flight/sequential-worker guarantee
+    documented in visual_chain.py's module docstring, not something this
+    query should have to rely on to be correct. Patch 7 adds a third value
+    from the SAME row/read rather than a fourth gathered call, for the
+    identical reason).
 
-    Returns `(prior_description, continuity_streak)`:
+    Returns `(prior_description, continuity_streak, context_slot_rotation)`:
       - `prior_description`: the continuity input the next run's prompt is
         built from (design doc §2/§5).
       - `continuity_streak`: how many CONSECUTIVE recent runs used real
@@ -454,10 +457,18 @@ def load_latest_visual_chain_continuity_state() -> tuple[str | None, int]:
         recorded yet" answer, same direction a missing counter should fail
         in (under-count, never over-count, so a bad read causes an extra
         continuity run at worst, never gets stuck skipping resets forever).
+      - `context_slot_rotation`: a monotonically increasing counter this
+        service writes on every run (design doc §18,
+        `visual_chain.py::select_context_slot`), used to round-robin which
+        ONE of {context_text, self_study_text, memory_text} actually enters
+        the prompt each run -- see that function's own docstring for why
+        only one, ever. Missing/unparsable on a pre-Patch-7 row degrades to
+        0, same direction as `continuity_streak`.
 
-    Read-only, best-effort: `(None, 0)` on any error or empty table, so a
-    lookup failure degrades to "no continuity yet, nothing to cap" (the
-    same prompt a first-ever run uses) rather than breaking the tick.
+    Read-only, best-effort: `(None, 0, 0)` on any error or empty table, so a
+    lookup failure degrades to "no continuity yet, nothing to cap, start
+    rotation at slot 0" (the same prompt a first-ever run uses) rather than
+    breaking the tick.
     """
     try:
         from sqlalchemy import text
@@ -475,20 +486,25 @@ def load_latest_visual_chain_continuity_state() -> tuple[str | None, int]:
                 .first()
             )
         if not row:
-            return None, 0
+            return None, 0, 0
         value = row.get("prior_description")
         prior = str(value).strip() or None if value else None
         cj = row.get("chain_json")
         streak = 0
+        rotation = 0
         if isinstance(cj, dict):
             try:
                 streak = max(0, int(cj.get("continuity_streak") or 0))
             except (TypeError, ValueError):
                 streak = 0
-        return prior, streak
+            try:
+                rotation = max(0, int(cj.get("context_slot_rotation") or 0))
+            except (TypeError, ValueError):
+                rotation = 0
+        return prior, streak, rotation
     except Exception as exc:
         logger.debug("visual chain continuity state load failed: %s", exc)
-        return None, 0
+        return None, 0, 0
 
 
 # Cap on the interpretation text handed into a diffusion prompt (§ cap-all-
@@ -656,10 +672,22 @@ def load_latest_reverie_interpretation(
 
 
 # Cap on the self-study body handed into a diffusion prompt (§ cap-all-
-# collections) -- real bodies average ~1080 chars (measured live 2026-08-27),
-# most of it a fixed disclaimer footer; 400 chars covers the "what fired /
-# measured" substance without the boilerplate.
-MAX_SELF_STUDY_CONTEXT_CHARS = 400
+# collections). Was 400 chars (real bodies average ~1080 chars, measured
+# live 2026-08-27) until Patch 7 (design doc §18) found the REAL binding
+# constraint isn't the 400-char cap at all -- it's the diffusion model's
+# CLIP text encoder, which silently truncates any prompt over 77 tokens
+# (verified live with the actual tokenizer: a real self-study body at the
+# 400-char cap alone tokenizes to 104 tokens WITH its framing prefix,
+# already over budget by itself, before prior_description or a style
+# suffix are even added). 150 chars keeps this clause (with its "Orion
+# recently noticed: " prefix) around 47 tokens -- real margin for
+# prior_description/style to coexist. Self-study's dense, jargon-heavy
+# prose (hyphens, underscores, table/column names) tokenizes markedly
+# worse per character than natural narration (~3.8 chars/token measured,
+# vs context_text's ~5 chars/token) -- that is why this cap is tighter
+# than MAX_REVERIE_CONTEXT_CHARS despite both feeding the same 77-token
+# budget.
+MAX_SELF_STUDY_CONTEXT_CHARS = 150
 
 # The ONLY four source_ref prefixes self_study_analysis.py's SOURCE_SPECS
 # actually writes (services/orion-cortex-exec/app/self_study_analysis.py,
@@ -791,9 +819,17 @@ def load_latest_self_study_reflection(
         return None
 
 
-# Cap on the crystallization summary handed into a diffusion prompt --
-# same 400 self_study uses (§ cap-all-collections).
-MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 400
+# Cap on the crystallization summary handed into a diffusion prompt (§
+# cap-all-collections). Was 400 chars (matching self_study's old cap) until
+# Patch 7 (design doc §18) found the real binding constraint is the
+# diffusion model's 77-token CLIP text-encoder budget, not this char count
+# -- verified live with the real tokenizer. 180 chars keeps this clause
+# (with its "Orion remembers: " prefix) around 44 tokens. Crystallization
+# summaries are closer to natural conversational English than self-study's
+# jargon-heavy prose (~4 chars/token measured vs self-study's ~3.8), so
+# this cap sits between MAX_SELF_STUDY_CONTEXT_CHARS and
+# MAX_REVERIE_CONTEXT_CHARS rather than matching either.
+MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 180
 
 
 def load_latest_memory_crystallization(

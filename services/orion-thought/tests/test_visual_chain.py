@@ -1,7 +1,8 @@
-"""Reverie VISUAL chain (Patch 2 orchestration + Patch 3 context-seeding +
-Patch 4 continuity reset) -- fully testable with injected fakes at each hop:
-diffusion generation, percept upload, vision-host RPC, reverie-interpretation
-context-seed, continuity-streak read, and persistence. No GPU, no torch, no
+"""Reverie VISUAL chain (Patch 2 orchestration + Patch 3/5/6 context-seeding +
+Patch 4 continuity reset + Patch 7 context-slot rotation) -- fully testable
+with injected fakes at each hop: diffusion generation, percept upload,
+vision-host RPC, reverie-interpretation/self-study/memory-crystallization
+context-seeds, continuity-streak read, and persistence. No GPU, no torch, no
 live Redis/Postgres.
 """
 from __future__ import annotations
@@ -58,15 +59,32 @@ def _fake_bus(reply_payload: dict):
     return bus
 
 
-# --- build_visual_prompt (pure) ------------------------------------------------
+# --- build_visual_prompt (pure) ---------------------------------------------
+#
+# Patch 7 changed this function's signature: it used to take ALL THREE
+# context-seeds and blend whichever were non-empty (Patches 3/5/6). It now
+# takes ONE already-selected slot (context_slot_name/context_slot_text --
+# select_context_slot's output, below) -- the diffusion model's real
+# 77-token text-encoder budget made "blend all three" silently discard most
+# of them (module docstring's Patch 7 entry has the live evidence).
 
 
-def test_build_visual_prompt_uses_seed_when_neither_prior_nor_context():
+def test_build_visual_prompt_uses_seed_when_neither_prior_nor_slot():
     from app import visual_chain
 
     assert visual_chain.build_visual_prompt(None) == visual_chain.DEFAULT_SEED_PROMPT
     assert visual_chain.build_visual_prompt("   ") == visual_chain.DEFAULT_SEED_PROMPT
-    assert visual_chain.build_visual_prompt(None, "   ") == visual_chain.DEFAULT_SEED_PROMPT
+    assert visual_chain.build_visual_prompt(None, "context", "   ") == visual_chain.DEFAULT_SEED_PROMPT
+    assert visual_chain.build_visual_prompt(None, None, None) == visual_chain.DEFAULT_SEED_PROMPT
+
+
+def test_build_visual_prompt_ignores_slot_text_without_a_known_slot_name():
+    """Defensive: a slot_text with no valid, known slot_name must never
+    render an unlabeled clause -- both must be present and consistent."""
+    from app import visual_chain
+
+    assert visual_chain.build_visual_prompt(None, None, "some text") == visual_chain.DEFAULT_SEED_PROMPT
+    assert visual_chain.build_visual_prompt(None, "bogus_slot", "some text") == visual_chain.DEFAULT_SEED_PROMPT
 
 
 def test_build_visual_prompt_continues_prior():
@@ -77,103 +95,165 @@ def test_build_visual_prompt_continues_prior():
     assert prompt != visual_chain.DEFAULT_SEED_PROMPT
 
 
-def test_build_visual_prompt_uses_context_when_no_prior():
-    """Patch 3: a cold-start run (no prior_description yet) with a real
-    reverie thought on record must seed from that thought, not the generic
-    fixed string -- the whole point of context-seeding."""
+@pytest.mark.parametrize(
+    "slot_name,label",
+    [
+        ("context", "Orion is currently thinking"),
+        ("self_study", "Orion recently noticed"),
+        ("memory", "Orion remembers"),
+    ],
+)
+def test_build_visual_prompt_uses_selected_slot_when_no_prior(slot_name, label):
+    """Patch 3/5/6's original point, preserved under Patch 7's new
+    signature: a cold-start run (no prior_description yet) with a real
+    selected context-seed must seed from it, not the generic fixed string
+    -- whichever of the three slots won this run's rotation."""
     from app import visual_chain
 
-    prompt = visual_chain.build_visual_prompt(None, "the mesh keeps humming with new nodes")
-    assert "the mesh keeps humming with new nodes" in prompt
+    prompt = visual_chain.build_visual_prompt(None, slot_name, "the mesh keeps humming with new nodes")
+    assert f"{label}: the mesh keeps humming with new nodes" in prompt
     assert prompt != visual_chain.DEFAULT_SEED_PROMPT
 
 
-def test_build_visual_prompt_blends_prior_and_context():
-    """Both continuity and context-seed present -- neither silently drops
-    the other; a reader of the stored prompt can see both inputs."""
+def test_build_visual_prompt_blends_prior_and_selected_slot():
+    """Both continuity and the selected context-seed present -- neither
+    silently drops the other; a reader of the stored prompt can see both
+    inputs."""
     from app import visual_chain
 
-    prompt = visual_chain.build_visual_prompt("a quiet room, warm light", "curiosity about the mesh")
+    prompt = visual_chain.build_visual_prompt(
+        "a quiet room, warm light", "context", "curiosity about the mesh"
+    )
     assert "a quiet room, warm light" in prompt
     assert "curiosity about the mesh" in prompt
 
 
-def test_build_visual_prompt_uses_self_study_when_nothing_else():
-    """Patch 5: self_study_text alone (no prior, no context) still seeds a
-    real prompt, not the generic fixed string."""
+def test_build_visual_prompt_exact_wording_for_each_slot():
+    """Exact-string assertions (not just substring checks) for every slot
+    label's wording -- a regression guard, matching the discipline Patch 5's
+    list-join refactor established."""
     from app import visual_chain
 
-    prompt = visual_chain.build_visual_prompt(
-        None, None, "vision events dropped 0.36x vs baseline"
-    )
-    assert "vision events dropped 0.36x vs baseline" in prompt
-    assert prompt != visual_chain.DEFAULT_SEED_PROMPT
-
-
-def test_build_visual_prompt_blends_all_three_inputs():
-    """All three present -- none silently drops another."""
-    from app import visual_chain
-
-    prompt = visual_chain.build_visual_prompt(
-        "a quiet room, warm light",
-        "curiosity about the mesh",
-        "vision events dropped 0.36x vs baseline",
-    )
-    assert "a quiet room, warm light" in prompt
-    assert "curiosity about the mesh" in prompt
-    assert "vision events dropped 0.36x vs baseline" in prompt
-
-
-def test_build_visual_prompt_uses_memory_text_when_nothing_else():
-    """Patch 6: memory_text alone (no prior, no context, no self-study)
-    still seeds a real prompt, not the generic fixed string."""
-    from app import visual_chain
-
-    prompt = visual_chain.build_visual_prompt(
-        None, None, None, "Orion and Juniper talked through the mesh work"
-    )
-    assert "Orion and Juniper talked through the mesh work" in prompt
-    assert prompt != visual_chain.DEFAULT_SEED_PROMPT
-
-
-def test_build_visual_prompt_blends_all_four_inputs():
-    """All four present -- none silently drops another."""
-    from app import visual_chain
-
-    prompt = visual_chain.build_visual_prompt(
-        "a quiet room, warm light",
-        "curiosity about the mesh",
-        "vision events dropped 0.36x vs baseline",
-        "Orion and Juniper talked through the mesh work",
-    )
-    assert "a quiet room, warm light" in prompt
-    assert "curiosity about the mesh" in prompt
-    assert "vision events dropped 0.36x vs baseline" in prompt
-    assert "Orion and Juniper talked through the mesh work" in prompt
-
-
-def test_build_visual_prompt_exact_wording_unchanged_for_pre_patch_5_combinations():
-    """Review-motivated refactor guard (module docstring): the list-join
-    composition must produce BYTE-IDENTICAL output to Patch 3/4's old
-    explicit if/elif branches for every combination that existed before
-    Patch 5 -- this only adds a third clause, never changes the other two's
-    wording. Exact-string assertions, not just substring checks."""
-    from app import visual_chain
-
-    assert visual_chain.build_visual_prompt(None, None) == visual_chain.DEFAULT_SEED_PROMPT
+    assert visual_chain.build_visual_prompt(None, None, None) == visual_chain.DEFAULT_SEED_PROMPT
     assert (
         visual_chain.build_visual_prompt("a quiet room, warm light")
         == "a quiet room, warm light. Continue this train of imagination, soft dreamlike style."
     )
     assert (
-        visual_chain.build_visual_prompt(None, "curiosity about the mesh")
+        visual_chain.build_visual_prompt(None, "context", "curiosity about the mesh")
         == "Orion is currently thinking: curiosity about the mesh. Soft abstract dreamlike style."
     )
     assert (
-        visual_chain.build_visual_prompt("a quiet room, warm light", "curiosity about the mesh")
-        == "a quiet room, warm light. Orion is currently thinking: curiosity about the mesh. "
+        visual_chain.build_visual_prompt(
+            "a quiet room, warm light", "self_study", "vision events dropped 0.36x vs baseline"
+        )
+        == "a quiet room, warm light. Orion recently noticed: vision events dropped 0.36x vs baseline. "
         "Continue this train of imagination, soft dreamlike style."
     )
+    assert (
+        visual_chain.build_visual_prompt(None, "memory", "Orion and Juniper talked through the mesh work")
+        == "Orion remembers: Orion and Juniper talked through the mesh work. Soft abstract dreamlike style."
+    )
+
+
+# --- select_context_slot (pure) ---------------------------------------------
+#
+# Patch 7 (module docstring): the actual regression fix. Round-robin among
+# whichever of {context, self_study, memory} currently have real content --
+# never all three at once, since only one clause's worth of tokens ever
+# realistically survives the diffusion model's 77-token budget.
+
+
+def test_select_context_slot_none_when_nothing_available():
+    from app import visual_chain
+
+    assert visual_chain.select_context_slot(None, None, None, 5) == (None, None, 5)
+    assert visual_chain.select_context_slot("   ", "", None, 5) == (None, None, 5)
+
+
+def test_select_context_slot_rotation_index_unchanged_when_nothing_available():
+    """No reason to advance a counter that picked nothing this run."""
+    from app import visual_chain
+
+    _, _, next_idx = visual_chain.select_context_slot(None, None, None, 7)
+    assert next_idx == 7
+
+
+def test_select_context_slot_picks_context_first_at_rotation_zero():
+    from app import visual_chain
+
+    name, text, next_idx = visual_chain.select_context_slot("ctx", "study", "mem", 0)
+    assert (name, text) == ("context", "ctx")
+    assert next_idx == 1
+
+
+def test_select_context_slot_rotates_through_all_three_and_wraps():
+    from app import visual_chain
+
+    idx = 0
+    picks = []
+    for _ in range(4):
+        name, _text, idx = visual_chain.select_context_slot("ctx", "study", "mem", idx)
+        picks.append(name)
+    assert picks == ["context", "self_study", "memory", "context"]
+
+
+def test_select_context_slot_skips_unavailable_slots():
+    """Only self_study and memory have content this run -- rotation cycles
+    between just those two, never invents a pick for the absent context
+    slot."""
+    from app import visual_chain
+
+    idx = 0
+    picks = []
+    for _ in range(3):
+        name, _text, idx = visual_chain.select_context_slot(None, "study", "mem", idx)
+        picks.append(name)
+    assert picks == ["self_study", "memory", "self_study"]
+
+
+def test_select_context_slot_wraps_a_large_rotation_index():
+    from app import visual_chain
+
+    name, _text, next_idx = visual_chain.select_context_slot("ctx", "study", "mem", 100)
+    assert name == "self_study"  # 100 % 3 == 1
+    assert next_idx == 101
+
+
+def test_select_context_slot_not_perfectly_fair_under_fluctuating_availability():
+    """Review finding, documented not fixed (see the function's own
+    docstring): re-indexing against the CURRENT available set means a slot
+    present on more ticks than another can be visited disproportionately
+    more often -- this locks in the actual, verified behavior rather than
+    the docstring's own former (incorrect) claim of perfect fairness.
+    Progress and per-tick coverage of whatever IS available are still
+    guaranteed; long-run fairness across a changing set is not, and this
+    function does not attempt to provide it."""
+    from app import visual_chain
+
+    idx = 0
+    picks = []
+    # context/memory always present; self_study toggles absent on some ticks.
+    self_study_present = [True, True, True, True, False, True, False]
+    for present in self_study_present:
+        name, _text, idx = visual_chain.select_context_slot(
+            "ctx", "study" if present else None, "mem", idx
+        )
+        picks.append(name)
+
+    # Exact sequence, verified by direct simulation -- "context" is picked
+    # more than an even 1/3 share precisely because the available set
+    # shrinks on two of the seven ticks.
+    assert picks == [
+        "context",
+        "self_study",
+        "memory",
+        "context",
+        "context",
+        "memory",
+        "context",
+    ]
+    assert picks.count("context") > len(picks) // 3  # the actual unfairness
 
 
 # --- resolve_visual_chain_continuity (pure) --------------------------------
@@ -251,7 +331,7 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -286,6 +366,7 @@ async def test_run_visual_chain_once_success(tmp_path, monkeypatch):
     assert chain.terminal_reason == "max_steps"
     assert chain.prior_description == "a calm room with soft light"
     assert generate_calls == [visual_chain.DEFAULT_SEED_PROMPT]  # no prior/context -> seed prompt
+    assert chain.chain_json["context_slot_used"] is None
 
     assert len(persisted_chains) == 1
     assert persisted_chains[0].chain_id == chain.chain_id
@@ -315,7 +396,7 @@ async def test_run_visual_chain_once_generation_failure_writes_no_artifact(tmp_p
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -358,7 +439,7 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: ("old description", 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -396,16 +477,18 @@ async def test_run_visual_chain_once_caption_failure_carries_forward_prior(tmp_p
 async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     tmp_path, monkeypatch
 ):
-    """Patch 3 acceptance check: the context-seed actually reaches the
-    diffusion prompt AND is recorded in chain_json as its own field -- same-
-    run evidence a reader (or this repo's own Hub Reverie tab) can inspect,
-    not just embedded prose inside the prompt string (module docstring's
-    "same-run evidence, not schema presence" discipline, design doc §9)."""
+    """Patch 3 acceptance check, preserved under Patch 7's rotation: with
+    context_text the only real context-seed available, rotation trivially
+    selects it, and it reaches both the prompt and chain_json as its own
+    field -- same-run evidence a reader (or this repo's own Hub Reverie
+    tab) can inspect, not just embedded prose inside the prompt string
+    (module docstring's "same-run evidence, not schema presence"
+    discipline, design doc §9)."""
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
     )
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
@@ -427,6 +510,7 @@ async def test_run_visual_chain_once_uses_context_text_in_prompt_and_chain_json(
     assert chain is not None
     assert "a real reverie thought" in chain.chain_json["prompt"]
     assert chain.chain_json["context_text"] == "a real reverie thought"
+    assert chain.chain_json["context_slot_used"] == "context"
 
 
 @pytest.mark.asyncio
@@ -439,7 +523,7 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
     )
     monkeypatch.setattr(
         visual_chain, "load_latest_reverie_interpretation", lambda **kw: "a real reverie thought"
@@ -457,6 +541,7 @@ async def test_run_visual_chain_once_generation_failure_records_context_text(
 
     assert chain.terminal_reason == "generation_failed"
     assert chain.chain_json["context_text"] == "a real reverie thought"
+    assert chain.chain_json["context_slot_used"] == "context"
 
 
 @pytest.mark.asyncio
@@ -485,16 +570,17 @@ async def test_continuity_flows_into_the_next_run(tmp_path, monkeypatch):
     monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
 
     # A tiny fake "DB": load reads back whatever the last persisted chain wrote.
-    db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0}
+    db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0, "context_slot_rotation": 0}
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: (db["prior_description"], db["continuity_streak"]),
+        lambda: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
     )
 
     def fake_persist_chain(chain):
         db["prior_description"] = chain.prior_description
         db["continuity_streak"] = chain.chain_json.get("continuity_streak", 0)
+        db["context_slot_rotation"] = chain.chain_json.get("context_slot_rotation", 0)
         return True
 
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
@@ -540,16 +626,17 @@ async def test_continuity_resets_after_max_runs_end_to_end(tmp_path, monkeypatch
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_memory_crystallization", lambda **kw: None)
 
-    db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0}
+    db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0, "context_slot_rotation": 0}
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: (db["prior_description"], db["continuity_streak"]),
+        lambda: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
     )
 
     def fake_persist_chain(chain):
         db["prior_description"] = chain.prior_description
         db["continuity_streak"] = chain.chain_json.get("continuity_streak", 0)
+        db["context_slot_rotation"] = chain.chain_json.get("context_slot_rotation", 0)
         return True
 
     monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
@@ -618,7 +705,11 @@ async def test_continuity_reset_survives_a_failed_generation(tmp_path, monkeypat
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: ("the same stale aqueduct", visual_chain.settings.visual_chain_continuity_max_runs),
+        lambda: (
+            "the same stale aqueduct",
+            visual_chain.settings.visual_chain_continuity_max_runs,
+            0,
+        ),
     )
 
     def fake_generate(prompt, *, base_url, timeout_sec):
@@ -649,7 +740,11 @@ async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkey
     monkeypatch.setattr(
         visual_chain,
         "load_latest_visual_chain_continuity_state",
-        lambda: ("the same stale aqueduct", visual_chain.settings.visual_chain_continuity_max_runs),
+        lambda: (
+            "the same stale aqueduct",
+            visual_chain.settings.visual_chain_continuity_max_runs,
+            0,
+        ),
     )
     monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
     monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "f" * 64)
@@ -680,16 +775,15 @@ async def test_continuity_reset_survives_a_failed_reobservation(tmp_path, monkey
 async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_json(
     tmp_path, monkeypatch
 ):
-    """Patch 5 acceptance check: the self-study context-seed actually reaches
-    the diffusion prompt AND is recorded in chain_json as its own field --
-    same-run evidence, matching the discipline test_run_visual_chain_once_
-    uses_context_text_in_prompt_and_chain_json already established for
-    Patch 3's context_text."""
+    """Patch 5 acceptance check, preserved under Patch 7's rotation: with
+    self_study_text the only real context-seed available, rotation
+    trivially selects it -- same discipline as the context_text test
+    above."""
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(
@@ -709,6 +803,7 @@ async def test_run_visual_chain_once_uses_self_study_text_in_prompt_and_chain_js
     assert chain is not None
     assert "vision events dropped 0.36x vs baseline" in chain.chain_json["prompt"]
     assert chain.chain_json["self_study_text"] == "vision events dropped 0.36x vs baseline"
+    assert chain.chain_json["context_slot_used"] == "self_study"
 
 
 @pytest.mark.asyncio
@@ -722,7 +817,7 @@ async def test_run_visual_chain_once_generation_failure_records_self_study_text(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(
@@ -742,20 +837,21 @@ async def test_run_visual_chain_once_generation_failure_records_self_study_text(
 
     assert chain.terminal_reason == "generation_failed"
     assert chain.chain_json["self_study_text"] == "vision events dropped 0.36x vs baseline"
+    assert chain.chain_json["context_slot_used"] == "self_study"
 
 
 @pytest.mark.asyncio
 async def test_run_visual_chain_once_uses_memory_text_in_prompt_and_chain_json(
     tmp_path, monkeypatch
 ):
-    """Patch 6 acceptance check: the memory-crystallization context-seed
-    actually reaches the diffusion prompt AND is recorded in chain_json as
-    its own field -- same discipline as context_text/self_study_text."""
+    """Patch 6 acceptance check, preserved under Patch 7's rotation: with
+    memory_text the only real context-seed available, rotation trivially
+    selects it -- same discipline as context_text/self_study_text above."""
     from app import visual_chain
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -775,6 +871,7 @@ async def test_run_visual_chain_once_uses_memory_text_in_prompt_and_chain_json(
     assert chain is not None
     assert "Orion and Juniper talked through the mesh work" in chain.chain_json["prompt"]
     assert chain.chain_json["memory_text"] == "Orion and Juniper talked through the mesh work"
+    assert chain.chain_json["context_slot_used"] == "memory"
 
 
 @pytest.mark.asyncio
@@ -788,7 +885,7 @@ async def test_run_visual_chain_once_generation_failure_records_memory_text(
 
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
     monkeypatch.setattr(
-        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0)
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
     )
     monkeypatch.setattr(visual_chain, "load_latest_reverie_interpretation", lambda **kw: None)
     monkeypatch.setattr(visual_chain, "load_latest_self_study_reflection", lambda **kw: None)
@@ -808,3 +905,99 @@ async def test_run_visual_chain_once_generation_failure_records_memory_text(
 
     assert chain.terminal_reason == "generation_failed"
     assert chain.chain_json["memory_text"] == "Orion and Juniper talked through the mesh work"
+    assert chain.chain_json["context_slot_used"] == "memory"
+
+
+@pytest.mark.asyncio
+async def test_run_visual_chain_once_uses_only_one_context_seed_per_run_when_all_three_present(
+    tmp_path, monkeypatch
+):
+    """Patch 7's actual regression fix, end to end (live report,
+    2026-08-28: "the memory got washed out and Orion just continued
+    generating stars"). When all three context-seeds have real content
+    SIMULTANEOUSLY, only the rotation-selected one may appear in the
+    prompt -- concatenating all three (Patches 3/5/6's original design) is
+    exactly what silently exceeded the diffusion model's real 77-token
+    budget (verified live: a real prompt hit 191 tokens)."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_visual_chain_continuity_state", lambda: (None, 0, 0)
+    )
+    monkeypatch.setattr(
+        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "the coalition narration"
+    )
+    monkeypatch.setattr(
+        visual_chain, "load_latest_self_study_reflection", lambda **kw: "the self-study finding"
+    )
+    monkeypatch.setattr(
+        visual_chain, "load_latest_memory_crystallization", lambda **kw: "the shared memory"
+    )
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "i" * 64)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", lambda c: True)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+
+    bus = _fake_bus(_vision_result_payload("a rendering"))
+    chain = await visual_chain.run_visual_chain_once(bus)
+
+    assert chain is not None
+    # Rotation starts at index 0 -> "context" wins this run.
+    assert chain.chain_json["context_slot_used"] == "context"
+    assert "the coalition narration" in chain.chain_json["prompt"]
+    # The real assertion: the other two, though real and separately
+    # recorded, must NOT also be crammed into the same prompt string.
+    assert "the self-study finding" not in chain.chain_json["prompt"]
+    assert "the shared memory" not in chain.chain_json["prompt"]
+    # Still recorded, for inspectability -- just not rendered this run.
+    assert chain.chain_json["self_study_text"] == "the self-study finding"
+    assert chain.chain_json["memory_text"] == "the shared memory"
+
+
+@pytest.mark.asyncio
+async def test_context_slot_rotation_advances_across_successive_runs(tmp_path, monkeypatch):
+    """Design doc §18 acceptance check: successive runs visit different
+    context-seeds in turn, proven via the same fake-DB round-trip harness
+    test_continuity_flows_into_the_next_run uses for prior_description --
+    same-run evidence, not just select_context_slot's own isolated
+    correctness."""
+    from app import visual_chain
+
+    monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
+    monkeypatch.setattr(
+        visual_chain, "load_latest_reverie_interpretation", lambda **kw: "the coalition narration"
+    )
+    monkeypatch.setattr(
+        visual_chain, "load_latest_self_study_reflection", lambda **kw: "the self-study finding"
+    )
+    monkeypatch.setattr(
+        visual_chain, "load_latest_memory_crystallization", lambda **kw: "the shared memory"
+    )
+
+    db: dict[str, Any] = {"prior_description": None, "continuity_streak": 0, "context_slot_rotation": 0}
+    monkeypatch.setattr(
+        visual_chain,
+        "load_latest_visual_chain_continuity_state",
+        lambda: (db["prior_description"], db["continuity_streak"], db["context_slot_rotation"]),
+    )
+
+    def fake_persist_chain(chain):
+        db["prior_description"] = chain.prior_description
+        db["continuity_streak"] = chain.chain_json.get("continuity_streak", 0)
+        db["context_slot_rotation"] = chain.chain_json.get("context_slot_rotation", 0)
+        return True
+
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_chain", fake_persist_chain)
+    monkeypatch.setattr(visual_chain, "persist_reverie_visual_artifact", lambda a: True)
+    monkeypatch.setattr(visual_chain, "call_diffusion_generate", lambda prompt, **kw: _fake_png())
+    monkeypatch.setattr(visual_chain, "upload_to_percept_store", lambda data, **kw: "j" * 64)
+
+    slots_used = []
+    for _ in range(4):
+        chain = await visual_chain.run_visual_chain_once(
+            _fake_bus(_vision_result_payload("a rendering"))
+        )
+        slots_used.append(chain.chain_json["context_slot_used"])
+
+    assert slots_used == ["context", "self_study", "memory", "context"]

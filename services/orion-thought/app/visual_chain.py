@@ -73,6 +73,45 @@ second audience for that content beyond the one person who is also its
 original source. See `store.load_latest_memory_crystallization`'s own
 docstring for the full writeup.
 
+Patch 7 (design doc §18): the REAL root cause of "the memory got washed
+out and Orion just kept generating stars" (live report, 2026-08-28, same
+day Patch 6 shipped) -- Patches 3/5/6 concatenated ALL THREE context-seeds
+into one prompt string, but `orion-diffusion-host`'s SDXL-turbo model
+truncates its CLIP text encoder input at 77 tokens, SILENTLY (diffusers'
+own default, no exception, no response-visible signal). Verified live
+with the real tokenizer against an actual generated prompt: 191 real
+tokens, encoder only sees the first 77 -- cutting off mid self-study
+clause and NEVER reaching `memory_text` or even the trailing style
+suffix. Every context-seed added after Patch 3 had, in practice, almost
+never actually reached the model, regardless of how correctly it was
+computed, stored, and displayed in the Hub tab -- a real "no empty-shell
+cognition" (CLAUDE.md §0A) violation once understood: the UI honestly
+showed content the image could not possibly have reflected.
+
+Fix, two parts:
+  1. `select_context_slot` below: stop concatenating all three -- round-
+     robin ONE per run (after `prior_description`/continuity, which keeps
+     its own separate reset mechanism from Patch 4). Reduces the realistic
+     worst case from 4 competing clauses to 2 (continuity + one selected
+     slot), and each individual slot's own char cap was independently
+     re-derived against the REAL tokenizer (see `store.py`'s
+     `MAX_SELF_STUDY_CONTEXT_CHARS`/`MAX_MEMORY_CRYSTALLIZATION_CONTEXT_
+     CHARS` -- both cut substantially from their Patch 5/6 values, which
+     were never checked against a real token budget at all).
+  2. `orion-diffusion-host`'s `_run_generation` now logs a WARNING with
+     real token counts whenever a prompt exceeds either of SDXL's two
+     text-encoder budgets (CLIP-L and OpenCLIP-bigG) -- this exact failure
+     mode was previously invisible in every log this system produces; it
+     took a forensic re-tokenization of an already-stored prompt to find
+     it. Visibility only (does not change what gets generated) -- the
+     actual behavioral fix is #1.
+
+A genuinely long-context text encoder (T5-XXL, used by FLUX.1/SD3.5)
+would remove this ceiling entirely, but that is a real model-swap
+decision (different VRAM footprint, different generation parameters, a
+fresh Circe GPU/VRAM check) -- out of scope for this patch, which fixes
+the model actually running today.
+
 One run = one step (`step_index=0` always). The design doc's "chain" here is
 the *sequence of runs over time* (each with its own `chain_id`, linked by
 `prior_description`), not a multi-step loop within one run like the text
@@ -163,45 +202,120 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Framing prefix per context-seed source, keyed by the slot name
+# `select_context_slot` returns -- moved out of `build_visual_prompt`
+# itself (Patch 7) since only ONE slot's text is ever composed into a
+# prompt now, not all three.
+_CONTEXT_SLOT_LABELS: dict[str, str] = {
+    "context": "Orion is currently thinking",
+    "self_study": "Orion recently noticed",
+    "memory": "Orion remembers",
+}
+
+
+def select_context_slot(
+    context_text: str | None,
+    self_study_text: str | None,
+    memory_text: str | None,
+    rotation_index: int,
+) -> tuple[str | None, str | None, int]:
+    """Patch 7 (module docstring): pick ONE of the three context-seeds to
+    actually put in the prompt this run, round-robin among whichever
+    currently have real content.
+
+    Why one, not all three: SDXL-turbo's CLIP text encoder truncates at 77
+    tokens, silently. Concatenating all three (Patches 3/5/6's original
+    design) meant real prompts routinely hit 150-200+ tokens -- verified
+    live 2026-08-28 against an actual generated prompt (191 tokens) -- so
+    every clause after the first was, in practice, invisible to the model
+    regardless of how correct its content was. Rotation guarantees whichever
+    ONE slot wins this run gets its full, real token budget instead of
+    fighting two other clauses for the same 77-token window every single
+    time.
+
+    Pure function -- `rotation_index` is `store.load_latest_visual_chain_
+    continuity_state()`'s third return value (a monotonically increasing
+    counter this service writes every run). `idx = rotation_index %
+    len(available)` re-indexes against whichever slots currently have
+    content, so a currently-empty slot never gets skipped-but-still-counted
+    the way a fixed `rotation_index % 3` would (a self-study body absent
+    this tick costs nothing -- rotation just cycles the other two).
+
+    Review finding, not fixed by design: this re-indexing is NOT guaranteed
+    fair in the long run when the available set itself fluctuates tick to
+    tick (verified by direct simulation) -- a slot that happens to be
+    present on more ticks than another can end up visited disproportionately
+    more often, since `rotation_index % len(available)` maps the SAME
+    counter value to a different position whenever `len(available)`
+    changes. This does not get anything stuck (progress and eventual
+    coverage of every currently-available slot are still guaranteed each
+    tick) -- it just is not a perfect long-run-fair scheduler under
+    fluctuating availability, and this function does not attempt to be one.
+    The actual regression this fixes (concatenating all three, guaranteeing
+    2 of 3 are silently truncated away every single tick) does not require
+    long-run fairness to be solved -- "sometimes one slot" beats "always
+    the same one or two truncated."
+
+    Returns `(slot_name, slot_text, next_rotation_index)`:
+      - `slot_name`/`slot_text`: `None`/`None` when no context-seed has
+        real content this run (`build_visual_prompt` then falls back to
+        `prior_description`/`DEFAULT_SEED_PROMPT`, unchanged from before
+        this patch).
+      - `next_rotation_index`: the value to record in this run's
+        `chain_json.context_slot_rotation`, for the next run's decision.
+        Left unchanged when nothing was available this run -- no reason to
+        advance a counter that picked nothing.
+    """
+    available = [
+        (name, text)
+        for name, text in (
+            ("context", context_text),
+            ("self_study", self_study_text),
+            ("memory", memory_text),
+        )
+        if (text or "").strip()
+    ]
+    if not available:
+        return None, None, rotation_index
+    idx = rotation_index % len(available)
+    slot_name, slot_text = available[idx]
+    return slot_name, slot_text, rotation_index + 1
+
+
 def build_visual_prompt(
     prior_description: str | None,
-    context_text: str | None = None,
-    self_study_text: str | None = None,
-    memory_text: str | None = None,
+    context_slot_name: str | None = None,
+    context_slot_text: str | None = None,
 ) -> str:
     """The diffusion prompt for one run. See module docstring for scope.
 
-    Four independent inputs, each optional: `prior_description` (visual
-    continuity -- the previous run's own re-observed caption), `context_text`
-    (Patch 3 -- Orion's own most recent real reverie-thought interpretation),
-    `self_study_text` (Patch 5 -- a real quantified self-study observation),
-    and `memory_text` (Patch 6 -- a real shared-life memory crystallization).
+    Two independent inputs, each optional: `prior_description` (visual
+    continuity -- the previous run's own re-observed caption) and ONE
+    selected context-seed (`context_slot_name`/`context_slot_text` --
+    Patch 7's `select_context_slot`, the round-robin winner among
+    {context_text, self_study_text, memory_text} for THIS run only).
     Continuity keeps the image chain visually coherent frame-to-frame; the
-    three context-seeds keep it grounded in what Orion is actually
+    selected context-seed keeps it grounded in what Orion is actually
     narrating/observing/remembering instead of drifting into purely
     self-referential imagery with nothing anchoring it to a real cognitive
-    state. Falls back to DEFAULT_SEED_PROMPT only when all four are empty.
+    state. Falls back to DEFAULT_SEED_PROMPT only when both are empty.
 
-    Composed by joining whichever clauses are non-empty (list-join
-    composition, not if/elif branches -- a fourth optional input would have
-    meant 16 branches by that pattern). Output is byte-identical to the old
-    branches for every combination that existed before Patch 6 (verified by
-    test_visual_chain.py's exact-string assertions) -- this only adds a
-    fourth clause, never changes the other three's wording.
+    Was a four-way list-join over all three context-seeds at once
+    (Patches 3/5/6) until Patch 7 found that design silently discarded
+    everything past the diffusion model's real 77-token budget -- see
+    `select_context_slot`'s own docstring and the module docstring's
+    Patch 7 entry for the live evidence. This function's own wording for
+    each labeled clause is unchanged; only how many clauses it is ever
+    asked to compose changed (always at most one selected slot now, never
+    up to three).
     """
     prior = (prior_description or "").strip()
-    context = (context_text or "").strip()
-    self_study = (self_study_text or "").strip()
-    memory = (memory_text or "").strip()
+    slot_text = (context_slot_text or "").strip()
     clauses = []
     if prior:
         clauses.append(prior)
-    if context:
-        clauses.append(f"Orion is currently thinking: {context}")
-    if self_study:
-        clauses.append(f"Orion recently noticed: {self_study}")
-    if memory:
-        clauses.append(f"Orion remembers: {memory}")
+    if slot_text and context_slot_name in _CONTEXT_SLOT_LABELS:
+        clauses.append(f"{_CONTEXT_SLOT_LABELS[context_slot_name]}: {slot_text}")
     if not clauses:
         return DEFAULT_SEED_PROMPT
     style = (
@@ -382,6 +496,7 @@ async def run_visual_chain_once(
     async def _generation_failed(chain_id: str, error: BaseException, prompt: str,
                                   prior_description: str | None, context_text: str | None,
                                   self_study_text: str | None, memory_text: str | None,
+                                  context_slot_used: str | None, context_slot_rotation: int,
                                   continuity_streak: int, continuity_reset: bool
                                   ) -> ReverieVisualChainV1:
         logger.warning("visual chain generation failed chain=%s err=%s", chain_id, error)
@@ -395,6 +510,8 @@ async def run_visual_chain_once(
                 "context_text": context_text,
                 "self_study_text": self_study_text,
                 "memory_text": memory_text,
+                "context_slot_used": context_slot_used,
+                "context_slot_rotation": context_slot_rotation,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "error": str(error),
@@ -411,12 +528,13 @@ async def run_visual_chain_once(
         # (review finding: this function already makes exactly this
         # argument a few lines below for store_visual_artifact/
         # upload_to_percept_store; the same reasoning applies here).
-        # prior_description and continuity_streak come from the SAME row of
-        # the SAME table, so they're one combined read (review finding: two
+        # prior_description, continuity_streak, AND context_slot_rotation
+        # come from the SAME row of the SAME table, so they're one combined
+        # read (review finding on the original 2-value version: two
         # separate round trips to the same row wasted a query and left a
-        # theoretical read-your-own-write race), not two gathered reads.
+        # theoretical read-your-own-write race), not three gathered reads.
         (
-            (prior_description, continuity_streak),
+            (prior_description, continuity_streak, context_slot_rotation),
             context_text,
             self_study_text,
             memory_text,
@@ -461,7 +579,15 @@ async def run_visual_chain_once(
         # before resetting again). A non-reset run keeps the pre-Patch-4
         # behavior unchanged: carry the old value forward on any failure.
         continuity_fallback = None if continuity_reset else prior_description
-        prompt = build_visual_prompt(effective_prior, context_text, self_study_text, memory_text)
+        # Patch 7 (module docstring): pick ONE context-seed for this run's
+        # prompt instead of concatenating all three -- see
+        # select_context_slot's own docstring for why. Computed here
+        # (before generation) so a failed run still records which slot/
+        # rotation value it used, same discipline as continuity_streak.
+        context_slot_used, context_slot_text, context_slot_rotation = select_context_slot(
+            context_text, self_study_text, memory_text, context_slot_rotation
+        )
+        prompt = build_visual_prompt(effective_prior, context_slot_used, context_slot_text)
 
         try:
             png_bytes = await asyncio.to_thread(
@@ -473,7 +599,8 @@ async def run_visual_chain_once(
         except Exception as exc:
             return await _generation_failed(
                 chain_id, exc, prompt, continuity_fallback, context_text, self_study_text,
-                memory_text, continuity_streak, continuity_reset,
+                memory_text, context_slot_used, context_slot_rotation,
+                continuity_streak, continuity_reset,
             )
 
         # store_visual_artifact (disk write) and upload_to_percept_store (a
@@ -500,7 +627,8 @@ async def run_visual_chain_once(
         if isinstance(store_result, BaseException):
             return await _generation_failed(
                 chain_id, store_result, prompt, continuity_fallback, context_text, self_study_text,
-                memory_text, continuity_streak, continuity_reset,
+                memory_text, context_slot_used, context_slot_rotation,
+                continuity_streak, continuity_reset,
             )
         stored: StoredVisualArtifact = store_result
 
@@ -536,6 +664,8 @@ async def run_visual_chain_once(
                 "context_text": context_text,
                 "self_study_text": self_study_text,
                 "memory_text": memory_text,
+                "context_slot_used": context_slot_used,
+                "context_slot_rotation": context_slot_rotation,
                 "continuity_streak": continuity_streak,
                 "continuity_reset": continuity_reset,
                 "artifact_sha256": stored.sha256,

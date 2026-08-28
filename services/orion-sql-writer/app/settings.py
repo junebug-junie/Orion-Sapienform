@@ -30,6 +30,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "dream.result.v1": "Dream",
     "biometrics.telemetry": "BiometricsTelemetry",
     "biometrics.summary.v1": "BiometricsSummarySQL",
+    "biometrics.cluster.v1": "BiometricsClusterSQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
@@ -137,6 +138,7 @@ class Settings(BaseSettings):
             "orion:dream:log",
             "orion:telemetry:biometrics",
             "orion:biometrics:summary",
+            "orion:biometrics:cluster",
             "orion:biometrics:induction",
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -342,6 +344,17 @@ class Settings(BaseSettings):
         10, alias="SUBSTRATE_PROPOSAL_FRAMES_RETENTION_DAYS"
     )
 
+    # Fleet power history for orion_biometrics_cluster. ~2,880 rows/day at the ~30s
+    # publish cadence, so 30 days is ~86k small rows. Bounded from the table's first
+    # commit rather than after it becomes a problem.
+    # Name matches the TABLE name exactly, as every other managed table's does.
+    # `_other_retention_truth_blocks` builds the attribute as f"{table}_retention_days",
+    # so a `biometrics_cluster_` prefix on a table called `orion_biometrics_cluster`
+    # would make /health report a working prune as unconfigured.
+    orion_biometrics_cluster_retention_days: int = Field(
+        30, alias="ORION_BIOMETRICS_CLUSTER_RETENTION_DAYS"
+    )
+
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
     # The window was never the reason these tables were 36 GB -- retention could not run
@@ -473,6 +486,15 @@ class Settings(BaseSettings):
         # autonomy feedback lane before it can even reach the fallback log.
         if "orion:autonomy:action:outcome" not in channels:
             channels.append("orion:autonomy:action:outcome")
+        # Same guarantee, same reason, learned the same way. biometrics.cluster.v1 is a
+        # code-default route with no feature toggle, and SQL_WRITER_SUBSCRIBE_CHANNELS
+        # REPLACES the Python default wholesale rather than merging the way `route_map`
+        # does -- so adding the channel to settings.py alone left the writer with a
+        # correct route, a correct model, working retention, a created table, green
+        # tests, and no subscription. Caught in review before deploy; the code default
+        # is not sufficient on its own for this field.
+        if "orion:biometrics:cluster" not in channels:
+            channels.append("orion:biometrics:cluster")
         return channels
 
     @property

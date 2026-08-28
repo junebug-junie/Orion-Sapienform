@@ -66,6 +66,16 @@ class ReverieVisualChainV1(BaseModel):
     terminal_reason: VisualTerminalReason = "max_steps"
     ema_salience: float = Field(default=0.0, ge=0.0, le=1.0)
     prior_description: str | None = None
+    # NOTE (2026-08-28): `chain_json["description"]` has a SECOND consumer
+    # outside this service -- `services/orion-hub/scripts/endogenous_outreach.
+    # py::_fetch_current_daydream` reads it straight out of Postgres to ground
+    # Orion's unprompted outreach. It is an untyped key with no schema field
+    # and no cross-service contract test, so renaming or dropping it makes
+    # that lane go permanently silent with no error and no failing test.
+    # It reads this key rather than `prior_description` above on purpose:
+    # `visual_chain.py` sets `prior_description = description or
+    # continuity_fallback`, which carries the PREVIOUS run's caption forward
+    # on a caption-failure row.
     chain_json: dict = Field(default_factory=dict)
     stored_at: datetime = Field(default_factory=_utc_now)
 

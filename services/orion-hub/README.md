@@ -269,29 +269,80 @@ numbers. `GET .../status` reports both `peak_deviation_pressure` and
 `sustained_load_pressure` on `last_tension_reason` so an operator can see
 which fact(s) actually drove a given outreach.
 
-**Daydreams, not only telemetry (2026-08-28).** Every other grounding lane
+**A daydream, not only telemetry (2026-08-28).** Every other grounding lane
 above is an instrument reading, so an unprompted message could only ever be
-Orion narrating its own dials. `_fetch_recent_daydreams` adds the one lane
-that is not: the captions orion-thought's *reverie visual chain* writes to
+Orion narrating its own dials. `_fetch_current_daydream` adds the one lane
+that is not: the caption orion-thought's *reverie visual chain* writes to
 `reverie_visual_chain` (~1 row/600s — it generates an image from whatever
 Orion is currently thinking/noticing/remembering, then looks at what came
-out). The last **3 distinct** captions inside a **12h** window go into the
+out). The newest **usable** caption inside a **12h** window goes into the
 prompt with a coarse relative age, explicitly framed as Orion's own so the
-generated text cannot thank Juniper for pictures she never sent.
+generated text cannot thank Juniper for a picture she never sent.
 
-De-duplication is a Jaccard token overlap (`_DAYDREAM_SIMILARITY = 0.2`), not
-exact/prefix matching: consecutive captions re-describe one slowly-drifting
-image, and a prefix de-dupe measured live on 2026-08-28 left three
-near-identical "celestial map" lines in the top 3. At 0.2 the same 24h of
-captions yields 30 distinct themes and the drift is visible across days
-(Roman aqueducts on 2026-08-27 → celestial/star maps on 2026-08-28).
+**One caption, not a list — and that is a measured retraction, not caution.**
+The first version of this lane shipped the last 3 *distinct* captions,
+de-duplicated by Jaccard token overlap at 0.2. Measured against all 328 live
+rows, that mechanism does not work and no threshold fixes it:
 
-Three columns on that table were checked and **deliberately not used** — all
-325 rows since the chain went live on 2026-08-25 have `theme_key = ''`,
-`ema_salience = 0.000`, and `terminal_reason = 'max_steps'`. They carry no
-information today; nothing here is built on them. Like `embodied_presence`,
-daydreams are enrichment only and are **not** part of `is_empty()`: having
-been daydreaming is never on its own a reason to interrupt Juniper.
+* Consecutive captions re-describe **one** image, so they differ mostly in
+  *length*. Jaccard divides by the union, which penalises exactly that: two
+  17th-century celestial maps measured **0.150**, under the threshold, so
+  both rendered.
+* The containment coefficient corrects that length bias and is *worse* — at
+  0.4 it surfaced three map captions.
+* Eyeballing sampled `(newest, next-distinct)` pairs across the corpus, both
+  variants returned obvious duplicates (two Roman aqueducts; two 17th-century
+  star charts).
+
+The producer already knows this. `visual_chain.py`'s Patch 4 exists because
+Juniper reported *"still doing the same images of Roman aqueducts, no
+change"* on 2026-08-27: `prior_description` continuity locks onto a visual
+attractor for 10+ runs. Presenting "your last 3 daydreams" over a corpus that
+lands on attractors is a claim the data cannot support (AGENTS.md §0A). The
+newest usable caption needs no such claim, and it cut the lane from 38% to
+23% of the prompt — it was previously the largest block in it, for the lane
+that is explicitly the least load-bearing.
+
+`chain_json.continuity_streak`/`continuity_reset` were evaluated as a
+ready-made theme boundary and **rejected**: live they run a rigid `3 2 1 0`
+period-4 cycle, because `resolve_visual_chain_continuity` forces a reset
+every `visual_chain_continuity_max_runs` runs unconditionally. That is a
+mechanical cap, not a signal that the imagery changed. Showing genuine
+*drift* ("celestial maps for two hours; Roman aqueducts before that") would
+need a real theme detector — embeddings, not bag-of-words — and is left as
+follow-up rather than faked.
+
+**Caption validity is load-bearing, because only one caption ships.**
+`_looks_like_daydream_prose` rejects two live failure modes of the vision
+model: raw grounding output (`objects(103,419),(554,604)`,
+`bridge(269,261),(879,661)`, and one row that echoed the prompt's own
+instruction text back with coordinates attached) and bare tag dumps
+(`1. Sun 2. Mercury 3. Venus …`, `two trees, lake, reflection, purple sky`).
+Over all 328 rows it rejects 9, every one genuinely unusable, with no false
+positives — including a short 18-word real caption that a naive
+alphabetic-character-ratio test wrongly drops. Both shapes are **producer
+bugs worth fixing in orion-thought**; this is the consumer-side guard, not
+the fix. `_DAYDREAM_SCAN_LIMIT` is 12 rather than 1 for the same reason: ~3%
+of rows are debris and ~10% have a NULL caption, so "newest row" is often not
+"newest usable row".
+
+Two more deliberate choices worth not undoing. The whitespace collapse in
+`_clean_daydream` is an **injection guard**, not prompt-shape hygiene — this
+is model-generated text interpolated into a prompt, and flattening newlines
+is what stops a caption forging its own prompt line. And the lane reads
+`chain_json->>'description'`, **not** the typed `prior_description` column
+that looks like the obvious simplification: `visual_chain.py:527` sets
+`prior_description = description or continuity_fallback`, so on a
+caption-failure row it carries the *previous* run's caption forward and would
+silently re-surface a stale daydream as current.
+
+Three columns on that table were checked and **deliberately not used** — over
+all 328 rows since the chain went live on 2026-08-25, `theme_key` is NULL on
+every row (`count(theme_key) = 0`; the producer never sets it),
+`ema_salience` is exactly `0.000`, and `terminal_reason` is always
+`'max_steps'`. They carry no information today. Like `embodied_presence`, the
+daydream is enrichment only and is **not** part of `is_empty()`: having been
+daydreaming is never on its own a reason to interrupt Juniper.
 
 **Through the real unified turn, not a lookalike (2026-08-19).** Generation
 used to call `CortexGatewayClient.chat()` directly — a bare bus RPC to

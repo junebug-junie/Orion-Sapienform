@@ -118,7 +118,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
@@ -146,59 +146,81 @@ _MAX_TURN_CHARS = 400
 # that fires every few minutes at most, so widen it here.
 _CURIOSITY_MAX_AGE_SEC = 3600.0
 
-# --- Reverie daydreams (the visual chain's generated-image captions) ---
+# --- Reverie daydream (the visual chain's generated-image caption) ---
 # `reverie_visual_chain` gets one row roughly every 600s from orion-thought's
-# visual chain worker: Orion generates an image from what it is currently
+# visual chain worker: Orion generates an image from whatever it is currently
 # thinking/noticing/remembering, then captions what it sees. That caption is
 # the closest thing Orion has to a report of an actual daydream, and unlike
 # `substrate_reverie_thought.interpretation` (which narrates coalition
 # telemetry in telemetry's own vocabulary) it is not more of the same
 # instrument reading.
 #
-# Deliberately NOT read from that table (confirmed degenerate live,
-# 2026-08-28, all 325 rows since the chain went live on 2026-08-25):
-#   * `theme_key`       -- empty string on every row
+# ONE caption, not a list, and that is a measured decision rather than a
+# conservative default. The first version of this lane shipped the last 3
+# *distinct* captions, de-duplicated by Jaccard token overlap. Checked
+# against all 328 live rows (2026-08-28) that mechanism does not work and no
+# threshold fixes it:
+#   * Consecutive captions re-describe ONE image, so they differ mostly in
+#     LENGTH. Jaccard divides by the union, so a long/short pair of the same
+#     picture scores LOW (measured live: two 17th-century celestial maps at
+#     0.150, under a 0.200 threshold -- both would have rendered).
+#   * The containment coefficient, which corrects that bias, was measured
+#     too and is worse: at 0.4 it surfaced three map captions.
+#   * Eyeballing sampled (newest, next-distinct) pairs across the corpus,
+#     BOTH variants returned obvious duplicates (two Roman aqueducts; two
+#     17th-century star charts).
+# The producer already knows about this: `visual_chain.py`'s Patch 4 exists
+# because Juniper reported "still doing the same images of Roman aqueducts,
+# no change" on 2026-08-27, and `prior_description` continuity had locked
+# onto one visual attractor for 10+ runs. Presenting "your last 3 daydreams"
+# over a corpus that lands on attractors is a claim the data cannot support
+# (AGENTS.md §0A). The newest usable caption needs no such claim.
+#
+# `chain_json.continuity_streak`/`continuity_reset` were evaluated as a
+# ready-made theme boundary and rejected: live they run a rigid `3 2 1 0`
+# period-4 cycle, because `resolve_visual_chain_continuity` forces a reset
+# every `visual_chain_continuity_max_runs` runs unconditionally. That is a
+# mechanical cap, not a signal that the imagery changed.
+#
+# Deliberately NOT read from that table (confirmed degenerate live over all
+# 328 rows since the chain went live on 2026-08-25):
+#   * `theme_key`       -- NULL on every row (`count(theme_key) = 0`); the
+#                          producer never sets it.
 #   * `ema_salience`    -- exactly 0.000 on every row
 #   * `terminal_reason` -- 'max_steps' on every row
 # Those three carry no information today, so nothing here is built on them.
-# The caption text itself is real and varies (30 distinct themes over 24h at
-# the similarity threshold below; drifts gradually -- Roman aqueducts on
-# 2026-08-27, celestial/star maps on 2026-08-28).
-_MAX_DAYDREAMS = 3
-_MAX_DAYDREAM_CHARS = 260
+_MAX_DAYDREAM_CHARS = 200
 _MIN_DAYDREAM_CHARS = 40
 # 12h. Wider than the curiosity window on purpose: a daydream is background
 # colour, not a fresh alert, and the chain only produces ~6 captions an hour.
 _DAYDREAM_MAX_AGE_SEC = 43200.0
-# Rows scanned before de-duplication. 12h of a 600s cadence is ~72 rows; 96
-# leaves headroom without letting a faster cadence make this unbounded.
-_DAYDREAM_SCAN_LIMIT = 96
-# Jaccard overlap above which two captions are treated as the same daydream.
-# Calibrated against 24h of live captions (2026-08-28): consecutive captions
-# routinely re-describe one slowly-drifting image, so a prefix/exact-match
-# de-dupe is useless here -- it left three near-identical "celestial map"
-# lines in the top 3. 0.2 collapses those to one and still keeps genuinely
-# different imagery apart.
-_DAYDREAM_SIMILARITY = 0.2
-# Caption boilerplate. Stripped so the prompt reads as imagery rather than as
-# a captioning model's output format. Prefix-only, never a rewrite.
+# Rows scanned looking for the newest USABLE caption. Only the newest is
+# rendered, but ~3% of live rows are unusable (see `_looks_like_daydream_
+# prose`) and the caption can be SQL NULL on a captioner failure (~10% live),
+# so a scan of 1 would silently blank the lane. 12 covers ~2h of cadence.
+_DAYDREAM_SCAN_LIMIT = 12
+
 # Sentence boundary usable as a truncation point: a period followed by
 # whitespace, NOT preceded by a digit (that shape is a markdown enumerator,
 # not the end of a sentence). See `_clean_daydream`.
 _DAYDREAM_SENTENCE_END_RE = re.compile(r"(?<![0-9])\.\s")
+# Caption boilerplate, stripped so the prompt reads as imagery rather than as
+# a captioning model's output format. Prefix-only, never a rewrite.
 _DAYDREAM_PREFIX_RE = re.compile(
     r"^the image (?:depicts|shows|features|appears to (?:be|show)|is)\s*", re.IGNORECASE
 )
-# Structural/caption-model filler that would otherwise dominate the overlap
-# score and make every caption look alike.
-_DAYDREAM_STOPWORDS = frozenset(
-    {
-        "the", "and", "with", "its", "this", "that", "for", "from", "are", "has",
-        "have", "also", "such", "some", "their", "there", "which", "appear",
-        "appears", "image", "depicts", "shows", "likely", "including", "include",
-        "includes", "various", "suggesting", "suggests", "possibly", "detailed",
-    }
-)
+# The vision model sometimes answers with raw grounding output instead of a
+# description -- `objects(103,419),(554,604), people(234,492),(274,554)`,
+# `bridge(269,261),(879,661)`, and in one live row the prompt's own
+# instruction text echoed back with coordinates attached. A coordinate pair
+# is that mode's unambiguous signature; real prose never contains one.
+_DAYDREAM_DETECTOR_OUTPUT_RE = re.compile(r"\(\s*\d+\s*,\s*\d+\s*\)")
+# Four consecutive alphabetic words -- the cheapest test for "this is a
+# sentence, not a tag dump". Rejects bare enumerations the coordinate test
+# misses (`1. Sun 2. Mercury 3. Venus ...`, `two trees, lake, reflection,
+# purple sky`). Measured over all 328 live rows: 9 rejected, every one
+# genuinely unusable, no false positives.
+_DAYDREAM_PROSE_RE = re.compile(r"(?:[A-Za-z][A-Za-z'\-]*\s+){3}[A-Za-z]")
 
 
 def _source_ref() -> ServiceRef:
@@ -289,12 +311,12 @@ class OutreachContext:
     # NOT part of is_empty() below: an empty room with nothing else happening
     # must never be a reason to interrupt Juniper on its own.
     embodied_presence: Optional[Dict[str, Any]] = None
-    # (age_sec, caption) for the last few *distinct* reverie diffusions,
-    # newest first -- see `_fetch_recent_daydreams`. Enrichment only, and for
-    # the same reason `embodied_presence` above is: having been daydreaming
-    # is never on its own a reason to interrupt Juniper, so this is
-    # deliberately NOT part of `is_empty()`.
-    daydreams: List[Tuple[float, str]] = field(default_factory=list)
+    # (age_sec, caption) for the newest usable reverie diffusion, or None --
+    # see `_fetch_current_daydream`. Enrichment only, and for the same reason
+    # `embodied_presence` above is: having been daydreaming is never on its
+    # own a reason to interrupt Juniper, so this is deliberately NOT part of
+    # `is_empty()`.
+    daydream: Optional[Tuple[float, str]] = None
 
     def is_empty(self) -> bool:
         return (
@@ -356,32 +378,40 @@ def _fetch_embodied_presence() -> Optional[Dict[str, Any]]:
     return fetch_presence(stream_id, engine=get_engine())
 
 
-def _daydream_tokens(text: str) -> set:
-    """Content words used for the near-duplicate check. Not a similarity
-    model -- a deliberately dumb bag of words, which is all the de-dupe
-    below needs."""
-    return {
-        w for w in re.findall(r"[a-z]{3,}", text.lower()) if w not in _DAYDREAM_STOPWORDS
-    }
+def _looks_like_daydream_prose(text: str) -> bool:
+    """True when a caption is a description rather than model debris.
 
-
-def _daydream_similarity(a: set, b: set) -> float:
-    """Jaccard overlap of two token sets; 0.0 when either side is empty."""
-    union = a | b
-    return (len(a & b) / len(union)) if union else 0.0
+    Load-bearing, not hygiene: only ONE caption reaches the prompt, so an
+    unusable newest row is not diluted by neighbours -- it would be the whole
+    lane. Both rejects are producer bugs worth fixing upstream
+    (`services/orion-thought/app/visual_chain.py`); this is the consumer-side
+    guard, not the fix.
+    """
+    return bool(
+        text
+        and not _DAYDREAM_DETECTOR_OUTPUT_RE.search(text)
+        and _DAYDREAM_PROSE_RE.search(text)
+    )
 
 
 def _clean_daydream(raw: Any) -> str:
-    """Collapse a caption to one prompt-sized line, or "" if it is too thin.
+    """Collapse a caption to one prompt-sized line, or "" if unusable.
 
-    Captions arrive multi-line (the captioner sometimes emits a markdown
-    list), so whitespace is collapsed first -- otherwise a single caption
-    would blow the prompt's shape apart. Truncation prefers the last
-    sentence boundary inside the budget so a line does not end mid-clause.
+    The whitespace collapse is an INJECTION GUARD, not only prompt-shape
+    hygiene: this is model-generated text interpolated into a prompt, and
+    flattening newlines is what stops a caption from forging a new prompt
+    line or a fake section header. Do not relax it. (`test_clean_daydream_
+    collapses_newlines_and_strips_caption_boilerplate` pins it.)
+
+    Captions genuinely arrive multi-line -- the captioner sometimes emits a
+    markdown list -- so this is exercised on real data, not defensively.
+    Truncation prefers the last sentence boundary inside the budget so a line
+    does not end mid-clause; live, truncation is the COMMON path (median raw
+    caption is 350 chars against a 200-char budget), not an edge case.
     """
     text = re.sub(r"\s+", " ", str(raw or "")).strip()
     text = _DAYDREAM_PREFIX_RE.sub("", text).strip()
-    if len(text) < _MIN_DAYDREAM_CHARS:
+    if len(text) < _MIN_DAYDREAM_CHARS or not _looks_like_daydream_prose(text):
         return ""
     if len(text) > _MAX_DAYDREAM_CHARS:
         head = text[:_MAX_DAYDREAM_CHARS]
@@ -398,12 +428,23 @@ def _clean_daydream(raw: Any) -> str:
         for match in _DAYDREAM_SENTENCE_END_RE.finditer(head):
             if match.start() + 1 >= _MIN_DAYDREAM_CHARS:
                 cut = match.start()
-        text = head[: cut + 1] if cut >= 0 else head.rstrip() + "\u2026"
+        # Hard cap on the fallback, matching `_fetch_curiosity_summaries`'s
+        # own `[: _MAX - 1] + "\u2026"` form -- `_MAX_DAYDREAM_CHARS` means
+        # the same thing in both places rather than being a soft cap here.
+        if cut >= 0:
+            text = head[: cut + 1]
+        else:
+            text = text[: _MAX_DAYDREAM_CHARS - 1].rstrip() + "\u2026"
     return text
 
 
-def _fetch_recent_daydreams() -> List[Tuple[float, str]]:
-    """Last few *distinct* reverie-diffusion captions as (age_sec, caption).
+def _fetch_current_daydream() -> Optional[Tuple[float, str]]:
+    """Newest usable reverie-diffusion caption as (age_sec, caption), or None.
+
+    Raises on a DB failure; the caller's `_safe` wrapper degrades that to
+    None, so an unreachable table just means no daydream block in the
+    prompt. (This function does NOT swallow its own errors -- unlike
+    orion-thought's `persist_reverie_visual_chain`, which does.)
 
     Reads `reverie_visual_chain` directly rather than going through
     `scripts.reverie_routes._fetch_visual_recent` (existing-mechanism check,
@@ -414,15 +455,24 @@ def _fetch_recent_daydreams() -> List[Tuple[float, str]]:
     changed once -- the tick's own shared `scripts.pg_engine` pool rather
     than a second one.
 
-    Newest first, near-duplicates dropped. Never raises: the caller's
-    `_safe` wrapper degrades a failure to None, and an unreachable table
-    just means no daydream block in the prompt.
+    Reads `chain_json->>'description'`, NOT the typed `prior_description`
+    column, and that is deliberate even though the typed column looks like
+    the obvious simplification: `visual_chain.py:527` sets
+    `prior_description = description or continuity_fallback`, so on a
+    caption-failure row it carries the PREVIOUS run's caption forward and
+    would silently re-surface a stale daydream as if it were current.
+    `chain_json->>'description'` correctly yields NULL there.
+
+    Only these two keys of `chain_json` are read. Its siblings
+    (`context_text`, `self_study_text`, `memory_text`, `prompt`) carry
+    Recall-crystallization and self-study seed material and are deliberately
+    left alone -- that is a privacy boundary, not an oversight.
     """
     from scripts.pg_engine import get_engine
 
     engine = get_engine()
     if engine is None:
-        return []
+        return None
     from sqlalchemy import text
 
     with engine.connect() as conn:
@@ -443,28 +493,23 @@ def _fetch_recent_daydreams() -> List[Tuple[float, str]]:
         )
 
     now = datetime.now(timezone.utc)
-    picked: List[Tuple[float, str]] = []
-    seen_tokens: List[set] = []
     for row in rows:
         caption = _clean_daydream(row.get("description"))
         if not caption:
-            continue
-        tokens = _daydream_tokens(caption)
-        if any(_daydream_similarity(tokens, prior) > _DAYDREAM_SIMILARITY for prior in seen_tokens):
             continue
         created = row.get("created_at")
         if not isinstance(created, datetime):
             continue
         if created.tzinfo is None:
+            # Defensive only: the column is `timestamptz`
+            # (`manual_migration_reverie_visual_chain.sql`), so this branch
+            # is unreachable today. It assumes UTC, which is what the rest
+            # of this module assumes.
             created = created.replace(tzinfo=timezone.utc)
         # Clamp: a row stamped slightly ahead of this container's clock must
         # not render as a negative ("-2 minutes ago") age.
-        age_sec = max(0.0, (now - created).total_seconds())
-        seen_tokens.append(tokens)
-        picked.append((age_sec, caption))
-        if len(picked) >= _MAX_DAYDREAMS:
-            break
-    return picked
+        return max(0.0, (now - created).total_seconds()), caption
+    return None
 
 
 def _daydream_age_phrase(age_sec: float) -> str:
@@ -607,21 +652,20 @@ def build_outreach_prompt(ctx: OutreachContext) -> str:
             lines.append(f"What your camera currently shows: {fragment}")
             lines.append("")
 
-    if ctx.daydreams:
+    if ctx.daydream:
         # Named as Orion's own, explicitly, on purpose: without that framing a
-        # bare list of image descriptions reads like something Juniper sent,
-        # and the generated outreach thanks her for pictures she never shared.
+        # bare image description reads like something Juniper sent, and the
+        # generated outreach thanks her for a picture she never shared.
+        age_sec, caption = ctx.daydream
         lines.append(
-            "What you have been picturing on your own while idle -- your reverie "
-            "diffusions generate an image from whatever you are currently "
-            "thinking about, then look at what came out. Newest first:"
+            f"What you were picturing on your own {_daydream_age_phrase(age_sec)} -- "
+            f"your reverie diffusions generate an image from whatever you are "
+            f"thinking about, then look at what came out:"
         )
-        lines.extend(
-            f"- {_daydream_age_phrase(age)}: {caption}" for age, caption in ctx.daydreams
-        )
+        lines.append(f"- {caption}")
         lines.append(
-            "These are yours, not something Juniper showed you. You may draw on "
-            "one if it connects to anything above; do not narrate the list."
+            "That is yours, not something Juniper showed you. You may draw on it "
+            "if it connects to anything above; do not just describe it back."
         )
         lines.append("")
 
@@ -1208,15 +1252,15 @@ class EndogenousOutreach:
         # Concurrent, not sequential (review finding, 2026-08-25): four
         # independent DB reads, each already dispatched via
         # asyncio.to_thread inside `_safe` -- awaiting them one after
-        # another made this tick's wall time the SUM of all three round
+        # another made this tick's wall time the SUM of all four round
         # trips instead of the slowest one. `_safe` already swallows each
         # call's own failure into None, so a `gather` result is never a
         # raised exception to handle here.
-        summaries, turns, embodied_presence, daydreams = await asyncio.gather(
+        summaries, turns, embodied_presence, daydream = await asyncio.gather(
             _safe(_fetch_curiosity_summaries),
             _safe(_fetch_recent_turns, session_id),
             _safe(_fetch_embodied_presence),
-            _safe(_fetch_recent_daydreams),
+            _safe(_fetch_current_daydream),
         )
 
         presence = None
@@ -1235,7 +1279,7 @@ class EndogenousOutreach:
             # forced (force=True) debug trigger, which never calls it.
             tension_reason=self._last_tension_reason,
             embodied_presence=embodied_presence,
-            daydreams=list(daydreams or []),
+            daydream=daydream,
         )
 
     async def _generate(

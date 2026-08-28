@@ -221,6 +221,19 @@ _DAYDREAM_DETECTOR_OUTPUT_RE = re.compile(r"\(\s*\d+\s*,\s*\d+\s*\)")
 # purple sky`). Measured over all 328 live rows: 9 rejected, every one
 # genuinely unusable, no false positives.
 _DAYDREAM_PROSE_RE = re.compile(r"(?:[A-Za-z][A-Za-z'\-]*\s+){3}[A-Za-z]")
+# A caption that addresses a reader is not a description of Orion's own
+# image. Live 2026-08-28, exactly one row of 296: "The graph you provided is
+# a phase diagram..." -- the captioner was addressed conversationally and
+# answered in kind. Rendering that verbatim under "That is yours, not
+# something Juniper showed you" produces the precise failure the ownership
+# sentence exists to prevent, so the framing is not asked to out-argue the
+# text; the text is dropped.
+#
+# The asymmetry justifies a blunt pronoun test: a false positive costs one
+# skipped caption out of `_DAYDREAM_SCAN_LIMIT` scanned rows, while a false
+# negative has Orion thank Juniper for a picture she never sent. Measured
+# over all 296 live captions: 1 match, no false positives.
+_DAYDREAM_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours|you're)\b", re.IGNORECASE)
 
 
 def _source_ref() -> ServiceRef:
@@ -383,13 +396,15 @@ def _looks_like_daydream_prose(text: str) -> bool:
 
     Load-bearing, not hygiene: only ONE caption reaches the prompt, so an
     unusable newest row is not diluted by neighbours -- it would be the whole
-    lane. Both rejects are producer bugs worth fixing upstream
+    lane. All three rejects (grounding output, second-person address, tag
+    dumps) are producer bugs worth fixing upstream
     (`services/orion-thought/app/visual_chain.py`); this is the consumer-side
     guard, not the fix.
     """
     return bool(
         text
         and not _DAYDREAM_DETECTOR_OUTPUT_RE.search(text)
+        and not _DAYDREAM_SECOND_PERSON_RE.search(text)
         and _DAYDREAM_PROSE_RE.search(text)
     )
 

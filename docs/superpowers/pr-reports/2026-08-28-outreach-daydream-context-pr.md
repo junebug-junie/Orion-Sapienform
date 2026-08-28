@@ -75,6 +75,7 @@ Showing genuine *drift* ("celestial maps for two hours; Roman aqueducts before t
 
 Both live in `services/orion-thought/app/visual_chain.py`. This PR adds the consumer-side guard only.
 
+0. **The captioner sometimes answers in the second person** — `"The graph you provided is a phase diagram…"` — because it was addressed conversationally. 1 of 296 live rows.
 1. **The vision model sometimes returns raw grounding output instead of a description.** Live rows: `objects(103,419),(554,604), people(234,492),(274,554)`, `bridge(269,261),(879,661)`, and one that echoed the prompt's own instruction text back with coordinates attached: `objects(1,2),(996,995),people(1,2),(996,995),state only what is directly visible.(1,2),(996,995)`.
 2. **Bare tag dumps with no sentence**: `1. Sun 2. Mercury 3. Venus …`, `two trees, lake, reflection, purple sky`.
 3. **Three columns are degenerate across all 329 rows**: `theme_key` is NULL on every row (`count(theme_key) = 0` — the producer never sets it), `ema_salience` is exactly `0.000`, `terminal_reason` is always `'max_steps'`. Checked, documented, and deliberately unused here.
@@ -102,7 +103,11 @@ Caption text is model-generated and interpolated into a prompt, so it is untrust
 
 ```text
 $ pytest services/orion-hub/tests/test_endogenous_outreach.py -q
-139 passed in 4.95s
+142 passed in 4.71s
+
+$ pytest services/orion-hub/tests/test_endogenous_outreach.py services/orion-hub/evals -q
+146 passed in 4.68s      # tests + evals in ONE session: the evals conftest's
+                         # sys.path fix does not disturb the tests suite
 
 $ pytest services/orion-hub/tests -q --tb=no
 31 failed, 1703 passed, 5 skipped
@@ -122,6 +127,8 @@ Mutation-tested — all five caught:
 | rename the SQL JSON key to `prior_description` | 1 failed |
 | return newest row instead of newest *usable* row | 2 failed |
 | count `daydream` in `is_empty()` | 1 failed |
+| drop the second-person guard | 3 failed |
+| second-person match by substring, not word boundary | 1 failed |
 
 ## Evals run
 
@@ -132,7 +139,8 @@ $ pytest services/orion-hub/evals -q
 $ DAYDREAM_EVAL_DATABASE_URL=<unreachable> pytest services/orion-hub/evals -q
 4 skipped in 0.40s      # skips cleanly, does not pass vacuously
 
-live corpus: rows=329 captioned=297 usable=288 rate=97.0%
+live corpus: rows=331 captioned=299 usable=289 rate=96.7%
+# (97.0% before the second-person guard; the guard costs exactly one row)
 ```
 
 `services/orion-hub/` had **no `evals/` directory** before this PR (AGENTS.md §11 says add the smallest useful one or report the gap). This is that one, and it exists for a specific reason: the retracted claim could not have been caught by a unit test, because unit tests run on fixtures the same reasoning invented. The eval runs the real pipeline over the real rows.
@@ -178,7 +186,8 @@ LIVE daydream: (506.6, 'a detailed astronomical map, likely from the 17th or 18t
 - Finding: `chain_json["description"]` is an untyped cross-service dependency with no contract test.
   - Fix: documented at the field in `orion/schemas/reverie_visual.py`, naming the consumer and why `prior_description` is wrong.
 - Finding: a live caption reads *"The graph you provided is a phase diagram…"* — second-person, contradicting the ownership framing.
-  - Fix: partially addressed. That row is not currently the newest and only one caption ships, so the exposure is far smaller than with a 3-item list; the framing sentence remains the mitigation. **Not fully solved — see Concerns.**
+  - Fix: such captions are now **dropped**, not merely framed — `_DAYDREAM_SECOND_PERSON_RE` in `_looks_like_daydream_prose`. The framing sentence is never asked to out-argue the text sitting under it.
+  - Evidence: 1 match over all 296 live captions, no false positives; usable rate 97.0% → 96.7%. Mutations M6 (drop the guard) and M7 (substring instead of word-boundary — "young" contains "you") both fail the suite.
 - Finding: `services/orion-hub/` has no `evals/` directory (§11).
   - Fix: added, with the eval that would have caught the retracted claim.
   - Evidence: `4 passed` against live data; `4 skipped` with no DB.
@@ -198,7 +207,7 @@ No restart needed for anything else; no other service's behavior changes.
 
 ## Risks / concerns
 
-- Severity: **medium**. Concern: second-person captions ("The graph you provided…") can still reach the prompt beneath a line asserting the image is Orion's own — 1 of 297 live captions has this shape, because the *captioner* was addressed conversationally. Mitigation: the ownership sentence, plus one-caption exposure. Proper fix is upstream (the captioner's prompt) or a second-person detector here; neither is in this PR.
+- Severity: **low**. Concern: the second-person guard is a blunt pronoun test, calibrated on a single live occurrence. A caption legitimately containing "your" (an image of a sign, say) would be skipped. Mitigation: the cost is one skipped caption out of `_DAYDREAM_SCAN_LIMIT` scanned rows, against a false negative in which Orion thanks Juniper for a picture she never sent. The asymmetry is the whole argument, and it is stated in code. The real fix is upstream in the captioner's prompt.
 - Severity: **low**. Concern: the lane changes what generation weighs, so it will move the PASS rate for unprompted outreach, and nothing measures that. Mitigation: the block is 23% of the prompt and explicitly subordinate ("if it connects to anything above"). A PASS-rate eval is the honest follow-up; `endogenous_outreach_decisions` already logs the data it would need.
 - Severity: **low**. Concern: `chain_json["description"]` is an untyped cross-service key. Mitigation: documented at the schema; the eval's liveness test fails if the window empties.
 - Severity: **low**. Concern: three degenerate columns and two captioner failure modes are real producer bugs left unfixed in orion-thought. Mitigation: documented here and in the README; the consumer-side guard holds regardless.

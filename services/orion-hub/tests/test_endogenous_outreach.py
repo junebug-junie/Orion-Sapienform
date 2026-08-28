@@ -1835,6 +1835,11 @@ _LIVE_UNUSABLE_CAPTIONS = [
     "objects(1,2),(996,995),people(1,2),(996,995),state only what is directly visible.(1,2),(996,995)",
     "1. Sun 2. Mercury 3. Venus 4. Earth 5. Mars 6. Jupiter 7. Saturn 8. Uranus 9. Neptune 10. Pluto",
     "two trees, lake, reflection, purple sky",
+    # Second-person address: the captioner was talked TO and answered in
+    # kind. Rendering this under "That is yours, not something Juniper showed
+    # you" is the exact failure the ownership framing exists to prevent.
+    "The graph you provided is a phase diagram, which is a graphical representation of the "
+    "phase transitions in a system. The phase diagram you have is for a system with four phases.",
 ]
 
 # Verbatim live rows that MUST survive -- including the short one that a
@@ -2054,3 +2059,58 @@ def test_fetch_current_daydream_skips_a_row_with_no_usable_timestamp(monkeypatch
         [{"created_at": None, "description": "a bright ring of light in a dark swirling field of dust."}],
     )
     assert _fetch_current_daydream() is None
+
+
+def test_second_person_caption_is_dropped_not_merely_framed(monkeypatch) -> None:
+    """The ownership sentence must never be asked to out-argue the caption
+    text sitting directly beneath it. A second-person caption is skipped and
+    the next usable row is used instead."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    _install_fake_engine(
+        monkeypatch,
+        [
+            {
+                "created_at": now - timedelta(seconds=60),
+                "description": "The graph you provided is a phase diagram showing the phase "
+                "transitions in a system with four distinct phases.",
+            },
+            {
+                "created_at": now - timedelta(seconds=660),
+                "description": "The image depicts an ancient Roman aqueduct, its arched stone "
+                "spans crossing a dry valley under low sun.",
+            },
+        ],
+    )
+
+    result = _fetch_current_daydream()
+
+    assert result is not None
+    _, caption = result
+    assert "Roman aqueduct" in caption
+    assert "you provided" not in caption
+
+    prompt = build_outreach_prompt(
+        OutreachContext(
+            curiosity_summaries=["substrate.execution deviated for 6 straight reads"],
+            recent_turns=[],
+            presence=None,
+            daydream=result,
+        )
+    )
+    # The ownership claim and a "you provided" caption must never co-occur.
+    assert "That is yours, not something Juniper showed you." in prompt
+    assert "you provided" not in prompt
+
+
+def test_second_person_guard_does_not_reject_ordinary_captions() -> None:
+    """The pronoun test is blunt on purpose, but it must not eat descriptions
+    that merely contain the letters. Measured over all 296 live captions on
+    2026-08-28 it matched exactly one row, with no false positives."""
+    for caption in _LIVE_USABLE_CAPTIONS:
+        assert _looks_like_daydream_prose(caption) is True
+    # Words that merely CONTAIN a pronoun must not trip the word-boundary test.
+    assert _looks_like_daydream_prose(
+        "a young woman standing beneath a vaulted stone ceiling, lit from one side."
+    ) is True

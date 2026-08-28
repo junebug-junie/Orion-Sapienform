@@ -49,6 +49,7 @@ is why a prior whose confidence Orion wrote as a string still reads correctly.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -75,7 +76,28 @@ STATUS_REVISED = "revised"
 STATUS_REFUTED = "refuted"
 STATUS_RETIRED = "retired_unresolvable"
 
-RESOLVED_STATUSES = (STATUS_SUPPORTED, STATUS_REVISED, STATUS_REFUTED, STATUS_RETIRED)
+# A PRIOR IS LIVE UNTIL ORION EXPLICITLY CLOSES IT.
+#
+# `supported` and `revised` are what a TEST returned, not a decision to stop
+# holding the belief -- a claim at confidence 0.85 after one test is not
+# settled, and `revised` means the claim itself just changed, which is the most
+# live a prior can be. Only `refuted` ("this is wrong") and
+# `retired_unresolvable` ("I cannot answer this with what I can reach") are
+# Orion saying it is done.
+#
+# This was a real outage of the accumulation loop, not a hypothetical: on
+# 2026-08-27 run `7736d5271d97` tested its one inherited prior and revised it,
+# and run `0a14e9531089` four hours later was offered `priors=0/0` because the
+# reader asked for `status = 'open'` only. Every prior Orion had ever formed
+# was invisible to it, and its own new prior was written `supported` on
+# formation -- born already deleted from its future. Confidence could not move
+# a second time because nothing came back to be tested twice.
+#
+# Defined as the COMPLEMENT of closed, not as a list of live statuses, so a
+# status Orion typos reads as live. Losing a belief to a spelling mistake is
+# the worse failure: re-litigation is already bounded by `stale_after`, and a
+# stale prior is still shown with an explicit retire option.
+CLOSED_STATUSES = (STATUS_REFUTED, STATUS_RETIRED)
 
 
 class WorldviewUnavailable(RuntimeError):
@@ -178,11 +200,15 @@ class TurnOutcome:
 class WorldviewSnapshot:
     """Everything Hub read from Orion's graph for one run's presentation."""
 
-    open_priors: list[Prior] = field(default_factory=list)
+    # `live_*`, not `open_*`: these hold every prior Orion has not explicitly
+    # closed, which includes `supported` and `revised` ones. A field named for
+    # one status while holding several is how the next reader reintroduces the
+    # bug CLOSED_STATUSES documents.
+    live_priors: list[Prior] = field(default_factory=list)
     stale_priors: list[Prior] = field(default_factory=list)
     recently_settled: list[tuple[str, str]] = field(default_factory=list)
-    open_total: int = 0
-    resolved_total: int = 0
+    live_total: int = 0
+    closed_total: int = 0
     concept_total: int = 0
     continuation: Optional[TurnOutcome] = None
     unavailable_reason: Optional[str] = None
@@ -281,15 +307,39 @@ _PRIOR_FIELDS = (
     "p.formed_from AS formed_from, p.last_tested_at AS last_tested_at"
 )
 
-OPEN_PRIORS_CYPHER = (
-    f"MATCH (p:{LABEL_PRIOR}) WHERE p.status = '{STATUS_OPEN}' "
-    f"RETURN {_PRIOR_FIELDS} LIMIT 200"
+# `p.status IS NULL OR NOT ... IN` rather than a positive `IN [live]` list:
+# in Cypher `NOT null IN [...]` evaluates to null, which filters the row OUT,
+# so a prior written with no status at all would vanish without the explicit
+# null arm. See CLOSED_STATUSES for why unknown must read as live.
+_LIVE_WHERE = (
+    "(p.status IS NULL OR NOT p.status IN "
+    f"[{', '.join(repr(s) for s in CLOSED_STATUSES)}])"
+)
+_CLOSED_WHERE = f"(p.status IN [{', '.join(repr(s) for s in CLOSED_STATUSES)}])"
+
+# The live set does NOT drain the way the old `open`-only set did -- a prior
+# now leaves it only when Orion refutes or retires it -- so a silent truncation
+# here is a new failure mode: rows past the limit would never be shown, never
+# accumulate `times_tested`, and so never reach `stale_after` to be retired.
+#
+# NOT fixed with a server-side `ORDER BY abs(p.confidence - 0.5)`, which is the
+# obvious repair and is WORSE. Orion writes this graph by hand and sometimes
+# quotes a number; FalkorDB rejects the whole query on the first one
+# ("Type mismatch: expected ... but was String", reproduced live 2026-08-27),
+# which costs Orion its entire world view rather than merely mis-ordering it.
+# `_as_float` in Python tolerates the same value. So: a bound high enough not
+# to bite, and loud when it is reached.
+LIVE_PRIORS_LIMIT = 2000
+
+LIVE_PRIORS_CYPHER = (
+    f"MATCH (p:{LABEL_PRIOR}) WHERE {_LIVE_WHERE} "
+    f"RETURN {_PRIOR_FIELDS} LIMIT {LIVE_PRIORS_LIMIT}"
 )
 
 COUNTS_CYPHER = (
     f"MATCH (p:{LABEL_PRIOR}) "
-    f"RETURN sum(CASE WHEN p.status = '{STATUS_OPEN}' THEN 1 ELSE 0 END) AS open_total, "
-    f"sum(CASE WHEN p.status <> '{STATUS_OPEN}' THEN 1 ELSE 0 END) AS resolved_total"
+    f"RETURN sum(CASE WHEN {_LIVE_WHERE} THEN 1 ELSE 0 END) AS live_total, "
+    f"sum(CASE WHEN {_CLOSED_WHERE} THEN 1 ELSE 0 END) AS closed_total"
 )
 
 CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
@@ -297,8 +347,12 @@ CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 # Priors Orion has closed, newest first. `last_tested_at` is a string Orion
 # writes by hand, so this ordering is only as good as what it wrote -- which is
 # exactly why it is a HINT in the prompt and never a gate on anything.
+#
+# CLOSED, not merely "not open": a `supported` prior is still offered for
+# testing above, and listing it here as well would show Orion the same claim
+# twice in one prompt under two contradictory headings.
 RECENT_SETTLED_CYPHER = (
-    f"MATCH (p:{LABEL_PRIOR}) WHERE p.status <> '{STATUS_OPEN}' "
+    f"MATCH (p:{LABEL_PRIOR}) WHERE {_CLOSED_WHERE} "
     "RETURN p.claim AS claim, p.status AS status, "
     "p.last_tested_at AS last_tested_at "
     "ORDER BY p.last_tested_at DESC LIMIT 8"
@@ -388,25 +442,45 @@ def build_turn_outcome(row: dict[str, Any]) -> Optional[TurnOutcome]:
     )
 
 
+def _rotation_key(prior_id: str, seed: str) -> str:
+    """A per-run ordering for priors that are otherwise exactly tied.
+
+    Every prior Orion forms from the prompt's template starts at confidence
+    0.55 with `times_tested: 0`, so `(uncertainty, times_tested)` ties across
+    the whole fresh pool and the last term decides everything. A plain
+    `prior_id` tiebreak is stable across runs, which means the same
+    lexicographically-lowest `sample` priors are shown every run and the rest
+    are never presented, never tested, and never retirable. That did not matter
+    while a prior left the pool on its first test; it does now.
+
+    Seeded by run so a single run is reproducible -- the same run always builds
+    the same prompt -- while the window moves between runs.
+    """
+    return hashlib.sha256(f"{seed}:{prior_id}".encode()).hexdigest()
+
+
 def select_priors(
     rows: Sequence[dict[str, Any]],
     *,
     sample: int,
     stale_after: int,
+    rotate_seed: str = "",
 ) -> tuple[list[Prior], list[Prior], int]:
-    """Split open priors into (offered, stale, dropped_count).
+    """Split LIVE priors into (offered, stale, dropped_count).
 
     UNCERTAINTY ORDERS THE PRESENTATION; ORION STILL CHOOSES. That distinction
     is the whole difference from the keyword detector this arc deleted: the
     code is not naming a subject, it is showing Orion where its own map is
-    thin. Most-uncertain first, then least-tested, then a stable id tiebreak so
-    the order does not shuffle between runs for no reason.
+    thin. Most-uncertain first, then least-tested, then a PER-RUN rotation among
+    exact ties -- see `_rotation_key`. It was a stable id tiebreak until the
+    pool stopped draining on first test, at which point stable meant the same
+    `sample` priors every run forever and the rest never presented at all.
 
     STALE PRIORS ARE SEPARATED, NOT HIDDEN. A prior tested `stale_after` times
-    without its status moving is exactly the "finds a favourite and
+    without being closed is exactly the "finds a favourite and
     re-litigates it" failure in a new costume, so it leaves the uncertainty
     list -- but it is still shown, in its own bucket, with the explicit option
-    to retire it. Dropping it silently would leave it open in the graph
+    to retire it. Dropping it silently would leave it live in the graph
     forever with nothing able to close it, since Hub never writes.
     """
     priors: list[Prior] = []
@@ -421,8 +495,16 @@ def select_priors(
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}
     fresh = [p for p in priors if p.prior_id not in stale_ids]
-    fresh.sort(key=lambda p: (p.uncertainty, p.times_tested, p.prior_id))
-    stale.sort(key=lambda p: (-p.times_tested, p.prior_id))
+    fresh.sort(
+        key=lambda p: (
+            p.uncertainty,
+            p.times_tested,
+            _rotation_key(p.prior_id, rotate_seed),
+        )
+    )
+    stale.sort(
+        key=lambda p: (-p.times_tested, _rotation_key(p.prior_id, rotate_seed))
+    )
     return fresh[: max(0, sample)], stale[: max(0, sample)], dropped
 
 
@@ -431,6 +513,7 @@ def read_snapshot(
     *,
     sample: int,
     stale_after: int,
+    rotate_seed: str = "",
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -441,14 +524,24 @@ def read_snapshot(
     reason: the only symptom of the former would otherwise be an absence.
     """
     try:
-        prior_rows = reader.query(OPEN_PRIORS_CYPHER)
+        prior_rows = reader.query(LIVE_PRIORS_CYPHER)
         count_rows = reader.query(COUNTS_CYPHER)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
     except WorldviewUnavailable as exc:
         return WorldviewSnapshot(unavailable_reason=str(exc)[:200])
+    if len(prior_rows) >= LIVE_PRIORS_LIMIT:
+        logger.warning(
+            "curiosity_worldview_priors_truncated limit=%s -- the live pool has "
+            "outgrown one read, so priors past the limit are never shown and "
+            "cannot accumulate times_tested or be retired",
+            LIVE_PRIORS_LIMIT,
+        )
     offered, stale, dropped = select_priors(
-        prior_rows, sample=sample, stale_after=stale_after
+        prior_rows,
+        sample=sample,
+        stale_after=stale_after,
+        rotate_seed=rotate_seed,
     )
     if dropped:
         logger.warning(
@@ -458,16 +551,29 @@ def read_snapshot(
             dropped,
         )
     counts = count_rows[0] if count_rows else {}
+    live_total = _as_int(counts.get("live_total"), len(offered))
+    closed_total = _as_int(counts.get("closed_total"), 0)
+    if live_total == 0 and closed_total > 0:
+        # Orion has formed priors and closed every one of them. Legitimate in
+        # principle; in practice this is what the 2026-08-27 status-filter bug
+        # looked like from the outside, and the only symptom was a run quietly
+        # starting from nothing. Loud here so a recurrence is not invisible.
+        logger.warning(
+            "curiosity_worldview_pool_dead closed=%s -- no live priors left, so "
+            "the next run inherits nothing to test; expected only if Orion has "
+            "genuinely refuted or retired all of them",
+            closed_total,
+        )
     return WorldviewSnapshot(
-        open_priors=offered,
+        live_priors=offered,
         stale_priors=stale,
         recently_settled=[
             (str(r.get("claim") or "").strip(), str(r.get("status") or "").strip())
             for r in settled_rows
             if str(r.get("claim") or "").strip()
         ],
-        open_total=_as_int(counts.get("open_total"), len(offered)),
-        resolved_total=_as_int(counts.get("resolved_total"), 0),
+        live_total=live_total,
+        closed_total=closed_total,
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
     )
 

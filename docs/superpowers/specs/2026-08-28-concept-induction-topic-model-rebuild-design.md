@@ -287,11 +287,21 @@ No new bus channels. No new substrate node kinds. Two additive changes:
 |---|---|---|
 | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP` | new, default `true` | orion-hub |
 | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC` | unchanged (86400) | orion-hub |
-| `TOPIC_FOUNDRY_BLOCK_MODE` | new, default `rows` | orion-topic-foundry |
-| `TOPIC_FOUNDRY_SPLIT_TEXT_COLUMNS` | new, default `true` | orion-topic-foundry |
 
-Every `.env_example` touched gets `python scripts/sync_local_env_from_example.py`
-run in the same session (CLAUDE.md 7).
+**Revised during build (branch 1).** This table originally proposed
+`TOPIC_FOUNDRY_BLOCK_MODE` and `TOPIC_FOUNDRY_SPLIT_TEXT_COLUMNS` as
+topic-foundry env keys. Dropped: a model's `windowing_spec` is *frozen into its
+model row at creation* and the Hub sends that payload, so a topic-foundry-side
+env key would be read only at model-creation time and then silently ignored --
+an operator knob that looks live and is not. Windowing is a design decision, not
+an operator knob; it lives in `_topic_foundry_windowing_spec()` in
+`concept_atlas_routes.py` and is now folded into the model-name fingerprint, so
+changing it always mints a new model instead of drifting. Zero new env keys for
+branch 1, so no `.env_example` change and no sync needed.
+
+Any `.env_example` touched by a later branch gets
+`python scripts/sync_local_env_from_example.py` run in the same session
+(CLAUDE.md 7).
 
 ### Files likely to touch
 

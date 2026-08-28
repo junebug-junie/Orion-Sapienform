@@ -370,6 +370,12 @@ def _run_training(
                         "row_ids": seg.row_ids,
                         "timestamps": seg.timestamps,
                         "doc_ids": [seg.doc_id],
+                        # Recorded speakers for this segment (see
+                        # WindowingSpec.column_speakers). Consumers read this
+                        # instead of re-joining to the source table, which
+                        # would mean a cross-service DB dependency. Empty list
+                        # on fused/unknown sources -- never fabricated.
+                        "speakers": seg.speakers,
                     },
                     topic_id=label,
                     topic_prob=topic_prob,

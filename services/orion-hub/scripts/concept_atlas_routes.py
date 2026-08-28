@@ -20,6 +20,7 @@ to an honest "unavailable" response instead of fabricating data or raising a
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -155,21 +156,77 @@ _TOPIC_FOUNDRY_MODEL_NAME_BASE = "orion-hub-autonomous-v4"
 _TOPIC_FOUNDRY_MODEL_VERSION = "v1"
 
 
-def _topic_foundry_model_spec_fingerprint() -> str:
-    """Short, deterministic fingerprint of the settings-driven HDBSCAN
-    model_spec fields. See the "Model name history" comment above.
+# Which dataset text column each speaker authored. `chat_history_log` stores
+# one full exchange per row: `prompt` is always Juniper, `response` is always
+# Orion. This is recorded fact, not inference -- confirmed live 2026-08-28,
+# both speak in 254/254 rows while their *names* appear in only 28%/26%, which
+# is why participation must come from here and not from entity extraction over
+# the text. Values are lowercase to match `_landmark_concept_ids()`'s
+# `label.lower() -> node_id` keys.
+_TOPIC_FOUNDRY_COLUMN_SPEAKERS = {"prompt": "juniper", "response": "orion"}
+# AI Town's corpus is agent-to-agent; its prompt/response authors are not
+# Juniper and Orion and are not currently resolvable, so it splits columns
+# (still correct -- two different speakers) but records no speaker rather than
+# guessing one.
+_TOPIC_FOUNDRY_AITOWN_COLUMN_SPEAKERS: dict[str, str] = {}
+
+
+def _topic_foundry_windowing_spec(column_speakers: dict[str, str]) -> dict[str, Any]:
+    """The windowing half of a model's frozen spec.
+
+    `block_mode="rows"` + `split_text_columns=True` means one document per
+    utterance. It replaced `turn_pairs` on 2026-08-28: on a source whose every
+    row already holds a full prompt+response exchange, turn_pairs paired two
+    *complete exchanges* and stamped one "User:" and the other "Assistant:",
+    embedding two false role labels into the vectorized text. See
+    docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
+    """
+    return {
+        "block_mode": "rows",
+        "split_text_columns": True,
+        "column_speakers": dict(column_speakers),
+        # Derived from column_speakers, never hardcoded. The old literal
+        # ["user", "assistant"] was a trap once speakers became real: under
+        # block_mode="turn_pairs" the role filter would match neither
+        # "juniper" nor "orion" and silently drop every block. Empty (AI
+        # Town, speakers unknown) is falsy, so the filter short-circuits and
+        # nothing is dropped -- same as its long-standing inert behavior.
+        "include_roles": sorted(set(column_speakers.values())),
+        "time_gap_seconds": 900,
+        "max_window_seconds": 7200,
+        "min_blocks_per_segment": 1,
+        "max_chars": 6000,
+    }
+
+
+def _topic_foundry_model_spec_fingerprint(windowing_spec: Optional[dict[str, Any]] = None) -> str:
+    """Short, deterministic fingerprint of a model's frozen spec fields. See
+    the "Model name history" comment above.
+
+    `windowing_spec` joined the fingerprint on 2026-08-28. It was missing, and
+    that was the same latent bug the HDBSCAN fields were added to close: a
+    model row freezes its `windowing_spec` at creation and get-or-create
+    matches purely by name, so changing windowing without changing the name
+    left every future run training on the OLD windowing forever, with no
+    warning and nothing to diff against (GET /models returns ModelSummary,
+    which omits both specs). Confirmed live: the model in service on
+    2026-08-28 still carried `block_mode: turn_pairs` frozen in its row.
     """
     fingerprint_input = "|".join(
         [
             str(settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE),
             str(settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC),
             str(settings.SUBSTRATE_TOPIC_FOUNDRY_EMBEDDING_URL),
+            json.dumps(windowing_spec or {}, sort_keys=True, separators=(",", ":")),
         ]
     )
     return hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:8]
 
 
-_TOPIC_FOUNDRY_MODEL_NAME = f"{_TOPIC_FOUNDRY_MODEL_NAME_BASE}-{_topic_foundry_model_spec_fingerprint()}"
+_TOPIC_FOUNDRY_WINDOWING_SPEC = _topic_foundry_windowing_spec(_TOPIC_FOUNDRY_COLUMN_SPEAKERS)
+_TOPIC_FOUNDRY_MODEL_NAME = (
+    f"{_TOPIC_FOUNDRY_MODEL_NAME_BASE}-{_topic_foundry_model_spec_fingerprint(_TOPIC_FOUNDRY_WINDOWING_SPEC)}"
+)
 _TOPIC_FOUNDRY_SOURCE_TABLE = "chat_history_log"
 _TOPIC_FOUNDRY_ID_COLUMN = "correlation_id"
 _TOPIC_FOUNDRY_TIME_COLUMN = "created_at"
@@ -216,8 +273,12 @@ _TOPIC_FOUNDRY_AITOWN_MODEL_NAME_BASE = "orion-hub-aitown-v1"
 # AI-Town-specific tuning yet (real chat-volume difference noted in the
 # design doc's "Missing questions", deliberately deferred rather than
 # guessed at without live cluster-quality data to tune against).
+_TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC = _topic_foundry_windowing_spec(
+    _TOPIC_FOUNDRY_AITOWN_COLUMN_SPEAKERS
+)
 _TOPIC_FOUNDRY_AITOWN_MODEL_NAME = (
-    f"{_TOPIC_FOUNDRY_AITOWN_MODEL_NAME_BASE}-{_topic_foundry_model_spec_fingerprint()}"
+    f"{_TOPIC_FOUNDRY_AITOWN_MODEL_NAME_BASE}-"
+    f"{_topic_foundry_model_spec_fingerprint(_TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC)}"
 )
 _TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE = "aitown_chat_history_log"
 
@@ -257,6 +318,7 @@ def _ensure_topic_foundry_dataset_and_model(
     model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
     source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
     where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
+    windowing_spec: Optional[dict[str, Any]] = None,
 ) -> Optional[tuple[str, str]]:
     """Idempotent get-or-create for a scheduler dataset+model, by name.
 
@@ -338,14 +400,7 @@ def _ensure_topic_foundry_dataset_and_model(
                         "metric": settings.SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_METRIC,
                         "params": {},
                     },
-                    "windowing_spec": {
-                        "block_mode": "turn_pairs",
-                        "include_roles": ["user", "assistant"],
-                        "time_gap_seconds": 900,
-                        "max_window_seconds": 7200,
-                        "min_blocks_per_segment": 1,
-                        "max_chars": 6000,
-                    },
+                    "windowing_spec": windowing_spec or _TOPIC_FOUNDRY_WINDOWING_SPEC,
                     "metadata": {},
                 },
             )
@@ -373,6 +428,7 @@ def trigger_topic_foundry_training_run(
     model_name: str = _TOPIC_FOUNDRY_MODEL_NAME,
     source_table: str = _TOPIC_FOUNDRY_SOURCE_TABLE,
     where_sql: Optional[str] = _TOPIC_FOUNDRY_WHERE_SQL,
+    windowing_spec: Optional[dict[str, Any]] = None,
     log_prefix: str = "topic_foundry",
 ) -> dict[str, Any]:
     """Scheduler entry point (Gap 5): ensure the scheduler's dataset/model
@@ -409,6 +465,7 @@ def trigger_topic_foundry_training_run(
         model_name=model_name,
         source_table=source_table,
         where_sql=where_sql,
+        windowing_spec=windowing_spec,
     )
     if ids is None:
         return {"triggered": False, "reason": "dataset_or_model_resolution_failed"}
@@ -550,6 +607,7 @@ def trigger_topic_foundry_aitown_training_run() -> dict[str, Any]:
         model_name=_TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
         source_table=_TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE,
         where_sql=None,
+        windowing_spec=_TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC,
         log_prefix="topic_foundry_aitown",
     )
 

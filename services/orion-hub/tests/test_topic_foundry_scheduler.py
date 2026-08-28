@@ -882,3 +882,137 @@ def test_topic_foundry_model_spec_fingerprint_changes_with_settings(monkeypatch:
     monkeypatch.setattr(car.settings, "SUBSTRATE_TOPIC_FOUNDRY_HDBSCAN_MIN_CLUSTER_SIZE", 12)
     fingerprint_b = car._topic_foundry_model_spec_fingerprint()
     assert fingerprint_b != fingerprint_a
+
+
+# ---------------------------------------------------------------------------
+# Windowing spec + model-name fingerprint (2026-08-28 concept-induction rebuild)
+# docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md
+# ---------------------------------------------------------------------------
+
+
+def test_created_model_carries_split_windowing_and_real_speakers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The model row freezes its windowing_spec at creation, so what is sent
+    here is what every future run trains on. Before 2026-08-28 this payload
+    hardcoded ``block_mode="turn_pairs"`` against a source table whose every
+    row already holds a full prompt+response exchange -- so it paired two
+    whole exchanges and labelled one "User:" and the other "Assistant:".
+    """
+    from scripts import concept_atlas_routes as car
+    from scripts import topic_foundry_client as tfc
+
+    seen: dict[str, Any] = {}
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/datasets"):
+            return _FakeResponse(200, {"datasets": []})
+        if url.endswith("/models"):
+            return _FakeResponse(200, {"models": []})
+        raise AssertionError(f"unexpected GET {url}")
+
+    def fake_post(url, json=None, timeout=None):
+        if url.endswith("/datasets"):
+            return _FakeResponse(200, {"dataset_id": FAKE_DATASET_ID, "created_at": "2026-08-28T00:00:00Z"})
+        if url.endswith("/models"):
+            seen["windowing_spec"] = json["windowing_spec"]
+            return _FakeResponse(200, {"model_id": FAKE_MODEL_ID, "created_at": "2026-08-28T00:00:00Z"})
+        raise AssertionError(f"unexpected POST {url}")
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    monkeypatch.setattr(tfc.requests, "post", fake_post)
+
+    assert car._ensure_topic_foundry_dataset_and_model(FAKE_BASE_URL) == (
+        FAKE_DATASET_ID,
+        FAKE_MODEL_ID,
+    )
+
+    ws = seen["windowing_spec"]
+    assert ws["block_mode"] == "rows"
+    assert ws["block_mode"] != "turn_pairs"
+    assert ws["split_text_columns"] is True
+    # `prompt` is always Juniper and `response` is always Orion on
+    # chat_history_log -- recorded fact, not inference.
+    assert ws["column_speakers"] == {"prompt": "juniper", "response": "orion"}
+    # Derived from column_speakers, never the old ["user", "assistant"]
+    # literal, which would match neither speaker and drop every block under
+    # turn_pairs.
+    assert ws["include_roles"] == ["juniper", "orion"]
+
+
+def test_aitown_model_records_no_speakers_rather_than_guessing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import concept_atlas_routes as car
+    from scripts import topic_foundry_client as tfc
+
+    seen: dict[str, Any] = {}
+
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/datasets"):
+            return _FakeResponse(200, {"datasets": []})
+        if url.endswith("/models"):
+            return _FakeResponse(200, {"models": []})
+        raise AssertionError(f"unexpected GET {url}")
+
+    def fake_post(url, json=None, timeout=None):
+        if url.endswith("/datasets"):
+            return _FakeResponse(200, {"dataset_id": FAKE_DATASET_ID, "created_at": "2026-08-28T00:00:00Z"})
+        if url.endswith("/models"):
+            seen["windowing_spec"] = json["windowing_spec"]
+            return _FakeResponse(200, {"model_id": FAKE_MODEL_ID, "created_at": "2026-08-28T00:00:00Z"})
+        raise AssertionError(f"unexpected POST {url}")
+
+    monkeypatch.setattr(tfc.requests, "get", fake_get)
+    monkeypatch.setattr(tfc.requests, "post", fake_post)
+
+    car._ensure_topic_foundry_dataset_and_model(
+        FAKE_BASE_URL,
+        dataset_name=car._TOPIC_FOUNDRY_AITOWN_DATASET_NAME,
+        model_name=car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME,
+        source_table=car._TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE,
+        where_sql=None,
+        windowing_spec=car._TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC,
+    )
+
+    ws = seen["windowing_spec"]
+    # AI Town's prompt/response authors are agents, not Juniper and Orion.
+    # Splitting is still right (two different speakers); naming them is not.
+    assert ws["split_text_columns"] is True
+    assert ws["column_speakers"] == {}
+    # Empty is falsy, so the role filter short-circuits and drops nothing --
+    # an unknown speaker must never silently delete the corpus.
+    assert ws["include_roles"] == []
+
+
+def test_model_name_fingerprint_changes_when_windowing_changes() -> None:
+    """The structural drift closure. A model row freezes windowing_spec at
+    creation and get-or-create matches purely by name, so if the fingerprint
+    ignored windowing, editing it here would keep training on the OLD
+    windowing forever with nothing to diff against (GET /models returns
+    ModelSummary, which omits both specs). Confirmed live 2026-08-28: the
+    model then in service still carried block_mode=turn_pairs in its row.
+    """
+    from scripts import concept_atlas_routes as car
+
+    base = car._topic_foundry_windowing_spec({"prompt": "juniper", "response": "orion"})
+    changed = dict(base, block_mode="turn_pairs")
+
+    assert car._topic_foundry_model_spec_fingerprint(base) != car._topic_foundry_model_spec_fingerprint(
+        changed
+    )
+    # Key order must not matter -- the fingerprint has to be stable across
+    # equivalent dicts or every Hub restart could mint a new model.
+    reordered = {k: base[k] for k in sorted(base, reverse=True)}
+    assert car._topic_foundry_model_spec_fingerprint(reordered) == car._topic_foundry_model_spec_fingerprint(
+        base
+    )
+
+
+def test_orion_and_aitown_models_have_distinct_names() -> None:
+    """They now carry different windowing (column_speakers differs), so they
+    must not collide on one model row."""
+    from scripts import concept_atlas_routes as car
+
+    assert car._TOPIC_FOUNDRY_MODEL_NAME != car._TOPIC_FOUNDRY_AITOWN_MODEL_NAME
+    assert car._TOPIC_FOUNDRY_WINDOWING_SPEC != car._TOPIC_FOUNDRY_AITOWN_WINDOWING_SPEC

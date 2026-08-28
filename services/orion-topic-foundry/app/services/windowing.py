@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from uuid import uuid4, UUID
@@ -20,6 +21,86 @@ if TYPE_CHECKING:
 logger = logging.getLogger("topic-foundry.windowing")
 
 
+@dataclass(frozen=True)
+class _Unit:
+    """One indivisible piece of source text plus who said it.
+
+    With ``split_text_columns`` on this is a single utterance (one text
+    column of one row); with it off it is a whole row's columns fused, and
+    ``speaker`` is None because the fused text has more than one author.
+    Every block mode below composes blocks out of these, so the speaker
+    survives windowing instead of being destroyed by it.
+    """
+
+    row: Dict[str, Any]
+    text: str
+    speaker: Optional[str]
+
+
+def _expand_units(
+    convo_rows: Sequence[Dict[str, Any]],
+    *,
+    spec: WindowingSpec,
+    text_columns: Sequence[str],
+) -> List[_Unit]:
+    units: List[_Unit] = []
+    for row in convo_rows:
+        if spec.split_text_columns:
+            for col in text_columns:
+                value = row.get(col)
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if not text:
+                    continue
+                units.append(_Unit(row=row, text=text, speaker=spec.column_speakers.get(col)))
+        else:
+            text = _row_text(row, text_columns)
+            if text:
+                units.append(_Unit(row=row, text=text, speaker=None))
+    return units
+
+
+def _unit_speakers(units: Sequence[_Unit]) -> List[str]:
+    """Ordered, de-duplicated speakers across ``units`` (unknowns dropped)."""
+    seen: List[str] = []
+    for unit in units:
+        if unit.speaker and unit.speaker not in seen:
+            seen.append(unit.speaker)
+    return seen
+
+
+def _block_from_units(
+    units: Sequence[_Unit],
+    *,
+    spec: WindowingSpec,
+    time_column: str,
+    id_column: str,
+) -> Optional[RowBlock]:
+    text = _make_block_text(units, spec)
+    if not text:
+        return None
+    # One row can contribute several units (prompt + response), and a block's
+    # row_ids are its provenance -- de-duplicate so a 2-unit block from one row
+    # does not claim to cover two rows.
+    row_ids: List[str] = []
+    timestamps: List[str] = []
+    for unit in units:
+        row_id = str(unit.row[id_column])
+        if row_id in row_ids:
+            continue
+        row_ids.append(row_id)
+        raw_ts = unit.row[time_column]
+        timestamps.append(raw_ts.isoformat() if hasattr(raw_ts, "isoformat") else str(raw_ts))
+    return RowBlock(
+        row_ids=row_ids,
+        timestamps=timestamps,
+        doc_id=str(uuid4()),
+        text=text,
+        speakers=_unit_speakers(units),
+    )
+
+
 def build_blocks_for_conversation(
     convo_rows: Sequence[Dict[str, Any]],
     *,
@@ -28,63 +109,39 @@ def build_blocks_for_conversation(
     time_column: str,
     id_column: str,
 ) -> List[RowBlock]:
+    units = _expand_units(convo_rows, spec=spec, text_columns=text_columns)
     blocks: List[RowBlock] = []
+
+    def emit(chunk: Sequence[_Unit]) -> None:
+        block = _block_from_units(chunk, spec=spec, time_column=time_column, id_column=id_column)
+        if block is not None:
+            blocks.append(block)
+
     if spec.block_mode == "rows":
-        for row in convo_rows:
-            text = _row_text(row, text_columns)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column])],
-                    timestamps=[row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])],
-                    doc_id=str(uuid4()),
-                    text=_truncate(text, spec.max_chars),
-                )
-            )
+        for unit in units:
+            emit([unit])
     elif spec.block_mode == "triads":
-        for idx in range(0, len(convo_rows), 3):
-            chunk = convo_rows[idx : idx + 3]
+        for idx in range(0, len(units), 3):
+            chunk = units[idx : idx + 3]
             if len(chunk) < 3:
                 break
-            text = _make_block_text(chunk, text_columns, spec)
-            if not text:
-                continue
-            blocks.append(
-                RowBlock(
-                    row_ids=[str(row[id_column]) for row in chunk],
-                    timestamps=[
-                        row[time_column].isoformat() if hasattr(row[time_column], "isoformat") else str(row[time_column])
-                        for row in chunk
-                    ],
-                    doc_id=str(uuid4()),
-                    text=text,
-                )
-            )
+            emit(chunk)
     else:
         idx = 0
-        while idx < len(convo_rows) - 1:
-            first = convo_rows[idx]
-            second = convo_rows[idx + 1]
-            role_first = _role_of(first)
-            role_second = _role_of(second)
-            if spec.include_roles and role_first and role_second:
-                if role_first not in spec.include_roles or role_second not in spec.include_roles:
+        while idx < len(units) - 1:
+            first = units[idx]
+            second = units[idx + 1]
+            # With split_text_columns on, a unit's speaker is real and this
+            # filter finally does something. With it off both speakers are
+            # None, the guard short-circuits, and include_roles is inert --
+            # which is exactly what it silently was for every run before
+            # 2026-08-28, because _role_of read `role`/`speaker` columns that
+            # do not exist on the configured source table.
+            if spec.include_roles and first.speaker and second.speaker:
+                if first.speaker not in spec.include_roles or second.speaker not in spec.include_roles:
                     idx += 1
                     continue
-            text = _make_block_text([first, second], text_columns, spec)
-            if text:
-                blocks.append(
-                    RowBlock(
-                        row_ids=[str(first[id_column]), str(second[id_column])],
-                        timestamps=[
-                            first[time_column].isoformat() if hasattr(first[time_column], "isoformat") else str(first[time_column]),
-                            second[time_column].isoformat() if hasattr(second[time_column], "isoformat") else str(second[time_column]),
-                        ],
-                        doc_id=str(uuid4()),
-                        text=text,
-                    )
-                )
+            emit([first, second])
             idx += 2
     return blocks
 
@@ -108,24 +165,30 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 def _role_of(row: Dict[str, Any]) -> Optional[str]:
+    """Speaker recorded ON THE ROW, for sources that carry one.
+
+    Retained for source tables that really do have a per-row `role`/`speaker`
+    column. It is NOT how speakers are resolved for column-split sources --
+    see WindowingSpec.column_speakers and _expand_units. Returns None when
+    the columns are absent, which is the case for `chat_history_log`.
+    """
     role = row.get("role") or row.get("speaker")
     if role is None:
         return None
     return str(role).lower().strip()
 
 
-def _make_block_text(rows: Sequence[Dict[str, Any]], text_columns: Sequence[str], spec: WindowingSpec) -> str:
-    if spec.block_mode == "turn_pairs":
-        if len(rows) == 2:
-            user_row, assistant_row = rows
-            user_text = _row_text(user_row, text_columns)
-            assistant_text = _row_text(assistant_row, text_columns)
-            text = f"User: {user_text}\nAssistant: {assistant_text}".strip()
-        else:
-            text = "\n".join(_row_text(row, text_columns) for row in rows).strip()
-    else:
-        text = "\n".join(_row_text(row, text_columns) for row in rows).strip()
-    return _truncate(text, spec.max_chars)
+def _make_block_text(units: Sequence[_Unit], spec: WindowingSpec) -> str:
+    """Join units into one document, prefixing only speakers we actually know.
+
+    Before 2026-08-28 the turn_pairs branch hardcoded "User:"/"Assistant:"
+    prefixes onto two arbitrary consecutive rows. On a source whose every row
+    holds a full exchange, both labels were false, and both went into the text
+    that gets embedded. Now a prefix appears only when column_speakers named a
+    real author for that unit; otherwise the text stands on its own.
+    """
+    parts = [f"{unit.speaker}: {unit.text}" if unit.speaker else unit.text for unit in units]
+    return _truncate("\n".join(parts).strip(), spec.max_chars)
 
 
 def _chunk_blocks(blocks: List[RowBlock], spec: WindowingSpec) -> List[RowBlock]:
@@ -139,10 +202,12 @@ def _chunk_blocks(blocks: List[RowBlock], spec: WindowingSpec) -> List[RowBlock]
         row_ids: List[str] = []
         timestamps: List[str] = []
         text_parts: List[str] = []
+        speakers: List[str] = []
         for block in chunk:
             row_ids.extend(block.row_ids)
             timestamps.extend(block.timestamps)
             text_parts.append(block.text)
+            speakers.extend(s for s in block.speakers if s not in speakers)
         segments.append(
             RowBlock(
                 row_ids=row_ids,
@@ -151,6 +216,7 @@ def _chunk_blocks(blocks: List[RowBlock], spec: WindowingSpec) -> List[RowBlock]
                 text=_truncate("\n".join(text_parts).strip(), spec.max_chars),
                 conversation_id=blocks[0].conversation_id if blocks else None,
                 block_index=blocks[0].block_index if blocks else None,
+                speakers=speakers,
             )
         )
     return segments
@@ -292,10 +358,12 @@ def _merge_blocks(blocks: List[RowBlock], max_chars: int) -> RowBlock:
     row_ids: List[str] = []
     timestamps: List[str] = []
     text_parts: List[str] = []
+    speakers: List[str] = []
     for block in blocks:
         row_ids.extend(block.row_ids)
         timestamps.extend(block.timestamps)
         text_parts.append(block.text)
+        speakers.extend(s for s in block.speakers if s not in speakers)
     text = "\n".join(text_parts).strip()
     if len(text) > max_chars:
         text = text[:max_chars].rstrip()
@@ -306,6 +374,7 @@ def _merge_blocks(blocks: List[RowBlock], max_chars: int) -> RowBlock:
         text=text,
         conversation_id=blocks[0].conversation_id if blocks else None,
         block_index=blocks[0].block_index if blocks else None,
+        speakers=speakers,
     )
 
 

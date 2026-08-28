@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, TypedDict
 from uuid import UUID
 
@@ -13,6 +13,13 @@ class RowBlock:
     text: str
     conversation_id: Optional[UUID] = None
     block_index: Optional[int] = None
+    # Ordered, de-duplicated speakers whose utterances make up this block.
+    # Populated from WindowingSpec.column_speakers when split_text_columns is
+    # on -- the speaker is a recorded property of *which column the text came
+    # from*, not something inferred from the text. Empty when the source
+    # columns are fused (speaker genuinely unknown at this point) so a
+    # consumer can tell "no speakers recorded" from "speaker was nobody".
+    speakers: List[str] = field(default_factory=list)
 
 
 @dataclass

@@ -21,8 +21,25 @@ class DatasetSpec(BaseModel):
 
 
 class WindowingSpec(BaseModel):
-    block_mode: Literal["turn_pairs", "triads", "rows"] = "turn_pairs"
+    # "rows" (one document per unit) is the default as of 2026-08-28. It used
+    # to be "turn_pairs", which -- on a source table whose every row already
+    # holds a full prompt+response exchange -- paired two *complete exchanges*
+    # and labelled one "User:" and the other "Assistant:", injecting two false
+    # role labels into the text that then got embedded. See
+    # docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
+    block_mode: Literal["turn_pairs", "triads", "rows"] = "rows"
     include_roles: List[str] = Field(default_factory=lambda: ["user", "assistant"])
+    # Emit one document per (row, text column) instead of concatenating every
+    # text column of a row into one blob. A prompt and its response are two
+    # different speech acts; fusing them averages both into a single vector
+    # that represents neither whenever they diverge in topic. Splitting also
+    # makes the speaker knowable per document (see column_speakers).
+    split_text_columns: bool = True
+    # Maps a dataset text column to the speaker who authored it, e.g.
+    # {"prompt": "juniper", "response": "orion"}. This is recorded metadata,
+    # not inference -- the column IS the speaker. Empty means "unknown", and
+    # unknown speakers are simply omitted rather than guessed.
+    column_speakers: Dict[str, str] = Field(default_factory=dict)
     segmentation_mode: Literal["time_gap", "semantic", "hybrid", "llm_judge", "hybrid_llm"] = "time_gap"
     semantic_split_threshold: float = 0.75
     confirm_edges_k: int = 2

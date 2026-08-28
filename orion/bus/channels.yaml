@@ -2593,6 +2593,40 @@ channels:
   # consumer yet -- same "publish real data first, decide on a consumer
   # once the live stream has had its own sanity pass" precedent as every
   # other signal in this program.
+  # Power intent and its settlement (2026-08-28, design doc
+  # 2026-08-28-consequential-action-space-and-power-budget-design.md stage 2).
+  #
+  # A workload declares an imminent draw; the node that can actually see the meter
+  # settles it. The declaration is what makes an override possible at all -- you cannot
+  # pre-empt a workload you learn about only after it has drawn -- and settling it
+  # against an independent instrument is what makes it falsifiable.
+  #
+  # orion-biometrics is the settler rather than the workload itself, deliberately: it
+  # already owns GPU and PDU sampling on both nodes, and keeping measurement out of the
+  # thing being measured means any future workload can declare without reimplementing a
+  # sampler. It also means the 1 Hz burst only runs while an intent is open.
+  - name: "orion:power:intent"
+    kind: "event"
+    schema_id: "PowerIntentV1"
+    message_kind: "power.intent.v1"
+    producer_services: ["orion-diffusion-host"]
+    consumer_services: ["orion-biometrics"]
+    stability: "experimental"
+    since: "2026-08-28"
+
+  # Settlement is a separate channel, not a reply on the request channel, because an
+  # intent can outlive the process that declared it: the settler must be able to close a
+  # window whose declarer has already exited, and a consumer of the outcome (sql-writer)
+  # has no interest in the declarations themselves.
+  - name: "orion:power:intent:settled"
+    kind: "event"
+    schema_id: "PowerIntentSettledV1"
+    message_kind: "power.intent.settled.v1"
+    producer_services: ["orion-biometrics"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-08-28"
+
   - name: "orion:substrate:dev_economics_ledger"
     kind: "event"
     schema_id: "DevEconomicsLedgerV1"

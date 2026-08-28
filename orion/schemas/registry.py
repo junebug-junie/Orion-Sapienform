@@ -130,6 +130,7 @@ from orion.schemas.self_experiments import (
 from orion.schemas.affective_state import JuniperAffectiveStateV1
 from orion.schemas.doc_semantic_drift import DocSemanticDriftV1
 from orion.schemas.dev_economics import DevEconomicsLedgerV1
+from orion.schemas.power import PowerIntentSettledV1, PowerIntentV1
 from orion.schemas.codebase_delta import CodebaseDeltaV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
@@ -761,6 +762,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JuniperAffectiveStateV1": JuniperAffectiveStateV1,
     "DocSemanticDriftV1": DocSemanticDriftV1,
     "DevEconomicsLedgerV1": DevEconomicsLedgerV1,
+    "PowerIntentV1": PowerIntentV1,
+    "PowerIntentSettledV1": PowerIntentSettledV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
     "AgentTraceToolStatV1": AgentTraceToolStatV1,
@@ -1356,6 +1359,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     # kind is set literally by the producer, same as VisionTaskRequestPayload
     # above. Registered in BOTH this dict and `_REGISTRY` -- see the note
     # immediately below.
+    # Power intent and settlement (2026-08-28, design doc
+    # 2026-08-28-consequential-action-space-and-power-budget-design.md stage 2).
+    # Registered in BOTH this dict and `_REGISTRY` above -- they are separate maps
+    # and a schema present in only one is half-registered.
+    "PowerIntentV1": SchemaRegistration(
+        model=PowerIntentV1,
+        kind="power.intent.v1",
+    ),
+    "PowerIntentSettledV1": SchemaRegistration(
+        model=PowerIntentSettledV1,
+        kind="power.intent.settled.v1",
+    ),
     "AffectGptAssessResultPayload": SchemaRegistration(
         model=AffectGptAssessResultPayload,
         kind="affectgpt.assess.result",

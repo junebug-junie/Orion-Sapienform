@@ -415,6 +415,21 @@ track something real:
 So the follow-on contemplated in the gate (weight by segment share rather than
 drop the edge) is what shipped, and it was the right call.
 
+### Branch 3, 2026-08-28
+
+Scheduler now ticks ~30s after Hub start instead of sleeping a full 86400s
+interval first (`SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP`, default
+on). A1/A2/A5/A6 above were all verified by triggering runs BY HAND -- this is
+what makes them recur.
+
+Label fixes: the atlas declutter is gated on node count, not on the mere
+existence of a god node (canonical seeds are god nodes unconditionally, so the
+old check was always true and a 24-node graph hid 19 labels); substrate
+prediction-error nodes get a real label (`node:substrate.harness_closure` ->
+"Harness closure prediction error" rather than
+`substrate:node:substrate.harness_closure`); and evidence nodes are named after
+the concept they support instead of falling back to their raw node_id.
+
 ## New finding: the Hub's substrate store is a process-local cache
 
 Found while verifying branch 1. `SUBSTRATE_SEMANTIC_STORE` is built once at

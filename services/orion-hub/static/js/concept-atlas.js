@@ -41,6 +41,24 @@ async function apiFetch(path, opts) {
   return payload || {};
 }
 
+// Below this many nodes every label fits, so show them all.
+//
+// The declutter used to be gated on whether ANY god node existed, which is
+// always true -- canonical seed concepts are god nodes unconditionally,
+// regardless of degree (see concept_atlas_routes.py's canonical_ids
+// handling). Confirmed live 2026-08-28: a 24-node graph rendered 19 of its
+// nodes as unlabeled dots, which is pure loss rather than decluttering.
+const LABEL_DECLUTTER_MIN_NODES = 60;
+
+// Pure, and defined at file scope so it is testable without a DOM or
+// cytoscape. Both conditions matter: below the threshold there is no clutter
+// to trade a label away for, and with no god node there is nothing left to
+// orient on once everything else is hidden. A non-numeric count degrades to
+// showing labels rather than hiding them.
+function shouldDeclutterLabels(nodeCount, hasGodNodes) {
+  return Number(nodeCount) >= LABEL_DECLUTTER_MIN_NODES && Boolean(hasGodNodes);
+}
+
 if (typeof document !== "undefined") {
 (function () {
   const STATUS = document.getElementById("caStatus");
@@ -307,7 +325,9 @@ if (typeof document !== "undefined") {
     // anchor_scope filter), where hiding every label leaves unlabeled dots
     // with nothing to orient on. Fall back to showing everything in that
     // case; the checkbox still overrides either way.
+    const nodeCount = elements.filter((el) => el.data && !el.data.source).length;
     const hasGodNodes = elements.some((el) => el.data && el.data.godNode);
+    const declutterLabels = shouldDeclutterLabels(nodeCount, hasGodNodes);
     cy = window.cytoscape({
       container: NETWORK_CY_HOST,
       elements,
@@ -315,11 +335,12 @@ if (typeof document !== "undefined") {
         {
           selector: "node",
           style: {
-            // God-nodes-only by default (see showAllLabels above); the
-            // checkbox flips this without needing a full remount, since
-            // cy.style().update() re-evaluates mapper functions in place.
+            // God-nodes-only once the graph is dense enough to need it (see
+            // LABEL_DECLUTTER_MIN_NODES above); the checkbox flips this
+            // without needing a full remount, since cy.style().update()
+            // re-evaluates mapper functions in place.
             label: (ele) =>
-              showAllLabels || !hasGodNodes || ele.data("godNode") ? ele.data("label") : "",
+              showAllLabels || !declutterLabels || ele.data("godNode") ? ele.data("label") : "",
             "font-size": 9,
             color: "#e2e8f0",
             "text-valign": "bottom",
@@ -538,5 +559,8 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { apiFetch };
+  // All three are plain file-scope declarations above the `typeof document`
+  // guard, so they exist whether or not the browser IIFE ran -- which is what
+  // makes concept-atlas.test.js able to import them under node with no DOM.
+  module.exports = { apiFetch, shouldDeclutterLabels, LABEL_DECLUTTER_MIN_NODES };
 }

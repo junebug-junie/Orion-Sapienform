@@ -746,6 +746,11 @@ async def startup_event():
         logger.info("substrate_decay_scheduler_disabled reason=env_disabled")
 
     if settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED:
+        from scripts.topic_foundry_scheduler_policy import (
+            next_wait_seconds as _tf_next_wait_seconds,
+            should_retry_startup_tick as _tf_should_retry_startup_tick,
+        )
+
         topic_foundry_interval_sec = max(
             1.0, float(settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC)
         )
@@ -764,8 +769,44 @@ async def startup_event():
             # or find nothing new -- both are expected, not errors. See
             # trigger_topic_foundry_training_run()'s and
             # trigger_topic_foundry_enrichment()'s docstrings.
+            # Sleep AFTER the first tick, not before it. This loop used to
+            # sleep first at an 86400s interval, so it required Hub to stay up
+            # for 24 unbroken hours to fire even once -- and Hub is redeployed
+            # far more often than that. Confirmed live 2026-08-28: zero
+            # `_tick` log lines had ever been emitted, and the concept graph
+            # was serving topics from a run 9 days stale while newer completed
+            # runs sat uningested. See
+            # docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
+            #
+            # The startup tick is cheap and idempotent by construction:
+            # topic-foundry dedups an identical training window by spec_hash,
+            # and ingestion re-upserts by deterministic node_id. It is gated
+            # anyway so an operator can turn it off without disabling the
+            # whole scheduler.
+            startup_pending = bool(
+                getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP", True)
+            )
+            startup_attempt = 0
+            if not startup_pending:
+                logger.info("substrate_topic_foundry_scheduler_startup_tick_disabled")
             while True:
-                await asyncio.sleep(topic_foundry_interval_sec)
+                # Timing/retry policy is pure and lives in
+                # scripts/topic_foundry_scheduler_policy.py so it is testable
+                # without starting the app -- see its module docstring.
+                await asyncio.sleep(
+                    _tf_next_wait_seconds(
+                        startup_pending=startup_pending,
+                        interval_sec=topic_foundry_interval_sec,
+                        attempt=startup_attempt,
+                    )
+                )
+                is_startup_tick = startup_pending
+                if is_startup_tick:
+                    logger.info(
+                        "substrate_topic_foundry_scheduler_startup_tick attempt=%s", startup_attempt
+                    )
+                    startup_pending = False
+                trigger_summary = None
                 try:
                     trigger_summary = await asyncio.to_thread(
                         concept_atlas_routes_runtime.trigger_topic_foundry_training_run
@@ -779,6 +820,22 @@ async def startup_event():
                     )
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_topic_foundry_scheduler_trigger_error error=%s", exc)
+
+                # Hub and orion-topic-foundry come up together on a full-stack
+                # `docker compose up`. Without this, a startup tick that lands
+                # before topic-foundry is answering would fall straight through
+                # to a full interval -- reproducing the exact "needs 24 unbroken
+                # hours" failure this shape exists to remove, one layer out.
+                if is_startup_tick and _tf_should_retry_startup_tick(
+                    trigger_summary, startup_attempt
+                ):
+                    startup_attempt += 1
+                    startup_pending = True
+                    logger.info(
+                        "substrate_topic_foundry_scheduler_startup_tick_retry attempt=%s reason=%s",
+                        startup_attempt,
+                        (trigger_summary or {}).get("reason"),
+                    )
 
                 try:
                     enrich_summary = await asyncio.to_thread(
@@ -881,9 +938,10 @@ async def startup_event():
             name="hub-substrate-topic-foundry-scheduler",
         )
         logger.info(
-            "substrate_topic_foundry_scheduler_enabled interval_sec=%s window_days=%s",
+            "substrate_topic_foundry_scheduler_enabled interval_sec=%s window_days=%s run_at_startup=%s",
             topic_foundry_interval_sec,
             settings.SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS,
+            getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP", True),
         )
     else:
         logger.info("substrate_topic_foundry_scheduler_disabled reason=env_disabled")

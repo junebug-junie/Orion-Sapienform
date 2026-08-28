@@ -13,6 +13,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -841,3 +843,69 @@ def test_summary_reads_hydrated_falkor_store(client: TestClient, monkeypatch: py
     assert body["total_concepts"] == 1
     assert body["by_promotion_state"]["canonical"] == 1
     assert body["by_anchor_scope"]["orion"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Readable labels in the network payload (branch 3, 2026-08-28)
+# ---------------------------------------------------------------------------
+
+
+def test_display_labels_names_evidence_after_the_concept_it_supports() -> None:
+    """EvidenceNodeV1 has no `label` field at all, so the payload used to fall
+    back to the raw node_id and the atlas rendered rows of
+    `sub-evidence-topicfoundry-<uuid>-<n>`."""
+    from scripts.concept_atlas_routes import _display_labels
+
+    concept = SimpleNamespace(node_id="c1", node_kind="concept", label="Code Review Process")
+    evidence = SimpleNamespace(node_id="e1", node_kind="evidence")
+    edge = SimpleNamespace(
+        predicate="supports",
+        source=SimpleNamespace(node_id="e1"),
+        target=SimpleNamespace(node_id="c1"),
+    )
+
+    labels = _display_labels([concept, evidence], [edge])
+    assert labels["c1"] == "Code Review Process"
+    assert labels["e1"] == "Evidence for Code Review Process"
+
+
+def test_display_labels_falls_back_to_node_id_never_empty() -> None:
+    from scripts.concept_atlas_routes import _display_labels
+
+    orphan = SimpleNamespace(node_id="e-orphan", node_kind="evidence")
+    blank = SimpleNamespace(node_id="c-blank", node_kind="concept", label="")
+    labels = _display_labels([orphan, blank], [])
+    assert labels["e-orphan"] == "e-orphan"
+    assert labels["c-blank"] == "c-blank"
+    assert all(v for v in labels.values())
+
+
+def test_display_labels_leaves_concept_to_concept_supports_alone() -> None:
+    """`supports` also runs concept -> concept after relation classification;
+    a real concept must never be renamed 'Evidence for ...'."""
+    from scripts.concept_atlas_routes import _display_labels
+
+    a = SimpleNamespace(node_id="c1", node_kind="concept", label="Alpha")
+    b = SimpleNamespace(node_id="c2", node_kind="concept", label="Beta")
+    edge = SimpleNamespace(
+        predicate="supports",
+        source=SimpleNamespace(node_id="c1"),
+        target=SimpleNamespace(node_id="c2"),
+    )
+    labels = _display_labels([a, b], [edge])
+    assert labels["c1"] == "Alpha"
+    assert labels["c2"] == "Beta"
+
+
+def test_scheduler_startup_tick_defaults_on() -> None:
+    """The loop used to sleep a full 86400s interval BEFORE its first tick, so
+    it needed 24 unbroken hours of Hub uptime to fire once -- and never had.
+
+    Asserts the CODE default, not the live settings singleton: hub Settings
+    reads .env plus process env, and turning this key off is a documented,
+    supported operator action -- it must not turn the suite red on their box.
+    """
+    from app.settings import Settings
+
+    field = Settings.model_fields["SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP"]
+    assert field.default is True

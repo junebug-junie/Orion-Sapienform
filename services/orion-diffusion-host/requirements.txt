@@ -33,3 +33,10 @@ pillow==10.4.0
 # sentencepiece-based tokenizer) -- caught by the live GPU smoke this
 # service's README/design doc had explicitly flagged as not yet run.
 sentencepiece==0.2.2
+# Second real missing dependency, same live smoke, next attempt: T5Converter
+# (invoked to build the fast T5 tokenizer from the slow/sentencepiece one)
+# requires protobuf and raises its own explicit "T5Converter requires the
+# protobuf library" error without it. transformers==4.44.2's own setup.py
+# declares protobuf with no version constraint, so pinning to current
+# stable (checked against PyPI directly, not guessed).
+protobuf==7.36.0

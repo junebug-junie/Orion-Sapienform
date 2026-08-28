@@ -980,6 +980,41 @@ async def concept_atlas_summary(graph: Optional[str] = Query(None)) -> dict[str,
     }
 
 
+def _display_labels(nodes: list[Any], edges: list[Any]) -> dict[str, str]:
+    """A readable label for every node in the network view.
+
+    Concepts already carry one. Evidence nodes do NOT -- ``EvidenceNodeV1``
+    has no ``label`` field at all, so the payload fell back to the raw
+    node_id and the atlas rendered rows of
+    ``sub-evidence-topicfoundry-<uuid>-<n>``. They are still worth showing
+    (they are what backs a concept), so name them after the concept they
+    support, which is exactly what a reader wants to know about them.
+
+    Falls back to the node_id when there is nothing better -- never empty.
+    """
+    labels: dict[str, str] = {}
+    for node in nodes:
+        raw = getattr(node, "label", None)
+        labels[node.node_id] = str(raw) if raw else str(node.node_id)
+
+    # `supports` runs evidence -> concept (see the topic_foundry adapter), so
+    # the target is the concept whose name the evidence should borrow.
+    concept_ids = {n.node_id for n in nodes if getattr(n, "node_kind", None) == "concept"}
+    for edge in edges:
+        if getattr(edge, "predicate", None) != "supports":
+            continue
+        source_id = getattr(edge.source, "node_id", None)
+        target_id = getattr(edge.target, "node_id", None)
+        if source_id is None or target_id not in concept_ids:
+            continue
+        if source_id in concept_ids:
+            continue  # concept -> concept `supports` keeps its own label
+        supported = labels.get(target_id)
+        if supported:
+            labels[source_id] = f"Evidence for {supported}"
+    return labels
+
+
 def _compute_connected_components(nodes: list[Any], edges: list[Any]) -> dict[str, int]:
     """Assign each node id a 0-indexed connected-component id via plain
     union-find over the (already filtered) node/edge lists.
@@ -1183,11 +1218,12 @@ async def concept_atlas_network(
     )
     god_ids = canonical_ids | set(ranked[:remaining_slots])
     component_of = _compute_connected_components(nodes, edges)
+    display_labels = _display_labels(nodes, edges)
 
     node_payload = [
         {
             "id": n.node_id,
-            "label": getattr(n, "label", n.node_id),
+            "label": display_labels[n.node_id],
             "node_kind": n.node_kind,
             "anchor_scope": n.anchor_scope,
             "promotion_state": n.promotion_state,

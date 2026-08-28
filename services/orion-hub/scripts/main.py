@@ -746,6 +746,10 @@ async def startup_event():
         logger.info("substrate_decay_scheduler_disabled reason=env_disabled")
 
     if settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED:
+        # Short, fixed grace period before the startup tick so it does not
+        # race the rest of app startup. Not an env knob: nothing an operator
+        # would tune, and the tick itself is already gated.
+        _TOPIC_FOUNDRY_STARTUP_TICK_DELAY_SEC = 30.0
         topic_foundry_interval_sec = max(
             1.0, float(settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC)
         )
@@ -764,8 +768,35 @@ async def startup_event():
             # or find nothing new -- both are expected, not errors. See
             # trigger_topic_foundry_training_run()'s and
             # trigger_topic_foundry_enrichment()'s docstrings.
+            # Sleep AFTER the first tick, not before it. This loop used to
+            # sleep first at an 86400s interval, so it required Hub to stay up
+            # for 24 unbroken hours to fire even once -- and Hub is redeployed
+            # far more often than that. Confirmed live 2026-08-28: zero
+            # `_tick` log lines had ever been emitted, and the concept graph
+            # was serving topics from a run 9 days stale while newer completed
+            # runs sat uningested. See
+            # docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md.
+            #
+            # The startup tick is cheap and idempotent by construction:
+            # topic-foundry dedups an identical training window by spec_hash,
+            # and ingestion re-upserts by deterministic node_id. It is gated
+            # anyway so an operator can turn it off without disabling the
+            # whole scheduler.
+            first_tick = bool(
+                getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP", True)
+            )
+            if not first_tick:
+                logger.info("substrate_topic_foundry_scheduler_startup_tick_disabled")
             while True:
-                await asyncio.sleep(topic_foundry_interval_sec)
+                if first_tick:
+                    # Let the rest of startup settle before the first tick --
+                    # this runs concurrently with the app coming up, and the
+                    # steps below reach out over HTTP.
+                    await asyncio.sleep(_TOPIC_FOUNDRY_STARTUP_TICK_DELAY_SEC)
+                    logger.info("substrate_topic_foundry_scheduler_startup_tick")
+                    first_tick = False
+                else:
+                    await asyncio.sleep(topic_foundry_interval_sec)
                 try:
                     trigger_summary = await asyncio.to_thread(
                         concept_atlas_routes_runtime.trigger_topic_foundry_training_run
@@ -881,9 +912,10 @@ async def startup_event():
             name="hub-substrate-topic-foundry-scheduler",
         )
         logger.info(
-            "substrate_topic_foundry_scheduler_enabled interval_sec=%s window_days=%s",
+            "substrate_topic_foundry_scheduler_enabled interval_sec=%s window_days=%s run_at_startup=%s",
             topic_foundry_interval_sec,
             settings.SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS,
+            getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP", True),
         )
     else:
         logger.info("substrate_topic_foundry_scheduler_disabled reason=env_disabled")

@@ -102,6 +102,17 @@ honest distinction CLAUDE.md §0A calls for: which context-seeds were
 *actually reached the image* (`context_slot_used`) -- a real gap this tab
 previously had no way to show, since `chain_json.prompt` alone doesn't
 reveal that everything past token 77 was invisible to the model.
+
+**Privacy/governance correction, same day** (design doc §20): the Patch 6
+note above called `status='active'` "a pipeline-lifecycle filter" implying
+the crystallization pipeline's governor had reviewed the content. Verified
+live that this is false for most of the table -- `formation_policy.py`'s
+`AUTO_ACTIVE_KINDS` sets `status='active'` on creation with zero
+governor review; only 21 of 652 real `active` rows have ever been touched
+by an actual decision. `store.load_latest_memory_crystallization` now also
+requires a real `memory_crystallization_history` row with `op='approve'`
+-- the pipeline's actual audit trail, not its near-universal default
+status.
 """
 
 from __future__ import annotations

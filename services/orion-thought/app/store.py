@@ -835,48 +835,75 @@ MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS = 180
 def load_latest_memory_crystallization(
     *, char_limit: int | None = None, max_age_sec: float | None = None
 ) -> str | None:
-    """Most recent active memory crystallization's `summary` -- a third
-    context-seed for the visual chain (design doc §17), sourced from the
-    Recall system's `memory_crystallizations` table.
+    """Most recent GENUINELY REVIEWED memory crystallization's `summary` --
+    a third context-seed for the visual chain (design doc §17), sourced
+    from the Recall system's `memory_crystallizations` table.
 
     Deliberately unfiltered by content (verbatim `summary`, whatever it
     holds) -- an explicit design decision (Juniper, 2026-08-27), reversing
-    Patch 5's declined-candidate call on this same table. The reversal
-    rests on one fact, not a change of policy: the only consumer of this
-    function's output is this service's own `reverie_visual_chain` row via
+    Patch 5's declined-candidate call on this same table. That reversal
+    rests on audience, not content: the only consumer of this function's
+    output is this service's own `reverie_visual_chain` row via
     `reverie_routes.py`'s `/api/reverie/visual/recent`, which has no
-    `ports:` mapping (services/orion-hub/docker-compose.yml, confirmed live
-    2026-08-27) and no auth/multi-user surface -- Juniper is the only
+    `ports:` mapping and no auth/multi-user surface -- Juniper is the only
     possible viewer, and she is also the original source of everything
-    this table holds. There is no second audience this function's own
-    content filtering could ever have been protecting; Patch 5's privacy
-    concern assumed one that does not exist. See design doc §17 for the
-    full writeup.
+    this table holds. See design doc §17 for the full writeup.
 
-    Filtered to `status = 'active'` -- a lifecycle filter, not a content
-    one: `status='rejected'` rows are stances the crystallization
-    pipeline's own governor already disavowed, and `status='proposed'`
-    rows aren't accepted yet; surfacing either into a diffusion prompt as
-    if it were live self-knowledge would misrepresent what Orion's own
-    memory system currently holds.
+    **Real correction, caught live 2026-08-28 (design doc §20)**: this
+    function originally filtered on `status = 'active'` alone, described
+    in this docstring as meaning the crystallization pipeline's "own
+    governor already accepted" the content. Verified against real data
+    that this is FALSE for most of the table: `orion.memory.crystallization
+    .formation_policy.AUTO_ACTIVE_KINDS` (`semantic`, `episode`,
+    `open_loop`, `procedure`) sets `status='active'` immediately on
+    creation, with NO governor review at all -- confirmed live via
+    `memory_crystallization_history` (the pipeline's own audit trail):
+    of 652 real `active` rows (live, 2026-08-28), only 21 distinct
+    crystallizations have ANY history entry at all, and every one of those
+    21 (`kind='stance'`, the one kind `formation_policy.py` actually
+    routes to `GOVERNOR_QUEUE`) carries a real `op='approve'` (actor
+    `orion_journal`) -- 5 of those 21 also carry later `evidence_removed`
+    entries, which is why the raw history-table row count for this set is
+    28, not 21; the entity count that matters here is 21. The other 631 --
+    including the row that triggered this fix, a `kind='semantic'`
+    IT-troubleshooting aside that became a "shared-life memory" and got
+    rendered into a generated image with zero review -- were never
+    approved by anyone or anything. `status='active'` alone was never a
+    meaningful governance signal for this reader; it was a lifecycle
+    default most rows get by
+    construction.
+
+    Fixed: this reader now also requires a real `memory_crystallization_
+    history` row with `op='approve'` for the same `crystallization_id` --
+    the pipeline's own actual, auditable "someone/something made a
+    deliberate decision about this" signal, not the near-universal
+    `status='active'` default. This narrows the real candidate pool a lot
+    (21 rows as of this fix, vs. 651+ under the old filter) -- an accepted
+    tradeoff: a context-seed that is honestly sparse beats one that
+    surfaces content nobody ever actually reviewed.
 
     `char_limit`/`max_age_sec` follow the other two context-seed readers'
     contract exactly (None = MAX_MEMORY_CRYSTALLIZATION_CONTEXT_CHARS /
     unbounded).
 
     Read-only, best-effort: None on any error, empty table, or nothing
-    `status='active'` -- degrades exactly like an absent `context_text`
-    does (visual_chain.build_visual_prompt).
+    both `status='active'` AND actually approved -- degrades exactly like
+    an absent `context_text` does (visual_chain.build_visual_prompt).
     """
     try:
         from sqlalchemy import text
 
         from orion.cognition.compactor.truncate import truncate_at_word_boundary
 
-        where_sql = "status = 'active' AND summary <> ''"
+        where_sql = (
+            "mc.status = 'active' AND mc.summary <> '' AND EXISTS ("
+            "  SELECT 1 FROM memory_crystallization_history h"
+            "  WHERE h.crystallization_id = mc.crystallization_id AND h.op = 'approve'"
+            ")"
+        )
         params: dict[str, Any] = {}
         if max_age_sec is not None:
-            where_sql += " AND created_at > now() - make_interval(secs => :max_age_sec)"
+            where_sql += " AND mc.created_at > now() - make_interval(secs => :max_age_sec)"
             params["max_age_sec"] = float(max_age_sec)
 
         engine = _get_engine()
@@ -884,8 +911,8 @@ def load_latest_memory_crystallization(
             row = (
                 conn.execute(
                     text(
-                        f"SELECT summary FROM memory_crystallizations WHERE {where_sql} "
-                        "ORDER BY created_at DESC LIMIT 1"
+                        f"SELECT mc.summary FROM memory_crystallizations mc WHERE {where_sql} "
+                        "ORDER BY mc.created_at DESC LIMIT 1"
                     ),
                     params,
                 )

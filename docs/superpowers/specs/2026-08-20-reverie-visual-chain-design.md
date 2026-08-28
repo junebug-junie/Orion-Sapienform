@@ -779,3 +779,78 @@ GPU smoke test against the real downloaded weights was run as part of
 this changeset (would require the actual multi-GB download completing on
 Circe) -- `docker/build/smoke` in the PR report says so plainly rather
 than claiming a check that didn't happen.
+
+**Update, same day**: the live GPU smoke WAS run (PR #1926's own report has
+the full trace) -- two real missing dependencies (`sentencepiece`,
+`protobuf`) found and fixed live against real downloaded weights on
+Circe, model loaded, two real `/generate` calls succeeded with coherent
+1024x1024 output. A follow-up (PR #1930) then caught a real production
+timeout: `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC=30` was tuned for
+sdxl-turbo's near-instant generation; FLUX's real 49-56s generation time
+timed out every tick until raised to 120s.
+
+## 20. Memory-crystallization context-seed: require real governor approval, not just `status='active'` (this changeset)
+
+Same day, live report from Juniper viewing the Hub Reverie tab: "I never
+crystalized this with approval" -- pointing at a `memory_text` clause
+(`"ah, yep. We moved from eno1 to eno5 on Circe (10G) and I forgot to
+allow list it on the Panduit PDU. Just fixed!"`) that had become a
+generated "fluffy cloud" image, and asking how a throwaway IT aside
+became a "shared-life memory" at all.
+
+**Real finding, verified against `memory_crystallization_history` (the
+crystallization pipeline's own audit trail), not assumed**: §17/§18's
+`load_latest_memory_crystallization` filtered on `status='active'` alone,
+describing that status in its own docstring as meaning "the crystallization
+pipeline's own governor already accepted" the content. That description
+was wrong for most of the table. `orion/memory/crystallization/
+formation_policy.py`'s `AUTO_ACTIVE_KINDS` (`semantic`, `episode`,
+`open_loop`, `procedure`) sets `status='active'` immediately on creation,
+with NO governor review at all -- only `GATED_KINDS` (`stance`,
+`decision`, `contradiction`, `attractor`, `failure_mode`) route to
+`GOVERNOR_QUEUE`, where a real decision can actually get recorded.
+
+Live query against `memory_crystallization_history`: of 652 real
+`status='active'` rows (live, 2026-08-28), only 21 distinct
+crystallizations have ANY history entry at all, and every one of those 21
+(`kind='stance'`) went through `GOVERNOR_QUEUE` and got a real
+`op='approve'` (actor `orion_journal`) -- 5 of those 21 also carry later
+`evidence_removed` entries, which is why the raw `memory_crystallization_
+history` row count for this set is 28, not 21; the entity count is 21.
+The other ~631 -- reflection/semantic/open_loop kinds -- were never
+touched by any recorded decision, human or automated. The row that
+triggered this fix (`kind='semantic'`) is one of those: it became a
+permanent, canonical "memory" the instant the pipeline processed it, with
+the same zero-review path as roughly 97% of everything in this table.
+
+This does not reopen the privacy/audience question §17 already settled
+(this route's blast radius is still Juniper alone) -- it is a different,
+also-real question: was this content ever actually decided-upon by
+anything, the way the reader's own docstring claimed. It was not, for the
+overwhelming majority of the table.
+
+**Fix**: `load_latest_memory_crystallization` now requires `EXISTS (SELECT
+1 FROM memory_crystallization_history WHERE crystallization_id = ... AND
+op = 'approve')` in addition to `status = 'active'`. This narrows the real
+candidate pool from 652 to 21 rows (live count, 2026-08-28) -- an accepted
+tradeoff: honestly sparse beats surfacing content nobody ever reviewed.
+Real cadence of the narrowed pool (live query): median gap ~11.6h between
+approved crystallizations, max gap ~13 days -- the existing 7-day
+`ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` window (§19) already
+fits this comfortably (median gap is 1.4% of the window) without needing
+to change.
+
+**Not a privacy fix, and does not make the remaining content "safe" in a
+new way**: the 21 actually-approved rows still include real, sensitive
+personal content (verified live -- medical content about a named family
+member is among them). This fix only ensures the content that DOES
+surface went through the pipeline's own real decision process, matching
+what the reader's docstring always claimed to require. §17's audience
+reasoning (Juniper is the only viewer, and the original source) still
+carries the privacy argument for that content being shown at all.
+
+**Tests**: `test_load_latest_memory_crystallization_query_requires_active_
+status_and_real_approval` (renamed from the old `..._filters_to_active_
+status`) asserts the SQL requires both `status = 'active'` AND `op =
+'approve'` against `memory_crystallization_history` -- not just the
+former.

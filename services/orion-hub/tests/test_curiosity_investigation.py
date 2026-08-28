@@ -118,6 +118,16 @@ class _FakeRedis:
         self.values[key] = str(int(self.values.get(key, 0)) + 1)
         return int(self.values[key])
 
+    async def decr(self, key):
+        self.values[key] = str(int(self.values.get(key, 0)) - 1)
+        return int(self.values[key])
+
+    async def delete(self, *keys):
+        n = 0
+        for k in keys:
+            n += self.values.pop(k, None) is not None
+        return n
+
     async def expire(self, key, ttl):
         return True
 
@@ -1172,3 +1182,81 @@ def test_two_turns_cannot_run_at_once() -> None:
             loop._run_lock.release()
 
     assert asyncio.run(_both()) == "already_running"
+
+
+# --- a redeploy should not cost a run --------------------------------------
+
+
+def _at_slot(bus, loop, *, count: str, stamp_minutes_ago: float = 600.0):
+    now = datetime.now(timezone.utc)
+    prior = (now - timedelta(minutes=stamp_minutes_ago)).isoformat()
+    bus.redis.values[_CD_KEY] = prior
+    bus.redis.values[loop._daily_key(now)] = count
+    return prior
+
+
+from scripts.curiosity_investigation import _COOLDOWN_KEY as _CD_KEY
+
+
+def test_a_turn_cancelled_mid_flight_gives_its_slot_back() -> None:
+    """Runs `5fd3349e2ba7` and `8d1e2fa92879` were each killed minutes in by a
+    redeploy, wrote nothing, and still cost a slot and stamped the cooldown."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    prior = _at_slot(bus, loop, count="2")
+
+    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True):
+        raise asyncio.CancelledError()
+
+    loop._generate = _cancelled  # type: ignore[assignment]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.tick())
+
+    now = datetime.now(timezone.utc)
+    assert int(bus.redis.values[loop._daily_key(now)]) == 2, "the slot must come back"
+    assert bus.redis.values[_CD_KEY] == prior, "the old stamp must be restored"
+
+
+def test_the_restored_stamp_is_the_old_one_not_an_absence() -> None:
+    """Deleting it would report "never investigated", which reads as eligible
+    immediately -- a redeploy storm would then start a turn per restart."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    prior = _at_slot(bus, loop, count="1")
+
+    async def _cancelled(prompt, correlation_id, source=None, require_lookup=True):
+        raise asyncio.CancelledError()
+
+    loop._generate = _cancelled  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.tick())
+    assert bus.redis.values.get(_CD_KEY) == prior
+    assert _CD_KEY in bus.redis.values
+
+
+def test_a_turn_that_merely_FAILS_still_costs_its_slot() -> None:
+    """The protection this must not break: a reliably failing turn would
+    otherwise retry every tick forever. Only cancellation refunds."""
+    bus = _FakeBus()
+    loop = _loop(bus, text="")          # empty generation == a failed turn
+    _at_slot(bus, loop, count="2")
+
+    assert asyncio.run(loop.tick()) == "empty_generation"
+    now = datetime.now(timezone.utc)
+    assert int(bus.redis.values[loop._daily_key(now)]) == 3, "a failed turn pays"
+
+
+def test_a_turn_that_raises_an_ordinary_error_still_costs_its_slot() -> None:
+    bus = _FakeBus()
+    loop = _loop(bus)
+    _at_slot(bus, loop, count="2")
+
+    async def _boom(prompt, correlation_id, source=None, require_lookup=True):
+        raise RuntimeError("the model fell over")
+
+    loop._generate = _boom  # type: ignore[assignment]
+    with pytest.raises(RuntimeError):
+        asyncio.run(loop.tick())
+    now = datetime.now(timezone.utc)
+    assert int(bus.redis.values[loop._daily_key(now)]) == 3

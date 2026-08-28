@@ -649,6 +649,53 @@ class CuriosityInvestigation:
         # Redis must read as "no previous run", never as a query fragment.
         return value if _RUN_ID_RE.match(value) else None
 
+    async def _refund_investigation(self, previous_stamp: Optional[str]) -> None:
+        """Give back a slot a turn never got to use.
+
+        ONLY on cancellation, and that distinction is the whole design. The
+        counter is written BEFORE the turn on purpose: a turn that errors, times
+        out, or gets deferred still consumes its slot, because otherwise a
+        reliably failing turn retries every tick forever. That protection has to
+        survive this.
+
+        A cancellation is not a failing turn. It means the event loop is going
+        away -- Hub got SIGTERM because the container is being replaced -- which
+        is the host being rebuilt, not Orion failing at anything. Measured
+        twice: run `5fd3349e2ba7` (2026-08-27 06:17) and `8d1e2fa92879`
+        (2026-08-28 04:51) were each killed minutes in by a redeploy, wrote
+        nothing, and each still cost a slot and stamped the cooldown. Two of
+        twelve daily runs spent on being restarted.
+
+        A crash-loop cannot farm this: every refund costs a full container
+        start, so the rate is bounded by how fast something can restart Hub, not
+        by the tick.
+
+        The previous stamp is RESTORED rather than deleted -- deleting it would
+        report "never investigated", which reads as eligible-immediately and
+        would let a redeploy storm start a turn per restart.
+        """
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            key = self._daily_key(now)
+            current = await redis.get(key)
+            if current is not None:
+                await redis.decr(key)
+            if previous_stamp:
+                await redis.setex(_COOLDOWN_KEY, _STATE_TTL_SEC, previous_stamp)
+            else:
+                await redis.delete(_COOLDOWN_KEY)
+            self._done_today = max(0, self._done_today - 1)
+            logger.warning(
+                "curiosity_investigation_refunded -- the turn was cancelled "
+                "before it finished, which means Hub is shutting down rather "
+                "than the turn failing; the slot is given back"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_state_refund_failed", exc_info=True)
+
     async def _record_investigation(self, now: datetime, run_id: str) -> None:
         """Persist the cooldown stamp, today's counter, and this run's id."""
         redis = getattr(self._bus, "redis", None)
@@ -665,6 +712,19 @@ class CuriosityInvestigation:
             await redis.setex(_LAST_RUN_KEY, 604800, run_id)
         except Exception:  # noqa: BLE001
             logger.warning("curiosity_state_write_failed", exc_info=True)
+
+    async def _read_cooldown_stamp(self) -> Optional[str]:
+        """The persisted cooldown stamp as written, or None."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return None
+        try:
+            raw = await redis.get(_COOLDOWN_KEY)
+        except Exception:  # noqa: BLE001
+            return None
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        return str(raw) if raw else None
 
     async def _read_study_material(self, now: datetime) -> StudyMaterial:
         """Read both stores. Never raises -- an unreadable store is reported as
@@ -901,6 +961,9 @@ class CuriosityInvestigation:
         # failing turn would be retried every tick forever.
         self._last_investigation_monotonic = time.monotonic()
         self._done_today = done_today + 1
+        # Captured before the stamp is overwritten, so a cancelled turn can put
+        # back the value that was there rather than clearing it.
+        previous_stamp = await self._read_cooldown_stamp()
         await self._record_investigation(now, run_id)
 
         logger.info(
@@ -932,7 +995,14 @@ class CuriosityInvestigation:
             # them here would silence the disclosure -- see build_kickoff_prompt.
             graph_enabled=self.graph_enabled,
         )
-        text, debug = await self._generate(prompt, correlation_id)
+        try:
+            text, debug = await self._generate(prompt, correlation_id)
+        except asyncio.CancelledError:
+            # Hub is going away mid-turn. Give the slot back and let the
+            # cancellation continue -- swallowing it would leave a task the
+            # shutdown is waiting on.
+            await self._refund_investigation(previous_stamp)
+            raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
             return "empty_generation"

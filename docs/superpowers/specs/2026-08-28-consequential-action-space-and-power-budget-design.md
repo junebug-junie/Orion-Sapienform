@@ -547,3 +547,48 @@ below a floor.
 To revive this: repair or replace the APC network card, then read
 `upsAdvOutputLoad`, `upsAdvOutputActivePower`, and
 `upsAdvBatteryRunTimeRemaining`. Until then it stays an appendix.
+
+---
+
+## Appendix B — candidates considered and rejected
+
+Seven outcome-measure candidates were worked through with Juniper on
+2026-08-28. Recording the rejections with their reasons, because the failure
+mode here is someone re-proposing one of these in a month and re-deriving the
+same dead end.
+
+**Kept.**
+
+- **Did Juniper write back.** Already in `chat_history_log`; Orion cannot fake
+  it; the only signal fully outside its reach. Folded into `reach_out`'s
+  outcome column in stage 4 rather than standing alone.
+- **Put a real action in the budget.** This became the spec.
+- **A bet log** — anything Orion asserts, logged with a resolution date and
+  scored. Not built, because **it already exists**: that is what priors in
+  `orion_worldview` are. `test_a_prior` is its action form.
+
+**Rejected, with reasons.**
+
+- **Fill `self_state_predictions`.** The table exists and holds **0 rows**. Its
+  only reference in the codebase is
+  `orion/substrate/causal_geometry_engine.py`, and the producer is believed
+  killed. Reviving a dead producer to create a measurement surface is a larger
+  build than it looked, and was not the cheapest path to a falsifiable claim.
+- **Close the loop on outreach decisions.** Misread. The **44,990** rows in
+  `endogenous_outreach_decisions` are decision *evaluations*, nearly all
+  negative — Orion has actually reached out on the order of **20 times ever**.
+  There is no outcome dataset to attach, and n≈20 will not carry a measurement.
+- **Hand-score curiosity findings.** Misread.
+  `substrate_endogenous_curiosity_candidates` (1,440 rows in 2 days) is **not**
+  investigations of Juniper. The rows are `endogenous_seed` /
+  `source:repair_pressure` frontier signals emitted **once per minute** —
+  1,440 rows is 1,440 minutes. It is a tick counter, not a finding stream.
+- **Check what Orion says it sees against stored frames.** No surface exists
+  for the comparison, and one was assumed rather than confirmed.
+- **A pure bet log as new construction.** Subsumed by priors, above. Juniper's
+  objection is also recorded because it is the right test to apply to any
+  successor: if it returns "wrong" every time it is a constant, not a
+  measurement — the same no-variance-no-signal failure as everything else this
+  spec catalogues. Current data runs the other way (2 supported, 1 revised, 0
+  refuted), which raises the mirrored risk that refutation is unreachable. See
+  acceptance check 7.

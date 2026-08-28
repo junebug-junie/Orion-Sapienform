@@ -161,8 +161,9 @@ _TOPIC_FOUNDRY_MODEL_VERSION = "v1"
 # Orion. This is recorded fact, not inference -- confirmed live 2026-08-28,
 # both speak in 254/254 rows while their *names* appear in only 28%/26%, which
 # is why participation must come from here and not from entity extraction over
-# the text. Values are lowercase to match `_landmark_concept_ids()`'s
-# `label.lower() -> node_id` keys.
+# the text. Values are lowercase to match `_speaker_concept_ids()`'s
+# `label.lower() -> node_id` keys -- NOT `_landmark_concept_ids()`, which as of
+# 2026-08-28 deliberately excludes exactly these speakers.
 _TOPIC_FOUNDRY_COLUMN_SPEAKERS = {"prompt": "juniper", "response": "orion"}
 # AI Town's corpus is agent-to-agent; its prompt/response authors are not
 # Juniper and Orion and are not currently resolvable, so it splits columns
@@ -288,6 +289,11 @@ _TOPIC_FOUNDRY_AITOWN_SOURCE_TABLE = "aitown_chat_history_log"
 # has no import-time dependency on the adapter (it's only imported lazily
 # inside concept_atlas_ingest_topic_foundry()).
 _OUTLIER_TOPIC_ID = -1
+
+# Must match fetch_segments_for_run's own `limit` default (the API caps at
+# 1000). Used only to tell whether a segment fetch came back full, i.e. the
+# run may have more segments than the participation shares were computed over.
+_SEGMENTS_FETCH_LIMIT = 1000
 
 
 def _day_bucket_from_timestamp(value: Any) -> Optional[str]:
@@ -1250,6 +1256,7 @@ def _ingest_topic_foundry_run(
     model_name: str,
     log_prefix: str,
     landmark_concept_ids: Optional[dict[str, str]] = None,
+    speaker_concept_ids: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Core ingestion logic shared by the Orion route/scheduler step and the
     AI Town route/scheduler step below -- parameterized (2026-08-20) over
@@ -1361,10 +1368,21 @@ def _ingest_topic_foundry_run(
 
     segment_topic_map: dict[str, list[int]] = {}
     segment_topic_id_map: dict[str, int] = {}
+    # segment_id -> recorded speakers, straight off provenance. Same
+    # GET /segments payload the two maps above are built from, so this costs
+    # no extra request.
+    segment_speakers: dict[str, list[str]] = {}
     segments_fetched = 0
+    # fetch_segments_for_run caps at the API's own limit with no pagination
+    # loop, so a full page means the run may well have more. Deliberately
+    # conservative: an exactly-full page that happens to be the whole run gets
+    # marked partial, which errs toward under-claiming a share rather than
+    # presenting a slice as ground truth.
+    segments_truncated = False
     try:
         segments = fetch_segments_for_run(base_url, run_id)
         segments_fetched = len(segments)
+        segments_truncated = segments_fetched >= _SEGMENTS_FETCH_LIMIT
         for seg in segments:
             topic_id = seg.get("topic_id")
             start_at = seg.get("start_at")
@@ -1379,6 +1397,13 @@ def _ingest_topic_foundry_run(
                 continue
             if segment_id is not None:
                 segment_topic_id_map[str(segment_id)] = topic_id_int
+                provenance = seg.get("provenance")
+                if isinstance(provenance, dict):
+                    speakers = provenance.get("speakers")
+                    if isinstance(speakers, list):
+                        segment_speakers[str(segment_id)] = [
+                            str(sp).strip().lower() for sp in speakers if str(sp).strip()
+                        ]
             day_bucket = _day_bucket_from_timestamp(start_at)
             if day_bucket is None:
                 continue
@@ -1424,6 +1449,9 @@ def _ingest_topic_foundry_run(
             mention_edges=mention_edges,
             segment_topic_id_map=segment_topic_id_map,
             landmark_concept_ids=landmark_concept_ids,
+            segment_speakers=segment_speakers,
+            speaker_concept_ids=speaker_concept_ids,
+            segments_truncated=segments_truncated,
         )
     except Exception as exc:  # pragma: no cover - the adapter itself never raises, but don't trust across the boundary
         logger.warning("%s_ingest_topic_foundry_adapter_failed run_id=%s error=%s", log_prefix, run_id, exc)
@@ -1434,6 +1462,24 @@ def _ingest_topic_foundry_run(
             concepts_written=0,
             entities_written=0,
             edges_written=0,
+        )
+
+    participation_edges = sum(
+        1
+        for e in record.edges
+        if getattr(e.provenance, "source_kind", None) == "topic_foundry.participation"
+    )
+    if participation_edges == 0 and speaker_concept_ids:
+        # Loud, not silent: the caller asked for participation edges and got
+        # none. Almost always a run trained before provenance.speakers existed.
+        logger.warning(
+            "%s_ingest_topic_foundry_no_participation_edges run_id=%s "
+            "segments_fetched=%s segments_with_speakers=%s -- Orion/Juniper "
+            "will have no seed edges (the mention path is retired for them)",
+            log_prefix,
+            run_id,
+            segments_fetched,
+            sum(1 for v in segment_speakers.values() if v),
         )
 
     if not record.nodes:
@@ -1498,21 +1544,40 @@ def _ingest_topic_foundry_run(
         "edges_written": counting_store.edges_written,
         "segments_fetched": segments_fetched,
         "segment_topic_map_buckets": len(segment_topic_map),
+        # Makes the silent-zero visible in the payload the scheduler already
+        # logs. `provenance.speakers` only exists on runs trained after
+        # 2026-08-28, so an older run yields segments_with_speakers=0 ->
+        # participation_edges=0 -- and since the mention path was retired for
+        # these speakers unconditionally, no seed edges from either route. That
+        # must not look identical to a healthy ingest.
+        "segments_with_speakers": sum(1 for v in segment_speakers.values() if v),
+        "participation_edges": participation_edges,
         "mentions_fetched": mentions_fetched,
         "typed_edges_written": typed_edges_written,
     }
 
 
-def _landmark_concept_ids() -> dict[str, str]:
-    """Build the ``label.lower() -> node_id`` map for the golden seed
-    concepts (Orion/Juniper/Claude), for
-    ``map_topic_foundry_run_to_substrate()``'s ``landmark_concept_ids``
-    param. Reads the seed fixture directly (``load_seed_concept_nodes()`` is
+# Speakers who are resolved from recorded segment provenance rather than from
+# entity mentions in the text. Measured on the real corpus 2026-08-28: each of
+# these speaks in 254/254 chat_history_log rows (100%) while being NAMED in
+# only 28%/26% -- so mention-based resolution had a ~28% ceiling on a fact that
+# is already a foreign key, and 0% actual recall (topic_foundry_edges has never
+# held a row). Anyone in this set is deliberately EXCLUDED from the mention
+# path: CLAUDE.md 0A, "kill means kill, no fallback to the thing being killed".
+# Derived, never hand-listed: a speaker is participation-resolvable precisely
+# when some dataset column is attributed to them. Hardcoding the set lets it
+# drift from _TOPIC_FOUNDRY_COLUMN_SPEAKERS -- and a name present here but
+# absent there is dropped from the mention path AND never appears in any
+# segment's speakers, so it silently gets zero edges from either route.
+_PARTICIPATION_RESOLVED_SPEAKERS = frozenset(_TOPIC_FOUNDRY_COLUMN_SPEAKERS.values())
+
+
+def _seed_concept_ids() -> dict[str, str]:
+    """``label.lower() -> node_id`` for every golden seed concept.
+
+    Reads the seed fixture directly (``load_seed_concept_nodes()`` is
     pure/read-only -- it does not write to any store); never writes anything.
-    Orion-graph ingestion only -- see ``_ingest_topic_foundry_run``'s
-    docstring for why the AI Town caller does not use this. Degrades to an
-    empty dict (landmark connection becomes a no-op for this call, everything
-    else proceeds normally) on any fixture read/parse problem, matching this
+    Degrades to an empty dict on any fixture read/parse problem, matching this
     module's existing degrade-not-raise convention.
     """
     try:
@@ -1521,8 +1586,38 @@ def _landmark_concept_ids() -> dict[str, str]:
         nodes, _edges = load_seed_concept_nodes()
         return {str(node.label).strip().lower(): node.node_id for node in nodes if node.label}
     except Exception as exc:  # pragma: no cover - defensive, never let a fixture bug abort ingestion
-        logger.warning("concept_atlas_landmark_concept_ids_failed error=%s", exc)
+        logger.warning("concept_atlas_seed_concept_ids_failed error=%s", exc)
         return {}
+
+
+def _speaker_concept_ids() -> dict[str, str]:
+    """Seed ids for speakers resolvable from provenance, for
+    ``map_topic_foundry_run_to_substrate()``'s ``speaker_concept_ids``.
+    """
+    return {
+        label: node_id
+        for label, node_id in _seed_concept_ids().items()
+        if label in _PARTICIPATION_RESOLVED_SPEAKERS
+    }
+
+
+def _landmark_concept_ids() -> dict[str, str]:
+    """Seed ids still resolved through ENTITY MENTIONS, for
+    ``map_topic_foundry_run_to_substrate()``'s ``landmark_concept_ids``.
+
+    Claude only, as of 2026-08-28. In `chat_history_log` Claude is a *subject
+    of conversation*, not a participant -- 20 rows mention the name, exactly 1
+    row has Claude as the responder -- so a mention edge is the correct
+    semantics there and the wrong one for Orion and Juniper, who now come from
+    ``_speaker_concept_ids()`` instead. Orion-graph ingestion only; see
+    ``_ingest_topic_foundry_run``'s docstring for why the AI Town caller does
+    not use either.
+    """
+    return {
+        label: node_id
+        for label, node_id in _seed_concept_ids().items()
+        if label not in _PARTICIPATION_RESOLVED_SPEAKERS
+    }
 
 
 @router.post("/api/substrate/concepts/ingest-topic-foundry")
@@ -1553,6 +1648,7 @@ def concept_atlas_ingest_topic_foundry() -> dict[str, Any]:
         model_name=_TOPIC_FOUNDRY_MODEL_NAME,
         log_prefix="concept_atlas",
         landmark_concept_ids=_landmark_concept_ids(),
+        speaker_concept_ids=_speaker_concept_ids(),
     )
 
 

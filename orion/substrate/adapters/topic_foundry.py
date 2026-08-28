@@ -74,6 +74,10 @@ MAX_COOCCURRENCE_EDGES = 2000
 # constant it can't see.
 MAX_MENTION_EDGES = 2000
 MAX_ENTITY_LABEL_LENGTH = 120
+# One edge per (accepted topic, speaker). Speakers are a tiny fixed set
+# (Orion/Juniper today), so this is far above any real run -- it exists only
+# to bound worst-case work on malformed input, like the caps above.
+MAX_PARTICIPATION_EDGES = 2000
 
 # HDBSCAN's noise/outlier bucket. Never a real cluster — always excluded.
 OUTLIER_TOPIC_ID = -1
@@ -110,6 +114,9 @@ def map_topic_foundry_run_to_substrate(
     subject_ref: Optional[str] = None,
     min_doc_count: int = DEFAULT_MIN_DOC_COUNT,
     landmark_concept_ids: Optional[Mapping[str, str]] = None,
+    segment_speakers: Optional[Mapping[str, Sequence[str]]] = None,
+    speaker_concept_ids: Optional[Mapping[str, str]] = None,
+    segments_truncated: bool = False,
 ) -> SubstrateGraphRecordV1:
     """Convert one topic-foundry run's topic/keyword/segment output into substrate records.
 
@@ -162,6 +169,24 @@ def map_topic_foundry_run_to_substrate(
         subject_ref: optional subject reference to attach to all emitted nodes.
         min_doc_count: topics with `count` below this floor are skipped as
             noise (default 3; see `DEFAULT_MIN_DOC_COUNT`).
+        segment_speakers: optional mapping of `segment_id` (str) -> the
+            speakers who authored that segment, from topic-foundry's
+            `provenance.speakers` (see
+            services/orion-topic-foundry/app/services/windowing.py's
+            `column_speakers`). This is RECORDED metadata -- the source
+            column is the speaker -- not anything extracted from the text.
+        segments_truncated: True when `segment_speakers`/`segment_topic_id_map`
+            cover only part of the run (the caller's segment fetch was
+            paginated/capped). Recorded on each participation edge's metadata
+            as `share_is_partial`, since `salience` is otherwise read as a
+            share of the whole topic.
+        speaker_concept_ids: optional mapping of lowercase speaker name ->
+            an already-existing golden seed concept node_id (e.g.
+            `{"orion": "sub-concept-seed-orion"}`). When both this and
+            `segment_speakers` are supplied, each accepted topic gets one
+            `associated_with` edge to every seed who actually spoke in it,
+            with `salience` set to that speaker's share of the topic's
+            segments. `None` for either is a complete no-op.
         landmark_concept_ids: optional mapping of normalized-lowercase label
             -> an already-existing seed concept node_id (typically built by a
             caller from `orion.substrate.seed.load_seed_concept_nodes()`).
@@ -214,6 +239,9 @@ def map_topic_foundry_run_to_substrate(
             subject_ref=subject_ref,
             min_doc_count=min_doc_count,
             landmark_concept_ids=landmark_concept_ids or {},
+            segment_speakers=segment_speakers or {},
+            speaker_concept_ids=speaker_concept_ids or {},
+            segments_truncated=segments_truncated,
         )
     except Exception:
         # Never raise — malformed topic-foundry data degrades to an empty,
@@ -253,6 +281,9 @@ def _build(
     subject_ref: Optional[str],
     min_doc_count: int,
     landmark_concept_ids: Mapping[str, str],
+    segment_speakers: Mapping[str, Sequence[str]],
+    speaker_concept_ids: Mapping[str, str],
+    segments_truncated: bool,
 ) -> SubstrateGraphRecordV1:
     nodes: list = []
     edges: list = []
@@ -526,6 +557,89 @@ def _build(
                 metadata={"run_id": run_id_str, "segment_id": str(segment_id)},
             )
         )
+
+    # Participation edges: who actually spoke in each topic.
+    #
+    # This is the replacement for resolving Orion/Juniper through entity
+    # mentions. Measured live 2026-08-28 on the real corpus: Orion and Juniper
+    # each speak in 254/254 rows (100%), while their NAMES appear in only 28%
+    # and 26% respectively. So the mention path's ceiling was ~28% recall on a
+    # fact that is already a foreign key -- and its actual recall was 0%,
+    # because topic_foundry_edges has never held a single row. The speaker is
+    # carried on the segment; nothing needs to be inferred.
+    #
+    # salience is the speaker's SHARE of the topic's segments, not a constant.
+    # An edge that merely exists would be uninformative here: every topic is
+    # expected to have both speakers, so uniform edges would connect the seeds
+    # to everything and say nothing. The share is what distinguishes a topic
+    # Orion mostly talked through from one Juniper drove.
+    if segment_speakers and speaker_concept_ids:
+        # (topic_id, speaker) -> number of that topic's segments they authored
+        participation_counts: dict[tuple[int, str], int] = {}
+        topic_segment_totals: dict[int, int] = {}
+        for segment_id, speakers in segment_speakers.items():
+            topic_id = segment_topic_id_map.get(str(segment_id))
+            if topic_id is None or topic_id not in accepted:
+                continue
+            topic_segment_totals[topic_id] = topic_segment_totals.get(topic_id, 0) + 1
+            if not speakers:
+                continue
+            # De-dup within the segment. Upstream de-dup is case-SENSITIVE and
+            # the caller lowercases only afterwards, so ["Orion", "orion"]
+            # survives as two entries -- which would emit segment_count=2 on a
+            # one-segment topic whose total is 1: self-contradictory metadata
+            # that still looks like an exact recorded count.
+            for speaker in dict.fromkeys(speakers):
+                speaker_key = str(speaker).strip().lower()
+                if not speaker_key or speaker_key not in speaker_concept_ids:
+                    continue
+                key = (topic_id, speaker_key)
+                participation_counts[key] = participation_counts.get(key, 0) + 1
+
+        emitted = 0
+        for (topic_id, speaker_key), count in sorted(
+            participation_counts.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1])
+        ):
+            if emitted >= MAX_PARTICIPATION_EDGES:
+                break
+            emitted += 1
+            total = topic_segment_totals.get(topic_id) or 1
+            share = min(1.0, max(0.0, count / total))
+            edges.append(
+                SubstrateEdgeV1(
+                    source=NodeRefV1(
+                        node_id=f"sub-concept-topicfoundry-{run_id_str}-{topic_id}",
+                        node_kind="concept",
+                    ),
+                    target=NodeRefV1(
+                        node_id=speaker_concept_ids[speaker_key], node_kind="concept"
+                    ),
+                    predicate="associated_with",
+                    temporal=temporal,
+                    # Recorded metadata, not an inference or a model output --
+                    # there is nothing here to be uncertain about.
+                    confidence=1.0,
+                    salience=share,
+                    provenance=make_provenance(
+                        source_kind="topic_foundry.participation",
+                        source_channel=source_channel,
+                        producer="topic_foundry_adapter",
+                    ),
+                    metadata={
+                        "run_id": run_id_str,
+                        "speaker": speaker_key,
+                        "segment_count": count,
+                        "topic_segment_total": total,
+                        # salience reads as "this speaker authored N% of the
+                        # topic". That is only true over the segments actually
+                        # supplied: the Hub's fetch is a single un-paginated
+                        # page (limit=1000, sort desc), so on a larger run the
+                        # denominator is a slice, not the run. Say so rather
+                        # than presenting a partial ratio as ground truth.
+                        "share_is_partial": bool(segments_truncated),
+                    },
+                )
+            )
 
     return SubstrateGraphRecordV1(
         graph_id=graph_id,

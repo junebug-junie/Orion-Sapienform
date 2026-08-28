@@ -378,6 +378,62 @@ runs the gate before anything builds on it.
    a distinct provenance `source_kind`; deleting them is one Cypher statement and
    the adapter params default to `None`.
 
+## Live results (updated as branches land)
+
+### Branch 1, verified 2026-08-28 on run `f9443362`
+
+| check | result |
+|---|---|
+| A1 documents >= 2x | **394** vs 62 -- 6.4x |
+| A2 no role labels in text | **0 / 394** snippets match `^(User|Assistant|juniper|orion):` |
+| speakers recorded | **394 / 394** (220 orion, 174 juniper) |
+| topics | **19** real clusters, up from 3 |
+
+Contamination check (the review finding that the *true* speaker name in the
+embedded text is as harmful as a fabricated one): 17 of 19 topics are
+speaker-MIXED, 50-77% purity against ~56% chance for the 174/220 split. Only 2
+are speaker-pure, both plausibly genuine Orion-only content. Had the label
+still been in the text, purity would sit near 100% across the board.
+
+### Branch 2, verified 2026-08-28 against the same run
+
+36 participation edges: Orion -> 19 topics, Juniper -> 17.
+
+**Metric quality gate item 4 (saturation) resolved: NOT saturated.** The
+concern was that if every topic linked to both speakers uniformly, the edge
+would be honest but carry no information. Measured shares span 0.00-1.00 and
+track something real:
+
+| topic | n | orion | juniper |
+|---|---|---|---|
+| General Greetings and Conversations | 30 | 0.23 | 0.77 |
+| Athena's numeric signal | 14 | 1.00 | 0.00 |
+| Conceptual Repair Pressure | 13 | 1.00 | 0.00 |
+| Model Testing & Development | 13 | 0.31 | 0.69 |
+| Code Review Process | 16 | 0.50 | 0.50 |
+
+So the follow-on contemplated in the gate (weight by segment share rather than
+drop the edge) is what shipped, and it was the right call.
+
+## New finding: the Hub's substrate store is a process-local cache
+
+Found while verifying branch 1. `SUBSTRATE_SEMANTIC_STORE` is built once at
+module import, and the served `/api/substrate/concepts/network` reflects only
+writes made **in the Hub's own process**.
+
+Evidence: an ingest run via `docker exec python3` wrote 19 concepts and 148
+edges to FalkorDB (verified independently: `orion_substrate` went 18 -> 37
+concept nodes), while the Hub endpoint kept serving the pre-ingest 24 nodes /
+15 edges with `truncated: false, degraded: false`. Re-running the identical
+ingest through the Hub's own HTTP route immediately returned 62 / 163.
+
+Impact: any writer other than the Hub process -- an out-of-band script, a
+second Hub replica, another service -- is invisible to the atlas until Hub
+restarts, and the endpoint reports itself healthy while stale. The scheduler
+runs in-process so the normal path is unaffected. Not fixed in this spec's
+branches; needs its own patch (either a TTL/refresh on the read path, or an
+explicit "this view is process-local" honesty field on the response).
+
 ## Missing questions
 
 1. After the split, does every topic link to both Orion and Juniper (the

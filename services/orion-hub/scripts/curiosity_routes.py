@@ -5,11 +5,19 @@ one log line — `priors=0/0` — that nobody read for four hours. Everything ne
 to see it was already in FalkorDB, Postgres, Redis and docker logs; nothing put
 it on one screen. This module is that screen.
 
-STRICTLY READ-ONLY, and that is a design constraint rather than a phase-one
-scope cut. Hub never writes to `orion_worldview` — Orion authors its own graph —
-and a surface that could edit it would need auth thinking, an audit trail, and a
-story about what it means for an operator to overwrite a belief Orion formed.
-There are no POST routes here and there should not be.
+NOTHING HERE WRITES TO ORION'S GRAPH, and that is a design constraint rather
+than a phase-one scope cut. Hub never writes to `orion_worldview` — Orion authors
+its own graph — and a surface that could edit it would need auth thinking, an
+audit trail, and a story about what it means for an operator to overwrite a
+belief Orion formed. That has not changed and should not.
+
+There is now exactly one POST, and it is narrower than it looks: `/api/run-now`
+asks the loop to take a turn sooner than the cooldown would have. It writes no
+memory, no prior, no finding. Orion still authors everything the turn produces.
+An earlier version of this docstring said "no POST routes here and there should
+not be", which was a claim about writes to the graph stated as a claim about
+HTTP verbs; a control action is not a write, and conflating them would have
+forced an operator button into a module that has nothing to do with this page.
 
 Follows `concept_atlas_routes.py`: two JSON GETs plus a standalone page route,
 degrading to an honest "unavailable" payload rather than a 500, because this is
@@ -31,6 +39,11 @@ from orion.curiosity.atlas import read_atlas, to_payload
 from orion.curiosity.worldview import WorldviewReader
 
 logger = logging.getLogger("orion-hub.curiosity_routes")
+
+# Strong references to in-flight forced turns. asyncio only holds a weak
+# reference to a running task, so without this the turn can be garbage-collected
+# mid-run -- the button would return ok and nothing would happen.
+_RUN_NOW_TASKS: set = set()
 
 router = APIRouter(prefix="/curiosity", tags=["curiosity"])
 
@@ -89,6 +102,8 @@ async def _read_schedule() -> dict[str, Any]:
     """
     out: dict[str, Any] = {
         "available": False,
+        "local_date": None,
+        "tz": None,
         "last_investigation_at": None,
         "next_eligible_at": None,
         "runs_today": None,
@@ -130,6 +145,8 @@ async def _read_schedule() -> dict[str, Any]:
             count = count.decode("utf-8", errors="replace")
 
         out["available"] = True
+        out["local_date"] = local_date
+        out["tz"] = str(tz)
         out["last_investigation_at"] = str(last) if last else None
         out["runs_today"] = int(count) if count else 0
         if last and cooldown:
@@ -147,6 +164,80 @@ async def _read_schedule() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
         logger.warning("curiosity_atlas_schedule_unavailable err=%s", exc)
     return out
+
+
+async def _read_journals(run_ids: list[str]) -> dict[str, str]:
+    """What each run actually SAID, which is its real output.
+
+    The graph holds the run's structure -- priors, findings, hops -- but the
+    prose Orion wrote for Juniper lives in Postgres, and a page that shows the
+    node counts without it describes the shape of a turn while hiding what the
+    turn was for. Juniper, looking at the first version of this page: "Don't
+    know what tools are being used or what the actual output is of the run."
+
+    Keyed `curiosity:<run_id>` by the loop (`curiosity_investigation.py:318`).
+    """
+    if not run_ids:
+        return {}
+    try:
+        from . import main as hub_main
+
+        pool = getattr(getattr(hub_main, "app", None), "state", None)
+        pool = getattr(pool, "memory_pg_pool", None)
+        if pool is None:
+            return {}
+        refs = [f"curiosity:{r}" for r in run_ids]
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT source_ref, body FROM journal_entries "
+                "WHERE source_ref = ANY($1::text[])",
+                refs,
+            )
+        return {
+            str(r["source_ref"]).split(":", 1)[1]: str(r["body"] or "")
+            for r in rows
+            if ":" in str(r["source_ref"])
+        }
+    except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
+        logger.warning("curiosity_atlas_journal_unavailable err=%s", exc)
+        return {}
+
+
+def _wrote_on(
+    runs: list[dict[str, Any]], local_date: Optional[str], tz_name: Optional[str]
+) -> Optional[int]:
+    """How many runs wrote a node on the SAME calendar day the counter keys on.
+
+    Computed here rather than in the browser. The daily counter is keyed in
+    `HUB_ENDOGENOUS_OUTREACH_TZ`, while a browser's `isToday` is the viewer's
+    own zone, and comparing a count from one zone against a count from another
+    makes the "wrote nothing at all" banner fire or stay silent for reasons that
+    have nothing to do with Orion. It happens to be right today because Juniper
+    and the configured zone are both MDT; it would be wrong for any viewer who
+    is not, and wrong for everyone for the hours the two dates disagree.
+
+    An undated run counts as today: its only timestamp comes from a
+    `:TurnOutcome`, so a turn killed mid-write has no date, and calling that
+    "not today" would report it as traceless when it plainly left a trace.
+    """
+    if not local_date:
+        return None
+    try:
+        tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+    except Exception:  # noqa: BLE001
+        tz = timezone.utc
+    n = 0
+    for run in runs:
+        if not run.get("total_added"):
+            continue
+        stamp = run.get("written_at")
+        if not stamp:
+            n += 1
+            continue
+        when = datetime.fromtimestamp(int(stamp) / 1000, timezone.utc).astimezone(tz)
+        if when.date().isoformat() == local_date:
+            n += 1
+    return n
 
 
 @router.get("/api/atlas")
@@ -171,8 +262,69 @@ async def curiosity_atlas_api() -> JSONResponse:
         # connected websocket, which is the rule `WorldviewReader` already
         # states for its own blocking call.
         payload = await asyncio.to_thread(lambda: to_payload(read_atlas(reader)))
+        journals = await _read_journals(
+            [r["run_id"] for r in payload.get("runs", []) if r.get("run_id")]
+        )
+        for run in payload.get("runs", []):
+            run["journal"] = journals.get(run.get("run_id", ""), "")
     payload["schedule"] = await _read_schedule()
+    payload["schedule"]["runs_wrote_today"] = _wrote_on(
+        payload.get("runs", []), payload["schedule"].get("local_date"),
+        payload["schedule"].get("tz"),
+    )
     return JSONResponse(content=payload, headers=_NO_CACHE)
+
+
+@router.post("/api/run-now")
+async def curiosity_run_now() -> JSONResponse:
+    """Take a turn now, skipping the cooldown and the daily cap.
+
+    Every health gate still applies. `enabled` is NOT overridable: a loop
+    switched off is a decision already made, and a button that quietly undid it
+    would make the switch meaningless.
+
+    The run still counts against today. A forced run that did not would make the
+    daily counter lie, and that counter is what the page compares against to
+    notice a run that left no trace.
+    """
+    try:
+        from . import main as hub_main
+
+        loop = getattr(hub_main, "curiosity_investigation", None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_run_now_import_failed err=%s", exc)
+        loop = None
+
+    if loop is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "loop_not_running"},
+            status_code=503,
+            headers=_NO_CACHE,
+        )
+
+    logger.warning("curiosity_run_now_requested -- operator asked for a turn")
+    try:
+        # A turn runs for ~20 minutes and this is a browser request. Fire it and
+        # return the acceptance, rather than holding an HTTP connection open
+        # across the whole turn and reporting a proxy timeout as a failure.
+        task = asyncio.create_task(loop.tick(force=True))
+        _RUN_NOW_TASKS.add(task)
+        task.add_done_callback(_RUN_NOW_TASKS.discard)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_run_now_failed err=%s", exc)
+        return JSONResponse(
+            content={"ok": False, "reason": str(exc)[:200]},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    return JSONResponse(
+        content={
+            "ok": True,
+            "detail": "Turn requested. It takes ~20 minutes; the page will "
+                      "show it once the run writes its first node.",
+        },
+        headers=_NO_CACHE,
+    )
 
 
 @router.get("")

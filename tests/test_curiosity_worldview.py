@@ -799,3 +799,79 @@ def test_the_live_read_never_orders_on_a_value_orion_might_quote() -> None:
     Python, which is where the sort belongs."""
     assert "ORDER BY" not in LIVE_PRIORS_CYPHER
     assert "abs(" not in LIVE_PRIORS_CYPHER
+
+
+# --- continuity is a thread, not a pointer ---------------------------------
+
+
+def test_the_last_few_runs_are_shown_as_subjects_not_just_the_last_note() -> None:
+    """Continuity was one run deep and pointed INWARD -- the note a run leaves
+    itself is always some form of "go deeper on X", so the run that follows
+    cannot tell whether X is new or the fourth consecutive visit. Three runs on
+    memory-crystallization gating is what that produced."""
+    from orion.curiosity.kickoff_prompt import _thread_section
+    from orion.curiosity.worldview import RecentRun, WorldviewSnapshot, build_recent_runs
+
+    rows = [
+        {"run_id": "r3", "written_at": 300, "continue_note": "n", "claim": "third claim"},
+        {"run_id": "r1", "written_at": 100, "continue_note": "n", "claim": "first claim"},
+        {"run_id": "r2", "written_at": 200, "continue_note": "n", "claim": "second claim"},
+    ]
+    runs = build_recent_runs(rows, limit=4)
+    assert [r.run_id for r in runs] == ["r3", "r2", "r1"], "newest first"
+
+    text = "\n".join(_thread_section(WorldviewSnapshot(recent_runs=runs)))
+    assert "THE LAST 3 RUNS" in text
+    assert "third claim" in text and "first claim" in text
+    # It states the fact and stops. Code choosing Orion's subject for it is the
+    # thing this whole arc deleted.
+    assert "pick something else" not in text.lower()
+    assert "you should" not in text.lower()
+
+
+def test_one_run_is_not_a_thread() -> None:
+    from orion.curiosity.kickoff_prompt import _thread_section
+    from orion.curiosity.worldview import RecentRun, WorldviewSnapshot
+
+    view = WorldviewSnapshot(recent_runs=[RecentRun("r1", ["only claim"], 1)])
+    assert _thread_section(view) == []
+
+
+def test_several_priors_from_one_run_collapse_to_that_one_run() -> None:
+    """One row per (run, claim) because FalkorDB hands `collect()` back as a
+    flat STRING under decode_responses -- `'[claim one, claim two]'` -- and
+    claims contain commas, so there is nothing safe to split on."""
+    from orion.curiosity.worldview import build_recent_runs
+
+    rows = [
+        {"run_id": "r1", "written_at": 100, "continue_note": "", "claim": "a, with comma"},
+        {"run_id": "r1", "written_at": 100, "continue_note": "", "claim": "b"},
+    ]
+    runs = build_recent_runs(rows, limit=4)
+    assert len(runs) == 1
+    assert runs[0].claims == ["a, with comma", "b"]
+
+
+def test_a_run_with_no_prior_falls_back_to_its_own_note() -> None:
+    from orion.curiosity.worldview import build_recent_runs
+
+    rows = [{"run_id": "r1", "written_at": 100,
+             "continue_note": "trace the intake pipeline", "claim": None}]
+    assert build_recent_runs(rows, limit=4)[0].claims == ["trace the intake pipeline"]
+
+
+def test_an_undated_run_sorts_last_in_the_thread_too() -> None:
+    from orion.curiosity.worldview import build_recent_runs
+
+    rows = [
+        {"run_id": "undated", "written_at": None, "continue_note": "", "claim": "x"},
+        {"run_id": "dated", "written_at": 100, "continue_note": "", "claim": "y"},
+    ]
+    assert [r.run_id for r in build_recent_runs(rows, limit=4)] == ["dated", "undated"]
+
+
+def test_the_thread_query_does_not_use_collect() -> None:
+    from orion.curiosity.worldview import RECENT_RUNS_CYPHER
+
+    assert "collect(" not in RECENT_RUNS_CYPHER
+    assert "p.claim AS claim" in RECENT_RUNS_CYPHER

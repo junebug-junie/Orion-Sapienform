@@ -371,6 +371,9 @@ class CuriosityInvestigation:
         except Exception:  # noqa: BLE001 -- a bad zone must not stop the loop
             logger.warning("curiosity_bad_timezone name=%s falling back to UTC", timezone_name)
             self._tz = timezone.utc
+        # One turn at a time. See `tick(force=...)` for why this arrived with
+        # the manual trigger rather than before it.
+        self._run_lock = asyncio.Lock()
         self._pool_provider = pool_provider
         self._source_ref = source_ref
 
@@ -717,10 +720,36 @@ class CuriosityInvestigation:
             return False
         return found is None
 
-    async def tick(self) -> Optional[str]:
-        """One decision. Returns the block reason, or None if it investigated."""
+    async def tick(self, *, force: bool = False) -> Optional[str]:
+        """One decision. Returns the block reason, or None if it investigated.
+
+        `force` SKIPS THE SCHEDULING GATE AND NOTHING ELSE. Cooldown and daily
+        cap exist to bound cost and to stop a redeploy spending a slot; an
+        operator asking for a run on purpose has already made that call. Every
+        other gate still applies -- `enabled`, the Postgres role, the graph ACL,
+        the stores, whether there is any material -- because those answer "can
+        this run work at all", which an operator cannot override by wanting it.
+
+        The run is still RECORDED: it stamps the cooldown and increments the
+        daily counter like any other. A forced run that did not count would make
+        the counter lie, and the counter is what the atlas page compares against
+        to notice a run that left no trace.
+        """
         now = datetime.now(timezone.utc)
         self._roll_daily_counter(now)
+
+        # No two turns at once. There was no lock before this because the
+        # cooldown made overlap impossible -- a turn runs ~20 minutes and the
+        # next was 4 hours away. A manual trigger removes that guarantee: it can
+        # land in the middle of a scheduled turn, and two concurrent turns would
+        # race on the same run-id key and the same FCC sandbox.
+        #
+        # `locked()` then `async with` is safe rather than racy here: acquiring
+        # an unlocked asyncio.Lock does not yield, so nothing can interleave
+        # between the check and the acquisition on this single-threaded loop.
+        if self._run_lock.locked():
+            logger.info("curiosity_investigation_blocked reason=already_running")
+            return "already_running"
 
         since_last, done_today = await self._read_persisted_state(now)
         reason = scheduling_block_reason(
@@ -732,6 +761,17 @@ class CuriosityInvestigation:
                 daily_cap=self.daily_cap,
             )
         )
+        if force and reason in {"cooldown", "daily_cap"}:
+            logger.warning(
+                "curiosity_investigation_forced overriding=%s since_last=%.0fs "
+                "done_today=%s cap=%s -- an operator asked for this run; it "
+                "still counts against today",
+                reason,
+                since_last if since_last is not None else -1.0,
+                done_today,
+                self.daily_cap,
+            )
+            reason = None
         if reason is not None:
             # INFO, not DEBUG. These fire at most once per tick (5 min), so the
             # volume is trivial, and a loop whose every refusal is invisible is
@@ -818,6 +858,31 @@ class CuriosityInvestigation:
         run_id = uuid4().hex[:12]
         correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
 
+        # HELD FOR THE WHOLE TURN, not just checked at the top. The check up
+        # there rejects a second trigger early and cheaply; this is what makes
+        # the rejection true, since the gate reads between the two both await.
+        if self._run_lock.locked():
+            logger.info("curiosity_investigation_blocked reason=already_running")
+            return "already_running"
+        async with self._run_lock:
+            return await self._investigate(
+                now=now,
+                run_id=run_id,
+                correlation_id=correlation_id,
+                material=material,
+                done_today=done_today,
+            )
+
+    async def _investigate(
+        self,
+        *,
+        now: datetime,
+        run_id: str,
+        correlation_id: str,
+        material: StudyMaterial,
+        done_today: int,
+    ) -> Optional[str]:
+        """The turn itself. Split out so `tick` can hold one lock across it."""
         last_run_id = await self._read_last_run_id()
         # Seeded with THIS run's id so ties in the prior ordering rotate
         # between runs instead of pinning the same `sample` priors forever.

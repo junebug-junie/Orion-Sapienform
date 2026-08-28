@@ -117,6 +117,11 @@ h2 {
   border-radius: 11px; box-shadow: var(--shadow);
 }
 
+button.ghost.run-now { border-color: var(--axis); color: var(--ink); }
+button.ghost.run-now[disabled] { opacity: 0.55; cursor: default; }
+.run-msg { font-size: 12px; color: var(--ink-2); }
+.run-msg.bad { color: var(--critical); }
+
 /* --- banners ----------------------------------------------------------- */
 .banner {
   display: flex; gap: 11px; align-items: flex-start;
@@ -199,6 +204,46 @@ h2 {
 .run .note b { color: var(--ink); font-weight: 620; }
 .run .wrote { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
 
+/* --- a run's actual working --------------------------------------------- */
+.working { margin-top: 11px; }
+.working-label {
+  font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ink-muted); font-weight: 600; margin-bottom: 6px;
+}
+ol.hops { margin: 0; padding-left: 0; list-style: none; counter-reset: hop; }
+ol.hops li {
+  counter-increment: hop; position: relative; padding: 0 0 9px 26px;
+  font-size: 12.5px; line-height: 1.5; color: var(--ink-2);
+  border-left: 1px solid var(--grid); margin-left: 7px;
+}
+ol.hops li:last-child { padding-bottom: 0; border-left-color: transparent; }
+ol.hops li::before {
+  content: counter(hop); position: absolute; left: -7px; top: 1px;
+  width: 15px; height: 15px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--axis);
+  color: var(--ink-muted); font-size: 9px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.evidence {
+  display: block; margin-top: 5px; font-size: 11.5px; color: var(--ink-muted);
+}
+.evidence b { color: var(--ink-muted); font-weight: 620; }
+details.journal { margin-top: 11px; }
+details.journal summary {
+  cursor: pointer; font-size: 12px; color: var(--ink-2);
+  list-style: none; display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--hairline); border-radius: 7px; padding: 3px 10px;
+}
+details.journal summary::-webkit-details-marker { display: none; }
+details.journal summary::before { content: "▸"; font-size: 9px; color: var(--ink-muted); }
+details.journal[open] summary::before { content: "▾"; }
+details.journal summary:hover { color: var(--ink); }
+.journal-body {
+  margin-top: 9px; font-size: 13px; line-height: 1.6; color: var(--ink-2);
+  white-space: pre-wrap; border-left: 2px solid var(--grid); padding-left: 12px;
+  max-height: 30rem; overflow-y: auto;
+}
+
 /* --- tables ------------------------------------------------------------ */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--grid); vertical-align: top; }
@@ -225,6 +270,8 @@ tr:last-child td { border-bottom: none; }
     <span id="updated">Loading…</span>
     <button class="ghost" id="refresh" type="button">Refresh</button>
     <button class="ghost" id="toggle-tables" type="button" aria-pressed="false">Table view</button>
+    <button class="ghost run-now" id="run-now" type="button">Run now</button>
+    <span id="run-now-msg" class="run-msg"></span>
   </div>
 
   <div id="banners"></div>
@@ -362,6 +409,18 @@ function renderBanners(d) {
     out.push(banner("info", "○", "Orion has not written a prior yet",
       "A normal place to start, not a gap. Distinct from a dead pool above."));
   }
+  // Named because it is an ABSENCE. A zero never shows up in a per-run
+  // breakdown -- nothing renders for a thing that was not written -- so the
+  // page has to ask for it by name or the loop looks busier than it is.
+  if (d.available !== false && (d.runs || []).length
+      && d.concept_total === 0 && d.edge_total === 0) {
+    out.push(banner("warning", "\u25b3", "Orion has written no concepts and no edges",
+      "It is handed a sample of the concept-induction graph every run, and the " +
+      "prompt offers it <span class=\"mono\">:Concept</span> nodes and " +
+      "SUPPORTS / CONTRADICTS / ABOUT edges. Across every run so far it has used " +
+      "neither, so its world view is disconnected nodes rather than a graph \u2014 " +
+      "and every prior it holds is on one subject."));
+  }
   // A run that was KILLED before writing anything carries no run_id on any
   // node, so it is invisible to every panel here -- and it is the run you most
   // want to see. Redis counted it; the graph did not. The gap between the two
@@ -370,20 +429,23 @@ function renderBanners(d) {
   // whole slot was spent on nothing.
   const s = d.schedule || {};
   if (s.available && typeof s.runs_today === "number" && d.available !== false) {
-    // A run's only timestamp comes from its `:TurnOutcome`, so a turn killed
-    // MID-write has nodes but no date. Counting those as "left no trace" was
-    // wrong in both directions: it contradicted this banner's own body, and it
-    // double-reported a run the ledger already flags with its own pill.
-    // Undated-but-wrote counts as accounted for; only a run that wrote NOTHING
-    // AT ALL is invisible here, and the counter gap is its sole evidence.
-    const wroteToday = (d.runs || []).filter((r) => isToday(r.written_at)).length;
-    const wroteUndated = (d.runs || []).filter(
-      (r) => !r.written_at && r.total_added > 0).length;
-    const missing = s.runs_today - wroteToday - wroteUndated;
+    // Both numbers come from the SERVER, in the zone the counter is keyed in.
+    // Counting "today" in the browser compared a tally from one timezone
+    // against a tally from another -- right only while the viewer and
+    // HUB_ENDOGENOUS_OUTREACH_TZ agree, and wrong for everyone during the
+    // hours the two dates disagree. It was 20:33 MDT on the 27th when this was
+    // written and the host clock already said the 28th.
+    //
+    // An undated run counts as having written: its only timestamp comes from a
+    // :TurnOutcome, so a turn killed mid-write has none, and calling that "not
+    // today" reported it as traceless when it plainly left a trace.
+    const wrote = s.runs_wrote_today;
+    if (typeof wrote !== "number") { $("banners").innerHTML = out.join(""); return; }
+    const missing = s.runs_today - wrote;
     if (missing > 0) {
       out.push(banner("warning", "△",
         `${missing} run${missing === 1 ? "" : "s"} today wrote nothing at all`,
-        `The daily counter says ${s.runs_today} ran and ${wroteToday + wroteUndated} left ` +
+        `The daily counter says ${s.runs_today} ran and ${wrote} left ` +
         `a node behind. A turn killed before it writes still spends its slot, and carries ` +
         `no run id on anything — so it appears in no panel below. Check Hub logs for it.`));
     }
@@ -406,8 +468,17 @@ function renderTiles(d) {
     tile("Runs today", today === null || today === undefined ? "—" : today,
          cap ? `of ${cap} allowed` : "cap unknown",
          cap && today >= cap),
-    tile("Next eligible", s.next_eligible_at ? fmtStamp(s.next_eligible_at) : "—",
-         s.next_eligible_at ? relative(s.next_eligible_at) : "no cooldown recorded"),
+    // A past cooldown is eligibility, not history: "8h 21m ago" read as though
+    // something had been missed.
+    tile("Next eligible",
+         !s.next_eligible_at ? "—"
+           : (new Date(s.next_eligible_at) <= new Date() ? "now"
+              : fmtStamp(s.next_eligible_at)),
+         !s.next_eligible_at ? "no cooldown recorded"
+           : (new Date(s.next_eligible_at) <= new Date()
+               ? (cap && today >= cap ? "cooldown clear — daily cap reached"
+                  : "cooldown clear")
+               : relative(s.next_eligible_at))),
   ];
   $("tiles").innerHTML = tiles.join("");
 }
@@ -538,7 +609,15 @@ function renderRuns(d) {
       </div>
       <div class="wrote">${wrote ? `wrote ${esc(wrote)}` : "wrote nothing"}${
         r.priors_touched.length ? ` · re-tested ${r.priors_touched.length} prior${r.priors_touched.length === 1 ? "" : "s"}` : ""}</div>
-      ${(r.findings || []).map((f) => `<p class="note"><b>Found</b> ${esc(f.text)}</p>`).join("")}
+      ${(r.hop_notes || []).length ? `<div class="working">
+        <div class="working-label">The turn, step by step</div>
+        <ol class="hops">${r.hop_notes.map((h) =>
+          `<li>${esc(h.note)}</li>`).join("")}</ol>
+      </div>` : ""}
+      ${(r.findings || []).map((f) => `<p class="note"><b>Found</b> ${esc(f.text)}
+        ${f.evidence ? `<span class="evidence"><b>Looked at</b> ${esc(f.evidence)}</span>` : ""}</p>`).join("")}
+      ${r.journal ? `<details class="journal"><summary>What it wrote to you (${r.journal.length} chars)</summary>
+        <div class="journal-body">${esc(r.journal)}</div></details>` : ""}
       ${r.reach_out_why ? `<p class="note"><b>Wanted to say</b> ${esc(r.reach_out_why)}</p>` : ""}
       ${r.continue_note ? `<p class="note"><b>Next</b> ${esc(r.continue_note)}</p>` : ""}
     </div>`;
@@ -582,6 +661,39 @@ async function load() {
 }
 
 $("refresh").addEventListener("click", load);
+
+// Skips the cooldown and the daily cap and nothing else. Confirmed first,
+// because a turn is a real ~20-minute run on the same pipeline that serves
+// Juniper -- a mis-click should not spend one.
+$("run-now").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const msg = $("run-now-msg");
+  if (!window.confirm(
+        "Take a curiosity turn now?\n\n" +
+        "Skips the cooldown and the daily cap. It still counts against today, " +
+        "and it runs for about 20 minutes on the same pipeline that serves you.")) {
+    return;
+  }
+  btn.disabled = true;
+  msg.className = "run-msg";
+  msg.textContent = "Requesting…";
+  try {
+    const res = await fetch("/curiosity/api/run-now", { method: "POST" });
+    const d = await res.json();
+    if (d.ok) {
+      msg.textContent = d.detail || "Turn requested.";
+      setTimeout(load, 3000);
+    } else {
+      msg.className = "run-msg bad";
+      msg.textContent = `Refused: ${d.reason || res.status}`;
+    }
+  } catch (err) {
+    msg.className = "run-msg bad";
+    msg.textContent = `Failed: ${String(err)}`;
+  }
+  // Left disabled: the turn takes ~20 minutes and a second press would be
+  // rejected as already_running anyway. Reload the page to arm it again.
+});
 $("toggle-tables").addEventListener("click", (e) => {
   const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
   e.currentTarget.setAttribute("aria-pressed", String(on));

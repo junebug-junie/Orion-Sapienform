@@ -31,11 +31,13 @@ empty trajectory here means "not recorded yet", never "confidence did not move".
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 from orion.curiosity.worldview import (
     CLOSED_STATUSES,
+    LABEL_CONCEPT,
     LABEL_FINDING,
     LABEL_HOP,
     LABEL_PRIOR,
@@ -89,6 +91,23 @@ ATLAS_OUTCOMES_CYPHER = (
     "t.written_at AS written_at LIMIT 2000"
 )
 
+# What the prompt OFFERS every run and Orion has never taken up. Counted
+# separately from growth because the interesting number is zero, and a zero
+# never appears in a per-run breakdown -- it is an absence, and an absence has
+# to be asked for by name.
+#
+# Juniper, reading the first version of this page: "I don't see any use of
+# concept induction profiles." She was right, and the page could not have shown
+# it: Orion is handed a sample of 651 concepts and 550 induction relations every
+# single run, the prompt gives it `CREATE (:Concept ...)` and the SUPPORTS /
+# CONTRADICTS / ABOUT edges, and across every run so far it has written none of
+# either. Its whole graph is disconnected nodes about one subject.
+ATLAS_UNUSED_CYPHER = (
+    f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
+)
+
+ATLAS_EDGES_CYPHER = "MATCH ()-[r]->() RETURN count(r) AS n"
+
 # Every node, by label and run, so graph growth is counted from the same source
 # the other reads use rather than by summing them (a label nobody has a reader
 # for yet would silently vanish from the totals).
@@ -96,6 +115,33 @@ ATLAS_GROWTH_CYPHER = (
     "MATCH (n) WHERE n.run_id IS NOT NULL "
     "RETURN labels(n)[0] AS label, n.run_id AS run_id, count(n) AS n"
 )
+
+
+def _stamp_ms(value: Any) -> Optional[int]:
+    """Epoch milliseconds from what Orion actually wrote, ISO string included.
+
+    The prompt asks for `written_at: timestamp()` and recent runs comply, but
+    run `32b42392f495` wrote an ISO string and `_as_int` mapped that to 0 ->
+    None. Two visible consequences, both wrong: the ledger labelled a run that
+    HAD written a `:TurnOutcome` as "died before writing an outcome", and the
+    undated run then counted as accounted-for on any day, masking the genuinely
+    traceless run the banner exists to catch. Juniper spotted the first one in
+    the rendered page.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
 
 
 def _text(value: Any, limit: int = 4000) -> str:
@@ -169,6 +215,8 @@ class AtlasView:
     priors: list[AtlasPrior] = field(default_factory=list)
     revisions: list[AtlasRevision] = field(default_factory=list)
     runs: list[AtlasRun] = field(default_factory=list)
+    concept_total: int = 0
+    edge_total: int = 0
     unavailable_reason: Optional[str] = None
     _by_prior: Optional[dict[str, list["AtlasRevision"]]] = field(
         default=None, repr=False, compare=False
@@ -237,7 +285,7 @@ def _build_revision(row: dict[str, Any]) -> Optional[AtlasRevision]:
         to_confidence=_as_float(row.get("to_confidence")),
         from_status=_text(row.get("from_status"), 60),
         to_status=_text(row.get("to_status"), 60),
-        written_at=_as_int(row.get("written_at"), 0) or None,
+        written_at=_stamp_ms(row.get("written_at")),
     )
 
 
@@ -311,7 +359,7 @@ def assemble_runs(
         slot["continue_note"] = _text(row.get("continue_note"), 2000)
         slot["reach_out"] = _as_bool(row.get("reach_out"))
         slot["reach_out_why"] = _text(row.get("reach_out_why"), 2000)
-        slot["written_at"] = _as_int(row.get("written_at"), 0) or None
+        slot["written_at"] = _stamp_ms(row.get("written_at"))
 
     for prior in priors:
         if prior.created_by_run:
@@ -356,6 +404,8 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
         hop_rows = reader.query(ATLAS_HOPS_CYPHER)
         outcome_rows = reader.query(ATLAS_OUTCOMES_CYPHER)
         growth_rows = reader.query(ATLAS_GROWTH_CYPHER)
+        concept_rows = reader.query(ATLAS_UNUSED_CYPHER)
+        edge_rows = reader.query(ATLAS_EDGES_CYPHER)
     except WorldviewUnavailable as exc:
         return AtlasView(unavailable_reason=str(exc)[:200])
 
@@ -377,6 +427,8 @@ def read_atlas(reader: WorldviewReader) -> AtlasView:
     )
 
     return AtlasView(
+        concept_total=_as_int(concept_rows[0].get("n"), 0) if concept_rows else 0,
+        edge_total=_as_int(edge_rows[0].get("n"), 0) if edge_rows else 0,
         priors=sorted(priors, key=lambda p: (p.is_closed, -p.times_tested, p.prior_id)),
         revisions=revisions,
         runs=assemble_runs(
@@ -446,6 +498,8 @@ def to_payload(view: AtlasView) -> dict[str, Any]:
         "closed_total": view.closed_total,
         "pool_is_dead": view.pool_is_dead,
         "history_recorded": bool(view.revisions),
+        "concept_total": view.concept_total,
+        "edge_total": view.edge_total,
         "priors": [
             {
                 **asdict(p),

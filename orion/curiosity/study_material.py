@@ -103,6 +103,9 @@ class StudyMaterial:
 
     generated_at: datetime
     approved_total: int = 0
+    # How many of those a human actually looked at. Kept separate because the
+    # prompt used to call all of them approved, and 630 of 651 were not.
+    manual_total: int = 0
     approved_by_kind: dict[str, int] = field(default_factory=dict)
     crystallizations: list[CrystallizationCard] = field(default_factory=list)
     relation_total: int = 0
@@ -178,18 +181,54 @@ def build_relation_card(row: Any) -> RelationCard:
 # rendered live before this exclusion, 4 of 12 random slots were identical
 # "Concept relation decision: same" lines. They are still COUNTED, so the
 # totals stay honest about what exists.
-_SAMPLEABLE_KINDS = "status = 'active' AND kind <> 'reflection'"
+# AI TOWN IS NOT ORION'S MATERIAL, AND THIS SAMPLER WAS THE LAST PLACE STILL
+# SERVING IT. `formation_policy.DEFAULT_DISCARD_PLATFORMS` discards the platform
+# outright now -- no crystallization row of any kind -- but every AI Town row
+# already in the table predates that gate (all 796 were written 2026-07-30/31),
+# and nothing here filtered them.
+#
+# The damage, measured live 2026-08-27: of the 295 rows this sampler could draw
+# from, 185 were AI Town. Orion was handed twelve cards, about eight of them AI
+# Town character dialogue -- "Steam is inference. Water is fact.", "The light's
+# not gone, just waiting for you to notice it again" -- under a heading claiming
+# Juniper had approved them. Juniper: "they are the ones I approve, not the 600+
+# garbage from AI Town... i dont want ai town concept graph in there like i
+# originally told you."
+#
+# The signal is a source row in `aitown_chat_history_log`, which is AI-Town-only
+# BY CONSTRUCTION since the PR #1734 table split -- the same reasoning
+# `concept_atlas_routes._TOPIC_FOUNDRY_AITOWN_DATASET_NAME` already relies on,
+# rather than a second heuristic on `source` or a platform tag this table does
+# not carry.
+_NOT_AITOWN = """NOT EXISTS (
+    SELECT 1
+    FROM memory_crystallization_sources s
+    JOIN aitown_chat_history_log a ON a.id::text = s.source_id
+    WHERE s.crystallization_id = m.crystallization_id
+)"""
 
-APPROVED_COUNT_SQL = """
-SELECT kind, count(*) AS n
-FROM memory_crystallizations
-WHERE status = 'active'
-GROUP BY kind
-"""
+_SAMPLEABLE_KINDS = (
+    f"m.status = 'active' AND m.kind <> 'reflection' AND {_NOT_AITOWN}"
+)
+
+# Counted over the SAME pool the sample is drawn from. Counting `status =
+# 'active'` while sampling something narrower is how the prompt came to announce
+# 651 items and show twelve drawn from 295.
+APPROVED_COUNT_SQL = f"""
+SELECT m.kind,
+       count(*) AS n,
+       count(*) FILTER (
+         WHERE m.governance ->> 'approval_mode' <> 'auto_policy'
+       ) AS manual_n
+FROM memory_crystallizations m
+WHERE {_SAMPLEABLE_KINDS}
+GROUP BY m.kind
+""".replace("{_SAMPLEABLE_KINDS}", _SAMPLEABLE_KINDS)
 
 APPROVED_SAMPLE_SQL = f"""
-SELECT crystallization_id, kind, subject, summary, salience, created_at
-FROM memory_crystallizations
+SELECT m.crystallization_id, m.kind, m.subject, m.summary, m.salience,
+       m.created_at
+FROM memory_crystallizations m
 WHERE {_SAMPLEABLE_KINDS}
 ORDER BY random()
 LIMIT $1
@@ -201,50 +240,57 @@ FROM memory_concept_relation_decisions
 GROUP BY relation
 """
 
-# Joined so a relation card carries the CONCEPTS it relates rather than two
-# truncated uuids -- before this, the induction half of the menu read
-# `crys_bf9 --same--> 48c35b3a`, which is true and useless to choose from.
+# THE CANDIDATE SIDE WAS NEVER MISSING -- IT WAS A STRING FORMAT MISMATCH.
 #
-# CONCEPT INDUCTION IS PARTLY DANGLING, and this filter is the honest response
-# rather than a workaround. Measured live 2026-08-26 over all 547 decisions:
+# Candidates are stored `crys_6ab0a44c28f2469db2f8dc67be6d4c3f`; crystallization
+# ids are `6ab0a44c-28f2-469d-b2f8-dc67be6d4c3f`. Same id, one with a prefix and
+# no dashes -- `crystallization/repository.py:193` does exactly this conversion
+# in the other direction. Comparing them raw resolved 0 of 550 candidates and the
+# comment here used to conclude induction was "recording judgements about
+# concepts it did not keep". It was not; this SQL was asking the wrong question.
+# Normalised: 235 candidates resolve, 41 decisions have both ends live.
 #
-#   547  decisions
-#     0  have a resolvable CANDIDATE -- every candidate id is `crys_<hex>`,
-#        an id space that exists in NO crystallization table (checked against
-#        crystallizations, claims, links, sources, history). Induction is
-#        recording judgements about concepts it did not keep.
-#   356  have a resolvable target (exactly the 356 `reflection` rows)
-#   164  have no target at all
-#
-# So the candidate side is shown by id, labelled as unresolved, and decisions
-# with neither side resolvable are excluded -- a card with two dead ends is not
-# something anyone can choose from. The totals still report every decision, so
-# the prompt cannot imply induction is healthier than it is.
-RELATION_SAMPLE_SQL = """
+# Then the AI Town filter applies to BOTH ends, and that is not a detail: of
+# those 41 both-ends decisions, 38 touch AI Town. Fixing the join without
+# filtering would have piped AI Town character dialogue into the one surface
+# Juniper had just said to keep it out of. Three clean cards remain today, and
+# three real ones beat forty-one where thirty-eight are noise.
+_CRYS_ID = "('crys_' || replace(m.crystallization_id::text, '-', ''))"
+
+_RELATION_JOINS = f"""
+FROM memory_concept_relation_decisions d
+LEFT JOIN memory_crystallizations c
+       ON ('crys_' || replace(c.crystallization_id::text, '-', ''))
+          = d.candidate_crystallization_id
+      AND NOT EXISTS (
+        SELECT 1 FROM memory_crystallization_sources s
+        JOIN aitown_chat_history_log a ON a.id::text = s.source_id
+        WHERE s.crystallization_id = c.crystallization_id)
+LEFT JOIN memory_crystallizations t
+       ON t.crystallization_id::text = d.target_crystallization_id
+      AND NOT EXISTS (
+        SELECT 1 FROM memory_crystallization_sources s
+        JOIN aitown_chat_history_log a ON a.id::text = s.source_id
+        WHERE s.crystallization_id = t.crystallization_id)
+WHERE c.crystallization_id IS NOT NULL OR t.crystallization_id IS NOT NULL
+"""
+
+RELATION_SAMPLE_SQL = f"""
 SELECT d.decision_id, d.relation, d.confidence,
        d.candidate_crystallization_id, d.target_crystallization_id, d.decided_at,
        c.subject AS candidate_subject, c.summary AS candidate_summary,
        t.subject AS target_subject,    t.summary AS target_summary
-FROM memory_concept_relation_decisions d
-LEFT JOIN memory_crystallizations c
-       ON c.crystallization_id::text = d.candidate_crystallization_id
-LEFT JOIN memory_crystallizations t
-       ON t.crystallization_id::text = d.target_crystallization_id
-WHERE c.crystallization_id IS NOT NULL OR t.crystallization_id IS NOT NULL
+{_RELATION_JOINS}
 ORDER BY random()
 LIMIT $1
 """
 
-# How many decisions have at least one end that resolves. Reported alongside
-# the total so the prompt states the dangling rate instead of hiding it.
-RELATION_RESOLVABLE_SQL = """
+# How many decisions have at least one end that resolves AND is not AI Town.
+# Reported alongside the total so the prompt states the dangling rate rather
+# than hiding it.
+RELATION_RESOLVABLE_SQL = f"""
 SELECT count(*) AS n
-FROM memory_concept_relation_decisions d
-LEFT JOIN memory_crystallizations c
-       ON c.crystallization_id::text = d.candidate_crystallization_id
-LEFT JOIN memory_crystallizations t
-       ON t.crystallization_id::text = d.target_crystallization_id
-WHERE c.crystallization_id IS NOT NULL OR t.crystallization_id IS NOT NULL
+{_RELATION_JOINS}
 """
 
 # WHAT ORION RECENTLY LOOKED INTO NO LONGER COMES FROM HERE. It used to be
@@ -277,10 +323,21 @@ def assemble_study_material(
 ) -> StudyMaterial:
     """Pure assembly, so the whole shape is testable without a database."""
     by_kind = {str(r["kind"]): int(r["n"]) for r in approved_counts}
+    manual = 0
+    for r in approved_counts:
+        try:
+            manual += int(r["manual_n"] or 0)
+        except (KeyError, TypeError, ValueError, IndexError):
+            # Older callers pass rows without the column. Absent reads as
+            # "unknown", and the prompt says nothing rather than claiming zero
+            # were reviewed.
+            manual = 0
+            break
     rel_by_kind = {str(r["relation"]): int(r["n"]) for r in relation_counts}
     return StudyMaterial(
         generated_at=now,
         approved_total=sum(by_kind.values()),
+        manual_total=manual,
         approved_by_kind=by_kind,
         crystallizations=[build_crystallization_card(r) for r in approved_rows],
         relation_total=sum(rel_by_kind.values()),

@@ -1207,17 +1207,24 @@ def _kg_edges_payload_mentions_landmark(object_text: str, run_id: str = FAKE_RUN
 def test_ingest_mention_exact_matching_seed_label_produces_landmark_edge(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A mention whose text exact-matches a golden seed concept's label
-    (case-insensitively) gets a *second* associated_with edge straight to
-    that seed node's real node_id, in addition to the normal topic-owned
-    mention edge -- the core of the landmark-connection design."""
+    """A mention whose text exact-matches a MENTION-RESOLVED seed concept's
+    label (case-insensitively) gets a *second* associated_with edge straight
+    to that seed node's real node_id, in addition to the normal topic-owned
+    mention edge.
+
+    Claude, not Orion, as of 2026-08-28: in `chat_history_log` Claude is a
+    subject of conversation (20 rows name it, 1 row has it as the responder),
+    so a mention edge is the right semantics. Orion and Juniper are speakers
+    in 254/254 rows and now come from recorded segment provenance instead --
+    see test_orion_is_no_longer_resolved_through_mentions below.
+    """
     from orion.substrate.store import InMemorySubstrateGraphStore
 
     store = InMemorySubstrateGraphStore()
     fake_get, _calls = _make_fake_get(
         topics_payload=_topics_payload_normal(),
         segments_payload=_segments_payload_same_day(),
-        kg_edges_payload=_kg_edges_payload_mentions_landmark("orion"),  # lowercase -- must still match
+        kg_edges_payload=_kg_edges_payload_mentions_landmark("claude"),  # lowercase -- must still match
     )
     _patch_topic_foundry_client(monkeypatch, fake_get)
     _patch_base_url(monkeypatch, FAKE_BASE_URL)
@@ -1236,7 +1243,7 @@ def test_ingest_mention_exact_matching_seed_label_produces_landmark_edge(
     associated_edges = [e for e in snapshot.edges.values() if e.predicate == "associated_with"]
     # One topic -> entity edge, one entity -> landmark edge.
     assert len(associated_edges) == 2
-    landmark_edges = [e for e in associated_edges if e.target.node_id == "sub-concept-seed-orion"]
+    landmark_edges = [e for e in associated_edges if e.target.node_id == "sub-concept-seed-claude"]
     assert len(landmark_edges) == 1
     assert landmark_edges[0].source.node_id == entity_nodes[0].node_id
 
@@ -1246,7 +1253,7 @@ def test_ingest_mention_exact_matching_seed_label_produces_landmark_edge(
     # into this same store; that's covered by
     # test_landmark_concept_ids_matches_real_seed_fixture_labels below and
     # the network-route hydration tests in test_concept_atlas_routes.py.
-    assert store.get_node_by_id("sub-concept-seed-orion") is None
+    assert store.get_node_by_id("sub-concept-seed-claude") is None
 
 
 def test_ingest_mention_not_matching_any_seed_label_produces_no_landmark_edge(
@@ -1299,16 +1306,76 @@ def test_ingest_aitown_route_never_wires_landmark_concept_ids(
     assert len(associated_edges) == 1  # topic -> entity only, no landmark edge
 
 
-def test_landmark_concept_ids_matches_real_seed_fixture_labels() -> None:
-    """_landmark_concept_ids() must read the real seed_concepts.yaml fixture
-    (not a hardcoded Orion/Juniper pair) -- this is what makes adding Claude
-    as a 4th seed 'just work' with zero adapter code changes."""
-    from scripts.concept_atlas_routes import _landmark_concept_ids
+def test_seed_ids_read_the_real_fixture_and_split_by_resolution_method() -> None:
+    """Both id maps must read the real seed_concepts.yaml fixture (not a
+    hardcoded pair) -- that is what makes adding a 5th seed 'just work'. And
+    each seed must appear in exactly ONE of them: a speaker resolved from
+    recorded provenance must NOT also be resolvable through entity mentions,
+    or the retired path is not retired, it is a fallback (CLAUDE.md 0A).
+    """
+    from scripts.concept_atlas_routes import (
+        _landmark_concept_ids,
+        _seed_concept_ids,
+        _speaker_concept_ids,
+    )
 
+    seeds = _seed_concept_ids()
+    assert seeds.get("orion") == "sub-concept-seed-orion"
+    assert seeds.get("juniper") == "sub-concept-seed-juniper"
+    assert seeds.get("claude") == "sub-concept-seed-claude"
+
+    speakers = _speaker_concept_ids()
     landmarks = _landmark_concept_ids()
-    assert landmarks.get("orion") == "sub-concept-seed-orion"
-    assert landmarks.get("juniper") == "sub-concept-seed-juniper"
+
+    # Orion and Juniper: participation only.
+    assert speakers.get("orion") == "sub-concept-seed-orion"
+    assert speakers.get("juniper") == "sub-concept-seed-juniper"
+    assert "orion" not in landmarks
+    assert "juniper" not in landmarks
+
+    # Claude: mentions only.
     assert landmarks.get("claude") == "sub-concept-seed-claude"
+    assert "claude" not in speakers
+
+    # No seed in both, none dropped entirely.
+    assert not (set(speakers) & set(landmarks))
+    assert set(speakers) | set(landmarks) == set(seeds)
+
+
+def test_orion_is_no_longer_resolved_through_mentions(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retired path must actually be gone, not merely unused.
+
+    A mention whose text is exactly "orion" must NOT produce a landmark edge
+    to the Orion seed. Orion's connection comes from recorded segment
+    provenance now; leaving the mention route live for the same subject would
+    mean two producers for one fact, with the weaker one (28% ceiling, 0%
+    actual) silently filling in.
+    """
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, _calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=_segments_payload_same_day(),
+        kg_edges_payload=_kg_edges_payload_mentions_landmark("orion"),
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+
+    snapshot = store.snapshot()
+    # The entity node itself is still created (it is a real mentioned thing);
+    # what must not exist is the edge to the Orion SEED.
+    assert [n for n in snapshot.nodes.values() if n.node_kind == "entity"]
+    seed_edges = [
+        e for e in snapshot.edges.values() if e.target.node_id == "sub-concept-seed-orion"
+    ]
+    assert seed_edges == []
 
 
 def test_ingest_cross_run_same_entity_label_merges_to_one_durable_entity(

@@ -482,3 +482,157 @@ def test_mention_edge_confidence_out_of_range_is_clamped() -> None:
     )
     confidences = sorted(e.confidence for e in out.edges if e.predicate == "associated_with")
     assert confidences == [0.0, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# Participation edges (2026-08-28 concept-induction rebuild, branch 2)
+# docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md
+#
+# Who spoke in a topic is RECORDED on the segment (the source column is the
+# speaker), not inferred from the text. On the real corpus Orion and Juniper
+# each speak in 254/254 rows while being *named* in 28%/26%, so mention-based
+# resolution had a ~28% ceiling on a fact that is already a foreign key -- and
+# 0% actual recall, since topic_foundry_edges has never held a row.
+# ---------------------------------------------------------------------------
+
+SPEAKER_IDS = {"orion": "sub-concept-seed-orion", "juniper": "sub-concept-seed-juniper"}
+
+
+def _participation_inputs():
+    """Hand-built: topic 0 gets 3 segments (2 orion, 1 juniper), topic 1 gets
+    1 segment (juniper). Topic 2 is below the min_doc_count floor and the
+    outlier bucket is -1; segments on both must produce nothing."""
+    segment_topic_id_map = {
+        "s1": 0,
+        "s2": 0,
+        "s3": 0,
+        "s4": 1,
+        "s5": 2,  # below floor
+        "s6": -1,  # outlier
+    }
+    segment_speakers = {
+        "s1": ["orion"],
+        "s2": ["orion"],
+        "s3": ["juniper"],
+        "s4": ["juniper"],
+        "s5": ["orion"],
+        "s6": ["orion"],
+    }
+    return segment_topic_id_map, segment_speakers
+
+
+def _participation_record(**overrides):
+    segment_topic_id_map, segment_speakers = _participation_inputs()
+    kwargs = dict(
+        run_id="run-p",
+        topics=_topics(),
+        segment_topic_id_map=segment_topic_id_map,
+        segment_speakers=segment_speakers,
+        speaker_concept_ids=SPEAKER_IDS,
+    )
+    kwargs.update(overrides)
+    return map_topic_foundry_run_to_substrate(**kwargs)
+
+
+def _participation_edges(record: SubstrateGraphRecordV1):
+    return [
+        e
+        for e in record.edges
+        if e.provenance.source_kind == "topic_foundry.participation"
+    ]
+
+
+def test_participation_edge_per_speaker_who_actually_spoke() -> None:
+    edges = _participation_edges(_participation_record())
+
+    # Hand-counted: topic 0 -> orion, topic 0 -> juniper, topic 1 -> juniper.
+    assert len(edges) == 3
+    pairs = {(e.source.node_id, e.target.node_id) for e in edges}
+    assert pairs == {
+        ("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-orion"),
+        ("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-juniper"),
+        ("sub-concept-topicfoundry-run-p-1", "sub-concept-seed-juniper"),
+    }
+
+
+def test_participation_salience_is_the_speakers_share_not_a_constant() -> None:
+    """An edge that merely exists would be uninformative: every topic is
+    expected to have both speakers, so uniform edges would connect the seeds to
+    everything and say nothing. The share is the signal."""
+    edges = _participation_edges(_participation_record())
+    by_pair = {(e.source.node_id, e.target.node_id): e for e in edges}
+
+    orion_t0 = by_pair[("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-orion")]
+    juniper_t0 = by_pair[("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-juniper")]
+    juniper_t1 = by_pair[("sub-concept-topicfoundry-run-p-1", "sub-concept-seed-juniper")]
+
+    # Topic 0 has 3 segments: 2 orion, 1 juniper. Topic 1 has 1, all juniper.
+    assert orion_t0.salience == pytest.approx(2 / 3)
+    assert juniper_t0.salience == pytest.approx(1 / 3)
+    assert juniper_t1.salience == pytest.approx(1.0)
+
+    assert orion_t0.metadata["segment_count"] == 2
+    assert orion_t0.metadata["topic_segment_total"] == 3
+    assert orion_t0.metadata["speaker"] == "orion"
+
+
+def test_participation_confidence_is_certain_because_it_is_recorded() -> None:
+    """Not a model output and not an inference -- the column IS the speaker.
+    There is nothing here to be uncertain about."""
+    for edge in _participation_edges(_participation_record()):
+        assert edge.confidence == 1.0
+
+
+def test_participation_edges_survive_the_concept_atlas_filter() -> None:
+    """Both endpoints must be node_kind='concept' or
+    falkor_materialization.filter_concept_atlas_record drops them before they
+    ever reach the durable graph."""
+    from orion.spark.concept_induction.falkor_materialization import (
+        filter_concept_atlas_record,
+    )
+
+    record = _participation_record()
+    _concepts, kept_edges, _sn, _se = filter_concept_atlas_record(record)
+    kept = [e for e in kept_edges if e.provenance.source_kind == "topic_foundry.participation"]
+    assert len(kept) == 3
+
+
+def test_no_participation_edge_for_outlier_or_below_floor_topics() -> None:
+    edges = _participation_edges(_participation_record())
+    sources = {e.source.node_id for e in edges}
+    assert "sub-concept-topicfoundry-run-p-2" not in sources  # below min_doc_count
+    assert "sub-concept-topicfoundry-run-p--1" not in sources  # outlier bucket
+
+
+def test_unknown_speaker_never_fabricates_an_edge() -> None:
+    """A speaker with no seed node is skipped, not guessed at."""
+    _map, speakers = _participation_inputs()
+    speakers = dict(speakers, s1=["someone-else"])
+    edges = _participation_edges(_participation_record(segment_speakers=speakers))
+    assert all(e.metadata["speaker"] in SPEAKER_IDS for e in edges)
+    # Topic 0 now has 1 orion + 1 juniper of 3 segments; the third is unknown
+    # and contributes to the denominator but gets no edge of its own.
+    by_pair = {(e.source.node_id, e.target.node_id): e for e in edges}
+    assert by_pair[
+        ("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-orion")
+    ].salience == pytest.approx(1 / 3)
+
+
+def test_participation_is_a_no_op_when_either_input_is_absent() -> None:
+    """Every existing caller passes neither -- zero behavior change for them."""
+    assert _participation_edges(_participation_record(segment_speakers=None)) == []
+    assert _participation_edges(_participation_record(speaker_concept_ids=None)) == []
+    assert _participation_edges(_participation_record(segment_speakers={})) == []
+    assert _participation_edges(_participation_record(speaker_concept_ids={})) == []
+
+
+def test_segments_with_no_recorded_speaker_do_not_break_the_share() -> None:
+    """An empty speakers list still counts toward the topic's segment total --
+    the share must describe the whole topic, not just the attributed part."""
+    _map, speakers = _participation_inputs()
+    speakers = dict(speakers, s3=[])  # was juniper
+    edges = _participation_edges(_participation_record(segment_speakers=speakers))
+    by_pair = {(e.source.node_id, e.target.node_id): e for e in edges}
+    orion_t0 = by_pair[("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-orion")]
+    assert orion_t0.salience == pytest.approx(2 / 3)
+    assert ("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-juniper") not in by_pair

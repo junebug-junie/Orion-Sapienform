@@ -40,7 +40,11 @@ const mk = (id) => ({ id, innerHTML: "", textContent: "", hidden: false,
 for (const id of ["updated","banners","tiles","traj-note","trajectories",
                   "growth","growth-table","runs","priors-table","refresh",
                   "toggle-tables"]) ELS[id] = mk(id);
-globalThis.document = { getElementById: (id) => ELS[id] || mk(id) };
+globalThis.document = {
+  getElementById: (id) => ELS[id] || mk(id),
+  addEventListener(){}, hidden: false,
+};
+globalThis.window = globalThis;
 __SCRIPT__
 const d = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8"));
 renderBanners(d); renderTiles(d); renderTrajectories(d);
@@ -56,10 +60,13 @@ def _render(payload: dict, tmp_path: Path) -> dict[str, str]:
     script = re.search(r"<script>\n(.*?)\n</script>", html, re.S)
     assert script, "no <script> block in the template"
     js = script.group(1)
-    # Drop the bootstrap: it wires listeners and fetches on a live page.
+    # Drop the bootstrap: it wires listeners and starts a poll on a live page.
+    # `activate()` is the entry point, so removing the bare call is what stops
+    # the harness fetching; the functions themselves stay defined and asserted
+    # on below.
     js = js.replace('$("refresh").addEventListener("click", load);', "")
     js = re.sub(r'\$\("toggle-tables"\)\.addEventListener[\s\S]*?\}\);\n', "", js)
-    js = js.replace("load();", "").replace("setInterval(load, 60000);", "")
+    js = re.sub(r'^activate\(\);\s*$', "", js, flags=re.M)
 
     hp = tmp_path / "harness.js"
     hp.write_text(_HARNESS.replace("__SCRIPT__", js), encoding="utf-8")
@@ -72,9 +79,22 @@ def _render(payload: dict, tmp_path: Path) -> dict[str, str]:
     return json.loads(proc.stdout)
 
 
+def _now_ms() -> int:
+    """A timestamp that is "today" whenever the suite runs.
+
+    A hardcoded epoch here is a test that passes until midnight: this file was
+    written on 2026-08-27 with a literal 2026-08-27 stamp and started failing
+    the moment the date rolled over, in the two tests whose whole subject is
+    "did this run happen today".
+    """
+    import time
+
+    return int(time.time() * 1000)
+
+
 def _run(**over) -> dict:
     base = {
-        "run_id": "r1", "written_at": 1787840568235, "hops": 1, "hop_notes": [],
+        "run_id": "r1", "written_at": _now_ms(), "hops": 1, "hop_notes": [],
         "findings": [], "added": {"Prior": 1}, "priors_created": [],
         "priors_touched": [], "continue_line": False, "continue_note": "",
         "reach_out": False, "reach_out_why": "", "total_added": 1,
@@ -223,3 +243,60 @@ def test_orion_prose_is_escaped_rather_than_rendered_as_markup(tmp_path) -> None
     assert "<img" not in out["runs"]
     assert "&lt;img" in out["runs"]
     assert "a &amp; b &lt; c" in out["runs"]
+
+
+# --- the Hub tab -----------------------------------------------------------
+#
+# CLAUDE.md section 9: a rendered template, a linked asset, and the changed
+# interaction are three separate things and all three have to be checked. The
+# page existed at /curiosity for a whole review cycle before anything in the Hub
+# UI pointed at it.
+
+_HUB = Path(__file__).resolve().parents[1] / "services" / "orion-hub"
+
+
+def test_the_tab_button_and_its_panel_both_exist() -> None:
+    index = (_HUB / "templates" / "index.html").read_text(encoding="utf-8")
+    assert 'id="curiosityAtlasTabButton"' in index
+    assert 'href="#curiosity-atlas"' in index
+    assert 'id="curiosity-atlas" data-panel="curiosity-atlas"' in index
+    assert 'src="/curiosity"' in index, "the iframe must point at the real route"
+
+
+def test_every_hub_side_wire_the_tab_needs_is_present() -> None:
+    """A tab is not one edit. Miss the hash branch and a deep link silently
+    lands on #hub; miss the styling and the button never looks selected."""
+    app = (_HUB / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    for needle in (
+        'document.getElementById("curiosityAtlasTabButton")',
+        'document.getElementById("curiosity-atlas")',
+        'document.getElementById("curiosityAtlasPanelFrame")',
+        'document.getElementById("curiosityAtlasPanelRefresh")',
+        'effectiveTab === "curiosity-atlas"',
+        'setActiveTab("curiosity-atlas")',
+        'h === "#curiosity-atlas"',
+        "styleTabButton(curiosityAtlasTabButton, isCuriosityAtlas)",
+    ):
+        assert needle in app, needle
+
+
+def test_the_page_stops_polling_when_its_panel_is_hidden() -> None:
+    """The iframe keeps running behind a hidden tab. Without this contract the
+    page is a FalkorDB read every 60s for a panel nobody is looking at."""
+    page = TEMPLATE.read_text(encoding="utf-8")
+    assert "window.OrionCuriosityAtlas" in page
+    for fn in ("refresh", "activate", "deactivate"):
+        assert fn in page, fn
+    assert "clearInterval" in page, "deactivate must actually stop the timer"
+    assert "visibilitychange" in page
+
+    app = (_HUB / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "OrionCuriosityAtlas" in app, "the host never calls the contract"
+    assert 'ping("deactivate")' in app, "hiding the tab must call deactivate"
+
+
+def test_the_standalone_link_and_the_iframe_agree_on_the_route() -> None:
+    """Two copies of a URL is how one of them goes stale."""
+    index = (_HUB / "templates" / "index.html").read_text(encoding="utf-8")
+    block = index.split('id="curiosity-atlas"', 1)[1].split("</section>", 1)[0]
+    assert block.count('"/curiosity"') == 2, block.count('"/curiosity"')

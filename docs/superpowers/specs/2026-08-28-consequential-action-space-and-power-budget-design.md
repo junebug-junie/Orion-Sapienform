@@ -166,39 +166,90 @@ circe's Panduit outlets are not mapped through.
 **So stage 1 is not "build a PDU reader."** The reader exists and is proven on
 another node. Stage 1 is: point it at circe's outlets.
 
-### The one number this makes computable, and the one it does not
+### ROOT CAUSE FOUND, and the numbers are no longer estimates
 
-Paired per-minute samples on athena, n=9,061:
-
-| | wall | GPU | **non-GPU remainder** |
-| --- | --- | --- | --- |
-| avg | 350W | 39W | **311W** |
-| range | | | **201W – 493W** |
-
-That is a real measured non-GPU baseline for athena — CPU, drives, fans, PSU
-loss.
-
-For circe it is **unknown**, and borrowing athena's number would be a mistake
-of exactly the kind this repo has been burned by before: a constant calibrated
-on one domain reused in another. Circe is a different chassis with more GPUs,
-more fans, and bigger supplies; its non-GPU draw is plausibly *higher* than
-athena's, not equal.
-
-Still, the arithmetic is worth stating precisely because it is what makes this
-urgent rather than interesting:
+**Why circe reads zero.** `orion-biometrics` logs `pdu_poll_failed error=5
+second timeout exceeded on UDP transport` every cycle, for both nodes. The PDU
+is healthy and pingable. The cause is source-address selection:
 
 ```
-circe GPU peak (measured)      804 W
-circe non-GPU (UNMEASURED)     ~300-500 W   <- the whole question
-athena peak (measured)         580 W
-                             ----------
-estimated total              ~1700-1900 W
-UPS deliverable (~2200VA)      ~1980 W
+$ ip route get 192.168.1.39
+192.168.1.39 dev eno5 src 192.168.1.43
+
+eno1  192.168.1.42/24     <- the address in the PDU's SNMP Manager whitelist
+eno5  192.168.1.43/24     <- the address the route actually uses
 ```
 
-**That is 86-96% of the battery, and it was reached at 13% average GPU
-utilisation.** The estimate rests entirely on a number nobody has measured. If
-circe's non-GPU draw is at the high end, the reserve is already gone.
+Athena has two NICs. The route to the PDU leaves via `eno5` as `.43`, which is
+not whitelisted, so the PDU silently drops the requests. Verified with a
+counterfactual, live:
+
+```
+snmpget ... 192.168.1.39 <outlet-1-oid>
+  -> Timeout: No Response from 192.168.1.39.
+
+snmpget ... --clientaddr=192.168.1.42 192.168.1.39 <outlet-1-oid>
+  -> INTEGER: 265
+```
+
+This is a recurrence in kind of the 2026-08-21 outage recorded in
+`services/orion-biometrics/.env` — that time a stale DHCP lease was whitelisted
+instead of athena's real address. Same failure mode, new cause: a second
+interface now wins the route. The `.env` comment documents the fix but not the
+fragility, which is why it came back.
+
+Note the container is on the `app-net` bridge, so its packets are SNAT'd by the
+host to the route-selected source. **Binding the source inside the container
+cannot fix this** — the fix has to be on the host route or in the PDU
+whitelist.
+
+### Measured fleet power, 2026-08-28
+
+Read directly off the PDU while diagnosing:
+
+| | outlets | wall watts |
+| --- | --- | --- |
+| circe | 1, 7, 13 | 276 + 415 + 296 = **987W** |
+| athena | 34, 35 | 246 + 257 = **503W** |
+| **fleet** | | **1490W** |
+
+At that instant circe's GPUs drew **337W**, so:
+
+| node | non-GPU baseline | source |
+| --- | --- | --- |
+| athena | **311W** (201-493W range) | 9,061 paired minutes |
+| **circe** | **~650W** | 987W wall − 337W GPU, measured |
+
+Circe's non-GPU draw is **more than double athena's**, and materially above the
+300-500W this spec previously guessed by analogy. Borrowing athena's constant
+would have understated the fleet by ~340W — the exact borrowed-constant error
+this repo has been burned by before.
+
+### The headroom is thinner than assumed
+
+```
+circe non-GPU (measured)          ~650 W
+circe GPU peak, 7d (measured)      804 W
+                                 -------
+circe at observed peak            ~1454 W
+athena peak, 7d (measured)          580 W
+                                 -------
+fleet at coincident peaks         ~2034 W
+UPS deliverable (~2200VA)         ~1980 W
+```
+
+**Coincident observed peaks already exceed the battery**, and current draw sits
+at 1490W — roughly **75% of deliverable while the GPUs are near idle** (337W of
+a seven-card box).
+
+Two honest caveats. The two nodes' peaks are not known to have occurred
+simultaneously, so 2034W is a worst-case composition of separately observed
+maxima, not a measured instant. And the ~1980W figure still depends on the APC
+model's VA-to-watt conversion, which has not been read off the unit.
+
+Neither caveat is reassuring, because the GPU peak in that sum was recorded at
+low utilisation. Seven cards under genuine load would add far more than the
+~130W of margin.
 
 ### The cap is the battery, not the outlet
 

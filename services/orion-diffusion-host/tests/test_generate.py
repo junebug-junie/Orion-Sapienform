@@ -176,6 +176,162 @@ def test_log_prompt_token_budget_never_raises_when_pipe_has_no_tokenizer(monkeyp
     main_mod._log_prompt_token_budget("anything")  # must not raise
 
 
+class SdxlLikeFakePipe:
+    """A pipe with an EXPLICIT `__call__` signature that has `negative_
+    prompt` but no `max_sequence_length` -- the real shape sdxl-turbo's
+    `StableDiffusionXLPipeline` has. Unlike `FakePipe`'s `**kwargs` catch-
+    all (which `inspect.signature` reports as having no named parameters
+    at all), this is what actually exercises `_pipe_accepts`'s real
+    behavior -- a `**kwargs`-shaped fake would silently report every
+    param name as absent, which is safe but never proves the True branch
+    works."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def __call__(
+        self,
+        prompt,
+        negative_prompt=None,
+        width=None,
+        height=None,
+        num_inference_steps=None,
+        guidance_scale=None,
+        generator=None,
+    ):
+        self.calls.append(
+            dict(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+            )
+        )
+        image = Image.new("RGB", (width or 8, height or 8), color=(100, 150, 200))
+        return SimpleNamespace(images=[image])
+
+
+class FluxLikeFakePipe:
+    """A pipe with an EXPLICIT `__call__` signature that has `max_
+    sequence_length` but NO `negative_prompt` -- the real shape
+    `FluxPipeline` has (schnell is guidance-distilled, no true classifier-
+    free-guidance/negative-prompt path). The real regression `_pipe_
+    accepts` exists to prevent: the old unconditional `negative_prompt=
+    req.negative_prompt` call would raise `TypeError` against a pipe
+    shaped exactly like this one."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def __call__(
+        self,
+        prompt,
+        width=None,
+        height=None,
+        num_inference_steps=None,
+        guidance_scale=None,
+        generator=None,
+        max_sequence_length=None,
+    ):
+        self.calls.append(
+            dict(
+                prompt=prompt,
+                width=width,
+                height=height,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                max_sequence_length=max_sequence_length,
+            )
+        )
+        image = Image.new("RGB", (width or 8, height or 8), color=(100, 150, 200))
+        return SimpleNamespace(images=[image])
+
+
+def _fake_generate_request(prompt="orion dreaming", **overrides):
+    from app.main import GenerateRequest
+
+    return GenerateRequest(prompt=prompt, **overrides)
+
+
+def test_pipe_accepts_true_for_a_real_named_parameter(monkeypatch):
+    monkeypatch.setattr(main_mod, "_pipe", SdxlLikeFakePipe())
+    assert main_mod._pipe_accepts("negative_prompt") is True
+    assert main_mod._pipe_accepts("max_sequence_length") is False
+
+
+def test_pipe_accepts_false_for_a_parameter_the_pipe_does_not_have(monkeypatch):
+    monkeypatch.setattr(main_mod, "_pipe", FluxLikeFakePipe())
+    assert main_mod._pipe_accepts("max_sequence_length") is True
+    assert main_mod._pipe_accepts("negative_prompt") is False
+
+
+def test_pipe_accepts_conservative_default_for_a_kwargs_catchall_pipe(monkeypatch):
+    """A `**kwargs`-shaped pipe (this file's plain `FakePipe`) reports
+    every specific name as absent -- safe (never crashes trying to build
+    kwargs for a param that isn't really there), even though such a pipe
+    would in practice accept anything."""
+    monkeypatch.setattr(main_mod, "_pipe", FakePipe())
+    assert main_mod._pipe_accepts("negative_prompt") is False
+    assert main_mod._pipe_accepts("max_sequence_length") is False
+
+
+def test_run_generation_against_sdxl_like_pipe_passes_negative_prompt_no_max_seq_len(monkeypatch):
+    fake = SdxlLikeFakePipe()
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+
+    main_mod._run_generation(_fake_generate_request(negative_prompt="blurry"))
+
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["negative_prompt"] == "blurry"
+    assert "max_sequence_length" not in fake.calls[0]
+
+
+def test_run_generation_against_flux_like_pipe_never_crashes_on_negative_prompt(monkeypatch):
+    """The actual regression: the old unconditional `negative_prompt=...`
+    call would raise TypeError here. Must not raise, and the negative
+    prompt must be dropped with a visible warning, not silently."""
+    fake = FluxLikeFakePipe()
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    calls = _capture_warnings(monkeypatch)
+
+    main_mod._run_generation(_fake_generate_request(negative_prompt="blurry"))  # must not raise
+
+    assert len(fake.calls) == 1
+    assert "negative_prompt" not in fake.calls[0]
+    assert any("does not accept" in c for c in calls)
+
+
+def test_run_generation_against_flux_like_pipe_passes_max_sequence_length(monkeypatch):
+    fake = FluxLikeFakePipe()
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    monkeypatch.setattr(main_mod.settings, "DIFFUSION_MAX_SEQUENCE_LENGTH", 256)
+
+    main_mod._run_generation(_fake_generate_request())
+
+    assert fake.calls[0]["max_sequence_length"] == 256
+
+
+def test_log_prompt_token_budget_uses_max_sequence_length_for_tokenizer_2_not_raw_attribute(
+    monkeypatch,
+):
+    """A T5-style tokenizer_2 often reports an effectively-unbounded raw
+    model_max_length -- the REAL, effective limit is whatever max_
+    sequence_length the pipeline call actually used. Must check against
+    that, not the tokenizer's own possibly-meaningless attribute."""
+    fake = FakePipe()
+    fake.tokenizer_2 = FakeTokenizer(model_max_length=1_000_000_000_000, tokens_per_char=1.0)
+    monkeypatch.setattr(main_mod, "_pipe", fake)
+    calls = _capture_warnings(monkeypatch)
+
+    main_mod._log_prompt_token_budget("x" * 300, max_sequence_length=256)
+
+    assert any("tokenizer_2" in c and "effective max_length=256" in c for c in calls)
+
+
 def test_generate_prompt_too_long_rejected(monkeypatch):
     fake = FakePipe()
     monkeypatch.setattr(main_mod, "_pipe", fake)

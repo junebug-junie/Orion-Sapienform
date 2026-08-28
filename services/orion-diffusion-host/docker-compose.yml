@@ -32,19 +32,23 @@ services:
       # a fresh worktree/host -- a documented recurring failure mode in
       # this repo). Same pattern NODE_NAME/HEARTBEAT_INTERVAL_SEC already
       # use above.
-      - DIFFUSION_MODEL_ID=${DIFFUSION_MODEL_ID:-stabilityai/sdxl-turbo}
+      - DIFFUSION_MODEL_ID=${DIFFUSION_MODEL_ID:-YuCollection/FLUX.1-schnell-Diffusers}
       - DIFFUSION_DEVICE=${DIFFUSION_DEVICE:-cuda:0}
       - DIFFUSION_DTYPE=${DIFFUSION_DTYPE:-fp16}
-      - DIFFUSION_NUM_INFERENCE_STEPS=${DIFFUSION_NUM_INFERENCE_STEPS:-1}
+      - DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD=${DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD:-true}
+      - DIFFUSION_NUM_INFERENCE_STEPS=${DIFFUSION_NUM_INFERENCE_STEPS:-4}
       - DIFFUSION_GUIDANCE_SCALE=${DIFFUSION_GUIDANCE_SCALE:-0.0}
-      - DIFFUSION_DEFAULT_WIDTH=${DIFFUSION_DEFAULT_WIDTH:-512}
-      - DIFFUSION_DEFAULT_HEIGHT=${DIFFUSION_DEFAULT_HEIGHT:-512}
+      - DIFFUSION_MAX_SEQUENCE_LENGTH=${DIFFUSION_MAX_SEQUENCE_LENGTH:-256}
+      - DIFFUSION_DEFAULT_WIDTH=${DIFFUSION_DEFAULT_WIDTH:-1024}
+      - DIFFUSION_DEFAULT_HEIGHT=${DIFFUSION_DEFAULT_HEIGHT:-1024}
       - DIFFUSION_MAX_PROMPT_CHARS=${DIFFUSION_MAX_PROMPT_CHARS:-2000}
 
     volumes:
-      # Real weight download now lands here (sdxl-turbo, several GB) --
-      # this mount stopped being a bare path convention once this patch
-      # wired a real model load.
+      # Real weight download lands here -- FLUX.1-schnell's full
+      # diffusers-format weights (transformer + T5-XXL encoder + VAE +
+      # CLIP) are tens of GB, not the "several GB" sdxl-turbo needed --
+      # this mount stopped being a bare path convention once a real model
+      # load was first wired in.
       - /mnt/storage-warm/models/diffusion:/mnt/storage-warm/models/diffusion
 
     # GPU reservation, Circe agent-lane assignment (2026-08-20).

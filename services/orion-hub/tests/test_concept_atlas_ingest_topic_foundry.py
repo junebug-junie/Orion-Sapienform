@@ -1370,12 +1370,18 @@ def test_orion_is_no_longer_resolved_through_mentions(
 
     snapshot = store.snapshot()
     # The entity node itself is still created (it is a real mentioned thing);
-    # what must not exist is the edge to the Orion SEED.
+    # what must not exist is a MENTION-derived edge to the Orion seed.
+    # Deliberately not "no edge to the seed at all": a participation edge to
+    # that same seed is the correct replacement, and would make a broader
+    # assertion fail on right behavior.
     assert [n for n in snapshot.nodes.values() if n.node_kind == "entity"]
-    seed_edges = [
-        e for e in snapshot.edges.values() if e.target.node_id == "sub-concept-seed-orion"
+    mention_seed_edges = [
+        e
+        for e in snapshot.edges.values()
+        if e.target.node_id == "sub-concept-seed-orion"
+        and e.provenance.source_kind == "topic_foundry.mention_landmark"
     ]
-    assert seed_edges == []
+    assert mention_seed_edges == []
 
 
 def test_ingest_cross_run_same_entity_label_merges_to_one_durable_entity(
@@ -1556,3 +1562,140 @@ def test_day_bucket_from_timestamp_none_returns_none() -> None:
     from scripts.concept_atlas_routes import _day_bucket_from_timestamp
 
     assert _day_bucket_from_timestamp(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Hub-side participation wiring (branch 2). The adapter tests hand-build
+# segment_speakers, so ONLY these exercise the actual read of
+# seg["provenance"]["speakers"] -- the single seam the whole feature rides on.
+# ---------------------------------------------------------------------------
+
+
+def _segments_payload_with_speakers(run_id: str = FAKE_RUN_ID) -> dict[str, Any]:
+    """Topic 0: 2 orion + 1 juniper. Topic 1: 1 juniper. Hand-counted shares
+    below are 2/3, 1/3 and 1/1."""
+    return {
+        "run_id": run_id,
+        "items": [
+            {
+                "segment_id": "seg-0a",
+                "topic_id": 0,
+                "start_at": "2026-08-28T09:00:00Z",
+                "provenance": {"row_ids": ["r1"], "speakers": ["orion"]},
+            },
+            {
+                "segment_id": "seg-0b",
+                "topic_id": 0,
+                "start_at": "2026-08-28T09:05:00Z",
+                "provenance": {"row_ids": ["r2"], "speakers": ["Orion"]},  # case-insensitive
+            },
+            {
+                "segment_id": "seg-0c",
+                "topic_id": 0,
+                "start_at": "2026-08-28T09:10:00Z",
+                "provenance": {"row_ids": ["r3"], "speakers": ["juniper"]},
+            },
+            {
+                "segment_id": "seg-1a",
+                "topic_id": 1,
+                "start_at": "2026-08-28T14:30:00Z",
+                "provenance": {"row_ids": ["r4"], "speakers": ["juniper"]},
+            },
+        ],
+        "limit": 1000,
+        "offset": 0,
+        "total": 4,
+    }
+
+
+def _participation_edges_in(store) -> list:
+    return [
+        e
+        for e in store.snapshot().edges.values()
+        if e.provenance.source_kind == "topic_foundry.participation"
+    ]
+
+
+def _ingest_with_speakers(client, monkeypatch, segments_payload):
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, _calls = _make_fake_get(
+        topics_payload=_topics_payload_normal(),
+        segments_payload=segments_payload,
+    )
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, store)
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    return store, r.json()
+
+
+def test_hub_reads_provenance_speakers_and_writes_participation_edges(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole feature rides on this one read. Without it segment_speakers
+    stays empty, the adapter no-ops, and -- because the mention path was
+    retired for these speakers in the same commit -- Orion and Juniper connect
+    to nothing while every other test stays green."""
+    store, body = _ingest_with_speakers(client, monkeypatch, _segments_payload_with_speakers())
+
+    edges = _participation_edges_in(store)
+    assert len(edges) == 3
+    by_pair = {(e.source.node_id, e.target.node_id): e for e in edges}
+    orion_t0 = by_pair[(f"sub-concept-topicfoundry-{FAKE_RUN_ID}-0", "sub-concept-seed-orion")]
+    juniper_t0 = by_pair[(f"sub-concept-topicfoundry-{FAKE_RUN_ID}-0", "sub-concept-seed-juniper")]
+    juniper_t1 = by_pair[(f"sub-concept-topicfoundry-{FAKE_RUN_ID}-1", "sub-concept-seed-juniper")]
+
+    assert orion_t0.salience == pytest.approx(2 / 3)  # "Orion" matched case-insensitively
+    assert juniper_t0.salience == pytest.approx(1 / 3)
+    assert juniper_t1.salience == pytest.approx(1.0)
+    assert orion_t0.metadata["share_is_partial"] is False
+
+    assert body["segments_with_speakers"] == 4
+    assert body["participation_edges"] == 3
+
+
+def test_run_without_recorded_speakers_reports_zero_rather_than_looking_healthy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`provenance.speakers` only exists on runs trained after 2026-08-28. An
+    older run produces no participation edges AND no mention-landmark edges
+    for these speakers (that path is retired), so the response must make the
+    zero visible instead of reporting a healthy-looking ingest."""
+    store, body = _ingest_with_speakers(client, monkeypatch, _segments_payload_same_day())
+
+    assert _participation_edges_in(store) == []
+    assert body["available"] is True  # the ingest itself really did succeed
+    assert body["segments_with_speakers"] == 0
+    assert body["participation_edges"] == 0
+    assert body["segments_fetched"] > 0  # ...on a run that did have segments
+
+
+def test_participation_share_is_flagged_partial_when_the_segment_page_is_full(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """salience reads as "N% of this topic", which is only true over the
+    segments actually fetched. The fetch is one un-paginated page."""
+    from scripts import concept_atlas_routes as car
+
+    monkeypatch.setattr(car, "_SEGMENTS_FETCH_LIMIT", 4)  # our fixture has exactly 4
+    store, _body = _ingest_with_speakers(client, monkeypatch, _segments_payload_with_speakers())
+
+    edges = _participation_edges_in(store)
+    assert edges
+    for edge in edges:
+        assert edge.metadata["share_is_partial"] is True
+
+
+def test_speaker_set_cannot_drift_from_the_columns_that_produce_it() -> None:
+    """A name in _PARTICIPATION_RESOLVED_SPEAKERS but not in
+    _TOPIC_FOUNDRY_COLUMN_SPEAKERS is excluded from the mention path AND never
+    appears in any segment's speakers -- zero edges from either route, silently."""
+    from scripts.concept_atlas_routes import (
+        _PARTICIPATION_RESOLVED_SPEAKERS,
+        _TOPIC_FOUNDRY_COLUMN_SPEAKERS,
+    )
+
+    assert _PARTICIPATION_RESOLVED_SPEAKERS == frozenset(_TOPIC_FOUNDRY_COLUMN_SPEAKERS.values())

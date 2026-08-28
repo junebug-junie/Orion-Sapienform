@@ -636,3 +636,32 @@ def test_segments_with_no_recorded_speaker_do_not_break_the_share() -> None:
     orion_t0 = by_pair[("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-orion")]
     assert orion_t0.salience == pytest.approx(2 / 3)
     assert ("sub-concept-topicfoundry-run-p-0", "sub-concept-seed-juniper") not in by_pair
+
+
+def test_repeated_speaker_in_one_segment_counts_once() -> None:
+    """Upstream de-dup is case-SENSITIVE and the Hub lowercases only
+    afterwards, so ["Orion", "orion"] can survive as two entries. Counting both
+    would emit segment_count=2 on a topic whose total is 1 -- metadata that
+    contradicts itself while looking like an exact recorded count."""
+    edges = _participation_edges(
+        _participation_record(
+            segment_topic_id_map={"s1": 0},
+            segment_speakers={"s1": ["orion", "orion"]},
+        )
+    )
+    assert len(edges) == 1
+    assert edges[0].metadata["segment_count"] == 1
+    assert edges[0].metadata["topic_segment_total"] == 1
+    assert edges[0].salience == pytest.approx(1.0)
+
+
+def test_share_is_flagged_partial_only_when_the_caller_says_so() -> None:
+    """salience reads as a share of the whole topic; that is only true when the
+    caller supplied every segment."""
+    assert all(
+        e.metadata["share_is_partial"] is False for e in _participation_edges(_participation_record())
+    )
+    assert all(
+        e.metadata["share_is_partial"] is True
+        for e in _participation_edges(_participation_record(segments_truncated=True))
+    )

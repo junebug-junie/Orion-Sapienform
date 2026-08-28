@@ -117,6 +117,11 @@ h2 {
   border-radius: 11px; box-shadow: var(--shadow);
 }
 
+button.ghost.run-now { border-color: var(--axis); color: var(--ink); }
+button.ghost.run-now[disabled] { opacity: 0.55; cursor: default; }
+.run-msg { font-size: 12px; color: var(--ink-2); }
+.run-msg.bad { color: var(--critical); }
+
 /* --- banners ----------------------------------------------------------- */
 .banner {
   display: flex; gap: 11px; align-items: flex-start;
@@ -265,6 +270,8 @@ tr:last-child td { border-bottom: none; }
     <span id="updated">Loading…</span>
     <button class="ghost" id="refresh" type="button">Refresh</button>
     <button class="ghost" id="toggle-tables" type="button" aria-pressed="false">Table view</button>
+    <button class="ghost run-now" id="run-now" type="button">Run now</button>
+    <span id="run-now-msg" class="run-msg"></span>
   </div>
 
   <div id="banners"></div>
@@ -654,6 +661,39 @@ async function load() {
 }
 
 $("refresh").addEventListener("click", load);
+
+// Skips the cooldown and the daily cap and nothing else. Confirmed first,
+// because a turn is a real ~20-minute run on the same pipeline that serves
+// Juniper -- a mis-click should not spend one.
+$("run-now").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const msg = $("run-now-msg");
+  if (!window.confirm(
+        "Take a curiosity turn now?\n\n" +
+        "Skips the cooldown and the daily cap. It still counts against today, " +
+        "and it runs for about 20 minutes on the same pipeline that serves you.")) {
+    return;
+  }
+  btn.disabled = true;
+  msg.className = "run-msg";
+  msg.textContent = "Requesting…";
+  try {
+    const res = await fetch("/curiosity/api/run-now", { method: "POST" });
+    const d = await res.json();
+    if (d.ok) {
+      msg.textContent = d.detail || "Turn requested.";
+      setTimeout(load, 3000);
+    } else {
+      msg.className = "run-msg bad";
+      msg.textContent = `Refused: ${d.reason || res.status}`;
+    }
+  } catch (err) {
+    msg.className = "run-msg bad";
+    msg.textContent = `Failed: ${String(err)}`;
+  }
+  // Left disabled: the turn takes ~20 minutes and a second press would be
+  // rejected as already_running anyway. Reload the page to arm it again.
+});
 $("toggle-tables").addEventListener("click", (e) => {
   const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
   e.currentTarget.setAttribute("aria-pressed", String(on));

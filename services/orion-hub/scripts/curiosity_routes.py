@@ -5,11 +5,19 @@ one log line — `priors=0/0` — that nobody read for four hours. Everything ne
 to see it was already in FalkorDB, Postgres, Redis and docker logs; nothing put
 it on one screen. This module is that screen.
 
-STRICTLY READ-ONLY, and that is a design constraint rather than a phase-one
-scope cut. Hub never writes to `orion_worldview` — Orion authors its own graph —
-and a surface that could edit it would need auth thinking, an audit trail, and a
-story about what it means for an operator to overwrite a belief Orion formed.
-There are no POST routes here and there should not be.
+NOTHING HERE WRITES TO ORION'S GRAPH, and that is a design constraint rather
+than a phase-one scope cut. Hub never writes to `orion_worldview` — Orion authors
+its own graph — and a surface that could edit it would need auth thinking, an
+audit trail, and a story about what it means for an operator to overwrite a
+belief Orion formed. That has not changed and should not.
+
+There is now exactly one POST, and it is narrower than it looks: `/api/run-now`
+asks the loop to take a turn sooner than the cooldown would have. It writes no
+memory, no prior, no finding. Orion still authors everything the turn produces.
+An earlier version of this docstring said "no POST routes here and there should
+not be", which was a claim about writes to the graph stated as a claim about
+HTTP verbs; a control action is not a write, and conflating them would have
+forced an operator button into a module that has nothing to do with this page.
 
 Follows `concept_atlas_routes.py`: two JSON GETs plus a standalone page route,
 degrading to an honest "unavailable" payload rather than a 500, because this is
@@ -31,6 +39,11 @@ from orion.curiosity.atlas import read_atlas, to_payload
 from orion.curiosity.worldview import WorldviewReader
 
 logger = logging.getLogger("orion-hub.curiosity_routes")
+
+# Strong references to in-flight forced turns. asyncio only holds a weak
+# reference to a running task, so without this the turn can be garbage-collected
+# mid-run -- the button would return ok and nothing would happen.
+_RUN_NOW_TASKS: set = set()
 
 router = APIRouter(prefix="/curiosity", tags=["curiosity"])
 
@@ -260,6 +273,58 @@ async def curiosity_atlas_api() -> JSONResponse:
         payload["schedule"].get("tz"),
     )
     return JSONResponse(content=payload, headers=_NO_CACHE)
+
+
+@router.post("/api/run-now")
+async def curiosity_run_now() -> JSONResponse:
+    """Take a turn now, skipping the cooldown and the daily cap.
+
+    Every health gate still applies. `enabled` is NOT overridable: a loop
+    switched off is a decision already made, and a button that quietly undid it
+    would make the switch meaningless.
+
+    The run still counts against today. A forced run that did not would make the
+    daily counter lie, and that counter is what the page compares against to
+    notice a run that left no trace.
+    """
+    try:
+        from . import main as hub_main
+
+        loop = getattr(hub_main, "curiosity_investigation", None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_run_now_import_failed err=%s", exc)
+        loop = None
+
+    if loop is None:
+        return JSONResponse(
+            content={"ok": False, "reason": "loop_not_running"},
+            status_code=503,
+            headers=_NO_CACHE,
+        )
+
+    logger.warning("curiosity_run_now_requested -- operator asked for a turn")
+    try:
+        # A turn runs for ~20 minutes and this is a browser request. Fire it and
+        # return the acceptance, rather than holding an HTTP connection open
+        # across the whole turn and reporting a proxy timeout as a failure.
+        task = asyncio.create_task(loop.tick(force=True))
+        _RUN_NOW_TASKS.add(task)
+        task.add_done_callback(_RUN_NOW_TASKS.discard)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_run_now_failed err=%s", exc)
+        return JSONResponse(
+            content={"ok": False, "reason": str(exc)[:200]},
+            status_code=500,
+            headers=_NO_CACHE,
+        )
+    return JSONResponse(
+        content={
+            "ok": True,
+            "detail": "Turn requested. It takes ~20 minutes; the page will "
+                      "show it once the run writes its first node.",
+        },
+        headers=_NO_CACHE,
+    )
 
 
 @router.get("")

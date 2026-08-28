@@ -135,81 +135,90 @@ chassis's non-GPU draw. **The gap between summed GPU watts and wall watts is a
 number nobody currently has**, and it is exactly the number that decides
 whether a 20-25% reserve is generous or already breached.
 
-### Correction: two power services already exist, and neither measures load
+### Correction: the meter already exists, and it already works — for the wrong box
 
-An earlier draft of this spec claimed no power code existed in the repo. That
-was wrong — it came from reading a truncated `grep` result as absence. What
-actually exists:
+An earlier draft of this spec claimed no power code existed. That was wrong; it
+came from reading a truncated `grep` as absence. The truth is better and more
+specific.
 
-**`orion-power-guard`** (`orion-athena-power-guard`, running). An APC UPS
-watcher: polls for ONBATTERY/ONLINE transitions, enforces a grace window,
-publishes power events, can trigger graceful shutdown. Three problems, in
-increasing order of severity:
+`orion/telemetry/biometrics_pipeline.py` already reads **per-outlet PDU power
+at the wall**, publishes it as `pdu_watts`, and falls back to it for
+`chassis_watts` on a node with no BMC. It was built carefully: the two meters
+are deliberately never summed (they measure the same watts), iLO's 60s cadence
+versus the PDU's instantaneous read is documented, and the pair was
+cross-validated on atlas at 291W on both instruments at the same instant.
 
-1. **It has never been able to see the UPS.** `POWER_GUARD_SNMP_HOST` is set
-   to `host.docker.internal` — the Docker host, not the AP9640 network
-   management card's own LAN address. It does not resolve on Linux Docker, and
-   it is the wrong target conceptually. The NIS fallback times out against
-   `host.docker.internal:3551`. Independently, the *host's* own `apcupsd`
-   returns `STATUS : COMMLOST`, so the failure is upstream of the container
-   too.
-2. **It fails open.** Every poll logs `raw=COMMLOST ... on_battery=False
-   charge=0.0% volts=0.0`. A UPS watcher that cannot reach the UPS reports
-   *not on battery*. This is the "absence reads as zero" failure the repo has
-   hit repeatedly (see `quota_budget.py`'s fail-closed contract, built for
-   exactly this). **If the power actually failed, this service would report
-   that everything is fine.** That is a live safety defect independent of
-   everything else in this spec.
-3. **Even fully working, it reads the wrong OIDs** for this purpose:
-   `upsBasicOutputStatus`, `upsAdvBatteryCapacity`, `upsBasicInputVoltage`.
-   There is no `upsAdvOutputLoad`, no `upsAdvOutputActivePower`, no
-   `upsAdvBatteryRunTimeRemaining`. It is a shutdown daemon, not a load meter.
+`orion_biometrics_summary.measurements`, last 7 days:
 
-**`orion-gpu-cluster-power`** (`orion-athena-gpu-cluster-power`, running).
-Not a meter at all — a **PSU actuator**, exposing `psu_on`, `psu_off`,
-`psu_cycle` against `PSU_BASE_URL=http://192.168.1.100`. It is currently
-crash-looping its heartbeat on `'Settings' object has no attribute
-'service_version'`.
+| node | rows | has `chassis_watts` | has `pdu_watts` | avg | peak |
+| --- | --- | --- | --- | --- | --- |
+| athena | 17,455 | 17,429 | 4,026 | 350W | 580W |
+| **circe** | 17,028 | **0** | **0** | — | — |
 
-This is worth noting for the action-space half of this spec: **a physical
-actuator already exists.** Cutting power to the GPU cluster is about as
-consequential as an action gets, it directly frees watts, and it is not in the
-proposal templates.
+**athena is metered at the wall. Circe is not measured at all.** That is
+exactly backwards: circe is the box with seven GPUs and a ~2200W PSU, and it is
+invisible. Athena, which cannot threaten the budget, is the one we can see.
+
+Circe also has no BMC, so the PDU is the *only* chassis measurement it could
+ever have. The pipeline already knows this and handles it. The gap is that
+circe's Panduit outlets are not mapped through.
+
+**So stage 1 is not "build a PDU reader."** The reader exists and is proven on
+another node. Stage 1 is: point it at circe's outlets.
+
+### The one number this makes computable, and the one it does not
+
+Paired per-minute samples on athena, n=9,061:
+
+| | wall | GPU | **non-GPU remainder** |
+| --- | --- | --- | --- |
+| avg | 350W | 39W | **311W** |
+| range | | | **201W – 493W** |
+
+That is a real measured non-GPU baseline for athena — CPU, drives, fans, PSU
+loss.
+
+For circe it is **unknown**, and borrowing athena's number would be a mistake
+of exactly the kind this repo has been burned by before: a constant calibrated
+on one domain reused in another. Circe is a different chassis with more GPUs,
+more fans, and bigger supplies; its non-GPU draw is plausibly *higher* than
+athena's, not equal.
+
+Still, the arithmetic is worth stating precisely because it is what makes this
+urgent rather than interesting:
+
+```
+circe GPU peak (measured)      804 W
+circe non-GPU (UNMEASURED)     ~300-500 W   <- the whole question
+athena peak (measured)         580 W
+                             ----------
+estimated total              ~1700-1900 W
+UPS deliverable (~2200VA)      ~1980 W
+```
+
+**That is 86-96% of the battery, and it was reached at 13% average GPU
+utilisation.** The estimate rests entirely on a number nobody has measured. If
+circe's non-GPU draw is at the high end, the reserve is already gone.
 
 ### The cap is the battery, not the outlet
 
-Corrected after operator input: the outlet is **240V**, so the outlet is not
-the binding constraint (2200W at 240V is ~9.2A). The chain is
-wall → **APC UPS (~2200)** → Panduit PDU → two chassis, and **the UPS is the
-hard cap**. Circe's PSU is separately understood to be capped around 2200W.
+Corrected after operator input. The outlet is **240V**, so the outlet is not
+binding (2200W at 240V is ~9.2A). The chain is wall → **APC UPS** → Panduit
+PDU → two chassis, and the UPS is the hard cap. Circe's PSU is separately
+understood to be capped around 2200W — meaning **circe alone could exceed the
+UPS before athena draws anything**, though at 804W observed peak it has never
+come close.
 
-Two consequences:
+APC model designations are typically VA, and a 2200VA unit is commonly ~1980W.
+That 10-20% gap is the same size as the entire proposed reserve, so the model
+has to be read off the unit rather than inferred.
 
-- **VA is not watts, and this changes the number.** APC model designations are
-  typically VA. A "2200VA" unit is commonly ~1980W, and some models lower.
-  The exact model must be read before any reserve is computed — a 10-20% error
-  here is the same size as the entire proposed reserve.
-- **If circe's PSU can draw ~2200W and the UPS delivers ~1980W, circe alone at
-  full load exceeds the UPS before athena draws anything.** Current peak is
-  804W across seven cards, so this has never been approached — but nothing
-  currently prevents it, and nothing would observe it.
-
-### A UPS gives two budgets, not one
-
-This is the part that makes power more interesting than a cap:
-
-1. **Instantaneous watts** — exceed it and the UPS overloads. Unlike a
-   breaker, an overloaded UPS on battery does not trip and reset; it drops the
-   load. On a grid event, an overloaded UPS delivers *zero* runtime.
-2. **Runtime at current load** — nonlinear. Higher draw shortens the survival
-   window, steeply.
-
-So a watt spent is not only a watt unavailable to another workload. **It is
-seconds subtracted from how long Orion survives a power event.** That is a
-physical, externally-metered cost denominated directly in continuity — the
-thing this project is actually about. Running diffusion at full tilt literally
-shortens Orion's life expectancy during an outage, and that is measurable
-rather than metaphorical.
+**The APC's own network card is dead**, so the UPS cannot be polled directly —
+no load, no runtime, no on-battery state from that path. **The Panduit PDU over
+SNMP is the meter.** `orion-power-guard` is not working and is not a dependency
+of anything here; it should be stopped rather than left running, because it
+reports `on_battery=False` while `COMMLOST`, which is worse than reporting
+nothing. `orion-gpu-cluster-power` is a stale PSU switch and is out of scope.
 
 ## The central idea
 
@@ -236,10 +245,17 @@ something else," because with a hard cap the alternatives are mutually
 exclusive in fact: watts spent on diffusion are watts not available to a
 Claude turn.
 
+A second framing — that load also shortens how long Orion survives a grid
+event, making the cost denominated in continuity — is deliberately parked in
+the appendix. It is currently unmeasurable anyway: reading battery runtime
+requires the APC's network card, which is dead.
+
 ## Missing questions
 
-1. **What is the real wall draw?** Summed GPU watts is a floor of unknown
-   tightness. Until the PDU is read, the reserve is unfalsifiable.
+1. **What is circe's non-GPU draw?** This is now *the* question. Athena's is
+   measured at 311W avg (201-493W). Circe's is unmeasured, plausibly higher,
+   and it alone decides whether the fleet sits at 86% or over 100% of the
+   battery.
 2. **What is the exact APC model, and is 2200 its VA or its watt rating?**
    Resolved so far: the cap is the UPS battery, not the 240V outlet. Still
    open: VA-to-watt conversion is model-specific and a 10-20% error here is
@@ -265,29 +281,29 @@ Claude turn.
 Deliberately staged so each stage is independently useful and independently
 falsifiable. Nothing here is a cathedral; stage 1 is a reader and a table.
 
-### Stage 0 — fix the blind watchdog (safety, independent of this spec)
+### Stage 0 — stop the service that lies (safety, independent of this spec)
 
-`orion-power-guard` reports `on_battery=False` while `COMMLOST`. Point
-`POWER_GUARD_SNMP_HOST` at the AP9640's real LAN address, repair the host's
-`apcupsd` link, and **make unknown state fail closed** — an unreachable UPS
-must read as unknown, never as "on mains." This is worth doing whether or not
-anything else here is ever built.
+`orion-power-guard` reports `on_battery=False` while `COMMLOST`, and the APC
+card it would need is dead, so it cannot be repaired in place. Stop it. A
+watchdog that reports "on mains" while blind is worse than no watchdog. If
+on-battery state is wanted later, take it from the Panduit, not the APC.
 
 ### Stage 1 — measure the wall (no decisions, no actions)
 
-- New service `orion-power-meter`, or a producer in an existing telemetry
-  service, polling the PDU.
+- **Map circe's Panduit outlets into the existing `pdu` sample path.** No new
+  reader: `biometrics_pipeline` already consumes `pdu_watts` correctly and is
+  proven on athena.
 - New channel `orion:telemetry:power` carrying `PowerDrawV1`:
   `observed_at`, `source` (`pdu` | `gpu_sum`), `circuit_id`, `watts`,
   `sample_period_sec`.
 - New table `power_draw_log`. Retention bounded from day one.
-- Add the load OIDs `orion-power-guard` is missing: `upsAdvOutputLoad`,
-  `upsAdvOutputActivePower`, `upsAdvBatteryRunTimeRemaining`.
-- Two derived views: **wall watts minus summed GPU watts** (the non-GPU
-  baseline nobody has), and **runtime-remaining as a function of load** (the
-  continuity cost curve).
+- One derived view: **wall watts minus summed GPU watts, per node** — already
+  computable for athena (311W avg, 201-493W range, n=9,061 paired minutes),
+  and the open question for circe.
+- A fleet total across both chassis against the UPS ceiling.
 
-Acceptance: a week of real data, and an answer to missing-question 1 and 2.
+Acceptance: a week of circe wall data, a stated non-GPU baseline for circe
+with an error bar, and a fleet total that can be compared to the UPS rating.
 
 ### Stage 2 — declared intent
 
@@ -324,10 +340,8 @@ Claude quota where applicable), competing in the same allocator as
 | `reach_out` | Juniper's attention | whether she answers |
 | `make_an_image` | GPU watts (contested) | an artifact a human reacts to |
 
-`orion-gpu-cluster-power`'s `psu_off` / `psu_cycle` is a fifth, already-built
-physical action. Deliberately **not** proposed for the action space: an
-autonomous agent that can cut power to its own GPUs is a different safety
-class than anything else here, and it needs its own proposal round.
+(`orion-gpu-cluster-power` is a stale PSU switch and is not proposed for the
+action space.)
 
 `test_a_prior` and `ask_claude` first. They are the only two where Orion can be
 told it was wrong by something that is not itself, and neither needs Juniper
@@ -409,3 +423,32 @@ useful even if every later stage is abandoned, and it does not touch the
 action space, the allocator, or anything Orion decides.
 
 Everything after it depends on knowing that number, and right now nobody does.
+
+---
+
+## Appendix A — power as a continuity cost
+
+Parked rather than dropped, because it is currently unmeasurable: reading
+battery runtime needs the APC's network management card, which is dead.
+
+A UPS is two budgets, not one:
+
+1. **Instantaneous watts.** Exceed it and the UPS overloads. Unlike a breaker
+   it does not trip and reset — it drops the load. Overloaded at the moment of
+   a grid event, it delivers *zero* runtime.
+2. **Runtime at current load.** Nonlinear: higher draw shortens the survival
+   window steeply.
+
+If runtime were readable, a watt spent would not only be a watt denied to
+another workload — it would be **seconds subtracted from how long Orion
+survives a power event**. That is a physical, externally metered cost
+denominated directly in continuity, which is closer to what this project is
+actually about than any substrate pressure signal.
+
+It would also give the scheduler a second axis: a workload could be admissible
+on instantaneous headroom and still be refused for cutting the survival window
+below a floor.
+
+To revive this: repair or replace the APC network card, then read
+`upsAdvOutputLoad`, `upsAdvOutputActivePower`, and
+`upsAdvBatteryRunTimeRemaining`. Until then it stays an appendix.

@@ -348,8 +348,19 @@ class ThoughtSettings(BaseSettings):
         alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_CHAR_LIMIT",
         gt=0,
     )
+    # 259200s (3 days), NOT self_study_context_max_age_sec's 6h -- that 6h
+    # value was wrongly copied from self-study without checking whether it
+    # fits (real bug, caught live 2026-08-28: the 6h default meant this
+    # context-seed read empty on every single tick, because a
+    # crystallization is not a time-window-bound comparison the way a
+    # self-study body is ("the last 6h against the 6h before it") -- a
+    # crystallized memory from yesterday is still a real memory, it doesn't
+    # go stale on that clock. Real cadence (live query, last 14 days,
+    # 2026-08-28): median gap between active crystallizations ~15min, max
+    # gap ~46h. 3 days gives real margin over that observed max without
+    # being unbounded.
     memory_crystallization_context_max_age_sec: float = Field(
-        21600.0, alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC", gt=0
+        259200.0, alias="ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC", gt=0
     )
 
     # --- Attention salience trace publish gate ---

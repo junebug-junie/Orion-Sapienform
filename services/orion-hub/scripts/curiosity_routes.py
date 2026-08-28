@@ -89,6 +89,8 @@ async def _read_schedule() -> dict[str, Any]:
     """
     out: dict[str, Any] = {
         "available": False,
+        "local_date": None,
+        "tz": None,
         "last_investigation_at": None,
         "next_eligible_at": None,
         "runs_today": None,
@@ -130,6 +132,8 @@ async def _read_schedule() -> dict[str, Any]:
             count = count.decode("utf-8", errors="replace")
 
         out["available"] = True
+        out["local_date"] = local_date
+        out["tz"] = str(tz)
         out["last_investigation_at"] = str(last) if last else None
         out["runs_today"] = int(count) if count else 0
         if last and cooldown:
@@ -147,6 +151,80 @@ async def _read_schedule() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
         logger.warning("curiosity_atlas_schedule_unavailable err=%s", exc)
     return out
+
+
+async def _read_journals(run_ids: list[str]) -> dict[str, str]:
+    """What each run actually SAID, which is its real output.
+
+    The graph holds the run's structure -- priors, findings, hops -- but the
+    prose Orion wrote for Juniper lives in Postgres, and a page that shows the
+    node counts without it describes the shape of a turn while hiding what the
+    turn was for. Juniper, looking at the first version of this page: "Don't
+    know what tools are being used or what the actual output is of the run."
+
+    Keyed `curiosity:<run_id>` by the loop (`curiosity_investigation.py:318`).
+    """
+    if not run_ids:
+        return {}
+    try:
+        from . import main as hub_main
+
+        pool = getattr(getattr(hub_main, "app", None), "state", None)
+        pool = getattr(pool, "memory_pg_pool", None)
+        if pool is None:
+            return {}
+        refs = [f"curiosity:{r}" for r in run_ids]
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT source_ref, body FROM journal_entries "
+                "WHERE source_ref = ANY($1::text[])",
+                refs,
+            )
+        return {
+            str(r["source_ref"]).split(":", 1)[1]: str(r["body"] or "")
+            for r in rows
+            if ":" in str(r["source_ref"])
+        }
+    except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
+        logger.warning("curiosity_atlas_journal_unavailable err=%s", exc)
+        return {}
+
+
+def _wrote_on(
+    runs: list[dict[str, Any]], local_date: Optional[str], tz_name: Optional[str]
+) -> Optional[int]:
+    """How many runs wrote a node on the SAME calendar day the counter keys on.
+
+    Computed here rather than in the browser. The daily counter is keyed in
+    `HUB_ENDOGENOUS_OUTREACH_TZ`, while a browser's `isToday` is the viewer's
+    own zone, and comparing a count from one zone against a count from another
+    makes the "wrote nothing at all" banner fire or stay silent for reasons that
+    have nothing to do with Orion. It happens to be right today because Juniper
+    and the configured zone are both MDT; it would be wrong for any viewer who
+    is not, and wrong for everyone for the hours the two dates disagree.
+
+    An undated run counts as today: its only timestamp comes from a
+    `:TurnOutcome`, so a turn killed mid-write has no date, and calling that
+    "not today" would report it as traceless when it plainly left a trace.
+    """
+    if not local_date:
+        return None
+    try:
+        tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+    except Exception:  # noqa: BLE001
+        tz = timezone.utc
+    n = 0
+    for run in runs:
+        if not run.get("total_added"):
+            continue
+        stamp = run.get("written_at")
+        if not stamp:
+            n += 1
+            continue
+        when = datetime.fromtimestamp(int(stamp) / 1000, timezone.utc).astimezone(tz)
+        if when.date().isoformat() == local_date:
+            n += 1
+    return n
 
 
 @router.get("/api/atlas")
@@ -171,7 +249,16 @@ async def curiosity_atlas_api() -> JSONResponse:
         # connected websocket, which is the rule `WorldviewReader` already
         # states for its own blocking call.
         payload = await asyncio.to_thread(lambda: to_payload(read_atlas(reader)))
+        journals = await _read_journals(
+            [r["run_id"] for r in payload.get("runs", []) if r.get("run_id")]
+        )
+        for run in payload.get("runs", []):
+            run["journal"] = journals.get(run.get("run_id", ""), "")
     payload["schedule"] = await _read_schedule()
+    payload["schedule"]["runs_wrote_today"] = _wrote_on(
+        payload.get("runs", []), payload["schedule"].get("local_date"),
+        payload["schedule"].get("tz"),
+    )
     return JSONResponse(content=payload, headers=_NO_CACHE)
 
 

@@ -108,7 +108,8 @@ def _payload(**over) -> dict:
         "available": True, "live_total": 1, "closed_total": 0,
         "pool_is_dead": False, "history_recorded": False,
         "priors": [], "runs": [], "revisions": [],
-        "schedule": {"available": False, "runs_today": None, "daily_cap": 3,
+        "schedule": {"available": False, "runs_today": None,
+                     "runs_wrote_today": None, "daily_cap": 3,
                      "next_eligible_at": None, "cooldown_sec": None,
                      "last_investigation_at": None},
     }
@@ -158,8 +159,8 @@ def test_a_run_killed_mid_write_is_not_reported_as_having_written_nothing(tmp_pa
     dated = _run(run_id="ok")
     out = _render(_payload(
         runs=[dated, killed],
-        schedule={"available": True, "runs_today": 2, "daily_cap": 3,
-                  "next_eligible_at": None, "cooldown_sec": 1.0,
+        schedule={"available": True, "runs_today": 2, "runs_wrote_today": 2,
+                  "daily_cap": 3, "next_eligible_at": None, "cooldown_sec": 1.0,
                   "last_investigation_at": None},
     ), tmp_path)
     assert "wrote nothing at all" not in out["banners"]
@@ -171,12 +172,25 @@ def test_a_run_that_wrote_nothing_at_all_is_surfaced_from_the_counter_gap(tmp_pa
     id, so it appears in no panel. That is a banner, not a silence."""
     out = _render(_payload(
         runs=[_run()],
-        schedule={"available": True, "runs_today": 3, "daily_cap": 3,
-                  "next_eligible_at": None, "cooldown_sec": 1.0,
+        schedule={"available": True, "runs_today": 3, "runs_wrote_today": 1,
+                  "daily_cap": 3, "next_eligible_at": None, "cooldown_sec": 1.0,
                   "last_investigation_at": None},
     ), tmp_path)
     assert "wrote nothing at all" in out["banners"]
     assert "2 runs today" in out["banners"]
+
+
+def test_the_banner_is_silent_when_the_server_could_not_count(tmp_path) -> None:
+    """`runs_wrote_today` is None when Redis or the zone is unavailable.
+    Treating that as 0 would fire the alarm on every page load during an
+    outage of something unrelated to Orion."""
+    out = _render(_payload(
+        runs=[_run()],
+        schedule={"available": True, "runs_today": 3, "runs_wrote_today": None,
+                  "daily_cap": 3, "next_eligible_at": None,
+                  "cooldown_sec": 1.0, "last_investigation_at": None},
+    ), tmp_path)
+    assert "wrote nothing at all" not in out["banners"]
 
 
 def test_an_unreadable_graph_and_an_unconfigured_one_read_differently(tmp_path) -> None:

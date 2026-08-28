@@ -251,6 +251,50 @@ Neither caveat is reassuring, because the GPU peak in that sum was recorded at
 low utilisation. Seven cards under genuine load would add far more than the
 ~130W of margin.
 
+### RESOLVED 2026-08-28: fleet wall power is live
+
+Juniper whitelisted `192.168.1.43` in the PDU's SNMP Manager list. The poll
+recovered on its own within two cycles — no restart, no code change. Confirmed
+from the live `orion:biometrics:cluster` payload:
+
+```
+pdu_watts             1526        <- true fleet wall draw
+chassis_watts         1415-1457
+gpu_watts_total        448
+measurements_proxied  {"circe": ["chassis_watts", "pdu_watts"]}
+measurements_missing  {"fan_pct_max": ["circe"]}
+nodes_absent          ["atlas"]
+```
+
+Circe has left `measurements_missing` for power and is correctly labelled as a
+proxied reading rather than a self-report — the provenance guarantee in
+`main.py:431` held.
+
+**The fleet number nobody had:**
+
+| quantity | watts |
+| --- | --- |
+| fleet wall (PDU) | **1526** |
+| fleet GPU | 448 |
+| **fleet non-GPU baseline** | **1078** |
+| UPS deliverable (~2200VA) | ~1980 |
+| **margin** | **~454** |
+
+**The fleet sits at ~77% of the battery with eight GPUs drawing 448W.** The
+non-GPU baseline — 1078W, more than twice the entire GPU draw — is the dominant
+term and is essentially fixed cost. The remaining ~454W is what all GPU
+headroom must fit inside, and eight cards under genuine load would exceed it
+several times over.
+
+This retires the earlier estimate-based section: circe's non-GPU draw was
+guessed at 300-500W by analogy to athena, then measured at ~650W, and the fleet
+baseline is 1078W. Every step of that borrowing was wrong in the same
+direction.
+
+**Stage 1 of this spec is therefore already complete**, achieved by a whitelist
+entry rather than a build. What remains is a bounded retention table for
+history, and then stage 2.
+
 ### The cap is the battery, not the outlet
 
 Corrected after operator input. The outlet is **240V**, so the outlet is not

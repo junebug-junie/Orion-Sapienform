@@ -8,6 +8,7 @@ must not do that is worth pinning.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1071,3 +1072,97 @@ def test_no_relay_configured_still_runs() -> None:
     loop = _loop(bus)
     assert asyncio.run(loop.tick()) is None
     assert len(bus.published) == 1
+
+
+# --- the manual override ---------------------------------------------------
+
+
+def test_force_skips_the_cooldown_and_the_daily_cap() -> None:
+    """The two gates that exist to bound cost. An operator asking for a run has
+    already made that call."""
+    from scripts.curiosity_investigation import (
+        SchedulingGateInputs,
+        scheduling_block_reason,
+    )
+
+    at_cap = SchedulingGateInputs(enabled=True, seconds_since_last=10.0,
+                                  min_cooldown_sec=14400.0, done_today=6,
+                                  daily_cap=6)
+    assert scheduling_block_reason(at_cap) in {"daily_cap", "cooldown"}
+
+    # State comes from Redis, not the in-process fields: `_read_persisted_state`
+    # prefers the persisted values, which is the whole reason a redeploy is not
+    # a licence to run again.
+    from scripts.curiosity_investigation import (
+        _COOLDOWN_KEY,
+        _DAILY_COUNT_KEY_PREFIX,
+    )
+
+    def _at_cap():
+        bus = _FakeBus()
+        loop = _loop(bus)
+        now = datetime.now(timezone.utc)
+        bus.redis.values[_COOLDOWN_KEY] = now.isoformat()
+        bus.redis.values[loop._daily_key(now)] = "6"
+        return loop
+
+    assert asyncio.run(_at_cap().tick()) in {"daily_cap", "cooldown"}
+    assert asyncio.run(_at_cap().tick(force=True)) is None, "force must reach the turn"
+
+
+def test_force_does_not_override_the_off_switch() -> None:
+    """A loop switched off is a decision already made. A button that quietly
+    undid it would make the switch meaningless."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    loop.enabled = False
+    assert asyncio.run(loop.tick(force=True)) == "disabled"
+
+
+def test_a_forced_run_still_counts_against_today() -> None:
+    """A forced run that did not count would make the daily counter lie, and
+    that counter is what the atlas page compares against to notice a run that
+    left no trace."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+    now = datetime.now(timezone.utc)
+    from scripts.curiosity_investigation import _COOLDOWN_KEY
+
+    bus.redis.values[_COOLDOWN_KEY] = now.isoformat()
+    bus.redis.values[loop._daily_key(now)] = "5"
+    assert asyncio.run(loop.tick(force=True)) is None
+    assert loop._done_today == 6
+
+
+def test_force_does_not_override_a_health_gate() -> None:
+    """Cooldown and cap answer "should this run now". The health gates answer
+    "can it work at all", which an operator cannot override by wanting it."""
+    bus = _FakeBus()
+    loop = _loop(bus, conn=_FakeConn(raises=True))
+    now = datetime.now(timezone.utc)
+    from scripts.curiosity_investigation import _COOLDOWN_KEY
+
+    bus.redis.values[_COOLDOWN_KEY] = now.isoformat()
+    bus.redis.values[loop._daily_key(now)] = "99"
+    assert asyncio.run(loop.tick(force=True)) is not None
+
+
+def test_two_turns_cannot_run_at_once() -> None:
+    """There was no lock before the manual trigger because the cooldown made
+    overlap impossible -- a turn runs ~20 minutes and the next was 4 hours
+    away. A button removes that guarantee."""
+    bus = _FakeBus()
+    loop = _loop(bus)
+
+    async def _both():
+        await loop._run_lock.acquire()
+        try:
+            # BOUNDED. Without the guard `tick` does not return the wrong
+            # answer, it blocks forever on the held lock -- confirmed by
+            # mutation, the unbounded version of this test hangs instead of
+            # failing. A test that hangs is a test nobody can run in CI.
+            return await asyncio.wait_for(loop.tick(force=True), timeout=5)
+        finally:
+            loop._run_lock.release()
+
+    assert asyncio.run(_both()) == "already_running"

@@ -332,8 +332,18 @@ def test_the_operator_surface_exposes_no_write_route() -> None:
     router = module.router
 
     assert router.routes, "the router registered nothing"
-    for route in router.routes:
-        assert route.methods <= {"GET", "HEAD"}, (route.path, route.methods)
+    writes = [
+        r for r in router.routes if not r.methods <= {"GET", "HEAD"}
+    ]
+    # Exactly one, and it is a CONTROL action: it asks the loop to take a turn
+    # sooner than the cooldown would have. It writes no memory, no prior, no
+    # finding -- Orion still authors everything the turn produces. Pinned by
+    # path so a second write route cannot be added without this going red and
+    # someone having to justify it.
+    assert [r.path for r in writes] == ["/curiosity/api/run-now"], [
+        (r.path, sorted(r.methods)) for r in writes
+    ]
+    assert writes[0].methods == {"POST"}
 
 
 def test_the_schedule_keys_are_imported_from_the_loop_that_writes_them() -> None:

@@ -774,8 +774,17 @@ the Flux-shaped pipe from `settings.DIFFUSION_MAX_SEQUENCE_LENGTH`. A
 dedicated test proves `_log_prompt_token_budget`'s `tokenizer_2` check
 uses the passed `max_sequence_length`, not the tokenizer's raw attribute.
 
-**Not done, named as a real follow-up, not silently dropped**: no live
-GPU smoke test against the real downloaded weights was run as part of
-this changeset (would require the actual multi-GB download completing on
-Circe) -- `docker/build/smoke` in the PR report says so plainly rather
-than claiming a check that didn't happen.
+**Live GPU smoke run on Circe, same day, closing the gap above**: real
+build + deploy against physical GPU 2 via `scripts/safe_docker_build.sh`
+from a dedicated worktree (never the shared checkout). First real load
+attempt against the actual downloaded weights failed on the FIRST try --
+exactly the class of bug only a live load can catch:
+`Cannot instantiate this tokenizer from a slow version... make sure you
+have sentencepiece installed`. `T5TokenizerFast` (`tokenizer_2`) needs
+`sentencepiece` to construct at all; sdxl-turbo never needed it (CLIP-only,
+no sentencepiece-based tokenizer), so nothing in the prior dependency set
+required it. Added `sentencepiece==0.2.2` (current stable, checked against
+PyPI directly, not guessed) to `requirements.txt`. The existing bounded-
+retry + permanent-`_load_error`/`/ready`-503 design worked exactly as
+intended: the failure was visible in `docker logs` and `/health` within
+seconds, not silently masked, and the container did not crash-loop.

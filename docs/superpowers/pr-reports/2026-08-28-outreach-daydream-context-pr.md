@@ -1,14 +1,15 @@
 # Orion's unprompted messages get a daydream, not only telemetry
 
 Branch: `feat/outreach-daydream-context`
-Commits: `d1722e319` (build), `9202967ab` (retraction + review fixes)
+Commits: `d1722e319` (build), `9202967ab` (retraction + review fixes), `db1d811b4` (second-person guard), `be7782223` (verification-review fixes)
 
 ## Summary
 
 - Juniper: *"orion writes chats to me unprompted. The prompt seems to be mostly telemetry... can we also add in anything interesting orion has day dreamed about over the last few reverie diffusions?"* She was right about the diagnosis — every grounding lane the outreach prompt had was an instrument reading.
 - Adds `_fetch_current_daydream`: the newest **usable** caption from orion-thought's reverie visual chain (`reverie_visual_chain`, ~1 row/600s), rendered with a coarse relative age and framed explicitly as Orion's own.
 - **Retracted a mechanism mid-PR.** The first commit shipped the last 3 *distinct* captions, de-duplicated by Jaccard token overlap. Live data falsified that; the second commit removes the de-dupe entirely rather than tuning its threshold.
-- Adds a caption-validity guard for two live vision-model failure modes (raw grounding coordinates, bare tag dumps) that would otherwise **be** the whole lane, since only one caption ships.
+- Adds caption-validity guards for **four** live vision-model failure modes — raw grounding coordinates, bare tag dumps, second-person address, and the captioner's own instruction text echoed back with a markdown breakdown attached. Since only one caption ships, an unusable newest row **is** the whole lane.
+- Two review rounds, both of which changed the design rather than polishing it.
 - Adds `services/orion-hub/evals/` — the service had no eval harness at all.
 - Enrichment only: deliberately **not** part of `is_empty()`, so it can never cause an outreach that would not otherwise have fired.
 
@@ -75,6 +76,7 @@ Showing genuine *drift* ("celestial maps for two hours; Roman aqueducts before t
 
 Both live in `services/orion-thought/app/visual_chain.py`. This PR adds the consumer-side guard only.
 
+0. **The captioner echoes its own instruction text back with a markdown breakdown** — `"a spiral galaxy. Directly visible objects and people include: 1. **Galaxy**: …"`. 12 of 290 rendered captions (4.1%) — the most frequent of the four.
 0. **The captioner sometimes answers in the second person** — `"The graph you provided is a phase diagram…"` — because it was addressed conversationally. 1 of 296 live rows.
 1. **The vision model sometimes returns raw grounding output instead of a description.** Live rows: `objects(103,419),(554,604), people(234,492),(274,554)`, `bridge(269,261),(879,661)`, and one that echoed the prompt's own instruction text back with coordinates attached: `objects(1,2),(996,995),people(1,2),(996,995),state only what is directly visible.(1,2),(996,995)`.
 2. **Bare tag dumps with no sentence**: `1. Sun 2. Mercury 3. Venus …`, `two trees, lake, reflection, purple sky`.
@@ -102,12 +104,11 @@ Caption text is model-generated and interpolated into a prompt, so it is untrust
 ## Tests run
 
 ```text
-$ pytest services/orion-hub/tests/test_endogenous_outreach.py -q
-142 passed in 4.71s
-
 $ pytest services/orion-hub/tests/test_endogenous_outreach.py services/orion-hub/evals -q
-146 passed in 4.68s      # tests + evals in ONE session: the evals conftest's
+160 passed in 4.70s      # tests + evals in ONE session: the evals conftest's
                          # sys.path fix does not disturb the tests suite
+                         # (independently confirmed by the verification review:
+                         #  exactly +4 passed, +0 failed, across two runs)
 
 $ pytest services/orion-hub/tests -q --tb=no
 31 failed, 1703 passed, 5 skipped
@@ -130,6 +131,24 @@ Mutation-tested — all five caught:
 | drop the second-person guard | 3 failed |
 | second-person match by substring, not word boundary | 1 failed |
 
+Second round — nine mutations the verification review found **unpinned**, all now caught:
+
+| Mutation | Result |
+|---|---|
+| prose regex `{3}` → `{2}` (three words, not four) | 1 failed |
+| detector regex drop `\s*` (spacing-tolerant → not) | 2 failed |
+| detector regex `\d+` → `\d{2,}` (single digits slip) | 1 failed |
+| age rounding `+ 0.5` → `+ 0.9` | 1 failed |
+| ellipsis cap `- 1` → `- 0` | 1 failed |
+| remove `_strip_appended_list` | 4 failed |
+| eval floor → `0.0` | 1 failed |
+| eval `_MIN_SAMPLE` → `100000` (silent permanent skip) | 1 failed |
+| eval reads `prior_description` instead of `description` | 1 failed |
+
+The ellipsis one is worth naming: its previous fixture could not discriminate, because the character at the cap boundary was a **space** that `.rstrip()` absorbed — the test passed identically with and without the off-by-one it was written to pin.
+
+**Method note.** One mutation initially read as "the test is weak" when it was actually a silent no-op — my replacement string never matched the file. Every mutation in both tables now asserts its target exists before mutating; without that, a green result is evidence about nothing.
+
 ## Evals run
 
 ```text
@@ -139,8 +158,12 @@ $ pytest services/orion-hub/evals -q
 $ DAYDREAM_EVAL_DATABASE_URL=<unreachable> pytest services/orion-hub/evals -q
 4 skipped in 0.40s      # skips cleanly, does not pass vacuously
 
-live corpus: rows=331 captioned=299 usable=289 rate=96.7%
-# (97.0% before the second-person guard; the guard costs exactly one row)
+$ DAYDREAM_EVAL_DATABASE_URL=<reachable DB, no such table> pytest services/orion-hub/evals -q
+4 errors                 # a missing table FAILS; it must not skip
+
+live corpus (24h window): usable rate 94.7%
+# 97.0% before the second-person guard, 96.7% after it, 94.7% after the
+# appended-list strip. Each drop is a caption that was rendering debris.
 ```
 
 `services/orion-hub/` had **no `evals/` directory** before this PR (AGENTS.md §11 says add the smallest useful one or report the gap). This is that one, and it exists for a specific reason: the retracted claim could not have been caught by a unit test, because unit tests run on fixtures the same reasoning invented. The eval runs the real pipeline over the real rows.
@@ -158,6 +181,35 @@ $ python <scratch>/live_smoke.py     # real engine, real reverie_visual_chain
 LIVE daydream: (506.6, 'a detailed astronomical map, likely from the 17th or 18th century.')
 [prompt 959 chars; daydream block 358 chars]   # was 1471 / 560 before the retraction
 ```
+
+## Second review round (verification pass)
+
+The first round's must-fix produced the retraction above. A second, adversarial pass over that retraction found two more must-fixes — both confirmed against live data before fixing, and both real.
+
+**1. The captioner's instruction echo was rendering into Orion's prompt — 12 of 290 captions (4.1%).**
+
+```
+a spiral galaxy. Directly visible objects and people include: 1. **Galaxy**: The
+central circular structure that appears to be a spiral galaxy.
+```
+
+`"Directly visible objects and people"` is the vision prompt's own instruction text coming back, with literal `**` markdown and a dangling enumerator, under the line *"What you were picturing on your own."* Thirteen times more frequent than the second-person case that got its own commit. `_DAYDREAM_SENTENCE_END_RE` had only fixed the *trailing* `"…include: 1."` shape.
+
+Fixed by `_strip_appended_list`: the prose *before* the list is genuinely good, so the tail is cut rather than the caption dropped; when nothing usable precedes the list, the length and prose checks reject what remains. It matches the structural markers (`**`, or a colon then an enumerator) rather than the instruction wording, which is the captioner's to change. Usable rate 96.7% → 94.7%.
+
+**2. Two of the four eval tests were provably vacuous.** They asserted a property on `_clean_daydream`'s *output* that the cleaner already enforces on a superstring of that output — a match in the output implies a match in the input implies the cleaner returned `""`. They could not fail for any data, and their docstrings made the strongest claims in the file (*"the one place it is checked against text nobody wrote by hand"*). This is the same trap as [assert what survives truncation, not that it happened].
+
+Replaced with assertions on the **input**: that debris genuinely occurs in the raw corpus and that none of it survives cleaning, plus a new instruction-echo check. **That new check caught its own false positive on first run against live data** — a real caption ending *"…The spiral structure and the central black hole are directly visible."* — which is exactly what an eval is for.
+
+Also fixed in that round:
+
+- The eval read the **whole table**, making `_MIN_USABLE_RATE` a lifetime rate. At ~6 rows/hour it takes 42 consecutive bad captions to trip today, but ~1,410 (≈10 days of total collapse) once the table reaches 10k rows — the eval would have decayed into a no-op by October. Now a 24h window, so detection latency is fixed forever.
+- `except Exception: pytest.skip(...)` meant a **dropped or renamed table** silently skipped all four tests, including liveness. Narrowed to `OperationalError`; a missing table now fails loudly. Verified all three paths: live → 4 passed, unreachable DB → 4 skipped, reachable DB with no table → 4 errors.
+- The prose guard validated the full caption then truncated, so a row that is debris for its first 200 chars and prose at char 350 would pass validation and render the debris. No live row does this; closed with one comparison.
+- The boundary scan now reads one char past the budget — the regex needs the period *and* the following space, so a sentence ending exactly at the budget previously fell to the ellipsis branch.
+- `_daydream_age_phrase` pluralised rather than relying on the ≥90min gate to make `"1 hours"` unreachable.
+
+**Repo-wide gap this exposed:** 11 services carry an `evals/` directory and **none** were reachable through `scripts/test_service.sh` or any Makefile target. An eval no tooling invokes is inert. Added an opt-in `--with-evals` flag (opt-in, not default, so this does not silently start running ten other services' evals against live infrastructure); wiring the other ten is follow-up, not this change.
 
 ## Review findings fixed
 

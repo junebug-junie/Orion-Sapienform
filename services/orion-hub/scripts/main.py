@@ -746,10 +746,11 @@ async def startup_event():
         logger.info("substrate_decay_scheduler_disabled reason=env_disabled")
 
     if settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED:
-        # Short, fixed grace period before the startup tick so it does not
-        # race the rest of app startup. Not an env knob: nothing an operator
-        # would tune, and the tick itself is already gated.
-        _TOPIC_FOUNDRY_STARTUP_TICK_DELAY_SEC = 30.0
+        from scripts.topic_foundry_scheduler_policy import (
+            next_wait_seconds as _tf_next_wait_seconds,
+            should_retry_startup_tick as _tf_should_retry_startup_tick,
+        )
+
         topic_foundry_interval_sec = max(
             1.0, float(settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC)
         )
@@ -782,21 +783,30 @@ async def startup_event():
             # and ingestion re-upserts by deterministic node_id. It is gated
             # anyway so an operator can turn it off without disabling the
             # whole scheduler.
-            first_tick = bool(
+            startup_pending = bool(
                 getattr(settings, "SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP", True)
             )
-            if not first_tick:
+            startup_attempt = 0
+            if not startup_pending:
                 logger.info("substrate_topic_foundry_scheduler_startup_tick_disabled")
             while True:
-                if first_tick:
-                    # Let the rest of startup settle before the first tick --
-                    # this runs concurrently with the app coming up, and the
-                    # steps below reach out over HTTP.
-                    await asyncio.sleep(_TOPIC_FOUNDRY_STARTUP_TICK_DELAY_SEC)
-                    logger.info("substrate_topic_foundry_scheduler_startup_tick")
-                    first_tick = False
-                else:
-                    await asyncio.sleep(topic_foundry_interval_sec)
+                # Timing/retry policy is pure and lives in
+                # scripts/topic_foundry_scheduler_policy.py so it is testable
+                # without starting the app -- see its module docstring.
+                await asyncio.sleep(
+                    _tf_next_wait_seconds(
+                        startup_pending=startup_pending,
+                        interval_sec=topic_foundry_interval_sec,
+                        attempt=startup_attempt,
+                    )
+                )
+                is_startup_tick = startup_pending
+                if is_startup_tick:
+                    logger.info(
+                        "substrate_topic_foundry_scheduler_startup_tick attempt=%s", startup_attempt
+                    )
+                    startup_pending = False
+                trigger_summary = None
                 try:
                     trigger_summary = await asyncio.to_thread(
                         concept_atlas_routes_runtime.trigger_topic_foundry_training_run
@@ -810,6 +820,22 @@ async def startup_event():
                     )
                 except Exception as exc:  # advisory runtime loop; never crash service startup
                     logger.warning("substrate_topic_foundry_scheduler_trigger_error error=%s", exc)
+
+                # Hub and orion-topic-foundry come up together on a full-stack
+                # `docker compose up`. Without this, a startup tick that lands
+                # before topic-foundry is answering would fall straight through
+                # to a full interval -- reproducing the exact "needs 24 unbroken
+                # hours" failure this shape exists to remove, one layer out.
+                if is_startup_tick and _tf_should_retry_startup_tick(
+                    trigger_summary, startup_attempt
+                ):
+                    startup_attempt += 1
+                    startup_pending = True
+                    logger.info(
+                        "substrate_topic_foundry_scheduler_startup_tick_retry attempt=%s reason=%s",
+                        startup_attempt,
+                        (trigger_summary or {}).get("reason"),
+                    )
 
                 try:
                     enrich_summary = await asyncio.to_thread(

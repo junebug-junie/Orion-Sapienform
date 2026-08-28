@@ -559,7 +559,8 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  // Assign, do not replace: the IIFE above already attached
-  // shouldDeclutterLabels/LABEL_DECLUTTER_MIN_NODES to this object.
+  // All three are plain file-scope declarations above the `typeof document`
+  // guard, so they exist whether or not the browser IIFE ran -- which is what
+  // makes concept-atlas.test.js able to import them under node with no DOM.
   module.exports = { apiFetch, shouldDeclutterLabels, LABEL_DECLUTTER_MIN_NODES };
 }

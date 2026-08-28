@@ -1009,6 +1009,14 @@ def _display_labels(nodes: list[Any], edges: list[Any]) -> dict[str, str]:
             continue
         if source_id in concept_ids:
             continue  # concept -> concept `supports` keeps its own label
+        # Only fill in for a node that has NO label of its own. Guarding on
+        # "not a concept" alone was too broad: EntityNodeV1 carries a real
+        # label (min_length=1) and entity nodes are hydrated into this same
+        # list, so the first producer to emit an entity -> concept `supports`
+        # edge would silently rename a node called "Juniper" to
+        # "Evidence for <topic>".
+        if labels.get(source_id) != source_id:
+            continue
         supported = labels.get(target_id)
         if supported:
             labels[source_id] = f"Evidence for {supported}"

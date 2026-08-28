@@ -899,7 +899,13 @@ def test_display_labels_leaves_concept_to_concept_supports_alone() -> None:
 
 def test_scheduler_startup_tick_defaults_on() -> None:
     """The loop used to sleep a full 86400s interval BEFORE its first tick, so
-    it needed 24 unbroken hours of Hub uptime to fire once -- and never had."""
-    from scripts.concept_atlas_routes import settings
+    it needed 24 unbroken hours of Hub uptime to fire once -- and never had.
 
-    assert settings.SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP is True
+    Asserts the CODE default, not the live settings singleton: hub Settings
+    reads .env plus process env, and turning this key off is a documented,
+    supported operator action -- it must not turn the suite red on their box.
+    """
+    from app.settings import Settings
+
+    field = Settings.model_fields["SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_RUN_AT_STARTUP"]
+    assert field.default is True

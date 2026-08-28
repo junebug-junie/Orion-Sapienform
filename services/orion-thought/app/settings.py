@@ -204,8 +204,20 @@ class ThoughtSettings(BaseSettings):
     diffusion_host_base_url: str = Field(
         "http://100.112.254.99:8014", alias="ORION_DIFFUSION_HOST_BASE_URL"
     )
+    # 30s (this field's original value) was tuned for sdxl-turbo's
+    # single-step, near-instant generation. Real bug, caught live
+    # 2026-08-28 the same day orion-diffusion-host swapped to
+    # FLUX.1-schnell (design doc §19): FLUX's real 4-step generation with
+    # CPU offloading measured 49-56s on the actual deployed hardware
+    # (Circe, physical GPU 2) -- every visual-chain tick timed out and
+    # recorded terminal_reason="generation_failed" the FIRST tick after
+    # deploy that wasn't also caught by a manual-testing 429 collision.
+    # 120s gives real margin over the observed 49-56s range (prompt-length
+    # and shared-GPU-contention variance could push it higher) without
+    # coming anywhere close to conflicting with visual_chain_interval_sec's
+    # 600s tick cadence above.
     visual_chain_diffusion_timeout_sec: float = Field(
-        30.0, alias="ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC"
+        120.0, alias="ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC"
     )
     # Content-addressed image storage (orion.reverie.visual_storage, design
     # doc §6). Overridable so tests never touch the real mount.

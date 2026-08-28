@@ -442,7 +442,7 @@ Flags:
 | `ORION_VISUAL_CHAIN_ENABLED` | `true` | Master switch |
 | `ORION_VISUAL_CHAIN_INTERVAL_SEC` | `600` | Trigger cadence (real cadence is `max(this, run duration)`) |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
-| `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `30` | `/generate` HTTP timeout |
+| `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
 | `ORION_VISUAL_CHAIN_STORAGE_DIR` | `/mnt/storage-lukewarm/orion/reverie-visual` | Content-addressed image store |
 | `ORION_VISUAL_CHAIN_PERCEPT_STORE_URL` | `http://orion-athena-percept-store:8000/percepts` | Cross-host hop to vision-host |
 | `ORION_VISUAL_CHAIN_PERCEPT_STORE_TOKEN` | *(empty)* | `X-Orion-Percept-Token`, if the store requires one |

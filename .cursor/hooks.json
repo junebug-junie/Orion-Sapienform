@@ -26,6 +26,11 @@
         "type": "command",
         "command": "python3 scripts/hooks/cursor_bridge.py deny --timeout 10 scripts/hooks/destructive_git_guard.py",
         "timeout": 12
+      },
+      {
+        "type": "command",
+        "command": "python3 scripts/hooks/cursor_bridge.py deny --timeout 10 scripts/hooks/bare_graphify_update_guard.py",
+        "timeout": 12
       }
     ],
     "preToolUse": [

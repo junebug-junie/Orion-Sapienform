@@ -263,6 +263,7 @@ def test_cursor_hooks_json_covers_claude_suite() -> None:
         "session_stop_agent_board.py",
         "stop_worktree_wip_snapshot.py",
         "destructive_git_guard.py",
+        "bare_graphify_update_guard.py",
         "shared_checkout_edit_guard.py",
         "graphify_hook_guard_gate.sh",
         "metric_lineage_nudge.py",
@@ -316,3 +317,23 @@ def test_bridge_nudge_through_graphify_gate(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
     assert "graphify" in payload["additional_context"].lower()
+
+
+def test_bridge_deny_blocks_bare_graphify_update() -> None:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(BRIDGE),
+            "deny",
+            str(ROOT / "scripts/hooks/bare_graphify_update_guard.py"),
+        ],
+        input=json.dumps({"command": "graphify update .", "tool_input": {}}),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=str(ROOT),
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["permission"] == "deny"
+    assert "safe_graphify_update" in payload["agent_message"]

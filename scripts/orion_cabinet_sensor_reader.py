@@ -68,6 +68,11 @@ def discover_device(glob_pattern: str = DEVICE_GLOB) -> Optional[str]:
     return matches[0]
 
 
+def device_glob_pattern() -> str:
+    raw = os.environ.get("ORION_CABINET_DEVICE_GLOB", "").strip()
+    return raw or DEVICE_GLOB
+
+
 def boot_output_path() -> Path:
     raw = os.environ.get("ORION_CABINET_BOOT_PATH", "").strip()
     if raw:
@@ -224,13 +229,13 @@ def run_loop(
     state: SnapshotState,
     reconnect_sec: float = DEFAULT_RECONNECT_SEC,
     baud: int = DEFAULT_BAUD,
-    device_glob: str = DEVICE_GLOB,
+    device_glob_pattern: str = DEVICE_GLOB,
     sleep_fn=time.sleep,
 ) -> None:
     import serial  # pyserial — installed by setup_athena_cabinet_sensors.sh
 
     while True:
-        device = discover_device(device_glob)
+        device = discover_device(device_glob_pattern)
         if device is None:
             state.set_missing_device()
             write_snapshot(output, state)
@@ -276,7 +281,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     path = output_path()
     state = SnapshotState(stale_after_sec=stale_after_sec())
     try:
-        run_loop(output=path, state=state)
+        run_loop(output=path, state=state, device_glob_pattern=device_glob_pattern())
     except KeyboardInterrupt:
         return 0
     return 0

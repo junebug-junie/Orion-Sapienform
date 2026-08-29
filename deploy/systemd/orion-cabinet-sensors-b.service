@@ -1,0 +1,25 @@
+[Unit]
+Description=Orion Athena cabinet sensor serial reader (Nano B — mag + IMU)
+Documentation=file:///mnt/scripts/Orion-Sapienform/docs/superpowers/specs/2026-08-29-athena-cabinet-dual-nano-design.md
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+RuntimeDirectory=orion-sensors
+RuntimeDirectoryMode=0755
+WorkingDirectory=@ORION_ROOT@
+Environment=PYTHONPATH=@ORION_ROOT@
+Environment=ORION_CABINET_SENSORS_PATH=/run/orion-sensors/b/latest.json
+Environment=ORION_CABINET_BOOT_PATH=/run/orion-sensors/b/boot.json
+EnvironmentFile=-/etc/default/orion-cabinet-sensors-b
+ExecStart=@ORION_ROOT@/venv/bin/python @ORION_ROOT@/scripts/orion_cabinet_sensor_reader.py
+Restart=always
+RestartSec=2
+User=athena
+Group=plugdev
+SupplementaryGroups=dialout
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

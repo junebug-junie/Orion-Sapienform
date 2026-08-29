@@ -410,6 +410,14 @@ class Settings(BaseSettings):
         default="/run/orion-sensors/boot.json",
         alias="CABINET_BOOT_PATH",
     )
+    CABINET_SENSORS_B_PATH: str = Field(
+        default="",
+        alias="CABINET_SENSORS_B_PATH",
+    )
+    CABINET_BOOT_B_PATH: str = Field(
+        default="",
+        alias="CABINET_BOOT_B_PATH",
+    )
     CABINET_SENSORS_STALE_AFTER_SEC: float = Field(
         default=10.0,
         alias="CABINET_SENSORS_STALE_AFTER_SEC",

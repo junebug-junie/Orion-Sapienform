@@ -23,14 +23,13 @@ from orion.telemetry.cabinet_sensors import (
     compute_cabinet_pressures,
     extract_cabinet_measurements,
 )
+from orion.telemetry.cabinet_snapshot_merge import load_merged_cabinet_sensors
 
 from .settings import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cabinet/sensors", tags=["cabinet-sensors"])
-
-_STALE_STATUSES = frozenset({"stale", "error", "missing"})
 
 _TRACKER = CabinetSensorTracker(CabinetPressureConfig())
 
@@ -66,30 +65,6 @@ def _load_json_object(path: str | Path) -> Optional[Dict[str, Any]]:
     return data
 
 
-def _compute_stale_and_age(
-    snapshot: Dict[str, Any],
-    *,
-    stale_after_sec: float,
-    now: datetime,
-) -> tuple[bool, Optional[float]]:
-    received_at = snapshot.get("received_at")
-    age_sec: Optional[float] = None
-    received_dt: Optional[datetime] = None
-    if isinstance(received_at, str) and received_at.strip():
-        received_dt = _parse_received_at(received_at)
-        if received_dt is not None:
-            age_sec = (now.astimezone(timezone.utc) - received_dt).total_seconds()
-
-    status = str(snapshot.get("status") or "").lower()
-    stale = status in _STALE_STATUSES
-    if not stale:
-        if received_dt is None:
-            stale = True
-        elif age_sec is not None and age_sec > stale_after_sec:
-            stale = True
-    return stale, age_sec
-
-
 def build_cabinet_sensors_latest(
     *,
     sensors_path: str,
@@ -97,51 +72,92 @@ def build_cabinet_sensors_latest(
     stale_after_sec: float,
     now: Optional[datetime] = None,
     tracker: Optional[CabinetSensorTracker] = None,
+    sensors_b_path: str = "",
+    boot_b_path: str = "",
 ) -> Dict[str, Any]:
     """Assemble the /latest response payload (pure enough for unit tests)."""
     now_dt = now or _now_utc()
     active_tracker = tracker if tracker is not None else _TRACKER
 
-    snapshot = _load_json_object(sensors_path)
-    boot = _load_json_object(boot_path)
+    secondary_sensors = (sensors_b_path or "").strip()
+    secondary_boot = (boot_b_path or "").strip()
 
-    if snapshot is None:
+    merged_payload = load_merged_cabinet_sensors(
+        sensors_path,
+        secondary_path=secondary_sensors or None,
+        stale_after_sec=stale_after_sec,
+        now=now_dt,
+    )
+
+    boot = _load_json_object(boot_path)
+    boot_b = _load_json_object(secondary_boot) if secondary_boot else None
+
+    primary_raw = _load_json_object(sensors_path)
+    secondary_raw = _load_json_object(secondary_sensors) if secondary_sensors else None
+
+    sources: Dict[str, Any] = {}
+    if primary_raw is not None:
+        sources["a"] = {"snapshot": primary_raw, "boot": boot}
+    if secondary_raw is not None:
+        sources["b"] = {"snapshot": secondary_raw, "boot": boot_b}
+
+    if merged_payload is None:
         return {
             "ok": False,
             "age_sec": None,
             "snapshot": None,
             "boot": boot,
+            "sources": sources or None,
             "measurements": {},
             "pressures": {},
         }
 
-    frame = snapshot.get("frame")
-    has_frame = isinstance(frame, dict)
-    stale, age_sec = _compute_stale_and_age(
-        snapshot, stale_after_sec=stale_after_sec, now=now_dt
-    )
+    merged_frame = merged_payload["frame"]
+    received_at = merged_payload.get("received_at")
+    stale = bool(merged_payload.get("stale"))
+    age_sec: Optional[float] = None
+    if isinstance(received_at, str) and received_at.strip():
+        received_dt = _parse_received_at(received_at)
+        if received_dt is not None:
+            age_sec = (now_dt.astimezone(timezone.utc) - received_dt).total_seconds()
+
+    snapshot = {
+        "status": "ok" if not stale else "stale",
+        "received_at": received_at,
+        "device": None,
+        "frame": merged_frame,
+    }
+    if merged_payload.get("sources"):
+        devices = [
+            meta.get("device")
+            for meta in merged_payload["sources"].values()
+            if isinstance(meta, dict) and meta.get("device")
+        ]
+        if len(devices) == 1:
+            snapshot["device"] = devices[0]
+        elif devices:
+            snapshot["device"] = " + ".join(devices)
 
     measurements: Dict[str, float] = {}
     pressures: Dict[str, float] = {}
 
-    if has_frame:
-        sensors_payload = {
-            "frame": frame,
-            "received_at": snapshot.get("received_at"),
-            "stale": stale,
-        }
-        if not stale:
-            measurements = extract_cabinet_measurements(sensors_payload)
-            if measurements:
-                pressures.update(compute_cabinet_pressures(measurements, active_tracker))
-        # Sensors payload exists (frame present) → always emit staleness 0/1.
-        pressures["cabinet_sensor_staleness"] = 1.0 if stale else 0.0
+    sensors_payload = {
+        "frame": merged_frame,
+        "received_at": received_at,
+        "stale": stale,
+    }
+    if not stale:
+        measurements = extract_cabinet_measurements(sensors_payload)
+        if measurements:
+            pressures.update(compute_cabinet_pressures(measurements, active_tracker))
+    pressures["cabinet_sensor_staleness"] = 1.0 if stale else 0.0
 
     return {
-        "ok": (not stale) and has_frame,
+        "ok": (not stale) and isinstance(merged_frame, dict),
         "age_sec": age_sec,
         "snapshot": snapshot,
         "boot": boot,
+        "sources": sources or None,
         "measurements": measurements,
         "pressures": pressures,
     }
@@ -153,6 +169,8 @@ def api_cabinet_sensors_latest() -> Dict[str, Any]:
         sensors_path=str(settings.CABINET_SENSORS_PATH),
         boot_path=str(settings.CABINET_BOOT_PATH),
         stale_after_sec=float(settings.CABINET_SENSORS_STALE_AFTER_SEC),
+        sensors_b_path=str(settings.CABINET_SENSORS_B_PATH),
+        boot_b_path=str(settings.CABINET_BOOT_B_PATH),
         now=_now_utc(),
         tracker=_TRACKER,
     )

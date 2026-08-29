@@ -17,6 +17,15 @@
   executed.
 - Both fixes are mutation-tested: reverting either makes the matching test fail.
 
+## NOT live in this patch
+
+`sweep_absent_nodes()` has **no caller**. Nothing in this branch detects absence at runtime;
+the circe gap is **not closed**. Phase 1 makes the signal expressible, correct and tested.
+Phase 2 wires it into the substrate-runtime tick, and must thread that service's configured
+`biometrics_node_stale_after_sec` (env `BIOMETRICS_NODE_STALE_AFTER_SEC`) rather than
+letting the sweep fall back to the module's 180 s default, or an operator override will make
+the sweep and the event path disagree about "stale".
+
 ## Outcome moved
 
 `node_capability_impact` had **0 rows in `grammar_atoms` for its entire lifetime**, and
@@ -45,14 +54,18 @@ layer modelled load and never presence.
 - `orion/substrate/biometrics_loop/pressure_organ.py`: `sweep_absent_nodes()` + Rule F
 - `orion/substrate/biometrics_loop/candidate_events.py`: `semantic_role` in `trace_id`
 - `orion/substrate/biometrics_loop/pressure_reducer.py`: expand real capability names
-- `tests/test_capability_absence_signal.py`: 9 tests (new)
+- `tests/test_capability_absence_signal.py`: 14 tests (new)
 - `docs/superpowers/specs/2026-08-29-capability-absence-signal-design.md`: design (new)
 
 ## Schema / bus / API changes
 
-- Added: none. `node_capability_impact` was already in `ALLOWED_PRESSURE_ROLES`, already in
-  `ROLE_TO_PRESSURE_KIND`/`ROLE_TO_OPERATION`, and already had a reducer arm. This patch
-  makes existing dead code reachable rather than minting a concept.
+- Added: `node_capability_absent` role (+ `ROLE_TO_PRESSURE_KIND["capability_absence"]`,
+  `ROLE_TO_OPERATION["update"]`, `ALLOWED_PRESSURE_ROLES`). Added on review: Rule F first
+  reused `node_capability_impact`, and sharing one role with Rule E caused three distinct
+  defects at once. It carries a producer, a reducer arm, a clearing path and 5 tests in this
+  same patch.
+- Reached, not added: `node_capability_impact` already existed everywhere and had simply
+  never executed.
 - Behavior changed: `trace_id` format is now
   `substrate.pressure:{node}:{semantic_role}:{ts}`.
 - Compatibility: **read-backward-compatible.** `parse_pressure_trace_id()` recovers the node
@@ -68,12 +81,12 @@ no sync was required.
 ## Tests run
 
 ```text
-pytest tests/test_capability_absence_signal.py -q            -> 9 passed
+pytest tests/test_capability_absence_signal.py -q            -> 14 passed
 pytest tests/test_biometrics_pressure_organ.py \
        tests/test_node_pressure_reducer.py \
        tests/test_biometrics_pipeline_ilo_pressures.py \
-       tests/test_peak_pressure.py -q                        -> 59 passed
-pytest services/orion-hub/tests/test_substrate_biometrics_debug_api.py -q -> 3 passed
+       tests/test_peak_pressure.py \
+       services/orion-hub/tests/test_substrate_biometrics_debug_api.py -q -> 67 passed
 pytest tests/ -k "substrate or biometric or pressure or grammar or field" \
        --continue-on-collection-errors                       -> 696 passed, 9 failed
 python scripts/check_inner_state_registry.py                 -> gate OK (15 entries)
@@ -102,6 +115,51 @@ Not run -- no service code, Dockerfile, compose file, dependency, or port change
 scripts/safe_graphify_update.sh -> REFUSED and auto-restored (node count 28306 -> 2485,
   ~91.2% loss), the known unfixed graphify bug. graphify-out/ verified clean afterwards.
 ```
+
+## Review findings fixed
+
+Code review (high effort, subagent) returned 6 findings. All 6 fixed; the two reproduced
+defects re-verified against the reviewer's own scenarios.
+
+- Finding 1 (high): Rule E and Rule F both emitted `semantic_role="node_capability_impact"`,
+  so putting the role in `trace_id` did not separate them. Reachable in exactly the
+  motivating case, because `node_reducer.py` merges `pressure_hints` and never clears them
+  -- a GPU-heavy node that dies stays stale *and* keeps `gpu >= 0.60`.
+  - Fix: Rule F emits its own role, `node_capability_absent`.
+  - Evidence: reviewer measured 16 events / 13 unique, traces `[4,8,4]`, one `event_id`
+    published twice. Now: **16 events / 16 unique, 4 traces `[4,4,4,4]`, 4 published / 4
+    unique**, every atom surviving grouping.
+    `test_saturated_and_dead_node_emits_no_duplicate_event_ids`.
+- Finding 2 (medium): `capability_impacts` had no removal path -- a one-way ratchet reaching
+  the concept graph via `biometrics_ctx.py:102`, the identical failure Rule B' exists to
+  undo for `availability`.
+  - Fix: `node_availability_recovered` clears them; `node_pressure_decayed` clears the
+    saturation subset.
+  - Evidence: `test_recovery_clears_capability_impacts`.
+- Finding 3 (medium): the expansion ignored which rule fired, so routine saturation marked
+  every declared capability.
+  - Fix: absence marks all declared capabilities; saturation marks only `LLM_CAPABILITIES`.
+  - Evidence: reviewer's repro (healthy circe, `gpu=0.65`) listed all five. Now
+    `training`/`dream_batch`/`batch_inference` are excluded.
+    `test_saturation_alone_does_not_impact_non_llm_capabilities`.
+- Finding 4 (low): both roles shared `pressure_kind="capability"`, so a saturation event
+  within the 300 s merge window silently swallowed the first absence event -- and
+  "saturated, then died" is the ordinary crash sequence.
+  - Fix: `node_capability_absent` gets its own `capability_absence` bucket.
+  - Evidence: `test_absence_and_saturation_use_separate_merge_buckets`.
+- Finding 5 (low): `sweep_absent_nodes()` has no caller, and defaults to 180 s rather than
+  the runtime's configured `biometrics_node_stale_after_sec`.
+  - Fix: not wired (phase 2, deliberate) but no longer implied -- added a "NOT live in this
+    patch" section above and an explicit warning in the function's own docstring that the
+    phase-2 caller must thread the setting.
+- Finding 6 (low): a spec acceptance criterion marked `[x]` claimed "one per declared
+  capability" while the code and its test assert exactly one per node.
+  - Fix: corrected the criterion and the two restatements to the actual
+    one-event-plus-reducer-expansion design.
+
+Self-caught before review, same round: my docstring cited `prometheus` as covered by the
+sweep. It is not -- the sweep iterates the projection, built from *received* events, and the
+live projection holds only `atlas`, `circe`, `athena`. Rewritten as a stated phase-2 gap.
 
 ## Restart required
 

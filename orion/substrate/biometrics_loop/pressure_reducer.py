@@ -12,6 +12,7 @@ from orion.schemas.state_delta import StateDeltaV1
 
 from .candidate_events import PRESSURE_SOURCE_COMPONENT
 from .ids import parse_pressure_trace_id
+from .pressure_organ import LLM_CAPABILITIES
 from .pressure_organ import ALLOWED_PRESSURE_ROLES
 
 DEFAULT_MIN_CONFIDENCE = 0.60
@@ -25,6 +26,12 @@ ROLE_TO_PRESSURE_KIND = {
     "node_availability_recovered": "availability",
     "node_pressure_suppressed": "strain",
     "node_capability_impact": "capability",
+    # Its own merge bucket, deliberately not "capability". Sharing one bucket with
+    # Rule E meant a saturation impact within merge_window_sec (300s) silently
+    # swallowed the first absence impact -- and "GPU saturated, then died" is the
+    # ordinary crash-under-load sequence, so the absence signal this exists to
+    # create was exactly the one losing the race.
+    "node_capability_absent": "capability_absence",
 }
 
 ROLE_TO_OPERATION = {
@@ -38,6 +45,7 @@ ROLE_TO_OPERATION = {
     "node_availability_recovered": "decay",
     "node_pressure_suppressed": "suppress",
     "node_capability_impact": "update",
+    "node_capability_absent": "update",
 }
 
 
@@ -212,6 +220,14 @@ def reduce_node_pressure_candidates(
         elif role == "node_pressure_decayed":
             node_state.active_pressures = [p for p in node_state.active_pressures if p != pressure_kind]
             node_state.pressure_score = max(0.0, node_state.pressure_score - 0.2)
+            # Strain is gone, so Rule E's saturation-derived labels go with it.
+            # Absence labels are NOT cleared here -- a node can be quiet and gone at
+            # the same time, and only node_availability_recovered proves it is back.
+            node_state.capability_impacts = [
+                c
+                for c in node_state.capability_impacts
+                if c not in {f"capability:{name}" for name in LLM_CAPABILITIES}
+            ]
         elif role == "node_availability_concern":
             if "availability" not in node_state.active_pressures:
                 node_state.active_pressures.append("availability")
@@ -219,31 +235,41 @@ def reduce_node_pressure_candidates(
         elif role == "node_availability_recovered":
             node_state.active_pressures = [p for p in node_state.active_pressures if p != pressure_kind]
             node_state.availability_status = "online"
+            # capability_impacts needs a removal path or it is a one-way ratchet --
+            # the exact failure Rule B' itself exists to undo for `availability`
+            # (2026-07-22, node:atlas), which would have been reintroduced on a new
+            # field the moment this became reachable. The node is back, so every
+            # capability judgement made while it was gone is void; anything still
+            # genuinely saturated is re-added by Rule E on the very next tick, the
+            # same re-fire contract `active_pressures` already relies on.
+            node_state.capability_impacts = []
         elif role == "node_pressure_suppressed":
             for pressure in list(node_state.active_pressures):
                 if pressure == pressure_kind:
                     node_state.active_pressures.remove(pressure)
                     if pressure not in node_state.suppressed_pressures:
                         node_state.suppressed_pressures.append(pressure)
-        elif role == "node_capability_impact":
-            # Expand to the node's real declared capabilities from the catalog
-            # profile already resolved above. This used to be
-            # `label = f"capability:{pressure_kind}"`, and `pressure_kind` here is
-            # the constant "capability" (ROLE_TO_PRESSURE_KIND), so the only value
-            # this arm could ever append was the literal string
-            # "capability:capability" -- schema-valid and meaningless. It was never
-            # caught because nothing had ever emitted this role: `grammar_atoms`
-            # held 0 rows for it and `capability_impacts` was `[]` in every
-            # projection row ever written, so the dead arm never ran.
+        elif role in ("node_capability_impact", "node_capability_absent"):
+            # Expand to real capability names from the catalog profile already
+            # resolved above. This arm used to append `f"capability:{pressure_kind}"`,
+            # and pressure_kind for the impact role is the constant "capability", so
+            # the only value it could ever write was the literal
+            # "capability:capability" -- schema-valid and meaningless. Never caught
+            # because nothing had ever emitted either role.
             #
-            # `profile.capabilities` is the catalog's dict[str, bool]; only the
-            # truthy ones are real declarations (node_catalog.yaml lists both, e.g.
-            # circe has `graphdb: false` alongside `local_llm_heavy: true`).
-            # Sorted for deterministic ordering across ticks, since this list is
-            # persisted and diffed into StateDeltaV1.before/after.
-            for capability in sorted(
-                name for name, declared in (profile.capabilities or {}).items() if declared
-            ):
+            # WHICH capabilities depends on which rule fired, and conflating them is
+            # a real false signal: Rule E gates on `has_llm and gpu_hint >= 0.60`, so
+            # a GPU crossing a routine load line says nothing about `training`,
+            # `dream_batch` or `batch_inference`. Only absence -- the provider is
+            # gone -- impacts everything the node declares.
+            declared = sorted(
+                name for name, is_declared in (profile.capabilities or {}).items() if is_declared
+            )
+            if role == "node_capability_absent":
+                impacted = declared
+            else:
+                impacted = [c for c in declared if c in LLM_CAPABILITIES]
+            for capability in impacted:
                 label = f"capability:{capability}"
                 if label not in node_state.capability_impacts:
                     node_state.capability_impacts.append(label)

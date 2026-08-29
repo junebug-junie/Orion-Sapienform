@@ -86,12 +86,17 @@ them already exists as schema; the joins are missing.
 
 ### Phase 1 (this patch)
 
-- **Rule F**, new, in `pressure_organ.py`: `expected_online AND stale` now also emits one
-  `node_capability_impact` per capability the catalog says the node provides. Rule E
-  (saturation) is untouched and keeps its meaning; Rule F is the absence sibling it never
-  had. `node_capability_impact` is already in `ALLOWED_PRESSURE_ROLES` and already handled
-  by `pressure_reducer.py:228` -- this makes existing dead code reachable, it does not mint
-  a new concept.
+- **Rule F**, new, in `pressure_organ.py`: `expected_online AND stale` emits **one**
+  `node_capability_absent` event for the node (not one per capability); the reducer expands
+  it into the node's declared capability names. Rule E (saturation) is untouched.
+- **`node_capability_absent` is a new role**, added after review. Rule F initially reused
+  `node_capability_impact`, but they are different facts -- "this capability is under load"
+  vs "its provider is gone" -- and sharing one role caused three separate defects: both
+  rules collided on the role-bearing trace_id and one atom was silently dropped (with a
+  duplicate `event_id` republished), they shared a merge-window bucket so a saturation
+  event could swallow the first absence event, and the reducer could not tell them apart to
+  decide which capabilities to mark. Distinguishing load from presence is the whole thesis
+  of this document; collapsing them into one role was re-committing the original sin.
 - **`sweep_absent_nodes()`**, new, in `pressure_organ.py`: a pure function over the
   existing `NodeBiometricsProjectionV1` that returns the node_ids which are
   `expected_online` and stale. This is the missing trigger. It takes the projection that
@@ -107,6 +112,16 @@ them already exists as schema; the joins are missing.
   `"capability:capability"`. It now expands to the node's real declared capabilities from
   the catalog profile already resolved in that loop, truthy-only and sorted. This was never
   caught because the arm had never once executed.
+- **Which capabilities depends on which rule fired.** Absence marks every declared
+  capability (the provider is gone). Saturation marks only the LLM capabilities Rule E
+  actually gates on (`LLM_CAPABILITIES`) -- a GPU crossing a routine 0.60 load line says
+  nothing about `training`, `dream_batch` or `batch_inference`.
+- **`capability_impacts` now has removal paths.** `node_availability_recovered` clears them
+  (the node is back; anything still saturated re-fires next tick), and
+  `node_pressure_decayed` clears the saturation-derived subset. Without this it was a
+  one-way ratchet that reached the concept graph via
+  `orion/substrate/relational/adapters/biometrics_ctx.py:102` -- the identical failure Rule
+  B' exists to undo for `availability` (2026-07-22, node:atlas).
 - No new bus channel, no new table, no new env key in phase 1.
 
 ### Phase 2 (not this patch)
@@ -200,8 +215,9 @@ Metric quality gate for the phase-2 signals, run per CLAUDE.md 0A:
 
 ## Acceptance checks
 
-- [x] Phase 1: Rule F emits `node_capability_impact` for an `expected_online` node that has
-      gone stale, one per declared capability, and emits nothing for an
+- [x] Phase 1: Rule F emits **one** `node_capability_absent` event for an `expected_online`
+      node that has gone stale -- not one per capability; the reducer expands that single
+      event into the node's real declared capability names. Emits nothing for an
       `expected_online: false` node (atlas must stay quiet forever).
 - [x] Phase 1: `sweep_absent_nodes()` returns exactly the stale+expected_online node ids and
       is a pure function of the projection.

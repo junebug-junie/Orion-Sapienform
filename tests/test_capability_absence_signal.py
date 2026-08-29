@@ -191,10 +191,11 @@ def test_absent_node_emits_capability_impact(catalog: NodeCatalog) -> None:
     )
     roles = _roles(emission)
     assert "node_availability_concern" in roles
-    assert "node_capability_impact" in roles
+    assert "node_capability_absent" in roles
     # Exactly one, not one per capability: atom_id is {trace_id}:{semantic_role},
-    # so per-capability events in one tick would collide on their own ids.
-    assert roles.count("node_capability_impact") == 1
+    # so per-capability events in one tick would collide on their own ids. The
+    # reducer expands this single event into the real names.
+    assert roles.count("node_capability_absent") == 1
 
 
 def test_absent_node_with_no_declared_capabilities_stays_quiet(catalog: NodeCatalog) -> None:
@@ -217,7 +218,7 @@ def test_absent_node_with_no_declared_capabilities_stays_quiet(catalog: NodeCata
         catalog=catalog,
         now=FIXED_TS,
     )
-    assert "node_capability_impact" not in _roles(emission)
+    assert "node_capability_absent" not in _roles(emission)
 
 
 def test_fresh_node_emits_no_capability_impact(catalog: NodeCatalog) -> None:
@@ -241,7 +242,7 @@ def test_fresh_node_emits_no_capability_impact(catalog: NodeCatalog) -> None:
         catalog=catalog,
         now=FIXED_TS,
     )
-    assert "node_capability_impact" not in _roles(emission)
+    assert "node_capability_absent" not in _roles(emission)
 
 
 # ---------------------------------------------------------------- reducer
@@ -349,3 +350,179 @@ def test_two_rules_for_one_node_survive_as_separate_traces(catalog: NodeCatalog)
     # rejects the trace outright (parse_pressure_trace_id -> profile.known).
     for trace_id in trace_ids:
         assert parse_pressure_trace_id(trace_id) == "circe"
+
+
+# ------------------------------------------------- review findings 1-4
+
+
+def _reduce(emission, catalog, prior=None):
+    grouped = group_candidate_events_by_trace(emission.candidate_events)
+    return reduce_node_pressure_candidates(
+        candidates=grouped,
+        projection=prior
+        or ActiveNodePressureProjectionV1(
+            projection_id="proj_active_pressure", generated_at=FIXED_TS, nodes={}
+        ),
+        catalog=catalog,
+        now=FIXED_TS,
+    )
+
+
+def _saturated_and_dead(gpu: float = 0.9):
+    """The crash-under-load shape: pressure_hints are never cleared when a node
+    goes silent (node_reducer merges hints and only ever adds), so a GPU-heavy node
+    that dies stays stale AND keeps gpu >= GPU_HINT_THRESHOLD -- firing Rule E and
+    Rule F in the same tick."""
+    bio = _bio(
+        {
+            "circe": _state(
+                "circe",
+                expected_online=True,
+                last_seen_at=FIXED_TS - timedelta(minutes=45),
+                capabilities=CIRCE_CAPS,
+            )
+        }
+    )
+    bio.nodes["circe"].pressure_hints = {"gpu": gpu}
+    return bio
+
+
+def test_saturated_and_dead_node_emits_no_duplicate_event_ids(catalog: NodeCatalog) -> None:
+    """Review finding 1. Rule E and Rule F both used semantic_role
+    'node_capability_impact', so putting the role in the trace_id did not separate
+    them: they collided anyway, one atom was silently dropped, and pipeline.py's
+    `event_id in accepted` filter matched the duplicate twice and republished the
+    same event_id on the accepted grammar channel."""
+    emission = invoke_biometrics_pressure(
+        trigger_event=_trigger("circe"),
+        node_bio=_saturated_and_dead(),
+        active_pressure=ActiveNodePressureProjectionV1(
+            projection_id="proj_active_pressure", generated_at=FIXED_TS, nodes={}
+        ),
+        catalog=catalog,
+        now=FIXED_TS,
+    )
+    event_ids = [e.event_id for e in emission.candidate_events]
+    assert len(event_ids) == len(set(event_ids)), "duplicate event_ids in one emission"
+
+    grouped = group_candidate_events_by_trace(emission.candidate_events)
+    assert len({t[0].trace_id for t in grouped}) == len(grouped)
+    # Every emitted atom must survive grouping -- one atom per trace, none swallowed.
+    atoms = [e for e in emission.candidate_events if e.atom is not None]
+    assert len(atoms) == len(grouped)
+
+
+def test_saturation_alone_does_not_impact_non_llm_capabilities(catalog: NodeCatalog) -> None:
+    """Review finding 3. Rule E gates on `has_llm and gpu_hint >= 0.60`. Expanding
+    it to every declared capability meant one routine GPU spike on a healthy,
+    still-reporting node marked `training`, `dream_batch` and `batch_inference`
+    impacted -- a false signal phase 3's capability-aware routing would consume."""
+    bio = _bio(
+        {
+            "circe": _state(
+                "circe",
+                expected_online=True,
+                last_seen_at=FIXED_TS - timedelta(seconds=2),  # healthy, not stale
+                capabilities=CIRCE_CAPS,
+            )
+        }
+    )
+    bio.nodes["circe"].pressure_hints = {"gpu": 0.65}
+    projection, _ = _reduce(
+        invoke_biometrics_pressure(
+            trigger_event=_trigger("circe"),
+            node_bio=bio,
+            active_pressure=ActiveNodePressureProjectionV1(
+                projection_id="proj_active_pressure", generated_at=FIXED_TS, nodes={}
+            ),
+            catalog=catalog,
+            now=FIXED_TS,
+        ),
+        catalog,
+    )
+    impacts = projection.nodes["circe"].capability_impacts
+    assert "capability:local_llm_heavy" in impacts
+    assert "capability:local_llm_quick" in impacts
+    for not_gpu_gated in ("training", "dream_batch", "batch_inference"):
+        assert f"capability:{not_gpu_gated}" not in impacts
+
+
+def test_absence_impacts_every_declared_capability(catalog: NodeCatalog) -> None:
+    """The counterpart: the provider is gone, so everything it declares is gone."""
+    projection, _ = _reduce(
+        invoke_biometrics_pressure(
+            trigger_event=_trigger("circe"),
+            node_bio=_bio(
+                {
+                    "circe": _state(
+                        "circe",
+                        expected_online=True,
+                        last_seen_at=FIXED_TS - timedelta(minutes=45),
+                        capabilities=CIRCE_CAPS,
+                    )
+                }
+            ),
+            active_pressure=ActiveNodePressureProjectionV1(
+                projection_id="proj_active_pressure", generated_at=FIXED_TS, nodes={}
+            ),
+            catalog=catalog,
+            now=FIXED_TS,
+        ),
+        catalog,
+    )
+    assert projection.nodes["circe"].capability_impacts == [
+        f"capability:{c}" for c in sorted(CIRCE_CAPS)
+    ]
+
+
+def test_recovery_clears_capability_impacts(catalog: NodeCatalog) -> None:
+    """Review finding 2. capability_impacts had no removal path, so labels persisted
+    forever and flowed into the concept graph via biometrics_ctx.py:102 -- the exact
+    one-way-ratchet failure Rule B' itself exists to undo for `availability`."""
+    prior = ActiveNodePressureProjectionV1(
+        projection_id="proj_active_pressure",
+        generated_at=FIXED_TS,
+        nodes={
+            "circe": ActiveNodePressureStateV1(
+                node_id="circe",
+                availability_status="stale",
+                last_updated_at=FIXED_TS,
+                active_pressures=["availability"],
+                capability_impacts=[f"capability:{c}" for c in sorted(CIRCE_CAPS)],
+            )
+        },
+    )
+    # Fresh again, with a prior availability flag -> Rule B' fires.
+    recovered = _bio(
+        {
+            "circe": _state(
+                "circe",
+                expected_online=True,
+                last_seen_at=FIXED_TS - timedelta(seconds=2),
+                capabilities=CIRCE_CAPS,
+            )
+        }
+    )
+    emission = invoke_biometrics_pressure(
+        trigger_event=_trigger("circe"),
+        node_bio=recovered,
+        active_pressure=prior,
+        catalog=catalog,
+        now=FIXED_TS,
+    )
+    assert "node_availability_recovered" in _roles(emission)
+    projection, _ = _reduce(emission, catalog, prior=prior)
+    assert projection.nodes["circe"].capability_impacts == []
+    assert projection.nodes["circe"].availability_status == "online"
+
+
+def test_absence_and_saturation_use_separate_merge_buckets() -> None:
+    """Review finding 4. Both roles shared pressure_kind='capability', so a
+    saturation impact within merge_window_sec (300s) silently swallowed the first
+    absence impact -- and 'saturated, then died' is the ordinary crash sequence."""
+    from orion.substrate.biometrics_loop.pressure_reducer import ROLE_TO_PRESSURE_KIND
+
+    assert (
+        ROLE_TO_PRESSURE_KIND["node_capability_absent"]
+        != ROLE_TO_PRESSURE_KIND["node_capability_impact"]
+    )

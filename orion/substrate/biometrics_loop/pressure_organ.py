@@ -24,8 +24,14 @@ ALLOWED_PRESSURE_ROLES = frozenset(
         "node_availability_recovered",
         "node_pressure_suppressed",
         "node_capability_impact",
+        "node_capability_absent",
     }
 )
+
+# The capabilities Rule E's saturation gate actually tests for. Exported because
+# the reducer must expand a saturation impact to exactly this set and no wider --
+# a GPU crossing a routine load line says nothing about `training` or `dream_batch`.
+LLM_CAPABILITIES = ("local_llm_heavy", "local_llm_quick", "llm_inference")
 
 DEFAULT_STALE_AFTER_SEC = 180
 DEFAULT_MIN_CONFIDENCE = 0.60
@@ -113,6 +119,13 @@ def sweep_absent_nodes(
     row; the live projection contains only `atlas`, `circe`, `athena`. Catching a
     never-reported node requires sweeping the catalog, not the projection, and is
     tracked as a phase-2 item in the design doc rather than silently implied here.
+
+    `stale_after_sec` defaults to this module's `DEFAULT_STALE_AFTER_SEC` (180), NOT
+    to the runtime's configured `biometrics_node_stale_after_sec`
+    (`services/orion-substrate-runtime/app/settings.py`, env-overridable via
+    `BIOMETRICS_NODE_STALE_AFTER_SEC`). The phase-2 caller MUST thread that setting
+    through, or an operator override will make this sweep and the event-triggered
+    path disagree about what "stale" means.
     """
     clock = _utc_now(now)
     absent: list[str] = []
@@ -222,7 +235,7 @@ def invoke_biometrics_pressure(
             candidates.append(
                 build_pressure_candidate_events(
                     node_id=node_id,
-                    semantic_role="node_capability_impact",
+                    semantic_role="node_capability_absent",
                     evidence_event_ids=evidence,
                     confidence=max(min_confidence, 0.8),
                     observed_at=clock,
@@ -290,10 +303,7 @@ def invoke_biometrics_pressure(
         )
 
     # Rule E: llm inference capability + gpu hint -> capability impact
-    has_llm = any(
-        cap in capabilities
-        for cap in ("local_llm_heavy", "local_llm_quick", "llm_inference")
-    )
+    has_llm = any(cap in capabilities for cap in LLM_CAPABILITIES)
     gpu_hint = float(hints.get("gpu", 0.0))
     if has_llm and gpu_hint >= GPU_HINT_THRESHOLD:
         candidates.append(

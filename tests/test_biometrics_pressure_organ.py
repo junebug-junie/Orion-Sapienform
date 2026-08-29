@@ -108,17 +108,22 @@ def _active_pressure(
     )
 
 
-def test_circe_expected_offline_emits_suppression_candidate(catalog: NodeCatalog) -> None:
+def test_expected_offline_node_emits_suppression_candidate(catalog: NodeCatalog) -> None:
+    """Rule A. Names `atlas`, which the catalog declares `expected_online: false`
+    (decommissioned 2026-08-21). Previously named `circe` -- whose catalog entry was
+    flipped to `true` on 2026-07-18 -- and only passed because the organ read the
+    test's own projection value instead of the catalog. Once the catalog became
+    authoritative that premise was simply false."""
     stale_ts = FIXED_TS - timedelta(seconds=300)
     emission = invoke_biometrics_pressure(
-        trigger_event=_trigger_event("circe"),
+        trigger_event=_trigger_event("atlas"),
         node_bio=_node_bio(
-            node_id="circe",
+            node_id="atlas",
             availability_status="offline_expected",
             last_seen_at=stale_ts,
             expected_online=False,
         ),
-        active_pressure=_active_pressure(node_id="circe"),
+        active_pressure=_active_pressure(node_id="atlas"),
         catalog=catalog,
         stale_after_sec=180,
         now=FIXED_TS,
@@ -132,16 +137,16 @@ def test_circe_expected_offline_emits_suppression_candidate(catalog: NodeCatalog
     assert "node_pressure_suppressed" in roles
 
 
-def test_missing_expected_atlas_emits_availability_concern(catalog: NodeCatalog) -> None:
+def test_missing_expected_online_node_emits_availability_concern(catalog: NodeCatalog) -> None:
     emission = invoke_biometrics_pressure(
-        trigger_event=_trigger_event("atlas"),
+        trigger_event=_trigger_event("circe"),
         node_bio=_node_bio(
-            node_id="atlas",
+            node_id="circe",
             availability_status="stale",
             last_seen_at=FIXED_TS - timedelta(seconds=300),
             expected_online=True,
         ),
-        active_pressure=_active_pressure(node_id="atlas"),
+        active_pressure=_active_pressure(node_id="circe"),
         catalog=catalog,
         stale_after_sec=180,
         now=FIXED_TS,
@@ -164,13 +169,13 @@ def test_availability_recovers_when_expected_online_and_fresh(catalog: NodeCatal
     only ever clears "strain" (pressure_reducer.py's ROLE_TO_PRESSURE_KIND),
     never "availability"."""
     emission = invoke_biometrics_pressure(
-        trigger_event=_trigger_event("atlas"),
+        trigger_event=_trigger_event("circe"),
         node_bio=_node_bio(
-            node_id="atlas",
+            node_id="circe",
             last_seen_at=FIXED_TS,  # fresh, not stale
             expected_online=True,
         ),
-        active_pressure=_active_pressure(node_id="atlas", active_pressures=["availability"]),
+        active_pressure=_active_pressure(node_id="circe", active_pressures=["availability"]),
         catalog=catalog,
         stale_after_sec=180,
         now=FIXED_TS,
@@ -189,9 +194,9 @@ def test_no_recovery_candidate_when_availability_not_flagged(catalog: NodeCatalo
     actually in active_pressures. A node that was never flagged shouldn't
     emit a recovery event just because it's online and fresh."""
     emission = invoke_biometrics_pressure(
-        trigger_event=_trigger_event("atlas"),
-        node_bio=_node_bio(node_id="atlas", last_seen_at=FIXED_TS, expected_online=True),
-        active_pressure=_active_pressure(node_id="atlas", active_pressures=[]),
+        trigger_event=_trigger_event("circe"),
+        node_bio=_node_bio(node_id="circe", last_seen_at=FIXED_TS, expected_online=True),
+        active_pressure=_active_pressure(node_id="circe", active_pressures=[]),
         catalog=catalog,
         stale_after_sec=180,
         now=FIXED_TS,

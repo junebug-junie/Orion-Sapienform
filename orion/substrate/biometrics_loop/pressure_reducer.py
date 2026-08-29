@@ -249,6 +249,18 @@ def reduce_node_pressure_candidates(
                     node_state.active_pressures.remove(pressure)
                     if pressure not in node_state.suppressed_pressures:
                         node_state.suppressed_pressures.append(pressure)
+            # Suppression is the ONLY reachable clearing path for a decommissioned
+            # node. `node_availability_recovered` needs the node to start reporting
+            # again, and a retired box never will -- so without this, anything
+            # written while it was still believed online is frozen forever and keeps
+            # feeding the concept graph via
+            # orion/substrate/relational/adapters/biometrics_ctx.py.
+            # Confirmed live 2026-08-29: atlas (decommissioned, its GPUs now inside
+            # circe) accumulated ["capability:batch_inference", "capability:embedding",
+            # "capability:local_llm_heavy", "capability:local_llm_quick"] plus an
+            # "availability" pressure before the catalog-precedence fix landed.
+            node_state.availability_status = "suppressed"
+            node_state.capability_impacts = []
         elif role in ("node_capability_impact", "node_capability_absent"):
             # Expand to real capability names from the catalog profile already
             # resolved above. This arm used to append `f"capability:{pressure_kind}"`,

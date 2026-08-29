@@ -41,6 +41,7 @@ from orion.substrate.biometrics_loop.pipeline import (
 from orion.substrate.biometrics_loop.pressure_organ import (
     build_absence_trigger_event,
     sweep_absent_nodes,
+    sweep_suppressible_nodes,
 )
 from orion.substrate.execution_loop.constants import (
     EXECUTION_GRAMMAR_CURSOR_NAME,
@@ -963,12 +964,34 @@ class BiometricsSubstrateWorker:
         if node_bio is None:
             return []
 
+        pressure_now = (
+            self._store.load_active_pressure(ACTIVE_NODE_PRESSURE_PROJECTION_ID)
+            or _empty_pressure(now)
+        )
         absent = sweep_absent_nodes(
             node_bio=node_bio,
+            catalog=self._catalog,
             stale_after_sec=self._settings.biometrics_node_stale_after_sec,
             now=now,
         )
-        if not absent:
+        # Retired nodes carrying state nothing else can clear. Self-terminating: a
+        # node only qualifies while it still has something to clear, so this stops
+        # on its own once the suppression lands.
+        suppressible = sweep_suppressible_nodes(
+            node_bio=node_bio,
+            active_pressure=pressure_now,
+            catalog=self._catalog,
+            stale_after_sec=self._settings.biometrics_node_stale_after_sec,
+            now=now,
+        )
+        if suppressible:
+            logger.info(
+                "biometrics_suppression_sweep nodes=%s (clearing stale state on "
+                "expected_online=false nodes)",
+                ",".join(suppressible),
+            )
+        targets = absent + suppressible
+        if not targets:
             return []
 
         logger.warning(
@@ -980,7 +1003,7 @@ class BiometricsSubstrateWorker:
         published: list[GrammarEventV1] = []
         try:
             process_biometrics_grammar_events(
-                events=[build_absence_trigger_event(n, now=now) for n in absent],
+                events=[build_absence_trigger_event(n, now=now) for n in targets],
                 catalog=self._catalog,
                 load_node_bio=lambda: node_bio,
                 save_node_bio=lambda _p: None,

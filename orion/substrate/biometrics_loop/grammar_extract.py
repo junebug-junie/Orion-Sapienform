@@ -8,6 +8,8 @@ from orion.schemas.grammar import GrammarEventV1
 
 from .ids import parse_biometrics_trace_id
 
+_SPIKE_TRACE_PREFIX = "cabinet.ambient.spike:"
+
 _CABINET_ROLE_TO_HINT: dict[str, str] = {
     "cabinet_climate_activity_signal": "cabinet_climate_activity",
     "cabinet_particulate_activity_signal": "cabinet_particulate_activity",
@@ -18,6 +20,7 @@ _CABINET_ROLE_TO_HINT: dict[str, str] = {
     "cabinet_sensor_staleness_signal": "cabinet_sensor_staleness",
     "cabinet_ambient_audio_activity_signal": "cabinet_ambient_audio_activity",
     "cabinet_ambient_audio_staleness_signal": "cabinet_ambient_audio_staleness",
+    "cabinet_ambient_audio_spike_signal": "cabinet_ambient_audio_activity",
 }
 
 
@@ -42,11 +45,17 @@ def _payload_kind(payload_ref: str | None) -> str | None:
 def _resolve_node_id(events: list[GrammarEventV1], catalog: NodeCatalog) -> str:
     for event in events:
         if event.trace_id:
+            if event.trace_id.startswith(_SPIKE_TRACE_PREFIX):
+                parts = event.trace_id[len(_SPIKE_TRACE_PREFIX) :].split(":", 1)
+                if parts:
+                    return catalog.resolve(parts[0]).node_id
             parsed = parse_biometrics_trace_id(event.trace_id)
             if parsed:
                 return catalog.resolve(parsed).node_id
         atom = event.atom
         if atom and atom.semantic_role == "node_context" and atom.text_value:
+            return catalog.resolve(atom.text_value).node_id
+        if atom and atom.semantic_role == "cabinet_ambient_audio_spike_signal" and atom.text_value:
             return catalog.resolve(atom.text_value).node_id
     return "unknown"
 

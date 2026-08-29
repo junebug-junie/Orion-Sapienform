@@ -249,6 +249,114 @@ def test_router_registered_on_api_routes():
 
     paths = {getattr(route, "path", None) for route in api_routes.router.routes}
     assert "/api/cabinet/sensors/latest" in paths
+    assert "/api/cabinet/sensors/history" in paths
+
+
+def test_rows_to_sensor_series_skips_nulls_and_zero_fills_nothing():
+    rows = [
+        {
+            "t": datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc),
+            "temp_c": 24.5,
+            "humidity_pct": 45.0,
+            "lidar_mm": 18.0,
+            "als_raw": None,
+            "climate_activity": 0.1,
+            "proximity_activity": None,
+            "uv_activity": 0.05,
+        },
+        {
+            "t": datetime(2026, 8, 29, 12, 0, 30, tzinfo=timezone.utc),
+            "temp_c": 24.7,
+            "humidity_pct": None,
+            "lidar_mm": 17.0,
+            "als_raw": 120.0,
+            "climate_activity": 0.2,
+            "proximity_activity": 0.4,
+            "uv_activity": None,
+        },
+    ]
+    series = cabinet_sensors_routes.rows_to_sensor_series(rows)
+    assert len(series["temp_c"]) == 2
+    assert series["temp_c"][0]["v"] == pytest.approx(24.5)
+    assert series["humidity_pct"] == [{"t": "2026-08-29T12:00:00Z", "v": pytest.approx(45.0)}]
+    assert len(series["lidar_mm"]) == 2
+    assert len(series["als_raw"]) == 1
+    assert series["als_raw"][0]["v"] == pytest.approx(120.0)
+    assert len(series["proximity_activity"]) == 1
+
+
+def test_history_defaults_to_24h_and_returns_empty_series(client, monkeypatch):
+    tc, _sensors, _boot = client
+
+    async def no_rows(*, node: str, hours: int):
+        assert (node, hours) == ("athena", 24)
+        return []
+
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_AMBIENT_HISTORY_NODE", "athena")
+    monkeypatch.setattr(cabinet_sensors_routes, "_history_query", no_rows)
+    body = tc.get("/api/cabinet/sensors/history").json()
+    assert body["ok"] is True
+    assert body["window"] == "24h"
+    assert body["grain_sec"] == 30
+    assert body["series"]["temp_c"] == []
+    assert body["stats"] == {}
+
+
+def test_history_uses_query_rows_and_reports_stats(client, monkeypatch):
+    tc, _sensors, _boot = client
+
+    async def rows(*, node: str, hours: int):
+        assert (node, hours) == ("athena", 72)
+        return [
+            {
+                "t": datetime(2026, 8, 26, 2, 54, 9, tzinfo=timezone.utc),
+                "temp_c": 24.0,
+                "humidity_pct": 40.0,
+                "lidar_mm": 50.0,
+                "als_raw": 100.0,
+                "climate_activity": 0.2,
+                "proximity_activity": 0.1,
+                "uv_activity": 0.05,
+            },
+            {
+                "t": datetime(2026, 8, 26, 2, 54, 39, tzinfo=timezone.utc),
+                "temp_c": 26.0,
+                "humidity_pct": 42.0,
+                "lidar_mm": 18.0,
+                "als_raw": 120.0,
+                "climate_activity": 0.85,
+                "proximity_activity": 0.9,
+                "uv_activity": 0.15,
+            },
+        ]
+
+    monkeypatch.setattr(cabinet_sensors_routes.settings, "CABINET_AMBIENT_HISTORY_NODE", "athena")
+    monkeypatch.setattr(cabinet_sensors_routes, "_history_query", rows)
+    body = tc.get("/api/cabinet/sensors/history?window=3d").json()
+    assert body["ok"] is True
+    assert body["window"] == "3d"
+    assert len(body["series"]["temp_c"]) == 2
+    assert body["stats"]["temp_c"] == {"n_raw": 2, "min": 24.0, "max": 26.0}
+    assert body["stats"]["lidar_mm"]["min"] == pytest.approx(18.0)
+
+
+def test_history_invalid_window_returns_400(client):
+    tc, _sensors, _boot = client
+    response = tc.get("/api/cabinet/sensors/history?window=1h")
+    assert response.status_code == 400
+
+
+def test_history_db_failure_returns_ok_false(client, monkeypatch):
+    tc, _sensors, _boot = client
+
+    async def failed(*, node: str, hours: int):
+        raise OSError("db unavailable")
+
+    monkeypatch.setattr(cabinet_sensors_routes, "_history_query", failed)
+    body = tc.get("/api/cabinet/sensors/history").json()
+    assert body["ok"] is False
+    assert body["series"]["temp_c"] == []
+    assert body["error"] == "sensor_history_unavailable"
 
 
 def test_dual_nano_merge_in_latest(tmp_path: Path, monkeypatch) -> None:

@@ -304,6 +304,15 @@ class Settings(BaseSettings):
     field_channel_anomaly_score_channel: str = Field(
         "orion:field_channel:anomaly_score", alias="FIELD_CHANNEL_ANOMALY_SCORE_CHANNEL"
     )
+    # Cabinet ambient spike cognition consumer (v2 step 2): subscribe to
+    # orion:cabinet:ambient:spike, publish a grammar trace, bump
+    # cabinet_ambient_audio_activity on the node for field digester.
+    enable_cabinet_ambient_spike_consumer: bool = Field(
+        True, alias="SUBSTRATE_CABINET_AMBIENT_SPIKE_CONSUMER_ENABLED"
+    )
+    cabinet_ambient_spike_channel: str = Field(
+        "orion:cabinet:ambient:spike", alias="CABINET_AMBIENT_SPIKE_CHANNEL"
+    )
     # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-30-
     # codebase-mass-signal-design.md, "Producer + consumer patch design").
     # Own dedicated flag, not piggybacked on SUBSTRATE_WRITE_PREDICTION_ERROR_NODES

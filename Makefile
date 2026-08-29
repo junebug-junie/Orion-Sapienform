@@ -53,6 +53,21 @@ test-actions:
 check-inner-state-registry:
 	@python scripts/check_inner_state_registry.py
 
+# Every SystemHealthV1(...) call site must pass the fields the model requires.
+# Each producer builds it inside a heartbeat loop's try/except, so a missing
+# required field logs a warning per tick and publishes nothing -- the container
+# stays "Up" and healthy while emitting no heartbeat at all. Found live
+# 2026-08-29 in three services at once (gpu-cluster-power, bus-tap, rag), with a
+# fourth carrying a hand-written "# FIX:" comment from the last time someone hit
+# it. AST-based, so formatting and argument order don't matter.
+# Uses python3, not the bare `python` 13 other targets use: `python` does not
+# exist on this host, so those targets exit 127 without running (verified
+# 2026-08-29 against check-inner-state-registry). A gate that cannot run is the
+# exact failure mode this patch exists to close, so this one is not written that
+# way. The other 13 are left alone -- out of scope, flagged in the PR.
+check-system-health-producers:
+	@python3 scripts/check_system_health_producers.py
+
 # One owner per tuned env key. Some numbers are restated in a service's
 # .env_example, its compose default, a Field(...) default, and prose deriving a
 # budget from them -- every restatement is a copy, and copies drift. Measured

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 from uuid import UUID, uuid4
 
+from app.services.enrichment_contract import coerce_meaning
 from app.storage.repository import fetch_model, fetch_run, fetch_segments, replace_edges_for_run, utc_now
 
 
@@ -45,12 +46,21 @@ def _edges_from_segment(
     model_name: str,
     min_confidence: float,
 ) -> List[Dict[str, Any]]:
-    meaning = segment.get("meaning") or {}
-    if isinstance(meaning, str):
-        try:
-            meaning = json.loads(meaning)
-        except json.JSONDecodeError:
-            meaning = {}
+    raw_meaning = segment.get("meaning")
+    meaning = coerce_meaning(raw_meaning) or {}
+    # The old code caught JSONDecodeError and silently substituted {}. That is
+    # why topic_foundry_edges had 0 rows for all time despite 554 enriched
+    # segments: every prose `meaning` produced an empty edge list and nothing
+    # anywhere said so. coerce_meaning() preserves prose under `summary`
+    # instead of discarding it, and the warning below makes a segment that
+    # can never yield edges visible in logs rather than indistinguishable
+    # from a segment that legitimately has none.
+    if meaning.get("unstructured"):
+        logger.warning(
+            "kg_edges_segment_meaning_unstructured segment_id=%s -- enricher returned prose, "
+            "not the object shape declared in app/services/enrichment_contract.py; no edges from this segment",
+            segment.get("segment_id"),
+        )
     edges: List[Dict[str, Any]] = []
     created_at = utc_now()
     segment_id = UUID(segment["segment_id"])

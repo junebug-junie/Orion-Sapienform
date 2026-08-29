@@ -4,7 +4,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.services.enrichment_contract import coerce_meaning, coerce_sentiment
 
 
 class DatasetSpec(BaseModel):
@@ -137,6 +139,28 @@ class SegmentRecord(BaseModel):
     row_ids_count: Optional[int] = None
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
+
+    # Validators, not a router-side fixup, because there are two independent
+    # SegmentRecord construction sites in routers/segments.py alone and a
+    # miss in either one is an HTTP 500 on the endpoint the concept-atlas
+    # participation edges are built from. Enforcing it on the model makes it
+    # unbypassable. `mode="before"` so it runs on the raw jsonb value from
+    # psycopg, ahead of the Dict[str, Any] check that was raising.
+    #
+    # This is the READ side of the fix in app/services/enrichment_contract.py:
+    # 552 rows with prose in these two columns already exist in the live
+    # database and re-enriching them costs real LLM compute, so they are
+    # coerced on the way out instead. New writes are fixed at the source by
+    # _finalize_enrichment.
+    @field_validator("meaning", mode="before")
+    @classmethod
+    def _coerce_meaning(cls, value: Any) -> Any:
+        return coerce_meaning(value)
+
+    @field_validator("sentiment", mode="before")
+    @classmethod
+    def _coerce_sentiment(cls, value: Any) -> Any:
+        return coerce_sentiment(value)
 
 
 class DatasetCreateRequest(BaseModel):

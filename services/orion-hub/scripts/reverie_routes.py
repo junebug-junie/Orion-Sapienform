@@ -320,6 +320,15 @@ async def visual_recent(
                 # reached the model" signal the diffusion model's 77-token
                 # budget made necessary (see module docstring).
                 "context_slot_used": cj.get("context_slot_used"),
+                # Patch 8: the concrete visual metaphor the metacog interpretation step
+                # actually invented for context_slot_used's raw text this run -- null when
+                # nothing was selected, interpretation is disabled, or the metacog call
+                # failed/timed out (build_visual_prompt then fell back to the raw slot text
+                # unchanged, exactly Patch 7's behavior). Surfaced as its own field so the tab
+                # can show the raw clause NEXT TO what it was actually turned into -- the
+                # concrete answer to "how does this translate into fluffy cloud??" is this
+                # field being visibly non-null and visibly not a cloud.
+                "context_slot_interpreted": cj.get("context_slot_interpreted"),
                 # Patch 4: whether THIS run's own prompt was forced to drop
                 # prior_description continuity (visual_chain.py::
                 # resolve_visual_chain_continuity) -- surfaced so the tab can

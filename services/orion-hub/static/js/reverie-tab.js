@@ -298,6 +298,17 @@
            <div class="text-xs text-gray-400 mt-0.5">${escapeHtml(chain.memory_text)}</div>
          </div>`
       : "";
+    // Patch 8: the metacog interpretation step's own output for context_slot_used's raw text
+    // this run -- the direct, visible answer to "how does this translate into fluffy cloud??".
+    // Null when nothing was selected, interpretation is off, or the call failed/timed out --
+    // in which case the raw clause above went into the prompt unchanged (Patch 7 behavior),
+    // and this block simply does not render rather than implying a translation happened.
+    const interpretedBlock = chain.context_slot_interpreted
+      ? `<div class="mt-1 rounded border border-emerald-900/50 bg-emerald-950/10 px-2 py-1.5">
+           <div class="text-[10px] uppercase tracking-wide text-emerald-600">Interpreted as (what actually went into the image prompt)</div>
+           <div class="text-xs text-gray-300 mt-0.5">${escapeHtml(chain.context_slot_interpreted)}</div>
+         </div>`
+      : "";
     const continuityLabel = chain.continuity_reset
       ? "Prompt used (continuity RESET this run -- seeded fresh from the selected context-seed above)"
       : `Prompt used (blends the prior caption with the selected context-seed above` +
@@ -324,6 +335,7 @@
         ${contextBlock}
         ${selfStudyBlock}
         ${memoryBlock}
+        ${interpretedBlock}
         ${promptBlock}
         <div class="text-[11px] text-gray-600 mt-1">egress: ${egressLine}</div>
         <div class="flex justify-between items-center mt-2 text-[11px] text-gray-500">

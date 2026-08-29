@@ -829,6 +829,32 @@ also-real question: was this content ever actually decided-upon by
 anything, the way the reader's own docstring claimed. It was not, for the
 overwhelming majority of the table.
 
+**Fix**: `load_latest_memory_crystallization` now requires `EXISTS (SELECT
+1 FROM memory_crystallization_history WHERE crystallization_id = ... AND
+op = 'approve')` in addition to `status = 'active'`. This narrows the real
+candidate pool from 652 to 21 rows (live count, 2026-08-28) -- an accepted
+tradeoff: honestly sparse beats surfacing content nobody ever reviewed.
+Real cadence of the narrowed pool (live query): median gap ~11.6h between
+approved crystallizations, max gap ~13 days -- the existing 7-day
+`ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` window (§19) already
+fits this comfortably (median gap is 1.4% of the window) without needing
+to change.
+
+**Not a privacy fix, and does not make the remaining content "safe" in a
+new way**: the 21 actually-approved rows still include real, sensitive
+personal content (verified live -- medical content about a named family
+member is among them). This fix only ensures the content that DOES
+surface went through the pipeline's own real decision process, matching
+what the reader's docstring always claimed to require. §17's audience
+reasoning (Juniper is the only viewer, and the original source) still
+carries the privacy argument for that content being shown at all.
+
+**Tests**: `test_load_latest_memory_crystallization_query_requires_active_
+status_and_real_approval` (renamed from the old `..._filters_to_active_
+status`) asserts the SQL requires both `status = 'active'` AND `op =
+'approve'` against `memory_crystallization_history` -- not just the
+former.
+
 ## 21. Metacog lane contention groundwork (this changeset, flag-gated + off)
 
 Discussion (§18-§20's visual-fidelity gap): the fix for "why does everything
@@ -903,28 +929,78 @@ to flip `ORION_REVERIE_METACOG_BACKGROUND_ENABLED` on can be made from
 evidence instead of the same live-measurement-vs-assumption gap this
 section opened with.
 
-**Fix**: `load_latest_memory_crystallization` now requires `EXISTS (SELECT
-1 FROM memory_crystallization_history WHERE crystallization_id = ... AND
-op = 'approve')` in addition to `status = 'active'`. This narrows the real
-candidate pool from 652 to 21 rows (live count, 2026-08-28) -- an accepted
-tradeoff: honestly sparse beats surfacing content nobody ever reviewed.
-Real cadence of the narrowed pool (live query): median gap ~11.6h between
-approved crystallizations, max gap ~13 days -- the existing 7-day
-`ORION_MEMORY_CRYSTALLIZATION_CONTEXT_MAX_AGE_SEC` window (§19) already
-fits this comfortably (median gap is 1.4% of the window) without needing
-to change.
+## 22. Patch 8: metacog interpretation step -- the actual fix for "fluffy cloud" (this changeset)
 
-**Not a privacy fix, and does not make the remaining content "safe" in a
-new way**: the 21 actually-approved rows still include real, sensitive
-personal content (verified live -- medical content about a named family
-member is among them). This fix only ensures the content that DOES
-surface went through the pipeline's own real decision process, matching
-what the reader's docstring always claimed to require. §17's audience
-reasoning (Juniper is the only viewer, and the original source) still
-carries the privacy argument for that content being shown at all.
+§21 built the infrastructure; this is the feature it was infrastructure
+for. `build_visual_prompt` (Patch 2 onward) is, and remains, pure string
+concatenation -- it has never done anything semantic with the selected
+context-seed's text. The diffusion model then pattern-matches whatever
+concrete nouns happen to already be in that raw text; abstract cognitive
+prose has none, so it falls back to the model's own generic "soft
+dreamlike style" priors. That is the direct mechanism behind Juniper's
+report: a `memory_text` clause about moving a server between Ethernet
+ports rendering as "a single, large, fluffy cloud in the sky, with a light
+pink hue."
 
-**Tests**: `test_load_latest_memory_crystallization_query_requires_active_
-status_and_real_approval` (renamed from the old `..._filters_to_active_
-status`) asserts the SQL requires both `status = 'active'` AND `op =
-'approve'` against `memory_crystallization_history` -- not just the
-former.
+**Fix**: `interpret_context_for_visual` (`visual_chain.py`) -- one
+metacog-routed cortex-exec call, run between `select_context_slot` and
+`build_visual_prompt`, that asks the LLM to invent a concrete visual
+metaphor for the selected slot's actual meaning. New verb
+`visual_context_interpret` (`orion/cognition/verbs/visual_context_
+interpret.yaml` + `.../prompts/visual_context_interpret.j2`) -- plain
+text output (one sentence, 15-35 words), not JSON, since the only consumer
+is `build_visual_prompt`'s own string concatenation and a JSON-parsing
+step would just be one more way to fail for no benefit.
+
+**Reuse, not a new mechanism**, per this doc's own §21 investigation:
+same `CortexExecClient`/`execute_plan` call shape the text-reverie chain
+already makes for its own metacog-routed narration
+(`reverie.py`'s `_metacog_route()`), same `"options": {"llm_lane":
+"background", "allow_chat_fallback": False}` context shape. The one
+deliberate difference: this call is hardcoded to plain `metacog`, with no
+flag branch to `metacog_background` at all -- per Juniper's stated
+priority ("diffusion trumps text if we are too tight"), this is the call
+that must never be the one waiting.
+
+**Fails open, never fails closed**: any timeout, RPC error, malformed
+response, or blank output returns `None`, and `run_visual_chain_once`
+falls back to `context_slot_text` unchanged -- exactly Patch 7's existing
+behavior. A metacog outage degrades this run's imagery back to Patch 7's
+baseline; it never breaks generation, storage, or re-observation.
+
+**Default ON** (`ORION_VISUAL_CHAIN_INTERPRETATION_ENABLED=true`),
+deliberately unlike §21's `ORION_REVERIE_METACOG_BACKGROUND_ENABLED`: that
+flag exists because Juniper explicitly wanted to observe an unmitigated
+failure mode before activating a routing change with cross-service
+profile-pinning risk. There is no equivalent failure mode to observe here
+-- the worst case is graceful fallback to the pre-existing raw-text
+behavior, so shipping it live is the actual deliverable, not an
+experiment.
+
+**Same-run evidence, not schema presence** (module docstring's recurring
+discipline): `chain_json.context_slot_interpreted` is a new field on both
+the success and `generation_failed` paths, surfaced through
+`reverie_routes.py` and rendered in the Hub Reverie tab directly under the
+selected context-seed's own block -- "Interpreted as (what actually went
+into the image prompt)". This is the literal, inspectable answer to "how
+does this translate into fluffy cloud??": the raw clause and its
+interpretation now sit next to each other in the same UI card, and a run
+where interpretation didn't fire (disabled, nothing selected, or a failed
+call) simply omits that block rather than implying a translation happened
+when it didn't.
+
+**Tests**: `test_visual_chain.py` -- pure-function coverage for
+`build_visual_interpretation_plan_request` (always plain `metacog`, blank
+prior becomes `None`) and `interpret_context_for_visual` (success,
+timeout, malformed result, blank text, all fail open to `None`), plus four
+`run_visual_chain_once` orchestration tests: interpreted text actually
+reaches the prompt on success, raw text is used on interpretation failure,
+interpretation is skipped entirely when disabled, and skipped entirely
+when `select_context_slot` picked nothing.
+
+**Self-caught while writing this section**: §20 and §21's boundary had
+been split by an editing error in the prior changeset -- §20's own "Fix"/
+"Not a privacy fix"/"Tests" paragraphs had landed physically after §21's
+closing paragraph instead of before its heading. Corrected in this same
+changeset (pure document reordering, no content changed) rather than left
+for a future reader to puzzle over.

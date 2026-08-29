@@ -701,6 +701,22 @@ class _CountingSubstrateStore:
         self.evidence_nodes_written = 0
         self.entities_written = 0
         self.edges_written = 0
+        # One node kind the store cannot persist used to abort the whole run.
+        # Live 2026-08-29: the store raised on the first EntityNodeV1 and the
+        # ingest ended at concepts_written=18 entities_written=0
+        # edges_written=0 -- 18 orphaned Evidence nodes and not one edge, on
+        # both the substrate and AI Town graphs. Entity nodes are durable as
+        # of the same patch (falkor_codec.DURABLE_NODE_KINDS), so this is the
+        # second, independent half: no single unwritable node may cost the
+        # run its edges again.
+        #
+        # Skips are COUNTED AND SURFACED, never swallowed -- the ingest
+        # response carries skipped_nodes/skipped_edges and the caller logs
+        # them. A silent partial write reported as success is the failure
+        # mode this whole route already exists to avoid.
+        self.skipped_nodes: list[dict[str, Any]] = []
+        self.skipped_edges = 0
+        self._failed_node_ids: set[str] = set()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -712,8 +728,18 @@ class _CountingSubstrateStore:
         node: Any,
         skip_metadata_keys: Any = None,
     ) -> None:
-        self._inner.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
         kind = getattr(node, "node_kind", None)
+        try:
+            self._inner.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
+        except Exception as exc:  # noqa: BLE001 - one bad node must not cost the run its edges
+            node_id = str(getattr(node, "node_id", "") or "")
+            self._failed_node_ids.add(node_id)
+            self.skipped_nodes.append({"node_id": node_id, "node_kind": kind, "error": str(exc)})
+            logger.warning(
+                "concept_atlas_ingest_node_skipped node_id=%s node_kind=%s error=%s",
+                node_id, kind, exc,
+            )
+            return
         if kind == "concept":
             self.concepts_written += 1
         elif kind == "evidence":
@@ -722,6 +748,21 @@ class _CountingSubstrateStore:
             self.entities_written += 1
 
     def upsert_edge(self, *, identity_key: str, edge: Any) -> None:
+        # An edge whose endpoint was skipped must be skipped too. upsert_edge's
+        # Cypher opens `MERGE (source:SubstrateNode {node_id: $source_id})`,
+        # which CREATES a bare node when none exists -- so writing this edge
+        # anyway would replace a skipped node with a phantom carrying nothing
+        # but a node_id, which every reader would then decode as None. Dropping
+        # the edge keeps the graph honest about what is missing.
+        source_id = str(getattr(getattr(edge, "source", None), "node_id", "") or "")
+        target_id = str(getattr(getattr(edge, "target", None), "node_id", "") or "")
+        if source_id in self._failed_node_ids or target_id in self._failed_node_ids:
+            self.skipped_edges += 1
+            logger.warning(
+                "concept_atlas_ingest_edge_skipped source=%s target=%s predicate=%s reason=endpoint_not_written",
+                source_id, target_id, getattr(edge, "predicate", None),
+            )
+            return
         self._inner.upsert_edge(identity_key=identity_key, edge=edge)
         self.edges_written += 1
 
@@ -1560,6 +1601,8 @@ def _ingest_topic_foundry_run(
             evidence_nodes_written=counting_store.evidence_nodes_written,
             entities_written=counting_store.entities_written,
             edges_written=counting_store.edges_written,
+            skipped_nodes=len(counting_store.skipped_nodes),
+            skipped_edges=counting_store.skipped_edges,
         )
 
     # Post-ingestion typed-relation classification (Phase 4 wiring): scans the
@@ -1575,6 +1618,13 @@ def _ingest_topic_foundry_run(
     # triggered trigger, not a hot path, and the route already runs as a sync
     # def in FastAPI's threadpool (see this function's own docstring), so the
     # added synchronous LLM round trips do not block the event loop.
+    if counting_store.skipped_nodes or counting_store.skipped_edges:
+        logger.warning(
+            "%s_ingest_topic_foundry_degraded run_id=%s skipped_nodes=%d skipped_edges=%d kinds=%s",
+            log_prefix, run_id, len(counting_store.skipped_nodes), counting_store.skipped_edges,
+            sorted({str(i.get("node_kind")) for i in counting_store.skipped_nodes}),
+        )
+
     typed_edges_written = _classify_typed_concept_relations(store)
 
     # Same counter owns success and failure accounting. Counts are successful
@@ -1599,6 +1649,18 @@ def _ingest_topic_foundry_run(
         "participation_edges": participation_edges,
         "mentions_fetched": mentions_fetched,
         "typed_edges_written": typed_edges_written,
+        # Nodes the store refused, and edges dropped because an endpoint was
+        # one of them. A run that skipped anything is NOT a clean success, and
+        # reporting available=true with these silently at zero-visibility is
+        # exactly the "success response hiding a fallback" this route has been
+        # bitten by before. `skipped_node_kinds` names which kinds so an
+        # operator can tell "the store cannot persist X" from a transient
+        # write error, without dumping every node id into the payload.
+        "skipped_nodes": len(counting_store.skipped_nodes),
+        "skipped_edges": counting_store.skipped_edges,
+        "skipped_node_kinds": sorted(
+            {str(item.get("node_kind")) for item in counting_store.skipped_nodes}
+        ),
     }
 
 

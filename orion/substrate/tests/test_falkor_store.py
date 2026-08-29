@@ -241,7 +241,7 @@ def test_falkor_rejects_non_concept_durable_write():
         ),
     )
 
-    with pytest.raises(ValueError, match="concept and evidence nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
         store.upsert_node(identity_key="drive:curiosity", node=drive)
 
     assert client.calls == []
@@ -1502,3 +1502,99 @@ def test_externally_owned_metadata_keys_translation_matches_real_encoding():
             "output -- falkor_store.py's translation ternary needs updating to match, or the "
             "skip_metadata_keys fix silently stops protecting this field."
         )
+
+
+# --- entity durable writes --------------------------------------------------
+
+
+def _entity_node(node_id="entity-athena", **overrides):
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1
+
+    kwargs = dict(
+        node_id=node_id,
+        label="athena",
+        entity_type="host",
+        aliases=["athena-host"],
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred",
+            source_kind="topic_foundry.entity",
+            source_channel="test",
+            producer="test_falkor_store",
+        ),
+    )
+    kwargs.update(overrides)
+    return EntityNodeV1(**kwargs)
+
+
+def test_falkor_upsert_entity_uses_native_cypher_properties():
+    """Entity nodes were rejected outright until 2026-08-29; the topic-foundry
+    adapter emits them, so the store raising aborted the whole ingest before
+    any edge was written."""
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+
+    store.upsert_node(identity_key="entity:athena", node=_entity_node())
+
+    cypher, params = client.calls[-1]
+    assert "MERGE (n:SubstrateNode:Entity {node_id: $node_id})" in cypher
+    assert "n.entity_type = $entity_type" in cypher
+    assert "n.aliases_json = $aliases_json" in cypher
+    assert params["node_kind"] == "entity"
+    assert params["entity_type"] == "host"
+    assert params["aliases_json"] == '["athena-host"]'
+    assert params["label"] == "athena"
+    # concept/evidence columns must not appear on an entity row
+    assert "taxonomy_path_json" not in params
+    assert "evidence_type" not in params
+
+
+def test_falkor_still_rejects_a_kind_nothing_writes():
+    """Widening to entity must not become "allow anything" -- a kind with no
+    producer and no decoder would round-trip to None."""
+    client = RecordingFalkorClient()
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=client,
+        hydrate=False,
+    )
+    drive = DriveNodeV1(
+        node_id="drive-curiosity",
+        drive_kind="curiosity",
+        anchor_scope="orion",
+        temporal=SubstrateTemporalWindowV1(observed_at=datetime(2026, 8, 29, tzinfo=timezone.utc)),
+        provenance=SubstrateProvenanceV1(
+            authority="local_inferred", source_kind="test", source_channel="test", producer="t"
+        ),
+    )
+    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
+        store.upsert_node(identity_key="drive:curiosity", node=drive)
+    assert client.calls == []
+
+
+def test_the_two_durable_kind_guards_cannot_drift():
+    """falkor_store and falkor_codec each refused non-durable kinds from their
+    own hardcoded copy of the list. Widening one without the other swaps a
+    clear rejection for a confusing encode error a frame deeper."""
+    import inspect
+
+    from orion.substrate.falkor_codec import DURABLE_NODE_KINDS
+    import orion.substrate.falkor_store as store_mod
+
+    assert "DURABLE_NODE_KINDS" in inspect.getsource(store_mod.FalkorSubstrateStore.upsert_node)
+    assert store_mod.DURABLE_NODE_KINDS is DURABLE_NODE_KINDS
+
+
+def test_entity_columns_are_hydrated_back():
+    """The generic MATCH (n:SubstrateNode) hydration returns a fixed column
+    list; without the entity columns every stored entity decodes with
+    entity_type='unknown' and aliases=[] while looking like it round-tripped."""
+    from orion.substrate.falkor_store import NATIVE_NODE_RETURN_FIELDS
+
+    assert "entity_type" in NATIVE_NODE_RETURN_FIELDS
+    assert "aliases_json" in NATIVE_NODE_RETURN_FIELDS

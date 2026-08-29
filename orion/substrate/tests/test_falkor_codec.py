@@ -161,7 +161,7 @@ def test_encode_node_properties_rejects_non_concept():
         temporal=_temporal(),
         provenance=_provenance(),
     )
-    with pytest.raises(ValueError, match="concept and evidence nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
         encode_node_properties(drive, identity_key="drive:curiosity")
 
 
@@ -502,3 +502,81 @@ def test_decode_edge_reconstructs_typed_edge():
     assert decoded.confidence == 0.9
     assert decoded.salience == 0.4
     assert decoded.provenance.evidence_refs == ["edge-ev:1"]
+
+
+# --- entity nodes -----------------------------------------------------------
+#
+# Entity became durable on 2026-08-29 after a live outage: the topic-foundry
+# adapter emits EntityNodeV1 and both this codec and FalkorSubstrateStore
+# raised on it, aborting the whole ingest before any edge was written
+# (`concepts_written=18 entities_written=0 edges_written=0`).
+
+
+def _entity(**overrides):
+    from orion.core.schemas.cognitive_substrate import EntityNodeV1
+
+    kwargs = dict(
+        node_id="sub-entity-athena",
+        label="athena",
+        entity_type="host",
+        aliases=["athena-host", "Athena"],
+        anchor_scope="orion",
+        temporal=_temporal(),
+        provenance=_provenance(),
+    )
+    kwargs.update(overrides)
+    return EntityNodeV1(**kwargs)
+
+
+def test_entity_is_a_durable_node_kind():
+    from orion.substrate.falkor_codec import DURABLE_NODE_KINDS
+
+    assert "entity" in DURABLE_NODE_KINDS
+    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity"}
+
+
+def test_encode_entity_writes_its_own_columns():
+    props = encode_node_properties(_entity(), identity_key="entity:athena")
+    assert props["node_kind"] == "entity"
+    assert props["label"] == "athena"
+    assert props["entity_type"] == "host"
+    assert props["aliases_json"] == '["athena-host", "Athena"]'
+    # concept-only columns must not leak onto an entity row
+    assert "taxonomy_path_json" not in props
+    assert "evidence_type" not in props
+
+
+def test_entity_round_trips_through_decode_node():
+    props = encode_node_properties(_entity(), identity_key="entity:athena")
+    node = decode_node(props)
+    assert node is not None
+    assert node.node_kind == "entity"
+    assert node.label == "athena"
+    assert node.entity_type == "host"
+    assert node.aliases == ["athena-host", "Athena"]
+
+
+def test_entity_decoder_does_not_hijack_other_kinds():
+    from orion.substrate.falkor_codec import decode_entity_node
+
+    assert decode_entity_node(encode_node_properties(_concept(), identity_key="c")) is None
+    assert decode_node(encode_node_properties(_concept(), identity_key="c")).node_kind == "concept"
+
+
+def test_entity_row_written_before_these_columns_existed_still_decodes():
+    """EntityNodeV1.entity_type is min_length=1, so a NULL column would raise
+    and take the whole generic hydration down with it, not just this node."""
+    from orion.substrate.falkor_codec import decode_entity_node
+
+    row = dict(encode_node_properties(_entity(), identity_key="entity:athena"))
+    row["entity_type"] = None
+    row["aliases_json"] = None
+    node = decode_entity_node(row)
+    assert node.entity_type == "unknown"
+    assert node.aliases == []
+
+
+def test_entity_uses_the_entity_label():
+    from orion.substrate.falkor_codec import node_label_for_kind
+
+    assert node_label_for_kind("entity") == "Entity"

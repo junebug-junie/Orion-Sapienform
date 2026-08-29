@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha1
 from uuid import uuid4
 
 from orion.biometrics.node_catalog import NodeCatalog
@@ -9,7 +10,7 @@ from orion.schemas.biometrics_projection import (
     ActiveNodePressureStateV1,
     NodeBiometricsProjectionV1,
 )
-from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.grammar import GrammarEventV1, GrammarProvenanceV1
 from orion.schemas.organ_emission import OrganEmissionV1
 
 from .candidate_events import PRESSURE_SOURCE_COMPONENT, build_pressure_candidate_events
@@ -140,6 +141,41 @@ def sweep_absent_nodes(
             continue
         absent.append(node_id)
     return sorted(absent)
+
+
+def build_absence_trigger_event(node_id: str, *, now: datetime | None = None) -> GrammarEventV1:
+    """A synthetic trigger for a node that is not sending anything.
+
+    `invoke_biometrics_pressure()` resolves its subject from the trigger event's
+    trace_id, so a node that has gone silent produces no trigger and is never
+    evaluated. `sweep_absent_nodes()` finds those nodes; this manufactures the
+    trigger they cannot send for themselves, in the same
+    `biometrics.node:{node}:{ts}` shape `parse_biometrics_trace_id()` already reads,
+    so the organ needs no special case for absence.
+
+    Marked `source_component="biometrics_absence_sweep"` so a synthetic trigger is
+    always distinguishable from a real reported sample in the trace record -- an
+    absence signal that looked like a report would be its own kind of lie.
+
+    The event_id is derived from node + timestamp rather than random, so a tick that
+    runs twice for the same node at the same clock produces the same id instead of
+    two indistinguishable rows.
+    """
+    clock = _utc_now(now)
+    ts = clock.isoformat().replace("+00:00", "Z")
+    return GrammarEventV1(
+        event_id=f"gev_absence_{sha1(f'{node_id}|{ts}'.encode()).hexdigest()[:16]}",
+        event_kind="atom_emitted",
+        trace_id=f"biometrics.node:{node_id}:{ts}",
+        emitted_at=clock,
+        observed_at=clock,
+        layer="substrate",
+        dimensions=["telemetry", "node"],
+        provenance=GrammarProvenanceV1(
+            source_service="orion-substrate-runtime",
+            source_component="biometrics_absence_sweep",
+        ),
+    )
 
 
 def invoke_biometrics_pressure(

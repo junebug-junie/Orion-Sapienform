@@ -54,9 +54,28 @@ class RecordingFalkorClient:
 
 
 class RedisGraphQueryClient:
-    """Minimal sync Redis GRAPH.QUERY client for FalkorDB."""
+    """Minimal sync Redis GRAPH.QUERY client for FalkorDB.
 
-    def __init__(self, *, uri: str, graph_name: str) -> None:
+    ``read_only=True`` sends ``GRAPH.RO_QUERY``, so a bug in a reader cannot
+    write -- the engine refuses a mutating clause outright rather than relying
+    on the caller only having composed read queries. Verified live 2026-08-29:
+    ``CREATE (:Tmp)`` through this path returns "graph.RO_QUERY is to be
+    executed only on read-only queries". Same belt-and-braces
+    ``orion/curiosity/worldview.py`` applies to Orion's own graph; defaults to
+    False so every existing writer is unchanged.
+
+    ONE CAVEAT, because the guarantee is not unconditional. redis-py's
+    ``Graph.query`` catches ``ResponseError`` and, on ``"unknown command"``
+    with ``read_only=True``, silently RE-ISSUES the query as a writable
+    ``GRAPH.QUERY``. That path only triggers against a FalkorDB build with no
+    ``GRAPH.RO_QUERY`` at all (this deployment has it -- see the refusal
+    above), but on such a build the read-only promise degrades with no signal
+    to the caller. Do not treat this flag as an authorization boundary; it is
+    defence in depth behind a caller that already only composes reads. The
+    real boundary for Orion's own graph is a FalkorDB ACL, not this flag.
+    """
+
+    def __init__(self, *, uri: str, graph_name: str, read_only: bool = False) -> None:
         import redis
         from redis.commands.graph import Graph
 
@@ -68,9 +87,28 @@ class RedisGraphQueryClient:
             decode_responses=True,
         )
         self._graph = Graph(self._r, graph_name)
+        self._graph_name = graph_name
+        self._read_only = bool(read_only)
+
+    @property
+    def read_only(self) -> bool:
+        return self._read_only
 
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
-        result = self._graph.query(cypher, params=params)
+        """Run Cypher and return rows as name-keyed dicts.
+
+        ``read_only`` routes to ``GRAPH.RO_QUERY`` via redis-py's own
+        ``read_only=True`` keyword rather than a hand-issued
+        ``execute_command``. That matters for more than tidiness: the library
+        path asks for ``--compact`` and decodes the reply through
+        ``QueryResult``, so a collection-valued column (``collect(...)``, a list
+        comprehension over ``nodes(path)``) comes back as a real list. Issuing
+        ``GRAPH.RO_QUERY`` by hand without ``--compact`` returns that same
+        column as its *string repr*, which does not fail -- it silently yields
+        a list of single characters when a caller iterates it. Caught live
+        2026-08-29; both modes now share one parser and one behaviour.
+        """
+        result = self._graph.query(cypher, params=params, read_only=self._read_only)
         # redis-py exposes list-shaped result_set rows and keeps column names on
         # QueryResult.header as [type, name] pairs. Zip to dicts so callers can
         # address fields by name (native multi-column and legacy 2-column alike).

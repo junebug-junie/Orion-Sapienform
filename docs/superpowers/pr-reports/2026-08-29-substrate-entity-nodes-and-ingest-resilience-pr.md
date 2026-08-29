@@ -68,26 +68,41 @@ No schema change, no bus change, no new env key, no new service.
 orion/substrate/tests/test_falkor_codec.py
 orion/substrate/tests/test_falkor_store.py
 orion/substrate/tests/test_falkor_codec_topic_id.py
-orion/substrate/tests/test_falkor_store_aitown_graph.py         87 passed, 1 failed*
+orion/substrate/tests/test_falkor_store_aitown_graph.py
+orion/graph/tests                                              194 passed
 
 services/orion-hub/tests/test_concept_atlas_routes.py
 services/orion-hub/tests/test_concept_atlas_ingest_resilience.py
-services/orion-hub/tests/test_concept_atlas_structure_route.py  58 passed
+services/orion-hub/tests/test_concept_atlas_ingest_topic_foundry.py
+services/orion-hub/tests/test_concept_atlas_structure_route.py 110 passed
 ```
 
-\* `test_redis_graph_client_returns_named_dicts_from_header` fails on **clean main**, untouched by this diff — a regression I introduced in PR #1957 and fixed separately in **PR #1964**. This branch should merge after that one. Substrate pytest is not in CI, so it does not gate either PR.
+**304 passed, 0 failed.** An earlier run showed one failure — `test_redis_graph_client_returns_named_dicts_from_header`, a regression I introduced in PR #1957 and fixed separately in **PR #1964**, which has since merged and is included here.
 
 Mutation-tested, every mutation asserted present in the file before running:
 
 ```text
-9/9 killed
+original      9/9 killed
   codec  entity dropped from durable kinds · entity encodes no aliases ·
          decode_node forgets entity · null entity_type no longer defaulted
   store  entity columns dropped from hydration ·
          store guard hardcodes its own list again
   route  a refused node aborts the run again · skips swallowed silently ·
          edges to a refused node get written anyway
+
+review fixes 13/13 killed
+  store  third guard reverts to a hardcoded tuple ·
+         topic_id dropped from hydration again
+  route  circuit breaker removed · failure counter never resets ·
+         wrote_anything ignores edges · empty node_id poisons the skip set ·
+         origin reverts to metadata-only · synthetic_label reverts to
+         metadata-only · origin claims every node · break-even guard removed ·
+         guard flips to zero-writes only · guard fires on any skip at all
 ```
+
+One review-fix mutation initially **survived** — removing the wrote-nothing guard. I had tested the `wrote_anything` property but never the route path that consumes it, so nothing exercised the guard. Fixed by adding three route-level ingest tests; that same gap is what then surfaced the break-even correction, because the pre-existing partial-write test proved my first threshold was too permissive.
+
+**A harness note, again.** The first review-fix mutation sweep hit the 2-minute tool timeout and was killed by SIGTERM, so its `try/finally` never ran and one mutation was left in the working tree — the same leak recorded earlier this session, this time from a signal rather than an exception. `finally` does not cover SIGTERM. The rerun installs `atexit` plus `SIGTERM`/`SIGINT`/`SIGHUP` handlers and runs in the background; it reported `restored: True` and the tree was verified clean by grepping for the mutation markers.
 
 ## Evals run
 
@@ -110,6 +125,17 @@ edges: [('associated_with', 'smoke-concept', '->', 'smoke-entity')]
 get_node_by_id: EntityNodeV1
 ```
 
+Re-run after the review fixes, on a second scratch graph (also deleted):
+
+```text
+kinds: ['concept', 'entity']
+entity from cold store: host ['Athena']
+topic_id survives hydration: 17 (was always None before)
+provenance.producer survives: topic_foundry_adapter
+metadata['source'] survives: None  <- confirms why origin needed producer
+edges: [('associated_with', 'smoke-c1', 'smoke-e1')]
+```
+
 Raw graph confirmed the label and columns: `[SubstrateNode, Entity] node_kind=entity label=athena entity_type=host`.
 
 One correction found by running it: `mentions` is not a valid `SubstrateEdgeV1` predicate. Entity mentions use `associated_with`, which matches the 74 such edges already live.
@@ -127,7 +153,23 @@ All 18 belong to run `9e1211cb-a0d1-4b03-9c8f-77dfc3ac158e` — the run that fai
 
 ## Review findings fixed
 
-`/code-review high` ran in a subagent; see the follow-up commit on this branch.
+`/code-review high` in a subagent. **Four findings, all real, all fixed.**
+
+- **Finding (major):** the blanket per-node `except` turned a *dead store* into `available: true` with every count at zero — strictly worse than the abort it replaced, and indistinguishable in the scheduler's tick log from "no new data". It also removed fail-fast (N × connect-timeout) and still spent sequential LLM calls afterward.
+  - **Fix:** two independent guards. A consecutive-failure breaker (`MAX_CONSECUTIVE_NODE_FAILURES`) bounds how long an unreachable store is retried and lets the exception propagate to the pre-existing `_unavailable("substrate_store_write_failed")`. Separately, a **break-even** check — more nodes skipped than written — decides how the run is reported. Break-even is not a tuned ratio; it is the point past which the run did not produce a usable graph, and it is exactly what separates "one unwritable kind" (many land, a few do not → available, skips surfaced) from "broken store" (few or none land → unavailable).
+  - **Evidence:** the pre-existing `test_ingest_partial_store_write_reports_precise_successful_counts` — which asserts a store failing everything after the first write reports `available: false` with real partial counts — **passes unchanged**, so the prior contract is preserved rather than replaced. Three mutations killed, including both wrong thresholds (`written == 0` only, and "any skip at all").
+
+- **Finding (medium):** a **third** hardcoded `("concept", "evidence")` guard survived centralization, in `_migrate_legacy_payload_nodes`. A legacy `payload_json` row holding an `EntityNodeV1` would never migrate and never enter the cache — invisible forever, while logging a skip on every hydrate. My own `test_the_two_durable_kind_guards_cannot_drift` asserted *two* call sites and passed while the third was out of sync, so it did not catch the drift it is named for.
+  - **Fix:** third guard now derives from `DURABLE_NODE_KINDS`; the test asserts the *literal tuple is absent anywhere in the module*, which finds any copy including one added later.
+  - **Evidence:** `grep -c 'not in ("concept", "evidence")'` → 0. Mutation reverting it fails 3 tests.
+
+- **Finding (medium):** `topic_id` has had a complete encode/decode pair since the topic-foundry work and was simply never listed in `NATIVE_NODE_RETURN_FIELDS`, so the decoder could only ever see NULL — **every hydrated node lost its cluster id, and the atlas colours nodes by that field.** Separately, `origin` and `synthetic_label` gated on `metadata["source"]`, which is not in the codec's closed allowlist and does not survive a rehydrate. Under the live `SUBSTRATE_STORE_BACKEND=falkor`, `origin` was permanently `"concept"` and `synthetic_label` permanently `False` — meaning a genuinely unlabeled `topic_<id>` cluster rendered as if it were a real concept name, the exact dishonest label that field exists to prevent. Pre-existing for concepts; this patch is what puts entities in front of it.
+  - **Fix:** `topic_id` added to the return fields. `origin`/`synthetic_label` now read `provenance.producer`, a native column that does survive, rather than growing the metadata allowlist.
+  - **Evidence, live:** `topic_id survives hydration: 17 (was always None before)`, `provenance.producer survives: topic_foundry_adapter`, and `metadata['source'] survives: None` — the last one confirming the finding directly. Four mutations killed, including one that would make `origin` claim every node.
+
+- **Finding (low):** a node with no `node_id` put `""` into `_failed_node_ids`, where it would match any later edge whose endpoint ref was missing, dropping it and blaming `endpoint_not_written` for an unrelated cause. My own test explicitly blessed this.
+  - **Fix:** only a real id joins the set; the test now asserts an unrelated edge is *not* dropped.
+  - **Evidence:** confirmed the review's reasoning that this cannot misfire on today's schema-typed path — `NodeRefV1.node_id` is `min_length=3`, which I hit for real while writing the live smoke. Fixed anyway: the wrapper is duck-typed and a sentinel comparison is the wrong shape regardless.
 
 ## Restart required
 

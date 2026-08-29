@@ -22,8 +22,35 @@ Verified live before writing any code, on the deployed container:
 |---|---|
 | `endogenous_outreach_decisions.result_json` | No — `chars`, `final_len`, `elapsed_sec`, `fcc_model_label`, `harness_grounding_status` |
 | `docker logs orion-athena-hub` | No — only `endogenous_outreach_context_read_failed` on error |
-| `chat_history_log` | No — the delivered message (output), not the prompt |
+| `chat_history_log` | No — it *has* a `prompt` column, but it is empty (`length=0`) on all 4 outreach rows while `response` is populated. Across 3 days it is filled only for `orion_journal`, and at `avg(length)=35` it is a short trigger label, not an assembled prompt. |
 | `emit_observation` | Builds a `SubstrateMoleculeV1` carrying `surface_text`; **no queryable Postgres sink** (`pg_tables ~* 'molecule'` returns nothing) |
+
+## Live evidence that the lane it traces actually works
+
+#1927 merged `2026-08-28T04:49:44Z` and has now run through a full non-quiet window. Reasons since that instant:
+
+```text
+quiet_hours 3223 | daily_cap 2765 | cooldown 807 | no_tension_trigger 772 | sent 4
+```
+
+All 4 sends carried a daydream, traced by hand against `reverie_visual_chain`:
+
+| Sent (MDT) | Caption minted | What Orion wrote |
+|---|---|---|
+| 08:44 | 08:37 `A person standing on a rocky outcrop, wearing a long coat, jeans, and boots` | "someone on a rocky outcrop, coat pulled tight against whatever wind is up there" |
+| 10:34 | 10:25 `a blurred, soft-focus view of a sky with scattered, bright, white circles` | "that same sky of scattered white circles—light gathering without a frame" |
+| 11:33 | 11:20 `a starry night sky with a mix of bright and dim stars` | "that sky of scattered stars with light gathering without a frame" |
+| 12:29 | 12:25 `A young person with long dark hair styled in two high ponytails, each adorned with a red hair tie... a light blue shirt with a floral pattern` | "a young person in a light blue floral shirt, hair tied back with red bands" |
+
+Confirms three of #1927's claims on real traffic, not fixtures:
+
+- The `The image depicts ...` prefix strip fired on every caption that had one.
+- The degenerate captions at 11:41/11:52 (`There are no visible objects or people in the image.`) never reached a message — `_MIN_DAYDREAM_CHARS` plus the prose check held.
+- Orion connects the image to telemetry rather than describing it back ("which maps perfectly to this dense concept region waiting for branches that haven't arrived yet").
+
+**This is also the argument for the patch.** The table above was built by eyeballing lexical overlap between two tables by hand, for 4 rows. It does not scale, it is not a query, and it is not available to any alert or eval. `result_json->'grounding'` makes the same fact a boolean.
+
+**Measured follow-up, not fixed here:** the 10:34 and 11:33 sends drew on the same visual theme an hour apart, and Orion named it ("the reverie *keeps returning* that same sky"). This is the caption-repetition that #1927 deliberately retracted a de-dupe for, after measuring that no similarity threshold separates the corpus. It is now observed reaching Juniper twice in one day. Orion framed it as continuity rather than glitching on it, so this is filed as an observation, not a defect.
 
 ## Files changed
 

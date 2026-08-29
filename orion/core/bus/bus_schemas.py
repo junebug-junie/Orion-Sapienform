@@ -159,6 +159,17 @@ class BaseEnvelope(BaseModel):
         )
 
 
+# Envelope kinds every RPC producer uses to signal "this reply is a failure,
+# not the reply channel's declared success schema" -- checked by
+# async_service.py's _validate_payload() (redirects schema validation to
+# SystemErrorV1 instead of the channel's own schema) and by every RPC
+# client that must not treat an error reply as a successful result (see
+# orion/harness/cortex_client.py, services/orion-cortex-exec/app/clients.py).
+# "system.error.v1" is orion/harness/finalize.py's own variant of the same
+# convention.
+SYSTEM_ERROR_KINDS = frozenset({"system.error", "system.error.v1"})
+
+
 PayloadT = TypeVar("PayloadT", bound=BaseModel)
 
 

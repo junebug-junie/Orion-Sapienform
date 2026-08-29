@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,4 +24,9 @@ class SystemErrorV1(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     error: Optional[str] = None
-    details: Dict[str, Any] = Field(default_factory=dict)
+    # str is real: whisper-tts's tts_worker.py/stt_worker.py and
+    # orion-substrate-runtime's finalize_appraisal_listener.py all publish
+    # `"details": str(exc)` (a plain exception message), not a dict, on their
+    # kind="system.error" replies. Confirmed live 2026-08-29. A strict
+    # Dict[str, Any] here rejects every one of those real payloads.
+    details: Union[str, Dict[str, Any]] = Field(default_factory=dict)

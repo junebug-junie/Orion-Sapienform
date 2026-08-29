@@ -13,8 +13,9 @@ from typing import Any, AsyncIterator, Dict, Optional
 from pydantic import BaseModel, ValidationError
 from redis import asyncio as aioredis
 
+from orion.schemas.platform import SystemErrorV1
 from orion.schemas.registry import resolve as resolve_schema_id
-from .bus_schemas import BaseEnvelope
+from .bus_schemas import BaseEnvelope, SYSTEM_ERROR_KINDS
 from .codec import OrionCodec
 from .enforce import enforcer
 from .rpc_health import RpcHealthAggregator, RpcHealthSnapshot
@@ -302,15 +303,19 @@ class OrionBusAsync:
         schema_id = entry.get("schema_id")
         if not schema_id:
             return
-        payload = None
+        # kind and payload are pulled from the same object in the same branch
+        # (never set independently) so the system.error redirect below can't
+        # see one without the other.
+        kind: Optional[str] = None
+        payload: Any = None
         if isinstance(msg, BaseEnvelope):
-            payload = msg.payload
+            kind, payload = msg.kind, msg.payload
         elif isinstance(msg, dict) and msg.get("schema") == "orion.envelope":
             try:
                 env = BaseEnvelope.model_validate(msg)
             except ValidationError as exc:
                 raise ValueError(f"Envelope validation failed for channel {channel}") from exc
-            payload = env.payload
+            kind, payload = env.kind, env.payload
         if payload is None:
             return
         # Boundary rule: payloads on the bus must be JSON-ish.
@@ -319,6 +324,22 @@ class OrionBusAsync:
             payload = payload.model_dump(mode="json")
 
         model = resolve_schema_id(schema_id)
+        # SYSTEM_ERROR_KINDS is the cross-cutting failure-signaling envelope
+        # kind every RPC producer uses to report a mid-request failure on its
+        # own result channel (codec.py's decode-failure envelope, whisper-tts's
+        # tts_worker.py/stt_worker.py, orion-substrate-runtime's
+        # finalize_appraisal_listener.py, orion-llm-gateway/app/main.py,
+        # orion/harness/finalize.py's "system.error.v1" variant). Its payload
+        # is SystemErrorV1-shaped, not the channel's declared success-result
+        # schema, and never validates against that schema by construction --
+        # redirect to SystemErrorV1 itself instead of skipping validation
+        # outright, so a genuinely malformed error payload still gets caught.
+        # See docs/superpowers/pr-reports/2026-08-29-tts-error-reply-schema-
+        # block-pr.md for the incident this closes (whisper-tts CUDA OOM
+        # error reply silently rejected here, hub burned the full 180s RPC
+        # timeout with no real cause reported).
+        if kind in SYSTEM_ERROR_KINDS and model is not SystemErrorV1:
+            model = SystemErrorV1
         try:
             model.model_validate(payload)
         except ValidationError as exc:

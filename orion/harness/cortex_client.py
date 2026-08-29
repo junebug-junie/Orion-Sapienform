@@ -5,7 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, SYSTEM_ERROR_KINDS
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 
 logger = logging.getLogger("orion.harness.cortex")
@@ -64,6 +64,17 @@ class HarnessCortexClient:
             raise RuntimeError(f"Harness cortex RPC failed: {decoded.error}")
 
         payload = decoded.envelope.payload
+        if decoded.envelope.kind in SYSTEM_ERROR_KINDS:
+            # Without this check, a system.error reply (no "result" key) fell
+            # through to `return payload` below and was handed to the caller
+            # as if it were real plan-execution output -- silent data
+            # corruption, not a raised error. Confirmed live 2026-08-29: this
+            # channel's Rabbit chassis (orion/core/bus/bus_service_chassis.py)
+            # publishes exactly this shape on any handler exception.
+            detail = payload.get("error") if isinstance(payload, dict) else None
+            # `is not None`, not `or` -- a producer-sent empty-string error
+            # must not fall through to dumping the whole payload instead.
+            raise RuntimeError(f"Harness cortex RPC returned an error: {detail if detail is not None else payload}")
         if isinstance(payload, dict):
             nested = payload.get("result")
             if isinstance(nested, dict):

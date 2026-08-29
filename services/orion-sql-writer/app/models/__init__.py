@@ -15,6 +15,7 @@ from .dreams import Dream
 from .biometrics_telemetry import BiometricsTelemetry
 from .biometrics_cluster import BiometricsClusterSQL
 from .power_intent_settled import PowerIntentSettledSQL
+from .cabinet_ambient_spike import CabinetAmbientSpikeSQL
 from .biometrics_summary import BiometricsSummarySQL
 from .biometrics_induction import BiometricsInductionSQL
 from .causal_geometry_snapshot import CausalGeometrySnapshotSQL
@@ -101,6 +102,7 @@ __all__ = [
     "BiometricsTelemetry",
     "BiometricsClusterSQL",
     "PowerIntentSettledSQL",
+    "CabinetAmbientSpikeSQL",
     "BiometricsSummarySQL",
     "BiometricsInductionSQL",
     "CausalGeometrySnapshotSQL",

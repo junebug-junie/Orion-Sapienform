@@ -1903,6 +1903,15 @@ channels:
     stability: "experimental"
     since: "2026-01-10"
 
+  - name: "orion:cabinet:ambient:spike"
+    kind: "telemetry"
+    schema_id: "CabinetAmbientSpikeV1"
+    message_kind: "cabinet.ambient.spike.v1"
+    producer_services: ["orion-biometrics"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-08-29"
+
   - name: "orion:exec:request:MetaTagsService"
     kind: "request"
     schema_id: "MetaTagsRequestV1"

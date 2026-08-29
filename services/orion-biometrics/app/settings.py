@@ -164,6 +164,34 @@ class Settings(BaseSettings):
     AMBIENT_AUDIO_PATH: str = Field(default="/run/orion-audio/latest.json")
     AMBIENT_AUDIO_STALE_AFTER_SEC: float = Field(default=5.0)
 
+    # Cabinet ambient audio spike events (v2 seam — activity threshold, no STT clip).
+    AMBIENT_AUDIO_SPIKE_ENABLED: bool = Field(default=True)
+    CABINET_AMBIENT_SPIKE_CHANNEL: str = Field(default="orion:cabinet:ambient:spike")
+    AMBIENT_AUDIO_SPIKE_ACTIVITY_THRESHOLD: float = Field(default=0.30)
+    AMBIENT_AUDIO_SPIKE_CONSECUTIVE_TICKS: int = Field(default=2)
+    AMBIENT_AUDIO_SPIKE_COOLDOWN_SEC: float = Field(default=300.0)
+
+    @field_validator("AMBIENT_AUDIO_SPIKE_CONSECUTIVE_TICKS")
+    @classmethod
+    def _validate_spike_consecutive_ticks(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("AMBIENT_AUDIO_SPIKE_CONSECUTIVE_TICKS must be >= 1")
+        return value
+
+    @field_validator("AMBIENT_AUDIO_SPIKE_ACTIVITY_THRESHOLD")
+    @classmethod
+    def _validate_spike_activity_threshold(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("AMBIENT_AUDIO_SPIKE_ACTIVITY_THRESHOLD must be in [0, 1]")
+        return value
+
+    @field_validator("AMBIENT_AUDIO_SPIKE_COOLDOWN_SEC")
+    @classmethod
+    def _validate_spike_cooldown_sec(cls, value: float) -> float:
+        if value < 0.0:
+            raise ValueError("AMBIENT_AUDIO_SPIKE_COOLDOWN_SEC must be >= 0")
+        return value
+
     @field_validator("role_weights", mode="before")
     @classmethod
     def _parse_role_weights(cls, value: object) -> Dict[str, float]:

@@ -32,6 +32,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "biometrics.summary.v1": "BiometricsSummarySQL",
     "biometrics.cluster.v1": "BiometricsClusterSQL",
     "power.intent.settled.v1": "PowerIntentSettledSQL",
+    "cabinet.ambient.spike.v1": "CabinetAmbientSpikeSQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
@@ -141,6 +142,7 @@ class Settings(BaseSettings):
             "orion:biometrics:summary",
             "orion:biometrics:cluster",
             "orion:power:intent:settled",
+            "orion:cabinet:ambient:spike",
             "orion:biometrics:induction",
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -507,6 +509,8 @@ class Settings(BaseSettings):
         # which is exactly how orion:biometrics:cluster shipped inert the first time.
         if "orion:power:intent:settled" not in channels:
             channels.append("orion:power:intent:settled")
+        if "orion:cabinet:ambient:spike" not in channels:
+            channels.append("orion:cabinet:ambient:spike")
         return channels
 
     @property

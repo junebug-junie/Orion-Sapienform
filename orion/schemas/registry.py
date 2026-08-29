@@ -424,6 +424,7 @@ from orion.schemas.telemetry.biometrics import (
     BiometricsInductionV1,
     BiometricsClusterV1,
 )
+from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.dream import (
     DreamInternalTriggerV1,
     DreamRequest,
@@ -1149,6 +1150,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BiometricsSummaryV1": BiometricsSummaryV1,
     "BiometricsInductionV1": BiometricsInductionV1,
     "BiometricsClusterV1": BiometricsClusterV1,
+    "CabinetAmbientSpikeV1": CabinetAmbientSpikeV1,
     "DreamRequest": DreamRequest,
     "DreamTriggerPayload": DreamTriggerPayload,
     "DreamInternalTriggerV1": DreamInternalTriggerV1,
@@ -1370,6 +1372,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PowerIntentSettledV1": SchemaRegistration(
         model=PowerIntentSettledV1,
         kind="power.intent.settled.v1",
+    ),
+    "CabinetAmbientSpikeV1": SchemaRegistration(
+        model=CabinetAmbientSpikeV1,
+        kind="cabinet.ambient.spike.v1",
     ),
     "AffectGptAssessResultPayload": SchemaRegistration(
         model=AffectGptAssessResultPayload,

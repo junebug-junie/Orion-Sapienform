@@ -32,6 +32,8 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.power import PowerIntentV1
 
+from fastapi.testclient import TestClient
+
 import app.main as main
 
 
@@ -104,3 +106,22 @@ def test_bus_failure_is_swallowed_so_generation_survives(monkeypatch):
     monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
 
     asyncio.run(main._publish_power_intent())  # must not raise
+
+
+def test_contradictory_config_is_loud(monkeypatch, caplog):
+    """POWER_INTENT on + bus off is silently fatal to the loop, because
+    publish() early-returns when disabled. Startup must say so."""
+    import logging
+
+    monkeypatch.setattr(main.settings, "DIFFUSION_POWER_INTENT_ENABLED", True)
+    monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", False)
+
+    records: list[str] = []
+    handler_id = main.logger.add(lambda m: records.append(str(m)), level="ERROR")
+    try:
+        with TestClient(main.app):
+            pass
+    finally:
+        main.logger.remove(handler_id)
+
+    assert any("power_intent_enabled_but_bus_disabled" in r for r in records), records

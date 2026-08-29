@@ -216,6 +216,22 @@ async def lifespan(app: FastAPI):
         logger.warning("heartbeat start failed: {}", exc)
         _heartbeat_chassis = None
 
+    # Contradictory-config guard. OrionBusAsync.publish() early-returns when
+    # the bus is disabled -- no raise, no log -- so with these two flags in
+    # this combination the service declares an intent on every generation,
+    # logs `power_intent_declared`, and nothing ever reaches the wire. That
+    # is exactly how power_intent_settled sat at 0 rows on Circe while both
+    # producer and settler logged success (2026-08-29). settings.py still
+    # defaults ORION_BUS_ENABLED to False, so a deploy that simply omits the
+    # key lands back in that state; this makes it loud instead of silent.
+    if settings.DIFFUSION_POWER_INTENT_ENABLED and not settings.ORION_BUS_ENABLED:
+        logger.error(
+            "power_intent_enabled_but_bus_disabled: DIFFUSION_POWER_INTENT_ENABLED "
+            "is true while ORION_BUS_ENABLED is false. Every declaration will be "
+            "silently discarded and nothing will ever be settled. Set "
+            "ORION_BUS_ENABLED=true for this service."
+        )
+
     # Fire-and-forget: startup completes immediately, /health and /ready
     # are live right away. See module docstring "Startup".
     asyncio.create_task(_load_model_background())

@@ -131,11 +131,33 @@ schemas/situation.py         + presence_identity_ask (the decision)
   `ORION_SITUATION_IDENTITY_ASK_MAX_PRESENCE_AGE_SECONDS=120`
 - `.env_example` updated: yes
 - local `.env` synced: **by hand.** `scripts/sync_local_env_from_example.py`
-  logs `reading live .env from primary checkout` and therefore could not see
-  keys added in a worktree — it reported only unrelated "Diverged" entries and
-  added nothing. Keys written directly into
+  would have missed these keys for **two independent reasons**, either one
+  sufficient, and would have printed a success-shaped message either way:
+
+  1. It logs `reading live .env from primary checkout` and reads
+     `.env_example` from there, so keys added in a worktree are invisible to
+     it. Observed: it reported only unrelated "Diverged" entries and added
+     nothing.
+  2. Even run from the primary checkout with the keys present, a default
+     invocation skips them. `orion-cortex-exec` *is* in `DEFAULT_SERVICES`,
+     but `should_sync_key` allowlists by prefix and `ORION_SITUATION_` is not
+     in `SYNC_PREFIXES`. Verified as a positive control:
+
+     ```
+     ORION_SITUATION_PERCEPTION_STREAM_IDS                  -> False
+     ORION_SITUATION_IDENTITY_ASK_UNCONFIRMED_COOLDOWN_SECONDS -> False
+     ORION_SITUATION_IDENTITY_ASK_MAX_PRESENCE_AGE_SECONDS   -> False
+     ```
+
+     `--all-keys` returns True for all three. This independently corroborates
+     an existing agent-board finding (`191c0c08`, 2026-08-29) that the
+     CLAUDE.md-prescribed bare command silently checks nothing for most
+     services and keys.
+
+  Keys written directly into
   `/mnt/scripts/Orion-Sapienform/services/orion-cortex-exec/.env` and verified
-  present at lines 403-405.
+  present at lines 403-405, then confirmed readable by the running container's
+  env after restart is required (see Restart section).
 - No compose change needed: the three replicas `extends` the base service and
   inherit its `env_file`, which is how the existing
   `ORION_SITUATION_PERCEPTION_STREAM_ID` already reaches them (confirmed by

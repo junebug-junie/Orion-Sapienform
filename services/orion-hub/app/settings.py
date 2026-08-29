@@ -522,6 +522,18 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_INVESTIGATION_DAILY_CAP: int = Field(
         default=3, alias="HUB_CURIOSITY_INVESTIGATION_DAILY_CAP"
     )
+    # The hours, in HUB_ENDOGENOUS_OUTREACH_TZ, that the cap is spread across.
+    # The cap alone was a budget and never a pace: it frees at local midnight,
+    # so the loop spent all six of 2026-08-28's runs between 00:48 and 02:57 and
+    # then sat blocked for twenty hours. Setting these makes the gap between
+    # runs `window / cap`, with MIN_COOLDOWN_SEC as a floor.
+    # START == END disables the window and restores the previous behaviour.
+    HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR: int = Field(
+        default=8, alias="HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR"
+    )
+    HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR: int = Field(
+        default=22, alias="HUB_CURIOSITY_INVESTIGATION_WINDOW_END_HOUR"
+    )
     # Budgeted from the harness's OWN ceilings, not copied from outreach.
     # Measured live 2026-08-26: outreach's 300s is far too short for an
     # investigation, because an investigation actually uses tools. The first

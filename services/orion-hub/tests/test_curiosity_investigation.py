@@ -15,6 +15,7 @@ import pytest
 
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.curiosity.study_material import StudyMaterial, assemble_study_material
+from scripts import curiosity_investigation as ci
 from scripts.curiosity_investigation import (
     MIN_HARNESS_STEPS,
     CuriosityInvestigation,
@@ -1166,3 +1167,160 @@ def test_two_turns_cannot_run_at_once() -> None:
             loop._run_lock.release()
 
     assert asyncio.run(_both()) == "already_running"
+
+
+# --- the waking window ----------------------------------------------------
+#
+# These exist because the daily cap was a budget and never a pace. Live on
+# 2026-08-28 the cap of 6 freed at local midnight and every run fired between
+# 00:48 and 02:57, then 240 consecutive ticks logged `blocked reason=daily_cap`
+# through the entire day Juniper was awake to watch them.
+
+
+def test_window_spread_is_what_paces_runs_not_the_configured_floor():
+    # 14 waking hours over 6 runs is one every 2h20m, which is what makes the
+    # budget last the day. The 30-minute floor must NOT win here -- if it did,
+    # the whole cap would still be spent by 03:00.
+    assert (
+        ci.paced_cooldown_sec(
+            min_cooldown_sec=1800.0, daily_cap=6, start_hour=8, end_hour=22
+        )
+        == 8400.0
+    )
+
+
+def test_the_floor_wins_when_a_big_cap_would_space_runs_closer_than_a_turn():
+    # A turn takes ~20 minutes. Without the floor, cap=100 gives 8.4 minutes,
+    # the run lock serialises them, and the greedy back-to-back behaviour this
+    # function removes comes straight back.
+    assert (
+        ci.paced_cooldown_sec(
+            min_cooldown_sec=1800.0, daily_cap=100, start_hour=8, end_hour=22
+        )
+        == 1800.0
+    )
+
+
+def test_an_unset_window_paces_exactly_as_before():
+    """START == END is the opt-out and must return the floor UNTOUCHED.
+
+    The first version of this test asserted `== 14400.0` against a floor of
+    14400 and a cap of 6, and passed against an implementation that derived
+    86400/6 from a notional 24-hour day -- the same number by coincidence. It
+    took `test_the_daily_cap_survives_a_restart` going red to show that every
+    deployment without a window had silently been re-paced. The numbers below
+    are chosen so no 24h-derived value can equal the expected one.
+    """
+    # 86400/6 == 14400 would be indistinguishable from the floor. 5.0 cannot be
+    # confused with any spread: a 24h day over 6 runs is 14400s.
+    assert (
+        ci.paced_cooldown_sec(
+            min_cooldown_sec=5.0, daily_cap=6, start_hour=0, end_hour=0
+        )
+        == 5.0
+    )
+    # And a zero floor must stay zero rather than becoming 14400.
+    assert (
+        ci.paced_cooldown_sec(
+            min_cooldown_sec=0.0, daily_cap=6, start_hour=0, end_hour=0
+        )
+        == 0.0
+    )
+    assert ci.in_window(3, 0, 0) is True
+
+
+def test_a_window_that_spans_midnight_is_not_read_inside_out():
+    # 22-06 is a legitimate configuration and the naive `start <= h < end`
+    # would make it match nothing at all.
+    assert ci.in_window(23, 22, 6) is True
+    assert ci.in_window(2, 22, 6) is True
+    assert ci.in_window(12, 22, 6) is False
+    assert ci.window_seconds(22, 6) == 8 * 3600
+
+
+def test_the_window_is_half_open_so_no_run_starts_as_it_closes():
+    # A turn takes ~20 minutes. Starting one at 22:00 finishes outside the
+    # window Juniper asked for.
+    assert ci.in_window(21, 8, 22) is True
+    assert ci.in_window(22, 8, 22) is False
+    assert ci.in_window(7, 8, 22) is False
+
+
+def test_three_in_the_morning_is_blocked_even_with_budget_and_no_cooldown():
+    # The exact live state at 03:00 on 2026-08-28: budget left, cooldown long
+    # expired. Before the window that combination ran; it is the reason the
+    # whole cap was gone before Juniper woke up.
+    assert (
+        ci.scheduling_block_reason(
+            ci.SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=8400.0,
+                done_today=1,
+                daily_cap=6,
+                local_hour=3,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        == "outside_window"
+    )
+
+
+def test_a_spent_budget_outranks_the_window_in_the_reason_reported():
+    # Both are true at 03:00 with the cap spent. `daily_cap` is the more
+    # informative answer, so it must be the one logged.
+    assert (
+        ci.scheduling_block_reason(
+            ci.SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=8400.0,
+                done_today=6,
+                daily_cap=6,
+                local_hour=3,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        == "daily_cap"
+    )
+
+
+def test_inside_the_window_with_budget_and_no_cooldown_runs():
+    assert (
+        ci.scheduling_block_reason(
+            ci.SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=8400.0,
+                done_today=1,
+                daily_cap=6,
+                local_hour=14,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        is None
+    )
+
+
+def test_the_window_never_applies_when_local_hour_is_unknown():
+    # `local_hour=None` is how "no window configured" reaches the gate. A
+    # window that fired on an unknown hour would block a deployment whose
+    # timezone failed to load, which is a silent stop rather than a fallback.
+    assert (
+        ci.scheduling_block_reason(
+            ci.SchedulingGateInputs(
+                enabled=True,
+                seconds_since_last=99999.0,
+                min_cooldown_sec=1.0,
+                done_today=0,
+                daily_cap=6,
+                local_hour=None,
+                window_start_hour=8,
+                window_end_hour=22,
+            )
+        )
+        is None
+    )

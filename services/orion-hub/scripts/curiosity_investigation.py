@@ -167,6 +167,69 @@ class SchedulingGateInputs:
     min_cooldown_sec: float
     done_today: int
     daily_cap: int
+    # Hour of day in the OPERATOR'S zone, not UTC -- the same zone the daily
+    # counter is keyed on. None means "no window configured", which is the
+    # pre-window behaviour exactly.
+    local_hour: Optional[int] = None
+    window_start_hour: int = 0
+    window_end_hour: int = 0
+
+
+def window_seconds(start_hour: int, end_hour: int) -> int:
+    """Length of the waking window, handling a window that spans midnight.
+
+    A window of zero length is not representable and would be a division by
+    zero in `paced_cooldown_sec`, so start == end means the whole day rather
+    than none of it -- the same reading as "no window configured".
+    """
+    if start_hour == end_hour:
+        return 24 * 3600
+    if start_hour < end_hour:
+        return (end_hour - start_hour) * 3600
+    return (24 - start_hour + end_hour) * 3600
+
+
+def in_window(hour: int, start_hour: int, end_hour: int) -> bool:
+    """Is `hour` inside [start, end)? Half-open, so a 08-22 window does not
+    start a run at 22:00 that finishes at 22:20."""
+    if start_hour == end_hour:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= hour < end_hour
+    return hour >= start_hour or hour < end_hour
+
+
+def paced_cooldown_sec(
+    *, min_cooldown_sec: float, daily_cap: int, start_hour: int, end_hour: int
+) -> float:
+    """How far apart runs should actually be.
+
+    THE DAILY CAP WAS A BUDGET AND NEVER A PACE, and that is what put every one
+    of Juniper's six runs between 00:48 and 02:57 on 2026-08-28 -- the counter
+    is keyed on the local date, so the cap frees at local midnight, and the loop
+    then spends the whole day's budget as fast as the cooldown allows. With the
+    cooldown stamped at turn START and a turn taking ~20 minutes, a 30-minute
+    cooldown is about ten minutes of rest. Six runs, three hours, all of them
+    while she was asleep, then twenty hours of `blocked reason=daily_cap`.
+
+    Spreading the budget over the window is therefore DERIVED rather than
+    configured: one knob (`daily_cap`) sets both how much Orion thinks and how
+    often, and raising the cap cannot silently re-create the 3am cluster.
+
+    `min_cooldown_sec` stays as a FLOOR. A large cap divided by a short window
+    would otherwise produce a spacing shorter than a turn takes, which the run
+    lock would then serialise into exactly the greedy back-to-back behaviour
+    this function exists to remove.
+    """
+    if daily_cap <= 0 or start_hour == end_hour:
+        # NO WINDOW MEANS NO PACING, not pacing derived from a 24-hour day.
+        # Deriving here would change the gap between runs for every deployment
+        # that never asked for a window -- caught by
+        # `test_the_daily_cap_survives_a_restart`, which builds a loop with a
+        # zero cooldown and expects three ticks back to back.
+        return min_cooldown_sec
+    spread = window_seconds(start_hour, end_hour) / daily_cap
+    return max(min_cooldown_sec, spread)
 
 
 @dataclass(frozen=True)
@@ -202,6 +265,13 @@ def scheduling_block_reason(inp: SchedulingGateInputs) -> Optional[str]:
         return "disabled"
     if inp.daily_cap >= 0 and inp.done_today >= inp.daily_cap:
         return "daily_cap"
+    # BEFORE the cooldown, so the reason logged through the night is the true
+    # one. Ordered after `daily_cap` because a spent budget is the more
+    # informative state when both are true.
+    if inp.local_hour is not None and not in_window(
+        inp.local_hour, inp.window_start_hour, inp.window_end_hour
+    ):
+        return "outside_window"
     if (
         inp.seconds_since_last is not None
         and inp.seconds_since_last < inp.min_cooldown_sec
@@ -330,6 +400,8 @@ class CuriosityInvestigation:
         tick_interval_sec: float,
         min_cooldown_sec: float,
         daily_cap: int,
+        window_start_hour: int = 0,
+        window_end_hour: int = 0,
         timeout_sec: float,
         session_id: str,
         crystallization_sample: int = DEFAULT_CRYSTALLIZATION_SAMPLE,
@@ -361,6 +433,8 @@ class CuriosityInvestigation:
         self.tick_interval_sec = tick_interval_sec
         self.min_cooldown_sec = min_cooldown_sec
         self.daily_cap = daily_cap
+        self.window_start_hour = int(window_start_hour)
+        self.window_end_hour = int(window_end_hour)
         self.timeout_sec = timeout_sec
         self.session_id = session_id
         self.crystallization_sample = crystallization_sample
@@ -451,11 +525,18 @@ class CuriosityInvestigation:
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
         logger.info(
-            "curiosity_investigation started tick=%ss cooldown=%ss cap=%s sample=%s+%s "
-            "graph=%s hops=%s outreach=%s",
+            "curiosity_investigation started tick=%ss cooldown=%ss(floor=%ss) "
+            "cap=%s window=%s sample=%s+%s graph=%s hops=%s outreach=%s",
             self.tick_interval_sec,
+            round(self.effective_cooldown_sec),
             self.min_cooldown_sec,
             self.daily_cap,
+            (
+                f"{self.window_start_hour:02d}-{self.window_end_hour:02d} "
+                f"{self.timezone_name}"
+                if self.window_configured
+                else "all-day"
+            ),
             self.crystallization_sample,
             self.relation_sample,
             self.graph_own if self.graph_enabled else "off",
@@ -584,6 +665,21 @@ class CuriosityInvestigation:
             return None, None, []
 
     # --- the tick ----------------------------------------------------------
+
+    @property
+    def effective_cooldown_sec(self) -> float:
+        """The spacing actually enforced -- the configured floor, or the
+        window spread over the cap, whichever is longer."""
+        return paced_cooldown_sec(
+            min_cooldown_sec=self.min_cooldown_sec,
+            daily_cap=self.daily_cap,
+            start_hour=self.window_start_hour,
+            end_hour=self.window_end_hour,
+        )
+
+    @property
+    def window_configured(self) -> bool:
+        return self.window_start_hour != self.window_end_hour
 
     def _roll_daily_counter(self, now: datetime) -> None:
         today = now.date().isoformat()
@@ -723,8 +819,9 @@ class CuriosityInvestigation:
     async def tick(self, *, force: bool = False) -> Optional[str]:
         """One decision. Returns the block reason, or None if it investigated.
 
-        `force` SKIPS THE SCHEDULING GATE AND NOTHING ELSE. Cooldown and daily
-        cap exist to bound cost and to stop a redeploy spending a slot; an
+        `force` SKIPS THE SCHEDULING GATE AND NOTHING ELSE -- cooldown, daily
+        cap, and the waking window. Those exist to bound cost and to keep Orion
+        off Juniper's small hours; an
         operator asking for a run on purpose has already made that call. Every
         other gate still applies -- `enabled`, the Postgres role, the graph ACL,
         the stores, whether there is any material -- because those answer "can
@@ -756,12 +853,19 @@ class CuriosityInvestigation:
             SchedulingGateInputs(
                 enabled=self.enabled,
                 seconds_since_last=since_last,
-                min_cooldown_sec=self.min_cooldown_sec,
+                min_cooldown_sec=self.effective_cooldown_sec,
                 done_today=done_today,
                 daily_cap=self.daily_cap,
+                local_hour=(
+                    now.astimezone(self._tz).hour
+                    if (self.window_configured and self._tz)
+                    else None
+                ),
+                window_start_hour=self.window_start_hour,
+                window_end_hour=self.window_end_hour,
             )
         )
-        if force and reason in {"cooldown", "daily_cap"}:
+        if force and reason in {"cooldown", "daily_cap", "outside_window"}:
             logger.warning(
                 "curiosity_investigation_forced overriding=%s since_last=%.0fs "
                 "done_today=%s cap=%s -- an operator asked for this run; it "

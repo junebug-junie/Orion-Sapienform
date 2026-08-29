@@ -69,3 +69,72 @@ def test_redis_graph_query_client_constructs_from_uri() -> None:
     assert client._r.connection_pool.connection_kwargs["host"] == "example.test"
     assert client._r.connection_pool.connection_kwargs["port"] == 6380
     assert client._r.connection_pool.connection_kwargs["db"] == 2
+
+
+# --- read-only mode must not break stand-in Graph objects -------------------
+#
+# Regression, 2026-08-29 (PR #1957): adding read_only mode made graph_query
+# read self._read_only and forward a third kwarg unconditionally. Both broke
+# orion/substrate/tests/test_falkor_store.py::
+# test_redis_graph_client_returns_named_dicts_from_header, which builds the
+# client with __new__ (no __init__, so no _read_only) and injects a fake Graph
+# whose query() takes only (cypher, params). Main went red on merge because
+# that consumer suite was never run against the shared-client change.
+
+
+class _FakeResult:
+    header = [[1, "node_id"]]
+    result_set = [["concept-alpha"]]
+
+
+class _TwoArgGraph:
+    """A Graph stand-in whose query() predates the read_only kwarg."""
+
+    def __init__(self):
+        self.calls = []
+
+    def query(self, cypher, params=None):
+        self.calls.append((cypher, params))
+        return _FakeResult()
+
+
+class _ThreeArgGraph:
+    def __init__(self):
+        self.calls = []
+
+    def query(self, cypher, params=None, read_only=False):
+        self.calls.append((cypher, params, read_only))
+        return _FakeResult()
+
+
+def test_graph_query_works_on_an_instance_built_without_init():
+    from orion.graph.falkor_client import RedisGraphQueryClient
+
+    client = RedisGraphQueryClient.__new__(RedisGraphQueryClient)
+    client._graph = _TwoArgGraph()
+
+    assert client.graph_query("RETURN 1", {"a": 1}) == [{"node_id": "concept-alpha"}]
+    assert client.read_only is False, "class-level default must exist"
+
+
+def test_default_mode_does_not_forward_the_read_only_kwarg():
+    """A two-argument query() must keep working: forwarding a kwarg that
+    changes nothing would break it for no benefit."""
+    from orion.graph.falkor_client import RedisGraphQueryClient
+
+    client = RedisGraphQueryClient.__new__(RedisGraphQueryClient)
+    graph = _TwoArgGraph()
+    client._graph = graph
+    client.graph_query("RETURN 1", {"a": 1})
+    assert graph.calls == [("RETURN 1", {"a": 1})]
+
+
+def test_read_only_mode_does_forward_the_kwarg():
+    from orion.graph.falkor_client import RedisGraphQueryClient
+
+    client = RedisGraphQueryClient.__new__(RedisGraphQueryClient)
+    graph = _ThreeArgGraph()
+    client._graph = graph
+    client._read_only = True
+    client.graph_query("RETURN 1", None)
+    assert graph.calls == [("RETURN 1", None, True)]

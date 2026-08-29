@@ -303,15 +303,27 @@ MAJOR ones were real defects that would have shipped a lying prompt.
 - **Finding 4 (MEDIUM): the 120s freshness bound rested on an unvalidated
   write cadence.** Reviewer sampled the live table and found it frozen. I
   reproduced and went further: **both `carbon` and `cam0` sat frozen at the
-  same instant for 16+ minutes** while `orion-athena-vision-window` was
-  `Up (healthy)`, `vision-edge` was publishing (31,500 frames) and the router
-  dispatched 283 frames in 15 minutes — with **zero presence log lines and
-  zero errors** in 60 minutes of window logs. `cam0` is RTSP and cannot
-  "close", so this is a silently stalled writer, not dark cameras.
-  - This is a **pre-existing live bug, not introduced here**, and it is
-    decisive for Finding 1: a patch that concluded "the camera is off" from
-    that state would have been confidently wrong. Logged on the agent board
-    (`2998eba2`). Not fixed in this PR — different service, different cause.
+  same instant for ~21 minutes** (21:16:0xZ → 21:37:0xZ) while
+  `orion-athena-vision-window` was `Up (healthy)`, `vision-edge` was publishing
+  (31,500 frames) and the router dispatched 283 frames in 15 minutes — with
+  **zero presence log lines and zero errors** in 60 minutes of window logs.
+  `cam0` is RTSP and cannot "close", so this was a stalled writer, not dark
+  cameras.
+  - **It then recovered on its own**, with no intervention: rows resumed at
+    21:37Z and were 2s and 10s old on the next check. So this is an
+    *intermittent* stall of order 20 minutes, **not** a dead writer — an
+    important correction to my first reading of it, which asserted only the
+    frozen state I happened to sample.
+  - Still a **pre-existing live bug, not introduced here**, and still decisive
+    for Finding 1: a patch that concluded "the camera is off" from that window
+    would have been confidently wrong. Logged on the agent board (`2998eba2`).
+    Not fixed in this PR — different service, different cause.
+  - **Operational consequence for this feature:** during such a stall Orion
+    reads `no_visual_confirmation` and may ask "is that you?" while the camera
+    can actually see Juniper fine. The 6h global cooldown caps that at roughly
+    one spurious ask per stall window. Tolerable, but it is the most likely
+    source of a wrong-feeling ask after deploy, and the first thing to check if
+    one shows up.
   - The 120s bound is retained but is now purely a *"do not describe this as
     current"* gate, no longer a claim about why.
 
@@ -367,6 +379,10 @@ MAJOR ones were real defects that would have shipped a lying prompt.
   an event. If Juniper works with the lid shut all day, she gets the question
   about once per 6h per camera. The cooldown is the only brake, and 21600s is
   a judgement call, not a measurement. It is a single env key to retune.
+- **Severity: medium.** The intermittent presence-writer stall above (~20 min,
+  self-recovering, cause unknown) reads as `no_visual_confirmation`. Orion may
+  ask "is that you?" while its camera is working. Capped at ~1 per stall by the
+  global cooldown; the real fix is in orion-vision-window, not here.
 - **Severity: low.** A total vision outage (no readable presence row) now
   reads as `no_visual_confirmation` and asks. Arguably correct — Orion
   genuinely cannot see — but it means an infra failure becomes conversational.

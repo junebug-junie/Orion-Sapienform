@@ -2243,11 +2243,11 @@ def test_grounding_summary_reports_each_lane() -> None:
         recent_turns=[("Juniper", "hi"), ("Orion", "hello")],
         presence={"health": "idle"},
         daydream=(1234.56, "a celestial map of the solar system on concentric rings."),
-        embodied_presence={"state": "present"},
+        embodied_presence={"state": "present", "since_sec": 120.0},
     )
     assert grounding_summary(ctx) == {
         "daydream": True,
-        "daydream_age_sec": 1234.6,
+        "daydream_age_sec": 1235,
         "curiosity_summaries": 2,
         "recent_turns": 2,
         "tension": False,
@@ -2283,21 +2283,118 @@ def test_grounding_summary_records_no_caption_text() -> None:
 
 
 def test_a_gate_that_fires_before_context_records_no_grounding(monkeypatch) -> None:
-    """The trap this guards: `_last_grounding` lives on the instance, so a
-    cycle blocked by quiet_hours/cooldown -- which returns BEFORE context is
-    gathered -- would otherwise inherit the PREVIOUS cycle's lanes and record
-    them as its own. Stale lanes are worse than none: they read as evidence."""
-    outreach = _outreach(quiet_start_hour=0, quiet_end_hour=24)
-    _stub_context(monkeypatch)
-    _stub_generation(monkeypatch, "hello")
-    outreach._last_grounding = {"daydream": True, "curiosity_summaries": 3}
+    """The trap this guards: a cycle blocked by quiet_hours/cooldown returns
+    BEFORE context is gathered. If the summary lived on the instance it would
+    inherit the PREVIOUS cycle's lanes and record them as its own. Stale lanes
+    are worse than none: they read as evidence.
 
-    result = asyncio.run(outreach.maybe_outreach())
+    Driven end-to-end -- a real cycle records a trace, then a gated cycle must
+    not carry it -- rather than by poking a private attribute, so the test
+    survives the summary moving off the instance (which is how it was fixed)."""
+    outreach = _outreach()
+    _stub_context(monkeypatch, summaries=("one", "two"))
+    _stub_generation(monkeypatch, "PASS")
 
-    assert result["reason"] == "quiet_hours"
-    assert "grounding" not in result, (
+    first = asyncio.run(outreach.maybe_outreach())
+    assert first["grounding"]["curiosity_summaries"] == 2, "setup: cycle 1 must record a trace"
+
+    outreach.quiet_start_hour, outreach.quiet_end_hour = 0, 24
+    second = asyncio.run(outreach.maybe_outreach())
+
+    assert second["reason"] == "quiet_hours"
+    assert "grounding" not in second, (
         "a quiet_hours decision inherited a previous cycle's grounding trace"
     )
+
+
+def test_offer_message_records_no_grounding_of_its_own(monkeypatch) -> None:
+    """`offer_message` is a SECOND live-wired producer of decision rows
+    (curiosity_investigation.py, enabled on the live container). It composes
+    its text elsewhere, never builds an OutreachContext, and never calls
+    `_gather_context`. When the summary lived on the instance it inherited the
+    last outreach cycle's lanes -- so a curiosity message that never saw a
+    daydream shipped a row asserting it saw one, with a frozen `age_sec` that
+    reads as a precise current fact rather than as stale."""
+    outreach = _outreach(min_cooldown_sec=0.0)
+    _stub_context(monkeypatch, summaries=("one", "two"))
+    _stub_generation(monkeypatch, "PASS")
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    first = asyncio.run(outreach.maybe_outreach())
+    assert first["grounding"]["curiosity_summaries"] == 2, "setup: cycle 1 must record a trace"
+
+    offered = asyncio.run(
+        outreach.offer_message(text="a curiosity finding", correlation_id="c-1", tag="curiosity")
+    )
+
+    assert offered["reason"] == "sent"
+    assert "grounding" not in offered, (
+        "offer_message claimed grounding lanes it never gathered"
+    )
+
+
+def test_a_concurrent_tick_cannot_strip_the_trace_off_a_delivered_row(monkeypatch) -> None:
+    """The second tick must land INSIDE `_generate`, not before it.
+
+    With a bare `asyncio.sleep(0)` the first task is still parked upstream and
+    has not built its summary yet, so the race does not reproduce and the test
+    passes green against the bug. Gating on an event set from within the stub
+    is what makes this a real test."""
+    outreach = _outreach(min_cooldown_sec=2700.0)
+    _stub_context(monkeypatch, summaries=("one", "two"))
+    inside = asyncio.Event()
+    released = asyncio.Event()
+
+    async def slow_generate(self, prompt, session_id, correlation_id):
+        inside.set()
+        await released.wait()
+        return "an unprompted thought", {}
+
+    monkeypatch.setattr(EndogenousOutreach, "_generate", slow_generate)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    async def scenario():
+        first = asyncio.create_task(outreach.maybe_outreach())
+        await inside.wait()
+        second = await outreach.maybe_outreach(force=True)
+        released.set()
+        return await first, second
+
+    sent, blocked = asyncio.run(scenario())
+
+    assert blocked["reason"] == "already_sending"
+    assert sent["outreach"] is True
+    assert sent["grounding"]["curiosity_summaries"] == 2, (
+        "a concurrent tick wiped the grounding trace off the delivered row"
+    )
+
+
+def test_embodied_presence_reports_the_rendered_line_not_the_fetched_row() -> None:
+    """`fetch_presence` returns a full dict for an `absent` camera, but
+    `presence_fragment` returns None for anything that is not present/recent,
+    so NO camera line renders. Reading `is not None` asserted a lane the
+    prompt did not contain -- and cam0 was `absent` on live data at the time,
+    so every row recorded that day would have carried the wrong value."""
+    absent = OutreachContext(
+        curiosity_summaries=["a signal"],
+        recent_turns=[],
+        presence=None,
+        embodied_presence={"state": "absent", "since_sec": 5160.3},
+    )
+    assert absent.embodied_presence is not None, "setup: the row IS fetched"
+    assert "camera" not in build_outreach_prompt(absent)
+    assert grounding_summary(absent)["embodied_presence"] is False
+
+    present = OutreachContext(
+        curiosity_summaries=["a signal"],
+        recent_turns=[],
+        presence=None,
+        embodied_presence={"state": "present", "since_sec": 120.0},
+    )
+    assert "camera" in build_outreach_prompt(present)
+    assert grounding_summary(present)["embodied_presence"] is True
 
 
 def test_a_completed_cycle_records_which_lanes_it_saw(monkeypatch) -> None:

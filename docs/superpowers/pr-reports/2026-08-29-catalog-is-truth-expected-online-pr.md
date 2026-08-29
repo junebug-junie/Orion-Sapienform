@@ -109,6 +109,46 @@ organ read the test's own projection value instead of the catalog. Once the cata
 authoritative their premises were simply false. Retargeted each to a node whose catalog entry
 actually matches the rule under test; the rules themselves are unchanged.
 
+## Third: the last hop -- a dark node now reaches Juniper
+
+The arc's actual ask. The substrate has detected absence since #1940, but that produced a
+signal Orion could read and nothing that reached anyone: during the ~45 minute outage of the
+entire local GPU fleet, `notify_requests` recorded **nothing at all**.
+
+`_node_availability_checks()` adds one `HealthCheck` per catalogued node whose projection
+carries an `availability` pressure, naming the node, the staleness threshold, and **which
+capabilities were lost** -- an operator needs to know what went away, not just that a box is
+quiet.
+
+**Reuses `HealthMonitor` instead of adding a second notifier.** Every property this needs is
+already there and is hard to get right: edge-triggered (fires on transition, never per tick --
+a per-tick alert on a 45-minute outage would be ~90 pages), a recheck debounce, restart
+handling via `_has_open_alert`, retry-on-failure, and a recovery note when the node returns.
+
+**A state transition, not a threshold -- there is no number to tune.** That is the point of
+the whole design. The obvious alternative, alerting on transport-error rate, was measured and
+**rejected**: over 315 hours the real outage hour scored *below* the p95 of ordinary hours,
+because the trigger rate is cooldown-capped at 120/hr. No cut separates the classes.
+
+Suppressed (decommissioned) nodes are skipped, so atlas can never page again.
+
+**The sink is verified, not assumed.** A real notification was sent end to end on 2026-08-29
+(`severity=error`, `channels=[email, in_app]`, `recipient_group=juniper_primary`) and Juniper
+confirmed receipt by email. That check was the stated prerequisite for building this at all.
+
+### Notify observability gap found while verifying (NOT fixed here)
+
+- `notify_attempts` has a table definition in `services/orion-notify-digest/app/db_models.py`
+  and **no writer anywhere in the repo**. Zero rows in its lifetime because nothing was ever
+  built to fill it -- so "0 attempts" was never evidence of non-delivery.
+- `notify_requests.status` is written once as `"pending"` and never updated; all 10,671 rows
+  since 2026-07-20 read `pending` regardless of outcome.
+- The notify service's own `[NOTIFY]` logger is not wired to stdout -- not one of its
+  decision lines (`email_send_eligible`, `email_send_attempted`) appears in
+  `docker logs`, only uvicorn access lines. That is why this went unnoticed for months.
+
+Delivery works. Its accounting does not exist. Worth its own patch.
+
 ## Risks / concerns
 
 - Severity: low. A node the catalog does not know still falls back to the stored flag, so an
@@ -118,6 +158,10 @@ actually matches the rule under test; the rules themselves are unchanged.
   but does not rewrite the cached flag itself. Same class as the known
   `reconcile_field_state_with_lattice()` gap (fills missing keys, never heals persisted stale
   ones).
-- Severity: low, unchanged. This is still a signal, not a notification. Nothing yet turns a
-  capability transition into something that reaches Juniper, and `notify_attempts` has 0 rows
-  ever.
+- Severity: medium. The alert rides `health_check_interval_sec`, default **900s**. Worst-case
+  time-to-page for a node going dark is therefore ~15 minutes plus the recheck delay, not
+  ~3 minutes. Detection is fast; paging is on the health tick's clock. Lowering that interval
+  is an operator call, not something this patch should decide unilaterally.
+- Severity: low. Alert text names the lost capabilities from `capability_impacts`, which is
+  only correct because Rule F expands from the catalog. If a node's catalog entry is wrong,
+  the page is wrong in the same way.

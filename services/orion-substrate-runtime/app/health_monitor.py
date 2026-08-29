@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from orion.notify.client import NotifyClient
+from orion.substrate.biometrics_loop.constants import ACTIVE_NODE_PRESSURE_PROJECTION_ID
 
 from app.grammar_truth import build_substrate_grammar_truth
 from app.settings import Settings
@@ -89,6 +90,68 @@ def run_checks(store: BiometricsSubstrateStore, settings: Settings) -> list[Heal
         )
     )
 
+    checks.extend(_node_availability_checks(store, settings))
+
+    return checks
+
+
+def _node_availability_checks(
+    store: BiometricsSubstrateStore, settings: Settings
+) -> list[HealthCheck]:
+    """One check per catalogued node that should be online but has gone silent.
+
+    This is the last hop of the 2026-08-29 circe work. The substrate already
+    DETECTS absence (`sweep_absent_nodes` -> `node_availability_concern` +
+    `node_capability_absent` -> `capability_impacts`), but that produced a signal
+    Orion could read and nothing that reached Juniper: during a ~45 minute outage of
+    the entire local GPU fleet, `notify_requests` recorded nothing at all.
+
+    Deliberately reuses `HealthMonitor` rather than adding a second notifier. Every
+    property this needs already exists here and is hard to get right: edge-triggered
+    (fires on transition, never per tick), a recheck debounce, restart handling via
+    `_has_open_alert`, retry-on-failure, and a recovery note when the node comes
+    back. A parallel path would have re-derived all of it worse.
+
+    **A state transition, not a threshold.** There is no number to tune: a provider
+    is reachable or it is not. That matters because the obvious alternative --
+    alerting on transport-error rate -- was measured and rejected: over 315 hours the
+    real outage hour scored *below* the p95 of ordinary hours, because the trigger
+    rate is cooldown-capped. No cut separates the classes. This has no such problem.
+    """
+    if not settings.enable_biometrics_pressure_organ:
+        return []
+    try:
+        projection = store.load_active_pressure(ACTIVE_NODE_PRESSURE_PROJECTION_ID)
+    except Exception:
+        logger.warning("node_availability_checks: could not load pressure", exc_info=True)
+        return []
+    if projection is None:
+        return []
+
+    checks: list[HealthCheck] = []
+    for node_id, state in sorted((projection.nodes or {}).items()):
+        # `suppressed` is a decommissioned node whose stale state has been cleared
+        # (Rule A). It is expected to be silent forever and must never page.
+        if state.availability_status == "suppressed":
+            continue
+        down = "availability" in (state.active_pressures or [])
+        lost = [c.removeprefix("capability:") for c in (state.capability_impacts or [])]
+        message = ""
+        if down:
+            detail = f" Capabilities affected: {', '.join(lost)}." if lost else ""
+            message = (
+                f"Node '{node_id}' has stopped reporting biometrics "
+                f"(no sample for over {settings.biometrics_node_stale_after_sec}s)."
+                f"{detail}"
+            )
+        checks.append(
+            _check(
+                f"node_availability:{node_id}",
+                healthy=not down,
+                severity="critical",
+                message_if_unhealthy=message,
+            )
+        )
     return checks
 
 

@@ -308,9 +308,70 @@ def test_history_db_failure_returns_ok_false(client, monkeypatch):
     assert body["error"] == "ambient_history_unavailable"
 
 
+def test_rows_to_spikes_maps_db_rows():
+    rows = [
+        {
+            "spike_id": "abc-123",
+            "t": datetime(2026, 8, 29, 6, 20, tzinfo=timezone.utc),
+            "activity": 0.41,
+            "rms": 7340.0,
+            "peak": 16213.0,
+            "activity_threshold": 0.30,
+        }
+    ]
+    assert cabinet_ambient_routes.rows_to_spikes(rows) == [
+        {
+            "t": "2026-08-29T06:20:00Z",
+            "spike_id": "abc-123",
+            "activity": 0.41,
+            "rms": 7340.0,
+            "peak": 16213.0,
+            "activity_threshold": 0.30,
+        }
+    ]
+
+
+def test_spikes_uses_query_rows(client, monkeypatch):
+    tc, _path = client
+
+    async def spikes(*, node: str, hours: int):
+        assert (node, hours) == ("athena", 24)
+        return [
+            {
+                "spike_id": "spike-1",
+                "t": datetime(2026, 8, 29, 6, 20, tzinfo=timezone.utc),
+                "activity": 0.41,
+                "rms": 7340.0,
+                "peak": 16213.0,
+                "activity_threshold": 0.30,
+                "consecutive_ticks": 2,
+            }
+        ]
+
+    monkeypatch.setattr(cabinet_ambient_routes, "_spike_query", spikes)
+    body = tc.get("/api/cabinet/ambient/spikes?window=24h").json()
+    assert body["ok"] is True
+    assert body["n"] == 1
+    assert body["spikes"][0]["spike_id"] == "spike-1"
+
+
+def test_spikes_db_failure_returns_ok_false(client, monkeypatch):
+    tc, _path = client
+
+    async def failed(*, node: str, hours: int):
+        raise OSError("db unavailable")
+
+    monkeypatch.setattr(cabinet_ambient_routes, "_spike_query", failed)
+    body = tc.get("/api/cabinet/ambient/spikes").json()
+    assert body["ok"] is False
+    assert body["spikes"] == []
+    assert body["error"] == "ambient_spikes_unavailable"
+
+
 def test_router_registered_on_api_routes():
     from scripts import api_routes
 
     paths = {getattr(route, "path", None) for route in api_routes.router.routes}
     assert "/api/cabinet/ambient/latest" in paths
     assert "/api/cabinet/ambient/history" in paths
+    assert "/api/cabinet/ambient/spikes" in paths

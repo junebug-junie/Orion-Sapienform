@@ -24,10 +24,10 @@ services:
       - path: .env
         required: false
     volumes:
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/templates:/app/templates
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/static:/app/static
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
-      - ${ORION_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/mnt/scripts/Orion-Sapienform:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/templates:/app/templates
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/static:/app/static
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/mnt/scripts/Orion-Sapienform:ro
       - ${HOME}/.fcc:/root/.fcc:ro
       - ${HOME}/.claude.json:/root/.claude.json:ro
       # Orion's disposable FCC sandbox checkout (see orion/fcc/sandbox_sync.py). A

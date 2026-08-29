@@ -895,12 +895,17 @@ class EndogenousOutreach:
         self._last_outreach_at: Optional[float] = None
         self._sent_today = 0
         self._counter_day: Optional[date] = None
+        # A fresh process has no idea how many outreaches today already
+        # carried, and 0 is a GUESS, not a reading. Until the real count is
+        # recovered from the decision log this flag stays False and every
+        # tick retries. See `_recover_sent_today`.
+        self._sent_today_recovered = False
+        # Surfaced in `status()`: a recovery that fails forever (missing
+        # migration, decision log switched off) leaves the cap unenforced
+        # while Postgres is otherwise healthy, and a `logger.warning` is
+        # not an inspectable runtime fact.
+        self._recovery_failures = 0
         self._last_result: Dict[str, Any] = {}
-        # Set once per cycle, immediately after context is gathered; read by
-        # `_record`. Reset to None at the top of every cycle so a gate that
-        # returns BEFORE context exists (quiet_hours, cooldown, daily_cap)
-        # cannot inherit the previous tick's lanes -- that would be worse than
-        # recording nothing, since it would read as evidence.
 
     # -- connection registry (called from websocket_handler) ---------------
 
@@ -1005,6 +1010,62 @@ class EndogenousOutreach:
             self._counter_day = today
             self._sent_today = 0
 
+    async def _recover_sent_today(self) -> None:
+        """Recover today's delivered count from the decision log. Idempotent.
+
+        WHY: `_sent_today` is in-process, initialised to 0, and reset only on
+        a day rollover -- nothing rehydrated it, so **every container restart
+        handed Orion a fresh daily cap.** Confirmed live 2026-08-28: four
+        sends by 12:29 MDT, `daily_cap` blocking at 20:12, then a fifth send
+        at 20:54 -- four minutes after a deploy restart, no day change in
+        between. This repo deploys several times a day, so a cap meant to
+        bound interruptions of Juniper was bounded by nothing.
+
+        Best-effort and retried every tick until it succeeds, so a database
+        that is briefly unavailable at boot self-heals rather than leaving the
+        count wrong for the rest of the day. On failure the counter keeps its
+        pre-existing meaning (0 = the old behaviour) rather than blocking
+        outreach outright: a database that cannot answer this count also
+        cannot serve `_gather_context`, so such a tick ends in
+        `no_grounding_context` anyway, and a hard gate here would buy nothing
+        for the cost of a new failure mode.
+        """
+        if self._sent_today_recovered:
+            return
+        local_date = datetime.now(tz=self._tz).date()
+        # `str(self._tz)` reads the zone off the object that actually did the
+        # bucketing above, so Postgres cannot disagree with this process about
+        # which day it is. NOT because it differs from `self.timezone_name` --
+        # `__init__` reassigns that to "UTC" on the same fallback path, so the
+        # two are equal in every reachable state. This is defensive style, not
+        # a live distinction; an earlier comment here claimed otherwise.
+        from scripts.endogenous_outreach_decisions import count_sent_on
+
+        # Snapshot before the await. A send can land while the query is in
+        # flight (`offer_message`, or the unauthenticated debug trigger racing
+        # the tick), and an ABSOLUTE assignment on return would discard it --
+        # a lost update that hands back exactly the extra send this patch
+        # exists to prevent. Increments between here and the assignment below
+        # are added back; there is no await between the delta read and the
+        # write, so nothing can interleave with the pair.
+        before = self._sent_today
+        recovered = await asyncio.to_thread(
+            count_sent_on, local_date.isoformat(), str(self._tz)
+        )
+        if recovered is None:
+            self._recovery_failures += 1
+            return
+        delta = max(0, self._sent_today - before)
+        self._counter_day = datetime.now(tz=self._tz).date()
+        self._sent_today = recovered + delta
+        self._sent_today_recovered = True
+        logger.info(
+            "endogenous_outreach_sent_today_recovered date=%s sent_today=%d cap=%d",
+            local_date.isoformat(),
+            recovered,
+            self.daily_cap,
+        )
+
     def _turn_in_flight(self) -> bool:
         return any(
             bool(entry.get("busy"))
@@ -1053,6 +1114,8 @@ class EndogenousOutreach:
             "timezone": self.timezone_name,
             "connections": len(self._connections),
             "sent_today": self._sent_today,
+            "sent_today_recovered": self._sent_today_recovered,
+            "sent_today_recovery_failures": self._recovery_failures,
             "seconds_since_last_outreach": inputs.seconds_since_last_outreach,
             "block_reason": outreach_block_reason(inputs),
             "last_result": dict(self._last_result),
@@ -1103,6 +1166,7 @@ class EndogenousOutreach:
         is unauthenticated, so a carve-out here would make "off by default" a
         lie that one POST could undo.
         """
+        await self._recover_sent_today()
         if self._send_lock.locked():
             # Never reaches `_outreach_once` -- pass `force` explicitly
             # rather than reading any shared instance attribute. Review
@@ -1311,6 +1375,12 @@ class EndogenousOutreach:
                 {"outreach": False, "reason": "already_sending", "source": tag},
                 forced=False,
             )
+        # The cap is SHARED, so this path has to consume the recovered count
+        # too -- it increments `_sent_today` exactly like the organic tick.
+        # Without this, a hub restarted after a full day of sends delivers
+        # here against a counter still sitting at 0, and `blocked_reason()`
+        # (sync, advisory, cannot await) tells the curiosity loop it is clear.
+        await self._recover_sent_today()
         async with self._send_lock:
             blocked = outreach_block_reason(self._gate_inputs())
             if blocked:

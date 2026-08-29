@@ -82,9 +82,41 @@ def _primary_hint_kind(hints: dict) -> str:
     return ranked[0][0] if ranked else "strain"
 
 
+def _expected_online(
+    node_id: str,
+    state: object | None,
+    catalog: NodeCatalog,
+) -> bool | None:
+    """`expected_online` for a node, with the CATALOG as source of truth.
+
+    `config/biometrics/node_catalog.yaml` is the operator contract. The copy on
+    `NodeBiometricsStateV1` is a denormalized cache written by
+    `node_reducer.py`, which only refreshes it when the node SENDS AN EVENT -- so
+    for a node that has stopped reporting it is frozen at whatever it was before,
+    permanently, and that is exactly the population this value governs.
+
+    Confirmed live 2026-08-29: `atlas` was decommissioned on 2026-08-21 (its GPUs
+    moved into circe, its disks into athena) and the catalog was set to
+    `expected_online: false` with "It will never report again". Its last biometrics
+    row is 2026-08-20 -- the day BEFORE the catalog change -- so the projection
+    still says `true` nine days later and would have said so forever. Reading the
+    cache would have made the absence sweep flag a machine that physically no longer
+    exists, on every tick, indefinitely: a permanent false alarm as the very first
+    thing this detector ever reported.
+
+    Falls back to the stored value only for a node the catalog does not know, where
+    there is no contract to consult.
+    """
+    profile = catalog.resolve(node_id)
+    if profile.known:
+        return profile.expected_online
+    return getattr(state, "expected_online", None)
+
+
 def sweep_absent_nodes(
     *,
     node_bio: NodeBiometricsProjectionV1,
+    catalog: NodeCatalog,
     stale_after_sec: int = DEFAULT_STALE_AFTER_SEC,
     now: datetime | None = None,
 ) -> list[str]:
@@ -131,7 +163,7 @@ def sweep_absent_nodes(
     clock = _utc_now(now)
     absent: list[str] = []
     for node_id, state in (node_bio.nodes or {}).items():
-        if state.expected_online is not True:
+        if _expected_online(node_id, state, catalog) is not True:
             continue
         if not _is_stale(
             last_seen_at=state.last_seen_at,
@@ -216,7 +248,10 @@ def invoke_biometrics_pressure(
                 evidence.append(event_id)
 
     candidates: list[list[GrammarEventV1]] = []
-    expected_online = bio_state.expected_online if bio_state else catalog.resolve(node_id).expected_online
+    # Catalog first, not the projection's cached copy -- see _expected_online().
+    # Reading the cache here meant a decommissioned node could never reach Rule A
+    # (node_pressure_suppressed) and would raise availability concerns forever.
+    expected_online = _expected_online(node_id, bio_state, catalog)
     stale = _is_stale(
         last_seen_at=bio_state.last_seen_at if bio_state else None,
         stale_after_sec=stale_after_sec,

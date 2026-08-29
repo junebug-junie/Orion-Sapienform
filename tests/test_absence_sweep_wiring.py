@@ -76,7 +76,7 @@ def test_absent_node_produces_capability_impacts_end_to_end(catalog: NodeCatalog
     )
     saved: dict = {}
 
-    absent = sweep_absent_nodes(node_bio=node_bio, now=NOW)
+    absent = sweep_absent_nodes(node_bio=node_bio, catalog=catalog, now=NOW)
     assert absent == ["circe"]
 
     process_biometrics_grammar_events(

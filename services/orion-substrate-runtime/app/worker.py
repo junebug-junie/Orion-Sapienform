@@ -965,6 +965,7 @@ class BiometricsSubstrateWorker:
 
         absent = sweep_absent_nodes(
             node_bio=node_bio,
+            catalog=self._catalog,
             stale_after_sec=self._settings.biometrics_node_stale_after_sec,
             now=now,
         )

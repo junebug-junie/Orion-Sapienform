@@ -239,3 +239,38 @@ def test_reaper_returns_zero_and_never_raises_when_the_scan_fails(
 
     monkeypatch.setattr("app.storage.repository.list_non_terminal_runs", _boom, raising=False)
     assert recovery_module.recover_stranded_runs() == 0
+
+
+def test_training_inline_enrichment_is_not_blocked_by_the_reentrancy_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # _run_training sets status="running", stage="enriching" on its OWN run
+    # and then calls run_enrichment_sync -- byte-for-byte the state the guard
+    # rejects. Without owns_run, the guard silently turns the enrichment step
+    # of EVERY training run into a no-op.
+    run_row = _run(status="running", stage="enriching")
+    writes = _stub_enrichment(monkeypatch, run_row)
+    enrichment_module.run_enrichment_sync(
+        UUID(RUN_ID), force=False, enricher="heuristic", limit=None
+    )
+    assert writes, "training's inline enrichment did no work at all"
+    assert writes[0] == ("running", "enriching")
+    assert writes[-1][1] == "enriched"
+
+
+def test_the_background_task_path_does_not_set_owns_run(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The exemption must be the inline caller's alone. If enqueue_enrichment
+    # ever passes owns_run=True the guard is dead for the path it was
+    # written for -- the scheduler's every-tick trigger.
+    captured = {}
+
+    class _BG:
+        def add_task(self, fn, *args, **kwargs):
+            captured["kwargs"] = kwargs
+
+    enrichment_module.enqueue_enrichment(
+        _BG(), UUID(RUN_ID), force=False, enricher="heuristic", limit=None
+    )
+    assert captured["kwargs"].get("owns_run") is not True

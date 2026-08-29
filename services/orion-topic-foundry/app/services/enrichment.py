@@ -33,10 +33,27 @@ def enqueue_enrichment(background_tasks, run_id: UUID, *, force: bool, enricher:
 
 
 def run_enrichment_sync(run_id: UUID, *, force: bool, enricher: Optional[str], limit: Optional[int]) -> None:
-    _run_enrichment(run_id, force=force, enricher=enricher, limit=limit)
+    """Inline enrichment, called by ``_run_training`` as a step of the run it
+    already owns.
+
+    ``owns_run=True`` because by this point training has deliberately written
+    ``status="running", stage="enriching"`` for its OWN run and is calling
+    straight into this function -- exactly the state the reentrancy guard
+    exists to reject. Without the distinction, the guard would silently turn
+    the enrichment step of every training run into a no-op. The caller is the
+    only thing that knows whether it holds the run; the row cannot tell.
+    """
+    _run_enrichment(run_id, force=force, enricher=enricher, limit=limit, owns_run=True)
 
 
-def _run_enrichment(run_id: UUID, *, force: bool, enricher: Optional[str], limit: Optional[int]) -> None:
+def _run_enrichment(
+    run_id: UUID,
+    *,
+    force: bool,
+    enricher: Optional[str],
+    limit: Optional[int],
+    owns_run: bool = False,
+) -> None:
     run_row = fetch_run(run_id)
     if not run_row:
         return
@@ -52,7 +69,7 @@ def _run_enrichment(run_id: UUID, *, force: bool, enricher: Optional[str], limit
     # status="running" at entry and wrote that same value back as the
     # terminal state. Refusing outright is correct, not merely safer: the
     # in-flight pass is already covering this run's segments.
-    if run_row.get("stage") == "enriching" and status == "running":
+    if not owns_run and run_row.get("stage") == "enriching" and status == "running":
         logger.warning(
             "enrichment_already_in_flight run_id=%s -- refusing to start a second pass", run_id
         )

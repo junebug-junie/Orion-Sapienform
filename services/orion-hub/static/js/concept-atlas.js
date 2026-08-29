@@ -41,22 +41,45 @@ async function apiFetch(path, opts) {
   return payload || {};
 }
 
-// Below this many nodes every label fits, so show them all.
+// Labels are ALWAYS attached to every node. What varies is the zoom at which
+// the renderer is allowed to draw them, via cytoscape's own
+// `min-zoomed-font-size`: a label whose on-screen text would render smaller
+// than this many pixels is skipped entirely for that frame.
 //
-// The declutter used to be gated on whether ANY god node existed, which is
-// always true -- canonical seed concepts are god nodes unconditionally,
-// regardless of degree (see concept_atlas_routes.py's canonical_ids
-// handling). Confirmed live 2026-08-28: a 24-node graph rendered 19 of its
-// nodes as unlabeled dots, which is pure loss rather than decluttering.
-const LABEL_DECLUTTER_MIN_NODES = 60;
+// This replaces an all-or-nothing declutter gate (">= 60 nodes and any god
+// node exists -> hide every non-god label"). Confirmed live 2026-08-29: at
+// 136 nodes that hid 131 of 136 labels, so the whole graph rendered as
+// unlabeled dots with five purple exceptions. Hiding 96% of the labels is not
+// decluttering, it is blanking -- the same failure the 24-node case was fixed
+// for on 2026-08-28, just at a threshold nobody had crossed yet.
+//
+// A zoom threshold has no cliff: zoomed out you get shape and structure with
+// no stacked label soup, and zoomed in on any region every label in it
+// appears, at any graph size. Nothing to tune per node count.
+const LABEL_MIN_ZOOMED_FONT_PX = 9;
+
+// Edge labels (`supports`, `co_occurs_with`) are far denser than node labels
+// -- 461 edges vs 136 nodes in the live graph -- and far less informative per
+// pixel, so they need to be zoomed in further before they earn the space.
+const EDGE_LABEL_MIN_ZOOMED_FONT_PX = 11;
+
+// God nodes carry the orientation signal, so their labels get a larger font
+// and therefore survive to a lower zoom level than everything else -- the
+// useful half of what the old gate was reaching for, without discarding the
+// other 131 labels to get it.
+const GOD_NODE_FONT_PX = 14;
+const NODE_FONT_PX = 9;
 
 // Pure, and defined at file scope so it is testable without a DOM or
-// cytoscape. Both conditions matter: below the threshold there is no clutter
-// to trade a label away for, and with no god node there is nothing left to
-// orient on once everything else is hidden. A non-numeric count degrades to
-// showing labels rather than hiding them.
-function shouldDeclutterLabels(nodeCount, hasGodNodes) {
-  return Number(nodeCount) >= LABEL_DECLUTTER_MIN_NODES && Boolean(hasGodNodes);
+// cytoscape. `showAll` is the checkbox: 0 disables the threshold entirely, so
+// labels render at any zoom no matter how they stack.
+function labelMinZoomedFontSize(showAll, godNode) {
+  if (showAll) return 0;
+  return godNode ? GOD_NODE_FONT_PX : LABEL_MIN_ZOOMED_FONT_PX;
+}
+
+function edgeLabelMinZoomedFontSize(showAll) {
+  return showAll ? 0 : EDGE_LABEL_MIN_ZOOMED_FONT_PX;
 }
 
 if (typeof document !== "undefined") {
@@ -319,15 +342,6 @@ if (typeof document !== "undefined") {
       NETWORK_CY_HOST.textContent = "No concept nodes match the current filters.";
       return;
     }
-    // God-nodes-only labels are meant to declutter a dense, mostly-default
-    // view -- they're useless as a default on a filtered/sparse subgraph
-    // that happens to have zero god nodes (e.g. every node degree-0 after an
-    // anchor_scope filter), where hiding every label leaves unlabeled dots
-    // with nothing to orient on. Fall back to showing everything in that
-    // case; the checkbox still overrides either way.
-    const nodeCount = elements.filter((el) => el.data && !el.data.source).length;
-    const hasGodNodes = elements.some((el) => el.data && el.data.godNode);
-    const declutterLabels = shouldDeclutterLabels(nodeCount, hasGodNodes);
     cy = window.cytoscape({
       container: NETWORK_CY_HOST,
       elements,
@@ -335,13 +349,19 @@ if (typeof document !== "undefined") {
         {
           selector: "node",
           style: {
-            // God-nodes-only once the graph is dense enough to need it (see
-            // LABEL_DECLUTTER_MIN_NODES above); the checkbox flips this
-            // without needing a full remount, since cy.style().update()
-            // re-evaluates mapper functions in place.
-            label: (ele) =>
-              showAllLabels || !declutterLabels || ele.data("godNode") ? ele.data("label") : "",
-            "font-size": 9,
+            // Every node always carries its label. Whether it is DRAWN is
+            // decided per frame by min-zoomed-font-size below, so there is no
+            // graph size at which a node becomes a permanently anonymous dot.
+            // The checkbox flips the threshold without a remount, since
+            // cy.style().update() re-evaluates mapper functions in place.
+            label: (ele) => ele.data("label"),
+            "font-size": (ele) => (ele.data("godNode") ? GOD_NODE_FONT_PX : NODE_FONT_PX),
+            "min-zoomed-font-size": (ele) =>
+              labelMinZoomedFontSize(showAllLabels, ele.data("godNode")),
+            "text-background-color": "#0b1220",
+            "text-background-opacity": 0.72,
+            "text-background-padding": 2,
+            "text-background-shape": "roundrectangle",
             color: "#e2e8f0",
             "text-valign": "bottom",
             "text-margin-y": 4,
@@ -378,7 +398,8 @@ if (typeof document !== "undefined") {
             "target-arrow-shape": "triangle",
             "curve-style": "bezier",
             label: "data(label)",
-            "font-size": 7,
+            "font-size": 9,
+            "min-zoomed-font-size": () => edgeLabelMinZoomedFontSize(showAllLabels),
             color: "#94a3b8",
           },
         },
@@ -562,5 +583,13 @@ if (typeof module !== "undefined" && module.exports) {
   // All three are plain file-scope declarations above the `typeof document`
   // guard, so they exist whether or not the browser IIFE ran -- which is what
   // makes concept-atlas.test.js able to import them under node with no DOM.
-  module.exports = { apiFetch, shouldDeclutterLabels, LABEL_DECLUTTER_MIN_NODES };
+  module.exports = {
+    apiFetch,
+    labelMinZoomedFontSize,
+    edgeLabelMinZoomedFontSize,
+    LABEL_MIN_ZOOMED_FONT_PX,
+    EDGE_LABEL_MIN_ZOOMED_FONT_PX,
+    GOD_NODE_FONT_PX,
+    NODE_FONT_PX,
+  };
 }

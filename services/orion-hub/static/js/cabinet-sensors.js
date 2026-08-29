@@ -17,6 +17,7 @@
   "use strict";
 
   var LATEST_URL = "/api/cabinet/sensors/latest";
+  var SENSOR_HISTORY_URL = "/api/cabinet/sensors/history?window=";
   var AMBIENT_LATEST_URL = "/api/cabinet/ambient/latest";
   var AMBIENT_HISTORY_URL = "/api/cabinet/ambient/history?window=";
   var AMBIENT_SPIKES_URL = "/api/cabinet/ambient/spikes?window=";
@@ -95,6 +96,67 @@
     "cabinet_sensor_staleness",
   ];
 
+  var SENSOR_HISTORY_CHARTS = [
+    {
+      key: "temp_c",
+      hostId: "cabinetSensorChartTempC",
+      label: "Temperature",
+      digits: 2,
+      color: "#fb923c",
+    },
+    {
+      key: "humidity_pct",
+      hostId: "cabinetSensorChartHumidity",
+      label: "Humidity",
+      digits: 1,
+      color: "#38bdf8",
+    },
+    {
+      key: "lidar_mm",
+      hostId: "cabinetSensorChartLidar",
+      label: "Lidar distance",
+      digits: 0,
+      color: "#a78bfa",
+    },
+    {
+      key: "als_raw",
+      hostId: "cabinetSensorChartAls",
+      label: "ALS raw",
+      digits: 0,
+      color: "#facc15",
+    },
+    {
+      key: "climate_activity",
+      hostId: "cabinetSensorChartClimateActivity",
+      label: "Climate activity",
+      digits: 3,
+      min: 0,
+      max: 1,
+      fixedScale: true,
+      color: "#34d399",
+    },
+    {
+      key: "proximity_activity",
+      hostId: "cabinetSensorChartProximityActivity",
+      label: "Proximity activity",
+      digits: 3,
+      min: 0,
+      max: 1,
+      fixedScale: true,
+      color: "#fb7185",
+    },
+    {
+      key: "uv_activity",
+      hostId: "cabinetSensorChartUvActivity",
+      label: "UV activity",
+      digits: 3,
+      min: 0,
+      max: 1,
+      fixedScale: true,
+      color: "#22d3ee",
+    },
+  ];
+
   var state = {
     active: false,
     timer: null,
@@ -109,6 +171,10 @@
     ambientWindow: "24h",
     ambientLatestNote: "Live values not loaded.",
     ambientHistoryNote: "History not loaded.",
+    sensorHistory: null,
+    sensorHistoryRequest: 0,
+    sensorWindow: "24h",
+    sensorHistoryNote: "History not loaded.",
   };
 
   var els = {};
@@ -133,6 +199,14 @@
     els.ambientWindowButtons = els.panel
       ? els.panel.querySelectorAll("[data-cabinet-ambient-window]")
       : [];
+    els.sensorHistoryStatus = $("cabinetSensorHistoryStatus");
+    els.sensorWindowButtons = els.panel
+      ? els.panel.querySelectorAll("[data-cabinet-sensor-window]")
+      : [];
+    els.sensorChartHosts = {};
+    SENSOR_HISTORY_CHARTS.forEach(function (chart) {
+      els.sensorChartHosts[chart.key] = $(chart.hostId);
+    });
     return !!els.panel;
   }
 
@@ -565,6 +639,41 @@
     });
   }
 
+  function renderSensorHistoryStatus() {
+    if (!els.sensorHistoryStatus) return;
+    els.sensorHistoryStatus.textContent = state.sensorHistoryNote;
+    els.sensorHistoryStatus.className =
+      "text-[11px] min-h-[1rem] " +
+      (state.sensorHistoryNote.indexOf("error") !== -1 ? "text-amber-400" : "text-gray-500");
+  }
+
+  function renderSensorHistory(payload) {
+    var series = payload && payload.series ? payload.series : {};
+    SENSOR_HISTORY_CHARTS.forEach(function (chart) {
+      var host = els.sensorChartHosts[chart.key];
+      var points = Array.isArray(series[chart.key]) ? series[chart.key] : [];
+      renderAmbientSeries(host, points, "v", {
+        label: chart.label,
+        digits: chart.digits,
+        color: chart.color,
+        min: chart.min,
+        max: chart.max,
+        fixedScale: chart.fixedScale,
+        heightClass: "h-32",
+      });
+    });
+  }
+
+  function renderSensorWindowButtons() {
+    Array.prototype.forEach.call(els.sensorWindowButtons || [], function (button) {
+      var selected = button.getAttribute("data-cabinet-sensor-window") === state.sensorWindow;
+      button.className = selected
+        ? "px-2 py-1 rounded border border-teal-500 bg-teal-950/60 text-[11px] font-mono text-teal-200"
+        : "px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200";
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
   function renderPayload(payload) {
     if (els.status) renderStatus(els.status, payload);
     if (els.grid) renderSensorGrid(els.grid, payload);
@@ -716,6 +825,50 @@
     }
   }
 
+  async function fetchSensorHistory() {
+    var requestId = ++state.sensorHistoryRequest;
+    var requestedWindow = state.sensorWindow;
+    state.sensorHistoryNote = "Loading " + requestedWindow + " sensor history…";
+    renderSensorHistoryStatus();
+    try {
+      var url = SENSOR_HISTORY_URL + encodeURIComponent(requestedWindow);
+      var resp = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + " from sensor history");
+      }
+      var payload = await resp.json();
+      if (!payload.ok) {
+        throw new Error(payload.error || "sensor history unavailable");
+      }
+      if (requestId !== state.sensorHistoryRequest) return;
+      state.sensorHistory = payload;
+      renderSensorHistory(payload);
+      var stats = payload.stats || {};
+      var tempStats = stats.temp_c || {};
+      var note = requestedWindow + " history";
+      if (tempStats.n_raw) note += " · temp n=" + tempStats.n_raw;
+      if (tempStats.min !== undefined && tempStats.max !== undefined) {
+        note +=
+          " · temp " +
+          Number(tempStats.min).toFixed(1) +
+          "–" +
+          Number(tempStats.max).toFixed(1) +
+          "°C";
+      }
+      state.sensorHistoryNote = note;
+    } catch (err) {
+      if (requestId !== state.sensorHistoryRequest) return;
+      state.sensorHistoryNote =
+        "history error — " +
+        (state.sensorHistory ? "keeping last good charts" : "no chart data yet") +
+        " (" +
+        (err.message || err) +
+        ")";
+    } finally {
+      if (requestId === state.sensorHistoryRequest) renderSensorHistoryStatus();
+    }
+  }
+
   function stopTimer() {
     if (state.timer !== null) {
       clearInterval(state.timer);
@@ -748,6 +901,7 @@
     poll();
     pollAmbientLatest();
     fetchAmbientHistory();
+    fetchSensorHistory();
     startTimer();
   }
 
@@ -764,6 +918,7 @@
         poll();
         pollAmbientLatest();
         fetchAmbientHistory();
+        fetchSensorHistory();
       });
     }
     Array.prototype.forEach.call(els.ambientWindowButtons || [], function (button) {
@@ -775,7 +930,17 @@
         fetchAmbientHistory();
       });
     });
+    Array.prototype.forEach.call(els.sensorWindowButtons || [], function (button) {
+      button.addEventListener("click", function () {
+        var nextWindow = button.getAttribute("data-cabinet-sensor-window");
+        if (!nextWindow || nextWindow === state.sensorWindow) return;
+        state.sensorWindow = nextWindow;
+        renderSensorWindowButtons();
+        fetchSensorHistory();
+      });
+    });
     renderAmbientWindowButtons();
+    renderSensorWindowButtons();
   }
 
   function init() {
@@ -793,6 +958,7 @@
       poll();
       pollAmbientLatest();
       fetchAmbientHistory();
+      fetchSensorHistory();
     },
   };
 

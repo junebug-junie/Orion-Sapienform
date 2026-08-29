@@ -14,6 +14,7 @@ from uuid import uuid4
 import requests
 
 from orion.biometrics.node_catalog import NodeCatalog
+from orion.grammar.publish import publish_grammar_event
 from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
@@ -23,6 +24,7 @@ from orion.schemas.codebase_delta import CodebaseDeltaV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.harness_finalize import HarnessPostTurnClosureV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
+from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.world_model import WorldModelTaskRequestPayload
 from orion.structural_mass.git_delta import GitChurnDelta
@@ -37,6 +39,10 @@ from orion.substrate.biometrics_loop.pipeline import (
     _empty_node_bio,
     _empty_pressure,
     process_biometrics_grammar_events,
+)
+from orion.substrate.cabinet_ambient_spike_consumer import (
+    apply_cabinet_ambient_spike_bump,
+    build_cabinet_ambient_spike_grammar_events,
 )
 from orion.substrate.biometrics_loop.pressure_organ import (
     build_absence_trigger_event,
@@ -533,6 +539,15 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._field_channel_anomaly_listener_loop(),
                     name="substrate-field-channel-anomaly-listener",
+                )
+            )
+        # Cabinet ambient spike cognition consumer: grammar trace + node
+        # biometrics bump when biometrics emits cabinet.ambient.spike.v1.
+        if self._bus is not None and s.enable_cabinet_ambient_spike_consumer:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._cabinet_ambient_spike_listener_loop(),
+                    name="substrate-cabinet-ambient-spike-listener",
                 )
             )
         # Perceptual health: feeds node:substrate.vision -> capability:vision.
@@ -2299,6 +2314,87 @@ class BiometricsSubstrateWorker:
             return
         self._latest_field_anomaly = score
         self._latest_field_anomaly_at = datetime.now(timezone.utc)
+
+    async def _cabinet_ambient_spike_listener_loop(self) -> None:
+        """Subscribe to sustained cabinet ambient audio spikes for cognition."""
+        channel = self._settings.cabinet_ambient_spike_channel
+        logger.info("substrate_cabinet_ambient_spike_listener subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        await self._handle_cabinet_ambient_spike_message(msg)
+                    except Exception:
+                        logger.exception("substrate_cabinet_ambient_spike_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_cabinet_ambient_spike_listener stopped channel=%s", channel)
+
+    async def _handle_cabinet_ambient_spike_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_cabinet_ambient_spike_decode_failed: %s", decoded.error)
+            return
+        try:
+            spike = CabinetAmbientSpikeV1.model_validate(decoded.envelope.payload or {})
+        except ValueError as exc:
+            logger.error("substrate_cabinet_ambient_spike_invalid err=%s", exc)
+            return
+
+        if spike.activity < spike.activity_threshold:
+            logger.warning(
+                "substrate_cabinet_ambient_spike_below_threshold node=%s activity=%.3f threshold=%.3f",
+                spike.node,
+                spike.activity,
+                spike.activity_threshold,
+            )
+            return
+
+        grammar_events = build_cabinet_ambient_spike_grammar_events(spike)
+
+        def _apply_bump() -> None:
+            clock = spike.timestamp
+            projection = self._store.load_node_biometrics(NODE_BIOMETRICS_PROJECTION_ID)
+            if projection is None:
+                projection = _empty_node_bio(clock)
+            updated, receipt = apply_cabinet_ambient_spike_bump(
+                projection=projection,
+                spike=spike,
+                catalog=self._catalog,
+                grammar_events=grammar_events,
+                now=clock,
+            )
+            self._store.save_node_biometrics(updated)
+            self._store.save_receipt(receipt)
+
+        await asyncio.to_thread(_apply_bump)
+
+        for event in grammar_events:
+            await publish_grammar_event(
+                self._bus,
+                event,
+                source_name=self._settings.service_name,
+                channel=self._settings.grammar_event_channel,
+            )
+
+        logger.info(
+            "substrate_cabinet_ambient_spike_consumed node=%s activity=%.3f spike_id=%s",
+            spike.node,
+            spike.activity,
+            spike.spike_id,
+        )
 
     async def _codebase_delta_listener_loop(self) -> None:
         """Subscribe to the codebase-mass domain's bus channel and score+write

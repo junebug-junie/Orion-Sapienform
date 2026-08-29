@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
 from orion.telemetry.cabinet_sensors import (
     CabinetPressureConfig,
@@ -25,6 +26,7 @@ from orion.telemetry.cabinet_sensors import (
 )
 from orion.telemetry.cabinet_snapshot_merge import load_merged_cabinet_sensors
 
+from .cabinet_ambient_routes import downsample_points, parse_window
 from .settings import settings
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cabinet/sensors", tags=["cabinet-sensors"])
 
 _TRACKER = CabinetSensorTracker(CabinetPressureConfig())
+_GRAIN_SEC = 30
+
+_SENSOR_HISTORY_SERIES: tuple[tuple[str, str], ...] = (
+    ("temp_c", "cabinet_temp_c"),
+    ("humidity_pct", "cabinet_humidity_pct"),
+    ("lidar_mm", "cabinet_lidar_mm"),
+    ("als_raw", "cabinet_als_raw"),
+    ("climate_activity", "cabinet_climate_activity"),
+    ("proximity_activity", "cabinet_proximity_activity"),
+    ("uv_activity", "cabinet_uv_activity"),
+)
+
+HistoryQuery = Callable[..., Awaitable[Sequence[Mapping[str, Any]]]]
+_history_query: HistoryQuery | None = None
 
 
 def _now_utc() -> datetime:
@@ -174,3 +190,123 @@ def api_cabinet_sensors_latest() -> Dict[str, Any]:
         now=_now_utc(),
         tracker=_TRACKER,
     )
+
+
+def _iso_utc(value: Any) -> str:
+    from .cabinet_ambient_routes import _parse_db_timestamp
+
+    return _parse_db_timestamp(value).isoformat().replace("+00:00", "Z")
+
+
+def rows_to_sensor_series(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Convert SQL rows to per-series [{t, v}, ...] without zero-filling gaps."""
+    series: dict[str, list[dict[str, Any]]] = {key: [] for key, _ in _SENSOR_HISTORY_SERIES}
+    for row in rows:
+        timestamp = row.get("t")
+        if timestamp is None:
+            continue
+        iso_t = _iso_utc(timestamp)
+        for out_key, _column in _SENSOR_HISTORY_SERIES:
+            raw = row.get(out_key)
+            if raw is None:
+                continue
+            series[out_key].append({"t": iso_t, "v": float(raw)})
+    return series
+
+
+def _series_stats(raw_series: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    for key, points in raw_series.items():
+        values = [float(point["v"]) for point in points if point.get("v") is not None]
+        if not values:
+            continue
+        stats[key] = {
+            "n_raw": len(values),
+            "min": min(values),
+            "max": max(values),
+        }
+    return stats
+
+
+def _downsample_series(
+    points: Sequence[Mapping[str, Any]], max_points: int
+) -> list[dict[str, Any]]:
+    if not points:
+        return []
+    bucket_input = [{"t": p["t"], "rms": p["v"]} for p in points]
+    down = downsample_points(bucket_input, max_points)
+    return [{"t": p["t"], "v": p["rms"]} for p in down if p.get("rms") is not None]
+
+
+async def query_sensor_history_rows(*, node: str, hours: int) -> Sequence[Mapping[str, Any]]:
+    """Read cabinet Nano measurements from biometrics summaries."""
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    import asyncpg
+
+    cutoff = _iso_utc(_now_utc() - timedelta(hours=hours))
+    connection = await asyncpg.connect(dsn=database_url)
+    try:
+        return await connection.fetch(
+            """
+            SELECT
+              timestamp AS t,
+              (measurements->>'cabinet_temp_c')::double precision AS temp_c,
+              (measurements->>'cabinet_humidity_pct')::double precision AS humidity_pct,
+              (measurements->>'cabinet_lidar_mm')::double precision AS lidar_mm,
+              (measurements->>'cabinet_als_raw')::double precision AS als_raw,
+              (pressures->>'cabinet_climate_activity')::double precision AS climate_activity,
+              (pressures->>'cabinet_proximity_activity')::double precision AS proximity_activity,
+              (pressures->>'cabinet_uv_activity')::double precision AS uv_activity
+            FROM orion_biometrics_summary
+            WHERE node = $1
+              AND timestamp >= $2
+              AND measurements ? 'cabinet_temp_c'
+            ORDER BY timestamp ASC
+            """,
+            node,
+            cutoff,
+        )
+    finally:
+        await connection.close()
+
+
+@router.get("/history")
+async def api_cabinet_sensors_history(
+    window: str = Query("24h"),
+) -> dict[str, Any]:
+    node = str(settings.CABINET_AMBIENT_HISTORY_NODE)
+    max_points = int(settings.CABINET_AMBIENT_HISTORY_MAX_POINTS)
+    query = _history_query or query_sensor_history_rows
+    try:
+        hours = parse_window(window)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    base = {"node": node, "window": window, "grain_sec": _GRAIN_SEC}
+    try:
+        rows = await query(node=node, hours=hours)
+        raw_series = rows_to_sensor_series(rows)
+        sampled = {
+            key: _downsample_series(points, max_points)
+            for key, points in raw_series.items()
+        }
+    except Exception as exc:
+        logger.warning("Cabinet sensor history unavailable: %s", exc)
+        empty = {key: [] for key, _ in _SENSOR_HISTORY_SERIES}
+        return {
+            "ok": False,
+            **base,
+            "series": empty,
+            "stats": {},
+            "error": "sensor_history_unavailable",
+        }
+
+    return {
+        "ok": True,
+        **base,
+        "series": sampled,
+        "stats": _series_stats(raw_series),
+    }

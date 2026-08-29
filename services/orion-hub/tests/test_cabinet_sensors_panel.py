@@ -50,8 +50,30 @@ def test_template_declares_nav_button_panel_and_script_tag() -> None:
         "cabinetAmbientLiveStatus",
         "cabinetAmbientRmsChart",
         "cabinetAmbientActivityChart",
+        "cabinetSensorHistoryStatus",
+        "cabinetSensorChartTempC",
+        "cabinetSensorChartHumidity",
+        "cabinetSensorChartLidar",
+        "cabinetSensorChartAls",
+        "cabinetSensorChartClimateActivity",
+        "cabinetSensorChartProximityActivity",
+        "cabinetSensorChartUvActivity",
     ):
         assert f'id="{mount_id}"' in INDEX_HTML, mount_id
+
+
+def test_template_declares_sensor_history_windows_and_biometrics_grain_caption() -> None:
+    section_start = INDEX_HTML.index('id="cabinet" data-panel="cabinet"')
+    section_end = INDEX_HTML.index("</section>", section_start)
+    section_html = INDEX_HTML[section_start:section_end]
+
+    for window in ("24h", "3d", "7d"):
+        assert f'data-cabinet-sensor-window="{window}"' in section_html
+    assert "Nano sensor history" in section_html
+    assert "Temperature" in section_html
+    assert "Lidar distance" in section_html
+    assert "~30s" in section_html
+    assert "biometrics" in section_html.lower()
 
 
 def test_template_declares_ambient_windows_and_biometrics_grain_caption() -> None:
@@ -139,6 +161,16 @@ def test_cabinet_sensors_js_wires_ambient_latest_and_history_contracts() -> None
     assert 'querySelectorAll("[data-cabinet-ambient-window]")' in CABINET_SENSORS_JS
 
 
+def test_cabinet_sensors_js_wires_sensor_history_contracts() -> None:
+    assert '"/api/cabinet/sensors/history?window="' in CABINET_SENSORS_JS
+    assert "function fetchSensorHistory(" in CABINET_SENSORS_JS
+    assert "function renderSensorHistory(" in CABINET_SENSORS_JS
+    assert 'querySelectorAll("[data-cabinet-sensor-window]")' in CABINET_SENSORS_JS
+    assert "SENSOR_HISTORY_CHARTS" in CABINET_SENSORS_JS
+    assert '"temp_c"' in CABINET_SENSORS_JS
+    assert '"lidar_mm"' in CABINET_SENSORS_JS
+
+
 def test_cabinet_sensors_js_polls_only_latest_and_bounds_history_state() -> None:
     timer_region = CABINET_SENSORS_JS[
         CABINET_SENSORS_JS.index("function startTimer") : CABINET_SENSORS_JS.index(
@@ -147,8 +179,10 @@ def test_cabinet_sensors_js_polls_only_latest_and_bounds_history_state() -> None
     ]
     assert "pollAmbientLatest();" in timer_region
     assert "fetchAmbientHistory" not in timer_region
+    assert "fetchSensorHistory" not in timer_region
     assert ".push(" not in CABINET_SENSORS_JS
     assert "state.ambientHistory =" in CABINET_SENSORS_JS
+    assert "state.sensorHistory =" in CABINET_SENSORS_JS
 
 
 def test_cabinet_sensors_js_draws_spike_markers_on_charts() -> None:
@@ -169,12 +203,15 @@ def test_cabinet_sensors_js_fetches_history_only_on_explicit_ui_events() -> None
         )
     ]
     assert "fetchAmbientHistory();" in activate_region
+    assert "fetchSensorHistory();" in activate_region
     assert controls_region.count("fetchAmbientHistory();") >= 2
+    assert controls_region.count("fetchSensorHistory();") >= 2
 
 
 def test_cabinet_sensors_js_preserves_last_good_ambient_data_on_errors() -> None:
     assert "state.ambientLatest =" in CABINET_SENSORS_JS
     assert "state.ambientHistory =" in CABINET_SENSORS_JS
+    assert "state.sensorHistory =" in CABINET_SENSORS_JS
     assert "keeping last good live values" in CABINET_SENSORS_JS
     assert "keeping last good charts" in CABINET_SENSORS_JS
 

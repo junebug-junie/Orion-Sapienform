@@ -13,6 +13,7 @@ The **Biometrics** service collects hardware telemetry (CPU, memory, GPU usage, 
 | `orion:biometrics:induction` | `BIOMETRICS_INDUCTION_CHANNEL` | `biometrics.induction.v1` | EWMA level/trend/volatility/spikes. |
 | `orion:biometrics:cluster` | `BIOMETRICS_CLUSTER_CHANNEL` | `biometrics.cluster.v1` | Role-weighted cluster aggregate (hub mode). |
 | `orion:spark:signal` | `SPARK_SIGNAL_CHANNEL` | `spark.signal.v1` | Bounded resource signal from cluster strain (hub mode). |
+| `orion:cabinet:ambient:spike` | `CABINET_AMBIENT_SPIKE_CHANNEL` | `cabinet.ambient.spike.v1` | Sustained cabinet ambient audio activity spike (agent mode, Athena). |
 | `orion:grammar:event` | `GRAMMAR_EVENT_CHANNEL` | `grammar.event.v1` | Node-scoped grammar trace (one trace per observed node per tick). |
 
 ### Which "how loaded is it" number to read

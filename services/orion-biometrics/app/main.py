@@ -22,6 +22,7 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from app.ambient_audio_snapshot import load_ambient_audio_snapshot
+from app.ambient_spike_detector import AmbientSpikeDetector, AmbientSpikeDetectorConfig
 from app.cabinet_snapshot import load_cabinet_sensors_snapshot
 from app.metrics import collect_biometrics, collect_disk_capacity
 from app.ilo import IloPoller
@@ -263,6 +264,13 @@ _pipeline = BiometricsPipeline(
 from app.node_catalog import NodeCatalog
 from app.grammar_emit import build_biometrics_node_grammar_events
 _NODE_CATALOG = NodeCatalog.load(settings.NODE_CATALOG_PATH)
+_AMBIENT_SPIKE_DETECTOR = AmbientSpikeDetector(
+    AmbientSpikeDetectorConfig(
+        activity_threshold=settings.AMBIENT_AUDIO_SPIKE_ACTIVITY_THRESHOLD,
+        consecutive_ticks=settings.AMBIENT_AUDIO_SPIKE_CONSECUTIVE_TICKS,
+        cooldown_sec=settings.AMBIENT_AUDIO_SPIKE_COOLDOWN_SEC,
+    )
+)
 
 
 async def publish_metrics(bus: OrionBusAsync) -> None:
@@ -317,6 +325,28 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
         await _publish(bus, settings.BIOMETRICS_SAMPLE_CHANNEL, "biometrics.sample.v1", sample)
         await _publish(bus, settings.BIOMETRICS_SUMMARY_CHANNEL, "biometrics.summary.v1", summary)
         await _publish(bus, settings.BIOMETRICS_INDUCTION_CHANNEL, "biometrics.induction.v1", induction)
+        if settings.AMBIENT_AUDIO_SPIKE_ENABLED:
+            try:
+                spike = _AMBIENT_SPIKE_DETECTOR.observe(
+                    node=sample.node or summary.node or settings.NODE_NAME,
+                    timestamp=summary.timestamp,
+                    summary=summary,
+                    source_service=settings.SERVICE_NAME,
+                    source_node=settings.NODE_NAME,
+                )
+                if spike is not None:
+                    await _publish(
+                        bus,
+                        settings.CABINET_AMBIENT_SPIKE_CHANNEL,
+                        "cabinet.ambient.spike.v1",
+                        spike,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to publish cabinet ambient spike: %s",
+                    exc,
+                    exc_info=True,
+                )
         if settings.PUBLISH_BIOMETRICS_GRAMMAR:
             try:
                 node_profile = _NODE_CATALOG.resolve(

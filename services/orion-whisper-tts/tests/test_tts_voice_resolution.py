@@ -83,6 +83,62 @@ def test_default_speaker_wav_from_settings(tmp_path) -> None:
     assert plan.kwargs["speaker_wav"] == str(wav.resolve())
 
 
+def test_default_speaker_wav_beats_voice_id(tmp_path) -> None:
+    """The live production config: TTS_DEFAULT_SPEAKER_WAV set AND a per-request
+    voice_id supplied. The env reference wins -- resolve order is
+    options.speaker_wav > tts_default_speaker_wav > voice_id >
+    tts_default_speaker (app/tts.py:85-110), so the env key outranks voice_id
+    and not merely tts_default_speaker.
+
+    Every other case in this file sets exactly one of the two, so nothing
+    covered the combination that actually ships. Added 2026-08-29 after review
+    found README payload examples documenting behavior this config makes
+    impossible.
+    """
+    wav = tmp_path / "orion_reference_v2.wav"
+    wav.write_bytes(b"RIFF")
+    plan = resolve_synthesis_plan(
+        _settings(
+            tts_voice_profile_dir=str(tmp_path),
+            tts_default_speaker_wav="orion_reference_v2.wav",
+            tts_default_speaker="Ana Florence",
+        ),
+        voice_id="Claribel Dervla",
+        language="en",
+        options=None,
+    )
+    assert plan.kwargs["speaker_wav"] == str(wav.resolve())
+    # The built-in speaker is not merely deprioritised -- XTTS is never told
+    # about it at all, so a caller passing voice_id gets silence on that field.
+    assert "speaker" not in plan.kwargs
+    assert plan.metadata["speaker"] is None
+    assert plan.metadata["speaker_wav_used"] is True
+    # voice_id is still echoed for traceability, which is exactly why metadata
+    # alone cannot tell you whether it was honoured.
+    assert plan.metadata["voice_id"] == "Claribel Dervla"
+
+
+def test_request_speaker_wav_beats_default_speaker_wav(tmp_path) -> None:
+    """options.speaker_wav is the only thing that outranks the env default --
+    this is the override the rollback/control procedure in README.md relies on.
+    """
+    default_wav = tmp_path / "orion_reference_v2.wav"
+    default_wav.write_bytes(b"RIFF")
+    override_wav = tmp_path / "orion_reference.wav"
+    override_wav.write_bytes(b"RIFF")
+    plan = resolve_synthesis_plan(
+        _settings(
+            tts_voice_profile_dir=str(tmp_path),
+            tts_default_speaker_wav="orion_reference_v2.wav",
+        ),
+        voice_id=None,
+        language="en",
+        options={"speaker_wav": "orion_reference.wav"},
+    )
+    assert plan.kwargs["speaker_wav"] == str(override_wav.resolve())
+    assert plan.metadata["speaker_wav_basename"] == "orion_reference.wav"
+
+
 def test_missing_speaker_wav_raises_loud(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="speaker_wav"):
         resolve_synthesis_plan(

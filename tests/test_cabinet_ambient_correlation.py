@@ -83,7 +83,26 @@ def test_spike_forensics_flags_fan_move():
     assert "fan moved" in spikes[0].notes
 
 
-def test_render_report_mentions_delta_coupling():
+def test_fan_rms_analysis_bins_monotonic_trend():
+    ticks = [
+        _tick("2026-08-26 02:00:00+00", 3000.0, 0.1, 35.0, 0.2),
+        _tick("2026-08-26 02:00:30+00", 3200.0, 0.1, 35.0, 0.2),
+        _tick("2026-08-26 02:01:00+00", 3100.0, 0.1, 35.0, 0.2),
+        _tick("2026-08-26 02:01:30+00", 5000.0, 0.2, 45.0, 0.3),
+        _tick("2026-08-26 02:02:00+00", 5200.0, 0.2, 45.0, 0.3),
+        _tick("2026-08-26 02:02:30+00", 5100.0, 0.2, 45.0, 0.3),
+        _tick("2026-08-26 02:03:00+00", 7000.0, 0.3, 55.0, 0.4),
+        _tick("2026-08-26 02:03:30+00", 7200.0, 0.3, 55.0, 0.4),
+        _tick("2026-08-26 02:04:00+00", 7100.0, 0.3, 55.0, 0.4),
+        _tick("2026-08-26 02:04:30+00", 7150.0, 0.3, 55.0, 0.4),
+    ]
+    out = mod.fan_rms_analysis(ticks, grain_sec=30, max_lag_ticks=2)
+    assert out is not None
+    by_pct = {row.fan_pct: row.rms_mean for row in out.bins}
+    assert by_pct[35] < by_pct[45] < by_pct[55]
+
+
+def test_render_report_mentions_fan_section():
     floor = mod.FloorStats(
         n=2,
         rms_min=1.0,
@@ -100,6 +119,14 @@ def test_render_report_mentions_delta_coupling():
         fan_pct_max=40.0,
         fan_pct_stdev=1.0,
     )
+    fan = mod.FanRmsAnalysis(
+        level_r=0.2,
+        bins=(mod.FanBinRow(fan_pct=35, n=10, rms_mean=4000.0, rms_median=3900.0),),
+        lags=(mod.FanLagRow(lag_ticks=3, lag_sec=90, r=0.33),),
+        best_lag_ticks=3,
+        best_lag_r=0.33,
+        fan_up_steps=(mod.FanStepRow(condition="fan↑ cpu↑", n=5, mean_drms=400.0),),
+    )
     text = mod.render_report(
         node="athena",
         window_hours=24,
@@ -109,17 +136,9 @@ def test_render_report_mentions_delta_coupling():
             datetime(2026, 8, 26, 3, 0, tzinfo=timezone.utc),
         ),
         floor=floor,
-        coupling=[
-            mod.CouplingRow(
-                target="measurements.fan_pct_max",
-                n=10,
-                target_stdev=0.5,
-                r_lag0=0.0,
-                best_lag_ticks=0,
-                best_r=0.0,
-            )
-        ],
+        fan_rms=fan,
+        coupling=[],
         spikes=[],
     )
-    assert "ΔRMS coupling" in text
-    assert "Level Pearson" in text
+    assert "Fan ↔ RMS" in text
+    assert "fan↑ cpu↑" in text

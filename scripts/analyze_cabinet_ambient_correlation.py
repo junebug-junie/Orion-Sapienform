@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
-"""Read-only cabinet ambient audio analysis — floor stats, delta coupling, spike forensics.
+"""Read-only cabinet ambient audio analysis — floor, fan↔RMS, deltas, spikes.
 
-v1 Pearson-on-levels was misleading: fan speed barely moves (steady acoustic floor),
-slow CPU/thermal drift inflates level correlations, and activity is derived from RMS
-(circular to correlate them).
-
-This script instead answers three separate questions:
-
-1. **Floor** — how loud and how steady is the cabinet? (descriptive stats only)
-2. **Coupling** — when host/Nano signals *change* tick-to-tick (~30s), does ΔRMS follow?
-3. **Spikes** — what else was happening at top activity windows?
+Fan *does* correlate with loudness — but tick Pearson hides it:
+  - mean RMS rises with fan pct (see bins)
+  - acoustic lags iLO fan by ~60–120s (iLO polls ~60s, biometrics ~30s)
+  - raw Δfan vs ΔRMS looks inverted when CPU drops (thermal cooldown)
 
 Data: Postgres `orion_biometrics_summary`, node `athena`, read-only.
-
-    python3 scripts/analyze_cabinet_ambient_correlation.py
-    python3 scripts/analyze_cabinet_ambient_correlation.py --window-hours 168
 """
 
 from __future__ import annotations
@@ -120,7 +112,11 @@ def pearson(xs: Sequence[float], ys: Sequence[float]) -> float | None:
 def lagged_pearson(
     xs: Sequence[float], ys: Sequence[float], lag_ticks: int
 ) -> float | None:
-    """Positive lag: ys leads xs (ys[i] paired with xs[i+lag])."""
+    """Align series with lag applied to xs (leading indicator).
+
+    lag_ticks > 0: xs[i + lag] paired with ys[i] — xs *leads* ys.
+    lag_ticks < 0: xs[i] paired with ys[i + |lag|] — ys leads xs.
+    """
     if lag_ticks == 0:
         return pearson(xs, ys)
     if lag_ticks > 0:
@@ -177,6 +173,38 @@ class FloorStats:
     fan_pct_min: float | None
     fan_pct_max: float | None
     fan_pct_stdev: float | None
+
+
+@dataclass(frozen=True)
+class FanBinRow:
+    fan_pct: int
+    n: int
+    rms_mean: float
+    rms_median: float
+
+
+@dataclass(frozen=True)
+class FanLagRow:
+    lag_ticks: int
+    lag_sec: int
+    r: float | None
+
+
+@dataclass(frozen=True)
+class FanStepRow:
+    condition: str
+    n: int
+    mean_drms: float
+
+
+@dataclass(frozen=True)
+class FanRmsAnalysis:
+    level_r: float | None
+    bins: tuple[FanBinRow, ...]
+    lags: tuple[FanLagRow, ...]
+    best_lag_ticks: int
+    best_lag_r: float | None
+    fan_up_steps: tuple[FanStepRow, ...]
 
 
 @dataclass(frozen=True)
@@ -246,6 +274,79 @@ def floor_stats(ticks: Sequence[Tick]) -> FloorStats | None:
         fan_pct_min=min(fan_vals) if fan_vals else None,
         fan_pct_max=max(fan_vals) if fan_vals else None,
         fan_pct_stdev=statistics.pstdev(fan_vals) if len(fan_vals) > 1 else None,
+    )
+
+
+def fan_rms_analysis(
+    ticks: Sequence[Tick], *, grain_sec: int, max_lag_ticks: int, min_dfan: float = 3.0
+) -> FanRmsAnalysis | None:
+    fan = [t.fields.get("measurements.fan_pct_max") for t in ticks]
+    rms = [t.rms for t in ticks]
+    cpu = [t.fields.get("pressures.cpu") for t in ticks]
+    fan_vals = [v for v in fan if v is not None]
+    if len(fan_vals) < 10:
+        return None
+
+    from collections import defaultdict
+
+    bins_map: dict[int, list[float]] = defaultdict(list)
+    for fp, r in zip(fan, rms):
+        if fp is not None:
+            bins_map[int(round(fp))].append(r)
+    bins = tuple(
+        FanBinRow(
+            fan_pct=pct,
+            n=len(vals),
+            rms_mean=statistics.mean(vals),
+            rms_median=statistics.median(vals),
+        )
+        for pct, vals in sorted(bins_map.items())
+        if len(vals) >= 3
+    )
+
+    lags: list[FanLagRow] = []
+    best_lag = 0
+    best_r: float | None = None
+    for lag in range(-2, max_lag_ticks + 1):
+        r = lagged_pearson(fan, rms, lag)
+        lags.append(FanLagRow(lag_ticks=lag, lag_sec=lag * grain_sec, r=r))
+        if r is not None and (best_r is None or abs(r) > abs(best_r)):
+            best_r = r
+            best_lag = lag
+
+    step_rows: list[FanStepRow] = []
+    up_drms: dict[str, list[float]] = {
+        "fan↑ cpu↑": [],
+        "fan↑ cpu↓": [],
+        "fan↑ cpu flat": [],
+    }
+    for i in range(1, len(ticks)):
+        fp0, fp1 = fan[i - 1], fan[i]
+        if fp0 is None or fp1 is None or fp1 - fp0 < min_dfan:
+            continue
+        dr = rms[i] - rms[i - 1]
+        c0, c1 = cpu[i - 1], cpu[i]
+        if c0 is None or c1 is None:
+            continue
+        if c1 > c0 + 0.02:
+            up_drms["fan↑ cpu↑"].append(dr)
+        elif c1 < c0 - 0.02:
+            up_drms["fan↑ cpu↓"].append(dr)
+        else:
+            up_drms["fan↑ cpu flat"].append(dr)
+    for cond, vals in up_drms.items():
+        if vals:
+            step_rows.append(
+                FanStepRow(condition=cond, n=len(vals), mean_drms=statistics.mean(vals))
+            )
+
+    return FanRmsAnalysis(
+        level_r=pearson(fan, rms),
+        bins=bins,
+        lags=tuple(lags),
+        best_lag_ticks=best_lag,
+        best_lag_r=best_r,
+        fan_up_steps=tuple(step_rows),
     )
 
 
@@ -382,18 +483,19 @@ def render_report(
     grain_sec: int,
     span: tuple[datetime, datetime] | None,
     floor: FloorStats | None,
+    fan_rms: FanRmsAnalysis | None,
     coupling: Sequence[CouplingRow],
     spikes: Sequence[SpikeRow],
 ) -> str:
     lines = [
         "# Cabinet ambient analysis report",
         "",
-        "Analysis v2: floor stats + **ΔRMS coupling** + spike forensics.",
-        "Level Pearson correlations are omitted — they confound slow drift with acoustic causation.",
+        "Fan **does** track loudness — see §2 bins and lagged correlation.",
+        "Instantaneous Δfan vs ΔRMS is misleading (thermal confound + acoustic lag).",
         "",
         f"- node: `{node}`",
         f"- window: last {window_hours:g}h",
-        f"- grain: ~{grain_sec}s (biometrics summary)",
+        f"- grain: ~{grain_sec}s (biometrics summary; iLO fan ~60s)",
     ]
     if span:
         lines.append(f"- span: `{span[0].isoformat()}` → `{span[1].isoformat()}`")
@@ -417,17 +519,58 @@ def render_report(
                 f"- Activity: p10 {floor.activity_p10:.3f}, p50 {floor.activity_p50:.3f}, p90 {floor.activity_p90:.3f}"
             )
         if floor.fan_pct_min is not None:
+            lines.append(
+                f"- Fan pct (iLO max): {floor.fan_pct_min:.0f}–{floor.fan_pct_max:.0f}% "
+                f"(σ≈{floor.fan_pct_stdev:.2f})"
+            )
+
+    if fan_rms:
+        level_r_txt = "—" if fan_rms.level_r is None else f"{fan_rms.level_r:+.3f}"
+        lines.extend(
+            [
+                "",
+                "## 2. Fan ↔ RMS (primary)",
+                "",
+                f"`fan_pct_max` is iLO max fan %. Instant Pearson r={level_r_txt} — weak because "
+                "RMS variance within each fan speed is large; **binned means** and **lag** tell the story.",
+                "| fan % | n | mean RMS | median RMS |",
+                "|---:|---:|---:|---:|",
+            ]
+        )
+        for row in fan_rms.bins:
+            lines.append(
+                f"| {row.fan_pct} | {row.n} | {row.rms_mean:.0f} | {row.rms_median:.0f} |"
+            )
+        lines.extend(
+            [
+                "",
+                "**Lagged correlation** (fan leads when lag_sec > 0):",
+                "",
+                "| lag (ticks) | lag (sec) | r |",
+                "|---:|---:|---:|",
+            ]
+        )
+        for row in fan_rms.lags:
+            r = "—" if row.r is None else f"{row.r:+.3f}"
+            mark = " ← best" if row.lag_ticks == fan_rms.best_lag_ticks else ""
+            lines.append(f"| {row.lag_ticks:+d} | {row.lag_sec:+d} | {r}{mark} |")
+        if fan_rms.fan_up_steps:
             lines.extend(
                 [
-                    f"- Fan pct: {floor.fan_pct_min:.0f}–{floor.fan_pct_max:.0f}% "
-                    f"(σ≈{floor.fan_pct_stdev:.2f}) — low fan variance ⇒ weak level↔RMS Pearson is expected",
+                    "",
+                    "**When fan steps up ≥3%** — stratify by CPU (thermal confound):",
+                    "",
+                    "| condition | n | mean ΔRMS |",
+                    "|---|---:|---:|",
                 ]
             )
+            for row in fan_rms.fan_up_steps:
+                lines.append(f"| {row.condition} | {row.n} | {row.mean_drms:+.0f} |")
 
     lines.extend(
         [
             "",
-            "## 2. Coupling: tick-to-tick ΔRMS vs Δtarget",
+            "## 3. Other signals: tick-to-tick ΔRMS vs Δtarget",
             "",
             "Answers: *when this signal moves one biometrics tick (~30s), does loudness move too?*",
             "",
@@ -444,9 +587,9 @@ def render_report(
     lines.extend(
         [
             "",
-            f"_Lag in ticks × {grain_sec}s. |r| < ~0.1 with low σ(Δtarget) ⇒ target barely moves — ignore._",
+            f"_Lag in ticks × {grain_sec}s. Δfan row often ≈0 — use §2 for fan; CPU co-movement confounds raw deltas._",
             "",
-            "## 3. Activity spike forensics",
+            "## 4. Activity spike forensics",
             "",
             "Top activity windows with host context. Activity is derived from RMS — use this table for *when*, not circular correlation.",
             "",
@@ -469,10 +612,11 @@ def render_report(
             "",
             "## How to read this",
             "",
-            "- **High RMS + mid activity** — loud floor with ongoing RMS wobble; EWMA may not have fully settled.",
-            "- **ΔRMS vs Δfan ≈ 0** — fan speed changes are not driving acoustic changes (steady fan noise floor).",
-            "- **Spikes with `no host step-change`** — likely room transients (door, voice, something outside the box).",
-            "- **Do not** merge ambient into fan pressure; keep as separate exogenous enclosure cue.",
+            "- **Higher fan % → higher mean RMS** in §2 bins — fans correlate; trust bins over single r.",
+            "- **Best lag ~60–120s** — acoustic follows iLO fan changes; don't expect same-tick Δfan↔ΔRMS.",
+            "- **fan↑ cpu↓ → ΔRMS negative** — cooldown: fans still high while machine quiets down.",
+            "- **fan↑ cpu↑ → ΔRMS positive** — load + airflow both up; this is the intuitive case.",
+            "- **Activity** = RMS volatility vs EWMA, not loudness.",
             "",
         ]
     )
@@ -485,7 +629,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--node", default="athena")
     ap.add_argument("--window-hours", type=float, default=168.0)
     ap.add_argument("--grain-sec", type=int, default=30)
-    ap.add_argument("--max-lag-ticks", type=int, default=4)
+    ap.add_argument("--max-lag-ticks", type=int, default=6)
     ap.add_argument("--top-spikes", type=int, default=8)
     ap.add_argument("--out-dir", default="/tmp/cabinet-ambient-correlation")
     args = ap.parse_args(argv)
@@ -502,6 +646,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     floor = floor_stats(ticks)
+    fan_rms = fan_rms_analysis(ticks, grain_sec=args.grain_sec, max_lag_ticks=args.max_lag_ticks)
     coupling = delta_coupling(ticks, max_lag_ticks=args.max_lag_ticks)
     spikes = spike_forensics(ticks, floor, top_n=args.top_spikes)
     span = (ticks[0].t, ticks[-1].t)
@@ -512,6 +657,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         grain_sec=args.grain_sec,
         span=span,
         floor=floor,
+        fan_rms=fan_rms,
         coupling=coupling,
         spikes=spikes,
     )

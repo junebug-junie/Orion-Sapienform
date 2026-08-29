@@ -16,13 +16,16 @@ from orion.curiosity.worldview import (
     COUNTS_CYPHER,
     LIVE_PRIORS_CYPHER,
     RECENT_SETTLED_CYPHER,
+    FindingConnectivity,
     Prior,
     WorldviewReader,
     WorldviewUnavailable,
     build_prior,
     build_turn_outcome,
+    finding_connectivity_cypher,
     hops_for_run_cypher,
     outcome_for_run_cypher,
+    read_finding_connectivity,
     read_hop_notes,
     read_run_footprint,
     read_snapshot,
@@ -950,3 +953,109 @@ def test_the_edge_footprint_counts_by_type_not_in_total() -> None:
     cypher = run_edge_footprint_cypher("a1b2c3d4e5f6")
     assert "type(r) AS label" in cypher
     assert "r.run_id = 'a1b2c3d4e5f6'" in cypher
+
+
+# --- did the finding get joined to anything ----------------------------------
+#
+# The footprint proves an edge was drawn SOMEWHERE in the run. It cannot prove
+# the findings were the things joined, and that is the claim the kickoff
+# prompt's edge instruction actually makes. First live reading, run
+# `d05ef10b303a` on 2026-08-29 -- the first run after the instruction shipped:
+# 2 findings, 0 joined, on a run that refuted two priors and wrote findings
+# plainly bearing on a third. The instruction did not take on its first outing,
+# and without this read nothing in the system would have said so.
+
+
+_CONNECTED = "AS connected"
+
+
+def test_connectivity_is_not_derivable_from_the_footprint_counts() -> None:
+    """THE WHOLE JUSTIFICATION FOR THIS METRIC, as a test.
+
+    Both cases below have an IDENTICAL footprint -- `Finding 3` and three
+    edges. In the first, one finding carries all three edges and two are
+    orphans; in the second, each finding carries one and none are. If this
+    metric could be computed from the numbers already collected it would be
+    redundant with `run_footprint_cypher` and should not exist, so these two
+    reading differently is the reason it does.
+    """
+    hoarded = _FakeReader(answers={_CONNECTED: [{"total": 3, "connected": 1}]})
+    spread = _FakeReader(answers={_CONNECTED: [{"total": 3, "connected": 3}]})
+
+    assert read_finding_connectivity(hoarded, "abc123").orphaned == 2
+    assert read_finding_connectivity(spread, "abc123").orphaned == 0
+
+
+def test_the_degree_is_counted_per_finding_not_per_edge() -> None:
+    """A finding with three edges must count ONCE.
+
+    Without the per-finding `WITH f, count(r)` collapse this query is a second
+    edge count wearing a different name, which is exactly the redundancy the
+    test above says it must not be. Asserted on the query text because the
+    fake cannot execute Cypher: verified against a live FalkorDB on
+    2026-08-29, where adding a second edge to an already-joined finding left
+    `connected` at 2 rather than moving it to 3.
+    """
+    cypher = finding_connectivity_cypher("abc123")
+    assert "WITH f, count(r) AS deg" in cypher
+    assert "sum(CASE WHEN deg > 0 THEN 1 ELSE 0 END)" in cypher
+
+
+def test_the_match_is_undirected_so_any_join_counts() -> None:
+    """`joined to anything` is the question, so direction must not be in it.
+
+    Every edge the prompt teaches points outward from the finding, which makes
+    a directed match pass every test written from those examples while
+    answering a narrower question than the name promises.
+    """
+    cypher = finding_connectivity_cypher("abc123")
+    assert "(f)-[r]-()" in cypher
+    assert "->" not in cypher, "a directed match answers a narrower question"
+
+
+def test_an_unreadable_graph_is_none_and_no_findings_is_zero() -> None:
+    """The distinction this whole module exists to preserve, once more.
+
+    `None` is "the graph did not answer". `total=0` is "this run wrote no
+    findings", which is an ordinary run that spent its turn revising priors --
+    reporting that as unreadable would cry wolf on a healthy run.
+    """
+    assert read_finding_connectivity(_FakeReader(raises=True), "abc123") is None
+
+    empty = read_finding_connectivity(_FakeReader(), "abc123")
+    assert empty == FindingConnectivity(total=0, connected=0)
+    assert empty.summary() == "no findings"
+
+
+def test_connectivity_refuses_a_non_hex_run_id() -> None:
+    """Same injection guard as every other per-run read here. The reader
+    swallows the ValueError into `None` rather than raising it into the tick,
+    which is what the footprint does with an unreadable graph."""
+    with pytest.raises(ValueError):
+        finding_connectivity_cypher("'; MATCH (n) DETACH DELETE n //")
+
+    reader = _FakeReader(answers={_CONNECTED: [{"total": 9, "connected": 9}]})
+    assert read_finding_connectivity(reader, "not-hex") is None
+    assert reader.queries == [], "a rejected run_id must never reach the graph"
+
+
+def test_a_broken_instrument_is_not_flattened_into_a_healthy_reading() -> None:
+    """`connected > total` is impossible by construction, so it means the query
+    or the driver changed under us. Clamping it would render as a perfectly
+    healthy run and hide the one failure that makes every other reading here
+    untrustworthy."""
+    reader = _FakeReader(answers={_CONNECTED: [{"total": 2, "connected": 5}]})
+    result = read_finding_connectivity(reader, "abc123")
+    assert result.connected == 5 and result.total == 2
+    assert result.orphaned == 0
+    assert result.summary() == "5/2 joined"
+
+
+def test_the_summary_reports_the_live_all_orphaned_case() -> None:
+    """Run `d05ef10b303a`, read from the live graph on 2026-08-29. This is the
+    string that would have appeared in the `wrote=` log line had the metric
+    been deployed one run earlier."""
+    reader = _FakeReader(answers={_CONNECTED: [{"total": 2, "connected": 0}]})
+    result = read_finding_connectivity(reader, "d05ef10b303a")
+    assert result.summary() == "0/2 joined"
+    assert result.orphaned == 2

@@ -624,6 +624,42 @@ the logs. The startup line reports the pace it actually resolved:
 curiosity_investigation started tick=300.0s cooldown=8400s(floor=1800.0s) cap=6 window=08-22 America/Denver ...
 ```
 
+#### Did the finding get joined to anything
+
+Each completed run logs what it wrote and whether those writes connect:
+
+```text
+curiosity_investigation_journaled run=d05ef10b303a chars=2143 wrote=Finding 2, Hop 1, PriorRevision 2, TurnOutcome 1 evidence=0/2 joined hops=1 ...
+```
+
+`wrote=` counts nodes and edges. `evidence=` counts **findings that carry at
+least one edge**, and the two cannot be derived from each other: three edges
+hanging off one finding and one edge on each of three findings produce an
+identical `wrote=`, and only the second is what the kickoff prompt asks Orion
+for. A finding joined to the claim it bears on is evidence; a finding that
+points at nothing is a note nothing can use next run.
+
+Three readings, three different meanings:
+
+| `evidence=` | Means |
+| --- | --- |
+| `3/3 joined` | every finding this run wrote is attached to a claim |
+| `0/2 joined` | Orion wrote findings and connected none of them |
+| `no findings` | an ordinary run that spent its turn elsewhere — not a failure |
+| `unreadable` | the graph did not answer; **not** the same as `0/0` |
+
+It is scoped to what **this** run connected, read immediately after the turn,
+so a later run that joins an older finding does not retroactively improve an
+earlier number — the instruction says to connect the finding in the same breath
+as writing it, and that is the thing being measured.
+
+First live reading, run `d05ef10b303a` on 2026-08-29, the first run after the
+edge instruction shipped: `0/2 joined`, on a run that refuted two priors and
+wrote findings plainly bearing on a third. The footprint alone read as a
+productive run, because it was one. One run is one sample and not yet a verdict
+on the instruction — this exists so the next twenty are readable without anyone
+hand-querying FalkorDB.
+
 **What it shows Orion.** Its own open priors (ordered by how uncertain *it*
 said it was, and the prompt says the ordering is not neutral), a random sample
 of Juniper-approved crystallizations and concept-induction judgements, what it

@@ -57,7 +57,7 @@ None. Uses the service's existing `biometrics_node_stale_after_sec`
 pytest tests/test_absence_sweep_wiring.py -q                    -> 5 passed
 pytest tests/test_absence_sweep_wiring.py tests/test_capability_absence_signal.py \
        tests/test_biometrics_pressure_organ.py tests/test_node_pressure_reducer.py -q
-                                                                -> 49 passed
+                                                                -> 40 passed
 pytest services/orion-substrate-runtime/tests -q --continue-on-collection-errors
                                                                 -> 305 passed, 17 failed, 1 error
 ```

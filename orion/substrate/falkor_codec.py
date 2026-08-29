@@ -17,6 +17,7 @@ from typing import Any
 from orion.core.schemas.cognitive_substrate import (
     BaseSubstrateNodeV1,
     ConceptNodeV1,
+    EntityNodeV1,
     EvidenceNodeV1,
     NodeRefV1,
     SubstrateActivationV1,
@@ -100,10 +101,30 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
     }
 
 
+# Node kinds this codec can round-trip through durable Falkor storage.
+#
+# `entity` joined concept/evidence on 2026-08-29 after a live outage: the
+# topic-foundry adapter has always emitted EntityNodeV1 for the entities its
+# enrichment extracts, and both this function and FalkorSubstrateStore.
+# upsert_node RAISED on them. Because SubstrateGraphMaterializer.apply_record
+# writes incrementally, that exception aborted the entire ingest *before any
+# edge was written* -- observed live as
+# `concepts_written=18 entities_written=0 edges_written=0` on the substrate
+# graph and `132/0/0` on the AI Town graph, leaving 18 orphaned Evidence
+# nodes with no edges and adding no structure at all. Entities were the one
+# node kind the pipeline actually produced and the store refused.
+#
+# This is deliberately NOT "allow every kind": the remaining kinds in
+# _LABEL_BY_KIND have no producer writing them to this store, and adding
+# encode/decode for a kind nothing emits would be a keyword cathedral. Add a
+# kind here when something real writes it, with a decoder in the same patch.
+DURABLE_NODE_KINDS: tuple[str, ...] = ("concept", "evidence", "entity")
+
+
 def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) -> dict[str, Any]:
-    if node.node_kind not in ("concept", "evidence"):
+    if node.node_kind not in DURABLE_NODE_KINDS:
         raise ValueError(
-            "falkor durable path supports concept and evidence nodes only; "
+            f"falkor durable path supports {', '.join(DURABLE_NODE_KINDS)} nodes only; "
             f"got node_kind={node.node_kind!r}"
         )
     props = _common_node_properties(node, identity_key)
@@ -113,6 +134,10 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
         props["taxonomy_path_json"] = _json_list(getattr(node, "taxonomy_path", None))
         props.update(_dynamics_properties_from_metadata(node.metadata))
         props.update(_topic_foundry_properties_from_metadata(node.metadata))
+    elif node.node_kind == "entity":
+        props["label"] = getattr(node, "label")
+        props["entity_type"] = getattr(node, "entity_type", "unknown")
+        props["aliases_json"] = _json_list(getattr(node, "aliases", None))
     else:
         props["evidence_type"] = getattr(node, "evidence_type")
         props["content_ref"] = getattr(node, "content_ref")
@@ -483,11 +508,37 @@ def decode_evidence_node(row: Mapping[str, Any]) -> EvidenceNodeV1 | None:
     )
 
 
+def decode_entity_node(row: Mapping[str, Any]) -> EntityNodeV1 | None:
+    if row.get("node_kind") != "entity":
+        return None
+    return EntityNodeV1(
+        node_id=str(row["node_id"]),
+        label=str(row["label"]),
+        # EntityNodeV1 constrains entity_type to min_length=1, so a NULL or
+        # empty column from a row written before this property existed would
+        # raise here and take the whole hydration down with it. The schema's
+        # own default is the honest value for "we did not record one".
+        entity_type=str(row.get("entity_type") or "unknown"),
+        aliases=[str(item) for item in _parse_json_list(row.get("aliases_json"), field="aliases_json")],
+        anchor_scope=row["anchor_scope"],
+        subject_ref=row.get("subject_ref"),
+        promotion_state=row.get("promotion_state") or "proposed",
+        risk_tier=row.get("risk_tier") or "low",
+        temporal=_temporal_from_row(row),
+        signals=_signals_from_row(row),
+        provenance=_provenance_from_row(row),
+        metadata={},
+    )
+
+
 def decode_node(row: Mapping[str, Any]) -> BaseSubstrateNodeV1 | None:
     node = decode_concept_node(row)
     if node is not None:
         return node
-    return decode_evidence_node(row)
+    node = decode_evidence_node(row)
+    if node is not None:
+        return node
+    return decode_entity_node(row)
 
 
 def decode_edge(row: Mapping[str, Any]) -> SubstrateEdgeV1 | None:

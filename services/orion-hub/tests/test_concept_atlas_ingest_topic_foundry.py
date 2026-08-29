@@ -1699,3 +1699,108 @@ def test_speaker_set_cannot_drift_from_the_columns_that_produce_it() -> None:
     )
 
     assert _PARTICIPATION_RESOLVED_SPEAKERS == frozenset(_TOPIC_FOUNDRY_COLUMN_SPEAKERS.values())
+
+
+# --- a run that wrote nothing must not answer available: true ----------------
+#
+# The ingest wrapper now catches per-node failures so one unwritable node
+# cannot cost the run its edges (live 2026-08-29: the store raised on the first
+# EntityNodeV1 and the run ended concepts_written=18 edges_written=0). Taken
+# alone, that resilience is strictly worse than the abort it replaced when the
+# STORE is down rather than a node being bad: every write raises, every one is
+# caught and counted, apply_record completes normally, and the route reports
+# `available: true` with all counts at zero -- indistinguishable in the
+# scheduler's tick log from "no new data".
+
+
+class _StoreThatRefusesEverything:
+    """Every node write fails -- e.g. FalkorDB unreachable."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def upsert_node(self, *, identity_key=None, node=None, skip_metadata_keys=None):
+        raise ConnectionError("Error 111 connecting to 127.0.0.1:6380. Connection refused.")
+
+    def upsert_edge(self, *, identity_key, edge):
+        raise ConnectionError("Error 111 connecting to 127.0.0.1:6380. Connection refused.")
+
+
+def test_ingest_that_wrote_nothing_reports_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    fake_get, _ = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, _StoreThatRefusesEverything(InMemorySubstrateGraphStore()))
+
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["available"] is False, "a run that wrote nothing is not a successful ingest"
+    assert body["reason"] in ("substrate_store_wrote_nothing", "substrate_store_write_failed")
+    assert body["concepts_written"] == 0
+    assert body["edges_written"] == 0
+
+
+def test_a_single_unwritable_node_kind_still_reports_available(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of the same guard: a run that skipped something but still
+    wrote a real graph IS available -- reporting it unavailable would throw away
+    the edges the resilience exists to preserve. The skip is surfaced in the
+    payload instead."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    class _RefusesEvidenceOnly:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def upsert_node(self, *, identity_key=None, node=None, skip_metadata_keys=None):
+            if node.node_kind == "evidence":
+                raise ValueError("durable writes support concept nodes only; got node_kind='evidence'")
+            self._inner.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
+
+    store = InMemorySubstrateGraphStore()
+    fake_get, _ = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, _RefusesEvidenceOnly(store))
+
+    body = client.post("/api/substrate/concepts/ingest-topic-foundry").json()
+
+    assert body["available"] is True
+    assert body["concepts_written"] == 2, "concepts still landed"
+    assert body["skipped_nodes"] == 2, "the refused evidence nodes are reported, not hidden"
+    assert body["skipped_node_kinds"] == ["evidence"]
+    assert body["skipped_edges"] == 2, "supports edges to the skipped evidence are dropped, not MERGE-phantomed"
+    # the phantom check: nothing bare was conjured by upsert_edge's MERGE
+    assert {n.node_kind for n in store.snapshot().nodes.values()} == {"concept"}
+
+
+def test_a_clean_ingest_reports_zero_skips(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skip fields must stay at zero on a healthy run, or every ingest
+    reads as degraded."""
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    fake_get, _ = _make_fake_get(topics_payload=_topics_payload_normal())
+    _patch_topic_foundry_client(monkeypatch, fake_get)
+    _patch_base_url(monkeypatch, FAKE_BASE_URL)
+    _patch_store(monkeypatch, InMemorySubstrateGraphStore())
+
+    body = client.post("/api/substrate/concepts/ingest-topic-foundry").json()
+    assert body["available"] is True
+    assert body["skipped_nodes"] == 0
+    assert body["skipped_edges"] == 0
+    assert body["skipped_node_kinds"] == []

@@ -38,6 +38,7 @@ from orion.graph.falkor_client import (
 )
 from orion.graph.property_guard import sanitize_metadata
 from orion.substrate.falkor_codec import (
+    DURABLE_NODE_KINDS,
     JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS,
     decode_edge,
     decode_node,
@@ -131,6 +132,17 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     "taxonomy_path_json",
     "evidence_type",
     "content_ref",
+    # entity nodes; without these the generic MATCH (n:SubstrateNode)
+    # hydration returns them with every entity column NULL and
+    # decode_entity_node falls back to "unknown"/[] for real stored values.
+    "entity_type",
+    "aliases_json",
+    # topic_id has had a complete encode/decode pair since the topic-foundry
+    # work (_topic_foundry_properties_from_metadata /
+    # _topic_foundry_metadata_from_row) and was simply never listed here, so
+    # the decoder could only ever see NULL and drop it. Every hydrated node
+    # therefore lost its cluster id -- and the atlas colours nodes by it.
+    "topic_id",
     "anchor_scope",
     "subject_ref",
     "promotion_state",
@@ -398,7 +410,7 @@ class FalkorSubstrateStore:
             except Exception:
                 logger.warning("falkor_substrate_legacy_node_invalid")
                 continue
-            if getattr(node, "node_kind", None) not in ("concept", "evidence"):
+            if getattr(node, "node_kind", None) not in DURABLE_NODE_KINDS:
                 logger.warning(
                     "falkor_substrate_legacy_node_skipped node_kind=%s node_id=%s",
                     getattr(node, "node_kind", None),
@@ -556,9 +568,13 @@ class FalkorSubstrateStore:
         next ``snapshot()`` call detects the mismatch and re-hydrates from
         durable Falkor, which is unaffected by this narrow window.
         """
-        if getattr(node, "node_kind", None) not in ("concept", "evidence"):
+        # Derived from the codec's DURABLE_NODE_KINDS rather than repeating the
+        # tuple: these two guards were separate hardcoded copies of the same
+        # list, so widening one without the other would swap a clear rejection
+        # for a confusing encode error one frame deeper.
+        if getattr(node, "node_kind", None) not in DURABLE_NODE_KINDS:
             raise ValueError(
-                "FalkorSubstrateStore durable writes support concept and evidence nodes only; "
+                f"FalkorSubstrateStore durable writes support {', '.join(DURABLE_NODE_KINDS)} nodes only; "
                 f"got node_kind={getattr(node, 'node_kind', None)!r}"
             )
         node = _with_sanitized_metadata(node)

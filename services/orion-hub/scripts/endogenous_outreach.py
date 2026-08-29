@@ -649,6 +649,52 @@ def _fetch_recent_turns(session_id: Optional[str]) -> List[Tuple[str, str]]:
     return turns
 
 
+def grounding_summary(ctx: OutreachContext) -> Dict[str, Any]:
+    """Which grounding lanes actually made it into this tick's prompt.
+
+    Recorded into `endogenous_outreach_decisions.result_json` so the question
+    "did that outreach actually see a daydream?" has an answer after the fact.
+    It did not before (found 2026-08-28, right after the daydream lane went
+    live): the prompt is built in memory, handed to generation, and dropped --
+    it is not in the decision log, not in the container logs, and not in
+    Postgres. `emit_observation` puts it on the substrate as a molecule, but
+    that has no queryable Postgres sink either.
+
+    So every lane added to this prompt was, until now, unfalsifiable in
+    production: an outreach that silently lost a lane and one that never had
+    it look identical. Booleans and counts only -- deliberately NOT the
+    caption or summary text, which would copy real content into a second
+    store with its own retention (`services/orion-hub/README.md` §4.1 states
+    the daydream lane reads exactly one `chain_json` key and no seed material;
+    logging the text here would quietly widen that).
+    """
+    daydream_age = None
+    if ctx.daydream:
+        daydream_age = round(float(ctx.daydream[0]))
+    return {
+        "daydream": ctx.daydream is not None,
+        "daydream_age_sec": daydream_age,
+        "curiosity_summaries": len(ctx.curiosity_summaries),
+        "recent_turns": len(ctx.recent_turns),
+        "tension": ctx.tension_reason is not None,
+        "chat_presence": ctx.presence is not None,
+        # Reports the RENDERED fragment, not the fetched row. `presence_fragment`
+        # returns None for any state that is not present/recent (an empty room is
+        # the default expectation most of the time), so `fetch_presence` handing
+        # back a full `absent` dict renders NO camera line. Reading
+        # `is not None` here claimed a lane the prompt did not contain --
+        # review finding, and it was wrong on live data at the time, since cam0
+        # sat `absent`. Anything reported here must be traceable to prompt text.
+        "embodied_presence": bool(
+            ctx.embodied_presence
+            and presence_fragment(
+                ctx.embodied_presence.get("state"),
+                ctx.embodied_presence.get("since_sec"),
+            )
+        ),
+    }
+
+
 def build_outreach_prompt(ctx: OutreachContext) -> str:
     """Render the generation prompt from real context.
 
@@ -850,6 +896,11 @@ class EndogenousOutreach:
         self._sent_today = 0
         self._counter_day: Optional[date] = None
         self._last_result: Dict[str, Any] = {}
+        # Set once per cycle, immediately after context is gathered; read by
+        # `_record`. Reset to None at the top of every cycle so a gate that
+        # returns BEFORE context exists (quiet_hours, cooldown, daily_cap)
+        # cannot inherit the previous tick's lanes -- that would be worse than
+        # recording nothing, since it would read as evidence.
 
     # -- connection registry (called from websocket_handler) ---------------
 
@@ -1110,11 +1161,23 @@ class EndogenousOutreach:
         ctx = await self._gather_context(session_id)
         prompt = build_outreach_prompt(ctx)
         if not prompt:
+            # No `grounding` on this row on purpose: the key means "lanes that
+            # reached the prompt", and there is no prompt. `is_empty()`
+            # deliberately ignores `daydream`/`embodied_presence`, so a
+            # populated daydream CAN land here -- recording it would assert a
+            # lane reached a prompt that was never built. `reason` already
+            # separates this row from a gated one.
             return self._record(
                 {"outreach": False, "reason": "no_grounding_context"},
                 forced=force,
                 tension_reason=tension_reason,
             )
+        # A local, not an instance attribute. Same reasoning as `forced` above
+        # (2026-08-22 review): shared state read back after an `await` can be
+        # overwritten by a concurrent tick, and `offer_message` -- a second,
+        # live-wired producer of decision rows that never builds an
+        # `OutreachContext` -- would inherit whatever the last cycle left.
+        grounding = grounding_summary(ctx)
 
         correlation_id = str(uuid4())
         raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
@@ -1127,12 +1190,14 @@ class EndogenousOutreach:
                 {"outreach": False, "reason": "empty_generation", "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
+                grounding=grounding,
             )
         if is_pass_response(text):
             return self._record(
                 {"outreach": False, "reason": "orion_passed", "generation": gen_debug},
                 forced=force,
                 tension_reason=tension_reason,
+                grounding=grounding,
             )
 
         # Re-gate immediately before delivery. Generation is a bus RPC bounded
@@ -1155,6 +1220,7 @@ class EndogenousOutreach:
                 },
                 forced=force,
                 tension_reason=tension_reason,
+                grounding=grounding,
             )
 
         await self._deliver(
@@ -1184,6 +1250,7 @@ class EndogenousOutreach:
             },
             forced=force,
             tension_reason=tension_reason,
+            grounding=grounding,
         )
 
     # -- delivery on behalf of another loop --------------------------------
@@ -1282,9 +1349,16 @@ class EndogenousOutreach:
             )
 
     def _record(
-        self, result: Dict[str, Any], *, forced: bool, tension_reason: Optional[Any] = None
+        self,
+        result: Dict[str, Any],
+        *,
+        forced: bool,
+        tension_reason: Optional[Any] = None,
+        grounding: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         result["at"] = datetime.now(timezone.utc).isoformat()
+        if grounding is not None:
+            result["grounding"] = dict(grounding)
         self._last_result = result
         # Durable trail for every decision cycle, not just the ones that
         # ship -- see endogenous_outreach_decisions.py's own module

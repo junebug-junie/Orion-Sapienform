@@ -175,11 +175,11 @@ locks the ratio rather than just the values.
 ```text
 # the two suites this touches, from the worktree
 pytest services/orion-cortex-exec/tests orion/situational -q --continue-on-collection-errors
-  92 failed, 840 passed, 14 errors
+  92 failed, 849 passed, 14 errors     (after review fixes)
 
 # same command, unmodified main (baseline)
   92 failed, 810 passed, 14 errors
-  => +30 passing, zero regressions. The 92 failures and 14 collection errors
+  => +39 passing, zero regressions. The 92 failures and 14 collection errors
      are pre-existing (e.g. "ValueError: Verb already registered: legacy.plan",
      reproduced on main; test_situation_prompt_integration's jinja
      'metadata' is undefined likewise reproduces standalone on main).
@@ -198,6 +198,8 @@ git diff --check -> clean
 | `reason = "no_visual_confirmation"` -> `None` (pre-patch behavior) | 6 failed |
 | `fresh = age <= max` -> `fresh = True` (ignore row age) | 1 failed (`test_camera_that_went_dark_mid_session_asks`) |
 | delete the `carbon:` block from the shipped yaml | 2 failed; `cam0` still passed |
+| remove the `identity_unread` branch (review fix 1) | 1 failed, the right one |
+| ignore `read_ok` (review fix 2) | 1 failed, the right one |
 
 The third matters most: every pre-existing router test builds its own synthetic
 policy, which is exactly how this feature stayed "fully tested" while never
@@ -256,6 +258,108 @@ docker exec orion-athena-cortex-exec-chat env | grep ORION_SITUATION_PERCEPTION_
 docker logs orion-orion-athena-vision-frame-router --since 10m | grep identity_dispatch
 # expect: at least one line with stream_id=carbon
 ```
+
+## Review findings fixed
+
+Code review (high effort) returned 12 findings; all 12 addressed. The two
+MAJOR ones were real defects that would have shipped a lying prompt.
+
+- **Finding 1 (MAJOR): the catch-all asserted a physical fact that is often
+  false.** `no_visual_confirmation` said *"your camera is closed, off, or
+  showing an empty frame"*, but a live camera with a person in frame and no
+  identity reading lands there routinely — `identity_confidence_from_artifact`
+  returns `None` when no face is in the sampled frame and deliberately returns
+  `None` for an unenrolled gallery. The brief would then carry *"Someone has
+  been in view for 15 minutes"* and *"your camera is closed"* simultaneously.
+  - Fix: a third reason, `identity_unread` ("someone is in view, you just
+    haven't verified who"), and **no wording anywhere asserts a physical
+    camera state** — Orion now says only what it has read, not why.
+  - Evidence: `test_person_in_view_without_an_identity_read_does_not_claim_a_dark_camera`
+    asserts the scene fragment and the caution coexist without contradiction;
+    `test_no_wording_anywhere_asserts_why_orion_cannot_see` bans the phrases.
+    Mutation: removing the `identity_unread` branch fails exactly that test.
+
+- **Finding 2 (MAJOR): a database outage produced a false "my camera is
+  closed" claim.** `fetch_presence_resolved` swallowed its own DB errors and an
+  unset DSN, returning `(None, None)` — indistinguishable from "answered, and
+  nobody is there". Only a *raise* reached the `except`, so a Postgres blip
+  fell through to the catch-all.
+  - Fix: it now returns a `PresenceResolution(stream_id, presence, read_ok)`
+    NamedTuple; `read_ok=False` yields no ask at all. An infrastructure fault
+    must never be laundered into a claim about the physical world.
+  - Evidence: `test_a_failed_presence_read_never_becomes_a_claim_about_the_room`
+    (also asserts no cooldown is burned). Mutation: ignoring `read_ok` fails
+    exactly that test.
+
+- **Finding 3 (MEDIUM): cross-service deploy coupling.** `identity_confirmed`
+  is written only by the new vision-window build, so until it is redeployed
+  `confirmed` was permanently `False` and Orion would doubt Juniper while
+  looking straight at her.
+  - Fix: a named `subject` also counts as confirmation — the **currently
+    deployed** build already writes a real name there on a probable/possible
+    match. The deploy order no longer matters.
+  - Evidence: `test_a_named_subject_counts_as_confirmation_on_a_pre_deploy_row`.
+
+- **Finding 4 (MEDIUM): the 120s freshness bound rested on an unvalidated
+  write cadence.** Reviewer sampled the live table and found it frozen. I
+  reproduced and went further: **both `carbon` and `cam0` sat frozen at the
+  same instant for 16+ minutes** while `orion-athena-vision-window` was
+  `Up (healthy)`, `vision-edge` was publishing (31,500 frames) and the router
+  dispatched 283 frames in 15 minutes — with **zero presence log lines and
+  zero errors** in 60 minutes of window logs. `cam0` is RTSP and cannot
+  "close", so this is a silently stalled writer, not dark cameras.
+  - This is a **pre-existing live bug, not introduced here**, and it is
+    decisive for Finding 1: a patch that concluded "the camera is off" from
+    that state would have been confidently wrong. Logged on the agent board
+    (`2998eba2`). Not fixed in this PR — different service, different cause.
+  - The 120s bound is retained but is now purely a *"do not describe this as
+    current"* gate, no longer a claim about why.
+
+- **Finding 5 (MEDIUM/LOW): a global condition was rate-limited per camera.**
+  The resolved stream flips between `carbon` and `cam0`, and each flip granted
+  a fresh 6h slot — two cameras bought two asks, a third would raise the
+  ceiling again.
+  - Fix: `no_visual_confirmation` keys on a constant `_global` scope; the other
+    two reasons stay genuinely per-camera.
+  - Evidence: `test_the_global_reason_is_not_rate_limited_per_camera`.
+
+- **Finding 6 (MEDIUM): the prose path consumed an unbounded-age row.** The
+  tier-3 fallback returns the last known row at any age; it was fed straight
+  into present-tense prose. The live frozen row would have rendered "Someone
+  has been in view for about 27 minutes."
+  - Fix: prose is gated on `row_fresh`; the identity path deliberately is not.
+  - Evidence: `test_a_frozen_row_never_renders_as_present_tense_prose`.
+
+- **Finding 7 (LOW/MEDIUM): the one-shot ask was baked into a 300s cached
+  brief**, so a single Redis claim was replayed to every turn within the TTL
+  and only the model's own compliance prevented repetition.
+  - Fix: the cached copy is stored with the ask cleared — this turn asks,
+    later cache hits do not.
+
+- **Finding 8 (LOW): a comment contradicted the shipped default.** It claimed
+  unsetting the multi-stream key restores cam0-only behavior; cortex-exec's
+  `Settings` default is `"carbon,cam0"`, so it does not. Comment corrected to
+  say so explicitly.
+
+- **Finding 9 (LOW): reported a stream it did not read.** On the
+  nothing-readable path `stream_id` fell back to `cfg.perception_stream_id` —
+  reproducing the exact dishonesty the adjacent comment cites. Now `None`.
+  - Evidence: `test_nothing_readable_reports_no_stream_id_rather_than_a_guess`.
+
+- **Finding 10 (LOW): a router test could pass vacuously.** If no frame was
+  ever sampled, `decide_identity` returned `False` because `should_dispatch`
+  was `False`, not because `kitchen` was opted out. Added the
+  `assert dispatched is not None` guard its sibling already had.
+
+- **Finding 11 (LOW): `dict()` sat outside the fail-open try** in
+  `fetch_presence`, so a driver returning a JSON string would raise out of a
+  function documented never to. Moved inside.
+
+- **Finding 12 (LOW): a `datetime` was injected into a cross-service dict.**
+  `row_updated_at` flowed into orion-hub's `OutreachContext.embodied_presence`,
+  inert today but a trap for the first caller to serialize it. `fetch_presence`
+  now returns its original shape; only the resolved path carries the timestamp.
+
 
 ## Risks / concerns
 

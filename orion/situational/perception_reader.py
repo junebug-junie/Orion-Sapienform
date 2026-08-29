@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import create_engine, text
 
@@ -126,13 +126,16 @@ def fetch_presence(stream_id: str, *, engine: Any | None = None) -> dict[str, An
                 ),
                 {"stream_id": stream_id},
             ).first()
+        if row is None or not row[0]:
+            return None
+        # dict() INSIDE the try (review finding, 2026-08-29): a driver that
+        # hands back a JSON string rather than a decoded mapping would raise
+        # here, escaping a function whose stated contract is fail-open --
+        # orion-hub's _fetch_embodied_presence relies on that contract.
+        return dict(row[0])
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_presence_read_failed err=%s", exc)
         return None
-
-    if row is None or not row[0]:
-        return None
-    return _presence_row_to_dict(row[0], row[1])
 
 
 def _presence_row_to_dict(presence_json: Any, updated_at: Any) -> dict[str, Any]:
@@ -145,6 +148,13 @@ def _presence_row_to_dict(presence_json: Any, updated_at: Any) -> dict[str, Any]
     presence has to come from this column. Named `row_updated_at` rather than
     `updated_at` so it can never be confused with, or shadowed by, a field
     inside the snapshot blob itself.
+
+    Deliberately NOT applied to `fetch_presence` (review finding, 2026-08-29):
+    that dict flows cross-service into orion-hub's
+    `OutreachContext.embodied_presence`, and injecting a non-JSON-serializable
+    datetime into a payload-shaped dict is a trap for the first caller that
+    ever tries to serialize it. Only the resolved path, whose single consumer
+    needs the age, carries this key.
     """
     out = dict(presence_json)
     if updated_at is not None and getattr(updated_at, "tzinfo", None) is None:
@@ -166,12 +176,28 @@ def presence_row_age_seconds(presence: dict[str, Any] | None) -> float | None:
         return None
 
 
+class PresenceResolution(NamedTuple):
+    """`read_ok` distinguishes "the database answered and there is nothing
+    there" from "the read never happened" (review finding, 2026-08-29).
+
+    Collapsing both into `(None, None)` was a real defect, not a style point:
+    the caller treats "no presence" as evidence that Orion cannot see, so a
+    Postgres blip -- or simply an unset `SITUATION_PERCEPTION_DSN` -- would
+    have made Orion assert out loud that its camera was off. An infrastructure
+    fault must never be laundered into a claim about the physical world.
+    """
+
+    stream_id: str | None
+    presence: dict[str, Any] | None
+    read_ok: bool
+
+
 def fetch_presence_resolved(
     stream_ids: list[str],
     *,
     max_age_seconds: float,
     engine: Any | None = None,
-) -> tuple[str | None, dict[str, Any] | None]:
+) -> PresenceResolution:
     """Pick the one camera whose presence row should speak for "where is
     Juniper right now", across several streams, in a single query.
 
@@ -188,6 +214,13 @@ def fetch_presence_resolved(
     2. a FRESH row that says `recent` -- someone just stepped out of frame
     3. the first configured stream that returned a row at all
 
+    Tier 3 has NO age bound, deliberately -- it exists so a caller can still
+    see what the last known state was. Callers must therefore check
+    `presence_row_age_seconds` themselves before presenting a tier-3 row as
+    current; `_build_perception_context` does exactly that before rendering
+    any presence prose (review finding, 2026-08-29: it previously did not,
+    and would narrate a frozen row's "in view for 27 minutes" as live).
+
     "Fresh" is judged from `row_updated_at`, never from the blob (see
     `_presence_row_to_dict`). Ties inside a tier break on the more recently
     written row, so two live cameras resolve deterministically rather than on
@@ -196,10 +229,14 @@ def fetch_presence_resolved(
     (single-stream callers such as endogenous_outreach still use that).
     """
     if not stream_ids:
-        return (None, None)
+        # Nothing was asked for, so nothing failed -- but there is also no
+        # evidence, so read_ok stays False rather than asserting a clean miss.
+        return PresenceResolution(None, None, False)
     engine = engine if engine is not None else _get_engine()
     if engine is None:
-        return (None, None)
+        # No DSN configured. Not an outage, but equally not an observation.
+        logger.warning("situation_presence_multi_no_engine streams=%s", stream_ids)
+        return PresenceResolution(None, None, False)
     try:
         with engine.connect() as conn:
             rows = conn.execute(
@@ -211,15 +248,20 @@ def fetch_presence_resolved(
             ).all()
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
         logger.warning("situation_presence_multi_read_failed err=%s", exc)
-        return (None, None)
+        return PresenceResolution(None, None, False)
 
-    found: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        if not row[1]:
-            continue
-        found[str(row[0])] = _presence_row_to_dict(row[1], row[2])
+    try:
+        found: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if not row[1]:
+                continue
+            found[str(row[0])] = _presence_row_to_dict(row[1], row[2])
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.warning("situation_presence_multi_decode_failed err=%s", exc)
+        return PresenceResolution(None, None, False)
     if not found:
-        return (None, None)
+        # A real answer: the table has no row for any configured stream.
+        return PresenceResolution(None, None, True)
 
     def _sort_key(item: tuple[str, dict[str, Any]]) -> float:
         age = presence_row_age_seconds(item[1])
@@ -236,12 +278,12 @@ def fetch_presence_resolved(
         ]
         if tier:
             sid, pres = min(tier, key=_sort_key)
-            return (sid, pres)
+            return PresenceResolution(sid, pres, True)
 
     for sid in stream_ids:
         if sid in found:
-            return (sid, found[sid])
-    return (None, None)
+            return PresenceResolution(sid, found[sid], True)
+    return PresenceResolution(None, None, True)
 
 
 def reset_perception_reader_engine_for_tests() -> None:

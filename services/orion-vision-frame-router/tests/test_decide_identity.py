@@ -236,6 +236,7 @@ def test_shipped_config_keeps_identity_opt_in_for_other_streams() -> None:
     policy = _real_policy()
     state = RouterState()
     state.record_activity("kitchen", ["person"], now=100.0)
+    dispatched = None
     for _ in range(30):
         decision = policy.decide(
             _frame_env(camera_id="kitchen-cam", stream_id="kitchen"),
@@ -244,7 +245,14 @@ def test_shipped_config_keeps_identity_opt_in_for_other_streams() -> None:
             image_path_exists=True,
         )
         if decision.dispatch_tier == "triggered" and decision.should_dispatch:
+            dispatched = decision
             break
+    # Without this, the test passes vacuously: if nothing is ever sampled,
+    # decide_identity returns False because should_dispatch is False, not
+    # because kitchen is opted out -- and both assertions below still hold
+    # (review finding, 2026-08-29).
+    assert dispatched is not None, "no frame was sampled in 30 tries"
+    decision = dispatched
     assert decision.dispatch_tier == "triggered"
     assert decision.identity_dispatch_cfg.get("enabled") is not True
     assert policy.decide_identity(decision, camera_id="kitchen-cam", state=state, now=100.5) is False

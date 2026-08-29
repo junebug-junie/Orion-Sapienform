@@ -158,9 +158,13 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         perception_stream_id=str(
             getattr(settings, "orion_situation_perception_stream_id", "cam0")
         ),
-        # Comma-separated. Defaults to the single-stream setting above so an
-        # unset key is exactly today's behavior rather than a silent widening
-        # of which cameras reach the prompt.
+        # Comma-separated. Falls back to the single-stream setting above only
+        # when a caller supplies no value at all -- note that cortex-exec's own
+        # Settings ships a real default of "carbon,cam0", so unsetting the env
+        # var there does NOT restore cam0-only behavior (review finding,
+        # 2026-08-29: an earlier comment here claimed it did, which would have
+        # misled anyone trying to roll back). To pin one camera, set the key
+        # explicitly rather than removing it.
         perception_stream_ids=_split_stream_ids(
             getattr(settings, "orion_situation_perception_stream_ids", None)
         )
@@ -441,8 +445,32 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
         diagnostics=diagnostics,
     )
     fragment = _build_prompt_fragment(brief, cfg.prompt_max_chars)
+
+    # The identity ask is a ONE-SHOT claim, so it must not be cached (review
+    # finding, 2026-08-29). The cooldown is claimed exactly once in Redis, but
+    # the brief that carries the resulting caution is cached for ttl_seconds
+    # (300 default) and replayed to every subsequent turn that hits the same
+    # key -- so a single claim produced the same "is that you?" instruction
+    # over and over, and the only thing standing against repetition was the
+    # caution's own "do not repeat it again once asked", which is model
+    # compliance rather than a gate. What gets cached is the same brief with
+    # the ask cleared: this turn asks, later cache hits do not.
     with _LOCK:
-        _SITUATION_CACHE[cache_key] = (now, brief, fragment)
+        if brief.perception.presence_identity_ask:
+            cacheable = brief.model_copy(
+                update={
+                    "perception": brief.perception.model_copy(
+                        update={"presence_identity_ask": None, "presence_identity_uncertain": False}
+                    )
+                }
+            )
+            _SITUATION_CACHE[cache_key] = (
+                now,
+                cacheable,
+                _build_prompt_fragment(cacheable, cfg.prompt_max_chars),
+            )
+        else:
+            _SITUATION_CACHE[cache_key] = (now, brief, fragment)
     return brief.model_dump(mode="json"), fragment.model_dump(mode="json")
 
 
@@ -842,6 +870,11 @@ class _PresenceReading:
     presence: Optional[dict[str, Any]] = None
     identity_uncertain: bool = False
     identity_ask: Optional[str] = None
+    # Whether the resolved row is recent enough to describe the present.
+    # fetch_presence_resolved's tier-3 fallback returns the last known row at
+    # ANY age, so this is the only thing standing between a frozen row and
+    # prose asserting "someone has been in view for 27 minutes" as current.
+    row_fresh: bool = False
 
 
 async def _resolve_presence_and_identity_ask(
@@ -861,23 +894,43 @@ async def _resolve_presence_and_identity_ask(
 
     The ask decision, first match wins:
 
-    * a fresh row with `identity_confirmed` -> stay silent, this is Juniper
-    * a fresh row with `identity_uncertain` -> `"unmatched_face"`
-    * anything else                          -> `"no_visual_confirmation"`
+    * the read itself failed          -> no ask at all
+    * fresh row, identity confirmed   -> stay silent, this is Juniper
+    * fresh row, identity_uncertain   -> `"unmatched_face"`
+    * fresh row, someone present      -> `"identity_unread"`
+    * anything else                   -> `"no_visual_confirmation"`
 
-    "Anything else" is intentionally broad -- a stale row (camera went dark),
-    a row saying nobody is present, or no readable row at all (vision stack
-    down). This function is only ever called while assembling a real turn, so
-    someone IS talking to Orion; the question is only whether Orion has fresh
-    visual proof of who. Each reason carries its own cooldown TTL, because
-    `no_visual_confirmation` is a background condition that can hold for
-    hours rather than a transient event -- see identity_ask_cooldown._key.
+    **`identity_unread` exists because the two-reason version told a lie**
+    (review finding, 2026-08-29). `no_visual_confirmation` was the catch-all,
+    and its prompt text said "your camera is closed, off, or showing an empty
+    frame". But a live camera with a person in frame and no identity reading
+    lands there routinely -- `identity_confidence_from_artifact` returns None
+    when no face is detected in the sampled frame, and deliberately returns
+    None when the gallery is unenrolled. The brief would then carry "Someone
+    has been in view for 15 minutes" and "your camera is closed" at the same
+    time. Orion must never be handed a description that contradicts the rest
+    of its own situation brief.
+
+    Nothing here asserts a physical camera state any more. Orion knows what
+    it has READ, not why -- "no current visual read" is true whether the lid
+    is shut, the writer stalled, or the vision stack is down. Confirmed
+    necessary the same day: `substrate_embodied_presence` sat frozen for 11+
+    minutes while the frame router was healthily dispatching 283 frames, with
+    no error logged anywhere. A patch that concluded "the camera is off" from
+    that would have been confidently wrong.
+
+    `confirmed` also accepts a named `subject`, which the CURRENTLY DEPLOYED
+    vision-window build already writes on a probable/possible match. Without
+    that fallback this feature would be inert-and-wrong between deploying
+    cortex-exec and deploying vision-window: `identity_confirmed` would be
+    absent, every read would look unconfirmed, and Orion would open
+    conversations doubting Juniper even while looking straight at her.
 
     Fail-open like every other provider here: any failure yields no ask.
     """
     stream_ids = cfg.perception_stream_ids or [cfg.perception_stream_id]
     try:
-        stream_id, presence = await asyncio.to_thread(
+        resolution = await asyncio.to_thread(
             fetch_presence_resolved,
             stream_ids,
             max_age_seconds=cfg.identity_ask_max_presence_age_seconds,
@@ -887,16 +940,29 @@ async def _resolve_presence_and_identity_ask(
         diagnostics.provider_errors["perception_presence"] = str(exc)
         return _PresenceReading()
 
+    stream_id, presence = resolution.stream_id, resolution.presence
+    if not resolution.read_ok:
+        # The read never happened (database error, or no DSN configured).
+        # Absence of data is NOT evidence that Orion cannot see -- saying so
+        # would launder an infrastructure fault into a claim about the room.
+        diagnostics.provider_status["perception_presence"] = "unread"
+        return _PresenceReading(stream_id=stream_id, presence=presence, row_fresh=False)
+
     age = presence_row_age_seconds(presence)
     fresh = age is not None and age <= cfg.identity_ask_max_presence_age_seconds
 
     identity_uncertain = bool(fresh and presence and presence.get("identity_uncertain"))
-    confirmed = bool(fresh and presence and presence.get("identity_confirmed"))
+    subject = str((presence or {}).get("subject") or "").strip().lower()
+    named_subject = bool(fresh and subject and subject not in ("unknown", "none"))
+    confirmed = bool(fresh and presence and presence.get("identity_confirmed")) or named_subject
+    someone_present = bool(fresh and presence and presence.get("state") == "present")
 
     if confirmed:
         reason = None
     elif identity_uncertain:
         reason = "unmatched_face"
+    elif someone_present:
+        reason = "identity_unread"
     else:
         reason = "no_visual_confirmation"
 
@@ -904,13 +970,20 @@ async def _resolve_presence_and_identity_ask(
     if reason is not None:
         ttl = (
             cfg.identity_ask_cooldown_seconds
-            if reason == "unmatched_face"
+            if reason in ("unmatched_face", "identity_unread")
             else cfg.identity_ask_unconfirmed_cooldown_seconds
         )
-        # Key on the resolved stream when there is one, else the first
-        # configured stream -- a stable key even when nothing is readable, so
-        # a total vision outage still gets rate-limited rather than asking
-        # every turn.
+        # `no_visual_confirmation` is keyed on a CONSTANT, not the resolved
+        # stream (review finding, 2026-08-29). The other two reasons are
+        # genuinely per-camera facts -- this face, at this camera, did not
+        # match. "I have no confirmed read of anyone anywhere" is a single
+        # global condition, and keying it per stream meant the resolved
+        # stream flipping between carbon and cam0 handed out a fresh 6h slot
+        # each time it moved. Two cameras bought two asks; a third would have
+        # silently raised the ceiling again.
+        key_scope = (
+            "_global" if reason == "no_visual_confirmation" else (stream_id or stream_ids[0])
+        )
         #
         # No try/except: try_claim_identity_ask is itself documented "never
         # raises" (fail-open internally, logging a warning instead) --
@@ -919,14 +992,13 @@ async def _resolve_presence_and_identity_ask(
         # atomic call (review finding, 2026-08-26: a separate check-then-set
         # let two concurrent cortex-exec replicas both read "not in cooldown"
         # and both ask).
-        if await try_claim_identity_ask(
-            stream_id or stream_ids[0], reason=reason, ttl_seconds=ttl
-        ):
+        if await try_claim_identity_ask(key_scope, reason=reason, ttl_seconds=ttl):
             identity_ask = reason
 
     return _PresenceReading(
         stream_id=stream_id,
         presence=presence,
+        row_fresh=fresh,
         # Mirrors the pre-2026-08-29 meaning exactly: the unmatched-face
         # observation, gated by ITS cooldown. Kept so the existing structured
         # consumer of this boolean reads the same thing it always did.
@@ -1012,7 +1084,16 @@ async def _build_perception_context(
     # PROSE fragment: the identity-ask decision above deliberately does not
     # share this gate, because "the camera went dark" is a reason to ask, not
     # a reason to say nothing.
-    presence = reading.presence
+    # `row_fresh`, not merely `presence` (review finding, 2026-08-29):
+    # fetch_presence_resolved's tier-3 fallback returns the last known row at
+    # ANY age so a caller can still see the last known state. Feeding that
+    # straight into present-tense prose is a confabulation with a real
+    # referent -- the exact failure the percept staleness gate above exists
+    # to prevent, reintroduced one field over. Live proof the same day: both
+    # presence rows sat frozen for 11+ minutes reading `state=present,
+    # last_seen_sec=0.0` while nothing was updating them, which would have
+    # rendered as "Someone has been in view for 27 minutes."
+    presence = reading.presence if reading.row_fresh else None
     if presence:
         presence_state = presence.get("state")
         presence_since_sec = presence.get("since_sec")
@@ -1029,10 +1110,13 @@ async def _build_perception_context(
         scene_summary=scene_summary,
         observed_at=percept.get("observed_at"),
         observation_age_seconds=age,
-        # The camera that actually won resolution, not the first configured
-        # one -- reporting a stream_id Orion did not read from is how the
-        # 2026-08-29 "narrating an empty room" bug stayed invisible.
-        stream_id=reading.stream_id or cfg.perception_stream_id,
+        # The camera that actually won resolution -- and None when nothing
+        # was read, rather than falling back to a configured name Orion never
+        # actually looked at. Reporting a stream_id Orion did not read from is
+        # how the "narrating an empty room" bug stayed invisible; the fallback
+        # this line originally carried reproduced that same dishonesty on the
+        # nothing-readable path (review finding, 2026-08-29).
+        stream_id=reading.stream_id,
         presence_state=presence_state,
         presence_since_sec=presence_since_sec,
         presence_subject=presence_subject,
@@ -1288,7 +1372,8 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # camera is dark. Handing the model a description that does not match
         # what it is being asked to act on is how a warm clarifying question
         # turns into a confabulated one.
-        if brief.perception.presence_identity_ask == "unmatched_face":
+        ask = brief.perception.presence_identity_ask
+        if ask == "unmatched_face":
             ask_caution = (
                 "You don't recognize the person currently in view with confidence "
                 "(a camera identity check came back unsure, not a name match). If it "
@@ -1297,15 +1382,33 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
                 "Juniper?\" This has not been asked recently for this camera, so it is "
                 "safe to ask now; do not repeat it again this conversation once asked."
             )
-        else:
+        elif ask == "identity_unread":
+            # Someone IS in frame; only the identity read is missing. The
+            # earlier catch-all wording claimed the camera was closed here,
+            # which contradicted this same brief's own "Someone has been in
+            # view for 15 minutes" line (review finding, 2026-08-29).
             ask_caution = (
-                "You have no fresh visual confirmation of who you are talking to right "
-                "now -- your camera is closed, off, or showing an empty frame, so you "
-                "cannot see whether this is Juniper. Do not assert that you can see "
-                "anyone. If it feels natural in this turn, ask ONE brief, warm "
-                "clarifying question -- e.g. \"I can't see you at the moment -- is that "
-                "you, Juniper?\" This has not been asked recently, so it is safe to ask "
+                "Someone is in view right now, but you have no confirmed identity "
+                "read for them -- you can see a person, you just haven't verified "
+                "it's Juniper. If it feels natural in this turn, ask ONE brief, warm "
+                "clarifying question -- e.g. \"I want to make sure -- is that you, "
+                "Juniper?\" This has not been asked recently, so it is safe to ask "
                 "now; do not repeat it again this conversation once asked."
+            )
+        else:
+            # Says only what Orion actually knows -- that it has no current
+            # read. NOT why. A closed lid, a stalled presence writer and a
+            # down vision stack are indistinguishable from here, and the
+            # earlier wording picked one and asserted it.
+            ask_caution = (
+                "You have no current visual read of who you are talking to -- you "
+                "cannot confirm from what you can see that this is Juniper. Do not "
+                "assert that you can see anyone, and do not guess at why (a closed "
+                "lid, a camera that is off and a stalled sensor all look identical "
+                "from here). If it feels natural in this turn, ask ONE brief, warm "
+                "clarifying question -- e.g. \"I can't see you at the moment -- is "
+                "that you, Juniper?\" This has not been asked recently, so it is "
+                "safe to ask now; do not repeat it again this conversation once asked."
             )
         cautions.insert(0, ask_caution)
     # The cautions are appended AFTER truncation, never inside it.

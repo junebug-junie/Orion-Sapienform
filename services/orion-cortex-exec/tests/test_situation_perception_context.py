@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from orion.situational import context as situation_mod
+from orion.situational.perception_reader import PresenceResolution
 from orion.situational.context import (
     SituationSettings,
     _build_perception_context,
@@ -87,7 +88,7 @@ def _no_real_db(monkeypatch):
     monkeypatch.setattr(
         situation_mod,
         "fetch_presence_resolved",
-        lambda stream_ids, *, max_age_seconds: (None, None),
+        lambda stream_ids, *, max_age_seconds: PresenceResolution(None, None, True),
     )
 
 
@@ -299,8 +300,8 @@ def _with_presence(monkeypatch, row, *, stream_id: str = "cam0", age_sec: float 
     monkeypatch.setattr(
         situation_mod,
         "fetch_presence_resolved",
-        lambda stream_ids, *, max_age_seconds: (
-            (stream_id, resolved) if resolved is not None else (None, None)
+        lambda stream_ids, *, max_age_seconds: PresenceResolution(
+            stream_id if resolved is not None else None, resolved, True
         ),
     )
 
@@ -384,7 +385,16 @@ def test_presence_prose_never_enriches_a_stale_or_unavailable_percept(monkeypatc
 
     def _spy(stream_ids, *, max_age_seconds):
         called["n"] += 1
-        return ("cam0", {"state": "present", "since_sec": 10.0, "subject": "unknown"})
+        return PresenceResolution(
+            "cam0",
+            {
+                "state": "present",
+                "since_sec": 10.0,
+                "subject": "unknown",
+                "row_updated_at": datetime.now(timezone.utc),
+            },
+            True,
+        )
 
     monkeypatch.setattr(situation_mod, "fetch_presence_resolved", _spy)
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)  # unavailable
@@ -711,3 +721,129 @@ def test_perception_disabled_never_asks(monkeypatch) -> None:
     _with_presence(monkeypatch, None)
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=False), _diag()))
     assert ctx.presence_identity_ask is None
+
+
+# --- review findings, 2026-08-29 --------------------------------------------
+
+
+def test_person_in_view_without_an_identity_read_does_not_claim_a_dark_camera(monkeypatch) -> None:
+    """Finding 1. The two-reason version put this case in the catch-all, whose
+    text said "your camera is closed, off, or showing an empty frame" -- while
+    the SAME brief said someone had been in view for 15 minutes. A live camera
+    with a person in frame and no identity reading is routine: no face in the
+    sampled frame, or an unenrolled gallery, both yield confidence None."""
+    _with_percept(monkeypatch, "A person is seated at a desk.")
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 900.0, "subject": "unknown"})
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_ask == "identity_unread"
+
+    text = _build_prompt_fragment(_brief(ctx), 4000).compact_text
+    assert "Someone has been in view" in text, "the scene still reports a visible person"
+    assert "camera is closed" not in text
+    assert "in view right now" in text
+
+
+def test_no_wording_anywhere_asserts_why_orion_cannot_see() -> None:
+    """Finding 1, generalized. Orion knows what it has READ, not why. A closed
+    lid, a stalled presence writer and a down vision stack are
+    indistinguishable from the situation brief -- and on 2026-08-29 the
+    presence table sat frozen 11+ minutes while the frame router was healthily
+    dispatching, so 'the camera is off' would have been confidently wrong."""
+    text = _build_prompt_fragment(
+        _brief(PerceptionContextV1(available=False, source="stale",
+                                   presence_identity_ask="no_visual_confirmation")),
+        4000,
+    ).compact_text
+    assert "is that you" in text.lower()
+    for claim in ("camera is closed", "camera is off", "showing an empty frame"):
+        assert claim not in text, f"must not assert a physical camera state: {claim!r}"
+
+
+def test_a_failed_presence_read_never_becomes_a_claim_about_the_room(monkeypatch) -> None:
+    """Finding 2. fetch_presence_resolved swallows its own database errors and
+    an unset DSN, so only a RAISE reached the except. A Postgres blip fell
+    through to the catch-all and Orion announced that its camera was off --
+    an infrastructure fault laundered into a claim about the physical world."""
+    _with_percept(monkeypatch)
+    monkeypatch.setattr(
+        situation_mod,
+        "fetch_presence_resolved",
+        lambda stream_ids, *, max_age_seconds: PresenceResolution(None, None, False),
+    )
+    redis = _FakeCooldownRedis()
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
+    diag = _diag()
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), diag))
+    assert ctx.presence_identity_ask is None, "no data is not evidence of no vision"
+    assert redis.set_calls == [], "a failed read must not burn a cooldown either"
+    assert diag.provider_status["perception_presence"] == "unread"
+
+
+def test_a_named_subject_counts_as_confirmation_on_a_pre_deploy_row(monkeypatch) -> None:
+    """Finding 3. `identity_confirmed` is written only by the NEW vision-window
+    build. Without this fallback, the window between deploying cortex-exec and
+    deploying vision-window would have Orion doubting Juniper out loud while
+    looking straight at her -- the currently-deployed build already writes a
+    real name into `subject` on a probable/possible match."""
+    _with_percept(monkeypatch)
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 30.0, "subject": "juniper"})
+    redis = _FakeCooldownRedis()
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_ask is None
+    assert redis.set_calls == []
+
+
+def test_a_frozen_row_never_renders_as_present_tense_prose(monkeypatch) -> None:
+    """Finding 6. The tier-3 fallback returns the last known row at ANY age so
+    a caller can still see the last known state. Feeding it into present-tense
+    prose reintroduces exactly the confabulation the percept staleness gate
+    exists to prevent. Live 2026-08-29: rows frozen 11+ min still read
+    state=present, last_seen_sec=0.0."""
+    _with_percept(monkeypatch, "An empty room.")
+    _with_presence(
+        monkeypatch,
+        {"state": "present", "since_sec": 1610.8, "subject": "unknown"},
+        age_sec=3600.0,
+    )
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.scene_summary == "An empty room.", "no fragment from a stale row"
+    assert ctx.presence_state is None
+    assert ctx.presence_since_sec is None
+    assert "in view" not in (ctx.scene_summary or "")
+
+
+def test_the_global_reason_is_not_rate_limited_per_camera(monkeypatch) -> None:
+    """Finding 5. "I have no confirmed read of anyone anywhere" is one global
+    condition, but it was keyed on the resolved stream -- which flips between
+    carbon and cam0 -- so each flip handed out a fresh 6h slot. Two cameras
+    bought two asks; a third would have raised the ceiling again."""
+    _with_percept(monkeypatch)
+    redis = _FakeCooldownRedis()
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
+
+    _with_presence(monkeypatch, None, stream_id="carbon")
+    first = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert first.presence_identity_ask == "no_visual_confirmation"
+
+    # Resolution moves to the other camera; the condition has not changed.
+    _with_presence(monkeypatch, {"state": "absent", "since_sec": 90.0, "subject": "none"},
+                   stream_id="cam0")
+    second = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert second.presence_identity_ask is None, "same global condition, still in cooldown"
+    assert {call[0] for call in redis.set_calls} == {
+        "orion:cortex-exec:identity_ask_cooldown:no_visual_confirmation:_global"
+    }
+
+
+def test_nothing_readable_reports_no_stream_id_rather_than_a_guess(monkeypatch) -> None:
+    """Finding 9. Falling back to the first configured name reproduces the very
+    dishonesty the adjacent comment claims to fix -- naming a camera Orion
+    never read from."""
+    _with_percept(monkeypatch)
+    _with_presence(monkeypatch, None)
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.stream_id is None

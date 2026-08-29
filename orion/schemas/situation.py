@@ -376,9 +376,14 @@ class PerceptionContextV1(BaseModel):
     #
     #   "unmatched_face"        a person is in view and identity_face did
     #                           not match the one enrolled subject
-    #   "no_visual_confirmation" no fresh confirmed read exists at all --
-    #                           lid closed, camera off, nobody in frame, or
-    #                           the vision stack is down
+    #   "identity_unread"       a person IS in view, fresh, but no identity
+    #                           reading exists for them (no face in the
+    #                           sampled frame, or an unenrolled gallery)
+    #   "no_visual_confirmation" no fresh read at all. Note this names what
+    #                           Orion LACKS, not a physical camera state:
+    #                           a closed lid, a stalled presence writer and a
+    #                           down vision stack are indistinguishable here,
+    #                           and an earlier version asserted the first
     #   None                    either Orion has a fresh confirmed read, or
     #                           the cooldown for that reason is already held
     #
@@ -389,7 +394,7 @@ class PerceptionContextV1(BaseModel):
     # consistently -- reason "unmatched_face" implies the boolean is True.
     # The prompt reads ONLY this field.
     presence_identity_ask: Optional[
-        Literal["unmatched_face", "no_visual_confirmation"]
+        Literal["unmatched_face", "identity_unread", "no_visual_confirmation"]
     ] = None
 
 

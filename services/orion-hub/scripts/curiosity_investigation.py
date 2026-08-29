@@ -81,6 +81,8 @@ from typing import Any, Callable, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+from .endogenous_outreach import in_quiet_hours
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.kickoff_prompt import DEFAULT_MAX_HOPS, build_kickoff_prompt
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
@@ -175,14 +177,26 @@ class SchedulingGateInputs:
     window_end_hour: int = 0
 
 
+def window_is_configured(start_hour: int, end_hour: int) -> bool:
+    """Is a waking window actually in force?
+
+    `start == end` disables it, and so does EITHER BEING NEGATIVE -- matching
+    `endogenous_outreach.in_quiet_hours`, the sibling hour-pair setting in this
+    same service whose `.env_example` documents "equal values or -1 disable it".
+    Two hour-pair configs of opposite polarity now sit in the same `.env`; an
+    operator copying the adjacent convention must not get a live, wrong window.
+    """
+    return start_hour >= 0 and end_hour >= 0 and start_hour != end_hour
+
+
 def window_seconds(start_hour: int, end_hour: int) -> int:
     """Length of the waking window, handling a window that spans midnight.
 
-    A window of zero length is not representable and would be a division by
-    zero in `paced_cooldown_sec`, so start == end means the whole day rather
-    than none of it -- the same reading as "no window configured".
+    A disabled window is the whole day rather than none of it -- `paced_cooldown_sec`
+    never divides by this when disabled, but returning 0 here would make the two
+    functions disagree about what "disabled" means.
     """
-    if start_hour == end_hour:
+    if not window_is_configured(start_hour, end_hour):
         return 24 * 3600
     if start_hour < end_hour:
         return (end_hour - start_hour) * 3600
@@ -190,13 +204,21 @@ def window_seconds(start_hour: int, end_hour: int) -> int:
 
 
 def in_window(hour: int, start_hour: int, end_hour: int) -> bool:
-    """Is `hour` inside [start, end)? Half-open, so a 08-22 window does not
-    start a run at 22:00 that finishes at 22:20."""
-    if start_hour == end_hour:
+    """Is `hour` inside [start, end)? A disabled window admits every hour.
+
+    DELEGATES THE SHAPE to `endogenous_outreach.in_quiet_hours`, which is the
+    identical half-open wrap-midnight computation, in this same service, and
+    already had the negative-hour guard this one had dropped. Only the polarity
+    differs -- that one names hours to avoid, this one names hours to use -- so
+    the disable case is handled here and the arithmetic is not written twice.
+
+    Hour granularity: a run may still START at 21:59 in an 08-22 window and
+    finish after it closes. The window bounds when a turn may begin, not when
+    it must be over.
+    """
+    if not window_is_configured(start_hour, end_hour):
         return True
-    if start_hour < end_hour:
-        return start_hour <= hour < end_hour
-    return hour >= start_hour or hour < end_hour
+    return in_quiet_hours(hour, start_hour, end_hour)
 
 
 def paced_cooldown_sec(
@@ -220,8 +242,22 @@ def paced_cooldown_sec(
     would otherwise produce a spacing shorter than a turn takes, which the run
     lock would then serialise into exactly the greedy back-to-back behaviour
     this function exists to remove.
+
+    TWO LIMITS, BOTH DELIBERATE AND NEITHER FREE.
+
+    `daily_cap <= 0` means "no cap", and with no cap there is no budget to
+    spread -- pacing falls back to the floor alone, so `DAILY_CAP=-1` inside an
+    08-22 window is up to 28 runs a day at 30-minute spacing. The window still
+    keeps them out of the small hours; it is the cap that makes them rare.
+
+    Spacing is measured from the LAST RUN, not anchored to window open, so a day
+    that starts late ends early: a first run at 15:00 with cap 6 and 2h20m
+    spacing fires three times before 22:00 and strands the other three. That is
+    the accepted trade -- anchoring to window open would mean either a burst at
+    08:00 to catch up, which is the clustering this function removes, or a
+    schedule that ignores how long turns actually take.
     """
-    if daily_cap <= 0 or start_hour == end_hour:
+    if daily_cap <= 0 or not window_is_configured(start_hour, end_hour):
         # NO WINDOW MEANS NO PACING, not pacing derived from a 24-hour day.
         # Deriving here would change the gap between runs for every deployment
         # that never asked for a window -- caught by
@@ -442,9 +478,17 @@ class CuriosityInvestigation:
         self.timezone_name = timezone_name
         try:
             self._tz = ZoneInfo(timezone_name)
+            self._tz_loaded = True
         except Exception:  # noqa: BLE001 -- a bad zone must not stop the loop
             logger.warning("curiosity_bad_timezone name=%s falling back to UTC", timezone_name)
             self._tz = timezone.utc
+            # TRACKED SEPARATELY BECAUSE `timezone.utc` IS TRUTHY. Guarding the
+            # window on `self._tz` alone could never be False, so a typo'd zone
+            # would not disable the window -- it would evaluate 08-22 in UTC,
+            # which is 02:00-16:00 in Denver, and quietly rebuild the 3am
+            # cluster this window exists to remove. One boot WARNING would be
+            # the only trace. A review finding.
+            self._tz_loaded = False
         # One turn at a time. See `tick(force=...)` for why this arrived with
         # the manual trigger rather than before it.
         self._run_lock = asyncio.Lock()
@@ -679,7 +723,7 @@ class CuriosityInvestigation:
 
     @property
     def window_configured(self) -> bool:
-        return self.window_start_hour != self.window_end_hour
+        return window_is_configured(self.window_start_hour, self.window_end_hour)
 
     def _roll_daily_counter(self, now: datetime) -> None:
         today = now.date().isoformat()
@@ -856,9 +900,13 @@ class CuriosityInvestigation:
                 min_cooldown_sec=self.effective_cooldown_sec,
                 done_today=done_today,
                 daily_cap=self.daily_cap,
+                # `None` disables the window for this tick. A zone that failed
+                # to load means every local hour is a guess, and a guessed
+                # window is worse than none: it would run Orion at the wrong
+                # hours while the config insists it is bounded.
                 local_hour=(
                     now.astimezone(self._tz).hour
-                    if (self.window_configured and self._tz)
+                    if (self.window_configured and self._tz_loaded)
                     else None
                 ),
                 window_start_hour=self.window_start_hour,

@@ -529,6 +529,50 @@ time; Orion decides what to do with it, inside a real
 > `orion/curiosity/README.md`. `orion/sentience_striving_program/README.md` §15
 > evaluates it against that program's own outcomes.
 
+#### When it runs
+
+`HUB_CURIOSITY_INVESTIGATION_DAILY_CAP` is a **budget**, not a pace. It is
+keyed on the operator's local date, so it frees at local midnight and — with
+nothing else in the way — the loop spends the whole day as fast as the cooldown
+allows. Measured live on 2026-08-28: all six of that day's runs fired between
+00:48 and 02:57 MDT, followed by 240 consecutive ticks logging
+`blocked reason=daily_cap` through the entire day Juniper was awake to watch
+them.
+
+`HUB_CURIOSITY_INVESTIGATION_WINDOW_START_HOUR` / `_END_HOUR` (in
+`HUB_ENDOGENOUS_OUTREACH_TZ`, range `-1..23`) spread the budget across the
+hours Orion is allowed to think. The gap between runs is **derived** —
+`window / cap`, floored by `MIN_COOLDOWN_SEC` — so one knob sets both how much
+Orion thinks and how often, and raising the cap cannot rebuild the 3am cluster.
+At `8`/`22` with a cap of 6 that is one run every 2h20m: 08:00, 10:20, 12:40,
+15:00, 17:20, 19:40, with the seventh landing exactly on the window close.
+
+Equal values or `-1` disable the window, the same convention as
+`HUB_ENDOGENOUS_OUTREACH_QUIET_*`, and restore the previous behaviour exactly.
+A manual run (`POST /curiosity/api/run-now`) overrides the window along with
+the cooldown and the cap.
+
+Two limits, both deliberate:
+
+- **A disabled cap disables the pacing.** With `DAILY_CAP=-1` there is no
+  budget to spread, so spacing falls back to `MIN_COOLDOWN_SEC` alone. The
+  window still keeps runs out of the small hours; it is the cap that makes them
+  rare.
+- **A day that starts late ends early.** Spacing is measured from the last run,
+  not anchored to window open, so a first run at 15:00 with a cap of 6 fires
+  three times before 22:00 and strands the other three. Anchoring instead would
+  mean either a catch-up burst at 08:00 — the clustering this removes — or a
+  schedule that ignores how long turns actually take.
+
+If `HUB_ENDOGENOUS_OUTREACH_TZ` fails to load, the window is **disabled** rather
+than evaluated in UTC: a guessed local hour would run Orion at the wrong hours
+while the config insisted it was bounded. Look for `curiosity_bad_timezone` in
+the logs. The startup line reports the pace it actually resolved:
+
+```text
+curiosity_investigation started tick=300.0s cooldown=8400s(floor=1800.0s) cap=6 window=08-22 America/Denver ...
+```
+
 **What it shows Orion.** Its own open priors (ordered by how uncertain *it*
 said it was, and the prompt says the ordering is not neutral), a random sample
 of Juniper-approved crystallizations and concept-induction judgements, what it

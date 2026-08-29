@@ -317,7 +317,7 @@ def test_the_prompt_shows_how_to_write_an_edge_not_just_that_edges_exist() -> No
     is a line Orion can copy; the edge was a sentence, and it produced nothing
     across every run."""
     prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
-    assert "MERGE (f)-[:SUPPORTS" in prompt, "no copyable edge syntax in the prompt"
+    assert "MERGE (f)-[e:SUPPORTS]->(p)" in prompt, "no copyable edge syntax"
     assert "MATCH (f:Finding {finding_id:" in prompt, "no way to reach both ends"
 
 
@@ -326,7 +326,13 @@ def test_the_prompt_asks_for_run_id_on_the_edge() -> None:
     footprint -- which reads `r.run_id` -- would count zero forever while edges
     piled up in the graph."""
     prompt = build_kickoff_prompt(_material(), run_id="abc123", own_graph="g")
-    assert 'MERGE (f)-[:SUPPORTS {run_id: "abc123"}]->(p)' in prompt
+    assert 'MERGE (f)-[e:SUPPORTS]->(p) ON CREATE SET e.run_id = "abc123"' in prompt
+    # NOT inside the arrow. Verified live against FalkorDB 2026-08-29: with
+    # `{run_id: ...}` in the relationship pattern, two runs asserting the same
+    # Finding->Prior link produce TWO parallel SUPPORTS edges. The first live
+    # check missed it because it replayed the same run_id, the one case that
+    # cannot distinguish the two forms.
+    assert "[:SUPPORTS {run_id:" not in prompt
 
 
 def test_the_prompt_warns_that_a_failed_merge_is_silent() -> None:

@@ -27,6 +27,7 @@ from scripts.curiosity_investigation import (
     SignalGateInputs,
     build_investigation_journal_entry,
     in_window,
+    window_is_configured,
     paced_cooldown_sec,
     scheduling_block_reason,
     signal_block_reason,
@@ -1331,3 +1332,139 @@ def test_the_window_never_applies_when_local_hour_is_unknown():
         )
         is None
     )
+
+
+# --- the window as the APPLIANCE, not the calculator ------------------------
+#
+# The tests above call the pure functions directly. Review demonstrated that
+# replacing the whole `local_hour=(...)` expression in `tick()` with
+# `local_hour=None` -- i.e. Orion runs at 3am again, the exact behaviour this
+# branch exists to remove -- left 80/80 green. Nothing drove a real clock
+# through `tick()`. These do.
+
+
+def _at(loop: CuriosityInvestigation, when: datetime):
+    """Run one tick with the wall clock pinned to `when`.
+
+    PATCHES `tick.__globals__`, NOT `import scripts.curiosity_investigation`.
+    Under this repo's layout that import resolves to a DIFFERENT module object
+    than the one `CuriosityInvestigation` was defined in -- verified by id:
+    `mod.__dict__` and `type(loop).tick.__globals__` are two distinct dicts
+    with the same `__module__` name, because the hub `scripts` package is
+    imported once by the test file and again through pytest's own path
+    insertion. Patching the wrong copy leaves the real clock in place, and
+    every test expecting a block then reports "ran" -- green for the tests that
+    expect None, and silently meaningless. The class's own globals are the one
+    dict the running code is guaranteed to read.
+    """
+    g = CuriosityInvestigation.tick.__globals__
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when.astimezone(tz) if tz else when
+
+    real, g["datetime"] = g["datetime"], _Clock
+    try:
+        return asyncio.run(loop.tick())
+    finally:
+        g["datetime"] = real
+
+
+def _windowed(bus, **over):
+    kwargs = dict(min_cooldown_sec=0.0, daily_cap=6, window_start_hour=8,
+                  window_end_hour=22, timezone_name="America/Denver")
+    kwargs.update(over)
+    return _loop(bus, **kwargs)
+
+
+def test_a_tick_at_three_in_the_morning_does_not_investigate() -> None:
+    # 09:00 UTC on 2026-08-29 is 03:00 MDT -- the hour the whole cap was being
+    # spent in. Budget available, no cooldown, and it must still refuse.
+    bus = _FakeBus()
+    got = _at(_windowed(bus), datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc))
+    assert got == "outside_window"
+
+
+def test_the_same_tick_six_hours_later_does_investigate() -> None:
+    # 15:00 UTC is 09:00 MDT. Same loop, same budget, inside the window.
+    bus = _FakeBus()
+    got = _at(_windowed(bus), datetime(2026, 8, 29, 15, 0, tzinfo=timezone.utc))
+    assert got is None
+
+
+def test_the_window_is_read_in_junipers_zone_not_the_containers() -> None:
+    """The container sets no TZ, so `datetime.now()` there is UTC. 04:00 UTC is
+    22:00 MDT the previous evening -- outside an 08-22 window -- while 04 is
+    comfortably inside it read as UTC. A loop reading its own locale would run."""
+    bus = _FakeBus()
+    got = _at(_windowed(bus), datetime(2026, 8, 30, 4, 0, tzinfo=timezone.utc))
+    assert got == "outside_window"
+
+
+def test_force_overrides_the_window() -> None:
+    # The commit claims force skips all three scheduling gates. Nothing tested
+    # the third, and removing "outside_window" from that set stayed green.
+    bus = _FakeBus()
+    loop = _windowed(bus)
+    when = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
+    g = CuriosityInvestigation.tick.__globals__
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when.astimezone(tz) if tz else when
+
+    real, g["datetime"] = g["datetime"], _Clock
+    try:
+        assert asyncio.run(loop.tick()) == "outside_window"
+        assert asyncio.run(loop.tick(force=True)) is None
+    finally:
+        g["datetime"] = real
+
+
+def test_an_unconfigured_window_runs_at_any_hour() -> None:
+    # START == END must reproduce the old behaviour through the real tick, not
+    # merely in `paced_cooldown_sec`.
+    bus = _FakeBus()
+    loop = _windowed(bus, window_start_hour=0, window_end_hour=0)
+    assert _at(loop, datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)) is None
+
+
+def test_a_timezone_that_failed_to_load_disables_the_window() -> None:
+    """`timezone.utc` is truthy, so guarding on `self._tz` could never be False:
+    a typo'd zone would evaluate 08-22 in UTC -- 02:00-16:00 in Denver -- and
+    quietly rebuild the 3am cluster while the config insisted it was bounded.
+    Running unbounded is the honest failure; running on a guessed clock is not.
+    """
+    bus = _FakeBus()
+    loop = _windowed(bus, timezone_name="America/Denvor")
+    assert loop._tz_loaded is False
+    # 02:00 UTC is chosen so the two behaviours DISAGREE. The first version of
+    # this test used 09:00 UTC, which is hour 9 read as UTC and therefore
+    # inside an 08-22 window either way -- it returned None against both the
+    # fix and the bug, and the mutation stayed green. Read as UTC, 02:00 is
+    # outside the window, so the buggy guard blocks and the correct one runs.
+    assert _at(loop, datetime(2026, 8, 29, 2, 0, tzinfo=timezone.utc)) is None
+
+
+def test_minus_one_disables_the_window_the_way_quiet_hours_documents() -> None:
+    """`HUB_ENDOGENOUS_OUTREACH_QUIET_*` documents "equal values or -1 disable
+    it". An operator copying that convention onto these keys must not get a
+    live, wrong window -- and the two halves must AGREE about it: before this,
+    `in_window(h, 8, -1)` admitted hours 8-23 while `window_seconds(8, -1)`
+    returned 15h, so the derived pace was computed from a window length that
+    was not the one being enforced."""
+    assert window_is_configured(8, -1) is False
+    assert window_is_configured(-1, 22) is False
+    assert in_window(3, 8, -1) is True, "a disabled window must admit every hour"
+    assert window_seconds(8, -1) == 24 * 3600
+    assert paced_cooldown_sec(
+        min_cooldown_sec=5.0, daily_cap=6, start_hour=8, end_hour=-1
+    ) == 5.0
+
+
+def test_a_tick_runs_at_any_hour_when_the_window_is_disabled_by_minus_one() -> None:
+    bus = _FakeBus()
+    loop = _windowed(bus, window_start_hour=-1)
+    assert _at(loop, datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)) is None

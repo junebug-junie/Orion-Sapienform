@@ -904,12 +904,20 @@ def test_the_footprint_reports_edges_alongside_nodes() -> None:
 
 
 def test_a_run_that_wrote_nodes_but_drew_no_edges_says_so_by_omission() -> None:
-    # The live case for every run so far. Nodes present, no edge key at all --
-    # NOT an edge key sitting at zero, which would read as "tried and failed".
+    """The live case for every run so far: nodes present, no edge key at all --
+    NOT an edge key at zero, which would read as "tried and failed".
+
+    ASSERTS THE EDGE QUERY WAS ACTUALLY ISSUED. `_FakeReader` returns `[]` for
+    any unmatched needle, so the result assertion alone held whether or not the
+    edge read happened -- it passed against the pre-commit code. A review nit,
+    and the same shape as a mutation that no-ops."""
     reader = _FakeReader(answers={
         "MATCH (n) WHERE n.run_id": [{"label": "Finding", "n": 3}],
     })
     assert read_run_footprint(reader, "abc123") == {"Finding": 3}
+    assert any("-[r]->" in q for q in reader.queries), (
+        "the edge query was never issued; this test proves nothing without it"
+    )
 
 
 def test_an_unreadable_edge_query_makes_the_whole_footprint_unknown() -> None:

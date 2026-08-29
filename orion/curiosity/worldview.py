@@ -448,12 +448,16 @@ def run_edge_footprint_cypher(run_id: str) -> str:
     actually costs something to write, because it cuts against a claim Orion
     holds -- is visible as its own number rather than averaged into a total
     with SUPPORTS.
+
+    Labels come back PREFIXED `-> `, because the caller merges these rows into
+    the same dict as the node counts and a later key wins: a relationship type
+    named like a node label would otherwise delete that label's count outright.
     """
     if not _RUN_ID_RE.match(str(run_id or "")):
         raise ValueError(f"refusing to build Cypher for a non-hex run_id: {run_id!r}")
     return (
         f"MATCH ()-[r]->() WHERE r.run_id = '{run_id}' "
-        "RETURN type(r) AS label, count(r) AS n"
+        "RETURN '-> ' + type(r) AS label, count(r) AS n"
     )
 
 

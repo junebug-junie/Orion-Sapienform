@@ -121,9 +121,17 @@ ATLAS_EDGES_CYPHER = "MATCH ()-[r]->() RETURN count(r) AS n"
 # the same way it shows a node being written. Split from ATLAS_GROWTH_CYPHER
 # because a single MATCH covering both would need an OPTIONAL MATCH whose null
 # rows land in the node counts.
+# `'-> ' + type(r)` is NOT decoration. Both this and ATLAS_GROWTH_CYPHER feed
+# ONE fold keyed on `label`, and edge rows are appended after node rows, so a
+# relationship type sharing a name with a node label silently overwrites the
+# node count -- 4 Concept nodes plus 1 Concept-typed edge rendered as `1`, with
+# the real history being the half that was destroyed. Orion writes free-form
+# Cypher and the prompt does not forbid other edge names, so this is reachable.
+# Prefixing puts edges in their own key space and reads correctly in the legend.
+# A review finding, demonstrated against the real `assemble_runs`.
 ATLAS_EDGE_GROWTH_CYPHER = (
     "MATCH ()-[r]->() WHERE r.run_id IS NOT NULL "
-    "RETURN type(r) AS label, r.run_id AS run_id, count(r) AS n"
+    "RETURN '-> ' + type(r) AS label, r.run_id AS run_id, count(r) AS n"
 )
 
 # Every node, by label and run, so graph growth is counted from the same source

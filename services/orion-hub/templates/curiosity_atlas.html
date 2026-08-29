@@ -26,16 +26,22 @@
   --series-3:       #1baf7a;
   --series-4:       #eda100;
   --series-5:       #e87ba4;
-  --series-6:       #008300;
+  --series-6:       #5c940d;
+  --series-7:       #a78bfa;
+  --series-8:       #22b8cf;
+  --series-9:       #c9a227;
   --good:           #0ca30c;
   --warning:        #fab219;
   --critical:       #d03b3b;
   --good-text:      #006300;
-  /* ONE ink for every stack label, both modes. Measured against all eight
-     fills: near-black beats white on every one of them (light 4.46-9.09,
-     dark 5.07-6.41), so a per-slot rule would be complexity buying nothing.
+  /* ONE ink for every stack label, both modes. Re-measured 2026-08-29 across
+     all NINE fills: near-black beats white on every one (light 5.34-9.09,
+     dark 4.99-6.92), so a per-slot rule would be complexity buying nothing.
      White would have been 2.17:1 on light-mode yellow -- a label that is
-     present and unreadable, which reads as handled and is not. */
+     present and unreadable, which reads as handled and is not.
+     --series-6 WAS #008300 AND MEASURED 3.98, below the floor this very
+     comment claimed. Caught by re-running the numbers instead of trusting the
+     note; now #5c940d (5.34), also further from --series-3. */
   --on-series:      #0b0b0b;
   --shadow:         0 1px 2px rgba(11,11,11,0.05), 0 4px 12px rgba(11,11,11,0.04);
 }
@@ -55,7 +61,10 @@
     --series-3:     #199e70;
     --series-4:     #c98500;
     --series-5:     #d55181;
-    --series-6:     #008300;
+    --series-6:     #5c940d;
+    --series-7:     #9d7cf5;
+    --series-8:     #1ba8bd;
+    --series-9:     #b8941f;
     --good-text:    #0ca30c;
     --shadow:       0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
   }
@@ -75,7 +84,10 @@
   --series-3:     #199e70;
   --series-4:     #c98500;
   --series-5:     #d55181;
-  --series-6:     #008300;
+  --series-6:     #5c940d;
+  --series-7:     #9d7cf5;
+  --series-8:     #1ba8bd;
+  --series-9:     #b8941f;
   --good-text:    #0ca30c;
   --shadow:       0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
 }
@@ -313,7 +325,8 @@ tr:last-child td { border-bottom: none; }
 "use strict";
 
 const SERIES = ["--series-1", "--series-2", "--series-3",
-                "--series-4", "--series-5", "--series-6"];
+                "--series-4", "--series-5", "--series-6",
+                "--series-7", "--series-8", "--series-9"];
 // Fixed order, never cycled. KNOWN kinds lead in this order; anything Orion
 // starts writing that is not listed still gets a segment, because the growth
 // query counts every labelled node and `total_added` sums all of them --
@@ -321,8 +334,16 @@ const SERIES = ["--series-1", "--series-2", "--series-3",
 // own total (a run writing 1 Prior + 5 PriorRevision rendered a full-width
 // bar labelled "1" beside a total of "6"). Review finding. Past six the tail
 // folds into one "Other" segment rather than inventing a seventh hue.
+// Edge kinds are listed EXPLICITLY, and last, so they get stable dedicated
+// slots. Without them the panel degraded exactly when the new edge capability
+// started working: every unlisted kind maps to the final colour, so SUPPORTS,
+// CONTRADICTS and ABOUT would have rendered as one hue and as each other, and
+// crossing six kinds would fold real node labels into a grey "Other". A review
+// finding. The `-> ` prefix comes from ATLAS_EDGE_GROWTH_CYPHER and keeps an
+// edge type from colliding with a node label of the same name.
 const KIND_ORDER = ["Prior", "Finding", "Hop", "TurnOutcome",
-                    "PriorRevision", "Concept"];
+                    "PriorRevision", "Concept",
+                    "-> SUPPORTS", "-> CONTRADICTS", "-> ABOUT"];
 const OTHER = "Other";
 
 function kindsPresent(runs) {

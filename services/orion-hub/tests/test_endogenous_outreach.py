@@ -2503,37 +2503,135 @@ def test_a_failed_recovery_retries_on_the_next_tick(monkeypatch) -> None:
     assert result["reason"] == "daily_cap"
 
 
-def test_recovery_uses_the_timezone_actually_in_effect(monkeypatch) -> None:
-    """`self.timezone_name` can fall back to UTC when ZoneInfo rejects it.
-    Postgres must bucket the day the way this process does, or the recovered
-    count is for a different day than the gate is reasoning about."""
+def test_recovery_buckets_the_day_in_orions_configured_zone(monkeypatch) -> None:
+    """Postgres must bucket the local day the same way the gate does. An
+    earlier version of this test used an INVALID zone to prove `str(self._tz)`
+    differs from `self.timezone_name` -- it does not, `__init__` reassigns the
+    latter to UTC on that same path, so the test passed against a hardcoded
+    "UTC" and guarded nothing."""
     calls: list = []
-    outreach = _outreach(daily_cap=4, timezone_name="Not/AZone")
+    outreach = _outreach(daily_cap=4, timezone_name="America/Denver")
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "PASS")
     _stub_sent_count(monkeypatch, 0, calls=calls)
 
     asyncio.run(outreach.maybe_outreach())
 
-    assert calls[0][1] == "UTC", f"queried Postgres with {calls[0][1]!r}, not the effective zone"
+    assert calls[0][1] == "America/Denver", f"queried Postgres with {calls[0][1]!r}"
+    from datetime import datetime as _dtc
+    from zoneinfo import ZoneInfo as _zi
+
+    assert calls[0][0] == _dtc.now(_zi("America/Denver")).date().isoformat()
 
 
-def test_a_day_rollover_still_zeroes_without_re_reading(monkeypatch) -> None:
-    """A day ROLLOVER genuinely means zero sends so far -- unlike process
-    start. Conflating the two is the bug; over-correcting into a re-read on
-    every midnight would be a second one."""
-    calls: list = []
+def test_a_day_rollover_zeroes_the_counter(monkeypatch) -> None:
+    """A day ROLLOVER genuinely means zero sends so far, unlike process start.
+    Asserted through the GATE, not by reading `_sent_today` straight after the
+    call that unconditionally sets it -- that assertion cannot fail."""
     outreach = _outreach(daily_cap=4)
     _stub_context(monkeypatch)
     _stub_generation(monkeypatch, "PASS")
-    _stub_sent_count(monkeypatch, 4, calls=calls)
+    _stub_sent_count(monkeypatch, 4)
 
     assert asyncio.run(outreach.maybe_outreach())["reason"] == "daily_cap"
 
     from datetime import date as _date
 
-    outreach._roll_daily_counter(_date(2999, 1, 1))
+    outreach._counter_day = _date(2000, 1, 1)  # pretend the last tick was long ago
+    result = asyncio.run(outreach.maybe_outreach())
 
-    assert outreach._sent_today == 0
-    assert asyncio.run(outreach.maybe_outreach())["reason"] != "daily_cap"
-    assert len(calls) == 1, "a day rollover re-read the decision log"
+    assert result["reason"] != "daily_cap", "a new day did not clear the cap"
+
+
+def test_offer_message_on_a_fresh_process_respects_the_cap(monkeypatch) -> None:
+    """`offer_message` is the curiosity loop's delivery path and increments the
+    SAME shared counter. It has its own gate check, so a restarted hub that
+    never ran recovery here would deliver against a counter sitting at 0 --
+    the cap bypassed on the exact path `blocked_reason()` cannot protect,
+    because it is sync and cannot await the recovery."""
+    outreach = _outreach(daily_cap=4, min_cooldown_sec=0.0)
+    _stub_sent_count(monkeypatch, 4)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    result = asyncio.run(
+        outreach.offer_message(text="a curiosity finding", correlation_id="c-1", tag="curiosity")
+    )
+
+    assert result["outreach"] is False, "offer_message delivered past an exhausted cap"
+    assert result["reason"] == "daily_cap"
+
+
+def test_a_send_during_recovery_is_not_discarded(monkeypatch) -> None:
+    """Recovery reads the count, awaits a thread hop, then writes. A send that
+    lands inside that window would be lost by an absolute assignment -- and a
+    lost increment hands back exactly the extra interruption this fixes. The
+    debug trigger (unauthenticated) can race the tick this way."""
+    import scripts.endogenous_outreach_decisions as decisions
+
+    outreach = _outreach(daily_cap=4, min_cooldown_sec=0.0)
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+
+    def slow_count(local_date, tz_name):
+        # Runs on the worker thread while the loop is free: simulate a send
+        # landing mid-query by bumping the counter the way _deliver does.
+        outreach._sent_today += 1
+        return 3
+
+    monkeypatch.setattr(decisions, "count_sent_on", slow_count)
+
+    asyncio.run(outreach._recover_sent_today())
+
+    assert outreach._sent_today == 4, (
+        f"recovery discarded a concurrent send: {outreach._sent_today} != 4"
+    )
+
+
+def test_recovery_failures_are_visible_in_status(monkeypatch) -> None:
+    """A recovery that fails forever (missing migration, decision log off)
+    leaves the cap unenforced while Postgres is otherwise healthy. A warning
+    line is not an inspectable runtime fact; status() backs the debug
+    endpoint."""
+    outreach = _outreach(daily_cap=4)
+    _stub_context(monkeypatch)
+    _stub_generation(monkeypatch, "PASS")
+    _stub_sent_count(monkeypatch, None)
+
+    asyncio.run(outreach.maybe_outreach())
+    asyncio.run(outreach.maybe_outreach())
+
+    assert outreach.status()["sent_today_recovered"] is False
+    assert outreach.status()["sent_today_recovery_failures"] == 2
+
+
+def test_the_reader_and_writer_agree_on_the_decision_log_flag(monkeypatch) -> None:
+    """With the log switched off the table stops receiving rows while the read
+    still succeeds. Returning 0 there would mark the count recovered at zero
+    and leave the cap unenforced for the rest of the day -- the original bug,
+    reachable by flipping one env key.
+
+    Asserts the engine is never CONSULTED, not merely that the result is None:
+    with no Postgres in the test environment `count_sent_on` returns None
+    either way, so a result-only assertion passes against the bug."""
+    import scripts.pg_engine as pg_engine
+    from scripts.endogenous_outreach_decisions import count_sent_on, decision_log_enabled
+
+    consulted: list = []
+
+    def tripwire():
+        consulted.append(True)
+        raise AssertionError("read the decision log while it was switched off")
+
+    monkeypatch.setattr(pg_engine, "get_engine", tripwire)
+
+    monkeypatch.setenv("HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED", "false")
+    assert decision_log_enabled() is False
+    assert count_sent_on("2026-08-28", "America/Denver") is None
+    assert not consulted, "the flag did not short-circuit before the engine"
+
+    # ...and with the flag ON the engine IS consulted, so the check above is
+    # not passing merely because nothing ever reaches it.
+    monkeypatch.setenv("HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED", "true")
+    assert count_sent_on("2026-08-28", "America/Denver") is None
+    assert consulted, "the reader never reached the engine even with the log on"

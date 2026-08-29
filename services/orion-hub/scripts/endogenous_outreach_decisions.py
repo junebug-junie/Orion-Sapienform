@@ -103,6 +103,13 @@ def _write_decision_to_postgres(
         logger.warning("endogenous_outreach_decision_write_failed error=%s", exc)
 
 
+def decision_log_enabled() -> bool:
+    """Whether the decision log is switched on. Shared by the writer and the
+    reader so the two can never disagree about whether rows exist."""
+    flag = os.getenv("HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED", "true").strip().lower()
+    return flag not in {"0", "false", "no", "off"}
+
+
 def record_decision(
     result: Dict[str, Any],
     *,
@@ -121,8 +128,7 @@ def record_decision(
     forced debug trigger, or an organic tick that never fired.
     """
     try:
-        flag = os.getenv("HUB_ENDOGENOUS_OUTREACH_DECISION_LOG_ENABLED", "true").strip().lower()
-        if flag in {"0", "false", "no", "off"}:
+        if not decision_log_enabled():
             return
         decision_id = str(uuid4())
         target_id = getattr(tension_reason, "target_id", None)
@@ -164,11 +170,26 @@ def count_sent_on(local_date: str, tz_name: str) -> Optional[int]:
     several times a day in this repo, so the cap that is supposed to bound
     interruptions at `daily_cap` per day was bounded by nothing.
 
-    Counts `reason='sent'` rows, which is the same set the counter increments:
+    A LOWER BOUND, not an exact reconstruction: `record_decision` is
+    fire-and-forget on a daemon thread and swallows its INSERT failure, so a
+    delivered message whose row never lands is a send with no row. That errs
+    toward under-counting, i.e. toward allowing an extra send -- the same
+    direction as the bug being fixed, so it narrows the gap without closing
+    it completely.
+
+    Counts `reason='sent'` rows, which is otherwise the same set the counter
+    increments:
     both the organic tick and `offer_message` (the curiosity loop) bump it,
     because the cap is deliberately SHARED -- from the receiving end they are
     the same interruption.
     """
+    if not decision_log_enabled():
+        # UNKNOWN, not zero. With the log switched off the table stops
+        # receiving rows while this read still succeeds, so returning 0 would
+        # mark the count "recovered" at zero and leave the cap unenforced for
+        # the rest of the day -- the exact bug this function exists to close,
+        # reachable by flipping one env key.
+        return None
     try:
         from scripts.pg_engine import get_engine
         from sqlalchemy import text

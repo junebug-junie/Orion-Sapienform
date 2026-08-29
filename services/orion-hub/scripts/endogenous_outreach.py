@@ -900,6 +900,11 @@ class EndogenousOutreach:
         # recovered from the decision log this flag stays False and every
         # tick retries. See `_recover_sent_today`.
         self._sent_today_recovered = False
+        # Surfaced in `status()`: a recovery that fails forever (missing
+        # migration, decision log switched off) leaves the cap unenforced
+        # while Postgres is otherwise healthy, and a `logger.warning` is
+        # not an inspectable runtime fact.
+        self._recovery_failures = 0
         self._last_result: Dict[str, Any] = {}
 
     # -- connection registry (called from websocket_handler) ---------------
@@ -1002,16 +1007,8 @@ class EndogenousOutreach:
 
     def _roll_daily_counter(self, today: date) -> None:
         if self._counter_day != today:
-            # A day ROLLOVER genuinely means zero sends so far, so nothing is
-            # left to recover once we have crossed one. PROCESS START also
-            # lands here (`_counter_day` begins None) and means the opposite:
-            # unknown. Conflating those two is the bug `_recover_sent_today`
-            # exists for, so only a real rollover clears the flag.
-            rolled_over = self._counter_day is not None
             self._counter_day = today
             self._sent_today = 0
-            if rolled_over:
-                self._sent_today_recovered = True
 
     async def _recover_sent_today(self) -> None:
         """Recover today's delivered count from the decision log. Idempotent.
@@ -1036,18 +1033,31 @@ class EndogenousOutreach:
         if self._sent_today_recovered:
             return
         local_date = datetime.now(tz=self._tz).date()
-        # `str(self._tz)` -- the zone ACTUALLY in effect -- not
-        # `self.timezone_name`, so Postgres buckets the day exactly the way
-        # this process does even if the configured name fell back to UTC.
+        # `str(self._tz)` reads the zone off the object that actually did the
+        # bucketing above, so Postgres cannot disagree with this process about
+        # which day it is. NOT because it differs from `self.timezone_name` --
+        # `__init__` reassigns that to "UTC" on the same fallback path, so the
+        # two are equal in every reachable state. This is defensive style, not
+        # a live distinction; an earlier comment here claimed otherwise.
         from scripts.endogenous_outreach_decisions import count_sent_on
 
+        # Snapshot before the await. A send can land while the query is in
+        # flight (`offer_message`, or the unauthenticated debug trigger racing
+        # the tick), and an ABSOLUTE assignment on return would discard it --
+        # a lost update that hands back exactly the extra send this patch
+        # exists to prevent. Increments between here and the assignment below
+        # are added back; there is no await between the delta read and the
+        # write, so nothing can interleave with the pair.
+        before = self._sent_today
         recovered = await asyncio.to_thread(
             count_sent_on, local_date.isoformat(), str(self._tz)
         )
         if recovered is None:
+            self._recovery_failures += 1
             return
-        self._counter_day = local_date
-        self._sent_today = recovered
+        delta = max(0, self._sent_today - before)
+        self._counter_day = datetime.now(tz=self._tz).date()
+        self._sent_today = recovered + delta
         self._sent_today_recovered = True
         logger.info(
             "endogenous_outreach_sent_today_recovered date=%s sent_today=%d cap=%d",
@@ -1104,6 +1114,8 @@ class EndogenousOutreach:
             "timezone": self.timezone_name,
             "connections": len(self._connections),
             "sent_today": self._sent_today,
+            "sent_today_recovered": self._sent_today_recovered,
+            "sent_today_recovery_failures": self._recovery_failures,
             "seconds_since_last_outreach": inputs.seconds_since_last_outreach,
             "block_reason": outreach_block_reason(inputs),
             "last_result": dict(self._last_result),
@@ -1363,6 +1375,12 @@ class EndogenousOutreach:
                 {"outreach": False, "reason": "already_sending", "source": tag},
                 forced=False,
             )
+        # The cap is SHARED, so this path has to consume the recovered count
+        # too -- it increments `_sent_today` exactly like the organic tick.
+        # Without this, a hub restarted after a full day of sends delivers
+        # here against a counter still sitting at 0, and `blocked_reason()`
+        # (sync, advisory, cannot await) tells the curiosity loop it is clear.
+        await self._recover_sent_today()
         async with self._send_lock:
             blocked = outreach_block_reason(self._gate_inputs())
             if blocked:

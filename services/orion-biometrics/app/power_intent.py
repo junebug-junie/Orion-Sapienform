@@ -152,7 +152,14 @@ async def settle(
         )
 
     gpu = int(intent.gpu_index)
-    baseline = sampler(gpu)  # before the window opens, so the delta is recoverable
+    # asyncio.to_thread: the default sampler is a synchronous subprocess.run of
+    # nvidia-smi (up to a 2.0s timeout). Called bare on the biometrics event loop
+    # it blocks the SystemHealth heartbeat, the iLO/PDU pollers, and the hub's
+    # intake Hunter -- roughly 20 times per generation. The first live settlement
+    # measured achieved_sample_hz=0.894 against a configured 1.0s interval, i.e.
+    # ~0.11s of loop-blocking per sample. to_thread accepts a plain sync callable,
+    # so injected test samplers keep working unchanged.
+    baseline = await asyncio.to_thread(sampler, gpu)  # before the window opens
     start = now_fn()
     window = _window_seconds(intent, start)
 
@@ -165,7 +172,7 @@ async def settle(
             break
         if (now - start).total_seconds() >= window:
             break
-        value = sampler(gpu)
+        value = await asyncio.to_thread(sampler, gpu)
         if value is not None:
             samples.append(value)
         await sleep_fn(sample_interval_sec)

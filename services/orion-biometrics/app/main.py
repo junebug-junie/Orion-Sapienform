@@ -3,7 +3,7 @@ import logging
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Awaitable, Callable, Deque, Dict, Optional
 
 from fastapi import FastAPI, Query
 
@@ -546,6 +546,71 @@ class BiometricsHubWorker(Clock):
         await self.hub.publish_cluster(self.bus)
 
 
+def make_power_intent_handler(
+    get_bus: Callable[[], OrionBusAsync],
+) -> Callable[[BaseEnvelope], Awaitable[None]]:
+    """Build the ``orion:power:intent`` handler.
+
+    Module-level and bus-injected on purpose. This lived inside ``lifespan``
+    as a nested closure, and its settled-event publish referenced a bare
+    ``bus`` name that existed in NO enclosing scope -- a NameError that only
+    fired after ``settle()`` had already spent its full sampling window
+    measuring the GPU. The settlement was computed, logged as
+    ``outcome=settled``, then discarded, and because the crash happened in a
+    fire-and-forget task nobody awaited, it surfaced only as "Task exception
+    was never retrieved". Nothing was testable because nothing was reachable:
+    a closure defined inside lifespan cannot be imported.
+
+    ``get_bus`` is a callable rather than a bus so the Hunter that owns the
+    connection can be constructed after this handler is built.
+    """
+
+    async def _handle_power_intent(env: BaseEnvelope) -> None:
+        payload = env.payload
+        if hasattr(payload, "model_dump"):
+            payload = payload.model_dump(mode="json")
+        if not isinstance(payload, dict):
+            return
+        try:
+            intent = PowerIntentV1.model_validate(payload)
+        except Exception:
+            logger.exception("power_intent_invalid_payload")
+            return
+        if intent.node != settings.NODE_NAME:
+            return  # another node's meter, not ours to read
+
+        async def _run() -> None:
+            try:
+                settled = await settle(
+                    intent,
+                    sampler=sample_gpu_watts,
+                    sample_interval_sec=settings.POWER_INTENT_SAMPLE_INTERVAL_SEC,
+                )
+            except Exception:
+                logger.exception("power_intent_settle_failed intent=%s", intent.intent_id)
+                return
+            try:
+                await _publish(
+                    get_bus(),
+                    settings.POWER_INTENT_SETTLED_CHANNEL,
+                    "power.intent.settled.v1",
+                    settled,
+                )
+            except Exception:
+                # A settlement that cannot be published is a lost measurement,
+                # not a lost workload -- but it must be LOUD. The original bug
+                # was silent precisely because this task was never awaited.
+                logger.exception(
+                    "power_intent_publish_failed intent=%s", intent.intent_id
+                )
+
+        # Fire-and-forget: the window must not block the intent consumer, or a
+        # second workload declaring mid-window would queue behind the first.
+        asyncio.create_task(_run())
+
+    return _handle_power_intent
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"🚀 Starting {settings.SERVICE_NAME} v{settings.SERVICE_VERSION} (node={settings.NODE_NAME})")
@@ -568,46 +633,10 @@ async def lifespan(app: FastAPI):
     # the node that physically owns the GPU, and only agent-mode deployments run there.
     # An intent for another node is ignored, so all nodes can subscribe safely.
     if settings.POWER_INTENT_SETTLE_ENABLED:
-
-        async def _handle_power_intent(env: BaseEnvelope) -> None:
-            payload = env.payload
-            if hasattr(payload, "model_dump"):
-                payload = payload.model_dump(mode="json")
-            if not isinstance(payload, dict):
-                return
-            try:
-                intent = PowerIntentV1.model_validate(payload)
-            except Exception:
-                logger.exception("power_intent_invalid_payload")
-                return
-            if intent.node != settings.NODE_NAME:
-                return  # another node's meter, not ours to read
-
-            async def _run() -> None:
-                try:
-                    settled = await settle(
-                        intent,
-                        sampler=sample_gpu_watts,
-                        sample_interval_sec=settings.POWER_INTENT_SAMPLE_INTERVAL_SEC,
-                    )
-                except Exception:
-                    logger.exception("power_intent_settle_failed intent=%s", intent.intent_id)
-                    return
-                await _publish(
-                    bus,
-                    settings.POWER_INTENT_SETTLED_CHANNEL,
-                    "power.intent.settled.v1",
-                    settled,
-                )
-
-            # Fire-and-forget: the window must not block the intent consumer, or a
-            # second workload declaring mid-window would queue behind the first.
-            asyncio.create_task(_run())
-
         power_hunter = Hunter(
             chassis_cfg(),
             patterns=[settings.POWER_INTENT_CHANNEL],
-            handler=_handle_power_intent,
+            handler=make_power_intent_handler(lambda: power_hunter.bus),
         )
         asyncio.create_task(power_hunter.start_background(hunter_stop))
 

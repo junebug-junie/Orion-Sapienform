@@ -62,6 +62,7 @@ from fastapi.responses import JSONResponse, Response
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from orion.schemas.power import PowerIntentV1
@@ -74,6 +75,8 @@ _pipe = None
 _load_error: Optional[str] = None
 _generation_lock = asyncio.Lock()
 _heartbeat_chassis: Optional[HeartbeatOnly] = None
+# One-shot latch so the no-bus error below cannot spam once per generation.
+_power_intent_no_bus_warned: bool = False
 
 # Dedicated, single-worker executor -- see module docstring "Concurrency".
 # Both model load and every /generate call run here, never on the default
@@ -205,6 +208,32 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
     )
 
 
+def warn_on_contradictory_power_intent_config() -> None:
+    """Loud check for a flag combination that is silently fatal to the loop.
+
+    OrionBusAsync.publish() early-returns when the bus is disabled -- no raise,
+    no log -- so in this combination the service declares an intent on every
+    generation, logs `power_intent_declared`, and nothing ever reaches the
+    wire. That is exactly how power_intent_settled sat at 0 rows on Circe
+    while both producer and settler logged success (2026-08-29). settings.py
+    still defaults ORION_BUS_ENABLED to False, so a deploy that simply omits
+    the key lands back in that state.
+
+    Module-level rather than inline in lifespan so a test can call it without
+    entering the lifespan -- entering it fires _load_model_background(), which
+    on any host with torch installed starts a real multi-GB FLUX load onto the
+    live GPU. test_health.py's docstring documents that rule; this function
+    exists so this check does not have to break it.
+    """
+    if settings.DIFFUSION_POWER_INTENT_ENABLED and not settings.ORION_BUS_ENABLED:
+        logger.error(
+            "power_intent_enabled_but_bus_disabled: DIFFUSION_POWER_INTENT_ENABLED "
+            "is true while ORION_BUS_ENABLED is false. Every declaration will be "
+            "silently discarded and nothing will ever be settled. Set "
+            "ORION_BUS_ENABLED=true for this service."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _heartbeat_chassis
@@ -214,6 +243,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 -- heartbeat is additive, never fatal to startup
         logger.warning("heartbeat start failed: {}", exc)
         _heartbeat_chassis = None
+
+    warn_on_contradictory_power_intent_config()
 
     # Fire-and-forget: startup completes immediately, /health and /ready
     # are live right away. See module docstring "Startup".
@@ -437,6 +468,21 @@ async def _publish_power_intent() -> None:
     chassis = _heartbeat_chassis
     bus = getattr(chassis, "bus", None) if chassis is not None else None
     if bus is None:
+        # NOT silent. lifespan catches a failed chassis start into one boot-time
+        # warning and sets _heartbeat_chassis = None permanently, with no retry --
+        # so a single Redis blip at container start would otherwise mean every
+        # generation for the life of the container declares nothing, logs
+        # nothing, and power_intent_settled quietly stops growing. That is the
+        # same silent-discard shape this whole patch exists to remove.
+        global _power_intent_no_bus_warned
+        if not _power_intent_no_bus_warned:
+            _power_intent_no_bus_warned = True
+            logger.error(
+                "power_intent_no_bus: the heartbeat chassis is absent (its start "
+                "failed at boot and is never retried), so no intent can be "
+                "declared for the life of this container. Restart the service "
+                "once the bus is reachable. This is logged once."
+            )
         return
     try:
         now = datetime.now(timezone.utc)
@@ -450,7 +496,23 @@ async def _publish_power_intent() -> None:
             deadline=now
             + timedelta(seconds=settings.DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC),
         )
-        await bus.publish("orion:power:intent", "power.intent.v1", intent)
+        # OrionBusAsync.publish() takes (channel, envelope) -- the schema/kind
+        # rides INSIDE the envelope, it is not a third positional argument. The
+        # previous 3-positional-arg call raised TypeError on every generation and
+        # was swallowed by the except below, so the loop looked wired while no
+        # intent was ever published: power_intent_settled sat at 0 rows from the
+        # day the table was created. Same BaseEnvelope(kind=, source=, payload=)
+        # shape orion-biometrics' own _publish() uses on the settled channel.
+        env = BaseEnvelope(
+            kind="power.intent.v1",
+            source=ServiceRef(
+                name=settings.SERVICE_NAME,
+                version=settings.SERVICE_VERSION,
+                node=settings.NODE_NAME,
+            ),
+            payload=intent.model_dump(mode="json"),
+        )
+        await bus.publish("orion:power:intent", env)
         logger.info("power_intent_declared intent={} gpu={}", intent.intent_id, intent.gpu_index)
     except Exception as exc:  # noqa: BLE001
         logger.warning("power_intent_declare_failed (generation continues): {}", exc)

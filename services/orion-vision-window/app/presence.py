@@ -42,6 +42,23 @@ avoid. The caller (WindowService) also owns a cross-process cooldown so this
 question gets asked at most once per sit-down, not every turn -- see
 `orion.situational.identity_ask_cooldown`.
 
+**`identity_confirmed` is the POSITIVE fact, added 2026-08-29** (Juniper:
+"orion never bites when they can't recognize me (eg I close the camera
+lid). they are supposed to ask who dis"). `identity_uncertain` above can
+only ever be True when a face was DETECTED and did not match -- closing a
+laptop lid produces no frames, so no face, so `identity_confidence` is
+`None` rather than `"uncertain"` and the whole ask was structurally
+unreachable for exactly the case that prompted it. Asking "do I have a
+fresh confirmed read of Juniper RIGHT NOW" is the question that actually
+covers lid-closed, camera-off, person-absent AND unmatched-face, and it
+needs a field that says "yes I do" rather than one that says "no I
+explicitly don't" -- absence of `identity_uncertain` conflates "matched"
+with "never looked". Consumers decide staleness themselves from the row's
+own `updated_at` (see `orion.situational.perception_reader.fetch_presence`):
+a camera that goes dark stops UPDATING this row rather than writing
+`identity_confirmed=False` into it, so the row content alone cannot
+distinguish "confirmed a moment ago" from "confirmed yesterday".
+
 `state` mirrors `hub_presence`'s `active | idle | dormant` with camera-shaped
 names: `present` (seen in the most recent window), `recent` (not seen just
 now, but within `grace_sec` -- covers a bathroom break without flapping to
@@ -139,6 +156,7 @@ class PresenceTracker:
             subject = str(identity_hint["subject"])
 
         identity_uncertain = bool(present_now and identity_confidence == "uncertain")
+        identity_confirmed = bool(present_now and identity_confidence == "confirmed")
 
         snapshot = {
             "state": self._state,
@@ -146,6 +164,7 @@ class PresenceTracker:
             "last_seen_sec": last_seen_sec,
             "subject": subject,
             "identity_uncertain": identity_uncertain,
+            "identity_confirmed": identity_confirmed,
         }
         self._last_snapshot = snapshot
         return snapshot

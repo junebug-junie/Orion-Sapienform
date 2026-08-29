@@ -69,6 +69,46 @@ streams:
         enabled: true
         min_seconds_between_dispatch: 30
 
+  carbon:
+    enabled: true
+    # Opted IN 2026-08-29 (Juniper: "orion never bites when they can't
+    # recognize me"). This was deliberately opted OUT when identity_face
+    # shipped 2026-08-26 -- policy.py's decide_identity docstring cites
+    # docs/superpowers/specs/2026-08-21-...-design.md section 9B, "carbon
+    # must not inherit cam0's policy". That reasoning was about not letting
+    # a permissive GLOBAL default silently reach every stream, and it still
+    # holds: this is an explicit per-stream opt-in, not a defaults change.
+    #
+    # The effect of leaving it out was that the face-match check never once
+    # ran on the camera actually pointed at Juniper's face. Measured
+    # 2026-08-29 before this line: 2 identity_face dispatches in 24h, both
+    # stream_id=cam0, while `substrate_embodied_presence` showed carbon
+    # present (last_seen 0.0s) and cam0 absent for 70 minutes. carbon does
+    # reach the `triggered` tier that decide_identity requires (6 hits in
+    # 6h, same window), so this is not inert.
+    #
+    # Fully overrides defaults.triggered (resolve_stream_policy's shallow
+    # merge replaces the whole `triggered` key rather than merging per
+    # field), so every sibling field is repeated here on purpose -- same
+    # reason cam0's block below repeats them.
+    #
+    # min_seconds_between_dispatch is 60 here, not cam0's 30: carbon is a
+    # webcam pointed at one seated person for hours, so a face that matched
+    # once is overwhelmingly likely to still match; cam0 is a room camera
+    # where a genuinely new person can walk in.
+    triggered:
+      task_type: retina_fast
+      trigger_labels: [person]
+      trigger_ttl_seconds: 8
+      min_seconds_between_tasks_per_camera: 2
+      max_inflight_per_camera: 1
+      request:
+        want_caption: true
+        want_embeddings: true
+      identity_dispatch:
+        enabled: true
+        min_seconds_between_dispatch: 60
+
 cameras:
   mock-cam-01:
     enabled: true

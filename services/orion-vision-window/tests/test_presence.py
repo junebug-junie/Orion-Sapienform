@@ -292,3 +292,49 @@ def test_concurrent_streams_do_not_bleed_into_each_other() -> None:
     assert snap_carbon["since_sec"] == 124.0    # carbon has been present since t=1
     assert snap_cam0["state"] == "absent"
     assert snap_cam0["last_seen_sec"] == 126.0  # cam0 last seen at t=0
+
+
+# -- identity_confirmed, 2026-08-29 ------------------------------------------
+# The positive fact, added because its mirror image could not express the case
+# Juniper reported: "orion never bites when they can't recognize me (eg I close
+# the camera lid)". identity_uncertain is only ever True when a face was
+# DETECTED and did not match, so a closed lid -- no frames, no face -- leaves
+# it False, indistinguishable from a clean match. A consumer asking "do I have
+# a confirmed read right now" needs a field that says yes.
+
+
+def test_confirmed_reading_sets_identity_confirmed() -> None:
+    t = _tracker()
+    snap = t.observe(PERSON, now=1000.0, identity_confidence="confirmed")
+    assert snap["identity_confirmed"] is True
+    assert snap["identity_uncertain"] is False
+
+
+def test_uncertain_reading_is_not_confirmed() -> None:
+    t = _tracker()
+    snap = t.observe(PERSON, now=1000.0, identity_confidence="uncertain")
+    assert snap["identity_confirmed"] is False
+    assert snap["identity_uncertain"] is True
+
+
+def test_no_identity_signal_is_neither_confirmed_nor_uncertain() -> None:
+    """The gap the old boolean alone could not express: identity_face never
+    ran (or produced nothing), which is NOT the same as it running and
+    matching. Both flags False means "I have no idea", and the consumer is
+    the one that decides that warrants asking."""
+    t = _tracker()
+    snap = t.observe(PERSON, now=1000.0)
+    assert snap["identity_confirmed"] is False
+    assert snap["identity_uncertain"] is False
+
+
+def test_confirmed_requires_someone_present_right_now() -> None:
+    """Same present_now guard identity_uncertain already carried: a confirmed
+    match from before the person walked out of frame must not keep asserting
+    'yes that is Juniper, right now'. grace_sec=120, last seen at t=1000, so
+    t=1060 is 'recent' (60s <= 120) but not present."""
+    t = _tracker(grace_sec=120.0)
+    t.observe(PERSON, now=1000.0, identity_confidence="confirmed")
+    snap = t.observe(EMPTY, now=1060.0, identity_confidence="confirmed")
+    assert snap["state"] == "recent"
+    assert snap["identity_confirmed"] is False

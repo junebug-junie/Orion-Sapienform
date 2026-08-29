@@ -19,6 +19,7 @@
   var LATEST_URL = "/api/cabinet/sensors/latest";
   var AMBIENT_LATEST_URL = "/api/cabinet/ambient/latest";
   var AMBIENT_HISTORY_URL = "/api/cabinet/ambient/history?window=";
+  var AMBIENT_SPIKES_URL = "/api/cabinet/ambient/spikes?window=";
   var SVG_NS = "http://www.w3.org/2000/svg";
 
   // Nano reader ticks ~1 Hz; poll at the same cadence while the tab is visible.
@@ -103,6 +104,7 @@
     ambientLatestInFlight: false,
     ambientLatest: null,
     ambientHistory: null,
+    ambientSpikes: null,
     ambientHistoryRequest: 0,
     ambientWindow: "24h",
     ambientLatestNote: "Live values not loaded.",
@@ -477,6 +479,27 @@
         );
       }
     });
+    var markers = Array.isArray(options.markers) ? options.markers : [];
+    if (markers.length && maxTime !== null && maxTime > minTime) {
+      markers.forEach(function (marker) {
+        var markerTime = marker && marker.t ? Date.parse(marker.t) : NaN;
+        if (!isFinite(markerTime)) return;
+        var mx = ((markerTime - minTime) / (maxTime - minTime)) * 100;
+        chart.appendChild(
+          svgEl("line", {
+            x1: mx,
+            y1: 0,
+            x2: mx,
+            y2: 40,
+            stroke: options.markerColor || "#f87171",
+            "stroke-width": 0.9,
+            "stroke-dasharray": "2 1.5",
+            "vector-effect": "non-scaling-stroke",
+            opacity: 0.9,
+          })
+        );
+      });
+    }
     host.appendChild(chart);
 
     var firstTime = validSamples[0].t ? new Date(validSamples[0].t).toLocaleString() : "—";
@@ -508,13 +531,16 @@
     );
   }
 
-  function renderAmbientHistory(payload) {
+  function renderAmbientHistory(payload, spikesPayload) {
     var points = payload && Array.isArray(payload.points) ? payload.points : [];
+    var spikes = spikesPayload && Array.isArray(spikesPayload.spikes) ? spikesPayload.spikes : [];
     renderAmbientSeries(els.ambientRmsChart, points, "rms", {
       label: "Ambient RMS",
       digits: 1,
       color: "#818cf8",
       heightClass: "h-32",
+      markers: spikes,
+      markerColor: "#f87171",
     });
     renderAmbientSeries(els.ambientActivityChart, points, "activity", {
       label: "Ambient activity",
@@ -524,6 +550,8 @@
       fixedScale: true,
       color: "#34d399",
       heightClass: "h-32",
+      markers: spikes,
+      markerColor: "#f87171",
     });
   }
 
@@ -646,7 +674,13 @@
     renderAmbientStatus();
     try {
       var url = AMBIENT_HISTORY_URL + encodeURIComponent(requestedWindow);
-      var resp = await fetch(url, { headers: { Accept: "application/json" } });
+      var spikesUrl = AMBIENT_SPIKES_URL + encodeURIComponent(requestedWindow);
+      var results = await Promise.all([
+        fetch(url, { headers: { Accept: "application/json" } }),
+        fetch(spikesUrl, { headers: { Accept: "application/json" } }),
+      ]);
+      var resp = results[0];
+      var spikesResp = results[1];
       if (!resp.ok) {
         throw new Error("HTTP " + resp.status + " from ambient history");
       }
@@ -654,11 +688,21 @@
       if (!payload.ok) {
         throw new Error(payload.error || "ambient history unavailable");
       }
+      var spikesPayload = { spikes: [] };
+      if (spikesResp.ok) {
+        var parsedSpikes = await spikesResp.json();
+        if (parsedSpikes && parsedSpikes.ok) spikesPayload = parsedSpikes;
+      }
       if (requestId !== state.ambientHistoryRequest) return;
       state.ambientHistory = payload;
-      renderAmbientHistory(payload);
+      state.ambientSpikes = spikesPayload;
+      renderAmbientHistory(payload, spikesPayload);
+      var spikeCount = Array.isArray(spikesPayload.spikes) ? spikesPayload.spikes.length : 0;
       state.ambientHistoryNote =
-        requestedWindow + " history · n=" + (Array.isArray(payload.points) ? payload.points.length : 0);
+        requestedWindow +
+        " history · n=" +
+        (Array.isArray(payload.points) ? payload.points.length : 0) +
+        (spikeCount ? " · spikes=" + spikeCount : "");
     } catch (err) {
       if (requestId !== state.ambientHistoryRequest) return;
       state.ambientHistoryNote =

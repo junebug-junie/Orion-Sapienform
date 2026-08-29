@@ -130,6 +130,8 @@ def test_cabinet_sensors_js_is_standalone_and_reads_only_its_own_api() -> None:
 def test_cabinet_sensors_js_wires_ambient_latest_and_history_contracts() -> None:
     assert '"/api/cabinet/ambient/latest"' in CABINET_SENSORS_JS
     assert '"/api/cabinet/ambient/history?window="' in CABINET_SENSORS_JS
+    assert '"/api/cabinet/ambient/spikes?window="' in CABINET_SENSORS_JS
+    assert "red dashes = spikes" in INDEX_HTML
     assert "function pollAmbientLatest(" in CABINET_SENSORS_JS
     assert "function fetchAmbientHistory(" in CABINET_SENSORS_JS
     assert "function renderAmbientLatest(" in CABINET_SENSORS_JS
@@ -147,6 +149,12 @@ def test_cabinet_sensors_js_polls_only_latest_and_bounds_history_state() -> None
     assert "fetchAmbientHistory" not in timer_region
     assert ".push(" not in CABINET_SENSORS_JS
     assert "state.ambientHistory =" in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_draws_spike_markers_on_charts() -> None:
+    assert "options.markers" in CABINET_SENSORS_JS
+    assert "stroke-dasharray" in CABINET_SENSORS_JS
+    assert "AMBIENT_SPIKES_URL" in CABINET_SENSORS_JS
 
 
 def test_cabinet_sensors_js_fetches_history_only_on_explicit_ui_events() -> None:

@@ -105,6 +105,30 @@ def rows_to_points(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return points
 
 
+def rows_to_spikes(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Convert persisted spike rows for chart overlays."""
+    spikes: list[dict[str, Any]] = []
+    for row in rows:
+        timestamp = row.get("t")
+        spike_id = row.get("spike_id")
+        activity = row.get("activity")
+        if timestamp is None or spike_id is None or activity is None:
+            continue
+        spike: dict[str, Any] = {
+            "t": _iso_utc(timestamp),
+            "spike_id": str(spike_id),
+            "activity": float(activity),
+        }
+        if row.get("rms") is not None:
+            spike["rms"] = float(row["rms"])
+        if row.get("peak") is not None:
+            spike["peak"] = float(row["peak"])
+        if row.get("activity_threshold") is not None:
+            spike["activity_threshold"] = float(row["activity_threshold"])
+        spikes.append(spike)
+    return spikes
+
+
 def downsample_points(
     points: Sequence[Mapping[str, Any]], max_points: int
 ) -> list[dict[str, Any]]:
@@ -199,8 +223,43 @@ async def query_history_rows(*, node: str, hours: int) -> Sequence[Mapping[str, 
         await connection.close()
 
 
+async def query_spike_rows(*, node: str, hours: int) -> Sequence[Mapping[str, Any]]:
+    """Read cabinet ambient spike events persisted by orion-sql-writer."""
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is not configured")
+
+    import asyncpg
+
+    cutoff = _now_utc() - timedelta(hours=hours)
+    connection = await asyncpg.connect(dsn=database_url)
+    try:
+        return await connection.fetch(
+            """
+            SELECT
+              spike_id,
+              timestamp AS t,
+              activity,
+              rms,
+              peak,
+              activity_threshold,
+              consecutive_ticks
+            FROM cabinet_ambient_spike
+            WHERE node = $1
+              AND timestamp >= $2
+            ORDER BY timestamp ASC
+            """,
+            node,
+            cutoff,
+        )
+    finally:
+        await connection.close()
+
+
 HistoryQuery = Callable[..., Awaitable[Sequence[Mapping[str, Any]]]]
+SpikeQuery = Callable[..., Awaitable[Sequence[Mapping[str, Any]]]]
 _history_query: HistoryQuery = query_history_rows
+_spike_query: SpikeQuery = query_spike_rows
 
 
 def _stats(raw_points: Sequence[Mapping[str, Any]], n: int) -> dict[str, Any]:
@@ -263,4 +322,36 @@ async def api_cabinet_ambient_history(
         **base,
         "points": points,
         "stats": _stats(raw_points, len(points)),
+    }
+
+
+@router.get("/spikes")
+async def api_cabinet_ambient_spikes(
+    window: str = Query("24h"),
+) -> dict[str, Any]:
+    try:
+        hours = parse_window(window)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    node = str(settings.CABINET_AMBIENT_HISTORY_NODE)
+    base = {"node": node, "window": window}
+    try:
+        rows = await _spike_query(node=node, hours=hours)
+        spikes = rows_to_spikes(rows)
+    except Exception as exc:
+        logger.warning("Cabinet ambient spikes unavailable: %s", exc)
+        return {
+            "ok": False,
+            **base,
+            "spikes": [],
+            "n": 0,
+            "error": "ambient_spikes_unavailable",
+        }
+
+    return {
+        "ok": True,
+        **base,
+        "spikes": spikes,
+        "n": len(spikes),
     }

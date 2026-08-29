@@ -22,7 +22,7 @@ from jinja2 import Environment
 
 from pydantic import BaseModel
 
-from orion.llm.routes import LLM_ROUTE_ALIASES, normalize_llm_route
+from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
@@ -4261,7 +4261,7 @@ async def call_step_services(
                     model=req_model,
                     profile=(
                         ctx.get("profile_name")
-                        or (settings.atlas_metacog_profile_name if llm_route == "metacog" else None)
+                        or (settings.atlas_metacog_profile_name if llm_route in METACOG_LLM_ROUTES else None)
                     ),
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),

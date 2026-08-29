@@ -243,6 +243,57 @@ async def test_tick_publishes_grounded_thought():
 
 
 @pytest.mark.asyncio
+async def test_plain_reverie_timeout_does_not_report_to_metacog_health_monitor(monkeypatch):
+    """Regression (review caught this live 2026-08-29): ORION_REVERIE_SEMANTIC_LIFT_ENABLED
+    defaults off, so the default tick never sets llm_route to metacog at all (mode='reverie',
+    not 'metacog' -- see build_reverie_plan_request's use_lift branch). A timeout on THIS path
+    must never report to the metacog health monitor, or every ordinary reverie timeout would be
+    mislabeled as a metacog outage in Hub's Pending Attention panel -- corrupting the exact
+    evidence ORION_REVERIE_METACOG_BACKGROUND_ENABLED's "off for now" period exists to collect.
+    Still must degrade the tick to None either way -- the hard "a tick must never raise"
+    constraint."""
+    import asyncio
+
+    from app import reverie
+
+    calls = []
+    monkeypatch.setattr(
+        "app.reverie_health_monitor.check_reverie_metacog_timeout",
+        lambda timed_out: calls.append(timed_out),
+    )
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(side_effect=asyncio.TimeoutError())
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+    )
+    assert result is None
+    bus.publish.assert_not_called()
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_plain_reverie_success_does_not_report_to_metacog_health_monitor(monkeypatch):
+    from app import reverie
+
+    calls = []
+    monkeypatch.setattr(
+        "app.reverie_health_monitor.check_reverie_metacog_timeout",
+        lambda timed_out: calls.append(timed_out),
+    )
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
+    })
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+    )
+    assert result is not None
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_tick_persists_published_thought(monkeypatch):
     from app import reverie
 

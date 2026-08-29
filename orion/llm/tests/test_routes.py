@@ -4,6 +4,7 @@ from orion.llm.routes import (
     ACCEPTED_LLM_ROUTES,
     BACKGROUND_LLM_ROUTES,
     LLM_ROUTE_DISPLAY_ORDER,
+    METACOG_LLM_ROUTES,
     SYSTEM_LLM_ROUTES,
     normalize_llm_route,
 )
@@ -53,6 +54,31 @@ def test_harness_is_a_system_route_hidden_from_the_human_picker() -> None:
     # a human's turn.
     assert "harness" in SYSTEM_LLM_ROUTES
     assert "harness" not in BACKGROUND_LLM_ROUTES
+
+
+def test_metacog_background_is_accepted_background_and_displayed() -> None:
+    # Second pilot of the `quick_background` pattern (2026-08-29): shares metacog's upstream
+    # (circe-worker-2/GPU5) but yields for /slots slack. Nothing routes onto it by default --
+    # see ORION_REVERIE_METACOG_BACKGROUND_ENABLED in services/orion-thought/.env_example.
+    assert "metacog_background" in ACCEPTED_LLM_ROUTES
+    assert "metacog_background" in LLM_ROUTE_DISPLAY_ORDER
+    assert "metacog_background" in BACKGROUND_LLM_ROUTES
+    assert "metacog_background" not in SYSTEM_LLM_ROUTES
+
+
+def test_metacog_background_is_a_valid_caller_override() -> None:
+    # Unlike `harness`, this is a real caller-selectable override -- reverie.py's
+    # `_metacog_route()` sets it explicitly once its own flag is on.
+    assert normalize_llm_route("metacog_background") == "metacog_background"
+    assert normalize_llm_route("METACOG_BACKGROUND") == "metacog_background"
+
+
+def test_metacog_llm_routes_share_the_deterministic_profile_pin() -> None:
+    # Single source of truth for cortex-exec's and llm-gateway's independent
+    # `route == "metacog"` profile-pinning checks -- review caught live 2026-08-29 that both
+    # were an exact string match, so `metacog_background` silently stopped being pinned.
+    assert METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES
+    assert {"metacog", "metacog_background"} <= METACOG_LLM_ROUTES
 
 
 def test_system_and_background_routes_are_mutually_exclusive() -> None:

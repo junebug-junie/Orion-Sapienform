@@ -95,6 +95,19 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_CORTEX_EXEC_REQUEST",
     )
 
+    # --- Reverie metacog routing (default-off) ---
+    # `metacog_background` (orion/llm/routes.py) shares circe-worker-2/GPU5 with `metacog` but
+    # waits for llama.cpp /slots slack before dispatching (same pattern as `quick_background`).
+    # Live-checked 2026-08-29: metacog is NOT capacity-starved (4 slots, mostly idle), so this is
+    # a tail-latency guard, not a rescue. Default OFF on purpose: Juniper wants to see reverie's
+    # real, unmitigated timeout/failure rate under load before this takes effect. Flip on to make
+    # reverie's own metacog calls yield to any other consumer contending for the same worker
+    # (e.g. a future visual-chain interpretation call staying on plain `metacog`, which never
+    # waits) instead of competing evenly.
+    reverie_metacog_background_enabled: bool = Field(
+        False, alias="ORION_REVERIE_METACOG_BACKGROUND_ENABLED"
+    )
+
     # --- Reverie perception context (default-off, read-only) ---
     # Feeds the most recent orion-vision-council narrative(s) from `vision_events`
     # into the reverie prompt as ungrounded sensory context -- reverie is
@@ -183,6 +196,16 @@ class ThoughtSettings(BaseSettings):
     # detector's lookback window, and that must not page anyone.
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
+
+    # --- Reverie metacog-timeout health monitor (default-on) ---
+    # Same edge-triggered orion-notify attention pattern as the resonance monitor above and
+    # orion-field-digester's HealthMonitor: fires once on a healthy->unhealthy transition (the
+    # reverie tick's cortex-exec call timing out), not once per tick, and a recovery note once it
+    # stops. Exists to make reverie_metacog_background_enabled's "off for now" period actually
+    # observable in the Hub, not just in logs -- see reverie_health_monitor.py.
+    reverie_metacog_timeout_attention_enabled: bool = Field(
+        True, alias="ORION_REVERIE_METACOG_TIMEOUT_ATTENTION_ENABLED"
+    )
 
     # --- Reverie VISUAL chain (Patch 2 of docs/superpowers/specs/2026-08-20-
     # reverie-visual-chain-design.md, default-off). A second, parallel reverie

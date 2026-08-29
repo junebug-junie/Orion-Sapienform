@@ -219,6 +219,16 @@ def _open_loops_for_prompt(
     return entries
 
 
+def _metacog_route() -> str:
+    """`metacog`, or `metacog_background` once ORION_REVERIE_METACOG_BACKGROUND_ENABLED is on.
+
+    Default off (2026-08-29, Juniper direction): keep reverie's calls on plain `metacog`
+    (contends evenly) until the flag is flipped, so its real timeout/failure rate under load is
+    observable first -- see settings.py and orion/llm/routes.py's BACKGROUND_LLM_ROUTES.
+    """
+    return "metacog_background" if settings.reverie_metacog_background_enabled else "metacog"
+
+
 def build_reverie_context(
     broadcast: AttentionBroadcastProjectionV1,
     *,
@@ -235,7 +245,7 @@ def build_reverie_context(
             "coalition_refs": coalition_refs,
             "metadata": {"mode": "metacog", "llm_profile": "metacog"},
             "mode": "metacog",
-            "llm_route": "metacog",
+            "llm_route": _metacog_route(),
             "options": {"llm_lane": "background", "allow_chat_fallback": False},
         }
         if percepts:
@@ -279,7 +289,7 @@ def build_reverie_plan_request(
         "mode": "metacog" if use_lift else "reverie",
     }
     if use_lift:
-        extra["llm_route"] = "metacog"
+        extra["llm_route"] = _metacog_route()
         extra["execution_lane"] = "background"
     return PlanExecutionRequest(
         plan=plan,
@@ -609,12 +619,31 @@ async def run_reverie_once(
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
         )
-        exec_result = await client.execute_plan(
-            source=_source(),
-            req=plan_request,
-            correlation_id=correlation_id,
-            timeout_sec=settings.stance_react_timeout_sec,
-        )
+        # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
+        # duplicated here (not returned by that function) because only a call that actually set
+        # llm_route to metacog/metacog_background should feed the health monitor below. Review
+        # caught this live 2026-08-29: ORION_REVERIE_SEMANTIC_LIFT_ENABLED defaults false, so most
+        # ticks never touch metacog at all, and reporting every plain-reverie timeout as a
+        # "metacog timed out" attention item would corrupt the exact evidence
+        # ORION_REVERIE_METACOG_BACKGROUND_ENABLED's "off for now" period exists to collect.
+        is_metacog_call = settings.reverie_semantic_lift_enabled and bool(concern_cards)
+        report_metacog_health = is_metacog_call and settings.reverie_metacog_timeout_attention_enabled
+        if report_metacog_health:
+            from .reverie_health_monitor import check_reverie_metacog_timeout
+        try:
+            exec_result = await client.execute_plan(
+                source=_source(),
+                req=plan_request,
+                correlation_id=correlation_id,
+                timeout_sec=settings.stance_react_timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            if report_metacog_health:
+                check_reverie_metacog_timeout(True)
+            raise
+        else:
+            if report_metacog_health:
+                check_reverie_metacog_timeout(False)
         raw_payload = extract_stance_react_payload(exec_result)
 
         thought = parse_reverie_payload(

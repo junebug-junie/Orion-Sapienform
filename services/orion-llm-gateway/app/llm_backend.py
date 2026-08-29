@@ -11,6 +11,7 @@ import re
 import httpx
 
 from orion.llm.openai_message_content import join_openai_message_content
+from orion.llm.routes import METACOG_LLM_ROUTES
 from app.vision import (
     AttachmentFetchError,
     build_multimodal_messages,
@@ -1458,11 +1459,12 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
     route, route_target, has_route_table, route_source = _resolve_route(body)
     effective_profile_name = body.profile_name
     if (
-        route == "metacog"
+        route in METACOG_LLM_ROUTES
         and not effective_profile_name
         and settings.atlas_metacog_profile_name
     ):
-        # Keep metacog lane deterministic even when callers omit profile.
+        # Keep metacog lane deterministic even when callers omit profile (both `metacog` and
+        # `metacog_background` share circe-worker-2 -- see METACOG_LLM_ROUTES).
         effective_profile_name = settings.atlas_metacog_profile_name
     profile = _select_profile(effective_profile_name)
     backend = _pick_backend(body.options, profile)

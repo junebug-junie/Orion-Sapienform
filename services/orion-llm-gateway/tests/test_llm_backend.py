@@ -352,6 +352,41 @@ class TestLLMBackendExecution(unittest.TestCase):
 
     @patch("app.llm_backend._select_profile")
     @patch("app.llm_backend._execute_openai_chat")
+    def test_run_llm_chat_injects_atlas_metacog_profile_on_metacog_background_route(
+        self,
+        mock_execute,
+        mock_select_profile,
+    ):
+        """Regression (review caught this live 2026-08-29): this pin used to be an exact
+        `route == "metacog"` string match, so `metacog_background` (reverie.py's
+        `_metacog_route()`, once ORION_REVERIE_METACOG_BACKGROUND_ENABLED is on) would silently
+        stop being pinned and fall through to the generic default profile instead -- both share
+        circe-worker-2, see orion/llm/routes.py's METACOG_LLM_ROUTES."""
+        original_table = settings.llm_route_table_json
+        original_profile = settings.atlas_metacog_profile_name
+        try:
+            settings.atlas_metacog_profile_name = "llama3-8b-instruct-q4km-atlas-metacog"
+            settings.llm_route_table_json = (
+                '{"metacog_background":{"url":"http://atlas:8012","served_by":"atlas-worker-2",'
+                '"backend":"llamacpp","priority":"background","reserved_free_slots":1}}'
+            )
+            mock_select_profile.return_value = None
+            mock_execute.return_value = {"text": "OK", "raw": {}}
+            _load_route_targets.cache_clear()
+            run_llm_chat(
+                ChatBody(
+                    route="metacog_background",
+                    messages=[ChatMessage(role="user", content="hello")],
+                )
+            )
+            mock_select_profile.assert_called_once_with("llama3-8b-instruct-q4km-atlas-metacog")
+        finally:
+            settings.llm_route_table_json = original_table
+            settings.atlas_metacog_profile_name = original_profile
+            _load_route_targets.cache_clear()
+
+    @patch("app.llm_backend._select_profile")
+    @patch("app.llm_backend._execute_openai_chat")
     def test_run_llm_chat_keeps_explicit_profile_on_metacog_route(
         self,
         mock_execute,

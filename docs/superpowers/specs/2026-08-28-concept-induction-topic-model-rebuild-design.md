@@ -479,3 +479,118 @@ Four branches off this spec, each independently verifiable.
 Branch 1. It is the only one that changes what the model sees, every other branch
 is either presentation or a consumer of its output, and it forces the D4 model
 rename that the rest should land on top of rather than under.
+
+## Branch 4 result, 2026-08-29: the contract defect was bigger than this spec said
+
+Branch 4 was scoped here as "last, because only the Claude mention path (8% of
+the corpus) depends on it." That was wrong, and the reason is worth recording.
+
+A live re-check of all ten acceptance checks before starting branch 4 found that
+`GET /segments` was returning **HTTP 500** -- `pydantic_core.ValidationError: 2
+validation errors for SegmentRecord ... dict_type` -- for every run containing a
+segment whose `meaning`/`sentiment` were prose strings. Measured: 552 of 554
+enriched rows, both columns.
+
+That endpoint is not a Claude-only concern. It is the sole source of
+`segment_speakers`, and `concept_atlas_routes` degrades a segments-fetch failure
+to an empty map. So a live ingest run on 2026-08-29 returned:
+
+```json
+{"available": true, "run_id": "f9443362-...", "concepts_written": 19,
+ "segments_fetched": 0, "segments_with_speakers": 0, "participation_edges": 0}
+```
+
+Branch 2's participation edges -- the mechanism that resolved the original
+complaint -- were **dead on the live path**, with every test green, an
+`available: true` response, and 19 concepts written. The 36 edges observed
+during branch 2's own verification were real; they had simply stopped being
+reproducible by the time the enrichment column filled up with prose. This is the
+"no empty-shell cognition" failure mode described in CLAUDE.md 0A, arriving
+through a schema-valid success response.
+
+The `SegmentRecord` model declared `meaning: Optional[Dict[str, Any]]` all along.
+Nothing enforced it: `_llm_prompt` named the six keys but never their shapes, so
+the model answered with prose, and `_finalize_enrichment`'s `setdefault` is a
+no-op for a key that is present-but-wrong-typed.
+
+Three further consequences, all silent:
+
+- `kg_edges._edges_from_segment` caught the resulting `JSONDecodeError` and
+  substituted `{}`. That is the whole explanation for `topic_foundry_edges`
+  holding 0 rows for all time.
+- `repository.fetch_segments`'s `friction`/`valence` sort keys are
+  `(sentiment->>'friction')::float`, which is NULL for a JSON string, so both
+  sorts silently collapsed to a constant 0.
+- Topic Studio and every other reader of those two columns saw a string where a
+  dict was declared.
+
+### What shipped
+
+`app/services/enrichment_contract.py` -- the declared shape as constants, plus
+`coerce_meaning`/`coerce_sentiment`. The prompt's shape block is **generated from
+the same constants the coercion validates against**, so the instruction given to
+the model and the shape the database accepts cannot drift apart. That is the
+seam; the coercion is what makes the 552 already-written rows readable without
+paying to re-enrich them.
+
+Prose is preserved under `summary` with `unstructured: true` rather than
+discarded or dressed up as structure. A non-numeric sentiment scalar is dropped
+rather than defaulted to `0.0`, because a fabricated 0.0 valence is
+indistinguishable from a measured neutral one.
+
+Read side is enforced by `SegmentRecord` field validators rather than a
+router-side fixup: `routers/segments.py` has two independent construction sites
+and a miss in either is a 500 on the endpoint the participation edges depend on.
+
+### Live results
+
+| check | before | after |
+|---|---|---|
+| `GET /segments` | HTTP 500 | HTTP 200, 394/394 with speakers |
+| ingest `segments_fetched` | 0 | 375 |
+| ingest `segments_with_speakers` | 0 | 255 |
+| ingest `participation_edges` | 0 | 34 |
+| ingest `edges_written` | 19 | 170 |
+| ingest `segment_topic_map_buckets` | 0 | 19 |
+| **A3** `topic_foundry_edges` | **0 rows, all time** | **50 rows (14 `mentions`)** |
+| **A4** newly enriched `jsonb_typeof` | 552 string / 2 object | **5/5 object, both columns** |
+
+A live 5-segment re-enrichment through the fixed prompt produced populated
+`entities` (`Athena`, `Circe`, `10G pipe`, `concept region`) and full numeric
+`sentiment` on every row -- the entity path that had never once produced a row.
+
+### Acceptance checks still open after branch 4
+
+- **A7** (`component_count` below 12) is unreachable as written. Live decomposition
+  is one 42-node main component (seeds + topics + evidence -- the win), one
+  10-node orphan component from the stale 2026-08-19 run that nothing retires,
+  and ten singleton substrate-telemetry concept nodes that connect to nothing by
+  design. The check needs replacing with one that names those two groups, not
+  satisfying.
+- **A10** (no `^substrate:` label) fails on 3 nodes, but the branch-3 fix is
+  working: 7 of the 10 telemetry nodes now carry real labels. The 3 that do not
+  (`node:substrate.harness_closure`, `.transport`, `.chat`) are rows written to
+  Falkor before that fix and never rewritten. This needs a backfill, not a code
+  change. Separately, `node:substrate.transport` is `transport_prediction_error`,
+  which CLAUDE.md 0A records as retired outright -- it is still holding a node.
+
+### Follow-ups found while verifying, not fixed here
+
+1. **The tick cannot land what it triggers.** `main.py` runs trigger -> enrich ->
+   ingest back-to-back in one tick body (`:815`, `:845`, `:862`); training takes
+   ~3 minutes and both endpoints are `BackgroundTasks`. At an 86400s interval the
+   graph is always at least a day behind the newest run. Confirmed: the 2026-08-28
+   startup tick queued run `68f0a3d1` (394 segments), which sat un-ingested until
+   a manual call.
+2. **Runs wedge with no watchdog.** `68f0a3d1` and `9160b074` sat in
+   `running/enriching` for 20+ hours with nothing to time them out or retry.
+3. **A failed training run is not retried.** Both 2026-08-29 02:34 runs failed on a
+   transient `orion-athena-vector-host` DNS resolution error (the host was healthy
+   again 20 minutes later). Nothing retried; at a 24h interval one DNS blip costs
+   a day.
+4. **`enriched_count` in the enrich response is stale.** `enrich_run_endpoint`
+   reads `stats["segments_enriched"]` from the run row *before* queueing the
+   background task, so the scheduler logs a number that predates the work it just
+   asked for.
+5. `topic-foundry` has no `evals/` directory. Coverage for this branch is gate
+   tests plus the live verification above.

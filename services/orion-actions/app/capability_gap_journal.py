@@ -39,21 +39,43 @@ from typing import Any, Iterable, Sequence
 
 logger = logging.getLogger("orion-actions.capability_gap_journal")
 
-# Attention `reason` values that mean "a capability Orion depends on was absent".
-# `node_availability:<node>` is minted by services/orion-substrate-runtime/app/
-# health_monitor.py::_node_availability_checks; `vision_blind` by the vision
-# liveness watchdog (PR #1805).
+# Alert `reason` -> the `reason` its producer uses to announce recovery.
+# A producer that announces recovery under the SAME reason (health_monitor does:
+# `_publish` reuses `check.key` for both) maps to itself.
+#   node_availability:<node>  services/orion-substrate-runtime/app/health_monitor.py (PR #1944)
+#   vision_blind              services/orion-vision-host/app/liveness.py (PR #1805)
+RECOVERY_REASON_BY_ALERT: dict[str, str] = {"vision_blind": "vision_recovered"}
+
+# Alert reasons this module tracks. A trailing ':' means prefix-match.
 LIVENESS_REASON_PREFIXES: tuple[str, ...] = ("node_availability:", "vision_blind")
 
-# health_monitor._publish formats a recovery as
-#     f"[Orion substrate-runtime] recovered: {check.key}"
-# and the attention record carries no severity field, so the message is the only
-# available signal for "this record closes an episode" -- see
-# test_recovery_marker_matches_health_monitor_format, which pins this literal
-# against that producer's format string so a rename there fails here.
+# Recovery records are identified by `severity == "info"` (health_monitor._publish
+# sets exactly that, versus "critical" on the alert; vision-host sets it on
+# `vision_recovered`), with this message marker as a secondary signal for the
+# same-reason producers.
+#
+# An earlier version of this module used the marker ALONE and justified it in a
+# docstring claiming the attention record "carries no severity field". That was
+# false -- `severity` is declared on ChatAttentionState (orion/schemas/notify.py)
+# and is present in the live payload; the claim came from reading a truncated
+# key listing. Severity is the better signal and is now primary. Kept as a
+# belt-and-braces check because a message-only match is exploitable: an alert
+# whose interpolated capability list happened to contain "recovered: " would
+# otherwise be journaled as a gap that ENDED, at the moment a node went down.
 RECOVERY_MARKER = "recovered: "
+RECOVERY_SEVERITIES = frozenset({"info"})
 
+# Cap on episodes carried into the seed. Selection keeps the most *recent*
+# episodes and unresolved ones first -- an ongoing outage matters more to the
+# entry than an old closed one. Display order is chronological.
 MAX_EPISODES_IN_SEED = 12
+
+# Attention messages are operator-facing runbook text written by other services
+# (the live vision_blind message is ~330 chars of docker/VRAM instructions).
+# Truncated before it reaches a prompt: unbounded producer text has no business
+# being interpolated verbatim, and a future producer could put a path or token
+# in there.
+MAX_DETAIL_CHARS = 320
 
 
 @dataclass(frozen=True)
@@ -71,6 +93,14 @@ class CapabilityGapEpisode:
     ended_at: datetime | None
     node: str | None = None
     evidence_ids: list[str] = field(default_factory=list)
+    # True when `ended_at` was inferred from a LATER alert rather than read from a
+    # recovery record. vision-host must clear `_alerting` before it can fire
+    # again, so a subsequent alert proves the earlier gap closed -- but not when.
+    # The duration is therefore an upper bound and is reported as one. Without
+    # this, every vision episode since 2026-08-21 stayed permanently "open"
+    # (`vision_recovered` has never once been emitted: 0 rows, ever) and a 24h
+    # window inherited all nine of them.
+    end_is_upper_bound: bool = False
 
     @property
     def resolved(self) -> bool:
@@ -88,11 +118,18 @@ class CapabilityGapEpisode:
             "node": self.node,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
-            "duration_minutes": self.duration_minutes,
-            "resolved": self.resolved,
+            "duration_minutes": None if self.end_is_upper_bound else self.duration_minutes,
+            "duration_upper_bound_minutes": self.duration_minutes if self.end_is_upper_bound else None,
+            "resolved": self.resolved and not self.end_is_upper_bound,
+            "ended_by_a_later_alert": self.end_is_upper_bound,
             "started_before_window": self.started_at is None,
-            "detail": self.message,
+            "detail": _truncate(self.message),
         }
+
+
+def _truncate(text: str, limit: int = MAX_DETAIL_CHARS) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
 
 
 def _parse_ts(raw: Any) -> datetime | None:
@@ -115,12 +152,7 @@ def _parse_ts(raw: Any) -> datetime | None:
 
 
 def _is_liveness_reason(reason: str) -> bool:
-    """A trailing ':' in the constant means prefix-match; otherwise exact.
-
-    Written out rather than as a conditional expression: `a or b if c else d`
-    parses as `(a or b) if c else d`, which is right here but reads as though it
-    might not be, and this predicate decides what lands in Orion's journal.
-    """
+    """A trailing ':' in the constant means prefix-match; otherwise exact."""
     for prefix in LIVENESS_REASON_PREFIXES:
         if prefix.endswith(":"):
             if reason.startswith(prefix) and len(reason) > len(prefix):
@@ -128,6 +160,32 @@ def _is_liveness_reason(reason: str) -> bool:
         elif reason == prefix:
             return True
     return False
+
+
+def _episode_key(reason: str) -> str | None:
+    """The alert reason an incoming record belongs to, or None if irrelevant.
+
+    A recovery record announced under a different reason (`vision_recovered`)
+    is mapped back onto the alert it closes; without this it was discarded by
+    the liveness filter before it could ever close anything, which is how three
+    separate vision outages on 2026-08-29 rendered as one 1h48m span that never
+    ended.
+    """
+    if _is_liveness_reason(reason):
+        return reason
+    for alert, recovery in RECOVERY_REASON_BY_ALERT.items():
+        if reason == recovery:
+            return alert
+    return None
+
+
+def _is_recovery(item: dict[str, Any], *, reason: str, episode_key: str) -> bool:
+    if reason != episode_key:
+        return True  # arrived under a paired recovery reason
+    severity = str(item.get("severity") or "").strip().lower()
+    if severity in RECOVERY_SEVERITIES:
+        return True
+    return RECOVERY_MARKER in str(item.get("message") or "") and severity == ""
 
 
 def _node_of(reason: str) -> str | None:
@@ -144,95 +202,119 @@ def summarize_capability_gaps(
 ) -> list[CapabilityGapEpisode]:
     """Pure: attention records in, capability-absence episodes out.
 
-    Pairs each alert with the recovery record that closes it. Repeated alerts for
-    an already-open reason are folded into the open episode rather than starting a
-    new one -- `HealthMonitor` is edge-triggered, but a service restart re-fires
-    the transition, and that is one outage from Orion's point of view, not two.
+    Episodes are built from the FULL record history and then filtered by
+    *overlap* with the window, not by whether individual records fall inside it.
+    Filtering records instead means an outage that began before the window and
+    was still running at the end of it has neither an in-window alert nor an
+    in-window recovery, and vanishes -- day two of a multi-day outage would be
+    silent, which is precisely the silence this module exists to remove.
+
+    Repeat alerts are NOT folded into one episode. Folding was in an earlier
+    version to absorb a restart re-firing an edge-triggered transition, but
+    `health_monitor._has_open_alert` already suppresses that: the 2026-08-29
+    absence sweep fired 142 times and produced exactly one attention record. For
+    vision-host, which re-arms after clearing, folding actively lied -- three
+    distinct outages became one. An alert opening while another is still open
+    leaves the earlier one unresolved, which is honest: with no recovery record
+    we do not know when it ended.
     """
-    by_reason: dict[str, list[tuple[datetime, dict[str, Any]]]] = {}
+    tracked: dict[str, list[tuple[datetime, str, dict[str, Any]]]] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
         reason = str(item.get("reason") or "").strip()
-        if not reason or not _is_liveness_reason(reason):
+        if not reason:
+            continue
+        key = _episode_key(reason)
+        if key is None:
             continue
         ts = _parse_ts(item.get("created_at"))
-        if ts is None or not (window_start <= ts <= window_end):
+        if ts is None or ts > window_end:
             continue
-        by_reason.setdefault(reason, []).append((ts, item))
+        tracked.setdefault(key, []).append((ts, reason, item))
 
     episodes: list[CapabilityGapEpisode] = []
-    for reason, rows in by_reason.items():
+    for key, rows in tracked.items():
         rows.sort(key=lambda r: r[0])
-        open_start: datetime | None = None
-        open_msg = ""
-        open_ids: list[str] = []
-        saw_open = False
-        for ts, item in rows:
-            message = str(item.get("message") or "").strip()
-            att_id = str(item.get("attention_id") or "").strip()
-            if RECOVERY_MARKER in message:
-                # A recovery with no in-window alert means the outage began before
-                # the window opened; record it with started_at=None rather than
-                # dropping it, which would silently hide a midnight-spanning gap.
+        open_ep: dict[str, Any] | None = None
+        for ts, reason, item in rows:
+            if _is_recovery(item, reason=reason, episode_key=key):
+                if open_ep is not None:
+                    episodes.append(
+                        CapabilityGapEpisode(
+                            reason=key,
+                            message=open_ep["message"],
+                            started_at=open_ep["started_at"],
+                            ended_at=ts,
+                            node=_node_of(key),
+                            evidence_ids=open_ep["ids"],
+                        )
+                    )
+                    open_ep = None
+                elif ts >= window_start:
+                    # Recovery with no known open alert: the gap began before any
+                    # record we hold. Recorded with started_at=None rather than
+                    # dropped, so a window-spanning outage is not silent.
+                    episodes.append(
+                        CapabilityGapEpisode(
+                            reason=key,
+                            message=str(item.get("message") or "").strip(),
+                            started_at=None,
+                            ended_at=ts,
+                            node=_node_of(key),
+                            evidence_ids=[str(item.get("attention_id") or "")],
+                        )
+                    )
+                continue
+            if open_ep is not None:
+                # A new alert while one is open. For a re-arming producer this
+                # proves the earlier gap closed at some point before now, so bound
+                # it here rather than leaving it open forever.
                 episodes.append(
                     CapabilityGapEpisode(
-                        reason=reason,
-                        message=open_msg or message,
-                        started_at=open_start,
+                        reason=key,
+                        message=open_ep["message"],
+                        started_at=open_ep["started_at"],
                         ended_at=ts,
-                        node=_node_of(reason),
-                        evidence_ids=[*open_ids, att_id] if att_id else list(open_ids),
+                        node=_node_of(key),
+                        evidence_ids=open_ep["ids"],
+                        end_is_upper_bound=True,
                     )
                 )
-                open_start, open_msg, open_ids, saw_open = None, "", [], False
-                continue
-            if not saw_open:
-                open_start, open_msg, saw_open = ts, message, True
-                open_ids = [att_id] if att_id else []
-            elif att_id:
-                open_ids.append(att_id)
-        if saw_open:
+            att_id = str(item.get("attention_id") or "").strip()
+            open_ep = {
+                "started_at": ts,
+                "message": str(item.get("message") or "").strip(),
+                "ids": [att_id] if att_id else [],
+            }
+        if open_ep is not None:
             episodes.append(
                 CapabilityGapEpisode(
-                    reason=reason,
-                    message=open_msg,
-                    started_at=open_start,
+                    reason=key,
+                    message=open_ep["message"],
+                    started_at=open_ep["started_at"],
                     ended_at=None,
-                    node=_node_of(reason),
-                    evidence_ids=open_ids,
+                    node=_node_of(key),
+                    evidence_ids=open_ep["ids"],
                 )
             )
 
-    episodes.sort(key=lambda e: (e.started_at or window_start, e.reason))
-    return episodes[:MAX_EPISODES_IN_SEED]
+    overlapping = [e for e in episodes if _overlaps(e, window_start, window_end)]
+    # Select the most important MAX_EPISODES_IN_SEED (unresolved first, then most
+    # recent), then restore chronological order for display. Slicing a
+    # chronologically-sorted list instead would drop the NEWEST episode -- the one
+    # most likely to still be happening.
+    overlapping.sort(key=lambda e: (e.resolved, -(e.started_at or window_start).timestamp()))
+    kept = overlapping[:MAX_EPISODES_IN_SEED]
+    kept.sort(key=lambda e: (e.started_at or window_start, e.reason))
+    return kept
 
 
-def format_capability_gap_block(episodes: Sequence[CapabilityGapEpisode]) -> str:
-    """Deterministic prose block for the journal body (not LLM-dependent).
-
-    Mirrors `orion.journaler.worker.format_world_pulse_curiosity_block`: if the
-    composer omits the fact, this is what still lands in the entry.
-    """
-    if not episodes:
-        return ""
-    lines = ["## What I could not do", ""]
-    for ep in episodes:
-        subject = ep.node or ep.reason
-        if ep.started_at is None:
-            when = "already underway when the day began"
-        else:
-            when = f"from {ep.started_at.strftime('%H:%M')} UTC"
-        if ep.duration_minutes is not None:
-            span = f", {ep.duration_minutes:g} minutes"
-        elif not ep.resolved:
-            span = ", still unresolved at the end of the window"
-        else:
-            span = ""
-        lines.append(f"- **{subject}** — {when}{span}.")
-        if ep.message:
-            lines.append(f"  {ep.message}")
-    return "\n".join(lines).strip()
+def _overlaps(ep: CapabilityGapEpisode, window_start: datetime, window_end: datetime) -> bool:
+    """True when the gap was in effect at any point inside the window."""
+    start = ep.started_at or datetime.min.replace(tzinfo=timezone.utc)
+    end = ep.ended_at or datetime.max.replace(tzinfo=timezone.utc)
+    return start <= window_end and end >= window_start
 
 
 async def fetch_recent_attention(
@@ -244,26 +326,55 @@ async def fetch_recent_attention(
 ) -> list[dict[str, Any]]:
     """Read the attention store. Returns [] on any failure -- never raises.
 
-    A journal is not worth failing a scheduler tick over: if notify is
-    unreachable the daily entry should still be written, just without this
-    section. The failure is logged, not swallowed silently.
-    """
-    import httpx
+    Uses `requests` on a worker thread rather than httpx: httpx is NOT installed
+    in the orion-actions image (`requirements.txt` has requests, fastapi,
+    uvicorn, pydantic, redis, PyYAML -- confirmed live with
+    `docker exec orion-athena-actions python -c "import httpx"`), and the module
+    import sat outside the try, so the first daily tick after deploy would have
+    raised ModuleNotFoundError straight through this function into the
+    scheduler's shared handler -- taking out the journal dispatch AND the
+    workflow-schedule claim in the same iteration, every 45 seconds, all day.
+    This mirrors the pattern services/orion-vision-host/app/liveness.py already
+    uses against this same endpoint.
 
-    headers = {"X-Orion-Notify-Token": notify_api_token} if notify_api_token else {}
-    url = f"{notify_url.strip().rstrip('/')}/attention"
+    A journal is not worth failing a scheduler tick over: if notify is
+    unreachable the daily entry is still written, just without this section.
+    """
+    def _blocking() -> list[dict[str, Any]]:
+        import requests  # inside, so a missing dep degrades instead of aborting
+
+        headers = {"X-Orion-Notify-Token": notify_api_token} if notify_api_token else {}
+        url = f"{notify_url.strip().rstrip('/')}/attention"
+        response = requests.get(
+            url, params={"limit": limit}, headers=headers, timeout=timeout_sec
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            logger.warning(
+                "capability_gap_attention_unexpected_payload type=%s", type(payload).__name__
+            )
+            return []
+        rows = [i for i in payload if isinstance(i, dict)]
+        # limit is orion-notify's hard ceiling (Query(le=200)); when the slice is
+        # full the oldest row bounds how far back we can see, so say so rather
+        # than silently reporting no gaps for a window we never covered.
+        if len(rows) >= limit:
+            logger.warning(
+                "capability_gap_attention_slice_full limit=%d oldest=%s "
+                "(older episodes may be invisible)",
+                limit,
+                rows[-1].get("created_at") if rows else None,
+            )
+        return rows
+
     try:
-        async with httpx.AsyncClient(timeout=timeout_sec) as client:
-            response = await client.get(url, params={"limit": limit}, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
+        import asyncio
+
+        return await asyncio.to_thread(_blocking)
     except Exception as exc:
-        logger.warning("capability_gap_attention_fetch_failed url=%s err=%s", url, exc)
+        logger.warning("capability_gap_attention_fetch_failed err=%s", exc)
         return []
-    if not isinstance(payload, list):
-        logger.warning("capability_gap_attention_unexpected_payload type=%s", type(payload).__name__)
-        return []
-    return [i for i in payload if isinstance(i, dict)]
 
 
 async def collect_capability_gaps(

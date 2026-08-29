@@ -17,13 +17,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.capability_gap_journal import (
+    MAX_DETAIL_CHARS,
     LIVENESS_REASON_PREFIXES,
+    MAX_EPISODES_IN_SEED,
+    RECOVERY_REASON_BY_ALERT,
     build_daily_seed_payload,
     RECOVERY_MARKER,
     CapabilityGapEpisode,
     collect_capability_gaps,
     fetch_recent_attention,
-    format_capability_gap_block,
     summarize_capability_gaps,
 )
 
@@ -83,17 +85,80 @@ def test_recovery_without_in_window_start_is_not_dropped() -> None:
     assert ep.to_seed_dict()["started_before_window"] is True
 
 
-def test_repeated_alerts_for_one_reason_fold_into_a_single_episode() -> None:
-    """A restart re-fires the transition; that is one outage, not three."""
+def test_repeat_alerts_are_separate_episodes_not_one_long_one() -> None:
+    """Three real vision_blind rows from 2026-08-29, verbatim timestamps.
+
+    An earlier version folded these into a single unresolved 1h48m span. They are
+    three distinct outages -- vision-host re-arms (`_alerting` must clear before it
+    can fire again) -- so folding told Orion's journal something false about his
+    own day. Folding was there to absorb an edge-triggered restart re-fire, but
+    `health_monitor._has_open_alert` already prevents that: the absence sweep fired
+    142 times on 2026-08-29 and produced exactly one attention record.
+    """
     items = [
-        _item("vision_blind", "2026-08-29T20:25:00", "Orion cannot see", att_id="v1"),
-        _item("vision_blind", "2026-08-29T21:00:00", "Orion cannot see", att_id="v2"),
-        _item("vision_blind", "2026-08-29T21:35:00", "Orion cannot see", att_id="v3"),
+        _item("vision_blind", "2026-08-29T20:25:33", "Orion cannot see", att_id="v1"),
+        _item("vision_blind", "2026-08-29T21:00:18", "Orion cannot see", att_id="v2"),
+        _item("vision_blind", "2026-08-29T22:13:19", "Orion cannot see", att_id="v3"),
     ]
     episodes = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
-    assert len(episodes) == 1
-    assert episodes[0].started_at == datetime(2026, 8, 29, 20, 25, tzinfo=timezone.utc)
-    assert episodes[0].evidence_ids == ["v1", "v2", "v3"]
+    assert len(episodes) == 3, "three arms of the watcher are three outages"
+    assert [e.started_at.strftime("%H:%M") for e in episodes] == ["20:25", "21:00", "22:13"]
+
+
+def test_vision_recovery_uses_a_different_reason_and_still_closes() -> None:
+    """vision-host announces recovery as `vision_recovered`, not `vision_blind`.
+
+    liveness.py:342 emits that reason with severity "info" and a message with no
+    "recovered: " substring, so a reason-filtered, marker-matched implementation
+    discarded it before it could close anything -- every vision episode stayed
+    open forever.
+    """
+    assert RECOVERY_REASON_BY_ALERT["vision_blind"] == "vision_recovered"
+    items = [
+        _item("vision_blind", "2026-08-29T20:25:00", "Orion cannot see"),
+        {
+            "reason": "vision_recovered",
+            "created_at": "2026-08-29T20:55:00",
+            "severity": "info",
+            "message": "Vision is working again on athena: 98% of recent tasks succeeding.",
+            "attention_id": "r1",
+        },
+    ]
+    (ep,) = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    assert ep.resolved is True
+    assert ep.duration_minutes == 30.0
+
+
+def test_severity_info_closes_a_same_reason_episode() -> None:
+    """health_monitor._publish sets severity="info" on recovery, "critical" on alert.
+
+    Severity is the primary close signal now. An earlier version used a message
+    substring alone, justified by a docstring claiming the record had no severity
+    field -- it does, and the claim came from a truncated key listing.
+    """
+    items = [
+        {"reason": "node_availability:circe", "created_at": "2026-08-29T08:00:00",
+         "severity": "critical", "message": "Node 'circe' has stopped reporting", "attention_id": "a"},
+        {"reason": "node_availability:circe", "created_at": "2026-08-29T08:45:00",
+         "severity": "info", "message": "[Orion substrate-runtime] recovered: node_availability:circe",
+         "attention_id": "b"},
+    ]
+    (ep,) = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    assert ep.resolved is True and ep.duration_minutes == 45.0
+
+
+def test_a_critical_alert_mentioning_recovered_does_not_close_an_episode() -> None:
+    """The alert message interpolates ', '.join(capability_impacts), which this
+    module does not control. Under marker-only matching, a capability literally
+    named with that substring turned a node going DOWN into a gap that ENDED."""
+    items = [
+        {"reason": "node_availability:circe", "created_at": "2026-08-29T08:00:00",
+         "severity": "critical",
+         "message": "Node 'circe' has stopped reporting. Capabilities affected: not-yet-recovered: gpu.",
+         "attention_id": "a"},
+    ]
+    (ep,) = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    assert ep.resolved is False, "a critical alert must never read as a recovery"
 
 
 def test_two_reasons_produce_two_episodes() -> None:
@@ -125,12 +190,18 @@ def test_bare_prefix_without_a_node_is_not_an_episode() -> None:
     assert summarize_capability_gaps(items, window_start=W_START, window_end=W_END) == []
 
 
-def test_items_outside_the_window_are_excluded() -> None:
-    items = [
-        _item("vision_blind", "2026-08-28T23:00:00"),   # before
-        _item("vision_blind", "2026-08-31T00:00:00"),   # after
-    ]
-    assert summarize_capability_gaps(items, window_start=W_START, window_end=W_END) == []
+def test_an_alert_before_the_window_is_carried_forward_not_excluded() -> None:
+    """Supersedes an earlier `test_items_outside_the_window_are_excluded`, which
+    asserted the defect: it filtered *records* by the window, so an alert at
+    23:00 the previous night with no recovery since -- an outage still in
+    progress -- was dropped. Episodes are now filtered by overlap instead. The
+    "after the window" half of that old test survives as
+    `test_records_after_the_window_are_ignored`.
+    """
+    items = [_item("vision_blind", "2026-08-28T23:00:00")]
+    (ep,) = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    assert ep.resolved is False
+    assert ep.started_at == datetime(2026, 8, 28, 23, 0, tzinfo=timezone.utc)
 
 
 def test_malformed_rows_do_not_raise() -> None:
@@ -227,39 +298,6 @@ def test_liveness_prefixes_cover_both_known_producers() -> None:
 
 
 # --------------------------------------------------------------------------
-# rendering
-# --------------------------------------------------------------------------
-
-def test_block_is_empty_when_nothing_was_absent() -> None:
-    assert format_capability_gap_block([]) == ""
-
-
-def test_block_names_subject_time_and_duration() -> None:
-    ep = CapabilityGapEpisode(
-        reason="node_availability:circe",
-        message="Node 'circe' has stopped reporting. Capabilities affected: local_llm_heavy.",
-        started_at=datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc),
-        ended_at=datetime(2026, 8, 29, 8, 45, tzinfo=timezone.utc),
-        node="circe",
-    )
-    block = format_capability_gap_block([ep])
-    assert "circe" in block
-    assert "08:00 UTC" in block
-    assert "45 minutes" in block
-    assert "local_llm_heavy" in block
-
-
-def test_block_marks_an_unresolved_gap() -> None:
-    ep = CapabilityGapEpisode(
-        reason="vision_blind",
-        message="Orion cannot see.",
-        started_at=datetime(2026, 8, 29, 21, 0, tzinfo=timezone.utc),
-        ended_at=None,
-    )
-    assert "still unresolved" in format_capability_gap_block([ep])
-
-
-# --------------------------------------------------------------------------
 # I/O never breaks the journal
 # --------------------------------------------------------------------------
 
@@ -345,3 +383,112 @@ def test_seed_carries_the_gap_when_there_was_one() -> None:
     assert gaps[0]["duration_minutes"] == 45.0
     assert gaps[0]["resolved"] is True
     json.dumps(gaps, sort_keys=True)  # must be JSON-serialisable for the seed
+
+
+# --------------------------------------------------------------------------
+# window overlap, truncation, and producer text
+# --------------------------------------------------------------------------
+
+def test_outage_spanning_the_entire_window_is_reported() -> None:
+    """Day two of a multi-day outage: the alert is before the window and there is
+    no recovery inside it. Filtering *records* by the window made this vanish --
+    the exact silence this module exists to remove."""
+    items = [_item("node_availability:circe", "2026-08-28T23:00:00", "circe stopped reporting")]
+    (ep,) = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    assert ep.resolved is False
+    assert ep.started_at == datetime(2026, 8, 28, 23, 0, tzinfo=timezone.utc)
+
+
+def test_an_episode_that_closed_before_the_window_is_not_reported() -> None:
+    items = [
+        _item("node_availability:circe", "2026-08-28T10:00:00", "down"),
+        {"reason": "node_availability:circe", "created_at": "2026-08-28T11:00:00",
+         "severity": "info", "message": "recovered: node_availability:circe"},
+    ]
+    assert summarize_capability_gaps(items, window_start=W_START, window_end=W_END) == []
+
+
+def test_records_after_the_window_are_ignored() -> None:
+    items = [_item("vision_blind", "2026-08-31T00:00:00")]
+    assert summarize_capability_gaps(items, window_start=W_START, window_end=W_END) == []
+
+
+def test_truncation_keeps_the_newest_and_the_unresolved() -> None:
+    """Slicing a chronologically-sorted list dropped the NEWEST episode -- the one
+    most likely to still be happening. Nothing covered the cap at all."""
+    items = []
+    for i in range(MAX_EPISODES_IN_SEED + 3):
+        items.append(_item(f"node_availability:n{i:02d}", f"2026-08-29T{7 + i:02d}:00:00"))
+    episodes = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    assert len(episodes) == MAX_EPISODES_IN_SEED
+    kept = {e.node for e in episodes}
+    newest = f"n{MAX_EPISODES_IN_SEED + 2:02d}"
+    oldest = "n00"
+    assert newest in kept, "the newest episode must survive truncation"
+    assert oldest not in kept, "the oldest is the one to drop"
+    starts = [e.started_at for e in episodes]
+    assert starts == sorted(starts), "display order stays chronological"
+
+
+def test_producer_message_is_truncated_before_it_reaches_the_prompt() -> None:
+    """The live vision_blind message is ~330 chars of docker/VRAM runbook text and
+    goes verbatim into the journal prompt. Unbounded producer text has no business
+    being interpolated into a prompt."""
+    long_msg = "x" * 5000
+    items = [_item("vision_blind", "2026-08-29T20:00:00", long_msg)]
+    (ep,) = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    detail = ep.to_seed_dict()["detail"]
+    assert len(detail) <= MAX_DETAIL_CHARS
+    assert detail.endswith("\u2026")
+
+
+def test_a_later_alert_bounds_an_earlier_gap_instead_of_leaving_it_open() -> None:
+    """vision-host clears `_alerting` before it can re-arm, so alert N+1 proves
+    gap N ended -- but not when. Live consequence of NOT doing this: because
+    `vision_recovered` has never once been emitted (0 rows ever), all nine
+    vision_blind episodes since 2026-08-21 stayed permanently open and a 24h
+    window inherited every one of them.
+    """
+    items = [
+        _item("vision_blind", "2026-08-29T20:25:00", "blind", att_id="v1"),
+        _item("vision_blind", "2026-08-29T21:00:00", "blind", att_id="v2"),
+    ]
+    first, second = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    d = first.to_seed_dict()
+    assert d["ended_by_a_later_alert"] is True
+    assert d["duration_upper_bound_minutes"] == 35.0
+    assert d["duration_minutes"] is None, "an inferred end must not report a hard duration"
+    assert d["resolved"] is False, "we never saw it recover; we only know it stopped"
+    assert second.to_seed_dict()["ended_by_a_later_alert"] is False
+
+
+def test_bounded_gaps_drop_out_of_a_later_window() -> None:
+    """Real 2026-08-21 vision_blind timestamps must not surface in today's entry.
+
+    Each is bounded by the alert that follows it. Note the LAST alert in a chain
+    legitimately stays open -- with no recovery and no successor, "still absent"
+    is the honest reading of that data, not a bug -- so this fixture carries the
+    successor that actually exists in the live store.
+    """
+    items = [
+        _item("vision_blind", "2026-08-21T21:13:23"),
+        _item("vision_blind", "2026-08-21T21:31:13"),
+        _item("vision_blind", "2026-08-26T22:58:32"),   # bounds the two above
+    ]
+    episodes = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    assert [e.started_at.strftime("%m-%d") for e in episodes] == ["08-26"], (
+        "only the still-open tail of the chain reaches the window"
+    )
+
+
+def test_a_real_recovery_still_reports_a_hard_duration() -> None:
+    items = [
+        _item("vision_blind", "2026-08-29T20:25:00", "blind"),
+        {"reason": "vision_recovered", "created_at": "2026-08-29T20:55:00",
+         "severity": "info", "message": "Vision is working again on athena: 98% succeeding."},
+    ]
+    (ep,) = summarize_capability_gaps(items, window_start=W_START, window_end=W_END)
+    d = ep.to_seed_dict()
+    assert d["resolved"] is True
+    assert d["duration_minutes"] == 30.0
+    assert d["duration_upper_bound_minutes"] is None

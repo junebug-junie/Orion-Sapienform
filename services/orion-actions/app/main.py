@@ -2144,12 +2144,20 @@ async def lifespan(app: FastAPI):
                     # the pre-patch one and this adds no journal entries of its own.
                     gaps: list[dict[str, Any]] = []
                     if settings.actions_journal_capability_gaps_enabled:
-                        gaps = await collect_capability_gaps(
-                            notify_url=settings.notify_url,
-                            notify_api_token=settings.notify_api_token,
-                            window_start_utc=window.window_start_utc,
-                            window_end_utc=window.window_end_utc,
-                        )
+                        # Own try/except, not the loop's shared handler at the bottom
+                        # of this iteration: an enrichment that cannot be rendered
+                        # must never cost the journal entry itself, nor starve the
+                        # workflow-schedule claim that runs after it.
+                        try:
+                            gaps = await collect_capability_gaps(
+                                notify_url=settings.notify_url,
+                                notify_api_token=settings.notify_api_token,
+                                window_start_utc=window.window_start_utc,
+                                window_end_utc=window.window_end_utc,
+                            )
+                        except Exception:
+                            logger.exception("journal_daily_capability_gaps_failed date=%s", window.request_date)
+                            gaps = []
                         if gaps:
                             logger.info(
                                 "journal_daily_capability_gaps date=%s count=%d reasons=%s",

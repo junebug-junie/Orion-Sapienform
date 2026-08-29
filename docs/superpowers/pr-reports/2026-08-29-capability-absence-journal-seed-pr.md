@@ -55,7 +55,7 @@ Volume in `journal_entries`, 14 days to 2026-08-29:
 - `services/orion-actions/app/main.py`: daily scheduler block calls `collect_capability_gaps` + `build_daily_seed_payload`.
 - `services/orion-actions/app/settings.py`: `actions_journal_capability_gaps_enabled`.
 - `services/orion-actions/.env_example`: `ACTIONS_JOURNAL_CAPABILITY_GAPS_ENABLED`.
-- `services/orion-actions/tests/test_capability_gap_journal.py`: new, 22 tests.
+- `services/orion-actions/tests/test_capability_gap_journal.py`: new, 30 tests.
 
 ## Schema / bus / API changes
 
@@ -75,7 +75,7 @@ Volume in `journal_entries`, 14 days to 2026-08-29:
 
 ```text
 pytest services/orion-actions/tests/test_capability_gap_journal.py -q  -> 22 passed
-pytest services/orion-actions/tests -q                                 -> 143 passed
+pytest services/orion-actions/tests -q                                 -> 151 passed
 pre-commit: check_settings_defaults OK; check_service_env_compose_parity OK
 ```
 
@@ -118,7 +118,47 @@ Follow-up: this service has no eval harness. Not created here — the patch is a
 
 ## Review findings fixed
 
-_Pending — code review dispatched; findings land as a follow-up commit on this branch._
+Adversarial review returned **BLOCKED** with six verified defects. All fixed; each fix mutation-tested against the real file.
+
+- **BLOCKER — `httpx` is not installed in the orion-actions image, and the import sat outside the `try`.**
+  - Verified live: `docker exec orion-athena-actions python -c "import httpx"` → `ModuleNotFoundError`. `requirements.txt` has `requests`, not `httpx`.
+  - Blast radius was not just this feature: the exception escaped into the scheduler's shared handler at `main.py:2238`, so the first daily tick after deploy would have killed the journal dispatch *and* the workflow-schedule claim, then re-raised every 45s all day. Tests passed only because the repo venv happens to have httpx.
+  - Fix: `requests` on a worker thread (already a dependency; mirrors `orion-vision-host/app/liveness.py` against this same endpoint), import moved inside the `try`, plus a dedicated `try/except` at the `main.py` call site so nothing here can ever reach the shared handler.
+  - Evidence: module imports and runs to completion **inside the live container**; with notify unreachable it returns `[]` and logs, no exception.
+
+- **CRITICAL — `vision_blind` episodes could never close; three real outages collapsed into one false span.**
+  - `orion-vision-host/app/liveness.py:342` announces recovery under a *different* reason (`vision_recovered`, severity `info`) with no `"recovered: "` substring, so the liveness filter discarded it before it could close anything. Separately, folding repeat alerts was wrong for a producer that re-arms.
+  - Fix: `RECOVERY_REASON_BY_ALERT` maps recovery reasons onto their alert; folding removed entirely (it existed to absorb an edge-triggered restart re-fire, but `_has_open_alert` already prevents that — the absence sweep fired 142 times on 08-29 and produced exactly **one** record).
+  - Follow-on found by re-running live: `vision_recovered` has **never been emitted — 0 rows, ever**, so episodes still never closed and a 24h window inherited all nine since 08-21. Added an upper-bound close: vision-host must clear `_alerting` before re-arming, so a later alert proves the earlier gap ended — reported as `duration_upper_bound_minutes` with `resolved: false`, never as a hard duration.
+  - Evidence: live in-container run went **9 permanently-open episodes → 5 correctly-bounded ones**.
+
+- **HIGH — an outage in progress for the whole window produced nothing.** Records were filtered by the window, so day two of a multi-day outage had neither an in-window alert nor an in-window recovery and vanished. Fix: build episodes from full history, filter by *overlap*.
+
+- **MEDIUM — `MAX_EPISODES_IN_SEED` truncation dropped the newest episode**, and no test covered the cap. Fix: select unresolved-first then newest, restore chronological order for display; test pins which episode survives.
+
+- **MEDIUM — the docstring claim "the attention record carries no severity field" was false.** `severity` is declared on `ChatAttentionState` and present in the live payload; the claim came from my own truncated key listing (`sorted(keys)[:14]` cut it off). Severity is now the primary recovery signal, with the marker as a secondary — which also closes the hole where a critical alert whose interpolated capability list contained `"recovered: "` was journaled as a gap that *ended*.
+
+- **MEDIUM — `format_capability_gap_block` was dead code** whose docstring claimed a deterministic-fallback guarantee it did not provide (nothing called it; three tests exercised unreachable code). Deleted, with the tests. **Follow-up:** there is now no deterministic fallback if the composer ignores the seed key — wiring one needs an injection point in `orion/journaler`, which is a different service boundary.
+
+- **LOW — producer message went into the prompt verbatim and unbounded.** Now truncated to `MAX_DETAIL_CHARS = 320`.
+
+- **LOW — the 200-record fetch is orion-notify's hard ceiling** (`Query(le=200)`). Now logs a warning when the slice comes back full, so a burst pushing the window out of range is visible rather than silently reporting no gaps.
+
+### Claims the review confirmed held up
+
+Timezone handling and its non-vacuous test; the byte-identical-seed property on the pure-function path; env parity including the kill switch actually reaching the container; no bus/schema contract change; the service boundary; and `reason` being matchable as written.
+
+### Mutation results after the fixes
+
+| mutation | result |
+|---|---|
+| drop `vision_recovered` pairing | CAUGHT |
+| drop the later-alert upper bound | CAUGHT |
+| ignore severity, marker only | CAUGHT |
+| match marker regardless of severity | CAUGHT |
+| slice chronologically (drops newest) | CAUGHT |
+| filter records by window, not overlap | CAUGHT |
+| no detail truncation | CAUGHT |
 
 ## Restart required
 

@@ -8,9 +8,9 @@ design), **both changes here alter live behavior.**
 - `orion-cortex-exec` no longer publishes a metacognitive trace when its fallback content
   is a gateway error sentinel. It was recording transport failures as
   `trace_role="reasoning"`.
-- New `orion/llm/backend_errors.py` gives the gateway's `[Error: ...]` sentinel one owner
-  (`BACKEND_ERROR_PREFIX` + `is_backend_error_text()`), replacing an unowned literal
-  repeated at ~10 sites.
+- The gate uses the repo's **existing canonical detector**,
+  `looks_like_error_text()` (`orion/cognition/cortex_payload_extract.py`). No new detector
+  is added and `orion-llm-gateway` is not touched at all.
 - `orion-gpu-cluster-power` gains the `service_version` setting its own `api.py` has always
   read -- the service has been crash-looping its heartbeat on `AttributeError` every tick.
 
@@ -38,13 +38,9 @@ code already knew: it sets `metadata["fallback_from_final_text"] = True` and the
 
 ## Files changed
 
-- `orion/llm/backend_errors.py`: new; one owner for the sentinel
-- `services/orion-llm-gateway/app/llm_backend.py`: two failure branches use the shared
-  constant. **Output is byte-identical** -- this is deduplication, not a behavior change, so
-  the 936 already-persisted rows stay matchable by the same predicate.
 - `services/orion-cortex-exec/app/main.py`: gate the fallback publish
 - `services/orion-gpu-cluster-power/app/settings.py`: add `service_version`
-- `tests/test_backend_error_not_reasoning.py`: 12 tests (new)
+- `tests/test_backend_error_not_reasoning.py`: 13 tests (new)
 
 ## Schema / bus / API changes
 
@@ -68,11 +64,16 @@ it. Verified live: `docker exec orion-athena-gpu-cluster-power printenv SERVICE_
 ## Tests run
 
 ```text
-pytest tests/test_backend_error_not_reasoning.py -q      -> 12 passed
-pytest services/orion-llm-gateway/tests -q               -> 285 passed
+pytest tests/test_backend_error_not_reasoning.py -q      -> 13 passed
+pytest tests/test_attention_runtime_store.py tests/test_backend_error_not_reasoning.py -q
+                                                         -> 24 passed
+pytest tests/test_backend_error_not_reasoning.py tests/test_receipt_pruner.py -q
+                                                         -> 17 passed
 pytest services/orion-cortex-exec/tests -q --continue-on-collection-errors
                                                          -> 787 passed, 96 failed, 14 errors
 ```
+
+The two mixed-file runs are review finding 1's own repros, which failed before the fix.
 
 The cortex-exec failures/errors are **pre-existing and environmental** (verb registry +
 missing services). Verified by reverting `main.py` in place and re-running the identical
@@ -80,8 +81,8 @@ invocation: **96 failed / 787 passed / 14 errors both ways**, byte-identical. `g
 deliberately avoided -- it is shared across worktrees.
 
 Mutation-tested: removing `service_version` fails
-`test_gpu_cluster_power_settings_expose_service_version`; reverting the gateway to its inline
-literal fails `test_prefix_matches_what_the_gateway_actually_emits`.
+`test_gpu_cluster_power_settings_expose_service_version`; swapping the canonical detector for
+a narrow `startswith("[Error: ")` check fails `test_cortex_exec_gates_on_the_canonical_detector`.
 
 ## Docker/build/smoke checks
 
@@ -104,13 +105,50 @@ docker compose --env-file .env --env-file services/orion-cortex-exec/.env \
 Prefer `scripts/safe_docker_build.sh <service> ...`; do not run these from the shared
 checkout.
 
+## Review findings fixed
+
+- Finding 2 (medium) -- **the serious one.** My first cut added
+  `orion/llm/backend_errors.py` with its own `[Error: ` constant and predicate, and the PR
+  claimed it gave the sentinel "one owner". That was false and I made the problem worse:
+  `looks_like_error_text()` was moved into `orion/cognition/cortex_payload_extract.py` on
+  2026-08-19 expressly to be the single home for this exact check (5 live call sites), and
+  `services/orion-vision-council/app/llm_reply.py:27` holds a second constant. Mine was a
+  third, and strictly narrower -- it would have let `[error:` (lowercase), `[Error:` (no
+  space), `Traceback ...` and `Internal Server Error` through the gate.
+  - Fix: deleted my module, reverted `llm_backend.py` entirely (the gateway is now untouched
+    by this PR), and pointed the gate at the canonical detector.
+  - Evidence: `test_gateway_failure_text_is_detected` now covers all four variants the
+    private version would have missed. I did not run the existing-mechanism check before
+    building; that is the process failure here, not just the duplicate.
+- Finding 1 (high) -- the settings test used `sys.path.insert` + `from app.settings import
+  Settings`, which collides with ~20 root tests binding a top-level `app` to a *different*
+  service. Review showed it failing beside `test_receipt_pruner.py` and passing **vacuously**
+  beside `test_attention_runtime_store.py` (whose Settings also declares `service_version`),
+  and leaving a poisoned `sys.modules['app']` behind.
+  - Fix: load by explicit file path via `importlib.util.spec_from_file_location` under a
+    unique name, never registered in `sys.modules`.
+  - Evidence: both of review's repro orderings now pass (24 passed / 17 passed), and the
+    mutation still fails the test.
+- Finding 3 (low) -- the pinning test grepped source text for 2 of 16 producer sites, so a
+  change at any other site stayed green while detection silently broke.
+  - Fix: dissolved by the finding-2 fix. The gateway is no longer modified, so there is
+    nothing to pin there; the replacement test asserts *which detector the gate calls*, which
+    is the property that actually matters, and covers behavior rather than source text.
+
+## Known remaining duplication (not fixed here)
+
+`services/orion-vision-council/app/llm_reply.py:27`'s `GATEWAY_ERROR_PREFIX = "[Error:"` is
+still a second definition alongside the canonical `looks_like_error_text`. Consolidating it
+crosses a service boundary for a different concern (deciding whether a *reply* is an error,
+not whether to persist reasoning), so it is deliberately left as a follow-up rather than
+scope-crept into this patch.
+
 ## Risks / concerns
 
-- Severity: low. `is_backend_error_text()` is a prefix match over a single-producer format,
-  not a text classifier. A real answer that merely mentions an error is not flagged (tested).
-  The gate is additionally narrowed to `reasoning_trace is None`, so a genuine reasoning
-  trace is never suppressed.
-- Severity: low. Three services in one PR. The gpu-cluster-power fix is independent and
+- Severity: low. `looks_like_error_text()` matches error *framing*, not the word "error";
+  real prose reflecting on an error is not swallowed (tested). The gate is additionally
+  narrowed to `reasoning_trace is None`, so a genuine reasoning trace is never suppressed.
+- Severity: low. Two services in one PR. The gpu-cluster-power fix is independent and
   bundled deliberately -- both are one-line fallout from the same incident.
 - Severity: medium, NOT addressed. The **936 existing rows are untouched.** They remain
   labelled `reasoning` and continue to reach any consumer reading that table. Relabelling or

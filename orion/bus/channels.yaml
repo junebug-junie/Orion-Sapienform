@@ -1908,7 +1908,7 @@ channels:
     schema_id: "CabinetAmbientSpikeV1"
     message_kind: "cabinet.ambient.spike.v1"
     producer_services: ["orion-biometrics"]
-    consumer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-sql-writer", "orion-substrate-runtime"]
     stability: "experimental"
     since: "2026-08-29"
 

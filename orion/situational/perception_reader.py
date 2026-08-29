@@ -132,7 +132,116 @@ def fetch_presence(stream_id: str, *, engine: Any | None = None) -> dict[str, An
 
     if row is None or not row[0]:
         return None
-    return dict(row[0])
+    return _presence_row_to_dict(row[0], row[1])
+
+
+def _presence_row_to_dict(presence_json: Any, updated_at: Any) -> dict[str, Any]:
+    """Snapshot content plus the row's own write time under `row_updated_at`.
+
+    The write time is NOT decoration: a camera that goes dark stops UPDATING
+    this row rather than writing "absent" into it, so the JSONB content alone
+    cannot distinguish "someone is present" from "someone was present when
+    the webcam was last alive an hour ago". Every freshness judgement about
+    presence has to come from this column. Named `row_updated_at` rather than
+    `updated_at` so it can never be confused with, or shadowed by, a field
+    inside the snapshot blob itself.
+    """
+    out = dict(presence_json)
+    if updated_at is not None and getattr(updated_at, "tzinfo", None) is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    out["row_updated_at"] = updated_at
+    return out
+
+
+def presence_row_age_seconds(presence: dict[str, Any] | None) -> float | None:
+    """Seconds since this presence row was last written, or None if unknown."""
+    if not presence:
+        return None
+    updated_at = presence.get("row_updated_at")
+    if updated_at is None:
+        return None
+    try:
+        return max(0.0, (datetime.now(timezone.utc) - updated_at).total_seconds())
+    except Exception:  # noqa: BLE001 -- fail-open by module contract
+        return None
+
+
+def fetch_presence_resolved(
+    stream_ids: list[str],
+    *,
+    max_age_seconds: float,
+    engine: Any | None = None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Pick the one camera whose presence row should speak for "where is
+    Juniper right now", across several streams, in a single query.
+
+    A single hardcoded `perception_stream_id` was the wrong shape and was
+    measurably wrong live (2026-08-29): cortex-exec read `cam0`, the interior
+    room camera, which had been `absent` for 70 minutes, while `carbon`
+    (the laptop webcam Juniper was actually sitting at) read `present` with
+    `last_seen_sec=0.0`. The prompt was narrating an empty room at someone
+    sitting at their desk.
+
+    Preference order, first match wins:
+
+    1. a FRESH row that says `present` -- someone is at this camera now
+    2. a FRESH row that says `recent` -- someone just stepped out of frame
+    3. the first configured stream that returned a row at all
+
+    "Fresh" is judged from `row_updated_at`, never from the blob (see
+    `_presence_row_to_dict`). Ties inside a tier break on the more recently
+    written row, so two live cameras resolve deterministically rather than on
+    dict ordering. Returns `(None, None)` when nothing is readable -- the same
+    fail-open contract as `fetch_presence`, which this does not replace
+    (single-stream callers such as endogenous_outreach still use that).
+    """
+    if not stream_ids:
+        return (None, None)
+    engine = engine if engine is not None else _get_engine()
+    if engine is None:
+        return (None, None)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT presence_id, presence_json, updated_at FROM substrate_embodied_presence "
+                    "WHERE presence_id = ANY(:stream_ids)"
+                ),
+                {"stream_ids": list(stream_ids)},
+            ).all()
+    except Exception as exc:  # noqa: BLE001 -- fail-open by contract
+        logger.warning("situation_presence_multi_read_failed err=%s", exc)
+        return (None, None)
+
+    found: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not row[1]:
+            continue
+        found[str(row[0])] = _presence_row_to_dict(row[1], row[2])
+    if not found:
+        return (None, None)
+
+    def _sort_key(item: tuple[str, dict[str, Any]]) -> float:
+        age = presence_row_age_seconds(item[1])
+        # Unknown age sorts last within its tier rather than first: a row we
+        # cannot date is not evidence of recency.
+        return age if age is not None else float("inf")
+
+    for wanted in ("present", "recent"):
+        tier = [
+            (sid, pres)
+            for sid, pres in found.items()
+            if pres.get("state") == wanted
+            and (lambda a: a is not None and a <= max_age_seconds)(presence_row_age_seconds(pres))
+        ]
+        if tier:
+            sid, pres = min(tier, key=_sort_key)
+            return (sid, pres)
+
+    for sid in stream_ids:
+        if sid in found:
+            return (sid, found[sid])
+    return (None, None)
 
 
 def reset_perception_reader_engine_for_tests() -> None:

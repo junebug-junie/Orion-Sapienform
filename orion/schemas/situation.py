@@ -359,6 +359,39 @@ class PerceptionContextV1(BaseModel):
     presence_subject: Optional[str] = None           # "unknown" | "none" | a real name
     presence_identity_uncertain: bool = False
 
+    # The ASK DECISION, 2026-08-29 -- distinct from the observation above.
+    #
+    # `presence_identity_uncertain` is one observation ("a face was seen and
+    # did not match"). This field is the decision that survived the cooldown
+    # claim, and it covers a strictly larger set of situations, because the
+    # observation could never describe the case Juniper actually reported:
+    # "orion never bites when they can't recognize me (eg I close the camera
+    # lid)". A closed lid emits no frames, so no face is detected, so
+    # `identity_confidence` is None rather than "uncertain", so the boolean
+    # above is False -- Orion stayed silent precisely when it could see
+    # nothing at all. Confirmed live the same day: three presence rows, all
+    # `identity_uncertain=false`, and the cortex-exec chat replica was
+    # reading `cam0` (absent 70 minutes) while `carbon` -- the laptop webcam
+    # -- showed a person present.
+    #
+    #   "unmatched_face"        a person is in view and identity_face did
+    #                           not match the one enrolled subject
+    #   "no_visual_confirmation" no fresh confirmed read exists at all --
+    #                           lid closed, camera off, nobody in frame, or
+    #                           the vision stack is down
+    #   None                    either Orion has a fresh confirmed read, or
+    #                           the cooldown for that reason is already held
+    #
+    # Kept separate from the boolean rather than replacing it: that field is
+    # registered in orion/schemas/registry.py and consumed as a structured
+    # debug signal, and widening its meaning in place would silently change
+    # what an existing reader thinks it is looking at. Both are set
+    # consistently -- reason "unmatched_face" implies the boolean is True.
+    # The prompt reads ONLY this field.
+    presence_identity_ask: Optional[
+        Literal["unmatched_face", "no_visual_confirmation"]
+    ] = None
+
 
 class AffectContextV1(BaseModel):
     """Juniper's most recent facial+vocal affect read, for the situation brief.

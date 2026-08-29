@@ -85,7 +85,42 @@ async def test_claim_uses_the_configured_ttl() -> None:
     redis = _FakeRedis()
     bind_identity_ask_cooldown_bus(_FakeBus(redis))
     await try_claim_identity_ask("cam0", ttl_seconds=42)
-    assert redis.set_calls == [("orion:cortex-exec:identity_ask_cooldown:cam0", "1", True, 42)]
+    assert redis.set_calls == [
+        ("orion:cortex-exec:identity_ask_cooldown:unmatched_face:cam0", "1", True, 42)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_each_reason_claims_its_own_key() -> None:
+    """Keyed by (reason, stream) since 2026-08-29. A shared key would let the
+    common reason starve the rare one: hours of lid-closed chat would hold the
+    slot, and a stranger who then walked into frame would go unremarked."""
+    redis = _FakeRedis()
+    bind_identity_ask_cooldown_bus(_FakeBus(redis))
+    assert await try_claim_identity_ask("cam0", reason="no_visual_confirmation") is True
+    assert await try_claim_identity_ask("cam0", reason="unmatched_face") is True
+    assert {call[0] for call in redis.set_calls} == {
+        "orion:cortex-exec:identity_ask_cooldown:no_visual_confirmation:cam0",
+        "orion:cortex-exec:identity_ask_cooldown:unmatched_face:cam0",
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_same_reason_on_the_same_stream_claims_once() -> None:
+    redis = _FakeRedis()
+    bind_identity_ask_cooldown_bus(_FakeBus(redis))
+    first = await try_claim_identity_ask("cam0", reason="no_visual_confirmation")
+    second = await try_claim_identity_ask("cam0", reason="no_visual_confirmation")
+    assert (first, second) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_reason_defaults_to_the_original_signal() -> None:
+    """Callers written before the second reason existed keep their key."""
+    redis = _FakeRedis()
+    bind_identity_ask_cooldown_bus(_FakeBus(redis))
+    await try_claim_identity_ask("cam0")
+    assert redis.set_calls[0][0].endswith(":unmatched_face:cam0")
 
 
 # --- the race condition this atomic claim exists to close -------------------

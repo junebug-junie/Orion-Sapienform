@@ -210,6 +210,29 @@ class Settings(BaseSettings):
     orion_situation_identity_ask_cooldown_seconds: int = Field(
         1200, alias="ORION_SITUATION_IDENTITY_ASK_COOLDOWN_SECONDS"
     )
+    # 2026-08-29. Comma-separated; empty falls back to the single stream_id
+    # above, so an unset key is exactly the previous behavior. Measured that
+    # day: this replica read cam0 (the room camera, absent 70 minutes) while
+    # carbon -- Juniper's laptop webcam -- had someone present, so the prompt
+    # was narrating an empty room at a person sitting at her desk.
+    orion_situation_perception_stream_ids: str = Field(
+        "carbon,cam0", alias="ORION_SITUATION_PERCEPTION_STREAM_IDS"
+    )
+    # 2026-08-29: the cooldown for the OTHER ask reason -- "I have no fresh
+    # confirmed read of who this is at all" (lid closed, camera off, empty
+    # frame). 21600s (6h), far longer than the mismatch cooldown above,
+    # because this one describes a condition that can hold all evening
+    # rather than a transient mis-recognition.
+    orion_situation_identity_ask_unconfirmed_cooldown_seconds: int = Field(
+        21600, alias="ORION_SITUATION_IDENTITY_ASK_UNCONFIRMED_COOLDOWN_SECONDS"
+    )
+    # 2026-08-29: how fresh a presence row must be to count as a live read.
+    # orion-vision-window rewrites it about every 5s while its camera is
+    # alive, so >120s means that camera stopped reporting -- which is the
+    # signal, not an edge case.
+    orion_situation_identity_ask_max_presence_age_seconds: int = Field(
+        120, alias="ORION_SITUATION_IDENTITY_ASK_MAX_PRESENCE_AGE_SECONDS"
+    )
     # 2026-08-25: Juniper's facial+vocal affect read (orion-affectgpt-worker
     # via orion-juniper-affective-state), mirrored into a single Redis key
     # by orion/situational/juniper_affect_state.py. Default ON, unlike

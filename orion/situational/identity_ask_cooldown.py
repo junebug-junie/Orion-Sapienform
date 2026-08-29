@@ -79,11 +79,33 @@ def reset_identity_ask_cooldown_bus_for_tests() -> None:
     _BUS = None
 
 
-def _key(stream_id: str) -> str:
-    return f"{_KEY_PREFIX}:{stream_id}"
+def _key(stream_id: str, reason: str) -> str:
+    """Keyed by (reason, stream), not stream alone (2026-08-29).
+
+    There are now two distinct reasons to ask, with very different natural
+    repeat rates, and a single shared key would let the common one starve the
+    rare one. `unmatched_face` means a face was seen and did not match -- a
+    strong, specific, usually transient signal worth re-raising within the
+    hour. `no_visual_confirmation` means Orion simply has no fresh confirmed
+    read at all (lid closed, camera off, nobody in frame) -- a background
+    CONDITION rather than an event, true for hours at a stretch, and asking
+    about it on the old 20-minute cadence would be roughly nine questions
+    across an evening of lid-closed chat. Separate keys let each carry its
+    own TTL (see SituationSettings' two cooldown fields).
+
+    Changing the key shape retires any cooldown claimed under the old
+    stream-only key; the one-time cost is at most one extra ask per camera
+    on the first turn after deploy.
+    """
+    return f"{_KEY_PREFIX}:{reason}:{stream_id}"
 
 
-async def try_claim_identity_ask(stream_id: str, *, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> bool:
+async def try_claim_identity_ask(
+    stream_id: str,
+    *,
+    reason: str = "unmatched_face",
+    ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+) -> bool:
     """Atomically claim the "ask about this camera's identity mismatch"
     slot for `stream_id`. Returns True if THIS call claimed it -- safe to
     surface the clarifying question now, and the cooldown is already
@@ -99,9 +121,11 @@ async def try_claim_identity_ask(stream_id: str, *, ttl_seconds: int = _DEFAULT_
     """
     bus = _BUS
     if bus is None:
-        logger.warning("identity_ask_cooldown_claim_bus_unbound stream_id=%s", stream_id)
+        logger.warning(
+            "identity_ask_cooldown_claim_bus_unbound stream_id=%s reason=%s", stream_id, reason
+        )
         return True
-    key = _key(stream_id)
+    key = _key(stream_id, reason)
     try:
         claimed = await bus.redis.set(key, "1", nx=True, ex=ttl_seconds)
     except Exception:

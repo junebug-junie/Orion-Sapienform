@@ -82,9 +82,13 @@ def _no_real_db(monkeypatch):
     """Never touch a database from these tests."""
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)
     # Every existing test that reaches the "ok" path now also calls
-    # fetch_presence -- without this default, they would attempt a real
-    # Postgres connection the moment presence fusion was added.
-    monkeypatch.setattr(situation_mod, "fetch_presence", lambda stream_id: None)
+    # the resolved presence read -- without this default, they would attempt
+    # a real Postgres connection the moment presence fusion was added.
+    monkeypatch.setattr(
+        situation_mod,
+        "fetch_presence_resolved",
+        lambda stream_ids, *, max_age_seconds: (None, None),
+    )
 
 
 # --- provider states -------------------------------------------------------
@@ -277,12 +281,33 @@ def _with_percept(monkeypatch, text: str = "Three chairs and a door are visible.
     )
 
 
+def _with_presence(monkeypatch, row, *, stream_id: str = "cam0", age_sec: float = 1.0):
+    """Stub the resolved presence read with a row of a REAL age.
+
+    `row_updated_at` is not decoration in these tests: since 2026-08-29 the
+    identity-ask decision is gated on how recently the presence row was
+    written, because a camera that goes dark stops updating its row rather
+    than writing "absent" into it. A fixture that omitted the timestamp would
+    exercise a path no live row can take -- every row that comes back from
+    `fetch_presence_resolved` carries one.
+    """
+    resolved = (
+        None
+        if row is None
+        else {**row, "row_updated_at": datetime.now(timezone.utc) - timedelta(seconds=age_sec)}
+    )
+    monkeypatch.setattr(
+        situation_mod,
+        "fetch_presence_resolved",
+        lambda stream_ids, *, max_age_seconds: (
+            (stream_id, resolved) if resolved is not None else (None, None)
+        ),
+    )
+
+
 def test_present_prefixes_a_duration_fragment(monkeypatch) -> None:
     _with_percept(monkeypatch)
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "present", "since_sec": 10800.0, "subject": "unknown"},
-    )
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 10800.0, "subject": "unknown"})
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.scene_summary.startswith("Someone has been in view for about 3 hours.")
     assert ctx.scene_summary.endswith("Three chairs and a door are visible.")
@@ -292,10 +317,7 @@ def test_present_prefixes_a_duration_fragment(monkeypatch) -> None:
 
 def test_recent_uses_stepped_out_phrasing(monkeypatch) -> None:
     _with_percept(monkeypatch)
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "recent", "since_sec": 45.0, "subject": "unknown"},
-    )
+    _with_presence(monkeypatch, {"state": "recent", "since_sec": 45.0, "subject": "unknown"})
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert "stepped out of view" in ctx.scene_summary
     assert ctx.presence_state == "recent"
@@ -304,10 +326,7 @@ def test_recent_uses_stepped_out_phrasing(monkeypatch) -> None:
 def test_absent_adds_no_fragment_and_no_noise(monkeypatch) -> None:
     """An empty room is the default expectation, not news."""
     _with_percept(monkeypatch, "Two chairs and a table are visible.")
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "absent", "since_sec": 3000.0, "subject": "none"},
-    )
+    _with_presence(monkeypatch, {"state": "absent", "since_sec": 3000.0, "subject": "none"})
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.scene_summary == "Two chairs and a table are visible."
     assert ctx.presence_state == "absent"
@@ -316,39 +335,64 @@ def test_absent_adds_no_fragment_and_no_noise(monkeypatch) -> None:
 def test_no_presence_row_is_a_normal_no_op(monkeypatch) -> None:
     """A stream with no presence row yet (e.g. brand new) must not error."""
     _with_percept(monkeypatch)
-    monkeypatch.setattr(situation_mod, "fetch_presence", lambda stream_id: None)
+    _with_presence(monkeypatch, None)
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.scene_summary == "Three chairs and a door are visible."
     assert ctx.presence_state is None
 
 
 def test_presence_read_failure_fails_open(monkeypatch) -> None:
-    """Same fail-open contract as the percept reader itself."""
+    """Same fail-open contract as the percept reader itself.
+
+    Changed 2026-08-29, and this is a real behavior fix rather than a test
+    edit: the old code called fetch_presence bare, so a database blip
+    PROPAGATED out of _build_perception_context and took the whole turn
+    assembly with it -- the docstring said "fails open" while the assertion
+    directly below it demanded a raise. The presence read now lives in
+    _resolve_presence_and_identity_ask behind the same try/except every other
+    provider in this module uses, so a broken database costs the presence
+    enrichment and nothing else.
+    """
     _with_percept(monkeypatch)
 
-    def _boom(stream_id):
+    def _boom(stream_ids, *, max_age_seconds):
         raise RuntimeError("db unreachable")
 
-    monkeypatch.setattr(situation_mod, "fetch_presence", _boom)
-    with pytest.raises(RuntimeError):
-        asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    monkeypatch.setattr(situation_mod, "fetch_presence_resolved", _boom)
+    diag = _diag()
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), diag))
+    assert ctx.available is True, "a presence failure must not cost the percept"
+    assert ctx.presence_state is None
+    assert ctx.presence_identity_ask is None, "no ask on a read we could not make"
+    assert diag.provider_status["perception_presence"] == "error"
 
 
-def test_presence_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> None:
-    """Presence is an enrichment of an already-valid percept, not an
-    independent availability path. A room not seen recently must not surface
-    'someone was there three hours ago' as if it were current."""
+def test_presence_prose_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> None:
+    """The presence PROSE stays gated on a valid percept -- a room not seen
+    recently must not surface 'someone was there three hours ago' as if it
+    were current.
+
+    Narrowed 2026-08-29 from "fetch_presence must not be CALLED at all". The
+    read now happens unconditionally, because the identity-ask decision needs
+    it on exactly the paths where there is no valid percept: a closed laptop
+    lid produces no percepts, and that is the case Juniper reported the ask
+    failing in. What must stay gated is the narrative fragment and the
+    structured presence fields, which is what this now asserts -- the
+    distinction the old assertion conflated.
+    """
     called = {"n": 0}
 
-    def _spy(stream_id):
+    def _spy(stream_ids, *, max_age_seconds):
         called["n"] += 1
-        return {"state": "present", "since_sec": 10.0, "subject": "unknown"}
+        return ("cam0", {"state": "present", "since_sec": 10.0, "subject": "unknown"})
 
-    monkeypatch.setattr(situation_mod, "fetch_presence", _spy)
+    monkeypatch.setattr(situation_mod, "fetch_presence_resolved", _spy)
     monkeypatch.setattr(situation_mod, "fetch_latest_percept", lambda: None)  # unavailable
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.available is False
-    assert called["n"] == 0, "fetch_presence must not be called for an unavailable percept"
+    assert ctx.scene_summary is None, "no percept means no narrative, presence or not"
+    assert ctx.presence_state is None, "structured presence stays gated on a valid percept"
+    assert called["n"] == 1, "the read itself now happens on every non-disabled path"
 
 
 # --- presence_identity_uncertain, 2026-08-26 --------------------------------
@@ -361,10 +405,7 @@ def test_presence_never_enriches_a_stale_or_unavailable_percept(monkeypatch) -> 
 
 def test_identity_uncertain_row_sets_the_context_field_and_marks_cooldown(monkeypatch) -> None:
     _with_percept(monkeypatch)
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
-    )
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True})
     redis = _FakeCooldownRedis()
     bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
@@ -374,10 +415,7 @@ def test_identity_uncertain_row_sets_the_context_field_and_marks_cooldown(monkey
 
 def test_identity_uncertain_suppressed_when_already_in_cooldown(monkeypatch) -> None:
     _with_percept(monkeypatch)
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
-    )
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True})
     redis = _FakeCooldownRedis()
     bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
     first = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
@@ -396,20 +434,14 @@ def test_identity_uncertain_false_when_presence_row_lacks_the_field(monkeypatch)
     """Backward compatible with a presence row written before this field
     existed -- no cooldown bus needed at all since the field is absent."""
     _with_percept(monkeypatch)
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown"},
-    )
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 5.0, "subject": "unknown"})
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.presence_identity_uncertain is False
 
 
 def test_identity_uncertain_false_when_the_field_is_explicitly_false(monkeypatch) -> None:
     _with_percept(monkeypatch)
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "juniper", "identity_uncertain": False},
-    )
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 5.0, "subject": "juniper", "identity_uncertain": False})
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.presence_identity_uncertain is False
 
@@ -425,10 +457,7 @@ def test_identity_uncertain_cooldown_read_failure_fails_open_to_asking(monkeypat
     fetch_presence above), should not add -- a redundant try/except of its
     own; turn assembly must not blow up either way."""
     _with_percept(monkeypatch)
-    monkeypatch.setattr(
-        situation_mod, "fetch_presence",
-        lambda stream_id: {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
-    )
+    _with_presence(monkeypatch, {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True})
     bind_identity_ask_cooldown_bus(_FakeCooldownBus(_RaisingCooldownRedis()))
     ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
     assert ctx.presence_identity_uncertain is True
@@ -445,11 +474,13 @@ def test_identity_uncertain_caution_appears_in_prompt() -> None:
             scene_summary="A person is visible.",
             observation_age_seconds=5,
             presence_identity_uncertain=True,
+            presence_identity_ask="unmatched_face",
         )
     )
     text = _build_prompt_fragment(brief, 4000).compact_text
     assert "is that you" in text.lower()
     assert "Juniper" in text
+    assert "currently in view" in text, "the unmatched-face wording describes a visible person"
 
 
 def test_identity_uncertain_caution_absent_when_false() -> None:
@@ -460,6 +491,7 @@ def test_identity_uncertain_caution_absent_when_false() -> None:
             scene_summary="A person is visible.",
             observation_age_seconds=5,
             presence_identity_uncertain=False,
+            presence_identity_ask=None,
         )
     )
     text = _build_prompt_fragment(brief, 4000).compact_text
@@ -506,3 +538,176 @@ def test_negative_or_none_since_sec_produces_no_fragment() -> None:
     assert presence_fragment("present", -5.0) is None
     assert presence_fragment("absent", 100.0) is None
     assert presence_fragment(None, 100.0) is None
+
+
+# --- the ask Juniper actually reported missing, 2026-08-29 -------------------
+# "orion never bites when they can't recognize me (eg I close the camera lid).
+# they are supposed to ask who dis"
+#
+# Every test below fails against the pre-2026-08-29 code, and that is the
+# point: the old trigger was `present_now AND identity_confidence ==
+# "uncertain"`, which requires a face to have been DETECTED and not matched.
+# A closed lid emits no frames at all, so no face, so no "uncertain" -- the
+# one situation the feature was asked for was the one it structurally could
+# not reach.
+
+
+def test_closed_lid_asks_who_this_is(monkeypatch) -> None:
+    """THE regression test. No presence row readable at all -- the webcam is
+    off, so orion-vision-window has nothing to write about."""
+    _with_percept(monkeypatch)
+    _with_presence(monkeypatch, None)
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_ask == "no_visual_confirmation"
+    assert ctx.presence_identity_uncertain is False, (
+        "no face was detected, so the unmatched-face observation stays False -- "
+        "the ask does not borrow a fact it does not have"
+    )
+
+
+def test_camera_that_went_dark_mid_session_asks(monkeypatch) -> None:
+    """The lid closed a while ago: the row still SAYS 'present' because
+    nothing has overwritten it, but it stopped being updated. Row content
+    alone cannot tell this from a live sighting -- only its age can."""
+    _with_percept(monkeypatch)
+    _with_presence(
+        monkeypatch,
+        {"state": "present", "since_sec": 300.0, "subject": "juniper", "identity_confirmed": True},
+        age_sec=3600.0,
+    )
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_ask == "no_visual_confirmation", (
+        "an hour-old 'confirmed' row is not a confirmation of who is here now"
+    )
+
+
+def test_ask_survives_the_stale_percept_early_return(monkeypatch) -> None:
+    """The structural fix. A dark camera produces no fresh percepts either, so
+    this function returns source='stale' well before it used to reach the
+    identity block. The ask has to outlive that early return or the feature is
+    unreachable in exactly the case it exists for."""
+    monkeypatch.setattr(
+        situation_mod,
+        "fetch_latest_percept",
+        lambda: {
+            "scene_summary": "An empty room.",
+            "observed_at": NOW - timedelta(seconds=100000),
+        },
+    )
+    _with_presence(monkeypatch, None)
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.source == "stale"
+    assert ctx.available is False
+    assert ctx.scene_summary is None, "the stale-summary privacy rule still holds"
+    assert ctx.presence_identity_ask == "no_visual_confirmation"
+
+
+def test_fresh_confirmed_read_stays_silent(monkeypatch) -> None:
+    """The one case that must never ask: Orion can see Juniper right now."""
+    _with_percept(monkeypatch)
+    _with_presence(
+        monkeypatch,
+        {"state": "present", "since_sec": 30.0, "subject": "juniper", "identity_confirmed": True},
+    )
+    redis = _FakeCooldownRedis()
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_ask is None
+    assert ctx.presence_identity_uncertain is False
+    assert redis.set_calls == [], "no cooldown burned on a turn with nothing to ask"
+
+
+def test_nobody_in_frame_asks_who_is_talking(monkeypatch) -> None:
+    """Camera alive and reporting, but the chair is empty -- someone is
+    nonetheless mid-conversation with Orion, since this only runs while a turn
+    is being assembled."""
+    _with_percept(monkeypatch)
+    _with_presence(monkeypatch, {"state": "absent", "since_sec": 900.0, "subject": "none"})
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_ask == "no_visual_confirmation"
+
+
+def test_unmatched_face_still_reports_its_own_reason(monkeypatch) -> None:
+    """The original 2026-08-26 signal is preserved, not swallowed by the
+    broader one -- a detected stranger is a different fact from a dark
+    camera, and they carry different cooldowns and different prompt text."""
+    _with_percept(monkeypatch)
+    _with_presence(
+        monkeypatch,
+        {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
+    )
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert ctx.presence_identity_ask == "unmatched_face"
+    assert ctx.presence_identity_uncertain is True
+
+
+def test_the_two_reasons_hold_independent_cooldowns(monkeypatch) -> None:
+    """A shared key would let the common reason starve the rare one: hours of
+    lid-closed chat would claim the slot, and then a genuine stranger walking
+    into frame would go unremarked."""
+    _with_percept(monkeypatch)
+    redis = _FakeCooldownRedis()
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(redis))
+
+    _with_presence(monkeypatch, None)
+    first = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert first.presence_identity_ask == "no_visual_confirmation"
+
+    _with_presence(
+        monkeypatch,
+        {"state": "present", "since_sec": 5.0, "subject": "unknown", "identity_uncertain": True},
+    )
+    second = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert second.presence_identity_ask == "unmatched_face", (
+        "the unconfirmed cooldown must not suppress a detected mismatch"
+    )
+    assert len({key for key, *_ in redis.set_calls}) == 2, "two distinct cooldown keys"
+
+
+def test_unconfirmed_ask_is_rate_limited_like_the_other_one(monkeypatch) -> None:
+    _with_percept(monkeypatch)
+    _with_presence(monkeypatch, None)
+    bind_identity_ask_cooldown_bus(_FakeCooldownBus(_FakeCooldownRedis()))
+    first = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    second = asyncio.run(_build_perception_context(_cfg(perception_enabled=True), _diag()))
+    assert first.presence_identity_ask == "no_visual_confirmation"
+    assert second.presence_identity_ask is None, "asked once, then quiet"
+
+
+def test_unconfirmed_cooldown_is_much_longer_than_the_mismatch_one() -> None:
+    """Not a knob check -- a mis-set ratio here is the difference between one
+    question per sitting and nine across an evening with the lid shut."""
+    cfg = settings_from_runtime(SimpleNamespace())
+    assert cfg.identity_ask_cooldown_seconds == 1200
+    assert cfg.identity_ask_unconfirmed_cooldown_seconds == 21600
+    assert cfg.identity_ask_unconfirmed_cooldown_seconds >= 8 * cfg.identity_ask_cooldown_seconds
+
+
+def test_unconfirmed_prompt_never_claims_someone_is_visible() -> None:
+    """The old wording said 'the person currently in view'. On this path there
+    is no one in view -- handing the model that sentence is how a clarifying
+    question becomes a confabulated one."""
+    brief = _brief(
+        PerceptionContextV1(
+            available=False,
+            source="stale",
+            presence_identity_ask="no_visual_confirmation",
+        )
+    )
+    text = _build_prompt_fragment(brief, 4000).compact_text
+    assert "is that you" in text.lower()
+    assert "currently in view" not in text
+    assert "cannot see" in text or "can't see" in text
+
+
+def test_perception_disabled_never_asks(monkeypatch) -> None:
+    """Perception off means Orion does not discuss its cameras at all --
+    including to say it cannot see."""
+    _with_presence(monkeypatch, None)
+    ctx = asyncio.run(_build_perception_context(_cfg(perception_enabled=False), _diag()))
+    assert ctx.presence_identity_ask is None

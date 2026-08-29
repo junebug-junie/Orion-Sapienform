@@ -3,7 +3,7 @@ import uuid
 from typing import Optional
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, SYSTEM_ERROR_KINDS
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
 from scripts.settings import settings
 
@@ -50,7 +50,7 @@ class TTSClient:
              logger.error(f"[{correlation_id}] Decode failed: {decoded.error}")
              raise ValueError(f"Bus decode error: {decoded.error}")
 
-        if decoded.envelope.kind == "system.error":
+        if decoded.envelope.kind in SYSTEM_ERROR_KINDS:
             err_payload = decoded.envelope.payload
             details = (
                 err_payload.get("details")
@@ -108,7 +108,7 @@ class TTSClient:
              logger.error(f"[{correlation_id}] Decode failed: {decoded.error}")
              raise ValueError(f"Bus decode error: {decoded.error}")
 
-        if decoded.envelope.kind == "system.error":
+        if decoded.envelope.kind in SYSTEM_ERROR_KINDS:
             err_payload = decoded.envelope.payload
             details = (
                 err_payload.get("details")

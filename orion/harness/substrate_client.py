@@ -4,7 +4,7 @@ import logging
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, SYSTEM_ERROR_KINDS
 from orion.schemas.harness_finalize import HarnessDraftMoleculeV1, SubstrateFinalizeAppraisalV1
 
 logger = logging.getLogger("orion.harness.substrate")
@@ -65,7 +65,7 @@ class HarnessSubstrateClient:
             raise RuntimeError(f"Substrate finalize RPC failed: {decoded.error}")
 
         payload = decoded.envelope.payload
-        if decoded.envelope.kind == "system.error":
+        if decoded.envelope.kind in SYSTEM_ERROR_KINDS:
             detail = payload.get("details") if isinstance(payload, dict) else payload
             raise RuntimeError(f"Substrate finalize appraisal error: {detail}")
 

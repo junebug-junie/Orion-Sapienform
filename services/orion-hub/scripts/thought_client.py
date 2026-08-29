@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, SYSTEM_ERROR_KINDS
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from scripts.settings import settings
 
@@ -110,7 +110,7 @@ class ThoughtClient:
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
             return ThoughtReactResult(failure_reason="thought_rpc_decode_failed")
-        if decoded.envelope.kind == "system.error":
+        if decoded.envelope.kind in SYSTEM_ERROR_KINDS:
             payload = decoded.envelope.payload
             detail = payload.get("details") if isinstance(payload, dict) else payload
             logger.warning("[%s] thought RPC system.error detail=%s", correlation_id, detail)

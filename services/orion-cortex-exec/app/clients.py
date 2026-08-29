@@ -11,6 +11,7 @@ from orion.core.bus.bus_schemas import (
     ChatRequestPayload,
     ChatResponsePayload,
     ServiceRef,
+    SYSTEM_ERROR_KINDS,
 )
 from orion.core.contracts.recall import RecallQueryV1, RecallReplyV1
 from orion.schemas.agents.schemas import (
@@ -103,6 +104,20 @@ class LLMGatewayClient:
         if not decoded.ok:
             raise RuntimeError(f"Decode failed: {decoded.error}")
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        if decoded.envelope.kind in SYSTEM_ERROR_KINDS:
+            # Without this check, ChatResponsePayload.model_validate(payload)
+            # below silently accepted an error payload -- every field on that
+            # model is Optional with extra="ignore", so it validated into a
+            # hollow content=None "successful" reply instead of raising.
+            # Confirmed live 2026-08-29:
+            # ChatResponsePayload.model_validate({"error": "..."}) ->
+            # ChatResultPayload(content=None, ..., usage={}, raw={}), no
+            # exception. orion-llm-gateway/app/main.py:216 publishes exactly
+            # this shape for an unsupported/failed chat request.
+            # `is not None`, not `or` -- a producer-sent empty-string error
+            # must not fall through to dumping the whole payload instead.
+            error_detail = payload.get("error")
+            raise RuntimeError(f"LLM gateway RPC returned an error: {error_detail if error_detail is not None else payload}")
         reasoning_content = payload.get("reasoning_content")
         reasoning_trace = payload.get("reasoning_trace")
         trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None

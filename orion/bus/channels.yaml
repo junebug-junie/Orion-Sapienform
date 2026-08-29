@@ -1,3 +1,13 @@
+# Every entry's schema_id is enforced by orion/core/bus/async_service.py's
+# _validate_payload() -- with one cross-cutting exception: an envelope whose
+# kind is "system.error" (or "system.error.v1") is validated against
+# SystemErrorV1 (orion/schemas/platform.py) instead of the channel's own
+# schema_id below. This is the shared failure-signaling convention every RPC
+# producer uses to report a mid-request failure on its own reply channel
+# (see orion.core.bus.bus_schemas.SYSTEM_ERROR_KINDS for the producer list).
+# A channel's declared schema_id therefore describes its *success* payload
+# shape only; a system.error reply on that same channel is real, expected
+# traffic and is not a contract violation.
 channels:
   - name: "orion:verb:request"
     kind: "request"

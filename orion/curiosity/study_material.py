@@ -234,10 +234,26 @@ ORDER BY random()
 LIMIT $1
 """
 
-RELATION_COUNT_SQL = """
-SELECT relation, count(*) AS n
-FROM memory_concept_relation_decisions
-GROUP BY relation
+# Counted over the same rows the sample can draw from, and over the same rows
+# Orion's own psql can reach. Unfiltered, this told Orion 551 induction
+# decisions exist while `orion_readonly` could see 89 -- an invitation to go
+# looking for 462 rows that answer as though they were deleted. Exactly the
+# error the crystallization count had at 651-vs-295, fixed on one side of this
+# module and missed on the other.
+_NOT_AITOWN_DECISION = """NOT EXISTS (
+    SELECT 1
+    FROM memory_crystallization_sources s
+    JOIN aitown_chat_history_log a ON a.id::text = s.source_id
+    WHERE ('crys_' || replace(s.crystallization_id::text, '-', ''))
+            = d.candidate_crystallization_id
+       OR s.crystallization_id::text = d.target_crystallization_id
+)"""
+
+RELATION_COUNT_SQL = f"""
+SELECT d.relation, count(*) AS n
+FROM memory_concept_relation_decisions d
+WHERE {_NOT_AITOWN_DECISION}
+GROUP BY d.relation
 """
 
 # THE CANDIDATE SIDE WAS NEVER MISSING -- IT WAS A STRING FORMAT MISMATCH.

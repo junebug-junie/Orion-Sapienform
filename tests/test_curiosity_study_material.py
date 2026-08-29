@@ -218,7 +218,14 @@ def test_the_sample_excludes_ai_town_at_the_sql_level() -> None:
         RELATION_SAMPLE_SQL,
     )
 
-    for sql in (APPROVED_COUNT_SQL, APPROVED_SAMPLE_SQL,
+    from orion.curiosity.study_material import RELATION_COUNT_SQL
+
+    # RELATION_COUNT_SQL is in this list because it was NOT filtered when the
+    # other three were, and the miss was invisible: the prompt announced 551
+    # induction decisions while `orion_readonly` could reach 89. A count and a
+    # sample taken over different populations is the same defect that had the
+    # crystallization heading claiming 651.
+    for sql in (APPROVED_COUNT_SQL, APPROVED_SAMPLE_SQL, RELATION_COUNT_SQL,
                 RELATION_SAMPLE_SQL, RELATION_RESOLVABLE_SQL):
         assert "aitown_chat_history_log" in sql, sql[:80]
         assert "NOT EXISTS" in sql, sql[:80]
